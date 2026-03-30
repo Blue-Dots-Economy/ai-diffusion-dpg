@@ -14,7 +14,7 @@ state:
       #
       # Declare all domain-specific session fields below.
       # These are initialised with their defaults when a new session starts.
-      current_node:      { type: string,  default: "" }
+      current_node:      { type: string,  default: "awaiting_consent" }
       mental_state:      { type: enum,    values: [fog, orientation, evaluation, commitment, follow_through],  default: "fog" }
       market_signal:     { type: enum,    values: [strong, weak, absent],                                      default: "absent" }
       skill_match:       { type: enum,    values: [direct, partial, gap],                                      default: "gap" }
@@ -37,12 +37,34 @@ state:
           rel: HAS_PROFILE
           declared_fields:
             - language
-            - trade
-            - education
-            - location
-            - experience_years
             - consent_flag
             - anonymous_flag
+            # Identity layer
+            - name
+            - age_bracket
+            - location
+            - gender
+            - disability_status
+            - language_preference
+            # Capability layer
+            - education_level
+            - trade_or_stream
+            - certifications
+            - years_experience
+            - informal_skills
+            - language_skills
+            - digital_literacy
+            # Constraint layer
+            - income_urgency
+            - max_commute_km
+            - availability_hours
+            - mobility_owned
+            - dependents
+            # Aspiration layer
+            - primary_goal
+            - sector_preference
+            - open_to_training
+            - growth_horizon
           adhoc:
             label: UserAttribute
             rel: HAS_ATTRIBUTE

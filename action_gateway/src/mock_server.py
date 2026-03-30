@@ -3,8 +3,9 @@ action_gateway/src/mock_server.py
 
 Mock ONEST FastAPI server — PoC stub for external connector API.
 
-Runs on port 9999 (configurable). Single endpoint:
-    POST /onest/market_lookup
+Runs on port 9999 (configurable). Endpoints:
+    POST /onest/market_lookup  — job market data lookup
+    POST /onest/apply          — mock job application (always succeeds)
 
 Returns hardcoded fixture JSON for KKB demo trades (electrician, welder, fitter).
 Falls back to a default fixture for any other trade.
@@ -23,6 +24,8 @@ Run standalone:
 from __future__ import annotations
 
 import logging
+import random
+import string
 from typing import Optional
 
 from fastapi import FastAPI
@@ -56,13 +59,48 @@ _FIXTURES: dict[str, dict] = {
         "top_employers": ["BEML Hubli", "KA Manufacturing"],
         "source": "ONEST",
     },
+    "plumber": {
+        "trade": "plumber",
+        "salary_range": "₹12k–₹22k",
+        "market_signal": "growing 9% QoQ",
+        "top_employers": ["Hubli Municipal Corp", "KA Infrastructure Projects"],
+        "source": "ONEST",
+    },
+    "carpenter": {
+        "trade": "carpenter",
+        "salary_range": "₹13k–₹24k",
+        "market_signal": "stable 6% QoQ",
+        "top_employers": ["Dharwad Furniture Hub", "Urban Interiors Hubli"],
+        "source": "ONEST",
+    },
+    "mason": {
+        "trade": "mason",
+        "salary_range": "₹14k–₹25k",
+        "market_signal": "growing 11% QoQ",
+        "top_employers": ["KA Construction Co", "Hubli Builders Association"],
+        "source": "ONEST",
+    },
+    "driver": {
+        "trade": "driver",
+        "salary_range": "₹14k–₹26k",
+        "market_signal": "high demand 15% QoQ",
+        "top_employers": ["Ola Fleet Hubli", "Karnataka Road Transport"],
+        "source": "ONEST",
+    },
+    "tailor": {
+        "trade": "tailor",
+        "salary_range": "₹10k–₹18k",
+        "market_signal": "stable 5% QoQ",
+        "top_employers": ["Dharwad Garments", "KA Textile Mills"],
+        "source": "ONEST",
+    },
 }
 
 _DEFAULT_FIXTURE: dict = {
     "trade": "unknown",
     "salary_range": "₹12k–₹20k",
     "market_signal": "stable",
-    "top_employers": [],
+    "top_employers": ["Local Contractor Network", "District Employment Exchange"],
     "source": "ONEST",
 }
 
@@ -84,6 +122,21 @@ class MarketLookupResponse(BaseModel):
     top_employers: list[str]
     source: str
     location_queried: str
+
+
+class ApplyRequest(BaseModel):
+    trade: str
+    employer: str
+    location: str = ""
+    applicant_name: str = ""
+
+
+class ApplyResponse(BaseModel):
+    status: str
+    reference_number: str
+    message: str
+    employer: str
+    trade: str
 
 
 class HealthResponse(BaseModel):
@@ -133,6 +186,40 @@ def create_mock_server() -> FastAPI:
             top_employers=fixture["top_employers"],
             source=fixture["source"],
             location_queried=request.location or "not specified",
+        )
+
+    @app.post("/onest/apply", response_model=ApplyResponse)
+    def apply(request: ApplyRequest) -> ApplyResponse:
+        """
+        Mock job application endpoint.
+
+        Always succeeds with a generated reference number.
+        In production this will call ONEST's actual apply API.
+        """
+        ref = "KKB-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+        name_part = f" for {request.applicant_name}" if request.applicant_name else ""
+        message = (
+            f"Application submitted{name_part} to {request.employer} "
+            f"for {request.trade} role. Reference: {ref}."
+        )
+
+        logger.info(
+            "mock_server.apply",
+            extra={
+                "operation": "mock_server.apply",
+                "status": "success",
+                "trade": request.trade,
+                "employer": request.employer,
+                "reference": ref,
+            },
+        )
+
+        return ApplyResponse(
+            status="success",
+            reference_number=ref,
+            message=message,
+            employer=request.employer,
+            trade=request.trade,
         )
 
     @app.get("/health", response_model=HealthResponse)

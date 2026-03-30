@@ -57,7 +57,38 @@ _TOOL_DEFINITIONS: list[dict] = [
             },
             "required": ["trade"],
         },
-    }
+    },
+    {
+        "name": "onest_apply",
+        "description": (
+            "Submit a job application via ONEST on behalf of the user. "
+            "Call this only after the user has explicitly confirmed they want to apply "
+            "to a specific employer for a specific role. "
+            "Returns a reference number and confirmation message."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "trade": {
+                    "type": "string",
+                    "description": "The trade/role the user is applying for.",
+                },
+                "employer": {
+                    "type": "string",
+                    "description": "Name of the employer to apply to.",
+                },
+                "location": {
+                    "type": "string",
+                    "description": "City or district of the job.",
+                },
+                "applicant_name": {
+                    "type": "string",
+                    "description": "Name of the applicant (from user profile).",
+                },
+            },
+            "required": ["trade", "employer"],
+        },
+    },
 ]
 
 
@@ -80,9 +111,13 @@ class MockActionGateway:
         gateway_cfg = config.get("action_gateway", {})
         connectors_cfg = gateway_cfg.get("connectors", {})
         onest_cfg = connectors_cfg.get("onest_market_lookup", {})
+        apply_cfg = connectors_cfg.get("onest_apply", {})
 
         self._onest_endpoint: str = onest_cfg.get(
             "endpoint", "http://localhost:9999/onest/market_lookup"
+        )
+        self._apply_endpoint: str = apply_cfg.get(
+            "endpoint", "http://localhost:9999/onest/apply"
         )
         self._timeout_s: float = onest_cfg.get("timeout_ms", 5000) / 1000
 
@@ -130,6 +165,9 @@ class MockActionGateway:
 
         if tool_name == "onest_market_lookup":
             return self._call_onest(tool_use_id, tool_name, input_params, session_id)
+
+        if tool_name == "onest_apply":
+            return self._call_apply(tool_use_id, tool_name, input_params, session_id)
 
         # Unknown tool — structured error, not an exception
         logger.warning(
@@ -249,6 +287,87 @@ class MockActionGateway:
                 result={},
                 success=False,
                 error=f"onest_error: {type(e).__name__}",
+            )
+
+    def _call_apply(
+        self,
+        tool_use_id: str,
+        tool_name: str,
+        input_params: dict[str, Any],
+        session_id: str,
+    ) -> dict:
+        """HTTP POST to the mock ONEST apply endpoint."""
+        start = time.time()
+
+        try:
+            response = httpx.post(
+                self._apply_endpoint,
+                json={
+                    "trade":          input_params.get("trade", ""),
+                    "employer":       input_params.get("employer", ""),
+                    "location":       input_params.get("location", ""),
+                    "applicant_name": input_params.get("applicant_name", ""),
+                },
+                timeout=self._timeout_s,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            logger.info(
+                "action_gateway.apply_success",
+                extra={
+                    "operation": "mock_gateway._call_apply",
+                    "status": "success",
+                    "session_id": session_id,
+                    "trade": input_params.get("trade"),
+                    "employer": input_params.get("employer"),
+                    "reference": data.get("reference_number"),
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            return _tool_result(
+                tool_use_id=tool_use_id,
+                tool_name=tool_name,
+                result=data,
+                success=True,
+            )
+
+        except httpx.TimeoutException as e:
+            logger.error(
+                "action_gateway.apply_timeout",
+                extra={
+                    "operation": "mock_gateway._call_apply",
+                    "status": "failure",
+                    "session_id": session_id,
+                    "error": f"TimeoutException: {e}",
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            return _tool_result(
+                tool_use_id=tool_use_id,
+                tool_name=tool_name,
+                result={},
+                success=False,
+                error="apply_timeout",
+            )
+
+        except Exception as e:
+            logger.error(
+                "action_gateway.apply_error",
+                extra={
+                    "operation": "mock_gateway._call_apply",
+                    "status": "failure",
+                    "session_id": session_id,
+                    "error": f"{type(e).__name__}: {e}",
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            return _tool_result(
+                tool_use_id=tool_use_id,
+                tool_name=tool_name,
+                result={},
+                success=False,
+                error=f"apply_error: {type(e).__name__}",
             )
 
 

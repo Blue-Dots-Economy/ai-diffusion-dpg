@@ -6,14 +6,25 @@ agent:
   fallback_model: claude-haiku-4-5-20251001
 
 conversation:
-  blocked_message: "Maafi kijiye, main is vishay mein madad nahi kar sakta. (I'm unable to help with that request.)"
+  blocked_message: "Maafi kijiye, main is vishay mein madad nahi kar sakta."
   escalation_message: "Main aapko ek counsellor se connect kar raha hoon jo aapki poori madad kar sakenge."
   output_blocked_message: "Maafi kijiye, abhi jawab dene mein dikkat ho rahi hai. Kripya dobara poochein."
-  # Termination message — shown when the user ends the conversation.
-  # Add termination_message_{language} variants to reply in the user's detected language.
-  # Falls back to termination_message if no language-specific variant is found.
+  unknown_intent_message: "Maafi kijiye, main samajh nahi paya. Kripya dobara batayein."
+  # Termination message — the LLM translates this into the user's language automatically.
   termination_message: "Shukriya! Aapki baat karke achha laga. Agar phir koi zaroorat ho toh zaroor aayein."
-  termination_message_english: "Thank you! It was a pleasure speaking with you. Come back anytime."
+  # Consent and profile flow messages — the LLM translates these into the user's language.
+  consent_message: >
+    Namaskar! Kaam Ki Baat mein aapka swagat hai.
+    Hum aapki madad karne se pehle, ek baar poochhna chahte hain —
+    kya aap apni jaankari save karne ki anumati dete hain?
+    Isse agle baar aapko wahi sawaal nahi poochhe jaayenge.
+    Haan ya Nahi — dono theek hai.
+  consent_decline_ack: >
+    Theek hai, aapki privacy hum respect karte hain.
+    Aapki jaankari is session ke baad delete kar di jaayegi.
+    Ab chaliye aapki madad karte hain!
+  profile_complete_message: "Shukriya! Ab main aapke liye sahi kaam dhundh raha hoon..."
+  returning_user_greeting: "Namaskar! Aap wapas aa gaye. Chaliye dekhte hain aapke liye kya naya hai."
 
 connectors:
   read:
@@ -33,7 +44,27 @@ connectors:
             description: "Search radius in km from the specified location. Default 50."
         required:
           - trade
-  write: []
+  write:
+    - name: onest_apply
+      description: "Submit a job application via ONEST on behalf of the user. Call only after user explicitly confirms they want to apply. Returns reference number and confirmation."
+      input_schema:
+        type: object
+        properties:
+          trade:
+            type: string
+            description: "The trade or role the user is applying for"
+          employer:
+            type: string
+            description: "Name of the employer"
+          location:
+            type: string
+            description: "City or district of the job"
+          applicant_name:
+            type: string
+            description: "Name of the applicant from user profile"
+        required:
+          - trade
+          - employer
   identity: []
 
 preprocessing:
@@ -61,10 +92,35 @@ preprocessing:
       - counsellor_request
       - pay_range_query
       - termination_intent
-      - consent_yes
-      - consent_no
+      - consent_granted
+      - consent_declined
+      - consent_yes          # alias for consent_granted
+      - consent_no           # alias for consent_declined
       - unknown
-    entities: [trade, location, distance_km, income_urgency]
+    entities:
+      - name
+      - age_bracket
+      - location
+      - gender
+      - disability_status
+      - language_preference
+      - education_level
+      - trade_or_stream
+      - certifications
+      - years_experience
+      - informal_skills
+      - language_skills
+      - digital_literacy
+      - income_urgency
+      - max_commute_km
+      - availability_hours
+      - mobility_owned
+      - dependents
+      - primary_goal
+      - sector_preference
+      - open_to_training
+      - growth_horizon
+      - distance_km
     sentiment_classes: [neutral, positive, distressed, frustrated]
 
 workflow:
@@ -83,26 +139,90 @@ workflow:
   hitl_threshold: 3
 
 profile_collection:
-  question_sequence:
-    - field: trade
-      question: "Aap kaun sa kaam karte hain? (What trade do you work in?)"
-      entity: trade
-    - field: location
-      question: "Aap kahan se hain? Apna shehar ya gaon batayein. (Where are you from?)"
-      entity: location
-    - field: education
-      question: "Aapki padhai kahan tak hui hai? (What is your highest education level?)"
-      entity: education
-    - field: experience_years
-      question: "Aapko is kaam mein kitne saal ka anubhav hai? (How many years of experience do you have?)"
-      entity: experience_years
+  # 5 conversational rounds — each covers a full entity layer.
+  # NLU extracts whatever entities are present. Advance UNCONDITIONALLY after each round.
+  # The LLM translates question text into the user's detected language automatically.
+  rounds:
+    - round: 1
+      layer: identity
+      entities: [name, age_bracket, location, gender, disability_status]
+      condition: null
+
+    - round: 2
+      layer: capability_basic
+      entities: [education_level]
+      condition: null
+
+    - round: 3
+      layer: capability_trade
+      entities: [trade_or_stream, years_experience, certifications, informal_skills, language_skills, digital_literacy]
+      condition: null
+
+    - round: 4
+      layer: constraint
+      entities: [income_urgency, max_commute_km, availability_hours, mobility_owned, dependents]
+      condition: null
+
+    - round: 5
+      layer: aspiration
+      entities: [primary_goal, sector_preference, open_to_training, growth_horizon]
+      condition: null
+
+  # Rounds that must complete before grace_turn check applies.
+  hard_min_rounds: [1, 2]
+
+  # Fields required for ONEST job lookup. If missing after all rounds → grace turn.
+  hard_min_fields: [trade_or_stream, location]
+
+  grace_turn: {}
+  field_labels:
+    name: "naam"
+    age_bracket: "umar"
+    location: "shehar / gaon"
+    gender: "gender"
+    disability_status: "viklangta"
+    language_preference: "bhasha preference"
+    education_level: "padhai"
+    trade_or_stream: "trade / kaam"
+    certifications: "certificates"
+    years_experience: "anubhav"
+    informal_skills: "aur koi hunar"
+    language_skills: "boli / bhasha"
+    digital_literacy: "mobile / computer jaankari"
+    income_urgency: "kitni jaldi chahiye kaam"
+    max_commute_km: "kitni door ja sakte hain"
+    availability_hours: "kab kaam kar sakte hain"
+    mobility_owned: "apna vahan"
+    dependents: "ghar mein dependents"
+    primary_goal: "main lakshya"
+    sector_preference: "sector choice"
+    open_to_training: "training ke liye taiyaar"
+    growth_horizon: "career goal"
 
 entity_to_profile_field:
-  trade: trade
+  name: name
+  age_bracket: age_bracket
   location: location
-  education: education
-  experience_years: experience_years
+  gender: gender
+  disability_status: disability_status
+  language_preference: language_preference
+  education_level: education_level
+  trade_or_stream: trade_or_stream
+  certifications: certifications
+  years_experience: years_experience
+  informal_skills: informal_skills
+  language_skills: language_skills
+  digital_literacy: digital_literacy
   income_urgency: income_urgency
+  max_commute_km: max_commute_km
+  availability_hours: availability_hours
+  mobility_owned: mobility_owned
+  dependents: dependents
+  primary_goal: primary_goal
+  sector_preference: sector_preference
+  open_to_training: open_to_training
+  growth_horizon: growth_horizon
+  distance_km: distance_km
 
 hitl:
   loop_count_threshold: 3
@@ -110,17 +230,109 @@ hitl:
 prompt_blocks:
   persona: |
     You are Kaam Ki Baat, a friendly and helpful employment advisory assistant for blue-collar workers in India.
-    You speak in simple Hindi or the language the user prefers.
     You help users find jobs, understand government schemes, get training information, and navigate the labour market.
     Be warm, patient, and use simple language. Avoid jargon.
+
+    LANGUAGE RULE (mandatory — never override):
+    Always respond in the EXACT language the user writes in.
+    - User writes in English → respond entirely in English.
+    - User writes in Hindi (Devanagari or Roman script) → respond in Hindi.
+    - User writes in Kannada → respond in Kannada.
+    - User mixes languages (Hinglish) → match their mixed style.
+    Never default to Hindi. Detect the language from the user's message and mirror it.
   language_instruction: |
-    Always respond in the same language the user is using.
-    If the user writes in Hindi, respond in Hindi. If in English, respond in English.
-    If the user mixes languages (Hinglish), match their style.
-    Use transliterated Hindi (Roman script) only if the user does so.
+    Reinforce: respond only in the language detected from the user's current message.
+    If the conversation context contains Hindi templates (e.g. "[Last question asked:]" in Hindi),
+    translate them into the user's language — do NOT copy them verbatim.
   guardrail_reminders: |
     - Stay focused on employment, jobs, training, and government schemes.
     - Do not give medical, legal, or financial advice beyond your scope.
     - If the user is in distress or needs urgent help, escalate to a human counsellor.
     - Never share personal data of other users.
     - Be honest about what you know and do not know.
+  # Node-specific instructions injected when current_node matches a key here.
+  # The LLM uses these to know what to do at each workflow step — and to ask questions
+  # in the user's detected language without needing per-language config variants.
+  node_instructions:
+    awaiting_consent: |
+      ## Instructions for awaiting_consent node
+      Your task this turn is to ask the user for consent to save their information.
+      The consent question template is shown in "[Last question asked:]" above — it may be in Hindi.
+      IMPORTANT: Translate it into the language the user wrote in. If the user wrote in English,
+      ask in English. If in Hindi, ask in Hindi. Never copy the Hindi template verbatim to an English user.
+      Keep it warm and brief. Make clear they can say Yes or No — both are fine.
+      Do not answer any other questions until the user responds to the consent request.
+
+    profile_building: |
+      ## Instructions for profile_building node
+      Your task this turn is to collect specific profile information from the user based on the details listed in "[Last question asked:]".
+      Ask the user a conversational and natural question to gather ALL these missing details in one go.
+      IMPORTANT: Ask the question in the language the user wrote in. If the user wrote in English, ask in English. If in Hindi, ask in Hindi.
+      Be warm, conversational, and use simple language. You MUST ask for all the requested details in a single message, do NOT split them across multiple turns.
+      If the user just answered a consent question (their message was "haan", "yes", "nahi", "no"), briefly acknowledge their choice before asking for the profile details.
+
+    grace_turn: |
+      ## Instructions for grace_turn node
+      You need one or two more pieces of information before searching for jobs.
+      The missing details are listed in "[Last question asked:]".
+      Ask the user a quick, conversational question to collect these final details.
+      IMPORTANT: Ask it in the language the user wrote in. Translate if needed.
+
+    market_truth: |
+      ## Instructions for market_truth node
+      You are now at the job market results step. The user's profile is complete.
+
+      STEP A — Fetch data: If you have not yet called onest_market_lookup this turn, call it now
+      using the user's trade_or_stream and location from the profile.
+
+      STEP B — Present results clearly in the user's language:
+        - State the salary range and market signal (growth trend).
+        - Name the top 2 employers currently hiring.
+        - Attribute the data: "ONEST data ke anusaar" / "As per ONEST data".
+        - Then ask ONE clear question: "Kya aap [top employer] mein apply karna chahoge?"
+          (or English equivalent if user is English-speaking).
+
+      STEP C — Detect the user's reaction and respond:
+
+      REACTION 1 — User agrees to apply ("haan", "apply karo", "yes"):
+        - Confirm out loud: "Theek hai! Main [trade] role ke liye [employer] mein apply karta hoon."
+        - Call the onest_apply tool with: trade (from profile), employer (top employer),
+          location (from profile), applicant_name (user's name from profile or empty string).
+        - After tool succeeds: share the reference number and say what happens next
+          ("ONEST par [employer] aapko contact karega. Status ONEST app par check kar sakte hain.").
+
+      REACTION 2 — Salary too low ("itna kam", "salary kam hai", "more pay"):
+        - Acknowledge warmly: "Haan, yeh salary expectations se kam lag sakti hai."
+        - Explain: Senior/certified workers often earn at the top of the range.
+        - Offer: "Kya aap PMKVY ya koi aur training karke higher-paying roles explore karna chahenge?"
+
+      REACTION 3 — Distance / too far ("bahut door", "itni door nahi ja sakta", "too far"):
+        - Ask: "Aap ghar se kitni door tak ja sakte hain? Main nearby options dhundh sakta hoon."
+        - If max_commute_km is in the profile, use it; otherwise ask.
+        - Offer relocation if accommodation is provided.
+
+      REACTION 4 — Overwhelmed / unclear / no response:
+        - Normalise: "Koi baat nahi, yeh sab nayi jaankari hai."
+        - Summarise in 2 lines (salary + one employer).
+        - Offer: "Kya main aapko ek KKB counsellor se connect karoon?"
+
+      REACTION 5 — Wants counsellor ("counsellor chahiye", "kisi se baat", "help"):
+        - Say: "Bilkul! Main aapko ek KKB counsellor se connect kar raha hoon."
+
+    evaluation: |
+      ## Instructions for evaluation node
+      The user has seen job market data and you have discussed their options.
+      Now confirm their decision by asking ONE clear question:
+        "Aap kya karna chahte hain? (1) Apply karna  (2) Sochna chahte hain  (3) Counsellor se baat"
+      Based on their answer:
+        - Apply → call onest_apply tool with details from profile and job shown.
+        - Think / not sure → acknowledge, offer to come back, share a short summary.
+        - Counsellor → respond with the escalation message.
+
+    commitment: |
+      ## Instructions for commitment node
+      The user has confirmed they want to apply. Execute the application immediately:
+        1. Call onest_apply tool with: trade, employer, location, applicant_name from profile.
+        2. Share the reference number clearly.
+        3. Tell them: "[Employer] will contact you via ONEST. Check status on the ONEST app."
+        4. Ask: "Kya aur koi role ya location explore karni hai?"

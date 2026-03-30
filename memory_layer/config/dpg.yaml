@@ -18,5 +18,5 @@ redis:
 neo4j:
   uri: "bolt://localhost:7687"
   user: "neo4j"
-  password: "neo4j1234"               
+  password: ""               
   connection_timeout_s: 5

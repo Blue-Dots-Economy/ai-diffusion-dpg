@@ -204,6 +204,16 @@ class ManagerAgent:
                 for reminder in guardrails:
                     parts.append(f"- {reminder}")
 
+        # Inject node-specific instruction when configured.
+        # node_instructions is a dict keyed by current_node value.
+        # E.g. node_instructions.market_truth guides the 5 reaction branches.
+        current_node = session.get("current_node", "")
+        node_instructions: dict = prompt_cfg.get("node_instructions", {})
+        if current_node and node_instructions:
+            instruction = node_instructions.get(current_node, "")
+            if instruction:
+                parts.append(instruction.strip())
+
         return "\n\n".join(parts)
 
     def build_messages(

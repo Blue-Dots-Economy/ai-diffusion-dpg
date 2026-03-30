@@ -280,6 +280,60 @@ def test_build_system_prompt_guardrails_included():
     assert "employment topics" in result
 
 
+def test_build_system_prompt_node_instruction_injected_for_market_truth():
+    """Node instruction for current_node=market_truth is included in system prompt."""
+    agent = _make_manager_for_prompt()
+    config = {
+        "prompt_blocks": {
+            "persona": "You are KKB.",
+            "node_instructions": {
+                "market_truth": "## Market truth guidance\nShow ONEST results.",
+            },
+        }
+    }
+    session = {"current_node": "market_truth"}
+    result = agent.build_system_prompt({}, session, "hindi", config)
+    assert "Market truth guidance" in result
+    assert "Show ONEST results" in result
+
+
+def test_build_system_prompt_no_node_instruction_when_node_not_in_map():
+    """No extra text added when current_node has no matching node_instruction."""
+    agent = _make_manager_for_prompt()
+    config = {
+        "prompt_blocks": {
+            "persona": "You are KKB.",
+            "node_instructions": {
+                "market_truth": "Market truth guidance.",
+            },
+        }
+    }
+    session = {"current_node": "profile_building"}
+    result = agent.build_system_prompt({}, session, "hindi", config)
+    assert "Market truth guidance" not in result
+
+
+def test_build_system_prompt_no_node_instruction_when_node_missing():
+    """No crash when session has no current_node."""
+    agent = _make_manager_for_prompt()
+    config = {
+        "prompt_blocks": {
+            "persona": "You are KKB.",
+            "node_instructions": {"market_truth": "Market truth guidance."},
+        }
+    }
+    result = agent.build_system_prompt({}, {}, "hindi", config)
+    assert "Market truth guidance" not in result
+
+
+def test_build_system_prompt_no_node_instruction_when_config_missing():
+    """No crash when node_instructions key absent from config."""
+    agent = _make_manager_for_prompt()
+    session = {"current_node": "market_truth"}
+    result = agent.build_system_prompt({}, session, "hindi", CONFIG_WITH_PROMPTS)
+    assert isinstance(result, str)  # no crash
+
+
 # ---------------------------------------------------------------------------
 # build_messages — E2
 # ---------------------------------------------------------------------------

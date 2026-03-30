@@ -44,6 +44,24 @@ _BASE_CONFIG = {
     "learning_client": {"endpoint": "http://localhost:8004", "timeout_ms": 2000},
     "ke_client": {"endpoint": "http://localhost:8001/retrieve", "timeout_ms": 8000},
     "action_gateway_client": {"endpoint": "http://localhost:9999/onest/market_lookup", "timeout_ms": 5000},
+    "connectors": {
+        "read": [
+            {
+                "name": "onest_market_lookup",
+                "description": "Search ONEST live job market data by trade and location.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "trade": {"type": "string", "description": "Trade to search for"},
+                        "location": {"type": "string", "description": "City or district"},
+                    },
+                    "required": ["trade"],
+                },
+            }
+        ],
+        "write": [],
+        "identity": [],
+    },
 }
 
 

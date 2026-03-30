@@ -162,7 +162,7 @@ def main() -> None:
     print(f"  Agent Core:  {ac_endpoint}")
     print(f"  Session ID:  {session_id}")
     if user_id:
-        print(f"  User ID:     {user_id}  (returning-user identity)")
+        print(f"  User ID:     {user_id}  (fixed — simulating returning user)")
     else:
         print("  User ID:     (not set — each restart is a new user)")
     print("  Type your message. Ctrl-C or Ctrl-D to exit.")

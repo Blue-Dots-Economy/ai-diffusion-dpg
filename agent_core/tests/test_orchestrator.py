@@ -46,12 +46,12 @@ SESSION_ID = "sess_orch_001"
 TIMESTAMP = int(time.time() * 1000)
 
 VALID_CONFIG = {
-    "termination_message": "Goodbye.",
     "conversation": {
         "unknown_intent_message": "I didn't understand that.",
         "blocked_message": "Blocked.",
         "escalation_message": "Escalating.",
         "output_blocked_message": "Output blocked.",
+        "termination_message": "Goodbye.",
     },
     "preprocessing": {
         "nlu_processor": {
@@ -111,7 +111,10 @@ def _make_agent(
     LanguageNormaliser and NLUProcessor are replaced on the instance after
     construction so their LLM calls do not interfere with the primary LLM mock.
     """
-    session = session_data or {}
+    # Default current_node to "market_truth" so existing orchestrator tests exercise
+    # the LLM path without being intercepted by the workflow gate.
+    # Tests that specifically test the gate use test_workflow_gate.py.
+    session = session_data if session_data is not None else {"current_node": "market_truth"}
     memory = MagicMock()
     memory.context_bundle.return_value = ContextBundle(
         session=session, profile={}, journey=None
@@ -369,7 +372,7 @@ def test_hitl_loop_count_triggers_escalation():
 
 
 def test_hitl_below_threshold_proceeds_normally():
-    agent = _make_agent(session_data={"loop_count": 2})
+    agent = _make_agent(session_data={"loop_count": 2, "current_node": "market_truth"})
     result = agent.process_turn(_turn_input())
     assert result.was_escalated is False
     agent._llm.call.assert_called_once()

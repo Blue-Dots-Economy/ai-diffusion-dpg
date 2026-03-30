@@ -93,6 +93,9 @@ class ActionGatewayHttpClient(ActionGatewayBase):
         self._endpoint: str = client_cfg.get(
             "endpoint", "http://localhost:9999/onest/market_lookup"
         )
+        self._apply_endpoint: str = client_cfg.get(
+            "apply_endpoint", "http://localhost:9999/onest/apply"
+        )
         self._timeout_s: float = client_cfg.get("timeout_ms", 5000) / 1000
         self._tool_definitions: list[dict] = _build_tool_definitions(config)
 
@@ -138,6 +141,9 @@ class ActionGatewayHttpClient(ActionGatewayBase):
 
         if tool_call.tool_name == "onest_market_lookup":
             return self._call_onest(tool_call, session_id)
+
+        if tool_call.tool_name == "onest_apply":
+            return self._call_apply(tool_call, session_id)
 
         # Unknown tool — structured error, not an exception
         logger.warning(
@@ -252,4 +258,65 @@ class ActionGatewayHttpClient(ActionGatewayBase):
                 result={},
                 success=False,
                 error=f"onest_error: {type(e).__name__}",
+            )
+
+    def _call_apply(self, tool_call: ToolCall, session_id: str) -> ToolResult:
+        """HTTP POST to the ONEST mock server for job application."""
+        start = time.time()
+        params = tool_call.input_params or {}
+
+        try:
+            response = httpx.post(
+                self._apply_endpoint,
+                json={
+                    "trade": params.get("trade", ""),
+                    "employer": params.get("employer", ""),
+                    "location": params.get("location", ""),
+                    "applicant_name": params.get("applicant_name", ""),
+                },
+                timeout=self._timeout_s,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            logger.info(
+                "action_gateway_http_client.apply_success",
+                extra={
+                    "operation": "action_gateway_http_client._call_apply",
+                    "status": "success",
+                    "session_id": session_id,
+                    "employer": params.get("employer"),
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            return ToolResult(
+                tool_use_id=tool_call.tool_use_id,
+                tool_name=tool_call.tool_name,
+                result=data,
+                success=True,
+            )
+
+        except httpx.TimeoutException as e:
+            return ToolResult(
+                tool_use_id=tool_call.tool_use_id,
+                tool_name=tool_call.tool_name,
+                result={},
+                success=False,
+                error="onest_apply_timeout",
+            )
+        except httpx.HTTPStatusError as e:
+            return ToolResult(
+                tool_use_id=tool_call.tool_use_id,
+                tool_name=tool_call.tool_name,
+                result={},
+                success=False,
+                error=f"onest_apply_http_error: {e.response.status_code}",
+            )
+        except Exception as e:
+            return ToolResult(
+                tool_use_id=tool_call.tool_use_id,
+                tool_name=tool_call.tool_name,
+                result={},
+                success=False,
+                error=f"onest_apply_error: {type(e).__name__}",
             )

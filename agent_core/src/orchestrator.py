@@ -289,23 +289,56 @@ class AgentCore(AgentCoreBase):
             )
 
         # ── Step 5b: Early exit on unknown / low-confidence intent ────
+        # BYPASS: during profile collection nodes, never do an early exit —
+        # any answer (even vague) may contain entities or advance the round.
+        _profile_collection_nodes = self._profile_nodes()
         confidence_threshold = (
             self._config.get("preprocessing", {})
             .get("nlu_processor", {})
             .get("confidence_threshold", 0.5)
         )
         logger.info(
-            "  [STEP 5b] Intent Gate  →  intent=%s  confidence=%.2f  threshold=%.2f",
-            nlu_result.intent, nlu_result.confidence, confidence_threshold,
+            "  [STEP 5b] Intent Gate  →  intent=%s  confidence=%.2f  threshold=%.2f"
+            "  current_node=%s",
+            nlu_result.intent, nlu_result.confidence, confidence_threshold, current_node,
         )
-        if nlu_result.confidence < confidence_threshold and nlu_result.intent == "unknown":
+        if current_node in _profile_collection_nodes:
+            logger.info(
+                "  [STEP 5b] Intent Gate  → BYPASSED (node=%s is in profile collection flow)",
+                current_node,
+            )
+        elif nlu_result.confidence < confidence_threshold and nlu_result.intent == "unknown":
             logger.info(
                 "  [STEP 5b] ✗ EARLY EXIT — intent=unknown and confidence=%.2f below threshold",
                 nlu_result.confidence,
             )
             return self._unknown_intent_response(session_id, user_id, bundle,
                                                   turn_input, nlu_result, start)
-        logger.info("  [STEP 5b] Intent Gate  ✓  proceeding")
+        else:
+            logger.info("  [STEP 5b] Intent Gate  ✓  proceeding")
+
+        # ── Step 5c: Workflow gate (consent / profile collection) ─────
+        gate_result = self._workflow_gate(
+            session_id=session_id,
+            user_id=user_id,
+            bundle=bundle,
+            nlu_result=nlu_result,
+            turn_input=turn_input,
+            start=start,
+            trust_input=trust_input,
+            detected_language=detected_language,
+        )
+        if gate_result is not None:
+            logger.info(
+                "  [STEP 5c] Workflow Gate  ✓  handled by gate (node=%s) — skipping LLM",
+                current_node,
+            )
+            return gate_result
+        # Re-read current_question: a gate may have updated bundle.session in-place
+        # (e.g., setting a new question to ask this turn) and then returned None to fall
+        # through to the LLM for language-aware delivery.
+        current_question = bundle.session.get("current_question", current_question)
+        logger.info("  [STEP 5c] Workflow Gate  → pass-through to LLM (node=%s)", current_node)
 
         # ── Step 6: Retrieve knowledge (KE) ──────────────────────────
         ke_endpoint = (
@@ -741,11 +774,14 @@ class AgentCore(AgentCoreBase):
             # normal turns, escalating users who are having a normal conversation.
             self._memory.write(session_id, user_id, "session", "last_response", response_text)
 
-            # Write extracted entities to persistent profile scope
+            # Write extracted entities — scope depends on user consent.
+            # consent=True → "persistent" (Neo4j). consent=False/absent → "session" (Redis only).
+            consent = bundle.session.get("consent", False)
+            entity_scope = "persistent" if consent else "session"
             entity_map: dict = self._config.get("entity_to_profile_field", {})
             for entity_key, entity_val in (nlu_result.entities or {}).items():
                 profile_field = entity_map.get(entity_key, entity_key)
-                self._memory.write(session_id, user_id, "persistent", profile_field, entity_val)
+                self._memory.write(session_id, user_id, entity_scope, profile_field, entity_val)
 
             logger.info(
                 "  [STEP 11] [async] Memory Write  ✓  loop_count=%d"
@@ -807,3 +843,404 @@ class AgentCore(AgentCoreBase):
                     "error": str(e),
                 },
             )
+
+    # ------------------------------------------------------------------
+    # Private: workflow gate — consent + profile collection
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _profile_nodes() -> frozenset:
+        """Nodes where the workflow gate intercepts before the LLM."""
+        return frozenset({"awaiting_consent", "profile_building", "grace_turn"})
+
+    def _write_memory_sync(
+        self,
+        session_id: str,
+        user_id: str,
+        scope: str,
+        key: str,
+        value: Any,
+    ) -> None:
+        """
+        Synchronous memory write for state transitions whose values must be
+        read by the NEXT turn. Unlike _post_turn's async writes, this blocks
+        until the write completes before returning the TurnResult.
+        """
+        try:
+            self._memory.write(session_id, user_id, scope, key, value)
+        except Exception as e:
+            logger.error(
+                "orchestrator.sync_write_failed",
+                extra={
+                    "operation": "orchestrator._write_memory_sync",
+                    "status": "failure",
+                    "session_id": session_id,
+                    "key": key,
+                    "error": str(e),
+                },
+            )
+
+    def _get_next_round(
+        self,
+        current_round: int,
+        profile: dict,
+        rounds_cfg: list,
+    ) -> Optional[dict]:
+        """
+        Returns the next applicable round config dict, or None if all rounds done.
+        Skips rounds whose condition field value is not in the allowed set.
+        current_round is the last completed round number (0 = none done yet).
+        """
+        for round_cfg in rounds_cfg:
+            r = int(round_cfg.get("round", 0))
+            if r <= current_round:
+                continue
+            condition = round_cfg.get("condition")
+            if condition:
+                field = condition.get("field", "")
+                allowed = condition.get("in", [])
+                field_val = str(profile.get(field, "")).strip().lower()
+                allowed_lower = [str(v).strip().lower() for v in allowed if v]
+                
+                matched = False
+                if field_val:
+                    matched = any(v in field_val or field_val in v for v in allowed_lower)
+
+                if not matched:
+                    logger.info(
+                        "  [GATE] Skipping round %d — condition field=%s value=%r not in %s",
+                        r, field, field_val, allowed,
+                    )
+                    continue
+
+            entities = round_cfg.get("entities", [])
+            missing = [e for e in entities if not profile.get(e)]
+            if not missing and entities:
+                logger.info("  [GATE] Skipping round %d — all entities already present", r)
+                continue
+
+            return round_cfg
+        return None
+
+    def _check_hard_min_met(
+        self,
+        profile: dict,
+        just_extracted: dict,
+    ) -> bool:
+        """
+        Returns True when all hard_min_fields are present in profile OR just_extracted.
+        just_extracted uses profile field names (already mapped via entity_to_profile_field).
+        """
+        hard_min_fields: list = self._config.get("profile_collection", {}).get(
+            "hard_min_fields", ["trade_or_stream", "location"]
+        )
+        for field in hard_min_fields:
+            if profile.get(field) or just_extracted.get(field):
+                continue
+            return False
+        return True
+
+    def _build_dynamic_question(self, round_cfg: dict, profile: dict) -> str:
+        """Formulate a dynamic instruction asking the LLM to get specific entities."""
+        entities = round_cfg.get("entities", [])
+        field_labels = self._config.get("profile_collection", {}).get("field_labels", {})
+        missing = [e for e in entities if not profile.get(e)]
+        labels = [field_labels.get(e, e) for e in missing]
+        return f"Please ask the user to provide ALL of the following details in a SINGLE conversational question: {', '.join(labels)}."
+
+    def _build_grace_question(
+        self,
+        profile: dict,
+        just_extracted: dict,
+    ) -> str:
+        """Build the one-shot grace turn question targeting only missing hard_min fields."""
+        hard_min_fields: list = self._config.get("profile_collection", {}).get(
+            "hard_min_fields", ["trade_or_stream", "location"]
+        )
+        field_labels = self._config.get("profile_collection", {}).get("field_labels", {})
+        missing = [
+            f for f in hard_min_fields
+            if not profile.get(f) and not just_extracted.get(f)
+        ]
+        if not missing:
+            return ""
+        missing_labels = [field_labels.get(m, m) for m in missing]
+        return f"We must collect the following final details before proceeding: {', '.join(missing_labels)}."
+
+    def _handle_consent_gate(
+        self,
+        session_id: str,
+        user_id: str,
+        bundle: ContextBundle,
+        nlu_result: NLUResult,
+        turn_input: TurnInput,
+        start: float,
+        trust_input: TrustCheckResult,
+        detected_language: Optional[str] = None,
+    ) -> None:
+        """
+        Handles the awaiting_consent node.
+
+        Always returns None — falls through to the LLM for language-aware delivery.
+        The LLM uses node_instructions.awaiting_consent / profile_building to ask
+        the appropriate question in the user's detected language.
+
+        State transitions:
+        - First visit (current_question empty): set consent question template.
+        - YES → consent=True, consent_flag=True (persistent), transition to profile_building.
+        - NO  → consent=False, transition to profile_building (session-only data).
+        - Ambiguous → stay in awaiting_consent (current_question unchanged).
+
+        bundle.session is updated in-place so the LLM path (called after this returns None)
+        sees the updated current_question and current_node via the re-read on line ~337.
+        """
+        conv_cfg = self._config.get("conversation", {})
+        consent_yes_intents = {"consent_granted", "consent_yes"}
+        consent_no_intents  = {"consent_declined", "consent_no"}
+
+        consent_message = conv_cfg.get(
+            "consent_message",
+            "Kya aap apni jaankari save karne ki anumati dete hain? (Haan/Nahi)"
+        )
+
+        # First visit: consent question not yet shown.
+        consent_already_asked = bool(bundle.session.get("current_question", ""))
+        if not consent_already_asked:
+            self._write_memory_sync(session_id, user_id, "session", "current_question", consent_message)
+            bundle.session["current_question"] = consent_message
+            logger.info("  [GATE] awaiting_consent → consent question set (first visit) → LLM will ask")
+            return None
+
+        # User is answering the consent question.
+        rounds_cfg = self._config.get("profile_collection", {}).get("rounds", [])
+
+        if nlu_result.intent in consent_yes_intents:
+            self._write_memory_sync(session_id, user_id, "session",    "consent",      True)
+            self._write_memory_sync(session_id, user_id, "session",    "current_node", "profile_building")
+            self._write_memory_sync(session_id, user_id, "persistent", "consent_flag", True)
+            bundle.session["consent"] = True
+            bundle.session["current_node"] = "profile_building"
+            next_round = self._get_next_round(0, bundle.profile, rounds_cfg)
+            if next_round:
+                question = self._build_dynamic_question(next_round, bundle.profile)
+                self._write_memory_sync(session_id, user_id, "session", "collection_round", next_round["round"])
+                self._write_memory_sync(session_id, user_id, "session", "current_question", question)
+                bundle.session["collection_round"] = next_round["round"]
+                bundle.session["current_question"] = question
+            else:
+                self._write_memory_sync(session_id, user_id, "session", "current_node", "market_truth")
+                self._write_memory_sync(session_id, user_id, "session", "current_question", "")
+                bundle.session["current_node"] = "market_truth"
+                bundle.session["current_question"] = ""
+            logger.info("  [GATE] awaiting_consent → consent granted → profile_building → LLM will ask round 1")
+            return None
+
+        if nlu_result.intent in consent_no_intents:
+            self._write_memory_sync(session_id, user_id, "session", "consent",      False)
+            self._write_memory_sync(session_id, user_id, "session", "current_node", "profile_building")
+            bundle.session["consent"] = False
+            bundle.session["current_node"] = "profile_building"
+            next_round = self._get_next_round(0, bundle.profile, rounds_cfg)
+            if next_round:
+                question = self._build_dynamic_question(next_round, bundle.profile)
+                self._write_memory_sync(session_id, user_id, "session", "collection_round", next_round["round"])
+                self._write_memory_sync(session_id, user_id, "session", "current_question", question)
+                bundle.session["collection_round"] = next_round["round"]
+                bundle.session["current_question"] = question
+            else:
+                self._write_memory_sync(session_id, user_id, "session", "current_node", "market_truth")
+                self._write_memory_sync(session_id, user_id, "session", "current_question", "")
+                bundle.session["current_node"] = "market_truth"
+                bundle.session["current_question"] = ""
+            logger.info("  [GATE] awaiting_consent → consent declined → profile_building (session-only) → LLM will ask round 1")
+            return None
+
+        # Ambiguous answer — re-ask; current_question already has the consent message.
+        logger.info("  [GATE] awaiting_consent → ambiguous answer → LLM will re-ask consent")
+        return None
+
+    def _handle_profile_building(
+        self,
+        session_id: str,
+        user_id: str,
+        bundle: ContextBundle,
+        nlu_result: NLUResult,
+        turn_input: TurnInput,
+        start: float,
+        trust_input: TrustCheckResult,
+        detected_language: Optional[str] = None,
+    ) -> None:
+        """
+        Handles the profile_building node.
+
+        Always returns None — falls through to the LLM for language-aware delivery.
+        bundle.session is updated in-place so the LLM path sees the new current_question.
+
+        1. Write extracted entities synchronously (consent-aware scope).
+        2. Advance to next applicable round UNCONDITIONALLY (never re-ask same round).
+        3. All rounds done + hard_min met → transition to market_truth; LLM auto-calls ONEST.
+        4. All rounds done + hard_min NOT met → grace_turn question.
+        """
+        current_round = int(bundle.session.get("collection_round", 0))
+        rounds_cfg = self._config.get("profile_collection", {}).get("rounds", [])
+        consent = bundle.session.get("consent", False)
+        scope = "persistent" if consent else "session"
+        entity_map: dict = self._config.get("entity_to_profile_field", {})
+
+        # Write extracted entities synchronously so condition checks this turn are accurate.
+        just_extracted: dict = {}
+        for entity_key, entity_val in (nlu_result.entities or {}).items():
+            profile_field = entity_map.get(entity_key, entity_key)
+            just_extracted[profile_field] = entity_val
+            self._write_memory_sync(session_id, user_id, scope, profile_field, entity_val)
+
+        logger.info(
+            "  [GATE] profile_building  round=%d  extracted=%s  scope=%s",
+            current_round, list(just_extracted.keys()), scope,
+        )
+
+        # Merge just_extracted into profile for condition evaluation this turn.
+        updated_profile = {**bundle.profile, **just_extracted}
+
+        next_round = self._get_next_round(current_round, updated_profile, rounds_cfg)
+        if next_round:
+            question = self._build_dynamic_question(next_round, updated_profile)
+            self._write_memory_sync(session_id, user_id, "session", "collection_round", next_round["round"])
+            self._write_memory_sync(session_id, user_id, "session", "current_question", question)
+            bundle.session["collection_round"] = next_round["round"]
+            bundle.session["current_question"] = question
+            logger.info("  [GATE] profile_building → next round=%d → LLM will ask in user's language", next_round["round"])
+            return None
+
+        # All rounds done — check hard_min.
+        if self._check_hard_min_met(updated_profile, {}):
+            self._write_memory_sync(session_id, user_id, "session", "current_node",     "market_truth")
+            self._write_memory_sync(session_id, user_id, "session", "current_question", "")
+            bundle.session["current_node"] = "market_truth"
+            bundle.session["current_question"] = ""
+            logger.info("  [GATE] profile_building → hard_min met → market_truth (LLM will auto-call ONEST)")
+            return None
+
+        # Hard min not met → grace turn.
+        grace_q = self._build_grace_question(updated_profile, {})
+        self._write_memory_sync(session_id, user_id, "session", "current_node",     "grace_turn")
+        self._write_memory_sync(session_id, user_id, "session", "current_question", grace_q)
+        bundle.session["current_node"] = "grace_turn"
+        bundle.session["current_question"] = grace_q
+        logger.info("  [GATE] profile_building → hard_min NOT met → grace_turn → LLM will ask")
+        return None
+
+    def _handle_grace_turn(
+        self,
+        session_id: str,
+        user_id: str,
+        bundle: ContextBundle,
+        nlu_result: NLUResult,
+        turn_input: TurnInput,
+        start: float,
+        trust_input: TrustCheckResult,
+        detected_language: Optional[str] = None,
+    ) -> Optional[TurnResult]:
+        """
+        Handles the grace_turn node.
+
+        Writes any extracted entities, then UNCONDITIONALLY advances to market_truth.
+        Returns None so the LLM/tool loop auto-triggers the ONEST lookup this turn.
+        """
+        consent = bundle.session.get("consent", False)
+        scope = "persistent" if consent else "session"
+        entity_map: dict = self._config.get("entity_to_profile_field", {})
+
+        just_extracted: dict = {}
+        for entity_key, entity_val in (nlu_result.entities or {}).items():
+            profile_field = entity_map.get(entity_key, entity_key)
+            just_extracted[profile_field] = entity_val
+            self._write_memory_sync(session_id, user_id, scope, profile_field, entity_val)
+
+        self._write_memory_sync(session_id, user_id, "session", "current_node",     "market_truth")
+        self._write_memory_sync(session_id, user_id, "session", "current_question", "")
+        bundle.session["current_node"] = "market_truth"
+        bundle.session["current_question"] = ""
+        logger.info(
+            "  [GATE] grace_turn → extracted=%s → unconditional transition to market_truth"
+            " (LLM will auto-call ONEST)",
+            list(just_extracted.keys()),
+        )
+        # Return None → fall through to LLM/tool loop so ONEST lookup happens this turn.
+        return None
+
+    def _infer_resume_node(self, bundle: ContextBundle) -> str:
+        """
+        For returning users starting a new session: determine where to resume.
+        Called only when is_returning=True and current_node="awaiting_consent"
+        (session was reset but profile exists in Neo4j).
+
+        Returns a node name string.
+        """
+        profile = bundle.profile
+        if not profile.get("consent_flag"):
+            return "awaiting_consent"
+        hard_min_fields: list = self._config.get("profile_collection", {}).get(
+            "hard_min_fields", ["trade_or_stream", "location"]
+        )
+        missing = [f for f in hard_min_fields if not profile.get(f)]
+        if not missing:
+            return "market_truth"
+        return "profile_building"
+
+    def _workflow_gate(
+        self,
+        session_id: str,
+        user_id: str,
+        bundle: ContextBundle,
+        nlu_result: NLUResult,
+        turn_input: TurnInput,
+        start: float,
+        trust_input: TrustCheckResult,
+        detected_language: Optional[str],
+    ) -> Optional[TurnResult]:
+        """
+        Step 5c: Intercepts consent / profile collection nodes before the LLM.
+
+        - awaiting_consent  → _handle_consent_gate
+        - profile_building  → _handle_profile_building
+        - grace_turn        → _handle_grace_turn
+        - all other nodes   → returns None (fall through to LLM)
+
+        For returning users whose new session defaults to awaiting_consent,
+        infers the correct resume node first.
+        """
+        current_node = bundle.session.get("current_node", "awaiting_consent")
+        is_returning = bundle.session.get("is_returning", False)
+
+        # Persist detected_language to session on first turn (if not already stored).
+        if detected_language and not bundle.session.get("language"):
+            self._write_memory_sync(session_id, user_id, "session", "language", detected_language)
+            logger.info("  [GATE] detected_language=%s → stored in session", detected_language)
+
+        if is_returning and current_node == "awaiting_consent":
+            inferred = self._infer_resume_node(bundle)
+            if inferred != "awaiting_consent":
+                self._write_memory_sync(session_id, user_id, "session", "current_node", inferred)
+                current_node = inferred
+                logger.info("  [GATE] returning user → inferred resume node=%s", current_node)
+
+        if current_node == "awaiting_consent":
+            return self._handle_consent_gate(
+                session_id=session_id, user_id=user_id, bundle=bundle,
+                nlu_result=nlu_result, turn_input=turn_input, start=start,
+                trust_input=trust_input, detected_language=detected_language,
+            )
+        if current_node == "profile_building":
+            return self._handle_profile_building(
+                session_id=session_id, user_id=user_id, bundle=bundle,
+                nlu_result=nlu_result, turn_input=turn_input, start=start,
+                trust_input=trust_input, detected_language=detected_language,
+            )
+        if current_node == "grace_turn":
+            return self._handle_grace_turn(
+                session_id=session_id, user_id=user_id, bundle=bundle,
+                nlu_result=nlu_result, turn_input=turn_input, start=start,
+                trust_input=trust_input, detected_language=detected_language,
+            )
+        return None

@@ -86,7 +86,7 @@ class TestCaseInsensitivity:
 
 class TestDefaultFallback:
     def test_unknown_trade_returns_default(self, client: TestClient) -> None:
-        resp = client.post("/onest/market_lookup", json={"trade": "carpenter"})
+        resp = client.post("/onest/market_lookup", json={"trade": "unknown_trade_xyz"})
         assert resp.status_code == 200
         data = resp.json()
         assert data["salary_range"] == "₹12k–₹20k"

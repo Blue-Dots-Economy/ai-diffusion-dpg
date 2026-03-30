@@ -86,16 +86,18 @@ class TestListAvailableTools:
         gw = MockActionGateway(_BASE_CONFIG)
         tools = gw.list_available_tools()
         assert isinstance(tools, list)
-        assert len(tools) == 1
+        assert len(tools) >= 2  # onest_market_lookup + onest_apply
 
-    def test_tool_name_is_onest_market_lookup(self) -> None:
+    def test_tool_names_include_market_lookup_and_apply(self) -> None:
         gw = MockActionGateway(_BASE_CONFIG)
-        tools = gw.list_available_tools()
-        assert tools[0]["name"] == "onest_market_lookup"
+        names = {t["name"] for t in gw.list_available_tools()}
+        assert "onest_market_lookup" in names
+        assert "onest_apply" in names
 
     def test_tool_has_required_input_schema_field(self) -> None:
         gw = MockActionGateway(_BASE_CONFIG)
-        tool = gw.list_available_tools()[0]
+        tools_by_name = {t["name"]: t for t in gw.list_available_tools()}
+        tool = tools_by_name["onest_market_lookup"]
         assert "input_schema" in tool
         assert "trade" in tool["input_schema"]["properties"]
 
