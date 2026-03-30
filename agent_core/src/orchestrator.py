@@ -2,14 +2,17 @@
 agent_core/orchestrator.py
 
 Concrete implementation of AgentCoreBase.
-Wires all components and executes the 12-step turn sequence.
+Wires all components and executes the turn sequence.
 
 Design rules enforced here:
 - Trust Layer is called exactly twice per turn (input + output). Neither is skippable.
 - Agent Core holds zero session state between turns.
 - Language Normalisation and NLU Processor run directly in Agent Core (steps 3-4)
   using the primary LLM wrapper with a model_override to Haiku.
-- Early exit at step 5 if intent is "unknown" or confidence is below threshold.
+- NLU receives current_question and workflow_step (not history) for context resolution.
+- Early exit at step 5 if intent is unknown or confidence is below threshold.
+- HITL bypass if loop_count >= hitl.loop_count_threshold before the LLM call.
+- Termination intent triggers flush_session via async daemon thread.
 - Steps 11-12 (memory write, learning emit) run in a daemon thread after TurnResult is returned.
 - This is the only file that imports and coordinates all DPG interfaces together.
 """
@@ -19,7 +22,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from src.base import AgentCoreBase
 from src.interfaces.action_gateway import ActionGatewayBase
@@ -27,14 +30,14 @@ from src.interfaces.knowledge_engine import KnowledgeEngineBase
 from src.interfaces.learning_layer import LearningLayerBase
 from src.interfaces.memory_layer import MemoryLayerBase
 from src.interfaces.reach_layer import ReachLayerBase
-from src.interfaces.trust_layer import TrustLayerBase
 from src.preprocessing.language_normalisation import LanguageNormaliser
 from src.llm_wrapper.base import LLMWrapperBase
 from src.manager_agent import ManagerAgent
 from src.models import (
+    ContextBundle,
     LLMResponse,
     NLUResult,
-    SessionState,
+    RetrievalChunk,
     ToolCall,
     TrustCheckResult,
     TurnEvent,
@@ -56,13 +59,13 @@ class AgentCore(AgentCoreBase):
     (main.py or equivalent) is the only place that instantiates and wires them.
 
     Args:
-        config:           Domain configuration dict. Used for fallback message text.
+        config:           Domain configuration dict.
         llm_wrapper:      LLM inferencing interface.
         memory:           Memory Layer interface.
         trust:            Trust Layer interface.
         knowledge_engine: Knowledge Engine interface.
         tool_registry:    Pre-built tool registry (initialised at startup).
-        manager_agent:    Tool-use loop handler.
+        manager_agent:    Prompt assembly + tool-use loop handler.
         learning:         Learning Layer interface (async emit).
     """
 
@@ -111,6 +114,8 @@ class AgentCore(AgentCoreBase):
 
         start = time.time()
         session_id = turn_input.session_id
+        # PoC fallback: use session_id as user_id if caller didn't provide one
+        user_id: str = turn_input.user_id or session_id
 
         logger.info(
             "orchestrator.turn_start",
@@ -129,20 +134,24 @@ class AgentCore(AgentCoreBase):
             session_id, turn_input.channel, turn_input.user_message[:120],
         )
 
-        # ── Step 1: Read session state ────────────────────────────────
+        # ── Step 1: Read context bundle ───────────────────────────────
         memory_endpoint = (
             self._config.get("memory_client", {}).get("endpoint", "http://memory_layer:8002")
         )
         logger.info(
-            "  [STEP 1] Memory Read  →  POST %s/session/read  (session=%s)",
+            "  [STEP 1] Memory context_bundle  →  POST %s/context_bundle  (session=%s)",
             memory_endpoint, session_id,
         )
         t1 = time.time()
-        state = self._memory.read_session(session_id)
+        bundle = self._memory.context_bundle(session_id, user_id)
+        current_node = bundle.session.get("current_node", "")
+        current_question = bundle.session.get("current_question", "")
+        loop_count = int(bundle.session.get("loop_count", 0))
         logger.info(
-            "  [STEP 1] Memory Read  ✓  history_turns=%d  confirmed_entities=%s  latency=%dms",
-            len(state.history) // 2,
-            list(state.confirmed_entities.keys()) if state.confirmed_entities else [],
+            "  [STEP 1] Memory context_bundle  ✓  current_node=%s  loop_count=%d"
+            "  is_returning=%s  latency=%dms",
+            current_node, loop_count,
+            bundle.session.get("is_returning", False),
             int((time.time() - t1) * 1000),
         )
 
@@ -174,10 +183,25 @@ class AgentCore(AgentCoreBase):
                 "  [STEP 2] ⚠ INPUT ESCALATED — reason=%s  →  routing to human agent",
                 trust_input.reason,
             )
+            self._schedule_flush(session_id, user_id, "escalation_trust_input")
             return self._escalated_response(session_id, trust_input, start, trust_input)
 
+        # ── HITL bypass: escalate if loop_count exceeds threshold ─────
+        hitl_threshold = int(
+            self._config.get("hitl", {}).get("loop_count_threshold", 3)
+        )
+        if loop_count >= hitl_threshold:
+            logger.info(
+                "  [HITL] loop_count=%d >= threshold=%d — escalating to human agent",
+                loop_count, hitl_threshold,
+            )
+            hitl_trust = TrustCheckResult(
+                passed=False, action="escalate", reason=f"hitl_loop_count={loop_count}"
+            )
+            self._schedule_flush(session_id, user_id, "hitl_loop_count")
+            return self._escalated_response(session_id, hitl_trust, start, trust_input)
+
         # ── Step 3: Language Normalisation ───────────────────────────
-        # Uses Haiku (model_override in config) — reads from preprocessing.language_normalisation
         lang_model = (
             self._config.get("preprocessing", {})
             .get("language_normalisation", {})
@@ -201,109 +225,151 @@ class AgentCore(AgentCoreBase):
         )
 
         # ── Step 4: NLU Processor ─────────────────────────────────────
-        # Injects recent history for context-aware follow-up classification.
-        # Uses Haiku (model_override in config) — reads from preprocessing.nlu_processor
+        # Uses current_question and workflow_step from bundle (not history).
         nlu_model = (
             self._config.get("preprocessing", {})
             .get("nlu_processor", {})
             .get("model_override", "haiku")
         )
         logger.info(
-            "  [STEP 4] NLU Processor  →  LLM call (model_override=%s)  history_turns=%d",
-            nlu_model, len(state.history) // 2,
+            "  [STEP 4] NLU Processor  →  LLM call (model_override=%s)"
+            "  workflow_step=%s  current_question=%r",
+            nlu_model, current_node, current_question[:60] if current_question else "",
         )
         t4 = time.time()
         nlu_result = self._nlu_processor.process(
             normalised_input=normalised_input,
-            history=state.history,
+            current_question=current_question,
+            workflow_step=current_node,
             config=self._config,
             llm=self._llm,
         )
         logger.info(
-            "  [STEP 4] NLU Processor  ✓  intent=%s  confidence=%.2f  entities=%s  sentiment=%s  latency=%dms",
+            "  [STEP 4] NLU Processor  ✓  intent=%s  confidence=%.2f  entities=%s"
+            "  sentiment=%s  latency=%dms",
             nlu_result.intent, nlu_result.confidence,
             nlu_result.entities if nlu_result.entities else {},
             nlu_result.sentiment,
             int((time.time() - t4) * 1000),
         )
 
-        # ── Step 5: Early exit on unknown / low-confidence intent ─────
+        # ── Step 5a: Termination intent check ────────────────────────
+        termination_intents = self._config.get("workflow", {}).get(
+            "termination_intents", ["termination_intent"]
+        )
+        if nlu_result.intent in termination_intents:
+            logger.info(
+                "  [STEP 5a] TERMINATION INTENT detected (%s) — flushing session",
+                nlu_result.intent,
+            )
+            # Pick termination message: prefer language-specific variant if configured.
+            # e.g. conversation.termination_message_english overrides conversation.termination_message
+            conv_cfg = self._config.get("conversation", {})
+            lang_key = f"termination_message_{detected_language}" if detected_language else ""
+            termination_text = (
+                (conv_cfg.get(lang_key) if lang_key else None)
+                or conv_cfg.get("termination_message", "Thank you for your time. Goodbye!")
+            )
+            return self._build_result(
+                session_id=session_id,
+                user_id=user_id,
+                response_text=termination_text,
+                was_escalated=False,
+                was_tool_used=False,
+                model_used="",
+                latency_ms=int((time.time() - start) * 1000),
+                bundle=bundle,
+                turn_input=turn_input,
+                tool_calls=[],
+                trust_input=trust_input,
+                trust_output=TrustCheckResult(passed=True, action="allow"),
+                nlu_result=nlu_result,
+                do_flush=True,
+                flush_reason="termination_intent",
+            )
+
+        # ── Step 5b: Early exit on unknown / low-confidence intent ────
         confidence_threshold = (
             self._config.get("preprocessing", {})
             .get("nlu_processor", {})
             .get("confidence_threshold", 0.5)
         )
         logger.info(
-            "  [STEP 5] Intent Gate  →  intent=%s  confidence=%.2f  threshold=%.2f",
+            "  [STEP 5b] Intent Gate  →  intent=%s  confidence=%.2f  threshold=%.2f",
             nlu_result.intent, nlu_result.confidence, confidence_threshold,
         )
         if nlu_result.confidence < confidence_threshold and nlu_result.intent == "unknown":
-            # Only exit early if BOTH conditions are true: intent is unknown AND confidence
-            # is below threshold. A vague but valid query (e.g. "hi can i get job info?")
-            # that NLU can't classify should still reach the LLM — it can ask a clarifying
-            # question. True unknown input (gibberish, off-topic) will have intent=unknown
-            # AND very low confidence. Trust Layer already blocks harmful content upstream.
             logger.info(
-                "  [STEP 5] ✗ EARLY EXIT — intent=unknown and confidence=%.2f below threshold  →  returning unknown-intent response",
+                "  [STEP 5b] ✗ EARLY EXIT — intent=unknown and confidence=%.2f below threshold",
                 nlu_result.confidence,
             )
-            return self._unknown_intent_response(session_id, start)
-        logger.info("  [STEP 5] Intent Gate  ✓  proceeding")
+            return self._unknown_intent_response(session_id, user_id, bundle,
+                                                  turn_input, nlu_result, start)
+        logger.info("  [STEP 5b] Intent Gate  ✓  proceeding")
 
-        # ── Step 6: Assemble prompt (KE) ─────────────────────────────
-        # KE receives pre-computed NLU data — runs only Glossary, Static KB, Multimodal.
-        # Returns (messages, system): system goes to llm.call(), messages are the conversation.
+        # ── Step 6: Retrieve knowledge (KE) ──────────────────────────
         ke_endpoint = (
-            self._config.get("knowledge_engine_client", {}).get("endpoint", "http://knowledge_engine:8001")
+            self._config.get("ke_client", {}).get("endpoint", "http://knowledge_engine:8001/retrieve")
         )
         logger.info(
-            "  [STEP 6] Knowledge Engine  →  POST %s/assemble_prompt"
-            "  (intent=%s  entities=%s)",
+            "  [STEP 6] Knowledge Engine  →  POST %s  (intent=%s  entities=%s)",
             ke_endpoint, nlu_result.intent,
             nlu_result.entities if nlu_result.entities else {},
         )
         t6 = time.time()
-        messages, system = self._knowledge_engine.assemble_prompt(
+        chunks: list[RetrievalChunk] = self._knowledge_engine.retrieve(
             session_id=session_id,
             user_message=turn_input.user_message,
-            session_state=state,
-            normalised_input=normalised_input,
-            detected_language=detected_language,
+            profile=bundle.profile,
+            session=bundle.session,
             intent=nlu_result.intent,
             entities=nlu_result.entities,
             sentiment=nlu_result.sentiment,
             confidence=nlu_result.confidence,
+            normalised_input=normalised_input,
+            detected_language=detected_language,
         )
-        rag_chunks = len(messages[-1]["content"].split("--- Relevant knowledge ---")) - 1 if messages else 0
         logger.info(
-            "  [STEP 6] Knowledge Engine  ✓  message_count=%d  rag_chunks_found=%d"
-            "  system_prompt_len=%d  latency=%dms",
-            len(messages), rag_chunks, len(system), int((time.time() - t6) * 1000),
+            "  [STEP 6] Knowledge Engine  ✓  chunks=%d  latency=%dms",
+            len(chunks), int((time.time() - t6) * 1000),
         )
 
-        # Empty prompt edge case — return safe empty response
+        # ── Step 6.5: Build prompt via ManagerAgent ───────────────────
+        system = self._manager_agent.build_system_prompt(
+            profile=bundle.profile,
+            session=bundle.session,
+            detected_language=detected_language,
+            config=self._config,
+        )
+        messages = self._manager_agent.build_messages(
+            user_message=turn_input.user_message,
+            chunks=chunks,
+            current_question=current_question,
+        )
+
         if not messages:
             logger.warning(
-                "orchestrator.empty_prompt",
+                "orchestrator.empty_messages",
                 extra={
                     "operation": "orchestrator.process_turn",
                     "status": "skipped",
                     "session_id": session_id,
                 },
             )
-            empty_trust = TrustCheckResult(passed=True, action="allow")
             return self._build_result(
                 session_id=session_id,
+                user_id=user_id,
                 response_text="",
                 was_escalated=False,
                 was_tool_used=False,
                 model_used="",
                 latency_ms=int((time.time() - start) * 1000),
-                state=state,
+                bundle=bundle,
                 turn_input=turn_input,
                 tool_calls=[],
                 trust_input=trust_input,
-                trust_output=empty_trust,
+                trust_output=TrustCheckResult(passed=True, action="allow"),
+                nlu_result=nlu_result,
             )
 
         # ── Step 7: LLM call #1 ──────────────────────────────────────
@@ -378,16 +444,18 @@ class AgentCore(AgentCoreBase):
         )
         result = self._build_result(
             session_id=session_id,
+            user_id=user_id,
             response_text=final_text,
             was_escalated=trust_output.action == "escalate",
             was_tool_used=bool(tool_calls),
             model_used=llm_response.model_used,
             latency_ms=latency_ms,
-            state=state,
+            bundle=bundle,
             turn_input=turn_input,
             tool_calls=tool_calls,
             trust_input=trust_input,
             trust_output=trust_output,
+            nlu_result=nlu_result,
         )
 
         logger.info(
@@ -435,7 +503,7 @@ class AgentCore(AgentCoreBase):
                 "reason": trust_result.reason,
             },
         )
-        blocked_text = self._config.get(
+        blocked_text = self._config.get("conversation", {}).get(
             "blocked_message",
             "I'm unable to help with that request.",
         )
@@ -463,7 +531,7 @@ class AgentCore(AgentCoreBase):
                 "reason": trust_result.reason,
             },
         )
-        escalation_text = self._config.get(
+        escalation_text = self._config.get("conversation", {}).get(
             "escalation_message",
             "I'm connecting you to a human agent who can better assist you.",
         )
@@ -475,10 +543,18 @@ class AgentCore(AgentCoreBase):
             latency_ms=int((time.time() - start) * 1000),
         )
 
-    def _unknown_intent_response(self, session_id: str, start: float) -> TurnResult:
+    def _unknown_intent_response(
+        self,
+        session_id: str,
+        user_id: str,
+        bundle: ContextBundle,
+        turn_input: TurnInput,
+        nlu_result: NLUResult,
+        start: float,
+    ) -> TurnResult:
         """
         Early exit when intent is unknown or NLU confidence is below threshold.
-        No KE call, no LLM call, no memory write.
+        Increments loop_count in memory so HITL can trigger after repeated failures.
         """
         logger.info(
             "orchestrator.unknown_intent",
@@ -495,19 +571,74 @@ class AgentCore(AgentCoreBase):
             "unknown_intent_message",
             "I didn't quite understand that. Could you tell me more about what you need help with?",
         )
-        return TurnResult(
+        # Increment loop_count — only on unknown/low-confidence turns.
+        # This is the HITL counter: N consecutive confused turns triggers human handoff.
+        try:
+            new_loop_count = int(bundle.session.get("loop_count", 0)) + 1
+            self._memory.write(session_id, user_id, "session", "loop_count", new_loop_count)
+            logger.info(
+                "  [STEP 5b] loop_count incremented to %d (HITL threshold=%d)",
+                new_loop_count,
+                int(self._config.get("hitl", {}).get("loop_count_threshold", 3)),
+            )
+        except Exception as e:
+            logger.error(
+                "orchestrator.loop_count_write_failed",
+                extra={
+                    "operation": "orchestrator._unknown_intent_response",
+                    "status": "failure",
+                    "session_id": session_id,
+                    "error": str(e),
+                },
+            )
+        return self._build_result(
             session_id=session_id,
+            user_id=user_id,
             response_text=unknown_text,
             was_escalated=False,
+            was_tool_used=False,
             model_used="",
             latency_ms=int((time.time() - start) * 1000),
+            bundle=bundle,
+            turn_input=turn_input,
+            tool_calls=[],
+            trust_input=TrustCheckResult(passed=True, action="allow"),
+            trust_output=TrustCheckResult(passed=True, action="allow"),
+            nlu_result=nlu_result,
         )
 
     def _safe_fallback_message(self) -> str:
-        return self._config.get(
+        return self._config.get("conversation", {}).get(
             "output_blocked_message",
             "I wasn't able to produce a safe response. Please try rephrasing your question.",
         )
+
+    # ------------------------------------------------------------------
+    # Private: schedule async flush for early exit paths
+    # ------------------------------------------------------------------
+
+    def _schedule_flush(self, session_id: str, user_id: str, reason: str) -> None:
+        """Spawn a daemon thread to flush the session asynchronously."""
+        thread = threading.Thread(
+            target=self._do_flush,
+            args=(session_id, user_id, reason),
+            daemon=True,
+        )
+        thread.start()
+
+    def _do_flush(self, session_id: str, user_id: str, reason: str) -> None:
+        try:
+            self._memory.flush_session(session_id, user_id, reason)
+        except Exception as e:
+            logger.error(
+                "orchestrator.flush_error",
+                extra={
+                    "operation": "orchestrator._do_flush",
+                    "status": "failure",
+                    "session_id": session_id,
+                    "error": str(e),
+                },
+            )
 
     # ------------------------------------------------------------------
     # Private: result construction + async post-turn
@@ -516,16 +647,20 @@ class AgentCore(AgentCoreBase):
     def _build_result(
         self,
         session_id: str,
+        user_id: str,
         response_text: str,
         was_escalated: bool,
         was_tool_used: bool,
         model_used: str,
         latency_ms: int,
-        state: SessionState,
+        bundle: ContextBundle,
         turn_input: TurnInput,
         tool_calls: list[ToolCall],
         trust_input: TrustCheckResult,
         trust_output: TrustCheckResult,
+        nlu_result: NLUResult,
+        do_flush: bool = False,
+        flush_reason: str = "",
     ) -> TurnResult:
         """
         Constructs the TurnResult and schedules the async post-turn work
@@ -540,10 +675,6 @@ class AgentCore(AgentCoreBase):
             latency_ms=latency_ms,
         )
 
-        updated_state = self._build_updated_state(
-            state, turn_input.user_message, response_text, tool_calls
-        )
-
         turn_event = TurnEvent(
             session_id=session_id,
             response_text=response_text,
@@ -551,7 +682,7 @@ class AgentCore(AgentCoreBase):
             trust_input_result=trust_input,
             trust_output_result=trust_output,
             model_used=model_used,
-            input_tokens=0,   # populated from llm_response upstream when available
+            input_tokens=0,
             output_tokens=0,
             latency_ms=latency_ms,
             timestamp_ms=turn_input.timestamp_ms,
@@ -559,44 +690,35 @@ class AgentCore(AgentCoreBase):
 
         thread = threading.Thread(
             target=self._post_turn,
-            args=(session_id, updated_state, turn_event),
+            args=(
+                session_id, user_id, response_text,
+                nlu_result, bundle, turn_event,
+                do_flush, flush_reason,
+            ),
             daemon=True,
         )
         thread.start()
 
         return result
 
-    def _build_updated_state(
-        self,
-        state: SessionState,
-        user_message: str,
-        response_text: str,
-        tool_calls: list[ToolCall],
-    ) -> SessionState:
-        """Append the current turn to conversation history in the session state."""
-        updated_history = list(state.history)
-
-        if user_message:
-            updated_history.append({"role": "user", "content": user_message})
-        if response_text:
-            updated_history.append({"role": "assistant", "content": response_text})
-
-        return SessionState(
-            session_id=state.session_id,
-            history=updated_history,
-            confirmed_entities=state.confirmed_entities,
-            workflow_step=state.workflow_step,
-            user_profile=state.user_profile,
-        )
-
     def _post_turn(
         self,
         session_id: str,
-        updated_state: SessionState,
+        user_id: str,
+        response_text: str,
+        nlu_result: NLUResult,
+        bundle: ContextBundle,
         turn_event: TurnEvent,
+        do_flush: bool,
+        flush_reason: str,
     ) -> None:
         """
         Runs in a daemon thread after TurnResult is returned to the caller.
+
+        Writes per-field session state and confirmed entities via Memory Layer.
+        Emits turn event to Learning Layer.
+        Flushes session if do_flush is True (termination or HITL).
+
         Any exception here is logged and swallowed — must never crash the thread.
         """
         memory_endpoint = (
@@ -606,16 +728,31 @@ class AgentCore(AgentCoreBase):
             self._config.get("learning_client", {}).get("endpoint", "http://learning_layer:8004")
         )
 
+        # ── Step 11: Write session fields ────────────────────────────
         logger.info(
-            "  [STEP 11] [async] Memory Write  →  POST %s/session/write  (session=%s)",
+            "  [STEP 11] [async] Memory Write  →  POST %s/write  (session=%s)",
             memory_endpoint, session_id,
         )
         try:
             t11 = time.time()
-            self._memory.write_session(session_id, updated_state)
+            # loop_count is NOT incremented here — it is only incremented by
+            # _unknown_intent_response when the intent is unknown/low-confidence.
+            # Incrementing on every turn would hit the HITL threshold after 3
+            # normal turns, escalating users who are having a normal conversation.
+            self._memory.write(session_id, user_id, "session", "last_response", response_text)
+
+            # Write extracted entities to persistent profile scope
+            entity_map: dict = self._config.get("entity_to_profile_field", {})
+            for entity_key, entity_val in (nlu_result.entities or {}).items():
+                profile_field = entity_map.get(entity_key, entity_key)
+                self._memory.write(session_id, user_id, "persistent", profile_field, entity_val)
+
             logger.info(
-                "  [STEP 11] [async] Memory Write  ✓  history_turns=%d  latency=%dms",
-                len(updated_state.history) // 2, int((time.time() - t11) * 1000),
+                "  [STEP 11] [async] Memory Write  ✓  loop_count=%d"
+                "  entities_written=%d  latency=%dms",
+                int(bundle.session.get("loop_count", 0)),
+                len(nlu_result.entities or {}),
+                int((time.time() - t11) * 1000),
             )
         except Exception as e:
             logger.error(
@@ -628,6 +765,27 @@ class AgentCore(AgentCoreBase):
                 },
             )
 
+        # ── Flush if session is ending ────────────────────────────────
+        if do_flush:
+            logger.info(
+                "  [STEP 11b] [async] flush_session  →  POST %s/flush_session"
+                "  (reason=%s)",
+                memory_endpoint, flush_reason,
+            )
+            try:
+                self._memory.flush_session(session_id, user_id, flush_reason)
+            except Exception as e:
+                logger.error(
+                    "orchestrator.flush_session_failed",
+                    extra={
+                        "operation": "orchestrator._post_turn",
+                        "status": "failure",
+                        "session_id": session_id,
+                        "error": str(e),
+                    },
+                )
+
+        # ── Step 12: Emit to Learning Layer ──────────────────────────
         logger.info(
             "  [STEP 12] [async] Learning Emit  →  POST %s/emit/turn  (session=%s)",
             learning_endpoint, session_id,

@@ -46,7 +46,9 @@ Rules:
 - Use "unknown" intent if no intent matches or confidence is below 0.5.
 - Only include entity types that are clearly present in the message.
 - Return an empty dict {{}} for entities if none are found.
-- If conversation history is provided, use it to resolve follow-up or ambiguous messages.
+- Use the current workflow step and the last question asked (if provided) to resolve
+  follow-up or ambiguous messages (e.g. a one-word answer like "welder" after "what trade
+  do you work in?" should be classified as a profile answer, not an unknown intent).
 - Never include keys outside the four specified (intent, entities, sentiment, confidence)."""
 
 
@@ -64,18 +66,21 @@ class NLUProcessor:
     def process(
         self,
         normalised_input: str,
-        history: list[dict],
+        current_question: str,
+        workflow_step: str,
         config: dict,
         llm: LLMWrapperBase,
     ) -> NLUResult:
         """
-        Run NLU classification with conversation history context.
+        Run NLU classification with workflow context.
 
         Args:
             normalised_input: Cleaned text from Language Normaliser.
-            history:          Session history from Memory Layer.
-                              Last `history_turns` turns are injected into the LLM
-                              messages for context-aware intent classification.
+            current_question: The last question the agent asked this session
+                              (from session["current_question"]). Used to resolve
+                              short follow-up answers like "welder" or "Hubli".
+            workflow_step:    Current workflow step (from session["current_node"]).
+                              Helps classify answers that are only meaningful in context.
             config:           Full agent_core config dict.
             llm:              LLM wrapper for direct LLM calls.
 
@@ -96,7 +101,6 @@ class NLUProcessor:
         entities_list = block_cfg.get("entities", [])
         sentiment_classes = block_cfg.get("sentiment_classes", ["neutral"])
         model_override = block_cfg.get("model")
-        history_turns = block_cfg.get("history_turns", 2)
 
         try:
             system_prompt = _NLU_SYSTEM_PROMPT.format(
@@ -105,12 +109,17 @@ class NLUProcessor:
                 sentiment_classes=", ".join(sentiment_classes),
             )
 
-            # Include recent history so the LLM can resolve follow-up intents
-            messages: list[dict] = []
-            if history:
-                recent = history[-(history_turns * 2):]
-                messages.extend(recent)
-            messages.append({"role": "user", "content": normalised_input})
+            # Build NLU context message with workflow and last-question grounding
+            context_parts: list[str] = []
+            if workflow_step:
+                context_parts.append(f"Current workflow step: {workflow_step}")
+            if current_question:
+                context_parts.append(f"Last question asked: {current_question}")
+            context_parts.append(f"User message: {normalised_input}")
+
+            messages: list[dict] = [
+                {"role": "user", "content": "\n".join(context_parts)}
+            ]
 
             llm_response = llm.call(
                 messages=messages,

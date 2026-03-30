@@ -1,7 +1,7 @@
 """
 agent_core/src/action_gateway_http_client.py
 
-HTTP client for the Action Gateway service (ONEST mock server) at port 9999.
+HTTP client for the Action Gateway service at port 9999.
 Self-contained in agent_core — does not import from action_gateway package.
 
 Implements the ActionGatewayBase interface contract:
@@ -11,6 +11,11 @@ Implements the ActionGatewayBase interface contract:
 Config reads from:
   action_gateway_client.endpoint   (default "http://localhost:9999/onest/market_lookup")
   action_gateway_client.timeout_ms (default 5000)
+
+Tool definitions are built from config at startup:
+  connectors.read / connectors.write / connectors.identity
+  Each connector entry must have: name, description, input_schema.
+  No tool schema is hardcoded here — all comes from domain.yaml.
 """
 
 from __future__ import annotations
@@ -28,37 +33,44 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Tool definition — Anthropic tool-use format (mirrors action_gateway stub)
+# Private helpers
 # ---------------------------------------------------------------------------
 
-_TOOL_DEFINITIONS: list[dict] = [
-    {
-        "name": "onest_market_lookup",
-        "description": (
-            "Search ONEST live job market data by trade and location. "
-            "Returns salary range, market signal (growth trend), and top employers "
-            "currently hiring for the given trade in the specified area."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "trade": {
-                    "type": "string",
-                    "description": "Trade/skill to search for. E.g. electrician, welder, fitter.",
-                },
-                "location": {
-                    "type": "string",
-                    "description": "City or district name. E.g. Hubli, Dharwad, Belgaum.",
-                },
-                "distance_km": {
-                    "type": "integer",
-                    "description": "Search radius in km from the specified location. Default 50.",
-                },
-            },
-            "required": ["trade"],
-        },
-    }
-]
+
+def _build_tool_definitions(config: dict) -> list[dict]:
+    """
+    Build Anthropic-formatted tool definitions from the connectors config.
+
+    Reads connectors.read, connectors.write, and connectors.identity.
+    Each connector entry must have: name, description, input_schema.
+    Entries missing name or input_schema are logged and skipped.
+    """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+    definitions: list[dict] = []
+    connectors = config.get("connectors", {})
+    for connector_type in ("read", "write", "identity"):
+        for connector in connectors.get(connector_type, []) or []:
+            name = connector.get("name")
+            description = connector.get("description", "")
+            input_schema = connector.get("input_schema")
+            if not name or not input_schema:
+                _log.warning(
+                    "action_gateway_http_client.skip_connector",
+                    extra={
+                        "operation": "_build_tool_definitions",
+                        "status": "skipped",
+                        "connector_name": name or "(unnamed)",
+                        "reason": "missing name or input_schema",
+                    },
+                )
+                continue
+            definitions.append({
+                "name": name,
+                "description": description,
+                "input_schema": input_schema,
+            })
+    return definitions
 
 
 class ActionGatewayHttpClient(ActionGatewayBase):
@@ -82,6 +94,7 @@ class ActionGatewayHttpClient(ActionGatewayBase):
             "endpoint", "http://localhost:9999/onest/market_lookup"
         )
         self._timeout_s: float = client_cfg.get("timeout_ms", 5000) / 1000
+        self._tool_definitions: list[dict] = _build_tool_definitions(config)
 
         logger.info(
             "action_gateway_http_client.init",
@@ -100,9 +113,9 @@ class ActionGatewayHttpClient(ActionGatewayBase):
     def list_available_tools(self) -> list[dict]:
         """
         Return Anthropic-formatted tool definitions for all available connectors.
-        Called once at startup by ToolRegistry — result is cached.
+        Built from config at startup. Called once by ToolRegistry — result is cached.
         """
-        return list(_TOOL_DEFINITIONS)
+        return list(self._tool_definitions)
 
     def execute(self, tool_call: ToolCall, session_id: str) -> ToolResult:
         """

@@ -20,7 +20,7 @@ from src.exceptions import ConsentRequiredError
 from src.interfaces.action_gateway import ActionGatewayBase
 from src.interfaces.trust_layer import TrustLayerBase
 from src.llm_wrapper.base import LLMWrapperBase
-from src.models import LLMResponse, ToolCall, ToolResult
+from src.models import LLMResponse, RetrievalChunk, ToolCall, ToolResult
 from src.tool_registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -139,6 +139,120 @@ class ManagerAgent:
 
         final_text = current_response.content or ""
         return final_text, all_tool_calls
+
+    # ------------------------------------------------------------------
+    # Prompt assembly helpers (E1, E2)
+    # ------------------------------------------------------------------
+
+    def build_system_prompt(
+        self,
+        profile: dict,
+        session: dict,
+        detected_language: str,
+        config: dict,
+    ) -> str:
+        """
+        Build the system prompt for one LLM call.
+
+        Reads prompt_blocks from config: persona, language_instruction, guardrail_reminders.
+        Appends detected language instruction and a compact profile summary if profile
+        has any filled fields.
+
+        Args:
+            profile:           UserProfile dict from ContextBundle.
+            session:           Session state dict from ContextBundle.
+            detected_language: Language detected by Language Normaliser.
+            config:            Full agent_core config dict.
+
+        Returns:
+            str: Assembled system prompt. Empty string if no persona configured.
+        """
+        prompt_cfg = config.get("prompt_blocks", {})
+        parts: list[str] = []
+
+        persona_text = prompt_cfg.get("persona", "").strip()
+        if persona_text:
+            parts.append(persona_text)
+
+        # Inject known profile fields as context
+        if profile:
+            profile_lines: list[str] = []
+            skip_keys = {"attributes", "user_id"}
+            for k, v in profile.items():
+                if k not in skip_keys and v not in (None, "", [], "[]"):
+                    profile_lines.append(f"  {k}: {v}")
+            if profile_lines:
+                parts.append("Known user profile:\n" + "\n".join(profile_lines))
+
+        language_instruction = prompt_cfg.get("language_instruction", "").strip()
+        if language_instruction:
+            parts.append(language_instruction)
+
+        if detected_language:
+            parts.append(
+                f"The user's current message is in {detected_language}. "
+                f"Respond in {detected_language}."
+            )
+
+        guardrails = prompt_cfg.get("guardrail_reminders", [])
+        if guardrails:
+            parts.append("\n--- Guidelines ---")
+            if isinstance(guardrails, str):
+                # YAML block scalar (|) — already formatted with dashes, append as-is
+                parts.append(guardrails.strip())
+            else:
+                for reminder in guardrails:
+                    parts.append(f"- {reminder}")
+
+        return "\n\n".join(parts)
+
+    def build_messages(
+        self,
+        user_message: str,
+        chunks: list[RetrievalChunk],
+        current_question: str,
+    ) -> list[dict]:
+        """
+        Build the Anthropic messages array for one LLM call.
+
+        New design: no conversation history — each turn is fresh context.
+        current_question (what the agent last asked) is prepended as grounding context.
+        RAG chunks are appended to the user message.
+
+        Args:
+            user_message:     Raw user message text.
+            chunks:           Retrieval chunks from KE.retrieve().
+            current_question: The question the agent last asked, from session["current_question"].
+                              Empty string if this is the first turn.
+
+        Returns:
+            list[dict]: Single-turn Anthropic messages list.
+            Empty list if user_message is empty.
+        """
+        if not user_message:
+            return []
+
+        content_parts: list[str] = []
+
+        if current_question:
+            content_parts.append(f"[Last question asked: {current_question}]")
+
+        content_parts.append(user_message)
+
+        always_include = [c for c in chunks if c.always_include]
+        retrieved = [c for c in chunks if not c.always_include]
+
+        if always_include:
+            content_parts.append("\n--- Always include context ---")
+            for chunk in always_include:
+                content_parts.append(chunk.text)
+
+        if retrieved:
+            content_parts.append("\n--- Relevant knowledge ---")
+            for chunk in retrieved:
+                content_parts.append(chunk.text)
+
+        return [{"role": "user", "content": "\n\n".join(content_parts)}]
 
     # ------------------------------------------------------------------
     # Private helpers

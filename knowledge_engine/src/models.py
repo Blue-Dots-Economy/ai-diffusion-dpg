@@ -65,3 +65,49 @@ class LLMResponse:
     model_used: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Retrieval request / response (new interface — replaces AssemblePromptRequest)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RetrievalChunk:
+    """
+    A single chunk of retrieved knowledge.
+    Mirrors agent_core.src.models.RetrievalChunk — KE defines its own copy
+    to remain dependency-free from agent_core.
+    """
+    text: str
+    doc_type: str = ""
+    source: str = ""
+    always_include: bool = False
+
+
+@dataclass
+class RetrievalRequest:
+    """
+    Request body for POST /retrieve from Agent Core.
+    Carries everything KE needs: user context + pre-computed NLU results.
+    """
+    session_id: str
+    user_message: str
+    profile: dict = field(default_factory=dict)    # UserProfile from ContextBundle
+    session: dict = field(default_factory=dict)    # Session state from ContextBundle
+    intent: str = "unknown"
+    entities: dict = field(default_factory=dict)
+    sentiment: str = "neutral"
+    confidence: float = 0.0
+    normalised_input: str = ""
+    detected_language: str = ""
+
+
+@dataclass
+class RetrievalResponse:
+    """
+    Response body for POST /retrieve.
+    Contains retrieval chunks only — prompt assembly is Agent Core's responsibility.
+    """
+    session_id: str
+    chunks: list[RetrievalChunk] = field(default_factory=list)

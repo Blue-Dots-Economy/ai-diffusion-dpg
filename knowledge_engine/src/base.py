@@ -4,7 +4,7 @@ knowledge_engine/src/base.py
 Base classes and the shared context object for all Knowledge Engine components:
 
 - LLMWrapperBase   — ABC for the LLM client injected into KE (HttpLLMWrapper)
-- KEContext        — shared data object passed through all 5 processing blocks
+- KEContext        — shared data object passed through all 3 processing blocks
 - KnowledgeBlock   — ABC every block must inherit and implement
 - KnowledgeEngineBase — ABC the KnowledgeEngine orchestrator must inherit
 
@@ -29,12 +29,18 @@ class LLMWrapperBase(ABC):
     """
     Abstract interface for the LLM client used by Knowledge Engine blocks.
 
+    Currently used only by MultimodalInputHandler (src/blocks/multimodal_input_handler.py)
+    for image and PDF description via LLM vision. That block is currently DISABLED
+    (knowledge.blocks.multimodal_input_handler.enabled: false in config), so llm=None
+    is passed to KnowledgeEngine at startup. This interface will be active when
+    multimodal is enabled.
+
     Concrete implementation: HttpLLMWrapper (knowledge_engine/src/llm_proxy_client.py).
-    It forwards all calls to Agent Core's POST /internal/llm/call endpoint so that
+    It forwards calls to Agent Core's POST /internal/llm/call endpoint so that
     KE never holds an Anthropic API key.
 
-    For testing, any class that implements call() and get_active_model() can be
-    substituted without changing block code.
+    Glossary and StaticKnowledgeBaseBlock receive llm as a parameter (required by the
+    KnowledgeBlock contract) but do not call it.
     """
 
     @abstractmethod
@@ -52,7 +58,7 @@ class LLMWrapperBase(ABC):
             messages:       Conversation messages in Anthropic format.
             tools:          Tool definitions. Pass empty list if no tools needed.
             system:         System prompt string.
-            model_override: Override the active model — used to call Haiku for NLU tasks.
+            model_override: Override the active model for this call if needed.
 
         Returns:
             LLMResponse — always. Never raises.
@@ -72,23 +78,28 @@ class LLMWrapperBase(ABC):
 @dataclass
 class KEContext:
     """
-    Shared data object passed through all 5 Knowledge Engine blocks in sequence.
-    Created at the start of assemble_prompt() with defaults, then enriched by each block.
+    Shared data object passed through all 3 Knowledge Engine blocks in sequence.
+    Created at the start of retrieve() with defaults, then enriched by each block.
+
+    Language Normalisation and NLU run in Agent Core before this call.
+    Their results arrive as parameters and are pre-loaded into the context.
 
     Immutable fields (set once, never changed):
         session_id      — identifies the session
         raw_input       — original user_message; blocks must never modify this
         session_state   — full session context from Memory Layer; read-only
 
+    Fields pre-populated from Agent Core NLU results:
+        normalised_input    — cleaned text from Language Normalisation
+        detected_language   — "hindi" | "kannada" | "english" | "hinglish"
+        intent              — classified intent label from NLU Processor
+        entities            — extracted entities dict; Block 1 (Glossary) normalises values
+        sentiment           — sentiment class from NLU Processor
+        confidence          — NLU confidence score 0.0–1.0
+
     Mutable fields (enriched by blocks in order):
-        normalised_input    — Block 1 (Language Normalisation): cleaned text used downstream
-        detected_language   — Block 1: "hindi" | "kannada" | "english" | "hinglish"
-        intent              — Block 2 (NLU Processor): classified intent label
-        entities            — Block 2: extracted entities dict; Block 3 normalises values
-        sentiment           — Block 2: sentiment class
-        confidence          — Block 2: NLU confidence score 0.0–1.0
-        retrieval_chunks    — Block 4 (Static KB): top-k relevant chunks
-        always_include_chunks — Block 4: always-present chunks (bypass similarity filter)
+        retrieval_chunks    — Block 2 (Static KB): top-k relevant chunks
+        always_include_chunks — Block 2: always-present chunks (bypass similarity filter)
     """
 
     session_id: str
@@ -111,7 +122,7 @@ class KEContext:
 
 class KnowledgeBlock(ABC):
     """
-    Abstract base class for all 5 Knowledge Engine processing blocks.
+    Abstract base class for all 3 Knowledge Engine processing blocks.
 
     Every block receives the current KEContext, enriches it, and returns it.
     Blocks are stateless — all configuration is read from the config dict passed
@@ -157,36 +168,31 @@ class KnowledgeEngineBase(ABC):
     This mirrors agent_core/src/interfaces/knowledge_engine.py exactly.
     Agent Core depends on this interface; KnowledgeEngine must implement it.
 
-    Language Normalisation and NLU Processor now run in Agent Core before this call.
+    KE's sole responsibility is RAG retrieval — returning knowledge chunks.
+    Prompt assembly (system prompt + messages) is Agent Core's responsibility,
+    handled by ManagerAgent.build_system_prompt() and build_messages().
+
+    Language Normalisation and NLU Processor run in Agent Core before this call.
     KE receives their results as parameters and runs only Glossary, Static KB, Multimodal.
     """
 
     @abstractmethod
-    def assemble_prompt(
+    def retrieve(
         self,
         session_id: str,
         user_message: str,
-        session_state: SessionState,
-        normalised_input: str = "",
-        detected_language: str = "",
+        profile: dict,
+        session: dict,
         intent: str = "unknown",
         entities: Optional[dict] = None,
         sentiment: str = "neutral",
         confidence: float = 0.0,
-    ) -> tuple[list[dict], str]:
+        normalised_input: str = "",
+        detected_language: str = "",
+    ) -> list:
         """
-        Build and return the messages list and system prompt for the LLM call.
+        Run RAG retrieval and return knowledge chunks.
 
-        Agent Core runs Language Normalisation and NLU before calling this method
-        and passes the results as parameters. KE uses these to drive Glossary
-        normalisation and Static KB intent-based filtering, then assembles the
-        messages list and system prompt from the enriched KEContext.
-
-        Returns:
-            tuple[list[dict], str]:
-                - messages: conversation messages in Anthropic format (RAG context +
-                  history + current user message). Empty list if user_message is empty.
-                - system: system prompt string (persona + language instruction +
-                  guardrails). Empty string if no persona is configured.
-            Never raises.
+        Returns list of RetrievalChunk (from src.models). Prompt assembly is
+        Agent Core's responsibility. Never raises — returns [] on any failure.
         """

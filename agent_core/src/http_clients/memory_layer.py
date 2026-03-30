@@ -1,16 +1,19 @@
 """
-agent_core/src/memory_http_client.py
+agent_core/src/http_clients/memory_layer.py
 
-HTTP client for the Memory Layer service at port 8002.
-Implements the same interface as MemoryLayerBase.
+MemoryLayerHttpClient — HTTP client for the Memory Layer service (port 8002).
+
+Implements MemoryLayerBase (5 methods). Agent Core calls this class;
+it translates each method call into the appropriate HTTP request to the
+Memory Layer service and deserialises the response into ContextBundle.
 
 Config reads from:
   memory_client.endpoint   (default "http://localhost:8002")
-  memory_client.timeout_ms (default 3000)
+  memory_client.timeout_ms (default 5000)
 
 Error handling:
-  - read_session: returns SessionState.empty(session_id) on any failure.
-  - write_session / get_user_profile / clear_session: log and continue.
+  - context_bundle: returns ContextBundle.empty() on any failure.
+  - write / flush_session / get_active_sessions / delete_user: log and continue.
   - Never raises to the caller.
 """
 
@@ -23,7 +26,7 @@ from typing import Any
 import httpx
 
 from src.interfaces.memory_layer import MemoryLayerBase
-from src.models import SessionState
+from src.models import ContextBundle
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +35,8 @@ class MemoryLayerHttpClient(MemoryLayerBase):
     """
     HTTP client that calls the Memory Layer service.
 
-    Implements the MemoryLayerBase interface contract so it can be swapped
-    with any other implementation without changing the orchestrator.
+    Implements MemoryLayerBase so it is interchangeable with any other
+    Memory Layer implementation without changing the orchestrator.
 
     Args:
         config: Full config dict. Reads memory_client.endpoint and
@@ -46,7 +49,7 @@ class MemoryLayerHttpClient(MemoryLayerBase):
 
         client_cfg = config.get("memory_client", {})
         self._endpoint: str = client_cfg.get("endpoint", "http://localhost:8002")
-        self._timeout_s: float = client_cfg.get("timeout_ms", 3000) / 1000
+        self._timeout_s: float = client_cfg.get("timeout_ms", 5000) / 1000
 
         logger.info(
             "memory_http_client.init",
@@ -59,149 +62,195 @@ class MemoryLayerHttpClient(MemoryLayerBase):
         )
 
     # ------------------------------------------------------------------
-    # Public interface — mirrors MemoryLayerBase
+    # Public interface — implements MemoryLayerBase
     # ------------------------------------------------------------------
 
-    def read_session(self, session_id: str) -> SessionState:
+    def context_bundle(self, session_id: str, user_id: str) -> ContextBundle:
         """
-        Load session state for the given session.
-        Returns SessionState.empty(session_id) on any failure.
-        Never raises.
+        POST /context_bundle -> ContextBundle.
+        Returns ContextBundle.empty() on any failure. Never raises.
         """
-        if session_id is None:
-            raise ValueError("session_id must not be None")
+        if not session_id:
+            raise ValueError("session_id must not be empty")
+        if not user_id:
+            raise ValueError("user_id must not be empty")
 
         start = time.time()
-
         try:
             response = httpx.post(
-                f"{self._endpoint}/session/read",
-                json={"session_id": session_id},
+                f"{self._endpoint}/context_bundle",
+                json={"session_id": session_id, "user_id": user_id},
                 timeout=self._timeout_s,
             )
             response.raise_for_status()
             data = response.json()
 
-            state = SessionState(
-                session_id=data.get("session_id", session_id),
-                history=data.get("history", []),
-                confirmed_entities=data.get("confirmed_entities", {}),
-                workflow_step=data.get("workflow_step"),
-                user_profile=data.get("user_profile", {}),
+            bundle = ContextBundle(
+                session=data.get("session") or {},
+                profile=data.get("profile") or {},
+                journey=data.get("journey"),
             )
 
             logger.info(
-                "memory_http_client.read_session",
+                "memory_http_client.context_bundle",
                 extra={
-                    "operation": "memory_http_client.read_session",
+                    "operation": "memory_http_client.context_bundle",
                     "status": "success",
                     "session_id": session_id,
-                    "history_turns": len(state.history) // 2,
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
-            return state
+            return bundle
 
         except httpx.TimeoutException as e:
             logger.error(
-                "memory_http_client.read_session_timeout",
+                "memory_http_client.context_bundle_timeout",
                 extra={
-                    "operation": "memory_http_client.read_session",
+                    "operation": "memory_http_client.context_bundle",
                     "status": "failure",
                     "session_id": session_id,
                     "error": f"TimeoutException: {e}",
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
-            return SessionState.empty(session_id)
+            return ContextBundle.empty()
 
         except httpx.HTTPStatusError as e:
             logger.error(
-                "memory_http_client.read_session_http_error",
+                "memory_http_client.context_bundle_http_error",
                 extra={
-                    "operation": "memory_http_client.read_session",
+                    "operation": "memory_http_client.context_bundle",
                     "status": "failure",
                     "session_id": session_id,
                     "error": f"HTTP {e.response.status_code}: {e}",
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
-            return SessionState.empty(session_id)
+            return ContextBundle.empty()
 
         except Exception as e:
             logger.error(
-                "memory_http_client.read_session_error",
+                "memory_http_client.context_bundle_error",
                 extra={
-                    "operation": "memory_http_client.read_session",
+                    "operation": "memory_http_client.context_bundle",
                     "status": "failure",
                     "session_id": session_id,
                     "error": f"{type(e).__name__}: {e}",
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
-            return SessionState.empty(session_id)
+            return ContextBundle.empty()
 
-    def write_session(self, session_id: str, state: SessionState) -> None:
+    def write(self, session_id: str, user_id: str, scope: str, key: str, value: Any) -> None:
         """
-        Persist session state. Called asynchronously — logs and continues on failure.
-        Never raises.
+        POST /write. Called asynchronously — logs and continues on failure. Never raises.
         """
-        if session_id is None:
-            raise ValueError("session_id must not be None")
-        if state is None:
-            raise ValueError("state must not be None")
+        if not session_id:
+            raise ValueError("session_id must not be empty")
+        if not user_id:
+            raise ValueError("user_id must not be empty")
 
         start = time.time()
-
-        state_dict = _session_state_to_dict(state, session_id)
-
         try:
             response = httpx.post(
-                f"{self._endpoint}/session/write",
-                json={"session_id": session_id, "state": state_dict},
+                f"{self._endpoint}/write",
+                json={
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "scope": scope,
+                    "key": key,
+                    "value": value,
+                },
                 timeout=self._timeout_s,
             )
             response.raise_for_status()
 
             logger.info(
-                "memory_http_client.write_session",
+                "memory_http_client.write",
                 extra={
-                    "operation": "memory_http_client.write_session",
+                    "operation": "memory_http_client.write",
                     "status": "success",
                     "session_id": session_id,
+                    "key": key,
+                    "scope": scope,
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
 
         except httpx.TimeoutException as e:
             logger.error(
-                "memory_http_client.write_session_timeout",
+                "memory_http_client.write_timeout",
                 extra={
-                    "operation": "memory_http_client.write_session",
+                    "operation": "memory_http_client.write",
+                    "status": "failure",
+                    "session_id": session_id,
+                    "key": key,
+                    "error": f"TimeoutException: {e}",
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+        except Exception as e:
+            logger.error(
+                "memory_http_client.write_error",
+                extra={
+                    "operation": "memory_http_client.write",
+                    "status": "failure",
+                    "session_id": session_id,
+                    "key": key,
+                    "error": f"{type(e).__name__}: {e}",
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+
+    def flush_session(self, session_id: str, user_id: str, end_reason: str) -> None:
+        """
+        POST /flush_session. Logs and continues on failure. Never raises.
+        """
+        if not session_id:
+            raise ValueError("session_id must not be empty")
+        if not user_id:
+            raise ValueError("user_id must not be empty")
+
+        start = time.time()
+        try:
+            response = httpx.post(
+                f"{self._endpoint}/flush_session",
+                json={
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "end_reason": end_reason or "unknown",
+                },
+                timeout=self._timeout_s,
+            )
+            response.raise_for_status()
+
+            logger.info(
+                "memory_http_client.flush_session",
+                extra={
+                    "operation": "memory_http_client.flush_session",
+                    "status": "success",
+                    "session_id": session_id,
+                    "end_reason": end_reason,
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+
+        except httpx.TimeoutException as e:
+            logger.error(
+                "memory_http_client.flush_session_timeout",
+                extra={
+                    "operation": "memory_http_client.flush_session",
                     "status": "failure",
                     "session_id": session_id,
                     "error": f"TimeoutException: {e}",
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
-
-        except httpx.HTTPStatusError as e:
-            logger.error(
-                "memory_http_client.write_session_http_error",
-                extra={
-                    "operation": "memory_http_client.write_session",
-                    "status": "failure",
-                    "session_id": session_id,
-                    "error": f"HTTP {e.response.status_code}: {e}",
-                    "latency_ms": int((time.time() - start) * 1000),
-                },
-            )
-
         except Exception as e:
             logger.error(
-                "memory_http_client.write_session_error",
+                "memory_http_client.flush_session_error",
                 extra={
-                    "operation": "memory_http_client.write_session",
+                    "operation": "memory_http_client.flush_session",
                     "status": "failure",
                     "session_id": session_id,
                     "error": f"{type(e).__name__}: {e}",
@@ -209,161 +258,104 @@ class MemoryLayerHttpClient(MemoryLayerBase):
                 },
             )
 
-    def get_user_profile(self, session_id: str) -> dict:
+    def get_active_sessions(self, user_id: str) -> list[dict]:
         """
-        Return persistent user profile data.
-        Returns an empty dict on any failure.
-        Never raises.
+        GET /sessions/{user_id} -> list of active session dicts.
+        Returns [] on any failure. Never raises.
         """
-        if session_id is None:
-            raise ValueError("session_id must not be None")
+        if not user_id:
+            return []
 
         start = time.time()
-
         try:
             response = httpx.get(
-                f"{self._endpoint}/profile/{session_id}",
+                f"{self._endpoint}/sessions/{user_id}",
                 timeout=self._timeout_s,
             )
             response.raise_for_status()
-            profile = response.json()
+            sessions = response.json()
 
             logger.info(
-                "memory_http_client.get_user_profile",
+                "memory_http_client.get_active_sessions",
                 extra={
-                    "operation": "memory_http_client.get_user_profile",
+                    "operation": "memory_http_client.get_active_sessions",
                     "status": "success",
-                    "session_id": session_id,
+                    "user_id": user_id,
+                    "session_count": len(sessions),
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
-            return profile if isinstance(profile, dict) else {}
+            return sessions if isinstance(sessions, list) else []
 
         except httpx.TimeoutException as e:
             logger.error(
-                "memory_http_client.get_user_profile_timeout",
+                "memory_http_client.get_active_sessions_timeout",
                 extra={
-                    "operation": "memory_http_client.get_user_profile",
+                    "operation": "memory_http_client.get_active_sessions",
                     "status": "failure",
-                    "session_id": session_id,
+                    "user_id": user_id,
                     "error": f"TimeoutException: {e}",
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
-            return {}
-
-        except httpx.HTTPStatusError as e:
-            logger.error(
-                "memory_http_client.get_user_profile_http_error",
-                extra={
-                    "operation": "memory_http_client.get_user_profile",
-                    "status": "failure",
-                    "session_id": session_id,
-                    "error": f"HTTP {e.response.status_code}: {e}",
-                    "latency_ms": int((time.time() - start) * 1000),
-                },
-            )
-            return {}
-
+            return []
         except Exception as e:
             logger.error(
-                "memory_http_client.get_user_profile_error",
+                "memory_http_client.get_active_sessions_error",
                 extra={
-                    "operation": "memory_http_client.get_user_profile",
+                    "operation": "memory_http_client.get_active_sessions",
                     "status": "failure",
-                    "session_id": session_id,
+                    "user_id": user_id,
                     "error": f"{type(e).__name__}: {e}",
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
-            return {}
+            return []
 
-    def clear_session(self, session_id: str) -> None:
+    def delete_user(self, user_id: str) -> None:
         """
-        Delete all session-scoped state for the given session_id.
-        Logs and continues on failure. Never raises.
+        DELETE /user/{user_id}. Logs and continues on failure. Never raises.
         """
-        if session_id is None:
-            raise ValueError("session_id must not be None")
+        if not user_id:
+            raise ValueError("user_id must not be empty")
 
         start = time.time()
-
         try:
             response = httpx.delete(
-                f"{self._endpoint}/session/{session_id}",
+                f"{self._endpoint}/user/{user_id}",
                 timeout=self._timeout_s,
             )
             response.raise_for_status()
 
             logger.info(
-                "memory_http_client.clear_session",
+                "memory_http_client.delete_user",
                 extra={
-                    "operation": "memory_http_client.clear_session",
+                    "operation": "memory_http_client.delete_user",
                     "status": "success",
-                    "session_id": session_id,
+                    "user_id": user_id,
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
 
         except httpx.TimeoutException as e:
             logger.error(
-                "memory_http_client.clear_session_timeout",
+                "memory_http_client.delete_user_timeout",
                 extra={
-                    "operation": "memory_http_client.clear_session",
+                    "operation": "memory_http_client.delete_user",
                     "status": "failure",
-                    "session_id": session_id,
+                    "user_id": user_id,
                     "error": f"TimeoutException: {e}",
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
-
-        except httpx.HTTPStatusError as e:
-            logger.error(
-                "memory_http_client.clear_session_http_error",
-                extra={
-                    "operation": "memory_http_client.clear_session",
-                    "status": "failure",
-                    "session_id": session_id,
-                    "error": f"HTTP {e.response.status_code}: {e}",
-                    "latency_ms": int((time.time() - start) * 1000),
-                },
-            )
-
         except Exception as e:
             logger.error(
-                "memory_http_client.clear_session_error",
+                "memory_http_client.delete_user_error",
                 extra={
-                    "operation": "memory_http_client.clear_session",
+                    "operation": "memory_http_client.delete_user",
                     "status": "failure",
-                    "session_id": session_id,
+                    "user_id": user_id,
                     "error": f"{type(e).__name__}: {e}",
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
-
-
-# ---------------------------------------------------------------------------
-# Private helpers
-# ---------------------------------------------------------------------------
-
-
-def _session_state_to_dict(state: Any, session_id: str) -> dict:
-    """Convert a SessionState dataclass to a plain dict for JSON serialisation."""
-    if isinstance(state, dict):
-        return state
-    try:
-        return {
-            "session_id": getattr(state, "session_id", session_id),
-            "history": getattr(state, "history", []),
-            "confirmed_entities": getattr(state, "confirmed_entities", {}),
-            "workflow_step": getattr(state, "workflow_step", None),
-            "user_profile": getattr(state, "user_profile", {}),
-        }
-    except Exception:
-        return {
-            "session_id": session_id,
-            "history": [],
-            "confirmed_entities": {},
-            "workflow_step": None,
-            "user_profile": {},
-        }

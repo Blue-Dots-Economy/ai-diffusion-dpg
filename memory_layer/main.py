@@ -3,8 +3,8 @@ memory_layer/main.py
 
 Entry point for the Memory Layer FastAPI service.
 
-Loads config from config/config.yaml, instantiates InProcessSessionMemory,
-creates the FastAPI app, and starts uvicorn on the configured port (default 8002).
+Loads config from config/dpg.yaml + config/domain.yaml, instantiates MemoryLayer
+(Redis + Neo4j), creates the FastAPI app, and starts uvicorn on the configured port (default 8002).
 
 Run:
     python -m main                   (from memory_layer/ directory)
@@ -25,7 +25,7 @@ _SRC = str(Path(__file__).parent / "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from session_memory import InProcessSessionMemory
+from memory_layer import MemoryLayer
 from server import create_app
 
 # ---------------------------------------------------------------------------
@@ -74,7 +74,7 @@ def _build_app():
     domain_config = _load_config("config/domain.yaml")
     config = _deep_merge(dpg_config, domain_config)
 
-    memory = InProcessSessionMemory(config)
+    memory = MemoryLayer(config)
     app = create_app(memory)
 
     server_cfg = config.get("server", {})

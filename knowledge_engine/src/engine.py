@@ -1,11 +1,14 @@
 """
 knowledge_engine/src/engine.py
 
-KnowledgeEngine — the orchestrator for the 3 retrieval/assembly blocks.
+KnowledgeEngine — the orchestrator for the 3 retrieval blocks.
 
 Implements KnowledgeEngineBase. Called by Agent Core after Language Normalisation
 and NLU Processor have already run (Agent Core steps 3-4). KE receives the NLU
-results as parameters and runs only the retrieval and assembly blocks.
+results as parameters and returns raw knowledge chunks.
+
+Prompt assembly (system prompt + messages) is Agent Core's responsibility,
+handled by ManagerAgent.build_system_prompt() and build_messages().
 
 Block execution order (fixed — cannot be changed by config):
     [1] Glossary             — normalises entity values using domain vocabulary
@@ -13,9 +16,9 @@ Block execution order (fixed — cannot be changed by config):
     [3] Multimodal Input Handler — processes attached images/PDFs (if present)
 
 Design:
-- This is the only public entry point for Knowledge Engine.
+- retrieve() is the only public entry point for Knowledge Engine.
 - All 3 blocks are instantiated at startup; disabled blocks are skipped at process time.
-- assemble_prompt() never raises — all errors are absorbed by blocks.
+- retrieve() never raises — all errors are absorbed by blocks.
 - llm is optional: Glossary and Static KB do not use it. Multimodal may use it
   for image description when enabled. Pass None if multimodal is disabled.
 """
@@ -32,7 +35,7 @@ from src.base import (
     KEContext,
     LLMWrapperBase,
 )
-from src.models import SessionState
+from src.models import SessionState  # used internally by retrieve() to build KEContext
 from src.blocks.glossary import GlossaryBlock
 from src.blocks.static_knowledge_base import StaticKnowledgeBaseBlock
 from src.blocks.multimodal_input_handler import MultimodalInputHandlerBlock
@@ -79,50 +82,50 @@ class KnowledgeEngine(KnowledgeEngineBase):
             },
         )
 
-    def assemble_prompt(
+    def retrieve(
         self,
         session_id: str,
         user_message: str,
-        session_state: SessionState,
-        normalised_input: str = "",
-        detected_language: str = "",
+        profile: dict,
+        session: dict,
         intent: str = "unknown",
         entities: Optional[dict[str, Any]] = None,
         sentiment: str = "neutral",
         confidence: float = 0.0,
-    ) -> tuple[list[dict], str]:
+        normalised_input: str = "",
+        detected_language: str = "",
+    ) -> list:
         """
-        Run Glossary, Static KB, and Multimodal blocks, then build messages and system prompt.
+        Run Glossary, Static KB, and Multimodal blocks then return chunks only.
 
-        Agent Core has already run Language Normalisation and NLU — their results
-        are passed in as parameters and used to pre-populate KEContext so Glossary
-        and Static KB can use them immediately.
+        Prompt assembly (system prompt + messages) is Agent Core's responsibility.
+        Blocks run identically to assemble_prompt() — only the return value differs.
 
         Returns:
-            tuple[list[dict], str]:
-                - messages: RAG context + history + current user message.
-                  Empty list if user_message is empty string.
-                - system: persona + language instruction + guardrails.
-                  Empty string if no persona configured.
+            list[RetrievalChunk]: chunks from static KB + always-include sources.
+            Empty list if user_message is empty or no chunks found.
             Never raises.
         """
+        from src.models import RetrievalChunk as KERetrievalChunk
+
         if not user_message:
-            logger.info(
-                "knowledge_engine.empty_input",
-                extra={
-                    "operation": "knowledge_engine.assemble_prompt",
-                    "status": "skipped",
-                    "session_id": session_id,
-                },
-            )
-            return [], ""
+            return []
 
         if session_id is None:
             raise ValueError("session_id must not be None")
 
         start = time.time()
 
-        # Initialise shared context — pre-populated with NLU results from Agent Core
+        # Build a minimal SessionState from the session + profile dicts
+        # so existing blocks (Glossary, StaticKB) still work unchanged.
+        session_state = SessionState(
+            session_id=session_id,
+            history=[],   # no history in new design
+            confirmed_entities=dict(entities) if entities else {},
+            workflow_step=session.get("current_node") or session.get("workflow_step"),
+            user_profile=dict(profile) if profile else {},
+        )
+
         context = KEContext(
             session_id=session_id,
             raw_input=user_message,
@@ -137,7 +140,6 @@ class KnowledgeEngine(KnowledgeEngineBase):
             session_state=session_state,
         )
 
-        # Run retrieval and assembly blocks in fixed order
         for block in self._blocks:
             try:
                 context = block.process(context, self._llm, self._config)
@@ -145,7 +147,7 @@ class KnowledgeEngine(KnowledgeEngineBase):
                 logger.error(
                     "knowledge_engine.block_failure",
                     extra={
-                        "operation": "knowledge_engine.assemble_prompt",
+                        "operation": "knowledge_engine.retrieve",
                         "status": "failure",
                         "session_id": session_id,
                         "block": type(block).__name__,
@@ -153,23 +155,35 @@ class KnowledgeEngine(KnowledgeEngineBase):
                     },
                 )
 
-        system = self._build_system_prompt(context.detected_language)
-        messages = self._build_messages(context)
+        # Convert raw chunk dicts to RetrievalChunk objects
+        chunks: list[KERetrievalChunk] = []
+        for c in context.always_include_chunks:
+            chunks.append(KERetrievalChunk(
+                text=c.get("text", ""),
+                doc_type=c.get("doc_type", ""),
+                source=c.get("source", ""),
+                always_include=True,
+            ))
+        for c in context.retrieval_chunks:
+            chunks.append(KERetrievalChunk(
+                text=c.get("text", ""),
+                doc_type=c.get("doc_type", ""),
+                source=c.get("source", ""),
+                always_include=False,
+            ))
 
         logger.info(
-            "knowledge_engine.assemble_prompt",
+            "knowledge_engine.retrieve",
             extra={
-                "operation": "knowledge_engine.assemble_prompt",
+                "operation": "knowledge_engine.retrieve",
                 "status": "success",
                 "session_id": session_id,
                 "intent": context.intent,
-                "retrieval_count": len(context.retrieval_chunks),
-                "message_count": len(messages),
+                "chunk_count": len(chunks),
                 "latency_ms": int((time.time() - start) * 1000),
             },
         )
-
-        return messages, system
+        return chunks
 
     # ------------------------------------------------------------------
     # Private: block initialisation
@@ -194,87 +208,3 @@ class KnowledgeEngine(KnowledgeEngineBase):
             if hasattr(block, "warmup"):
                 block.warmup(block_cfg)
 
-    # ------------------------------------------------------------------
-    # Private: prompt assembly
-    # ------------------------------------------------------------------
-
-    def _build_system_prompt(self, detected_language: str = "") -> str:
-        """
-        Build the system prompt string: persona + language instruction + guardrails.
-
-        This is passed to the LLM's `system` field — not embedded in the messages list.
-        Returns an empty string if no persona is configured.
-
-        Args:
-            detected_language: Language detected by Language Normaliser (e.g. "english",
-                                "hindi", "hinglish", "kannada"). When present, a specific
-                                instruction is appended so the LLM responds in that language
-                                rather than inferring it from context.
-        """
-        conversation_cfg = self._config.get("conversation", {})
-        parts = []
-
-        persona_text = conversation_cfg.get("persona", {}).get("text", "").strip()
-        if persona_text:
-            parts.append(persona_text)
-
-        language_instruction = conversation_cfg.get("language_instruction", "").strip()
-        if language_instruction:
-            parts.append(language_instruction)
-
-        if detected_language:
-            parts.append(f"The user's current message is in {detected_language}. Respond in {detected_language}.")
-
-        guardrails = conversation_cfg.get("guardrail_reminders", [])
-        if guardrails:
-            parts.append("\n--- Guidelines ---")
-            for reminder in guardrails:
-                parts.append(f"- {reminder}")
-
-        return "\n\n".join(parts)
-
-    def _build_messages(self, context: KEContext) -> list[dict]:
-        """
-        Build the Anthropic messages array from the enriched KEContext.
-
-        Message structure:
-        [1..N] Conversation history (last N turns from session_state.history)
-        [last] Current user message — with RAG context appended if any chunks exist
-
-        RAG chunks (always-include + retrieved) are appended to the current user
-        message so they appear as close as possible to the question they inform.
-        No fake assistant turn is needed because there is no standalone context
-        message at the start of the array.
-        """
-        messages: list[dict] = []
-
-        # Conversation history (last N turns)
-        max_turns = (
-            self._config.get("knowledge", {})
-            .get("conversation", {})
-            .get("max_history_turns", 10)
-        )
-        history = context.session_state.history
-        if history:
-            recent_history = history[-(max_turns * 2):]
-            messages.extend(recent_history)
-
-        # Build the current user message content — raw input + RAG context appended
-        content_parts = [context.raw_input]
-
-        if context.always_include_chunks:
-            content_parts.append("\n--- Always include context ---")
-            for chunk in context.always_include_chunks:
-                content_parts.append(chunk.get("text", ""))
-
-        if context.retrieval_chunks:
-            content_parts.append("\n--- Relevant knowledge ---")
-            for chunk in context.retrieval_chunks:
-                content_parts.append(chunk.get("text", ""))
-
-        messages.append({
-            "role": "user",
-            "content": "\n\n".join(content_parts),
-        })
-
-        return messages

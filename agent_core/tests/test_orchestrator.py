@@ -8,16 +8,17 @@ Coverage:
 - Normal: full turn — both Trust checks called, TurnResult returned
 - Normal: tool used — was_tool_used=True in result
 - Normal: async post-turn runs (memory write + learning emit scheduled)
-- Normal: KE assemble_prompt called with NLU-computed params
+- Normal: KE retrieve() called with NLU-computed params
 - Edge: empty user_message still processes without error
-- Edge: empty prompt from Knowledge Engine returns empty TurnResult
+- Edge: empty messages from build_messages returns empty TurnResult
 - Failure: Trust input returns "block" — blocked response returned, LLM not called
 - Failure: Trust input returns "escalate" — escalated response, LLM not called
 - Failure: Trust output returns "block" — response replaced with fallback message
 - Failure: None turn_input raises ValueError
 - Failure: empty session_id raises ValueError
-- Early exit: unknown intent — KE and LLM not called
-- Early exit: low confidence — KE and LLM not called
+- Early exit: unknown intent (+ low confidence) — KE and LLM not called
+- HITL: loop_count >= threshold triggers escalation
+- Termination: termination_intent triggers flush
 """
 
 from __future__ import annotations
@@ -28,9 +29,9 @@ from unittest.mock import MagicMock, patch
 
 from src.orchestrator import AgentCore
 from src.models import (
+    ContextBundle,
     LLMResponse,
     NLUResult,
-    SessionState,
     TrustCheckResult,
     TurnInput,
     TurnResult,
@@ -45,17 +46,20 @@ SESSION_ID = "sess_orch_001"
 TIMESTAMP = int(time.time() * 1000)
 
 VALID_CONFIG = {
-    "blocked_message": "Blocked.",
-    "escalation_message": "Escalating.",
-    "output_blocked_message": "Output blocked.",
+    "termination_message": "Goodbye.",
     "conversation": {
         "unknown_intent_message": "I didn't understand that.",
+        "blocked_message": "Blocked.",
+        "escalation_message": "Escalating.",
+        "output_blocked_message": "Output blocked.",
     },
     "preprocessing": {
         "nlu_processor": {
             "confidence_threshold": 0.5,
         }
     },
+    "hitl": {"loop_count_threshold": 3},
+    "workflow": {"termination_intents": ["termination_intent"]},
 }
 
 ALLOW = TrustCheckResult(passed=True, action="allow")
@@ -74,11 +78,11 @@ _UNKNOWN_NLU = NLUResult(
     sentiment="neutral",
     confidence=0.2,
 )
-_LOW_CONFIDENCE_NLU = NLUResult(
-    intent="market_truth_query",
+_TERMINATION_NLU = NLUResult(
+    intent="termination_intent",
     entities={},
     sentiment="neutral",
-    confidence=0.3,  # below 0.5 threshold
+    confidence=0.95,
 )
 
 
@@ -99,6 +103,7 @@ def _make_agent(
     manager_tool_calls: list = None,
     prompt_messages: list = None,
     nlu_result: NLUResult = None,
+    session_data: dict = None,
 ) -> AgentCore:
     """
     Build an AgentCore with all external dependencies mocked.
@@ -106,19 +111,19 @@ def _make_agent(
     LanguageNormaliser and NLUProcessor are replaced on the instance after
     construction so their LLM calls do not interfere with the primary LLM mock.
     """
+    session = session_data or {}
     memory = MagicMock()
-    memory.read_session.return_value = SessionState.empty(SESSION_ID)
+    memory.context_bundle.return_value = ContextBundle(
+        session=session, profile={}, journey=None
+    )
 
     trust = MagicMock()
     trust.check_input.return_value = trust_input
     trust.check_output.return_value = trust_output
 
+    # KE returns a list of RetrievalChunk objects
     knowledge_engine = MagicMock()
-    knowledge_engine.assemble_prompt.return_value = (
-        prompt_messages if prompt_messages is not None
-        else [{"role": "user", "content": "Hello"}],
-        "",
-    )
+    knowledge_engine.retrieve.return_value = []
 
     llm = MagicMock()
     llm.call.return_value = LLMResponse(
@@ -132,6 +137,11 @@ def _make_agent(
     tool_registry.get_tool_definitions.return_value = []
 
     manager = MagicMock()
+    manager.build_system_prompt.return_value = ""
+    manager.build_messages.return_value = (
+        prompt_messages if prompt_messages is not None
+        else [{"role": "user", "content": "Hello"}]
+    )
     manager.run_turn.return_value = (
         manager_text,
         manager_tool_calls or [],
@@ -151,7 +161,6 @@ def _make_agent(
     )
 
     # Replace Language Normaliser and NLU Processor with controlled mocks
-    # so orchestrator tests focus on orchestration, not on those components.
     agent._language_normaliser = MagicMock()
     agent._language_normaliser.normalise.return_value = ("Hello", "english")
 
@@ -252,12 +261,12 @@ def test_nlu_processor_called_with_normalised_input():
     assert call_args[1].get("normalised_input") == "kaam chahiye normalised"
 
 
-def test_ke_called_with_nlu_params():
-    """KE assemble_prompt must receive the NLU results computed by Agent Core."""
+def test_ke_retrieve_called_with_nlu_params():
+    """KE retrieve() must receive the NLU results computed by Agent Core."""
     agent = _make_agent(nlu_result=_DEFAULT_NLU)
     agent._language_normaliser.normalise.return_value = ("kaam chahiye", "hinglish")
     agent.process_turn(_turn_input("kaam chahiye"))
-    call_kwargs = agent._knowledge_engine.assemble_prompt.call_args[1]
+    call_kwargs = agent._knowledge_engine.retrieve.call_args[1]
     assert call_kwargs["intent"] == "market_truth_query"
     assert call_kwargs["detected_language"] == "hinglish"
     assert call_kwargs["normalised_input"] == "kaam chahiye"
@@ -274,7 +283,8 @@ def test_empty_user_message_processes_without_error():
     assert isinstance(result, TurnResult)
 
 
-def test_empty_prompt_returns_empty_response():
+def test_empty_messages_from_build_messages_returns_empty_response():
+    """When build_messages returns [], orchestrator returns empty response without LLM call."""
     agent = _make_agent(prompt_messages=[])
     result = agent.process_turn(_turn_input())
     assert result.response_text == ""
@@ -282,13 +292,13 @@ def test_empty_prompt_returns_empty_response():
 
 
 # ---------------------------------------------------------------------------
-# Early exit — unknown intent / low confidence
+# Early exit — unknown intent + low confidence
 # ---------------------------------------------------------------------------
 
 def test_unknown_intent_returns_early_without_ke_call():
     agent = _make_agent(nlu_result=_UNKNOWN_NLU)
     result = agent.process_turn(_turn_input())
-    agent._knowledge_engine.assemble_prompt.assert_not_called()
+    agent._knowledge_engine.retrieve.assert_not_called()
     agent._llm.call.assert_not_called()
     assert isinstance(result, TurnResult)
 
@@ -299,43 +309,21 @@ def test_unknown_intent_response_text_from_config():
     assert result.response_text == "I didn't understand that."
 
 
-def test_low_confidence_returns_early_without_ke_call():
-    agent = _make_agent(nlu_result=_LOW_CONFIDENCE_NLU)
+def test_low_confidence_with_unknown_intent_returns_early():
+    """Early exit only triggers when BOTH intent=unknown AND confidence<threshold."""
+    low_unknown = NLUResult(intent="unknown", entities={}, sentiment="neutral", confidence=0.3)
+    agent = _make_agent(nlu_result=low_unknown)
     result = agent.process_turn(_turn_input())
-    agent._knowledge_engine.assemble_prompt.assert_not_called()
-    agent._llm.call.assert_not_called()
-
-
-def test_low_confidence_uses_default_message_when_not_configured():
-    config_no_msg = {
-        "blocked_message": "Blocked.",
-        "escalation_message": "Escalating.",
-        "output_blocked_message": "Output blocked.",
-        "preprocessing": {"nlu_processor": {"confidence_threshold": 0.5}},
-    }
-    memory = MagicMock()
-    memory.read_session.return_value = SessionState.empty(SESSION_ID)
-    trust = MagicMock()
-    trust.check_input.return_value = ALLOW
-    agent = AgentCore(
-        config=config_no_msg,
-        llm_wrapper=MagicMock(),
-        memory=memory,
-        trust=trust,
-        knowledge_engine=MagicMock(),
-        tool_registry=MagicMock(),
-        manager_agent=MagicMock(),
-        learning=MagicMock(),
-    )
-    agent._language_normaliser = MagicMock()
-    agent._language_normaliser.normalise.return_value = ("Hello", "english")
-    agent._nlu_processor = MagicMock()
-    agent._nlu_processor.process.return_value = _LOW_CONFIDENCE_NLU
-
-    result = agent.process_turn(_turn_input())
-    # Should return the hardcoded default fallback, not crash
+    agent._knowledge_engine.retrieve.assert_not_called()
     assert isinstance(result, TurnResult)
-    assert result.response_text != ""
+
+
+def test_low_confidence_with_valid_intent_proceeds_to_ke():
+    """Low confidence alone does NOT trigger early exit if intent is known."""
+    low_valid = NLUResult(intent="market_truth_query", entities={}, sentiment="neutral", confidence=0.3)
+    agent = _make_agent(nlu_result=low_valid)
+    agent.process_turn(_turn_input())
+    agent._knowledge_engine.retrieve.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -352,7 +340,7 @@ def test_blocked_input_returns_blocked_message():
 def test_blocked_input_does_not_call_knowledge_engine():
     agent = _make_agent(trust_input=BLOCK)
     agent.process_turn(_turn_input())
-    agent._knowledge_engine.assemble_prompt.assert_not_called()
+    agent._knowledge_engine.retrieve.assert_not_called()
 
 
 def test_escalated_input_returns_escalation_message():
@@ -365,6 +353,36 @@ def test_escalated_input_returns_escalation_message():
 def test_escalated_input_does_not_call_llm():
     agent = _make_agent(trust_input=ESCALATE)
     agent.process_turn(_turn_input())
+    agent._llm.call.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# HITL bypass
+# ---------------------------------------------------------------------------
+
+def test_hitl_loop_count_triggers_escalation():
+    """loop_count >= hitl_threshold escalates before LLM call."""
+    agent = _make_agent(session_data={"loop_count": 3})
+    result = agent.process_turn(_turn_input())
+    assert result.was_escalated is True
+    agent._llm.call.assert_not_called()
+
+
+def test_hitl_below_threshold_proceeds_normally():
+    agent = _make_agent(session_data={"loop_count": 2})
+    result = agent.process_turn(_turn_input())
+    assert result.was_escalated is False
+    agent._llm.call.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Termination intent
+# ---------------------------------------------------------------------------
+
+def test_termination_intent_returns_goodbye_message():
+    agent = _make_agent(nlu_result=_TERMINATION_NLU)
+    result = agent.process_turn(_turn_input())
+    assert result.response_text == "Goodbye."
     agent._llm.call.assert_not_called()
 
 
@@ -391,9 +409,8 @@ def test_blocked_output_still_calls_trust_output():
 def test_memory_write_scheduled_after_return():
     agent = _make_agent()
     agent.process_turn(_turn_input())
-    # Give daemon thread a moment to complete
     time.sleep(0.1)
-    agent._memory.write_session.assert_called_once()
+    agent._memory.write.assert_called()
 
 
 def test_learning_emit_scheduled_after_return():

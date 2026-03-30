@@ -1,13 +1,19 @@
 """
 knowledge_engine/src/llm_proxy_client.py
 
-HttpLLMWrapper — Knowledge Engine's only LLM client.
+HttpLLMWrapper — Knowledge Engine's LLM proxy client.
 
 Makes HTTP calls to Agent Core's POST /internal/llm/call proxy endpoint.
 Agent Core owns the Anthropic API key; KE never holds it.
 
 Architecture:
     KE block → self._llm.call() → HttpLLMWrapper → HTTP POST → Agent Core → Anthropic API
+
+NOTE: This client is currently DORMANT. It will be used by MultimodalInputHandler
+(src/blocks/multimodal_input_handler.py) for image/PDF description via LLM vision
+once that block is enabled (knowledge.blocks.multimodal_input_handler.enabled: true).
+No other KE block (Glossary, StaticKB) calls the LLM — so llm=None is passed to
+KnowledgeEngine at startup until multimodal is activated.
 
 The proxy URL comes from YAML config (knowledge.llm_proxy_url), so switching
 between local dev and production is a config-only change — zero code changes:

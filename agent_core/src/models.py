@@ -13,6 +13,23 @@ from typing import Any, Optional
 
 
 # ---------------------------------------------------------------------------
+# Knowledge retrieval
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RetrievalChunk:
+    """
+    A single chunk of retrieved knowledge returned by the Knowledge Engine.
+    Used by ManagerAgent.build_messages() to construct the LLM prompt.
+    """
+    text: str
+    doc_type: str = ""
+    source: str = ""
+    always_include: bool = False
+
+
+# ---------------------------------------------------------------------------
 # Inbound
 # ---------------------------------------------------------------------------
 
@@ -25,6 +42,7 @@ class TurnInput:
     user_message: str
     channel: str          # "cli" | "whatsapp" | "web" | "voip"
     timestamp_ms: int
+    user_id: Optional[str] = None   # opaque identifier set by Reach Layer (phone, email, etc.)
 
 
 # ---------------------------------------------------------------------------
@@ -33,29 +51,43 @@ class TurnInput:
 
 
 @dataclass
-class SessionState:
+class ContextBundle:
     """
-    Full session context loaded from Memory Layer at the start of every turn.
-    Passed read-only to Knowledge Engine for prompt assembly.
-    Updated copy written back to Memory Layer after response is delivered.
+    Everything Agent Core needs to know about a user at the start of a turn.
+    Returned by memory.context_bundle(session_id, user_id).
+
+    Primary state contract between Memory Layer and Agent Core.
+
+    Fields:
+        session: Full Redis hash — current session state.
+                 Always contains: user_id, journey_id, is_returning.
+                 Plus all domain session fields declared in domain.yaml.
+
+        profile: UserProfile declared fields + all UserAttribute nodes.
+                 {
+                   "<declared_field>": "<value>",
+                   ...,
+                   "attributes": [{"key": ..., "value": ..., "raw": ...}]
+                 }
+
+        journey: Prior journey summary — only for returning users.
+                 {
+                   "outcomes": [...],
+                   "signals": [...],
+                   "end_reason": "...",
+                   ...promoted session fields from merge_on_session_end config...
+                 }
+                 None for new users.
     """
 
-    session_id: str
-    history: list[dict]               # [{"role": "user"|"assistant", "content": str}, ...]
-    confirmed_entities: dict[str, Any] # Things we already know about the user 
-    workflow_step: Optional[str]
-    user_profile: dict[str, Any]
+    session: dict
+    profile: dict
+    journey: dict | None = None
 
     @staticmethod
-    def empty(session_id: str) -> SessionState:
-        """Return a blank SessionState for a brand-new session."""
-        return SessionState(
-            session_id=session_id,
-            history=[],
-            confirmed_entities={},
-            workflow_step=None,
-            user_profile={},
-        )
+    def empty() -> ContextBundle:
+        """Return a blank ContextBundle — used on failure paths."""
+        return ContextBundle(session={}, profile={}, journey=None)
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +99,7 @@ class SessionState:
 class NLUResult:
     """
     Combined output of Language Normalisation and NLU Processor steps run in Agent Core.
-    Produced before the Knowledge Engine call and passed to KE's assemble_prompt().
+    Produced before the Knowledge Engine call and passed as parameters to KE's retrieve().
     """
 
     intent: str                    # classified intent label from config intents list

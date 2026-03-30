@@ -23,7 +23,7 @@ Coverage:
 from __future__ import annotations
 
 import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 import httpx
 
 from src.http_clients.memory_layer import MemoryLayerHttpClient
@@ -31,7 +31,7 @@ from src.http_clients.trust_layer import TrustLayerHttpClient
 from src.http_clients.learning_layer import LearningLayerHttpClient
 from src.http_clients.knowledge_engine import HttpKnowledgeEngineClient
 from src.http_clients.action_gateway import ActionGatewayHttpClient
-from src.models import SessionState, TrustCheckResult, TurnEvent, ToolCall, ToolResult
+from src.models import ContextBundle, TrustCheckResult, TurnEvent, ToolCall, ToolResult, RetrievalChunk
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +42,7 @@ _BASE_CONFIG = {
     "memory_client": {"endpoint": "http://localhost:8002", "timeout_ms": 3000},
     "trust_client": {"endpoint": "http://localhost:8003", "timeout_ms": 2000},
     "learning_client": {"endpoint": "http://localhost:8004", "timeout_ms": 2000},
-    "ke_client": {"endpoint": "http://localhost:8001/assemble_prompt", "timeout_ms": 8000},
+    "ke_client": {"endpoint": "http://localhost:8001/retrieve", "timeout_ms": 8000},
     "action_gateway_client": {"endpoint": "http://localhost:9999/onest/market_lookup", "timeout_ms": 5000},
 }
 
@@ -63,12 +63,8 @@ def _mock_http_error(status_code: int = 500) -> httpx.HTTPStatusError:
     return httpx.HTTPStatusError("error", request=MagicMock(), response=resp)
 
 
-def _empty_session(session_id: str = "s1") -> SessionState:
-    return SessionState.empty(session_id)
-
-
 # ===========================================================================
-# MemoryLayerHttpClient
+# MemoryLayerHttpClient — init only (full interface tested in test_memory_http_client.py)
 # ===========================================================================
 
 class TestMemoryLayerHttpClientInit:
@@ -80,112 +76,13 @@ class TestMemoryLayerHttpClientInit:
         client = MemoryLayerHttpClient({})
         assert client._endpoint == "http://localhost:8002"
 
-
-class TestMemoryReadSession:
-    def test_success_returns_session_state(self):
+    def test_endpoint_read_from_config(self):
         client = MemoryLayerHttpClient(_BASE_CONFIG)
-        with patch("httpx.post", return_value=_mock_response({
-            "session_id": "s1", "history": [], "confirmed_entities": {}, "workflow_step": None, "user_profile": {}
-        })):
-            state = client.read_session("s1")
-        assert isinstance(state, SessionState)
-        assert state.session_id == "s1"
+        assert "8002" in client._endpoint
 
-    def test_history_populated_from_response(self):
+    def test_timeout_converted_to_seconds(self):
         client = MemoryLayerHttpClient(_BASE_CONFIG)
-        history = [{"role": "user", "content": "hello"}]
-        with patch("httpx.post", return_value=_mock_response({
-            "session_id": "s1", "history": history, "confirmed_entities": {}, "workflow_step": None, "user_profile": {}
-        })):
-            state = client.read_session("s1")
-        assert state.history == history
-
-    def test_timeout_returns_empty_state(self):
-        client = MemoryLayerHttpClient(_BASE_CONFIG)
-        with patch("httpx.post", side_effect=httpx.TimeoutException("timeout")):
-            state = client.read_session("s1")
-        assert state.history == []
-
-    def test_http_error_returns_empty_state(self):
-        client = MemoryLayerHttpClient(_BASE_CONFIG)
-        with patch("httpx.post", side_effect=_mock_http_error(500)):
-            state = client.read_session("s1")
-        assert isinstance(state, SessionState)
-
-    def test_generic_exception_returns_empty_state(self):
-        client = MemoryLayerHttpClient(_BASE_CONFIG)
-        with patch("httpx.post", side_effect=RuntimeError("boom")):
-            state = client.read_session("s1")
-        assert isinstance(state, SessionState)
-
-    def test_none_session_id_raises(self):
-        client = MemoryLayerHttpClient(_BASE_CONFIG)
-        with pytest.raises(ValueError, match="session_id must not be None"):
-            client.read_session(None)
-
-
-class TestMemoryWriteSession:
-    def test_success_does_not_raise(self):
-        client = MemoryLayerHttpClient(_BASE_CONFIG)
-        with patch("httpx.post", return_value=_mock_response({"status": "ok"})):
-            client.write_session("s1", _empty_session("s1"))  # must not raise
-
-    def test_timeout_does_not_raise(self):
-        client = MemoryLayerHttpClient(_BASE_CONFIG)
-        with patch("httpx.post", side_effect=httpx.TimeoutException("timeout")):
-            client.write_session("s1", _empty_session("s1"))
-
-    def test_http_error_does_not_raise(self):
-        client = MemoryLayerHttpClient(_BASE_CONFIG)
-        with patch("httpx.post", side_effect=_mock_http_error(503)):
-            client.write_session("s1", _empty_session("s1"))
-
-    def test_none_session_id_raises(self):
-        client = MemoryLayerHttpClient(_BASE_CONFIG)
-        with pytest.raises(ValueError):
-            client.write_session(None, _empty_session("s1"))
-
-    def test_none_state_raises(self):
-        client = MemoryLayerHttpClient(_BASE_CONFIG)
-        with pytest.raises(ValueError):
-            client.write_session("s1", None)
-
-
-class TestMemoryGetUserProfile:
-    def test_success_returns_dict(self):
-        client = MemoryLayerHttpClient(_BASE_CONFIG)
-        with patch("httpx.get", return_value=_mock_response({"trade": "electrician"})):
-            profile = client.get_user_profile("s1")
-        assert profile == {"trade": "electrician"}
-
-    def test_timeout_returns_empty_dict(self):
-        client = MemoryLayerHttpClient(_BASE_CONFIG)
-        with patch("httpx.get", side_effect=httpx.TimeoutException("timeout")):
-            profile = client.get_user_profile("s1")
-        assert profile == {}
-
-    def test_non_dict_response_returns_empty(self):
-        client = MemoryLayerHttpClient(_BASE_CONFIG)
-        with patch("httpx.get", return_value=_mock_response("not_a_dict")):
-            profile = client.get_user_profile("s1")
-        assert profile == {}
-
-
-class TestMemoryClearSession:
-    def test_success_does_not_raise(self):
-        client = MemoryLayerHttpClient(_BASE_CONFIG)
-        with patch("httpx.delete", return_value=_mock_response({"status": "ok"})):
-            client.clear_session("s1")
-
-    def test_timeout_does_not_raise(self):
-        client = MemoryLayerHttpClient(_BASE_CONFIG)
-        with patch("httpx.delete", side_effect=httpx.TimeoutException("timeout")):
-            client.clear_session("s1")
-
-    def test_none_session_id_raises(self):
-        client = MemoryLayerHttpClient(_BASE_CONFIG)
-        with pytest.raises(ValueError):
-            client.clear_session(None)
+        assert client._timeout_s == pytest.approx(3.0)
 
 
 # ===========================================================================
@@ -358,46 +255,62 @@ class TestKEHttpClientInit:
             HttpKnowledgeEngineClient(None)
 
 
-class TestKEAssemblePrompt:
-    def test_success_returns_messages_and_system(self):
+class TestKERetrieve:
+    """Tests for HttpKnowledgeEngineClient.retrieve() — new interface replacing assemble_prompt."""
+
+    def test_success_returns_list_of_chunks(self):
         client = HttpKnowledgeEngineClient(_BASE_CONFIG)
         with patch("httpx.post", return_value=_mock_response({
-            "messages": [{"role": "user", "content": "hello"}],
-            "system": "You are KKB.",
+            "session_id": "s1",
+            "chunks": [
+                {"text": "ITI centres in Hubli", "doc_type": "institute", "source": "training_institutes.csv", "always_include": False},
+            ],
         })):
-            messages, system = client.assemble_prompt(
+            chunks = client.retrieve(
                 session_id="s1",
-                user_message="hello",
-                session_state=_empty_session("s1"),
+                user_message="ITI kahan hai",
+                profile={},
+                session={},
             )
-        assert isinstance(messages, list)
-        assert len(messages) == 1
-        assert system == "You are KKB."
+        assert isinstance(chunks, list)
+        assert len(chunks) == 1
+        assert isinstance(chunks[0], RetrievalChunk)
+        assert chunks[0].text == "ITI centres in Hubli"
+        assert chunks[0].doc_type == "institute"
+
+    def test_always_include_chunk_flag_preserved(self):
+        client = HttpKnowledgeEngineClient(_BASE_CONFIG)
+        with patch("httpx.post", return_value=_mock_response({
+            "session_id": "s1",
+            "chunks": [
+                {"text": "Market framing", "doc_type": "always_include", "source": "", "always_include": True},
+            ],
+        })):
+            chunks = client.retrieve("s1", "hello", {}, {})
+        assert chunks[0].always_include is True
 
     def test_empty_user_message_returns_empty(self):
         client = HttpKnowledgeEngineClient(_BASE_CONFIG)
-        messages, system = client.assemble_prompt("s1", "", _empty_session("s1"))
-        assert messages == []
-        assert system == ""
+        chunks = client.retrieve("s1", "", {}, {})
+        assert chunks == []
 
-    def test_timeout_returns_empty(self):
+    def test_timeout_returns_empty_list(self):
         client = HttpKnowledgeEngineClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=httpx.TimeoutException("timeout")):
-            messages, system = client.assemble_prompt("s1", "hello", _empty_session("s1"))
-        assert messages == []
-        assert system == ""
+            chunks = client.retrieve("s1", "hello", {}, {})
+        assert chunks == []
 
-    def test_http_error_returns_empty(self):
+    def test_http_error_returns_empty_list(self):
         client = HttpKnowledgeEngineClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=_mock_http_error(503)):
-            messages, system = client.assemble_prompt("s1", "hello", _empty_session("s1"))
-        assert messages == []
+            chunks = client.retrieve("s1", "hello", {}, {})
+        assert chunks == []
 
-    def test_generic_exception_returns_empty(self):
+    def test_generic_exception_returns_empty_list(self):
         client = HttpKnowledgeEngineClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=RuntimeError("boom")):
-            messages, system = client.assemble_prompt("s1", "hello", _empty_session("s1"))
-        assert messages == []
+            chunks = client.retrieve("s1", "hello", {}, {})
+        assert chunks == []
 
     def test_nlu_params_forwarded_in_payload(self):
         client = HttpKnowledgeEngineClient(_BASE_CONFIG)
@@ -405,19 +318,28 @@ class TestKEAssemblePrompt:
 
         def mock_post(url, json=None, timeout=None):
             captured.update(json or {})
-            return _mock_response({"messages": [], "system": ""})
+            return _mock_response({"session_id": "s1", "chunks": []})
 
         with patch("httpx.post", side_effect=mock_post):
-            client.assemble_prompt(
+            client.retrieve(
                 session_id="s1",
                 user_message="kaam chahiye",
-                session_state=_empty_session("s1"),
-                normalised_input="kaam chahiye",
+                profile={"trade": "electrician"},
+                session={"current_node": "market_truth"},
                 intent="market_truth_query",
                 entities={"location": "Hubli"},
+                detected_language="hinglish",
             )
         assert captured["intent"] == "market_truth_query"
         assert captured["entities"] == {"location": "Hubli"}
+        assert captured["detected_language"] == "hinglish"
+
+    def test_non_list_chunks_response_returns_empty(self):
+        """Malformed response with non-list chunks returns [] safely."""
+        client = HttpKnowledgeEngineClient(_BASE_CONFIG)
+        with patch("httpx.post", return_value=_mock_response({"session_id": "s1", "chunks": "not a list"})):
+            chunks = client.retrieve("s1", "hello", {}, {})
+        assert chunks == []
 
 
 # ===========================================================================

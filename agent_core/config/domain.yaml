@@ -5,32 +5,36 @@ agent:
   primary_model: claude-haiku-4-5-20251001
   fallback_model: claude-haiku-4-5-20251001
 
+conversation:
+  blocked_message: "Maafi kijiye, main is vishay mein madad nahi kar sakta. (I'm unable to help with that request.)"
+  escalation_message: "Main aapko ek counsellor se connect kar raha hoon jo aapki poori madad kar sakenge."
+  output_blocked_message: "Maafi kijiye, abhi jawab dene mein dikkat ho rahi hai. Kripya dobara poochein."
+  # Termination message — shown when the user ends the conversation.
+  # Add termination_message_{language} variants to reply in the user's detected language.
+  # Falls back to termination_message if no language-specific variant is found.
+  termination_message: "Shukriya! Aapki baat karke achha laga. Agar phir koi zaroorat ho toh zaroor aayein."
+  termination_message_english: "Thank you! It was a pleasure speaking with you. Come back anytime."
+
 connectors:
   read:
     - name: onest_market_lookup
-      description: "Search ONEST live job market data by trade and location"
+      description: "Search ONEST live job market data by trade and location. Returns salary range, market signal, and top employers currently hiring for the given trade in the specified area."
+      input_schema:
+        type: object
+        properties:
+          trade:
+            type: string
+            description: "Trade or skill to search for"
+          location:
+            type: string
+            description: "City or district name"
+          distance_km:
+            type: integer
+            description: "Search radius in km from the specified location. Default 50."
+        required:
+          - trade
   write: []
   identity: []
-
-ke_client:
-  endpoint: "http://localhost:8001/assemble_prompt"
-  timeout_ms: 30000
-
-memory_client:
-  endpoint: "http://localhost:8002"
-  timeout_ms: 3000
-
-trust_client:
-  endpoint: "http://localhost:8003"
-  timeout_ms: 2000
-
-learning_client:
-  endpoint: "http://localhost:8004"
-  timeout_ms: 2000
-
-action_gateway_client:
-  endpoint: "http://localhost:9999/onest/market_lookup"
-  timeout_ms: 5000
 
 preprocessing:
   language_normalisation:
@@ -47,14 +51,76 @@ preprocessing:
   nlu_processor:
     model: claude-haiku-4-5-20251001
     confidence_threshold: 0.5
-    history_turns: 2
     intents:
+      - greeting_intent
+      - profile_answer
       - market_truth_query
       - scheme_query
       - training_query
       - apply_now
       - counsellor_request
       - pay_range_query
+      - termination_intent
+      - consent_yes
+      - consent_no
       - unknown
     entities: [trade, location, distance_km, income_urgency]
     sentiment_classes: [neutral, positive, distressed, frustrated]
+
+workflow:
+  steps:
+    - greeting
+    - profile_collection
+    - market_truth
+    - scheme_info
+    - training_info
+    - apply_now
+    - counsellor_request
+    - pay_range
+    - ended
+  termination_intents:
+    - termination_intent
+  hitl_threshold: 3
+
+profile_collection:
+  question_sequence:
+    - field: trade
+      question: "Aap kaun sa kaam karte hain? (What trade do you work in?)"
+      entity: trade
+    - field: location
+      question: "Aap kahan se hain? Apna shehar ya gaon batayein. (Where are you from?)"
+      entity: location
+    - field: education
+      question: "Aapki padhai kahan tak hui hai? (What is your highest education level?)"
+      entity: education
+    - field: experience_years
+      question: "Aapko is kaam mein kitne saal ka anubhav hai? (How many years of experience do you have?)"
+      entity: experience_years
+
+entity_to_profile_field:
+  trade: trade
+  location: location
+  education: education
+  experience_years: experience_years
+  income_urgency: income_urgency
+
+hitl:
+  loop_count_threshold: 3
+
+prompt_blocks:
+  persona: |
+    You are Kaam Ki Baat, a friendly and helpful employment advisory assistant for blue-collar workers in India.
+    You speak in simple Hindi or the language the user prefers.
+    You help users find jobs, understand government schemes, get training information, and navigate the labour market.
+    Be warm, patient, and use simple language. Avoid jargon.
+  language_instruction: |
+    Always respond in the same language the user is using.
+    If the user writes in Hindi, respond in Hindi. If in English, respond in English.
+    If the user mixes languages (Hinglish), match their style.
+    Use transliterated Hindi (Roman script) only if the user does so.
+  guardrail_reminders: |
+    - Stay focused on employment, jobs, training, and government schemes.
+    - Do not give medical, legal, or financial advice beyond your scope.
+    - If the user is in distress or needs urgent help, escalate to a human counsellor.
+    - Never share personal data of other users.
+    - Be honest about what you know and do not know.

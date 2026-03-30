@@ -13,6 +13,27 @@ agent:
 
 conversation:
   max_turns: 20
-  blocked_message: "I'm unable to help with that request."
-  escalation_message: "I'm connecting you to a human agent who can better assist you."
-  output_blocked_message: "I wasn't able to produce a safe response. Please try rephrasing your question."
+  # blocked_message, escalation_message, output_blocked_message are domain-specific
+  # persona text — they must be set in domain.yaml, not here.
+
+# Default service client endpoints (localhost for local dev).
+# Override in domain.yaml or deployment config for staging/production.
+ke_client:
+  endpoint: "http://localhost:8001/retrieve"
+  timeout_ms: 30000
+
+memory_client:
+  endpoint: "http://localhost:8002"
+  timeout_ms: 3000
+
+trust_client:
+  endpoint: "http://localhost:8003"
+  timeout_ms: 2000
+
+learning_client:
+  endpoint: "http://localhost:8004"
+  timeout_ms: 2000
+
+action_gateway_client:
+  endpoint: "http://localhost:9999/onest/market_lookup"
+  timeout_ms: 5000

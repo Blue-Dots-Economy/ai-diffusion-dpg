@@ -1,5 +1,3 @@
 # reach_layer/config/domain.yaml — KKB domain config (local dev).
 # In Docker/Kubernetes this file is replaced by dev-kit/configs/kkb/reach_layer.yaml.
-
-agent_core_client:
-  endpoint: "http://localhost:8000/process_turn"
+# No KKB-specific overrides needed — dpg.yaml defaults apply.

@@ -1,26 +1,23 @@
 """
-reach_layer/main.py — KKB PoC CLI Reach Layer
+reach_layer/run.py — KKB PoC CLI Reach Layer with phone-based user identity.
 
-Thin terminal client that talks to the Agent Core orchestration service.
-This is the Reach Layer for CLI channel — the entry point for developer testing.
+Entry point that accepts --phone <number> as the persistent user identifier.
+The phone number is passed to Agent Core as user_id so the Memory Layer can
+load the user's profile and prior journey from Neo4j.
 
-In production, the Reach Layer is replaced by a channel adapter (WhatsApp, Web, VOIP).
-This CLI variant reads from stdin and POSTs to Agent Core via HTTP.
+Usage:
+    python run.py --phone +919876543210
 
-Prerequisites (run each in a separate terminal before this):
+If --phone is omitted, user_id is None and the Memory Layer creates a new
+anonymous user (session_id used as fallback user_id in Agent Core).
+
+Prerequisites (run each in a separate terminal):
     Terminal 1: cd memory_layer   && python main.py   (port 8002)
     Terminal 2: cd trust_layer    && python main.py   (port 8003)
     Terminal 3: cd learning_layer && python main.py   (port 8004)
     Terminal 4: cd knowledge_engine && python main.py (port 8001)
     Terminal 5: cd action_gateway && python main.py   (port 9999)
     Terminal 6: cd agent_core     && python main.py   (port 8000)
-
-Then run from reach_layer/:
-    python main.py
-
-KKB demo scenario (profile: electrician, Hubli, Hindi):
-    "mujhe kaam chahiye" → market_truth_query → ONEST lookup → salary range
-    "PMKVY ke baare mein batao" → scheme_query → schemes RAG context
 """
 
 from __future__ import annotations
@@ -46,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Config: read Agent Core endpoint from reach_layer's own config
+# Config
 # ---------------------------------------------------------------------------
 
 _DEFAULT_AC_ENDPOINT = "http://localhost:8000/process_turn"
@@ -62,7 +59,6 @@ def _load_yaml(path: str) -> dict:
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
-    """Merge override into base. Override values win. Dicts are merged recursively."""
     result = base.copy()
     for key, value in override.items():
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):
@@ -73,11 +69,6 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 def _load_config() -> tuple[str, float]:
-    """
-    Read agent_core_client.endpoint and timeout_s from merged dpg.yaml + domain.yaml.
-    DPG config missing → hard failure. Domain config missing → runs with DPG defaults.
-    Returns (endpoint, timeout_s).
-    """
     dpg_config = _load_yaml("config/dpg.yaml")
     domain_config = _load_yaml("config/domain.yaml")
     config = _deep_merge(dpg_config, domain_config)
@@ -96,27 +87,24 @@ def _send_turn(
     client: httpx.Client,
     endpoint: str,
     session_id: str,
+    user_id: str | None,
     user_message: str,
     timeout_s: float,
-    user_id: str | None = None,
 ) -> str:
     """
     POST /process_turn and return the response text.
     On failure, returns a safe error string — never raises.
     """
+    payload: dict = {
+        "session_id": session_id,
+        "user_message": user_message,
+        "channel": "cli",
+    }
+    if user_id:
+        payload["user_id"] = user_id
+
     try:
-        payload: dict = {
-            "session_id": session_id,
-            "user_message": user_message,
-            "channel": "cli",
-        }
-        if user_id:
-            payload["user_id"] = user_id
-        response = client.post(
-            endpoint,
-            json=payload,
-            timeout=timeout_s,
-        )
+        response = client.post(endpoint, json=payload, timeout=timeout_s)
         response.raise_for_status()
         data = response.json()
         return data.get("response_text", "(no response)")
@@ -140,21 +128,20 @@ def _send_turn(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Kaam Ki Baat — PoC CLI")
+    parser = argparse.ArgumentParser(
+        description="Kaam Ki Baat — PoC CLI Reach Layer"
+    )
     parser.add_argument(
-        "--user-id",
+        "--phone",
+        type=str,
         default=None,
-        help=(
-            "Persistent user identifier (e.g. phone number or name). "
-            "Pass the same value across restarts to simulate a returning user. "
-            "If omitted, session_id is used as user_id (each restart = new user)."
-        ),
+        help="User phone number (used as user_id for memory/profile lookup)",
     )
     args = parser.parse_args()
 
     ac_endpoint, timeout_s = _load_config()
     session_id = str(uuid.uuid4())
-    user_id: str | None = args.user_id
+    user_id: str | None = args.phone
 
     print()
     print("=" * 60)
@@ -162,9 +149,9 @@ def main() -> None:
     print(f"  Agent Core:  {ac_endpoint}")
     print(f"  Session ID:  {session_id}")
     if user_id:
-        print(f"  User ID:     {user_id}  (returning-user identity)")
+        print(f"  User (phone): {user_id}")
     else:
-        print("  User ID:     (not set — each restart is a new user)")
+        print("  User: anonymous (no --phone provided)")
     print("  Type your message. Ctrl-C or Ctrl-D to exit.")
     print("=" * 60)
     print()
@@ -172,10 +159,10 @@ def main() -> None:
     logger.info(
         "reach_layer.startup",
         extra={
-            "operation": "main.main",
+            "operation": "run.main",
             "status": "success",
             "session_id": session_id,
-            "user_id": user_id or session_id,
+            "user_id": user_id or "anonymous",
             "endpoint": ac_endpoint,
         },
     )
@@ -195,7 +182,7 @@ def main() -> None:
                 continue
 
             response_text = _send_turn(
-                client, ac_endpoint, session_id, user_input, timeout_s, user_id
+                client, ac_endpoint, session_id, user_id, user_input, timeout_s
             )
             print(f"\nAssistant: {response_text}\n")
 

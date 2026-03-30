@@ -1,9 +1,22 @@
 # memory_layer/config/dpg.yaml — DPG framework defaults.
+#
+# Infrastructure connection config lives here (not in domain.yaml).
+# Only the Memory Layer speaks to Redis and Neo4j — no other DPG block does.
 
 server:
   host: "0.0.0.0"
   port: 8002
 
-memory:
-  session_ttl_seconds: 3600
-  max_sessions: 1000
+redis:
+  host: "localhost"
+  port: 6379
+  db: 0
+  password: null                      # set via env or override in deployment config
+  socket_timeout_ms: 2000
+  socket_connect_timeout_ms: 2000
+
+neo4j:
+  uri: "bolt://localhost:7687"
+  user: "neo4j"
+  password: "neo4j1234"               
+  connection_timeout_s: 5

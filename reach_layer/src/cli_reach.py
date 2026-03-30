@@ -42,6 +42,7 @@ class TurnInput:
     user_message: str
     channel: str
     timestamp_ms: int
+    user_id: str | None = None
 
 
 @dataclass
@@ -70,7 +71,12 @@ class CLIReachLayer:
         session_id: Optional override. If None, a UUID is generated.
     """
 
-    def __init__(self, config: dict, session_id: str | None = None) -> None:
+    def __init__(
+        self,
+        config: dict,
+        session_id: str | None = None,
+        user_id: str | None = None,
+    ) -> None:
         if config is None:
             raise ValueError("config must not be None")
 
@@ -78,6 +84,7 @@ class CLIReachLayer:
         self._prompt: str = cli_cfg.get("prompt", "You: ")
         self._agent_prefix: str = cli_cfg.get("agent_prefix", "Agent: ")
         self._session_id: str = session_id or str(uuid.uuid4())
+        self._user_id: str | None = user_id
 
         logger.info(
             "reach_layer.init",
@@ -129,6 +136,7 @@ class CLIReachLayer:
             user_message=user_message,
             channel="cli",
             timestamp_ms=timestamp_ms,
+            user_id=self._user_id,
         )
 
     def deliver(self, result: TurnResult) -> None:
@@ -186,3 +194,8 @@ class CLIReachLayer:
     def session_id(self) -> str:
         """Return the session ID for this CLI session."""
         return self._session_id
+
+    @property
+    def user_id(self) -> str | None:
+        """Return the user ID for this CLI session (phone number or None)."""
+        return self._user_id

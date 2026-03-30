@@ -262,12 +262,14 @@ class MemoryLayerBase(ABC):
         Operations (in order):
           1. Read full Redis hash
           2. Execute merge_on_session_end rules from config
-             → promotes session fields to Neo4j persistent nodes
-          3. Close Journey node: SET ended_at, end_reason, mental_state_at_end
+             → promotes session fields to Neo4j Journey node properties
+          3. Close Journey node: SET ended_at, end_reason
           4. If consent=false:
              MATCH (u:User {user_id: $user_id}) DETACH DELETE u
              (erases all graph data for this user)
-          5. DELETE Redis key
+          5. redis.delete("session:{session_id}")
+          6. redis.hdel("user:{user_id}", session_id)
+          7. If no fields remain in user:{user_id}: redis.delete("user:{user_id}")
 
         Never raises.
         """
@@ -502,7 +504,9 @@ SCOPE_MAP = {
    → user_id=user_id, journey_id=journey_id, is_returning="false"
    → all domain session fields initialised from domain.yaml defaults
 7. Memory Layer: redis.expire("session:{session_id}", ttl)
-8. Returns ContextBundle(session=initial_state, profile={user_id: user_id}, journey=None)
+8. Memory Layer: redis.hset("user:{user_id}", session_id, now_iso8601())  ← register in user index
+9. Memory Layer: redis.expire("user:{user_id}", ttl)                       ← set user key TTL
+10. Returns ContextBundle(session=initial_state, profile={user_id: user_id}, journey=None)
 ```
 
 ### 8.2 Returning User — Session Resumes
@@ -515,15 +519,18 @@ SCOPE_MAP = {
 5. Memory Layer: neo4j.get_profile(user_id)
    → reads UserProfile declared fields + all UserAttribute nodes
 6. Memory Layer: neo4j.get_last_journey_summary(user_id)
-   → reads last Journey + its Role + DropOff + Signal nodes
+   → reads last Journey + its JourneyChild nodes + Signal nodes
    → builds journey summary dict
 7. Memory Layer: redis.hset with profile data pre-populated, is_returning="true"
    → declared profile fields copied into Redis for fast turn-by-turn access
-8. Returns ContextBundle(
+8. Memory Layer: redis.expire("session:{session_id}", ttl)
+9. Memory Layer: redis.hset("user:{user_id}", session_id, now_iso8601())  ← register in user index
+10. Memory Layer: redis.expire("user:{user_id}", ttl)                      ← set/reset user key TTL
+11. Returns ContextBundle(
        session={user_id: "...", journey_id: "...", is_returning: "true", ...domain fields...},
        profile={<declared_field_1>: "...", ..., attributes: [...]},
        journey={outcomes: [...], signals: [...], end_reason: "..."}
-   )
+    )
 ```
 
 ### 8.3 After Every Turn (Async Write)
@@ -536,6 +543,8 @@ Agent Core (daemon thread):
 
 Memory Layer:
   scope="session"      → redis.hset("session:{session_id}", key, value) + reset TTL
+                          redis.hset("user:{user_id}", session_id, now_iso8601())  ← update last_accessed
+                          redis.expire("user:{user_id}", ttl_seconds)              ← reset user key TTL
   scope="persistent"   → neo4j.upsert_profile_field(user_id, key, value)
                           if key in declared_fields: SET up.{key} = $value
                           else: MERGE UserAttribute node
@@ -556,12 +565,15 @@ Memory Layer:
   2. For each rule in merge_on_session_end config:
        val = session.get(rule["session_field"])
        if val: neo4j.upsert_path(user_id, journey_id, rule["target"], val)
-  3. neo4j.close_journey(user_id, journey_id, end_reason, mental_state)
+  3. neo4j.close_journey(user_id, journey_id, end_reason)
        → MATCH Journey {journey_id} SET ended_at=$now, end_reason=$reason
   4. if session["consent"] == "false":
        neo4j.delete_user(user_id)
        → MATCH (u:User {user_id: $user_id}) DETACH DELETE u
   5. redis.delete("session:{session_id}")
+  6. redis.hdel("user:{user_id}", session_id)          ← remove from user index
+  7. if redis.hlen("user:{user_id}") == 0:
+       redis.delete("user:{user_id}")                  ← clean up user key if no sessions left
 ```
 
 ### 8.5 DPDP Erasure
@@ -637,7 +649,7 @@ User reconnects (user_id known, no active sessions in Redis)
 | Task | Component | File | What it does |
 |---|---|---|---|
 | A1 | `ContextBundle` dataclass | `agent_core/src/models.py` | Replaces `SessionState` |
-| B1 | `MemoryLayerBase` (4 methods) | `agent_core/src/interfaces/memory_layer.py` | New interface |
+| B1 | `MemoryLayerBase` (5 methods) | `agent_core/src/interfaces/memory_layer.py` | New interface |
 | K1 | `RedisSessionStore` | `memory_layer/src/session_store.py` | HSET/HGETALL/DELETE/EXPIRE on session keys; HSET/HDEL/HGETALL/DELETE on user index key (`user:{user_id}`) |
 | K2 | `Neo4jUserStore` | `memory_layer/src/neo4j_user_store.py` | CREATE user graph, get/upsert UserProfile + UserAttribute |
 | K3 | `Neo4jJourneyStore` | `memory_layer/src/neo4j_journey_store.py` | CREATE/CLOSE Journey, get last journey summary, Role/DropOff nodes |
@@ -734,7 +746,6 @@ state:
             - education
             - location
             - experience_years
-            - income_urgency
             - consent_flag
             - anonymous_flag
           adhoc:

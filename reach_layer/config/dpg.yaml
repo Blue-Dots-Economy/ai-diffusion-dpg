@@ -10,4 +10,5 @@ reach_layer:
     agent_prefix: "Agent: "
 
 agent_core_client:
+  endpoint: "http://localhost:8000/process_turn"
   timeout_s: 30.0

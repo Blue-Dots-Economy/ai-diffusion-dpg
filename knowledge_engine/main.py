@@ -7,7 +7,7 @@ Responsibilities:
 - Load config from config/config.yaml
 - Instantiate KnowledgeEngine (no LLM proxy needed — Language Norm and NLU
   now run in Agent Core; KE runs only Glossary, Static KB, Multimodal)
-- Expose FastAPI endpoints: POST /assemble_prompt, GET /health
+- Expose FastAPI endpoints: POST /retrieve, GET /health
 - Start uvicorn HTTP server on configured host:port (default 8001)
 
 Run:
@@ -34,7 +34,7 @@ from pydantic import BaseModel
 load_dotenv()
 
 from src.engine import KnowledgeEngine
-from src.models import SessionState
+from src.models import RetrievalChunk
 
 # ---------------------------------------------------------------------------
 # Logging — structured output, INFO level default
@@ -52,36 +52,33 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class SessionStateSchema(BaseModel):
-    """Serialised form of SessionState for HTTP transport."""
-    session_id: str
-    history: list[dict] = []
-    confirmed_entities: dict[str, Any] = {}
-    workflow_step: Optional[str] = None
-    user_profile: dict[str, Any] = {}
+class HealthResponse(BaseModel):
+    status: str
 
 
-class AssemblePromptRequest(BaseModel):
+class RetrieveRequest(BaseModel):
     session_id: str
     user_message: str
-    session_state: SessionStateSchema
-    # NLU results pre-computed by Agent Core (steps 3-4 of process_turn)
-    normalised_input: str = ""
-    detected_language: str = ""
+    profile: dict[str, Any] = {}
+    session: dict[str, Any] = {}
     intent: str = "unknown"
     entities: dict[str, Any] = {}
     sentiment: str = "neutral"
     confidence: float = 0.0
+    normalised_input: str = ""
+    detected_language: str = ""
 
 
-class AssemblePromptResponse(BaseModel):
-    messages: list[dict]
-    system: str
+class RetrievalChunkSchema(BaseModel):
+    text: str
+    doc_type: str = ""
+    source: str = ""
+    always_include: bool = False
+
+
+class RetrieveResponse(BaseModel):
     session_id: str
-
-
-class HealthResponse(BaseModel):
-    status: str
+    chunks: list[RetrievalChunkSchema] = []
 
 
 # ---------------------------------------------------------------------------
@@ -134,59 +131,55 @@ def create_app(ke: KnowledgeEngine, config: dict) -> FastAPI:
     app.state.config = config
 
     # ----------------------------------------------------------------
-    # POST /assemble_prompt
+    # POST /retrieve
     # ----------------------------------------------------------------
 
-    @app.post("/assemble_prompt", response_model=AssemblePromptResponse)
-    def assemble_prompt(request: AssemblePromptRequest) -> AssemblePromptResponse:
+    @app.post("/retrieve", response_model=RetrieveResponse)
+    def retrieve(request: RetrieveRequest) -> RetrieveResponse:
         """
-        Assemble the complete LLM prompt for one conversation turn.
+        Run RAG retrieval for one conversation turn.
 
-        Accepts the session state from Agent Core, runs all enabled blocks,
-        and returns the fully assembled messages list.
-
-        Returns HTTP 422 if session_id or user_message is missing.
-        Always returns AssemblePromptResponse — never returns HTTP 5xx for
-        block-level failures (those are absorbed internally).
+        Returns knowledge chunks only — prompt assembly is Agent Core's responsibility.
+        Returns HTTP 422 if session_id is missing.
+        Always returns RetrieveResponse — block failures are absorbed internally.
         """
         if not request.session_id:
             raise HTTPException(status_code=422, detail="session_id must not be empty")
 
-        # Deserialise session state
-        session_state = SessionState(
-            session_id=request.session_state.session_id,
-            history=request.session_state.history,
-            confirmed_entities=request.session_state.confirmed_entities,
-            workflow_step=request.session_state.workflow_step,
-            user_profile=request.session_state.user_profile,
-        )
-
-        messages, system = app.state.ke.assemble_prompt(
+        chunks = app.state.ke.retrieve(
             session_id=request.session_id,
             user_message=request.user_message,
-            session_state=session_state,
-            normalised_input=request.normalised_input,
-            detected_language=request.detected_language,
+            profile=request.profile,
+            session=request.session,
             intent=request.intent,
             entities=request.entities,
             sentiment=request.sentiment,
             confidence=request.confidence,
+            normalised_input=request.normalised_input,
+            detected_language=request.detected_language,
         )
 
         logger.info(
-            "ke_server.assemble_prompt",
+            "ke_server.retrieve",
             extra={
-                "operation": "ke_server.assemble_prompt",
+                "operation": "ke_server.retrieve",
                 "status": "success",
                 "session_id": request.session_id,
-                "message_count": len(messages),
+                "chunk_count": len(chunks),
             },
         )
 
-        return AssemblePromptResponse(
-            messages=messages,
-            system=system,
+        return RetrieveResponse(
             session_id=request.session_id,
+            chunks=[
+                RetrievalChunkSchema(
+                    text=c.text,
+                    doc_type=c.doc_type,
+                    source=c.source,
+                    always_include=c.always_include,
+                )
+                for c in chunks
+            ],
         )
 
     # ----------------------------------------------------------------

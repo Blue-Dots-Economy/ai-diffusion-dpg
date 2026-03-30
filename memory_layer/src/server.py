@@ -1,43 +1,54 @@
 """
 memory_layer/src/server.py
 
-FastAPI server wrapping InProcessSessionMemory.
+FastAPI server for the Memory Layer DPG service.
 Port: 8002
 
-Exposes:
-  POST /session/read   — load session state
-  POST /session/write  — persist session state
-  GET  /profile/{session_id} — get user profile
-  DELETE /session/{session_id} — clear session
-  GET  /health         — liveness probe
+Endpoints (per design doc Section 10):
+  POST   /context_bundle           — context_bundle(session_id, user_id)
+  POST   /write                    — write(session_id, user_id, scope, key, value)
+  POST   /flush_session            — flush_session(session_id, user_id, end_reason)
+  GET    /sessions/{user_id}       — get_active_sessions(user_id)
+  DELETE /user/{user_id}           — delete_user(user_id)
+  GET    /health                   — liveness probe
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from session_memory import InProcessSessionMemory
+from src.memory_layer import MemoryLayer
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Pydantic schemas
+# Pydantic request schemas
 # ---------------------------------------------------------------------------
 
 
-class SessionReadRequest(BaseModel):
+class ContextBundleRequest(BaseModel):
     session_id: str
+    user_id: str
 
 
-class SessionWriteRequest(BaseModel):
+class WriteRequest(BaseModel):
     session_id: str
-    state: dict[str, Any]
+    user_id: str
+    scope: str
+    key: str
+    value: Any
+
+
+class FlushSessionRequest(BaseModel):
+    session_id: str
+    user_id: str
+    end_reason: str
 
 
 class StatusResponse(BaseModel):
@@ -49,12 +60,12 @@ class StatusResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def create_app(memory: InProcessSessionMemory) -> FastAPI:
+def create_app(memory: MemoryLayer) -> FastAPI:
     """
-    Factory that wires the InProcessSessionMemory instance into the FastAPI app.
+    Factory that wires the MemoryLayer instance into the FastAPI app.
 
     Args:
-        memory: Pre-constructed InProcessSessionMemory instance.
+        memory: Pre-constructed MemoryLayer instance (with Redis + Neo4j connected).
 
     Returns:
         Configured FastAPI application.
@@ -64,74 +75,123 @@ def create_app(memory: InProcessSessionMemory) -> FastAPI:
 
     app = FastAPI(
         title="Memory Layer Service",
-        description="Session state management service for the DPG AI framework.",
-        version="0.1.0",
+        description="Redis + Neo4j state management for the DPG AI framework.",
+        version="2.0.0",
     )
 
     # ------------------------------------------------------------------
     # Endpoints
     # ------------------------------------------------------------------
 
-    @app.post("/session/read")
-    def session_read(request: SessionReadRequest) -> dict:
-        """Load session state for the given session_id."""
+    @app.post("/context_bundle")
+    def context_bundle(request: ContextBundleRequest) -> dict:
+        """
+        Load full context bundle for a session.
+        Returns ContextBundle as JSON (session, profile, journey).
+        Returns empty bundle on any failure.
+        """
         start = time.time()
-        session_id = request.session_id
+        session_id = request.session_id.strip()
+        user_id = request.user_id.strip()
 
-        if not session_id:
-            return _empty_state(session_id)
+        if not session_id or not user_id:
+            return {"session": {}, "profile": {}, "journey": None}
 
         try:
-            state = memory.read_session(session_id)
+            bundle = memory.context_bundle(session_id, user_id)
             logger.info(
-                "memory_server.session_read",
+                "memory_server.context_bundle",
                 extra={
-                    "operation": "server.session_read",
+                    "operation": "server.context_bundle",
                     "status": "success",
                     "session_id": session_id,
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
-            return state if isinstance(state, dict) else _state_to_dict(state, session_id)
-
+            return bundle
         except Exception as e:
             logger.error(
-                "memory_server.session_read_error",
+                "memory_server.context_bundle_error",
                 extra={
-                    "operation": "server.session_read",
+                    "operation": "server.context_bundle",
                     "status": "failure",
                     "session_id": session_id,
                     "error": f"{type(e).__name__}: {e}",
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
-            return _empty_state(session_id)
+            return {"session": {}, "profile": {}, "journey": None}
 
-    @app.post("/session/write")
-    def session_write(request: SessionWriteRequest) -> StatusResponse:
-        """Persist session state for the given session_id."""
+    @app.post("/write")
+    def write(request: WriteRequest) -> StatusResponse:
+        """
+        Write a key/value to the appropriate backing store.
+        Called asynchronously after every turn — failures are logged, never surfaced.
+        """
         start = time.time()
-        session_id = request.session_id
+        session_id = request.session_id.strip()
+        user_id = request.user_id.strip()
 
-        if not session_id:
+        if not session_id or not user_id or not request.key:
             return StatusResponse(status="ok")
 
         try:
-            memory.write_session(session_id, request.state)
+            memory.write(session_id, user_id, request.scope, request.key, request.value)
             logger.info(
-                "memory_server.session_write",
+                "memory_server.write",
                 extra={
-                    "operation": "server.session_write",
+                    "operation": "server.write",
                     "status": "success",
                     "session_id": session_id,
+                    "key": request.key,
+                    "scope": request.scope,
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
         except Exception as e:
             logger.error(
-                "memory_server.session_write_error",
+                "memory_server.write_error",
                 extra={
-                    "operation": "server.session_write",
+                    "operation": "server.write",
+                    "status": "failure",
+                    "session_id": session_id,
+                    "key": request.key,
+                    "error": f"{type(e).__name__}: {e}",
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+
+        return StatusResponse(status="ok")
+
+    @app.post("/flush_session")
+    def flush_session(request: FlushSessionRequest) -> StatusResponse:
+        """
+        End a session: promote fields to Neo4j, close Journey node, clean Redis.
+        """
+        start = time.time()
+        session_id = request.session_id.strip()
+        user_id = request.user_id.strip()
+
+        if not session_id or not user_id:
+            return StatusResponse(status="ok")
+
+        try:
+            memory.flush_session(session_id, user_id, request.end_reason)
+            logger.info(
+                "memory_server.flush_session",
+                extra={
+                    "operation": "server.flush_session",
+                    "status": "success",
+                    "session_id": session_id,
+                    "end_reason": request.end_reason,
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+        except Exception as e:
+            logger.error(
+                "memory_server.flush_session_error",
+                extra={
+                    "operation": "server.flush_session",
                     "status": "failure",
                     "session_id": session_id,
                     "error": f"{type(e).__name__}: {e}",
@@ -141,66 +201,71 @@ def create_app(memory: InProcessSessionMemory) -> FastAPI:
 
         return StatusResponse(status="ok")
 
-    @app.get("/profile/{session_id}")
-    def get_profile(session_id: str) -> dict:
-        """Return persistent user profile for the given session_id."""
+    @app.get("/sessions/{user_id}")
+    def get_active_sessions(user_id: str) -> list[dict]:
+        """
+        Return active sessions for a user, sorted by last_accessed descending.
+        Returns [] if no active sessions.
+        """
         start = time.time()
+        user_id = user_id.strip()
 
-        if not session_id:
-            return {}
+        if not user_id:
+            return []
 
         try:
-            profile = memory.get_user_profile(session_id)
+            sessions = memory.get_active_sessions(user_id)
             logger.info(
-                "memory_server.get_profile",
+                "memory_server.get_active_sessions",
                 extra={
-                    "operation": "server.get_profile",
+                    "operation": "server.get_active_sessions",
                     "status": "success",
-                    "session_id": session_id,
+                    "user_id": user_id,
+                    "session_count": len(sessions),
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
-            return profile if isinstance(profile, dict) else {}
-
+            return sessions
         except Exception as e:
             logger.error(
-                "memory_server.get_profile_error",
+                "memory_server.get_active_sessions_error",
                 extra={
-                    "operation": "server.get_profile",
+                    "operation": "server.get_active_sessions",
                     "status": "failure",
-                    "session_id": session_id,
+                    "user_id": user_id,
                     "error": f"{type(e).__name__}: {e}",
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
-            return {}
+            return []
 
-    @app.delete("/session/{session_id}")
-    def clear_session(session_id: str) -> StatusResponse:
-        """Delete all session-scoped state for the given session_id."""
+    @app.delete("/user/{user_id}")
+    def delete_user(user_id: str) -> StatusResponse:
+        """DPDP right-to-erasure: delete all data for this user."""
         start = time.time()
+        user_id = user_id.strip()
 
-        if not session_id:
+        if not user_id:
             return StatusResponse(status="ok")
 
         try:
-            memory.clear_session(session_id)
+            memory.delete_user(user_id)
             logger.info(
-                "memory_server.clear_session",
+                "memory_server.delete_user",
                 extra={
-                    "operation": "server.clear_session",
+                    "operation": "server.delete_user",
                     "status": "success",
-                    "session_id": session_id,
+                    "user_id": user_id,
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
         except Exception as e:
             logger.error(
-                "memory_server.clear_session_error",
+                "memory_server.delete_user_error",
                 extra={
-                    "operation": "server.clear_session",
+                    "operation": "server.delete_user",
                     "status": "failure",
-                    "session_id": session_id,
+                    "user_id": user_id,
                     "error": f"{type(e).__name__}: {e}",
                     "latency_ms": int((time.time() - start) * 1000),
                 },
@@ -214,33 +279,3 @@ def create_app(memory: InProcessSessionMemory) -> FastAPI:
         return StatusResponse(status="ok")
 
     return app
-
-
-# ---------------------------------------------------------------------------
-# Private helpers
-# ---------------------------------------------------------------------------
-
-
-def _empty_state(session_id: str) -> dict:
-    """Return a blank session dict."""
-    return {
-        "session_id": session_id,
-        "history": [],
-        "confirmed_entities": {},
-        "workflow_step": None,
-        "user_profile": {},
-    }
-
-
-def _state_to_dict(state: Any, session_id: str) -> dict:
-    """Convert a SessionState dataclass to a plain dict if needed."""
-    try:
-        return {
-            "session_id": getattr(state, "session_id", session_id),
-            "history": getattr(state, "history", []),
-            "confirmed_entities": getattr(state, "confirmed_entities", {}),
-            "workflow_step": getattr(state, "workflow_step", None),
-            "user_profile": getattr(state, "user_profile", {}),
-        }
-    except Exception:
-        return _empty_state(session_id)
