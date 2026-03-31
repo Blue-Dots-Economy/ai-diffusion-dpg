@@ -280,7 +280,8 @@ class Neo4jUserStore:
     def _set_declared_field(self, user_id: str, key: str, value: Any) -> None:
         # Property key names cannot be parameterised in Cypher — interpolation is
         # intentional here. The key is validated to be a safe identifier before use.
-        assert key.isidentifier(), f"Invalid property key for Cypher interpolation: {key!r}"
+        if not key.isidentifier():
+            raise ValueError(f"Invalid property key for Cypher interpolation: {key!r}")
         with self._driver.session() as session:
             session.run(
                 f"""

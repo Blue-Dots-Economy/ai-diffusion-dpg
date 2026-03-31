@@ -361,7 +361,8 @@ class Neo4jJourneyStore:
                 # is intentional here. Keys come from domain.yaml merge_rules config
                 # (not user input) and are validated as safe identifiers before use.
                 for k in updates:
-                    assert k.isidentifier(), f"Invalid property key for Cypher interpolation: {k!r}"
+                    if not k.isidentifier():
+                        raise ValueError(f"Invalid property key for Cypher interpolation: {k!r}")
                 set_clauses = ", ".join(f"j.{k} = ${k}" for k in updates)
                 session.run(
                     f"""
