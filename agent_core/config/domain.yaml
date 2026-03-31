@@ -97,6 +97,13 @@ preprocessing:
       - consent_yes          # alias for consent_granted
       - consent_no           # alias for consent_declined
       - unknown
+      - interested
+      - pay_too_low
+      - too_far
+      - overwhelmed
+      - hang_up
+      - think_about_it
+      - not_ready
     entities:
       - name
       - age_bracket
@@ -128,12 +135,31 @@ workflow:
     - greeting
     - profile_collection
     - market_truth
+    - skill_check
+    - pay_branch
+    - distance_branch
+    - normalise_branch
+    - capture_dropoff
+    - commitment
     - scheme_info
     - training_info
     - apply_now
     - counsellor_request
     - pay_range
     - ended
+  transitions:
+    market_truth:
+      interested: skill_check
+      pay_too_low: pay_branch
+      too_far: distance_branch
+      overwhelmed: normalise_branch
+      hang_up: capture_dropoff
+      apply_now: skill_check
+    skill_check:
+      apply_now: commitment
+      think_about_it: normalise_branch
+      want_counsellor: normalise_branch
+      not_ready: normalise_branch
   termination_intents:
     - termination_intent
   hitl_threshold: 3
@@ -168,13 +194,9 @@ profile_collection:
       entities: [primary_goal, sector_preference, open_to_training, growth_horizon]
       condition: null
 
-  # Rounds that must complete before grace_turn check applies.
-  hard_min_rounds: [1, 2]
-
   # Fields required for ONEST job lookup. If missing after all rounds → grace turn.
   hard_min_fields: [trade_or_stream, location]
 
-  grace_turn: {}
   field_labels:
     name: "naam"
     age_bracket: "umar"
@@ -282,48 +304,18 @@ prompt_blocks:
       ## Instructions for market_truth node
       You are now at the job market results step. The user's profile is complete.
 
-      STEP A — Fetch data: If you have not yet called onest_market_lookup this turn, call it now
-      using the user's trade_or_stream and location from the profile.
+      Use the tools available to you to help the user:
+      1. Use `onest_market_lookup` to fetch job market data and show it to the user. Present the salary range, market signal, and name the top 2 employers. Then ask: "Would you like to apply to any of these employers?" (translated to their language).
+      2. If the user explicitly wants to apply to a specific employer from the lookup, use `onest_apply` to submit the application. Do not make up reference numbers; wait for the tool to succeed.
+      3. If the user complains about low salary, distance/commute, or is confused, acknowledge their concerns in their language, propose alternate solutions (like PMKVY training or relocation), and offer to connect them to a KKB counsellor.
 
-      STEP B — Present results clearly in the user's language:
-        - State the salary range and market signal (growth trend).
-        - Name the top 2 employers currently hiring.
-        - Attribute the data: "ONEST data ke anusaar" / "As per ONEST data".
-        - Then ask ONE clear question: "Kya aap [top employer] mein apply karna chahoge?"
-          (or English equivalent if user is English-speaking).
-
-      STEP C — Detect the user's reaction and respond:
-
-      REACTION 1 — User agrees to apply ("haan", "apply karo", "yes"):
-        - Confirm out loud: "Theek hai! Main [trade] role ke liye [employer] mein apply karta hoon."
-        - Call the onest_apply tool with: trade (from profile), employer (top employer),
-          location (from profile), applicant_name (user's name from profile or empty string).
-        - After tool succeeds: share the reference number and say what happens next
-          ("ONEST par [employer] aapko contact karega. Status ONEST app par check kar sakte hain.").
-
-      REACTION 2 — Salary too low ("itna kam", "salary kam hai", "more pay"):
-        - Acknowledge warmly: "Haan, yeh salary expectations se kam lag sakti hai."
-        - Explain: Senior/certified workers often earn at the top of the range.
-        - Offer: "Kya aap PMKVY ya koi aur training karke higher-paying roles explore karna chahenge?"
-
-      REACTION 3 — Distance / too far ("bahut door", "itni door nahi ja sakta", "too far"):
-        - Ask: "Aap ghar se kitni door tak ja sakte hain? Main nearby options dhundh sakta hoon."
-        - If max_commute_km is in the profile, use it; otherwise ask.
-        - Offer relocation if accommodation is provided.
-
-      REACTION 4 — Overwhelmed / unclear / no response:
-        - Normalise: "Koi baat nahi, yeh sab nayi jaankari hai."
-        - Summarise in 2 lines (salary + one employer).
-        - Offer: "Kya main aapko ek KKB counsellor se connect karoon?"
-
-      REACTION 5 — Wants counsellor ("counsellor chahiye", "kisi se baat", "help"):
-        - Say: "Bilkul! Main aapko ek KKB counsellor se connect kar raha hoon."
+      Always check `[Last question asked:]` and the user's latest response to determine the right next step. Rely purely on the tools and user context.
 
     evaluation: |
       ## Instructions for evaluation node
       The user has seen job market data and you have discussed their options.
-      Now confirm their decision by asking ONE clear question:
-        "Aap kya karna chahte hain? (1) Apply karna  (2) Sochna chahte hain  (3) Counsellor se baat"
+      Now confirm their decision by asking ONE clear question (translated to the user's language):
+        "What would you like to do? (1) Apply for a job (2) Think about it (3) Talk to a counsellor"
       Based on their answer:
         - Apply → call onest_apply tool with details from profile and job shown.
         - Think / not sure → acknowledge, offer to come back, share a short summary.
@@ -331,8 +323,52 @@ prompt_blocks:
 
     commitment: |
       ## Instructions for commitment node
-      The user has confirmed they want to apply. Execute the application immediately:
-        1. Call onest_apply tool with: trade, employer, location, applicant_name from profile.
-        2. Share the reference number clearly.
-        3. Tell them: "[Employer] will contact you via ONEST. Check status on the ONEST app."
-        4. Ask: "Kya aur koi role ya location explore karni hai?"
+      This is a 2-turn confirmation step. Use `[Last question asked:]` to determine which turn you are on:
+
+      TURN 1 — Confirmation Question:
+      - If `[Last question asked:]` does NOT already contain a confirmation question (e.g. "Kya main apply kar doon"),
+        then ask the user clearly in their language:
+        "Kya main [Employer Name] mein [Trade] ke liye apply kar doon?" (translated to user's language).
+      - Do NOT call any tool yet. Just ask this single confirmation question.
+
+      TURN 2 — Execute Application:
+      - If `[Last question asked:]` contains the confirmation question and the user said YES (haan, yes, ok, theek hai, etc.),
+        then IMMEDIATELY call the `onest_apply` tool using: trade, employer, location, applicant_name from profile.
+        After the tool succeeds:
+        1. Share the reference number clearly.
+        2. Tell them: "[Employer] will contact you via ONEST. Check status on the ONEST app."
+        3. End the conversation gracefully. Ask no further questions.
+      - If the user said NO, acknowledge politely and end the conversation gracefully.
+
+    skill_check: |
+      ## Instructions for skill_check node
+      Evaluate exactly how well the user's trade matches the market requirements:
+      1. Direct Match: "You are well fit, go ahead and apply."
+      2. Partial Match: Explain the capability gap honestly ("You can still apply, but here is the gap... Here is how to close it fast.").
+      3. Significant Gap: "Income urgency? Bridge income + training." Instruct them to consider upskilling.
+      
+      At the end, ask ONE clear question: "What would you like to do next? (Apply, Think about it, Talk to a Counsellor, Not ready)"
+
+    pay_branch: |
+      ## Instructions for pay_branch node
+      The user expressed disappointment with the salary.
+      1. Acknowledge their concern genuinely.
+      2. Explain why it is at this level and explain how senior workers earn more over time.
+      3. Suggest PMKVY short-term training to level up their income.
+      4. End the conversation gracefully. Do NOT ask any follow up questions.
+
+    distance_branch: |
+      ## Instructions for distance_branch node
+      The user expressed concerns about commute or distance.
+      Ask them honestly how far they are willing to travel and if they would consider relocation if accommodation is provided. Let them know we will test these constraints in our future search.
+
+    normalise_branch: |
+      ## Instructions for normalise_branch node
+      The user seems overwhelmed, silent, or simply said they want to think about it.
+      Reassure them that making the right choice takes time. 
+      Inform them that you will hand off their details to a human counsellor who will message them on WhatsApp later. Say goodbye gracefully.
+
+    capture_dropoff: |
+      ## Instructions for capture_dropoff node
+      The user has hung up or dropped off.
+      Capture the drop-off signal. You do not need to say anything else, just output a simple closing acknowledgment.

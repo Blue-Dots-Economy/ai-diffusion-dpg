@@ -114,14 +114,6 @@ BASE_CONFIG = {
     "profile_collection": {
         "rounds": ROUNDS_CFG,
         "hard_min_fields": ["trade_or_stream", "location"],
-        "hard_min_rounds": [1, 2],
-        "grace_turn": {
-            "question_templates": {
-                "trade_or_stream": "We must collect the following final details before proceeding: trade_or_stream.",
-                "location":        "Where are you from?",
-                "both":            "Trade and location?",
-            },
-        },
         "field_labels": {},
     },
     "entity_to_profile_field": {

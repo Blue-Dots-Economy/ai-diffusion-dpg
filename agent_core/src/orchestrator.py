@@ -317,6 +317,20 @@ class AgentCore(AgentCoreBase):
         else:
             logger.info("  [STEP 5b] Intent Gate  ✓  proceeding")
 
+        # ── Step 5b.1: Declarative State Machine Transitions ─────────
+        transitions = self._config.get("workflow", {}).get("transitions", {})
+        if current_node in transitions:
+            node_transitions = transitions[current_node]
+            if nlu_result.intent in node_transitions:
+                next_node = node_transitions[nlu_result.intent]
+                logger.info(
+                    "  [STATE MACHINE] Transition: %s + intent=%s → %s",
+                    current_node, nlu_result.intent, next_node
+                )
+                self._write_memory_sync(session_id, user_id, "session", "current_node", next_node)
+                bundle.session["current_node"] = next_node
+                current_node = next_node
+
         # ── Step 5c: Workflow gate (consent / profile collection) ─────
         gate_result = self._workflow_gate(
             session_id=session_id,
@@ -475,6 +489,11 @@ class AgentCore(AgentCoreBase):
         logger.info(
             "  [STEP 10] Delivering response to caller  (async: memory write + learning emit follow)",
         )
+
+        # Save the actual text the LLM generated so next turn has exact context
+        self._write_memory_sync(session_id, user_id, "session", "current_question", final_text)
+        bundle.session["current_question"] = final_text
+
         result = self._build_result(
             session_id=session_id,
             user_id=user_id,
