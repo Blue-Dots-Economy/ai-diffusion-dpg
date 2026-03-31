@@ -625,24 +625,31 @@ class AgentCore(AgentCoreBase):
         )
         # Increment loop_count — only on unknown/low-confidence turns.
         # This is the HITL counter: N consecutive confused turns triggers human handoff.
-        try:
-            new_loop_count = int(bundle.session.get("loop_count", 0)) + 1
-            self._memory.write(session_id, user_id, "session", "loop_count", new_loop_count)
-            logger.info(
-                "  [STEP 5b] loop_count incremented to %d (HITL threshold=%d)",
-                new_loop_count,
-                int(self._config.get("hitl", {}).get("loop_count_threshold", 3)),
-            )
-        except Exception as e:
-            logger.error(
-                "orchestrator.loop_count_write_failed",
-                extra={
-                    "operation": "orchestrator._unknown_intent_response",
-                    "status": "failure",
-                    "session_id": session_id,
-                    "error": str(e),
-                },
-            )
+        # Update in-memory immediately so this turn's bundle is accurate, then
+        # persist asynchronously to avoid adding memory-write latency to the response.
+        new_loop_count = int(bundle.session.get("loop_count", 0)) + 1
+        bundle.session["loop_count"] = new_loop_count
+        logger.info(
+            "  [STEP 5b] loop_count incremented to %d (HITL threshold=%d)",
+            new_loop_count,
+            int(self._config.get("hitl", {}).get("loop_count_threshold", 3)),
+        )
+
+        def _write_loop_count() -> None:
+            try:
+                self._memory.write(session_id, user_id, "session", "loop_count", new_loop_count)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "orchestrator.loop_count_write_failed",
+                    extra={
+                        "operation": "orchestrator._unknown_intent_response",
+                        "status": "failure",
+                        "session_id": session_id,
+                        "error": str(exc),
+                    },
+                )
+
+        threading.Thread(target=_write_loop_count, daemon=True).start()
         return self._build_result(
             session_id=session_id,
             user_id=user_id,

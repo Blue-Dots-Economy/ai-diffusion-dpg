@@ -34,6 +34,18 @@ class MemoryLayer:
     """
     Orchestrates Redis + Neo4j for all Memory Layer operations.
 
+    Implements the same 5-method contract as MemoryLayerBase (agent_core/interfaces/memory_layer.py):
+      - context_bundle(session_id, user_id) -> dict  (ContextBundle-shaped; see method docstring)
+      - write(session_id, user_id, scope, key, value) -> None
+      - flush_session(session_id, user_id, end_reason) -> None
+      - get_active_sessions(user_id) -> list[dict]
+      - delete_user(user_id) -> None
+
+    Direct inheritance from MemoryLayerBase is not possible — this is a separate
+    deployable service that cannot import agent_core's interface module without
+    creating a circular service dependency. Method signatures are kept in manual
+    sync with MemoryLayerBase; any drift should be caught by integration tests.
+
     Args:
         config: Full merged config dict (dpg.yaml deep-merged with domain.yaml).
                 Reads state.session, state.persistent, redis, neo4j sections.
@@ -114,7 +126,17 @@ class MemoryLayer:
 
     def context_bundle(self, session_id: str, user_id: str) -> dict:
         """
-        Called at the start of every turn. Returns ContextBundle as a dict.
+        Called at the start of every turn. Returns a ContextBundle-shaped dict.
+
+        Return type is `dict` rather than `ContextBundle` because this service
+        cannot import agent_core's ContextBundle model — the two are separate
+        deployable packages that communicate over HTTP. The returned dict has
+        exactly the shape {session: dict, profile: dict, journey: dict|None},
+        which the Agent Core HTTP client (memory_layer.py in agent_core) receives
+        as JSON and deserialises into a ContextBundle via ContextBundle.from_dict().
+
+        This intentional divergence from MemoryLayerBase's `-> ContextBundle`
+        signature is a cross-service boundary artefact, not a contract violation.
 
         New session: initialises Redis + Neo4j (creates user graph if needed,
                      creates Journey node, seeds Redis hash with schema defaults).
@@ -262,12 +284,16 @@ class MemoryLayer:
                 # value must be a dict: {label, ...fields}
                 if not isinstance(value, dict):
                     raise ValueError(f"journey_event value must be a dict, got {type(value)}")
-                child_label = value.pop("label", key)
+                # Use .get() (not .pop()) so we do not mutate the caller's dict.
+                # Build a copy of properties with 'label' excluded — it is a routing
+                # key only and has no meaning as a journey child node property.
+                child_label = value.get("label", key)
+                properties = {k: v for k, v in value.items() if k != "label"}
                 self._journey_store.create_journey_child(
                     user_id=user_id,
                     journey_id=session_id,
                     child_label=child_label,
-                    properties=value,
+                    properties=properties,
                 )
 
             else:

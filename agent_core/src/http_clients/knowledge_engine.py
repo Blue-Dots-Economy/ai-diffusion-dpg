@@ -103,6 +103,17 @@ class HttpKnowledgeEngineClient(KnowledgeEngineBase):
             response.raise_for_status()
             data = response.json()
             raw_chunks = data.get("chunks", [])
+            if not isinstance(raw_chunks, list):
+                logger.error(
+                    "ke_http_client.malformed_response",
+                    extra={
+                        "operation": "ke_http_client.retrieve",
+                        "status": "failure",
+                        "session_id": session_id,
+                        "error": f"'chunks' field is not a list: {type(raw_chunks)}",
+                    },
+                )
+                return []
 
             chunks = [
                 RetrievalChunk(

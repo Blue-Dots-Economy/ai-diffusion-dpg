@@ -11,7 +11,10 @@ Responsibilities:
   - Create/update an ad-hoc UserAttribute node (upsert_user_attribute)
   - DETACH DELETE a user and all subnodes (delete_user)
 
-All queries are parameterised. No dynamic Cypher string building.
+All queries are parameterised. The one exception is property key names in
+_set_declared_field, which must be interpolated into the Cypher template because
+Neo4j does not support parameterised property key names. The key is validated
+with assert key.isidentifier() before use — call sites are config-driven and trusted.
 All methods absorb exceptions and log — never raise.
 """
 
@@ -275,6 +278,9 @@ class Neo4jUserStore:
             )
 
     def _set_declared_field(self, user_id: str, key: str, value: Any) -> None:
+        # Property key names cannot be parameterised in Cypher — interpolation is
+        # intentional here. The key is validated to be a safe identifier before use.
+        assert key.isidentifier(), f"Invalid property key for Cypher interpolation: {key!r}"
         with self._driver.session() as session:
             session.run(
                 f"""

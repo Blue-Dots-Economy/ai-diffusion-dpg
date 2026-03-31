@@ -15,7 +15,11 @@ Journey structure (per domain.yaml):
                                    └──[:OFFERED]->(Role)
                                    └──[:DROPPED_AT]->(DropOff)
 
-All queries are parameterised. All methods absorb exceptions — never raise.
+All queries are parameterised. The one exception is property key names in
+merge_session_fields, which must be interpolated because Neo4j does not support
+parameterised property key names. Keys are validated with assert k.isidentifier()
+before use — all keys are sourced from domain.yaml config, not user input.
+All methods absorb exceptions — never raise.
 """
 
 from __future__ import annotations
@@ -353,7 +357,11 @@ class Neo4jJourneyStore:
                 return
 
             with self._driver.session() as session:
-                # Build SET clause dynamically from property names
+                # Property key names cannot be parameterised in Cypher — interpolation
+                # is intentional here. Keys come from domain.yaml merge_rules config
+                # (not user input) and are validated as safe identifiers before use.
+                for k in updates:
+                    assert k.isidentifier(), f"Invalid property key for Cypher interpolation: {k!r}"
                 set_clauses = ", ".join(f"j.{k} = ${k}" for k in updates)
                 session.run(
                     f"""
