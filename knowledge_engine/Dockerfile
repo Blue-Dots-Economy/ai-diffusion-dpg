@@ -1,38 +1,36 @@
 # =============================================================================
 # Knowledge Engine DPG — Multi-stage Dockerfile
 # =============================================================================
-# Stage 1 (builder): install dependencies into an isolated prefix.
-# Stage 2 (runtime): copy only the installed packages and source — no build tools.
-# Mirrors agent_core/Dockerfile conventions exactly.
+# Stage 1 (builder): install dependencies into a venv via uv sync.
+# Stage 2 (runtime): copy only the venv and source — no build tools.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
 # Stage 1: builder
 # -----------------------------------------------------------------------------
-FROM python:3.11-slim AS builder
+FROM python:3.14-slim AS builder
 
-WORKDIR /build
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# Install build tooling
-RUN pip install --upgrade pip setuptools wheel
+WORKDIR /app
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
 
 # Copy dependency declarations first — layer is cached unless pyproject.toml changes
 COPY pyproject.toml ./
 
-# Build inside a venv so pip installs ALL deps (including transitive ones like
-# packaging) into an isolated location, regardless of what is bundled in the
-# base image.  CPU-only torch is installed first so pip never fetches the
-# CUDA/GPU variant (~2.5 GB saved).
-RUN python -m venv /venv \
-    && /venv/bin/pip install --no-cache-dir --upgrade pip \
-    && /venv/bin/pip install --no-cache-dir \
-        "torch>=2.0.0" --index-url https://download.pytorch.org/whl/cpu \
-    && /venv/bin/pip install --no-cache-dir .
+# CPU-only torch index is declared first so uv never resolves the CUDA/GPU
+# variant (~2.5 GB saved). All other deps are synced in the same pass.
+RUN uv sync --no-dev --no-cache --no-install-project \
+    --extra-index-url https://download.pytorch.org/whl/cpu
 
 # -----------------------------------------------------------------------------
 # Stage 2: runtime
 # -----------------------------------------------------------------------------
-FROM python:3.11-slim AS runtime
+FROM python:3.14-slim AS runtime
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Non-root user for security
 RUN addgroup --system knowledgeengine && adduser --system --ingroup knowledgeengine knowledgeengine
@@ -40,7 +38,7 @@ RUN addgroup --system knowledgeengine && adduser --system --ingroup knowledgeeng
 WORKDIR /app
 
 # Copy the venv from builder
-COPY --from=builder /venv /venv
+COPY --from=builder /app/.venv /app/.venv
 
 # Copy application source, entrypoint, config, and scripts
 COPY src/ ./src/
@@ -57,8 +55,9 @@ USER knowledgeengine
 # OPENAI_API_KEY (if needed) must be injected at runtime via environment variable.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PATH="/venv/bin:$PATH" \
-    VIRTUAL_ENV=/venv
+    UV_NO_CACHE=1 \
+    PATH="/app/.venv/bin:$PATH" \
+    VIRTUAL_ENV=/app/.venv
 
 # ChromaDB vector store is written here at ingest time.
 # Mount a named volume at this path to persist embeddings across container restarts.
@@ -66,4 +65,4 @@ VOLUME /app/chroma_db
 
 EXPOSE 8001
 
-CMD ["python", "main.py"]
+CMD ["uv", "run", "python", "main.py"]

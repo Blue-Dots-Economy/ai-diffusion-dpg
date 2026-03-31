@@ -17,26 +17,33 @@
 # -----------------------------------------------------------------------------
 # Stage 1: builder
 # -----------------------------------------------------------------------------
-FROM python:3.11-slim AS builder
+FROM python:3.14-slim AS builder
 
-WORKDIR /build
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-RUN pip install --upgrade pip setuptools wheel
+WORKDIR /app
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
 
 COPY pyproject.toml ./
 
-RUN pip install --prefix=/install --no-cache-dir .
+# Sync runtime dependencies only; creates /app/.venv
+RUN uv sync --no-dev --no-cache --no-install-project
 
 # -----------------------------------------------------------------------------
 # Stage 2: runtime
 # -----------------------------------------------------------------------------
-FROM python:3.11-slim AS runtime
+FROM python:3.14-slim AS runtime
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 RUN addgroup --system reachlayer && adduser --system --ingroup reachlayer reachlayer
 
 WORKDIR /app
 
-COPY --from=builder /install /usr/local
+# Copy the venv from builder
+COPY --from=builder /app/.venv /app/.venv
 
 COPY main.py ./
 COPY config/ ./config/
@@ -46,9 +53,12 @@ RUN chown -R reachlayer:reachlayer /app
 USER reachlayer
 
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    UV_NO_CACHE=1 \
+    PATH="/app/.venv/bin:$PATH" \
+    VIRTUAL_ENV=/app/.venv
 
 # No EXPOSE — this is a CLI client, not a server.
 # stdin/stdout are the channel. Run with: docker run -it <image>
 
-CMD ["python", "main.py"]
+CMD ["uv", "run", "python", "main.py"]

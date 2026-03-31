@@ -1,39 +1,42 @@
 # =============================================================================
 # Learning Layer DPG — Multi-stage Dockerfile
 # =============================================================================
-# Stage 1 (builder): install dependencies into an isolated prefix.
-# Stage 2 (runtime): copy only the installed packages and source — no build tools.
-# Mirrors agent_core/Dockerfile conventions exactly.
+# Stage 1 (builder): install dependencies into a venv via uv sync.
+# Stage 2 (runtime): copy only the venv and source — no build tools.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
 # Stage 1: builder
 # -----------------------------------------------------------------------------
-FROM python:3.11-slim AS builder
+FROM python:3.14-slim AS builder
 
-WORKDIR /build
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# Install build tooling
-RUN pip install --upgrade pip setuptools wheel
+WORKDIR /app
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
 
 # Copy dependency declarations first — layer is cached unless pyproject.toml changes
 COPY pyproject.toml ./
 
-# Install runtime dependencies into /install prefix (no dev extras)
-RUN pip install --prefix=/install --no-cache-dir .
+# Sync runtime dependencies only; creates /app/.venv
+RUN uv sync --no-dev --no-cache --no-install-project
 
 # -----------------------------------------------------------------------------
 # Stage 2: runtime
 # -----------------------------------------------------------------------------
-FROM python:3.11-slim AS runtime
+FROM python:3.14-slim AS runtime
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Non-root user for security
 RUN addgroup --system learninglayer && adduser --system --ingroup learninglayer learninglayer
 
 WORKDIR /app
 
-# Copy installed packages from builder
-COPY --from=builder /install /usr/local
+# Copy the venv from builder
+COPY --from=builder /app/.venv /app/.venv
 
 # Copy application source, entrypoint, and config
 COPY src/ ./src/
@@ -46,8 +49,11 @@ RUN chown -R learninglayer:learninglayer /app
 USER learninglayer
 
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    UV_NO_CACHE=1 \
+    PATH="/app/.venv/bin:$PATH" \
+    VIRTUAL_ENV=/app/.venv
 
 EXPOSE 8004
 
-CMD ["python", "main.py"]
+CMD ["uv", "run", "python", "main.py"]
