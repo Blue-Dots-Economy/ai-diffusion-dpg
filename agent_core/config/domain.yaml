@@ -104,6 +104,7 @@ preprocessing:
   language_normalisation:
     model: claude-haiku-4-5-20251001
     provider: llm_native
+    default_language: hindi
     supported_languages: [hindi, kannada, english, hinglish]
     transliteration: true
     code_switching: true
@@ -286,10 +287,7 @@ agent_workflow:
         Example: "Namaste! Kaam Ki Baat mein aapka swagat hai. Kya main aapki trade aur location yaad rakh sakta hoon? Isse agle baar aapko dobara batana nahi padega."
 
       routing:
-        # If returning user, skip greeting/consent and go to market truth immediately
-        - intent: "*"
-          condition: { field: "is_returning", operator: "eq", value: true }
-          next_subagent_id: market_truth
+        # No special returning user skip here — Orchestrator adoption handles it.
 
         # First turn: stay in greeting to deliver the consent request
         - intent: greeting
@@ -335,32 +333,29 @@ agent_workflow:
       tools: []
 
       system_prompt: |
-        You are building a complete profile to find the most relevant work options for this person.
-        Collect information naturally — like a conversation, not a form.
-        Ask one question at a time. Never ask for everything at once.
-        Fields to collect (collect as many as possible across up to 5 rounds):
-          BASIC (mandatory minimum):
-          1. trade_or_stream — what work they do or were trained for
-          2. location — district or area (do not ask for full address)
-          CAPABILITY (required for skill assessment — collect all before moving on):
-          3. years_experience — how many years of work experience (0 is valid for freshers)
-          4. certifications — any formal certificates, ITI trade certificate, NSDC, etc. (none is valid)
-          5. informal_skills — practical skills learnt on the job or informally (e.g. wiring, tiling)
-          CONSTRAINTS (collect opportunistically):
-          6. income_urgency — how urgently they need income (immediate <30 days / flexible)
-          7. education_level — ITI / diploma / 10th / other
-          8. age_bracket — approximate age range (can be skipped)
+        Your goal is to build a profile for this user to deliver a realistic "market snapshot". 
+        Collect information naturally over approximately 5 interaction rounds. 
+        Do not ask for everything at once. Ask 1-2 related fields per round.
+
+        ROUNDS PLAN:
+        Round 1 (Identity): name, age_bracket
+        Round 2 (Core): trade_or_stream, location
+        Round 3 (Experience): years_experience, certifications
+        Round 4 (Skills): informal_skills, language_skills
+        Round 5 (Urgency): income_urgency, education_level
+
+        HARD MINIMUM: 'trade_or_stream' and 'location' must be known to proceed to market truth.
+
         Rules:
-        - Never ask for a field you already know from session or previous session.
-        - If they mention a field in passing, capture it — do not ask again.
-        - If they skip or deflect a non-minimum field twice, move on.
-        - Do not move to market truth until you have trade_or_stream, location, AND
-          at least years_experience and certifications (even if the answers are "none" or "0").
-        - Once all capability fields are collected or skipped, signal profile_complete.
+        - Never ask for a field you already know from context.
+        - If the user provides info without being asked (ad-hoc), capture it and skip that question. 
+        - Choose key names on the fly for any extra "ad-hoc" info provided.
+        - If a user skips a non-mandatory field, do not press. Move to the next round.
+        - Once you have the HARD MINIMUM, you can signal 'profile_complete' to start the market lookup. 
         - Do not ask for user_id, full address, or government ID.
 
       routing:
-        # Rule 1: Transition to market_truth only after capability fields are also collected
+        # Rule 1: Transition to market_truth if minimums are met AND 5 rounds finished
         - intent: "*"
           conditions:
             - field: trade_or_stream
@@ -369,15 +364,23 @@ agent_workflow:
             - field: location
               operator: not_eq
               value: null
-            - field: years_experience
+            - field: subagent_entry_count.profile_building
+              operator: gt
+              value: 4
+          next_subagent_id: market_truth
+
+        # Rule 2: Transition to market_truth if LLM signals complete AND minimums are met
+        - intent: profile_complete
+          conditions:
+            - field: trade_or_stream
               operator: not_eq
               value: null
-            - field: certifications
+            - field: location
               operator: not_eq
               value: null
           next_subagent_id: market_truth
 
-        # Rule 2: If we reach 5 rounds but still missing mandatory fields, go to incomplete
+        # Rule 3: If we reached the end of 5 rounds but still missing minimums -> Fail
         - intent: "*"
           condition:
             field: subagent_entry_count.profile_building
@@ -385,18 +388,7 @@ agent_workflow:
             value: 4
           next_subagent_id: profile_incomplete
 
-        # Rule 3: LLM signals profile is complete -> go to market truth
-        - intent: profile_complete
-          next_subagent_id: market_truth
-
-        # Rule 4: Normal collection loop
-        - intent: profile_answer
-          next_subagent_id: profile_building
-
-        - intent: skip_question
-          next_subagent_id: profile_building
-
-        # Rule 5: Catch-all
+        # Rule 4: Catch-all collection loop
         - intent: "*"
           next_subagent_id: profile_building
 
@@ -462,22 +454,25 @@ agent_workflow:
         - knowledge_retrieval     # LLM calls when it needs trade/scheme/market context from KE
 
       system_prompt: |
-        You are delivering verified market intelligence. This is the most important moment.
-        Use the ONEST Blue Dot data retrieved by the tool. Never invent roles or pay figures.
-        Structure your delivery:
-          1. What roles exist nearby (count, not a list yet)
-          2. Realistic pay range (always a range, never absolute: "₹14,000–18,000")
-          3. Distance from their location
-          4. What the employer actually needs (skills/certs)
-          5. Source: mention it came from live verified data
-        Scarcity handling: If ONEST returns zero or very few results:
-          - Do NOT say "there are no jobs". Say "abhi is area mein is trade mein kaam bahut kam hai."
-          - Offer: slightly wider radius, adjacent trade, alert signup for when roles appear.
-          - Capture this as a demand gap signal.
-        After delivery, PAUSE. Let the user react. Do not immediately push to skill check.
-        Read their reaction and respond to it — do not rush to the next step.
-        If they seem positive and engaged: move naturally toward skill check.
-        If they express disappointment, distance concern, or overwhelm: address that first.
+        You are delivering a verified market snapshot based on the user's trade and location.
+        THIS IS NOT THE FINAL MATCH — it is just to show what is happening in their area.
+        
+        STRICT DATA RULES:
+        - Use ONLY the ONEST Blue Dot data retrieved by the tool. 
+        - NEVER invent roles, employers, or pay figures.
+        - Present the EXACT salary range from the tool (e.g. if tool says "₹12k–₹22k", do not say "₹18k–₹22k").
+        - If the tool only returns 1 or 2 employers, mention ONLY those. Do not add "Private Contractors" or generic categories to "fill out" the list.
+        
+        Structure:
+          1. Local Demand: How many roles exist nearby.
+          2. Market Pay: Verified range (always the exact range from the tool).
+          3. Top Employers: Mention ONLY the real companies returned by the tool.
+          4. Verification: Mention this is live data from verified sources.
+        
+        CRITICAL: Do NOT assess the user's fit here. Just deliver the market facts.
+        Close with a clear question: "Do these options look interesting to you? 
+        If yes, I'll check how your specific skills and experience match these roles."
+        PAUSE and let the user react.
 
       routing:
         - intent: interested_engaged
@@ -521,23 +516,38 @@ agent_workflow:
         - profile_answer        # User may reveal more about their skills here
 
       tools:
+        - onest_market_lookup
         - knowledge_retrieval   # LLM calls when it needs training/course/scheme info from KE
 
       system_prompt: |
-        You are assessing whether the user's skills match the roles you just presented.
-        Ask naturally — do not make it feel like an evaluation or test.
-        Example: "Aapne ITI mein kya kiya tha? Aur koi practical experience hai kya,
-        ya ye pehla kaam hoga?"
-        Skill match levels:
-          - DIRECT MATCH: Their trade/certs match what employers need. Present 2–3 real
-            options immediately with Blue Dot source, pay range, distance, employer type.
-          - PARTIAL MATCH: There's a gap but it's closeable. Name the gap honestly.
-            Show how fast it can be closed. Present options with this caveat.
-          - SIGNIFICANT GAP: The gap is large. Do not hide this. Say it clearly and kindly.
-            Then check income urgency before routing:
-            - If immediate (<30 days): present bridge income option + parallel training path
-            - If flexible: present training path first, then job sequence after
-        Never push one path. Always present the honest trade-off.
+        You are performing a Skill Match Assessment. DO NOT ASK ANY NEW QUESTIONS.
+        Use the "Known user profile" (collected in the first phase) and the market data.
+        
+        STRICT DATA RULES:
+        - Present ONLY the roles and employers returned by the ONEST tool.
+        - NEVER invent "Private Contractors" or "Local Projects" if they aren't in the tool output.
+        - Use the EXACT salary ranges from the tool for each employer.
+        
+        Classify the user into ONE of these 3 levels and present the path clearly:
+        
+        1. DIRECT MATCH (Skills match employer needs):
+           - "Good news! You are a direct match for these roles."
+           - Present the REAL options from the tool immediately with Blue Dot source, pay, distance, employer.
+           - Transition to comparison/evaluation.
+        
+        2. PARTIAL MATCH (Close, but some gap like certificate or specific skill):
+           - "You are a partial match. You have the experience, but employers also look for [Gap]."
+           - Present the REAL options from the tool with this honest caveat.
+           - Explain how they can close the gap (e.g. "A 1-month certificate would boost your pay by 20%").
+        
+        3. SIGNIFICANT GAP (Trade mismatch or no experience for available roles):
+           - "There is a significant gap between your profile and these specific roles."
+           - Acknowledge this kindly and check income_urgency:
+             - If immediate (<30 days): Suggest bridge income (helper/general) + parallel training.
+             - If flexible: Suggest training path first, then job sequence after
+        
+        Present these paths as honest trade-offs. Never push. Let the user decide.
+        Once the assessment is delivered, hand over to Evaluation for the user's decision.
 
       routing:
         - intent: skill_direct_match
@@ -564,7 +574,7 @@ agent_workflow:
           next_subagent_id: skill_check  # Continue assessment
 
         - intent: "*"
-          next_subagent_id: skill_check
+          next_subagent_id: evaluation
 
     # ─────────────────────────────────────────────────────────────
     # EVALUATION
@@ -624,12 +634,8 @@ agent_workflow:
         - intent: evaluation_question
           next_subagent_id: evaluation   # Stay and answer
 
-        - intent: "*"
-          condition:
-            field: subagent_entry_count.evaluation   # Set by orchestrator
-            operator: gt
-            value: 3
-          next_subagent_id: counsellor_request   # Decision paralysis → HITL
+        - intent: interested_engaged
+          next_subagent_id: evaluation   # Stay and discuss options
 
         - intent: "*"
           next_subagent_id: evaluation
@@ -810,32 +816,73 @@ agent_workflow:
         - knowledge_retrieval   # LLM calls when user asks about course/scheme details before committing
 
       system_prompt: |
-        The user is ready to act. This is the commitment subagent.
-        Rules — non-negotiable:
-          1. ALWAYS confirm consent before any action:
-             "Kya main [specific role name] ke liye aapki taraf se apply kar doon?
-             Iska matlab hai [employer name] ko aapka naam aur number milega."
-          2. ALWAYS confirm the specific role or course — never submit for a vague option.
-          3. For job application: submit via ONEST, confirm reference number to user.
-          4. For course enrolment: connect to PMKVY/institute portal, confirm seat availability.
-          5. For counsellor: schedule callback within 24 hours, give the user a reference time.
-          6. After action: set follow-through check (72h for job, 1 week for course).
-          7. If user backs out: do not push. Save state. Offer to return anytime.
-        After successful action, briefly recap what was done and what happens next.
+        The user has decided to act. This is the final commitment stage.
+        CRITICAL: Your only goal is to bridge the user to the actual tool-based action.
+
+        ANTI-HALLUCINATION RULES:
+        - NEVER provide manual instructions like "visit the portal", "prepare a portfolio", or "contact HR".
+        - NEVER provide checklists or "How to Apply" advice.
+        - NEVER say you "cannot apply" or "don't have access" — you have the onest_apply tool.
+        - Your ONLY job is to get consent and CALL THE TOOL.
+
+        TWO-STEP FLOW — follow this strictly:
+
+        STEP 1 — First time in this stage: Ask for explicit confirmation:
+          "Kya main [specific employer] ke liye aapki taraf se apply kar doon?
+          Iska matlab hai unhe aapka naam aur number milega."
+
+        STEP 2 — User has confirmed (they said "yes", "haan", "apply kar do", etc.):
+          IMMEDIATELY call the relevant tool — DO NOT ask again, DO NOT explain the process:
+          - onest_apply (for jobs) — call it NOW with trade, employer, location from profile.
+          - counsellor_schedule (for counsellor requests) — call it NOW with session_id.
+          After the tool returns, show the reference number to the user.
+          Example: "Apply ho gaya! Reference number: [Reference]. Employer 24–48 ghante mein
+          contact karenge. Aapke paas yeh reference number save kar lein."
+
+        If the user asks a question, answer in ONE SENTENCE and REFOCUS: "Apply karein?"
 
       routing:
-        - intent: apply_now
-          next_subagent_id: follow_through
+        # User backs out — return to evaluation immediately
+        - intent: action_declined
+          next_subagent_id: evaluation
 
-        - intent: enrol_course
-          next_subagent_id: follow_through
-
+        # User requests counsellor — always honour immediately
         - intent: connect_counsellor
           next_subagent_id: counsellor_request
 
-        - intent: action_declined
-          next_subagent_id: evaluation   # Return to evaluation — user may reconsider
+        # apply_now / enrol_course on 2nd+ entry means the tool was already called
+        # last turn — proceed to follow-through.
+        - intent: apply_now
+          condition:
+            field: subagent_entry_count.commitment
+            operator: gt
+            value: 1
+          next_subagent_id: follow_through
 
+        - intent: enrol_course
+          condition:
+            field: subagent_entry_count.commitment
+            operator: gt
+            value: 1
+          next_subagent_id: follow_through
+
+        # apply_now / enrol_course on FIRST entry — stay in commitment so the LLM
+        # can call onest_apply / counsellor_schedule with the tool available here.
+        - intent: apply_now
+          next_subagent_id: commitment
+
+        - intent: enrol_course
+          next_subagent_id: commitment
+
+        # Any other intent on 2nd+ visit — tool was already called, move forward.
+        - intent: "*"
+          condition:
+            field: subagent_entry_count.commitment
+            operator: gt
+            value: 1
+          next_subagent_id: follow_through
+
+        # Default: stay in commitment
         - intent: "*"
           next_subagent_id: commitment
 
@@ -954,8 +1001,8 @@ agent_workflow:
         The user has chosen to end the call.
         Close warmly: "Dhanyavaad! Jab bhi zaroorat ho, hum yahan hain."
         Flush session state. Emit termination event to Learning Layer.
-        If consent_status = declined: orchestrator deletes all profile fields collected
-        this session. Nothing is persisted to the User Profile Store.
+        If user_storage_mode = anonymous: Memory Layer will delete all profile data
+        collected this session from Neo4j at flush time (DPDP-compliant erasure).
 
       routing: []   # Terminal
 

@@ -280,3 +280,78 @@ class TestOnestLookupGenericError:
             )
         assert result["success"] is False
         assert result["error"] is not None
+
+
+# ---------------------------------------------------------------------------
+# execute — ToolCall dataclass path (duck-typing fix)
+# ---------------------------------------------------------------------------
+
+class TestExecuteWithToolCallDataclass:
+    """
+    Verifies that execute() accepts a ToolCall dataclass (direct wiring)
+    in addition to the legacy dict (HTTP path).
+    """
+
+    def _make_tool_call(self, tool_name: str, tool_use_id: str, input_params: dict):
+        """Build a minimal ToolCall-shaped object with attribute access."""
+        tc = MagicMock()
+        tc.tool_name = tool_name
+        tc.tool_use_id = tool_use_id
+        tc.input_params = input_params
+        return tc
+
+    def test_toolcall_dataclass_succeeds(self) -> None:
+        gw = MockActionGateway(_BASE_CONFIG)
+        tc = self._make_tool_call(
+            "onest_market_lookup", "tu-dc-1", {"trade": "electrician", "location": "Hubli"}
+        )
+        with patch("httpx.post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.json.return_value = _ELECTRICIAN_RESPONSE
+            mock_response.raise_for_status.return_value = None
+            mock_post.return_value = mock_response
+
+            result = gw.execute(tc, "session-1")
+
+        assert result["success"] is True
+        assert result["tool_name"] == "onest_market_lookup"
+
+    def test_toolcall_dataclass_preserves_tool_use_id(self) -> None:
+        gw = MockActionGateway(_BASE_CONFIG)
+        tc = self._make_tool_call("onest_market_lookup", "my-dc-id", {"trade": "welder"})
+        with patch("httpx.post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.json.return_value = _ELECTRICIAN_RESPONSE
+            mock_response.raise_for_status.return_value = None
+            mock_post.return_value = mock_response
+
+            result = gw.execute(tc, "session-1")
+
+        assert result["tool_use_id"] == "my-dc-id"
+
+    def test_toolcall_dataclass_none_input_params_uses_empty_dict(self) -> None:
+        """input_params=None on the dataclass must not cause KeyError or AttributeError."""
+        gw = MockActionGateway(_BASE_CONFIG)
+        tc = self._make_tool_call("onest_market_lookup", "tu-dc-2", None)
+        with patch("httpx.post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.json.return_value = _ELECTRICIAN_RESPONSE
+            mock_response.raise_for_status.return_value = None
+            mock_post.return_value = mock_response
+
+            result = gw.execute(tc, "session-1")
+
+        assert result["success"] is True
+
+    def test_toolcall_dataclass_unknown_tool_returns_failure(self) -> None:
+        gw = MockActionGateway(_BASE_CONFIG)
+        tc = self._make_tool_call("nonexistent_tool", "tu-dc-3", {})
+        result = gw.execute(tc, "session-1")
+        assert result["success"] is False
+        assert "unknown_tool" in result["error"]
+
+    def test_toolcall_dataclass_preserves_tool_use_id_on_unknown_tool(self) -> None:
+        gw = MockActionGateway(_BASE_CONFIG)
+        tc = self._make_tool_call("nonexistent_tool", "dc-unknown-id", {})
+        result = gw.execute(tc, "session-1")
+        assert result["tool_use_id"] == "dc-unknown-id"

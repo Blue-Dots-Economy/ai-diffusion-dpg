@@ -32,7 +32,7 @@ _NLU_SYSTEM_PROMPT_TEMPLATE = """{domain_instruction}
 Classify the user's latest message and return a JSON object only — no explanation, no markdown.
 
 Valid intents: {intents}
-Valid entity types: {entities}
+Primary entity types: {entities}
 Valid sentiment classes: {sentiment_classes}
 
 Return exactly this JSON structure:
@@ -46,6 +46,7 @@ Return exactly this JSON structure:
 Rules:
 - Use "unknown" intent if no intent matches or confidence is below 0.5.
 - Only include entity types that are clearly present in the message.
+- **Ad-hoc extraction**: If the user provides interesting personal details or preferences NOT in the primary list (e.g. hobbies, specific equipment owned, preferred brand), extract them with **dynamic keys** in the "entities" object. Choose descriptive key names on the fly.
 - Return an empty dict {{}} for entities if none are found.
 - Use the current subagent and the last question asked (if provided) to resolve
   follow-up or ambiguous messages (e.g. a one-word answer like "welder" after "what trade

@@ -10,6 +10,9 @@ Covers:
 - Normal execution: all 5 public methods return correct results
 - Edge cases: new vs returning user, empty session state, lazy cleanup
 - Failure scenarios: store exceptions are absorbed and safe defaults returned
+- New: user_storage_mode field drives DPDP delete decision (replaces old consent field)
+- New: is_returning preserved correctly after session adoption
+- New: default_storage_mode config fallback when user_storage_mode absent
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from src.memory_layer import MemoryLayer, _build_initial_session, _build_scope_m
 
 
 # ---------------------------------------------------------------------------
-# Minimal KKB-like config for constructing MemoryLayer in tests
+# Minimal config for constructing MemoryLayer in tests
 # ---------------------------------------------------------------------------
 
 MINIMAL_CONFIG = {
@@ -37,9 +40,7 @@ MINIMAL_CONFIG = {
         "session": {
             "ttl_minutes": 60,
             "schema": {
-                "current_node": {"default": "greeting"},
                 "trade": {"default": ""},
-                "consent": {"default": ""},
                 "loop_count": {"default": 0},
                 "options_presented": {"default": []},
             },
@@ -48,7 +49,7 @@ MINIMAL_CONFIG = {
             "graph": {
                 "subnodes": {
                     "UserProfile": {
-                        "declared_fields": ["language", "trade", "education"]
+                        "declared_fields": ["trade", "education"]
                     },
                     "JourneyHistory": {
                         "child": {
@@ -101,6 +102,36 @@ def _make_layer() -> tuple[MemoryLayer, dict]:
     return layer, stores
 
 
+def _make_layer_with_config(config: dict) -> tuple[MemoryLayer, dict]:
+    """Construct a MemoryLayer with a custom config."""
+    with (
+        patch("src.memory_layer.RedisSessionStore") as MockRedis,
+        patch("src.memory_layer.Neo4jUserStore") as MockUser,
+        patch("src.memory_layer.Neo4jJourneyStore") as MockJourney,
+        patch("src.memory_layer.Neo4jContextStore") as MockContext,
+        patch("src.memory_layer.GraphDatabase") as MockGDB,
+    ):
+        mock_redis = MagicMock()
+        mock_user = MagicMock()
+        mock_journey = MagicMock()
+        mock_context = MagicMock()
+        MockRedis.return_value = mock_redis
+        MockUser.return_value = mock_user
+        MockJourney.return_value = mock_journey
+        MockContext.return_value = mock_context
+        MockGDB.driver.return_value = MagicMock()
+
+        layer = MemoryLayer(config)
+
+    stores = {
+        "redis": mock_redis,
+        "user": mock_user,
+        "journey": mock_journey,
+        "context": mock_context,
+    }
+    return layer, stores
+
+
 # ---------------------------------------------------------------------------
 # Constructor
 # ---------------------------------------------------------------------------
@@ -119,13 +150,14 @@ def test_init_builds_correct_ttl():
 
 def test_init_builds_scope_map_with_session_fields():
     layer, _ = _make_layer()
-    assert layer._scope_map["current_node"] == "session"
     assert layer._scope_map["loop_count"] == "session"
+    assert layer._scope_map["options_presented"] == "session"
 
 
 def test_init_builds_scope_map_with_persistent_fields():
     layer, _ = _make_layer()
-    assert layer._scope_map["language"] == "persistent"
+    # declared_fields = ["trade", "education"]; declared_fields override schema
+    assert layer._scope_map["trade"] == "persistent"
     assert layer._scope_map["education"] == "persistent"
 
 
@@ -173,7 +205,7 @@ def test_context_bundle_new_user_seeds_schema_defaults():
     result = layer.context_bundle("sess-1", "user-1")
 
     session = result["session"]
-    assert session["current_node"] == "greeting"
+    assert session["trade"] == ""
     assert session["is_returning"] == "false"
     assert session["user_id"] == "user-1"
     assert session["journey_id"] == "sess-1"
@@ -216,20 +248,43 @@ def test_context_bundle_returning_user_marks_is_returning_true():
 
 
 # ---------------------------------------------------------------------------
+# context_bundle — session adoption preserves is_returning
+# ---------------------------------------------------------------------------
+
+def test_context_bundle_adoption_preserves_is_returning_for_returning_user():
+    """Adopted stale is_returning=false must not overwrite the fresh Neo4j result."""
+    layer, stores = _make_layer()
+    stores["user"].user_exists.return_value = True       # returning user
+    stores["user"].get_profile.return_value = {}
+    stores["journey"].get_last_journey_summary.return_value = None
+
+    # new-sess does not exist; old-sess does exist (will be adopted)
+    stores["redis"].session_exists.side_effect = lambda s: s == "old-sess"
+    stores["redis"].get_user_sessions.return_value = {"old-sess": "2024-01-01T10:00:00Z"}
+    # old session has stale is_returning=false
+    stores["redis"].get_session.return_value = {"is_returning": "false", "trade": "welder"}
+
+    result = layer.context_bundle("new-sess", "user-1")
+
+    # After adoption, is_returning must reflect Neo4j (True), not the stale adopted value
+    assert result["session"]["is_returning"] == "true"
+
+
+# ---------------------------------------------------------------------------
 # context_bundle — existing session (hot path)
 # ---------------------------------------------------------------------------
 
 def test_context_bundle_existing_session_reads_from_redis():
     layer, stores = _make_layer()
     stores["redis"].session_exists.return_value = True
-    stores["redis"].get_session.return_value = {"current_node": "jobs", "trade": "welder"}
+    stores["redis"].get_session.return_value = {"current_subagent_id": "jobs", "trade": "welder"}
     stores["user"].get_profile.return_value = {"language": "hindi"}
 
     result = layer.context_bundle("sess-1", "user-1")
 
     stores["redis"].reset_session_ttl.assert_called_once_with("sess-1")
     stores["redis"].update_last_accessed.assert_called_once_with("user-1", "sess-1")
-    assert result["session"]["current_node"] == "jobs"
+    assert result["session"]["current_subagent_id"] == "jobs"
     assert result["profile"]["language"] == "hindi"
 
 
@@ -274,15 +329,16 @@ def test_context_bundle_redis_error_returns_empty_bundle():
 
 def test_write_session_scope_calls_redis_hset():
     layer, stores = _make_layer()
-    layer.write("sess-1", "user-1", "session", "current_node", "jobs")
-    stores["redis"].set_session_field.assert_called_once_with("sess-1", "current_node", "jobs")
+    layer.write("sess-1", "user-1", "session", "current_subagent_id", "jobs")
+    stores["redis"].set_session_field.assert_called_once_with("sess-1", "current_subagent_id", "jobs")
     stores["redis"].update_last_accessed.assert_called_once_with("user-1", "sess-1")
 
 
-def test_write_resolves_scope_from_scope_map():
-    """trade is in declared_fields → persistent, regardless of passed scope."""
+def test_write_unknown_scope_falls_back_to_scope_map():
+    """An unrecognized scope string causes scope_map lookup to determine the target store."""
     layer, stores = _make_layer()
-    layer.write("sess-1", "user-1", "session", "language", "hindi")
+    # "education" is in declared_fields → persistent in scope_map
+    layer.write("sess-1", "user-1", "UNRECOGNIZED_SCOPE", "education", "secondary")
     stores["user"].upsert_profile_field.assert_called_once()
     stores["redis"].set_session_field.assert_not_called()
 
@@ -293,7 +349,6 @@ def test_write_resolves_scope_from_scope_map():
 
 def test_write_persistent_scope_calls_user_store():
     layer, stores = _make_layer()
-    # Use a key not in scope_map (will fall back to passed scope)
     layer._scope_map["custom_field"] = "persistent"
     layer.write("sess-1", "user-1", "persistent", "custom_field", "value")
     stores["user"].upsert_profile_field.assert_called_once()
@@ -357,7 +412,7 @@ def test_write_empty_key_is_absorbed():
 def test_write_redis_error_is_absorbed():
     layer, stores = _make_layer()
     stores["redis"].set_session_field.side_effect = ConnectionError("down")
-    layer.write("sess-1", "user-1", "session", "current_node", "jobs")  # must not raise
+    layer.write("sess-1", "user-1", "session", "current_subagent_id", "jobs")  # must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -366,7 +421,7 @@ def test_write_redis_error_is_absorbed():
 
 def test_flush_session_promotes_fields_closes_journey_deletes_session():
     layer, stores = _make_layer()
-    stores["redis"].get_session.return_value = {"trade": "welder", "consent": "true"}
+    stores["redis"].get_session.return_value = {"trade": "welder", "user_storage_mode": "saved"}
 
     layer.flush_session("sess-1", "user-1", "completed")
 
@@ -376,22 +431,49 @@ def test_flush_session_promotes_fields_closes_journey_deletes_session():
     stores["redis"].remove_session_from_user_index.assert_called_once_with("user-1", "sess-1")
 
 
-def test_flush_session_consent_false_triggers_delete_user():
+def test_flush_session_user_storage_mode_anonymous_triggers_delete_user():
+    """user_storage_mode='anonymous' in session → DPDP delete of user graph."""
     layer, stores = _make_layer()
-    stores["redis"].get_session.return_value = {"consent": "false"}
+    stores["redis"].get_session.return_value = {"user_storage_mode": "anonymous"}
 
     layer.flush_session("sess-1", "user-1", "no_consent")
 
     stores["user"].delete_user.assert_called_once_with("user-1")
 
 
-def test_flush_session_consent_true_does_not_delete_user():
+def test_flush_session_user_storage_mode_saved_no_delete_user():
+    """user_storage_mode='saved' in session → user graph is retained."""
     layer, stores = _make_layer()
-    stores["redis"].get_session.return_value = {"consent": "true"}
+    stores["redis"].get_session.return_value = {"user_storage_mode": "saved"}
 
     layer.flush_session("sess-1", "user-1", "completed")
 
     stores["user"].delete_user.assert_not_called()
+
+
+def test_flush_session_absent_user_storage_mode_uses_default_saved():
+    """When user_storage_mode is absent and default_mode=saved, user graph is retained."""
+    layer, stores = _make_layer()
+    # MINIMAL_CONFIG has no user_data_persistence → default = "saved"
+    stores["redis"].get_session.return_value = {"trade": "welder"}  # no user_storage_mode
+
+    layer.flush_session("sess-1", "user-1", "completed")
+
+    stores["user"].delete_user.assert_not_called()
+
+
+def test_flush_session_absent_user_storage_mode_uses_default_anonymous():
+    """When user_storage_mode is absent and default_mode=anonymous, user graph is deleted."""
+    anon_config = {
+        **MINIMAL_CONFIG,
+        "user_data_persistence": {"default_mode": "anonymous"},
+    }
+    layer, stores = _make_layer_with_config(anon_config)
+    stores["redis"].get_session.return_value = {"trade": "welder"}  # no user_storage_mode
+
+    layer.flush_session("sess-1", "user-1", "completed")
+
+    stores["user"].delete_user.assert_called_once_with("user-1")
 
 
 def test_flush_session_empty_session_state_still_closes_journey():
@@ -500,7 +582,7 @@ def test_delete_user_error_is_absorbed():
 # ---------------------------------------------------------------------------
 
 def test_build_initial_session_includes_infrastructure_fields():
-    schema = {"current_node": {"default": "greeting"}}
+    schema = {"trade": {"default": ""}}
     state = _build_initial_session("sess-1", "user-1", schema, False)
     assert state["user_id"] == "user-1"
     assert state["journey_id"] == "sess-1"
@@ -521,17 +603,17 @@ def test_build_initial_session_serialises_bool_default():
 
 def test_build_scope_map_session_fields_from_schema():
     scope_map = _build_scope_map(
-        {"current_node": {}, "trade": {}},
-        ["language"],
+        {"loop_count": {}, "options_presented": {}},
+        ["education"],
         [{"label": "Role", "rel": "OFFERED"}],
     )
-    assert scope_map["current_node"] == "session"
-    assert scope_map["trade"] == "session"
+    assert scope_map["loop_count"] == "session"
+    assert scope_map["options_presented"] == "session"
 
 
 def test_build_scope_map_persistent_from_declared_fields():
-    scope_map = _build_scope_map({}, ["language", "education"], [])
-    assert scope_map["language"] == "persistent"
+    scope_map = _build_scope_map({}, ["trade", "education"], [])
+    assert scope_map["trade"] == "persistent"
     assert scope_map["education"] == "persistent"
 
 

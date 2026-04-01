@@ -23,6 +23,7 @@ Run standalone:
 
 from __future__ import annotations
 
+import json
 import logging
 import random
 import string
@@ -61,6 +62,13 @@ _FIXTURES: dict[str, dict] = {
     },
     "plumber": {
         "trade": "plumber",
+        "salary_range": "₹12k–₹22k",
+        "market_signal": "growing 9% QoQ",
+        "top_employers": ["Hubli Municipal Corp", "KA Infrastructure Projects"],
+        "source": "ONEST",
+    },
+    "plumbing": {
+        "trade": "plumbing",
         "salary_range": "₹12k–₹22k",
         "market_signal": "growing 9% QoQ",
         "top_employers": ["Hubli Municipal Corp", "KA Infrastructure Projects"],
@@ -153,7 +161,8 @@ class ExecuteRequest(BaseModel):
 class ExecuteResponse(BaseModel):
     tool_use_id: str
     success: bool
-    result_text: str
+    result: dict = {}
+    result_text: str = ""
     error: Optional[str] = None
 
 
@@ -256,10 +265,21 @@ def create_mock_server() -> FastAPI:
                 # Convert generic dict to specific Pydantic model
                 lookup_req = MarketLookupRequest(**request.input_params)
                 res = market_lookup(lookup_req)
+                
+                logger.info(
+                    "mock_server.tool_result",
+                    extra={
+                        "tool": "onest_market_lookup",
+                        "trade_requested": lookup_req.trade,
+                        "match_found": lookup_req.trade.lower() in _FIXTURES
+                    }
+                )
+                
                 return ExecuteResponse(
                     tool_use_id=request.tool_use_id,
                     success=True,
-                    result_text=str(res.dict()),
+                    result=res.dict(),
+                    result_text=json.dumps(res.dict()),
                 )
 
             if request.tool_name == "onest_apply":
@@ -269,7 +289,8 @@ def create_mock_server() -> FastAPI:
                 return ExecuteResponse(
                     tool_use_id=request.tool_use_id,
                     success=True,
-                    result_text=str(res.dict()),
+                    result=res.dict(),
+                    result_text=json.dumps(res.dict()),
                 )
 
             # Fallback for unknown tools

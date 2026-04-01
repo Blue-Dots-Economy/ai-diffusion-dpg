@@ -244,17 +244,43 @@ class AgentCore(AgentCoreBase):
             lang_model,
         )
         t4 = time.time()
-        normalised_input, detected_language = self._language_normaliser.normalise(
+        normalised_input, turn_language = self._language_normaliser.normalise(
             raw_input=turn_input.user_message,
             config=self._config,
             llm=self._llm,
         )
+        
+        # Determine language preference — lock it in if not already set
+        profile_data = bundle.profile if bundle.profile is not None else {}
+        session_data = bundle.session if bundle.session is not None else {}
+        
+        default_language = (
+            self._config.get("preprocessing", {})
+            .get("language_normalisation", {})
+            .get("default_language", "hindi")
+        )
+        language_preference = (
+            profile_data.get("language_preference") or
+            session_data.get("language_preference") or
+            turn_language or
+            default_language
+        )
+        
+        # If this is the first time we've seen a language, save it
+        if "language_preference" not in session_data and "language_preference" not in profile_data:
+            pref_scope: str = self._config.get("entity_persistence", {}).get("scope", "persistent")
+            self._write_memory_sync(session_id, user_id, pref_scope, "language_preference", language_preference)
+            bundle.session["language_preference"] = language_preference
+
         logger.info(
-            "  [STEP 4] Language Normalisation  ✓  detected_language=%s  normalised=%r  latency=%dms",
-            detected_language or "en",
+            "  [STEP 4] Language Normalisation  ✓  detected=%s  preference=%s  normalised=%r  latency=%dms",
+            turn_language or "—",
+            language_preference,
             (normalised_input or turn_input.user_message)[:100],
             int((time.time() - t4) * 1000),
         )
+        # Use preference for the rest of the turn logic
+        detected_language = language_preference
 
         # ── Step 5: NLU Processor ─────────────────────────────────────
         allowed_intents = self._workflow.nlu_intent_set.get(current_subagent_id, [])
@@ -334,6 +360,7 @@ class AgentCore(AgentCoreBase):
         )
         bundle.session["subagent_entry_count"] = subagent_entry_count
         bundle.session["current_subagent_id"] = next_subagent_id
+        self._write_memory_sync(session_id, user_id, "session", "current_subagent_id", next_subagent_id)
 
         logger.info(
             "  [STEP 6] Routing  ✓  next_subagent_id=%s  entry_count=%d",
@@ -349,19 +376,31 @@ class AgentCore(AgentCoreBase):
         )
         # Merge collected session fields into profile for LLM grounding context
         profile_context = dict(bundle.profile)
-        entity_map: dict = self._config.get("entity_to_profile_field", {})
         profile_field_names = set(entity_map.values())
         for k, v in bundle.session.items():
             if k in profile_field_names and v not in (None, "", "[]"):
                 profile_context[k] = v
 
+        # Ensure the prompt builder uses the most up-to-date language preference
+        # (which might have been updated by NLU in Step 5).
+        final_language = profile_context.get("language_preference", detected_language)
+
+        # Check for resumption signal from Memory Layer
+        is_resumption = bundle.session.get("was_adopted", False)
+        
         system = self._manager_agent.build_system_prompt(
             agent_system_prompt=self._workflow.agent_system_prompt,
             subagent_system_prompt=next_subagent.system_prompt,
-            detected_language=detected_language,
+            detected_language=final_language,
             channel=turn_input.channel,
             profile=profile_context,
+            is_resumption=is_resumption,
         )
+
+        # Clear resumption flag in session so it only affects the first turn
+        if is_resumption:
+            bundle.session["was_adopted"] = False
+            self._write_memory_sync(session_id, user_id, "session", "was_adopted", False)
         messages = self._manager_agent.build_messages(
             user_message=turn_input.user_message,
             current_question=current_question,
@@ -384,14 +423,10 @@ class AgentCore(AgentCoreBase):
                 was_tool_used=False,
                 model_used="",
                 latency_ms=int((time.time() - start) * 1000),
-                bundle=bundle,
                 turn_input=turn_input,
                 tool_calls=[],
                 trust_input=trust_input,
                 trust_output=TrustCheckResult(passed=True, action="allow"),
-                nlu_result=nlu_result,
-                next_subagent_id=next_subagent_id,
-                subagent_entry_count=subagent_entry_count,
             )
 
         # ── Step 8: LLM call #1 with scoped tools ────────────────────
@@ -495,14 +530,10 @@ class AgentCore(AgentCoreBase):
             was_tool_used=bool(tool_calls),
             model_used=llm_response.model_used,
             latency_ms=latency_ms,
-            bundle=bundle,
             turn_input=turn_input,
             tool_calls=tool_calls,
             trust_input=trust_input,
             trust_output=trust_output,
-            nlu_result=nlu_result,
-            next_subagent_id=next_subagent_id,
-            subagent_entry_count=subagent_entry_count,
         )
 
         logger.info(
@@ -852,41 +883,35 @@ class AgentCore(AgentCoreBase):
         was_tool_used: bool,
         model_used: str,
         latency_ms: int,
-        bundle: ContextBundle,
         turn_input: TurnInput,
         tool_calls: list[ToolCall],
         trust_input: TrustCheckResult,
         trust_output: TrustCheckResult,
-        nlu_result: NLUResult,
-        next_subagent_id: str = "",
-        subagent_entry_count: Optional[dict] = None,
         do_flush: bool = False,
         flush_reason: str = "",
     ) -> TurnResult:
         """
         Construct the TurnResult and schedule async post-turn work.
 
-        Spawns a daemon thread to run Steps 12-13 (memory write + learning
-        emit) after the TurnResult has been returned to the caller.
+        Spawns a daemon thread to run Step 12 (last_response write) and
+        Step 13 (learning emit) after the TurnResult has been returned.
+        Entity writes, subagent_entry_count, and current_subagent_id are
+        written synchronously before this point and are not repeated here.
 
         Args:
-            session_id:           Session identifier.
-            user_id:              User identifier.
-            response_text:        Final response text to deliver.
-            was_escalated:        True if this turn triggered escalation.
-            was_tool_used:        True if at least one tool was called.
-            model_used:           Model identifier from the LLM response.
-            latency_ms:           Total turn latency in milliseconds.
-            bundle:               Context bundle, used for entity consent scope.
-            turn_input:           Inbound turn data, used for TurnEvent timestamp.
-            tool_calls:           All tool calls executed this turn.
-            trust_input:          Trust check result for the input.
-            trust_output:         Trust check result for the output.
-            nlu_result:           NLU result for entity writing in post-turn.
-            next_subagent_id:     The resolved next subagent id to persist.
-            subagent_entry_count: Updated subagent entry count dict to persist.
-            do_flush:             If True, flush session after memory writes.
-            flush_reason:         Reason string passed to flush_session.
+            session_id:    Session identifier.
+            user_id:       User identifier.
+            response_text: Final response text to deliver.
+            was_escalated: True if this turn triggered escalation.
+            was_tool_used: True if at least one tool was called.
+            model_used:    Model identifier from the LLM response.
+            latency_ms:    Total turn latency in milliseconds.
+            turn_input:    Inbound turn data, used for TurnEvent timestamp.
+            tool_calls:    All tool calls executed this turn.
+            trust_input:   Trust check result for the input.
+            trust_output:  Trust check result for the output.
+            do_flush:      If True, flush session after memory writes.
+            flush_reason:  Reason string passed to flush_session.
 
         Returns:
             Fully constructed TurnResult.
@@ -917,9 +942,7 @@ class AgentCore(AgentCoreBase):
             target=self._post_turn,
             args=(
                 session_id, user_id, response_text,
-                nlu_result, bundle, turn_event,
-                next_subagent_id, subagent_entry_count or {},
-                do_flush, flush_reason,
+                turn_event, do_flush, flush_reason,
             ),
             daemon=True,
         )
@@ -932,34 +955,29 @@ class AgentCore(AgentCoreBase):
         session_id: str,
         user_id: str,
         response_text: str,
-        nlu_result: NLUResult,
-        bundle: ContextBundle,
         turn_event: TurnEvent,
-        next_subagent_id: str,
-        subagent_entry_count: dict,
         do_flush: bool,
         flush_reason: str,
     ) -> None:
         """
         Run Steps 12-13 asynchronously after the TurnResult is returned.
 
-        Writes per-field session state and confirmed entities via the Memory
-        Layer (Step 12). Emits a turn event to the Learning Layer (Step 13).
+        Writes last_response to the Memory Layer (Step 12) and emits a turn
+        event to the Learning Layer (Step 13). Entity writes, current_subagent_id,
+        and subagent_entry_count are written synchronously in process_turn and
+        are not repeated here.
+
         Flushes session if do_flush is True (termination, HITL, or handoff).
 
         Any exception here is logged and swallowed — must never crash the thread.
 
         Args:
-            session_id:           Session identifier.
-            user_id:              User identifier.
-            response_text:        Final response text delivered this turn.
-            nlu_result:           NLU result, used to determine which entities to write.
-            bundle:               Context bundle with session and profile state.
-            turn_event:           Pre-assembled TurnEvent to emit to Learning Layer.
-            next_subagent_id:     Next subagent id to persist as current_subagent_id.
-            subagent_entry_count: Updated entry count dict to persist.
-            do_flush:             If True, call flush_session after memory writes.
-            flush_reason:         Reason string passed to flush_session.
+            session_id:    Session identifier.
+            user_id:       User identifier.
+            response_text: Final response text delivered this turn.
+            turn_event:    Pre-assembled TurnEvent to emit to Learning Layer.
+            do_flush:      If True, call flush_session after memory writes.
+            flush_reason:  Reason string passed to flush_session.
         """
         memory_endpoint = (
             self._config.get("memory_client", {}).get("endpoint", "http://memory_layer:8002")
@@ -968,7 +986,9 @@ class AgentCore(AgentCoreBase):
             self._config.get("learning_client", {}).get("endpoint", "http://learning_layer:8004")
         )
 
-        # ── Step 12: Write session fields ─────────────────────────────
+        # ── Step 12: Write last_response ─────────────────────────────
+        # Entities, current_subagent_id, and subagent_entry_count are already
+        # written synchronously in process_turn before the response is returned.
         logger.info(
             "  [STEP 12] [async] Memory Write  →  POST %s/write  (session=%s)",
             memory_endpoint, session_id,
@@ -976,29 +996,8 @@ class AgentCore(AgentCoreBase):
         try:
             t12 = time.time()
             self._memory.write(session_id, user_id, "session", "last_response", response_text)
-
-            # Write current_subagent_id and subagent_entry_count.
-            if next_subagent_id:
-                self._memory.write(
-                    session_id, user_id, "session", "current_subagent_id", next_subagent_id
-                )
-            if subagent_entry_count:
-                self._memory.write(
-                    session_id, user_id, "session", "subagent_entry_count", subagent_entry_count
-                )
-
-            # Write extracted entities — scope is config-driven (entity_persistence.scope).
-            entity_scope = self._config.get("entity_persistence", {}).get("scope", "persistent")
-            entity_map: dict = self._config.get("entity_to_profile_field", {})
-            for entity_key, entity_val in (nlu_result.entities or {}).items():
-                profile_field = entity_map.get(entity_key, entity_key)
-                self._memory.write(session_id, user_id, entity_scope, profile_field, entity_val)
-
             logger.info(
-                "  [STEP 12] [async] Memory Write  ✓  current_subagent_id=%s"
-                "  entities_written=%d  latency=%dms",
-                next_subagent_id,
-                len(nlu_result.entities or {}),
+                "  [STEP 12] [async] Memory Write  ✓  last_response written  latency=%dms",
                 int((time.time() - t12) * 1000),
             )
         except Exception as e:

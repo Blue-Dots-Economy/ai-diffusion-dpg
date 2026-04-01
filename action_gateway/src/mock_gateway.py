@@ -142,16 +142,21 @@ class MockActionGateway:
         """
         return list(_TOOL_DEFINITIONS)
 
-    def execute(self, tool_call: dict, session_id: str) -> dict:
+    def execute(self, tool_call: Any, session_id: str) -> dict:
         """
         Execute a single tool call against the appropriate connector.
 
+        Accepts both a ToolCall dataclass (when wired directly into agent_core)
+        and a plain dict (legacy HTTP path). Uses attribute access with a dict
+        fallback so either form works without importing agent_core's ToolCall model.
+
         Args:
-            tool_call: dict with keys: tool_name, tool_use_id, input_params
-            session_id: used for logging and per-session constraints
+            tool_call: ToolCall dataclass or dict with keys tool_name, tool_use_id,
+                       input_params. Must not be None.
+            session_id: Used for logging and per-session constraints.
 
         Returns:
-            dict with keys: tool_use_id, tool_name, result, success, error
+            dict with keys: tool_use_id, tool_name, result, success, error.
             Always returns a result — never raises.
         """
         if tool_call is None:
@@ -159,9 +164,15 @@ class MockActionGateway:
         if session_id is None:
             raise ValueError("session_id must not be None")
 
-        tool_name = tool_call.get("tool_name", "")
-        tool_use_id = tool_call.get("tool_use_id", "")
-        input_params = tool_call.get("input_params", {})
+        # Support both ToolCall dataclass (direct wiring) and dict (HTTP path).
+        if hasattr(tool_call, "tool_name"):
+            tool_name = tool_call.tool_name
+            tool_use_id = tool_call.tool_use_id
+            input_params = tool_call.input_params or {}
+        else:
+            tool_name = tool_call.get("tool_name", "")
+            tool_use_id = tool_call.get("tool_use_id", "")
+            input_params = tool_call.get("input_params", {})
 
         if tool_name == "onest_market_lookup":
             return self._call_onest(tool_use_id, tool_name, input_params, session_id)

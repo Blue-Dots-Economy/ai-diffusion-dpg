@@ -176,6 +176,7 @@ class ManagerAgent:
         detected_language: str,
         channel: str,
         profile: dict,
+        is_resumption: bool = False,
     ) -> str:
         """
         Build the system prompt for one LLM call.
@@ -212,6 +213,13 @@ class ManagerAgent:
             )
         if context_parts:
             parts.append("\n".join(context_parts))
+
+        if is_resumption:
+            parts.append(
+                "CONTEXT: The user has returned to an ongoing session. DO NOT provide a starting greeting "
+                "or re-introduce yourself. Resume the conversation naturally from where it left off. "
+                "Ask the next question required for the current stage."
+            )
 
         # Inject known profile fields as grounding context
         if profile:
@@ -252,15 +260,16 @@ class ManagerAgent:
             current_question: The last question the agent asked (from session). Empty string if first turn.
 
         Returns:
-            Single-turn Anthropic messages list. Empty list if user_message is empty.
+            Single-turn Anthropic messages list.
         """
-        if not user_message:
-            return []
+        # If user_message is empty (e.g. cold-start resumption), use a placeholder
+        # so the LLM has a "turn" to generate the resumption prompt.
+        input_text = user_message.strip() if user_message else "[Resuming session...]"
 
         content_parts: list[str] = []
         if current_question:
             content_parts.append(f"[Last question asked: {current_question}]")
-        content_parts.append(user_message)
+        content_parts.append(input_text)
 
         return [{"role": "user", "content": "\n\n".join(content_parts)}]
 

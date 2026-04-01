@@ -2,13 +2,15 @@
 agent_core/tests/test_orchestrator.py
 
 Unit tests for AgentCore (orchestrator).
-All 6 DPG interfaces, ManagerAgent, LanguageNormaliser, and NLUProcessor are mocked.
+All 6 DPG interfaces, ManagerAgent, LanguageNormaliser, NLUProcessor, and AgentWorkflow
+are mocked.
 
 Coverage:
 - Normal: full turn — both Trust checks called, TurnResult returned
 - Normal: tool used — was_tool_used=True in result
+- Normal: sync memory writes happen before TurnResult is returned
 - Normal: async post-turn runs (memory write + learning emit scheduled)
-- Normal: KE retrieve() called with NLU-computed params
+- Normal: ke_context passed to manager_agent.run_turn
 - Edge: empty user_message still processes without error
 - Edge: empty messages from build_messages returns empty TurnResult
 - Failure: Trust input returns "block" — blocked response returned, LLM not called
@@ -16,16 +18,21 @@ Coverage:
 - Failure: Trust output returns "block" — response replaced with fallback message
 - Failure: None turn_input raises ValueError
 - Failure: empty session_id raises ValueError
-- Early exit: unknown intent (+ low confidence) — KE and LLM not called
-- HITL: loop_count >= threshold triggers escalation
-- Termination: termination_intent triggers flush
+- Failure: None workflow raises ValueError
+- Routing: unknown intent falls through to LLM via default_fallback
+- Routing: global routing intercepts termination_intent
+- Routing: session_writes from matched rule written synchronously
+- Routing: current_subagent_id written synchronously after routing
+- Special handler: hitl subagent escalates without LLM call
+- Special handler: whatsapp_handoff returns was_escalated=False
+- Config: default_language from config used when no session/profile preference
 """
 
 from __future__ import annotations
 
 import time
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, ANY
 
 from src.orchestrator import AgentCore
 from src.models import (
@@ -51,15 +58,16 @@ VALID_CONFIG = {
         "blocked_message": "Blocked.",
         "escalation_message": "Escalating.",
         "output_blocked_message": "Output blocked.",
-        "termination_message": "Goodbye.",
     },
     "preprocessing": {
         "nlu_processor": {
             "confidence_threshold": 0.5,
-        }
+        },
+        "language_normalisation": {
+            "default_language": "hindi",
+        },
     },
-    "hitl": {"loop_count_threshold": 3},
-    "workflow": {"termination_intents": ["termination_intent"]},
+    "hitl": {"response_message": "Connecting you to an advisor."},
 }
 
 ALLOW = TrustCheckResult(passed=True, action="allow")
@@ -95,6 +103,45 @@ def _turn_input(message: str = "Hello") -> TurnInput:
     )
 
 
+# ---------------------------------------------------------------------------
+# Workflow construction helpers
+# ---------------------------------------------------------------------------
+
+def _make_subagent(subagent_id: str = "market_truth", special_handler=None) -> MagicMock:
+    """Build a minimal mock SubAgent with no routing rules."""
+    sa = MagicMock()
+    sa.id = subagent_id
+    sa.name = f"Test Subagent ({subagent_id})"
+    sa.special_handler = special_handler
+    sa.system_prompt = f"Test prompt for {subagent_id}."
+    sa.output_format = None
+    sa.routing = []  # empty — falls through to global_routing, then default_fallback
+    return sa
+
+
+def _make_workflow(
+    subagent_id: str = "market_truth",
+    special_handler=None,
+    global_routing=None,
+    extra_subagents=None,
+) -> MagicMock:
+    """Build a minimal mock AgentWorkflow. Routing falls to default_fallback by default."""
+    sa = _make_subagent(subagent_id, special_handler)
+    subagents = {subagent_id: sa}
+    if extra_subagents:
+        subagents.update(extra_subagents)
+
+    wf = MagicMock()
+    wf.start_subagent_id = subagent_id
+    wf.subagents = subagents
+    wf.global_routing = global_routing or []
+    wf.default_fallback_subagent_id = subagent_id
+    wf.nlu_intent_set = {subagent_id: ["market_truth_query"]}
+    wf.tool_defs = {}
+    wf.agent_system_prompt = ""
+    return wf
+
+
 def _make_agent(
     trust_input: TrustCheckResult = ALLOW,
     trust_output: TrustCheckResult = ALLOW,
@@ -104,6 +151,7 @@ def _make_agent(
     prompt_messages: list = None,
     nlu_result: NLUResult = None,
     session_data: dict = None,
+    workflow: MagicMock = None,
 ) -> AgentCore:
     """
     Build an AgentCore with all external dependencies mocked.
@@ -111,10 +159,10 @@ def _make_agent(
     LanguageNormaliser and NLUProcessor are replaced on the instance after
     construction so their LLM calls do not interfere with the primary LLM mock.
     """
-    # Default current_node to "market_truth" so existing orchestrator tests exercise
-    # the LLM path without being intercepted by the workflow gate.
-    # Tests that specifically test the gate use test_workflow_gate.py.
-    session = session_data if session_data is not None else {"current_node": "market_truth"}
+    session = (
+        session_data if session_data is not None
+        else {"current_subagent_id": "market_truth"}
+    )
     memory = MagicMock()
     memory.context_bundle.return_value = ContextBundle(
         session=session, profile={}, journey=None
@@ -124,9 +172,7 @@ def _make_agent(
     trust.check_input.return_value = trust_input
     trust.check_output.return_value = trust_output
 
-    # KE returns a list of RetrievalChunk objects
     knowledge_engine = MagicMock()
-    knowledge_engine.retrieve.return_value = []
 
     llm = MagicMock()
     llm.call.return_value = LLMResponse(
@@ -152,6 +198,9 @@ def _make_agent(
 
     learning = MagicMock()
 
+    if workflow is None:
+        workflow = _make_workflow()
+
     agent = AgentCore(
         config=VALID_CONFIG,
         llm_wrapper=llm,
@@ -161,6 +210,7 @@ def _make_agent(
         tool_registry=tool_registry,
         manager_agent=manager,
         learning=learning,
+        workflow=workflow,
     )
 
     # Replace Language Normaliser and NLU Processor with controlled mocks
@@ -180,7 +230,22 @@ def _make_agent(
 def test_raises_on_none_config():
     with pytest.raises(ValueError, match="config must not be None"):
         AgentCore(None, MagicMock(), MagicMock(), MagicMock(),
-                  MagicMock(), MagicMock(), MagicMock(), MagicMock())
+                  MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock())
+
+
+def test_raises_on_none_workflow():
+    with pytest.raises(ValueError, match="workflow must not be None"):
+        AgentCore(
+            config={},
+            llm_wrapper=MagicMock(),
+            memory=MagicMock(),
+            trust=MagicMock(),
+            knowledge_engine=MagicMock(),
+            tool_registry=MagicMock(),
+            manager_agent=MagicMock(),
+            learning=MagicMock(),
+            workflow=None,
+        )
 
 
 def test_raises_on_none_turn_input():
@@ -264,16 +329,38 @@ def test_nlu_processor_called_with_normalised_input():
     assert call_args[1].get("normalised_input") == "kaam chahiye normalised"
 
 
-def test_ke_retrieve_called_with_nlu_params():
-    """KE retrieve() must receive the NLU results computed by Agent Core."""
+def test_manager_run_turn_called_with_ke_context():
+    """Agent Core passes ke_context dict (with NLU results) to manager_agent.run_turn."""
     agent = _make_agent(nlu_result=_DEFAULT_NLU)
     agent._language_normaliser.normalise.return_value = ("kaam chahiye", "hinglish")
     agent.process_turn(_turn_input("kaam chahiye"))
-    call_kwargs = agent._knowledge_engine.retrieve.call_args[1]
-    assert call_kwargs["intent"] == "market_truth_query"
-    assert call_kwargs["detected_language"] == "hinglish"
-    assert call_kwargs["normalised_input"] == "kaam chahiye"
-    assert call_kwargs["entities"] == {"location": "Hubli"}
+    call_kwargs = agent._manager_agent.run_turn.call_args.kwargs
+    ke_ctx = call_kwargs.get("ke_context", {})
+    assert ke_ctx["intent"] == "market_truth_query"
+    assert ke_ctx["entities"] == {"location": "Hubli"}
+    assert ke_ctx["normalised_input"] == "kaam chahiye"
+
+
+# ---------------------------------------------------------------------------
+# Sync writes — must complete before TurnResult is returned
+# ---------------------------------------------------------------------------
+
+def test_current_subagent_id_written_synchronously():
+    """current_subagent_id must be persisted to memory before process_turn returns."""
+    agent = _make_agent()
+    agent.process_turn(_turn_input())
+    agent._memory.write.assert_any_call(
+        SESSION_ID, SESSION_ID, "session", "current_subagent_id", ANY
+    )
+
+
+def test_entity_written_synchronously():
+    """Entities extracted by NLU are persisted synchronously before result is returned."""
+    agent = _make_agent(nlu_result=_DEFAULT_NLU)
+    agent.process_turn(_turn_input())
+    agent._memory.write.assert_any_call(
+        SESSION_ID, SESSION_ID, "persistent", "location", "Hubli"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -295,38 +382,72 @@ def test_empty_messages_from_build_messages_returns_empty_response():
 
 
 # ---------------------------------------------------------------------------
-# Early exit — unknown intent + low confidence
+# Routing — intent and workflow behaviour
 # ---------------------------------------------------------------------------
 
-def test_unknown_intent_returns_early_without_ke_call():
+def test_unknown_intent_falls_through_to_llm():
+    """Unknown intent falls to default_fallback subagent; LLM is still called."""
     agent = _make_agent(nlu_result=_UNKNOWN_NLU)
-    result = agent.process_turn(_turn_input())
-    agent._knowledge_engine.retrieve.assert_not_called()
-    agent._llm.call.assert_not_called()
-    assert isinstance(result, TurnResult)
+    agent.process_turn(_turn_input())
+    agent._llm.call.assert_called_once()
 
 
-def test_unknown_intent_response_text_from_config():
-    agent = _make_agent(nlu_result=_UNKNOWN_NLU)
-    result = agent.process_turn(_turn_input())
-    assert result.response_text == "I didn't understand that."
-
-
-def test_low_confidence_with_unknown_intent_returns_early():
-    """Early exit only triggers when BOTH intent=unknown AND confidence<threshold."""
-    low_unknown = NLUResult(intent="unknown", entities={}, sentiment="neutral", confidence=0.3)
-    agent = _make_agent(nlu_result=low_unknown)
-    result = agent.process_turn(_turn_input())
-    agent._knowledge_engine.retrieve.assert_not_called()
-    assert isinstance(result, TurnResult)
-
-
-def test_low_confidence_with_valid_intent_proceeds_to_ke():
-    """Low confidence alone does NOT trigger early exit if intent is known."""
+def test_low_confidence_valid_intent_still_calls_llm():
+    """Low confidence alone does NOT skip the LLM when intent is known."""
     low_valid = NLUResult(intent="market_truth_query", entities={}, sentiment="neutral", confidence=0.3)
     agent = _make_agent(nlu_result=low_valid)
     agent.process_turn(_turn_input())
-    agent._knowledge_engine.retrieve.assert_called_once()
+    agent._llm.call.assert_called_once()
+
+
+def test_termination_intent_routed_via_global_routing():
+    """Global routing intercepts termination_intent and routes to the 'ended' subagent."""
+    ended_sa = _make_subagent("ended")
+    term_rule = MagicMock()
+    term_rule.intent = "termination_intent"
+    term_rule.next_subagent_id = "ended"
+    term_rule.condition = None
+    term_rule.conditions = None
+    term_rule.session_writes = None
+
+    wf = _make_workflow(
+        subagent_id="greeting",
+        global_routing=[term_rule],
+        extra_subagents={"ended": ended_sa},
+    )
+    wf.default_fallback_subagent_id = "greeting"
+    wf.nlu_intent_set = {"greeting": ["termination_intent"]}
+
+    agent = _make_agent(
+        nlu_result=_TERMINATION_NLU,
+        session_data={"current_subagent_id": "greeting"},
+        workflow=wf,
+    )
+    agent.process_turn(_turn_input())
+    agent._memory.write.assert_any_call(
+        SESSION_ID, SESSION_ID, "session", "current_subagent_id", "ended"
+    )
+
+
+def test_session_writes_from_routing_rule_applied():
+    """session_writes from a matched routing rule are persisted synchronously."""
+    term_rule = MagicMock()
+    term_rule.intent = "termination_intent"
+    term_rule.next_subagent_id = "market_truth"
+    term_rule.condition = None
+    term_rule.conditions = None
+    term_rule.session_writes = {"user_storage_mode": "anonymous"}
+
+    wf = _make_workflow(global_routing=[term_rule])
+    agent = _make_agent(
+        nlu_result=_TERMINATION_NLU,
+        session_data={"current_subagent_id": "market_truth"},
+        workflow=wf,
+    )
+    agent.process_turn(_turn_input())
+    agent._memory.write.assert_any_call(
+        SESSION_ID, SESSION_ID, "session", "user_storage_mode", "anonymous"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -340,10 +461,10 @@ def test_blocked_input_returns_blocked_message():
     agent._llm.call.assert_not_called()
 
 
-def test_blocked_input_does_not_call_knowledge_engine():
+def test_blocked_input_does_not_call_llm():
     agent = _make_agent(trust_input=BLOCK)
     agent.process_turn(_turn_input())
-    agent._knowledge_engine.retrieve.assert_not_called()
+    agent._llm.call.assert_not_called()
 
 
 def test_escalated_input_returns_escalation_message():
@@ -360,32 +481,41 @@ def test_escalated_input_does_not_call_llm():
 
 
 # ---------------------------------------------------------------------------
-# HITL bypass
+# Special handlers (hitl, whatsapp_handoff)
 # ---------------------------------------------------------------------------
 
-def test_hitl_loop_count_triggers_escalation():
-    """loop_count >= hitl_threshold escalates before LLM call."""
-    agent = _make_agent(session_data={"loop_count": 3})
+def test_hitl_special_handler_escalates():
+    """A subagent with special_handler='hitl' sets was_escalated=True without LLM call."""
+    wf = _make_workflow(subagent_id="hitl_node", special_handler="hitl")
+    agent = _make_agent(
+        session_data={"current_subagent_id": "hitl_node"},
+        workflow=wf,
+    )
     result = agent.process_turn(_turn_input())
     assert result.was_escalated is True
     agent._llm.call.assert_not_called()
 
 
-def test_hitl_below_threshold_proceeds_normally():
-    agent = _make_agent(session_data={"loop_count": 2, "current_node": "market_truth"})
+def test_hitl_special_handler_returns_configured_message():
+    """HITL response message is read from config.hitl.response_message, not from LLM."""
+    wf = _make_workflow(subagent_id="hitl_node", special_handler="hitl")
+    agent = _make_agent(
+        session_data={"current_subagent_id": "hitl_node"},
+        workflow=wf,
+    )
+    result = agent.process_turn(_turn_input())
+    assert result.response_text == "Connecting you to an advisor."
+
+
+def test_whatsapp_special_handler_not_escalated():
+    """whatsapp_handoff special handler returns was_escalated=False without LLM call."""
+    wf = _make_workflow(subagent_id="whatsapp_node", special_handler="whatsapp_handoff")
+    agent = _make_agent(
+        session_data={"current_subagent_id": "whatsapp_node"},
+        workflow=wf,
+    )
     result = agent.process_turn(_turn_input())
     assert result.was_escalated is False
-    agent._llm.call.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# Termination intent
-# ---------------------------------------------------------------------------
-
-def test_termination_intent_returns_goodbye_message():
-    agent = _make_agent(nlu_result=_TERMINATION_NLU)
-    result = agent.process_turn(_turn_input())
-    assert result.response_text == "Goodbye."
     agent._llm.call.assert_not_called()
 
 
@@ -403,6 +533,21 @@ def test_blocked_output_still_calls_trust_output():
     agent = _make_agent(trust_output=BLOCK)
     agent.process_turn(_turn_input())
     agent._trust.check_output.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Config-driven default language
+# ---------------------------------------------------------------------------
+
+def test_default_language_from_config_used_when_no_preference():
+    """When no language_preference is in profile or session, config default_language is used."""
+    agent = _make_agent(session_data={"current_subagent_id": "market_truth"})
+    agent._language_normaliser.normalise.return_value = ("Hello", None)  # no detected language
+    agent.process_turn(_turn_input())
+    # language_preference should be written as "hindi" (from VALID_CONFIG.preprocessing.language_normalisation.default_language)
+    agent._memory.write.assert_any_call(
+        SESSION_ID, SESSION_ID, "persistent", "language_preference", "hindi"
+    )
 
 
 # ---------------------------------------------------------------------------
