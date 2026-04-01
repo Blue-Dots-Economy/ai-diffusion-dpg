@@ -60,14 +60,14 @@ subagents:
 
     routing:                            # Ordered list of routing rules. First match wins.
       - intent: <intent_name>
-        next_subagent: <subagent_id>
+        next_subagent_id: <subagent_id>
 
       - intent: <intent_name>           # Conditional routing: evaluated against session fields.
         condition:
           field: <session_field_name>
           operator: <eq|in|lt|gt|not_eq>
           value: <value_or_list>
-        next_subagent: <subagent_id>
+        next_subagent_id: <subagent_id>
 
       - intent: <intent_name>           # Multiple conditions (all must be true).
         conditions:
@@ -77,10 +77,10 @@ subagents:
           - field: <field>
             operator: <op>
             value: <value>
-        next_subagent: <subagent_id>
+        next_subagent_id: <subagent_id>
 
       - intent: "*"                     # Catch-all for this subagent. Stays on same subagent.
-        next_subagent: <subagent_id>
+        next_subagent_id: <subagent_id>
 ```
 
 ---
@@ -110,15 +110,15 @@ agent_workflow:
   global_routing:                       # Routing rules for global_intents. Applied after
                                         # subagent-level routing fails to match.
     - intent: <intent_name>
-      next_subagent: <subagent_id>
+      next_subagent_id: <subagent_id>
     - intent: <intent_name>
       condition:
         field: <field>
         operator: <op>
         value: <value>
-      next_subagent: <subagent_id>
+      next_subagent_id: <subagent_id>
 
-  default_fallback_subagent: <subagent_id>      # Where to go on unknown or unmatched intent.
+  default_fallback_subagent_id: <subagent_id>      # Where to go on unknown or unmatched intent.
                                         # Typically a re-prompt or clarification subagent.
 
   subagents:
@@ -213,20 +213,20 @@ function resolve_next_subagent(current_subagent, nlu_result, session_state):
   for rule in current_subagent.routing:
     if rule.intent == nlu_result.intent OR rule.intent == "*":
       if rule has no condition:
-        return rule.next_subagent
+        return rule.next_subagent_id
       if evaluate_condition(rule.condition, session_state):
-        return rule.next_subagent
+        return rule.next_subagent_id
 
   # 2. Try global routing rules
   for rule in workflow.global_routing:
     if rule.intent == nlu_result.intent:
       if rule has no condition:
-        return rule.next_subagent
+        return rule.next_subagent_id
       if evaluate_condition(rule.condition, session_state):
-        return rule.next_subagent
+        return rule.next_subagent_id
 
   # 3. Fallback
-  return workflow.default_fallback_subagent
+  return workflow.default_fallback_subagent_id
 
 function evaluate_condition(condition, session_state):
   value = session_state.get(condition.field)
@@ -354,7 +354,7 @@ Sections that remain unchanged: `agent`, `preprocessing`, `connectors`, `trust`,
 ## Validation Rules (enforced at startup)
 
 1. Exactly one subagent has `is_start: true`.
-2. Every `next_subagent` reference in routing rules resolves to a subagent id in the workflow.
+2. Every `next_subagent_id` reference in routing rules resolves to a subagent id in the workflow.
 3. Every tool name in `subagent.tools` must exist in the Action Gateway tool registry.
 4. Every intent in `subagent.valid_intents` must exist in `preprocessing.nlu.intents`.
 5. Global intents must NOT appear in any subagent's `valid_intents` (they're added automatically).

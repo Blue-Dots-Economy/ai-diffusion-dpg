@@ -69,14 +69,30 @@ class ClaudeLLMWrapper(LLMWrapperBase):
         tools: list[dict],
         system: str,
         model_override: Optional[str] = None,
+        output_format: Optional[dict] = None,
     ) -> LLMResponse:
+        """Execute an LLM call with automatic retries and fallback model switching.
+
+        Args:
+            messages: List of message dicts with role and content.
+            tools: List of tool definitions the LLM can call.
+            system: System prompt text.
+            model_override: Optional model ID to override the active model.
+            output_format: Optional structured output format dict for the response.
+
+        Returns:
+            LLMResponse with parsed content, tool calls, and metadata.
+
+        Raises:
+            ValueError: If messages is empty.
+        """
         if not messages:
             raise ValueError("messages must not be empty")
 
         model = model_override or self._active_model
 
         try:
-            return self._call_with_retry(model, messages, tools, system)
+            return self._call_with_retry(model, messages, tools, system, output_format)
         except _RetryableExhausted:
             if model != self._primary_model:
                 # Already on fallback — nothing left to try
@@ -87,7 +103,7 @@ class ClaudeLLMWrapper(LLMWrapperBase):
             )
             self._switch_to_fallback()
             try:
-                return self._call_with_retry(self._fallback_model, messages, tools, system)
+                return self._call_with_retry(self._fallback_model, messages, tools, system, output_format)
             except _RetryableExhausted:
                 return LLMResponse(content=None, stop_reason="error")
 
@@ -104,7 +120,23 @@ class ClaudeLLMWrapper(LLMWrapperBase):
         messages: list[dict],
         tools: list[dict],
         system: str,
+        output_format: Optional[dict] = None,
     ) -> LLMResponse:
+        """Internal retry loop for a single LLM call with exponential backoff.
+
+        Args:
+            model: Model ID to use for this call.
+            messages: List of message dicts with role and content.
+            tools: List of tool definitions the LLM can call.
+            system: System prompt text.
+            output_format: Optional structured output format dict for the response.
+
+        Returns:
+            LLMResponse with parsed content, tool calls, and metadata.
+
+        Raises:
+            _RetryableExhausted: If all retry attempts are exhausted on transient errors.
+        """
         last_error: Optional[Exception] = None
 
         for attempt in range(self._max_attempts):
@@ -123,6 +155,8 @@ class ClaudeLLMWrapper(LLMWrapperBase):
                 }
                 if tools:
                     kwargs["tools"] = tools
+                if output_format:
+                    kwargs["response_format"] = output_format
 
                 raw = self._client.messages.create(**kwargs)
                 response = self._parse_response(raw, model)

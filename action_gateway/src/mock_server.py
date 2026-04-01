@@ -143,6 +143,20 @@ class HealthResponse(BaseModel):
     status: str
 
 
+class ExecuteRequest(BaseModel):
+    tool_name: str
+    tool_use_id: str
+    input_params: dict
+    session_id: Optional[str] = None
+
+
+class ExecuteResponse(BaseModel):
+    tool_use_id: str
+    success: bool
+    result_text: str
+    error: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -221,6 +235,59 @@ def create_mock_server() -> FastAPI:
             employer=request.employer,
             trade=request.trade,
         )
+
+    @app.post("/execute", response_model=ExecuteResponse)
+    def execute(request: ExecuteRequest) -> ExecuteResponse:
+        """
+        Generic tool execution router.
+        Bridges the generic Agent Core call to specific domain connectors.
+        """
+        logger.info(
+            "mock_server.execute",
+            extra={
+                "operation": "mock_server.execute",
+                "tool_name": request.tool_name,
+                "session_id": request.session_id,
+            },
+        )
+
+        try:
+            if request.tool_name == "onest_market_lookup":
+                # Convert generic dict to specific Pydantic model
+                lookup_req = MarketLookupRequest(**request.input_params)
+                res = market_lookup(lookup_req)
+                return ExecuteResponse(
+                    tool_use_id=request.tool_use_id,
+                    success=True,
+                    result_text=str(res.dict()),
+                )
+
+            if request.tool_name == "onest_apply":
+                # Convert generic dict to specific Pydantic model
+                apply_req = ApplyRequest(**request.input_params)
+                res = apply(apply_req)
+                return ExecuteResponse(
+                    tool_use_id=request.tool_use_id,
+                    success=True,
+                    result_text=str(res.dict()),
+                )
+
+            # Fallback for unknown tools
+            return ExecuteResponse(
+                tool_use_id=request.tool_use_id,
+                success=False,
+                result_text="",
+                error=f"Unknown tool: {request.tool_name}",
+            )
+
+        except Exception as e:
+            logger.error("mock_server.execute_error", extra={"error": str(e)})
+            return ExecuteResponse(
+                tool_use_id=request.tool_use_id,
+                success=False,
+                result_text="",
+                error=f"Execution failed: {str(e)}",
+            )
 
     @app.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:

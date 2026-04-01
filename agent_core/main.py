@@ -8,7 +8,7 @@ Responsibilities:
 - Instantiate ClaudeLLMWrapper with agent config
 - Create HTTP clients for Memory Layer, Trust Layer, Learning Layer, Knowledge Engine,
   and Action Gateway
-- Wire ToolRegistry, ManagerAgent, and AgentCore
+- Wire ToolRegistry, AgentWorkflowLoader, ManagerAgent, and AgentCore
 - Create the FastAPI orchestration app via create_orchestration_app()
 - Start the uvicorn HTTP server on port 8000
 
@@ -18,7 +18,7 @@ Run:
 
 Environment:
     ANTHROPIC_API_KEY must be set. ClaudeLLMWrapper reads it from the environment
-    via the Anthropic SDK — never hardcoded here.
+    via the Anthropic SDK -- never hardcoded here.
 
 Prerequisites (all must be running before this starts):
     memory_layer/main.py     (port 8002)
@@ -52,10 +52,11 @@ from src.http_clients.action_gateway import ActionGatewayHttpClient
 from src.tool_registry import ToolRegistry
 from src.manager_agent import ManagerAgent
 from src.orchestrator import AgentCore
+from src.workflow_loader import AgentWorkflowLoader
 from src.servers.orchestration_server import create_orchestration_app
 
 # ---------------------------------------------------------------------------
-# Logging — structured output, INFO level default
+# Logging -- structured output, INFO level default
 # ---------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
@@ -90,7 +91,7 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# App construction — exposed at module level for uvicorn --reload
+# App construction -- exposed at module level for uvicorn --reload
 # ---------------------------------------------------------------------------
 
 
@@ -109,18 +110,22 @@ def _build_app():
     ke       = HttpKnowledgeEngineClient(config)
     gateway  = ActionGatewayHttpClient(config)
 
-    # ── Tool Registry — built from gateway's tool definitions ─────────────
+    # Tool Registry -- built from gateway's tool definitions
     tool_registry = ToolRegistry(config=config, gateway=gateway)
+
+    # Workflow Loader -- parse and validate agent_workflow block at startup
+    workflow = AgentWorkflowLoader().load(config=config, tool_registry=tool_registry)
 
     manager = ManagerAgent(
         llm_wrapper=llm,
         tool_registry=tool_registry,
         action_gateway=gateway,
+        knowledge_engine=ke,
         trust_layer=trust,
         max_tool_rounds=agent_cfg.get("max_tool_rounds", 1),
     )
 
-    # ── Agent Core — central orchestrator ────────────────────────────────
+    # Agent Core -- central orchestrator
     agent_core = AgentCore(
         config=config,
         llm_wrapper=llm,
@@ -130,11 +135,12 @@ def _build_app():
         tool_registry=tool_registry,
         manager_agent=manager,
         learning=learning,
+        workflow=workflow,
     )
 
     model_name = llm.get_active_model()
 
-    # ── FastAPI app ───────────────────────────────────────────────────────
+    # FastAPI app
     app = create_orchestration_app(agent_core)
 
     server_cfg = config.get("server", {})
@@ -149,6 +155,8 @@ def _build_app():
             "host": host,
             "port": port,
             "model": model_name,
+            "workflow_id": workflow.workflow_id,
+            "workflow_version": workflow.version,
         },
     )
 

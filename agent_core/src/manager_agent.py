@@ -18,6 +18,7 @@ from typing import Optional
 
 from src.exceptions import ConsentRequiredError
 from src.interfaces.action_gateway import ActionGatewayBase
+from src.interfaces.knowledge_engine import KnowledgeEngineBase
 from src.interfaces.trust_layer import TrustLayerBase
 from src.llm_wrapper.base import LLMWrapperBase
 from src.models import LLMResponse, RetrievalChunk, ToolCall, ToolResult
@@ -31,12 +32,13 @@ class ManagerAgent:
     Drives the tool-use loop for one conversation turn.
 
     Args:
-        llm_wrapper:    Used for the second (and any subsequent) LLM call after tool results.
-        tool_registry:  Used to check which tools require consent.
-        action_gateway: Executes tool calls against external connectors.
-        trust_layer:    Used to verify consent before write/identity tool execution.
-        max_tool_rounds:Maximum tool → LLM cycles per turn. Default 1 for PoC.
-                        Configurable so extending to multi-step chains needs only a config change.
+        llm_wrapper:      Used for the second (and any subsequent) LLM call after tool results.
+        tool_registry:    Used to check which tools require consent.
+        action_gateway:   Executes tool calls against external connectors.
+        knowledge_engine: Called when the LLM invokes the knowledge_retrieval tool.
+        trust_layer:      Used to verify consent before write/identity tool execution.
+        max_tool_rounds:  Maximum tool → LLM cycles per turn. Default 1 for PoC.
+                          Configurable so extending to multi-step chains needs only a config change.
     """
 
     def __init__(
@@ -44,6 +46,7 @@ class ManagerAgent:
         llm_wrapper: LLMWrapperBase,
         tool_registry: ToolRegistry,
         action_gateway: ActionGatewayBase,
+        knowledge_engine: KnowledgeEngineBase,
         trust_layer: TrustLayerBase,
         max_tool_rounds: int = 1,
     ) -> None:
@@ -53,12 +56,15 @@ class ManagerAgent:
             raise ValueError("tool_registry must not be None")
         if action_gateway is None:
             raise ValueError("action_gateway must not be None")
+        if knowledge_engine is None:
+            raise ValueError("knowledge_engine must not be None")
         if trust_layer is None:
             raise ValueError("trust_layer must not be None")
 
         self._llm = llm_wrapper
         self._registry = tool_registry
         self._gateway = action_gateway
+        self._ke = knowledge_engine
         self._trust = trust_layer
         self._max_tool_rounds = max(1, max_tool_rounds)
 
@@ -72,18 +78,33 @@ class ManagerAgent:
         session_id: str,
         initial_llm_response: LLMResponse,
         system: str = "",
+        active_tools: list[dict] | None = None,
+        ke_context: dict | None = None,
     ) -> tuple[str, list[ToolCall]]:
         """
         Drive the tool-use loop starting from the initial LLM response.
+
+        Routes knowledge_retrieval tool calls directly to the Knowledge Engine
+        via _execute_knowledge_retrieval. All other tool calls go through the
+        Action Gateway's consent gate and execution path.
 
         Args:
             messages:             The messages list that produced initial_llm_response.
                                   Extended in-place with tool_use and tool_result blocks.
             session_id:           Used for consent checks and gateway calls.
             initial_llm_response: First LLM response from orchestrator's LLM call #1.
-            system:               System prompt from KE — passed to follow-up LLM calls
-                                  so language and persona instructions are preserved after
-                                  tool use.
+            system:               System prompt passed to follow-up LLM calls so language
+                                  and persona instructions are preserved after tool use.
+            active_tools:         Scoped tool definitions for the current subagent. Only
+                                  these are passed to follow-up LLM calls. If None, falls
+                                  back to self._registry.get_tool_definitions() for
+                                  backward compatibility.
+            ke_context:           Dict with context required to call the Knowledge Engine
+                                  when knowledge_retrieval is invoked. Expected fields:
+                                  session_id, user_message, profile, session, intent,
+                                  entities, sentiment, confidence, normalised_input,
+                                  detected_language. If None, knowledge_retrieval calls
+                                  return an empty tool_result.
 
         Returns:
             (final_response_text, list_of_all_tool_calls_executed)
@@ -113,16 +134,20 @@ class ManagerAgent:
                 break
 
             for tool_call in current_response.tool_calls:
-                tool_result = self._execute_tool(tool_call, session_id)
+                if tool_call.tool_name == "knowledge_retrieval":
+                    tool_result = self._execute_knowledge_retrieval(tool_call, ke_context)
+                else:
+                    tool_result = self._execute_tool(tool_call, session_id)
                 all_tool_calls.append(tool_call)
                 messages = self._append_tool_result(messages, tool_call, tool_result)
 
             rounds += 1
 
+            follow_up_tools = active_tools if active_tools is not None else self._registry.get_tool_definitions()
             start = time.time()
             current_response = self._llm.call(
                 messages=messages,
-                tools=self._registry.get_tool_definitions(),
+                tools=follow_up_tools,
                 system=system,
             )
             logger.info(
@@ -141,132 +166,171 @@ class ManagerAgent:
         return final_text, all_tool_calls
 
     # ------------------------------------------------------------------
-    # Prompt assembly helpers (E1, E2)
+    # Prompt assembly helpers
     # ------------------------------------------------------------------
 
     def build_system_prompt(
         self,
-        profile: dict,
-        session: dict,
+        agent_system_prompt: str,
+        subagent_system_prompt: str,
         detected_language: str,
-        config: dict,
+        channel: str,
+        profile: dict,
     ) -> str:
         """
         Build the system prompt for one LLM call.
 
-        Reads prompt_blocks from config: persona, language_instruction, guardrail_reminders.
-        Appends detected language instruction and a compact profile summary if profile
-        has any filled fields.
+        Assembles three layers:
+        1. agent_system_prompt — use-case level purpose and hard rules (from AgentWorkflow)
+        2. Channel/language context — injected at runtime from Reach Layer / Language Normalisation
+        3. subagent_system_prompt — instructions for the active subagent (from SubAgent)
+
+        Also injects known profile fields as grounding context between layers.
 
         Args:
-            profile:           UserProfile dict from ContextBundle.
-            session:           Session state dict from ContextBundle.
-            detected_language: Language detected by Language Normaliser.
-            config:            Full agent_core config dict.
+            agent_system_prompt:   Workflow-level system prompt.
+            subagent_system_prompt: Active subagent's system prompt.
+            detected_language:     Language detected by Language Normaliser.
+            channel:               Channel type (e.g. "cli", "whatsapp", "voip").
+            profile:               User profile dict for known field injection.
 
         Returns:
-            str: Assembled system prompt. Empty string if no persona configured.
+            Assembled system prompt string.
         """
-        prompt_cfg = config.get("prompt_blocks", {})
         parts: list[str] = []
 
-        persona_text = prompt_cfg.get("persona", "").strip()
-        if persona_text:
-            parts.append(persona_text)
+        if agent_system_prompt:
+            parts.append(agent_system_prompt.strip())
 
-        # Inject known profile fields as context
+        # Channel and language context injected at runtime
+        context_parts: list[str] = []
+        if channel:
+            context_parts.append(f"Channel: {channel}")
+        if detected_language:
+            context_parts.append(
+                f"User's language: {detected_language}. Respond in {detected_language}."
+            )
+        if context_parts:
+            parts.append("\n".join(context_parts))
+
+        # Inject known profile fields as grounding context
         if profile:
             profile_lines: list[str] = []
             skip_keys = {"attributes", "user_id"}
             for k, v in profile.items():
                 if k not in skip_keys and v not in (None, "", [], "[]"):
                     profile_lines.append(f"  {k}: {v}")
+            # Also inject ad-hoc attributes
+            for attr in profile.get("attributes", []):
+                attr_key = attr.get("key")
+                attr_val = attr.get("value")
+                if attr_key and attr_val:
+                    profile_lines.append(f"  {attr_key}: {attr_val}")
+            
             if profile_lines:
                 parts.append("Known user profile:\n" + "\n".join(profile_lines))
 
-        language_instruction = prompt_cfg.get("language_instruction", "").strip()
-        if language_instruction:
-            parts.append(language_instruction)
-
-        if detected_language:
-            parts.append(
-                f"The user's current message is in {detected_language}. "
-                f"Respond in {detected_language}."
-            )
-
-        guardrails = prompt_cfg.get("guardrail_reminders", [])
-        if guardrails:
-            parts.append("\n--- Guidelines ---")
-            if isinstance(guardrails, str):
-                # YAML block scalar (|) — already formatted with dashes, append as-is
-                parts.append(guardrails.strip())
-            else:
-                for reminder in guardrails:
-                    parts.append(f"- {reminder}")
-
-        # Inject node-specific instruction when configured.
-        # node_instructions is a dict keyed by current_node value.
-        # E.g. node_instructions.market_truth guides the 5 reaction branches.
-        current_node = session.get("current_node", "")
-        node_instructions: dict = prompt_cfg.get("node_instructions", {})
-        if current_node and node_instructions:
-            instruction = node_instructions.get(current_node, "")
-            if instruction:
-                parts.append(instruction.strip())
+        if subagent_system_prompt:
+            parts.append(subagent_system_prompt.strip())
 
         return "\n\n".join(parts)
 
     def build_messages(
         self,
         user_message: str,
-        chunks: list[RetrievalChunk],
         current_question: str,
     ) -> list[dict]:
         """
         Build the Anthropic messages array for one LLM call.
 
-        New design: no conversation history — each turn is fresh context.
-        current_question (what the agent last asked) is prepended as grounding context.
-        RAG chunks are appended to the user message.
+        No RAG chunks injected here — knowledge retrieval is now tool-driven.
+        The LLM calls knowledge_retrieval tool when it needs context; chunks
+        arrive as tool_result blocks within the same turn's tool-use loop.
 
         Args:
             user_message:     Raw user message text.
-            chunks:           Retrieval chunks from KE.retrieve().
-            current_question: The question the agent last asked, from session["current_question"].
-                              Empty string if this is the first turn.
+            current_question: The last question the agent asked (from session). Empty string if first turn.
 
         Returns:
-            list[dict]: Single-turn Anthropic messages list.
-            Empty list if user_message is empty.
+            Single-turn Anthropic messages list. Empty list if user_message is empty.
         """
         if not user_message:
             return []
 
         content_parts: list[str] = []
-
         if current_question:
             content_parts.append(f"[Last question asked: {current_question}]")
-
         content_parts.append(user_message)
-
-        always_include = [c for c in chunks if c.always_include]
-        retrieved = [c for c in chunks if not c.always_include]
-
-        if always_include:
-            content_parts.append("\n--- Always include context ---")
-            for chunk in always_include:
-                content_parts.append(chunk.text)
-
-        if retrieved:
-            content_parts.append("\n--- Relevant knowledge ---")
-            for chunk in retrieved:
-                content_parts.append(chunk.text)
 
         return [{"role": "user", "content": "\n\n".join(content_parts)}]
 
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _execute_knowledge_retrieval(self, tool_call: ToolCall, ke_context: dict | None) -> ToolResult:
+        """
+        Call Knowledge Engine for RAG retrieval and return chunks as a ToolResult.
+
+        Args:
+            tool_call:   The knowledge_retrieval tool call from the LLM.
+            ke_context:  Dict with context fields for the KE retrieve call. If None
+                         or missing, returns a failure ToolResult without calling KE.
+
+        Returns:
+            ToolResult with retrieved context string in result["context"] on success,
+            or a failure ToolResult with an error string on failure or missing context.
+        """
+        if not ke_context:
+            return ToolResult(
+                tool_use_id=tool_call.tool_use_id,
+                tool_name=tool_call.tool_name,
+                result={},
+                success=False,
+                error="ke_context_not_available",
+            )
+        start = time.time()
+        try:
+            chunks = self._ke.retrieve(
+                session_id=ke_context.get("session_id", ""),
+                user_message=ke_context.get("user_message", ""),
+                profile=ke_context.get("profile", {}),
+                session=ke_context.get("session", {}),
+                intent=ke_context.get("intent", ""),
+                entities=ke_context.get("entities", {}),
+                sentiment=ke_context.get("sentiment", "neutral"),
+                confidence=ke_context.get("confidence", 0.0),
+                normalised_input=ke_context.get("normalised_input", ""),
+                detected_language=ke_context.get("detected_language", ""),
+            )
+            chunk_texts = [c.text for c in chunks] if chunks else []
+            combined = "\n\n".join(chunk_texts) if chunk_texts else "No relevant context found."
+            logger.info("manager_agent.knowledge_retrieval", extra={
+                "operation": "manager_agent._execute_knowledge_retrieval",
+                "status": "success",
+                "chunk_count": len(chunk_texts),
+                "latency_ms": int((time.time() - start) * 1000),
+            })
+            return ToolResult(
+                tool_use_id=tool_call.tool_use_id,
+                tool_name=tool_call.tool_name,
+                result={"context": combined},
+                success=True,
+            )
+        except Exception as e:
+            logger.error("manager_agent.knowledge_retrieval_error", extra={
+                "operation": "manager_agent._execute_knowledge_retrieval",
+                "status": "failure",
+                "error": f"{type(e).__name__}: {e}",
+                "latency_ms": int((time.time() - start) * 1000),
+            })
+            return ToolResult(
+                tool_use_id=tool_call.tool_use_id,
+                tool_name=tool_call.tool_name,
+                result={},
+                success=False,
+                error=str(e),
+            )
 
     def _execute_tool(self, tool_call: ToolCall, session_id: str) -> ToolResult:
         """
@@ -345,11 +409,12 @@ class ManagerAgent:
         })
 
         # Append user message with the tool_result block
-        result_content: str = (
-            tool_result.error
-            if not tool_result.success and tool_result.error
-            else str(tool_result.result)
-        )
+        result_content: str = ""
+        if not tool_result.success and tool_result.error:
+            result_content = tool_result.error
+        else:
+            result_content = tool_result.result_text or str(tool_result.result)
+
         messages.append({
             "role": "user",
             "content": [

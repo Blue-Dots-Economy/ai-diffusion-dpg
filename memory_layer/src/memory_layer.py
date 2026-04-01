@@ -84,6 +84,12 @@ class MemoryLayer:
             self._persistent_cfg.get("merge_on_session_end", [])
         )
 
+        # Default storage mode — used when user_storage_mode is absent from session.
+        # "saved" keeps Neo4j data. "anonymous" deletes it at flush.
+        self._default_storage_mode: str = (
+            config.get("user_data_persistence", {}).get("default_mode", "saved")
+        )
+
         # Build SCOPE_MAP from config
         self._scope_map: dict[str, str] = _build_scope_map(
             self._schema, self._declared_fields, journey_children
@@ -155,6 +161,19 @@ class MemoryLayer:
             if session_exists:
                 # Hot path — session already in Redis
                 session_data = self._redis.get_session(session_id)
+                
+                # Coerce types for session fields
+                for key, val in session_data.items():
+                    if val == "true":
+                        session_data[key] = True
+                    elif val == "false":
+                        session_data[key] = False
+                    elif isinstance(val, str) and (val.startswith("{") or val.startswith("[")):
+                        try:
+                            session_data[key] = json.loads(val)
+                        except (ValueError, TypeError):
+                            pass
+                
                 # Reset TTL on resume
                 self._redis.reset_session_ttl(session_id)
                 # Update last_accessed in user index
@@ -253,8 +272,10 @@ class MemoryLayer:
             if not key:
                 raise ValueError("key must not be empty")
 
-            # Resolve scope — unknown keys fall back to persistent
-            resolved_scope = self._scope_map.get(key, scope)
+            # Resolve scope — trust the caller (orchestrator) if a valid scope is passed,
+            # otherwise fallback to the scope_map.
+            valid_scopes = {"session", "persistent", "signal", "journey_event"}
+            resolved_scope = scope if scope in valid_scopes else self._scope_map.get(key, "persistent")
 
             if resolved_scope == "session":
                 self._redis.set_session_field(session_id, key, value)
@@ -331,7 +352,7 @@ class MemoryLayer:
           1. Read Redis session hash
           2. Apply merge_on_session_end rules (promote fields to Journey node)
           3. Close Journey node in Neo4j
-          4. If consent == "false": DETACH DELETE user graph
+          4. If user_storage_mode == "anonymous": DETACH DELETE user graph (DPDP)
           5. Delete Redis session key
           6. Remove session from user index
           7. Delete user index if no sessions remain
@@ -355,9 +376,15 @@ class MemoryLayer:
             # 3. Close Journey node
             self._journey_store.close_journey(user_id, session_id, end_reason)
 
-            # 4. DPDP: if consent was never given, erase all user data
-            consent_val = session_state.get("consent", "true") if session_state else "true"
-            if consent_val in ("false", "False", "0", ""):
+            # 4. DPDP: delete Neo4j data if user opted for anonymous storage.
+            # user_storage_mode is written to session by the agent_core routing
+            # rule session_writes when the user expresses a preference.
+            # Falls back to self._default_storage_mode if absent.
+            storage_mode = (
+                (session_state.get("user_storage_mode") or self._default_storage_mode)
+                if session_state else self._default_storage_mode
+            )
+            if storage_mode == "anonymous":
                 self._user_store.delete_user(user_id)
 
             # 5. Delete session key

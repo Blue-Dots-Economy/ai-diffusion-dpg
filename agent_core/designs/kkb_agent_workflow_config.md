@@ -95,15 +95,15 @@ agent_workflow:
 
   global_routing:
     - intent: counsellor_request
-      next_subagent: counsellor_request
+      next_subagent_id: counsellor_request
 
     - intent: termination_intent
-      next_subagent: ended
+      next_subagent_id: ended
 
     - intent: whatsapp_handoff_request
-      next_subagent: normalise_branch
+      next_subagent_id: normalise_branch
 
-  default_fallback_subagent: clarification
+  default_fallback_subagent_id: clarification
 
   subagents:
 
@@ -136,7 +136,7 @@ agent_workflow:
 
       routing:
         - intent: "*"
-          next_subagent: new_returning_check
+          next_subagent_id: new_returning_check
 
     # ─────────────────────────────────────────────────────────────
     # NEW / RETURNING CHECK
@@ -167,13 +167,13 @@ agent_workflow:
 
       routing:
         - intent: returning_user
-          next_subagent: market_truth
+          next_subagent_id: market_truth
 
         - intent: new_user
-          next_subagent: awaiting_consent
+          next_subagent_id: awaiting_consent
 
         - intent: "*"
-          next_subagent: awaiting_consent
+          next_subagent_id: awaiting_consent
 
     # ─────────────────────────────────────────────────────────────
     # AWAITING CONSENT
@@ -211,13 +211,13 @@ agent_workflow:
 
       routing:
         - intent: consent_granted
-          next_subagent: profile_building
+          next_subagent_id: profile_building
 
         - intent: consent_declined
-          next_subagent: profile_building  # Profile collected for session only — deleted at session end
+          next_subagent_id: profile_building  # Profile collected for session only — deleted at session end
 
         - intent: "*"
-          next_subagent: awaiting_consent  # Stay and re-ask gently
+          next_subagent_id: awaiting_consent  # Stay and re-ask gently
 
     # ─────────────────────────────────────────────────────────────
     # PROFILE BUILDING
@@ -261,20 +261,20 @@ agent_workflow:
 
       routing:
         - intent: profile_complete
-          next_subagent: market_truth
+          next_subagent_id: market_truth
 
         - intent: profile_answer
           condition:
             field: profile_minimum_met   # Set by orchestrator when trade + location known
             operator: eq
             value: true
-          next_subagent: market_truth
+          next_subagent_id: market_truth
 
         - intent: profile_answer
-          next_subagent: profile_building  # Continue collecting
+          next_subagent_id: profile_building  # Continue collecting
 
         - intent: skip_question
-          next_subagent: profile_building  # Move to next field
+          next_subagent_id: profile_building  # Move to next field
 
     # ─────────────────────────────────────────────────────────────
     # MARKET TRUTH
@@ -321,25 +321,25 @@ agent_workflow:
 
       routing:
         - intent: interested_engaged
-          next_subagent: skill_check
+          next_subagent_id: skill_check
 
         - intent: pay_disappointment
-          next_subagent: pay_branch
+          next_subagent_id: pay_branch
 
         - intent: distance_issue
-          next_subagent: distance_branch
+          next_subagent_id: distance_branch
 
         - intent: overwhelmed_silent
-          next_subagent: normalise_branch
+          next_subagent_id: normalise_branch
 
         - intent: hang_up
-          next_subagent: capture_dropoff
+          next_subagent_id: capture_dropoff
 
         - intent: market_truth_query
-          next_subagent: market_truth    # Stay and answer follow-up
+          next_subagent_id: market_truth    # Stay and answer follow-up
 
         - intent: "*"
-          next_subagent: market_truth    # Stay if unclear
+          next_subagent_id: market_truth    # Stay if unclear
 
     # ─────────────────────────────────────────────────────────────
     # SKILL CHECK
@@ -381,30 +381,30 @@ agent_workflow:
 
       routing:
         - intent: skill_direct_match
-          next_subagent: evaluation
+          next_subagent_id: evaluation
 
         - intent: skill_partial_match
-          next_subagent: evaluation
+          next_subagent_id: evaluation
 
         - intent: skill_significant_gap
           condition:
             field: income_urgency
             operator: eq
             value: immediate
-          next_subagent: evaluation   # With bridge_income context set
+          next_subagent_id: evaluation   # With bridge_income context set
 
         - intent: skill_significant_gap
           condition:
             field: income_urgency
             operator: not_eq
             value: immediate
-          next_subagent: evaluation   # With training_first context set
+          next_subagent_id: evaluation   # With training_first context set
 
         - intent: profile_answer
-          next_subagent: skill_check  # Continue assessment
+          next_subagent_id: skill_check  # Continue assessment
 
         - intent: "*"
-          next_subagent: skill_check
+          next_subagent_id: skill_check
 
     # ─────────────────────────────────────────────────────────────
     # EVALUATION
@@ -450,29 +450,29 @@ agent_workflow:
 
       routing:
         - intent: ready_to_apply
-          next_subagent: commitment
+          next_subagent_id: commitment
 
         - intent: wants_to_think
-          next_subagent: normalise_branch
+          next_subagent_id: normalise_branch
 
         - intent: wants_counsellor
-          next_subagent: counsellor_request
+          next_subagent_id: counsellor_request
 
         - intent: not_ready_yet
-          next_subagent: capture_dropoff
+          next_subagent_id: capture_dropoff
 
         - intent: evaluation_question
-          next_subagent: evaluation   # Stay and answer
+          next_subagent_id: evaluation   # Stay and answer
 
         - intent: "*"
           condition:
             field: subagent_entry_count.evaluation   # Set by orchestrator
             operator: gt
             value: 3
-          next_subagent: counsellor_request   # Decision paralysis → HITL
+          next_subagent_id: counsellor_request   # Decision paralysis → HITL
 
         - intent: "*"
-          next_subagent: evaluation
+          next_subagent_id: evaluation
 
     # ─────────────────────────────────────────────────────────────
     # PAY BRANCH
@@ -512,16 +512,16 @@ agent_workflow:
 
       routing:
         - intent: expectation_adjusted
-          next_subagent: evaluation
+          next_subagent_id: evaluation
 
         - intent: interested_engaged
-          next_subagent: evaluation
+          next_subagent_id: evaluation
 
         - intent: expectation_firm
-          next_subagent: capture_dropoff
+          next_subagent_id: capture_dropoff
 
         - intent: "*"
-          next_subagent: pay_branch
+          next_subagent_id: pay_branch
 
     # ─────────────────────────────────────────────────────────────
     # DISTANCE BRANCH
@@ -564,19 +564,19 @@ agent_workflow:
             field: local_options_available
             operator: eq
             value: false
-          next_subagent: capture_dropoff
+          next_subagent_id: capture_dropoff
 
         - intent: constraint_hard
-          next_subagent: evaluation   # Re-run with tight radius options
+          next_subagent_id: evaluation   # Re-run with tight radius options
 
         - intent: constraint_flexible
-          next_subagent: evaluation   # Show wider radius options
+          next_subagent_id: evaluation   # Show wider radius options
 
         - intent: interested_engaged
-          next_subagent: evaluation
+          next_subagent_id: evaluation
 
         - intent: "*"
-          next_subagent: distance_branch
+          next_subagent_id: distance_branch
 
     # ─────────────────────────────────────────────────────────────
     # NORMALISE BRANCH (WhatsApp Handoff)
@@ -615,16 +615,16 @@ agent_workflow:
 
       routing:
         - intent: whatsapp_accepted
-          next_subagent: capture_dropoff   # Session ends; WhatsApp takes over
+          next_subagent_id: capture_dropoff   # Session ends; WhatsApp takes over
 
         - intent: whatsapp_declined
-          next_subagent: capture_dropoff   # Session ends; passive re-engagement at 7 days
+          next_subagent_id: capture_dropoff   # Session ends; passive re-engagement at 7 days
 
         - intent: re_engaged
-          next_subagent: evaluation
+          next_subagent_id: evaluation
 
         - intent: "*"
-          next_subagent: capture_dropoff
+          next_subagent_id: capture_dropoff
 
     # ─────────────────────────────────────────────────────────────
     # COMMITMENT
@@ -665,19 +665,19 @@ agent_workflow:
 
       routing:
         - intent: apply_now
-          next_subagent: follow_through
+          next_subagent_id: follow_through
 
         - intent: enrol_course
-          next_subagent: follow_through
+          next_subagent_id: follow_through
 
         - intent: connect_counsellor
-          next_subagent: counsellor_request
+          next_subagent_id: counsellor_request
 
         - intent: action_declined
-          next_subagent: evaluation   # Return to evaluation — user may reconsider
+          next_subagent_id: evaluation   # Return to evaluation — user may reconsider
 
         - intent: "*"
-          next_subagent: commitment
+          next_subagent_id: commitment
 
     # ─────────────────────────────────────────────────────────────
     # FOLLOW-THROUGH
@@ -826,7 +826,7 @@ agent_workflow:
 
       routing:
         - intent: "*"
-          next_subagent: clarification   # Orchestrator will re-evaluate after re-prompt
+          next_subagent_id: clarification   # Orchestrator will re-evaluate after re-prompt
                                      # Loop detection: if stuck here > 2 turns → counsellor_request
 ```
 

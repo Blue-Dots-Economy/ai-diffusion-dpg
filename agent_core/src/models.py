@@ -144,6 +144,7 @@ class ToolResult:
     tool_name: str
     result: dict[str, Any]
     success: bool
+    result_text: str = ""
     error: Optional[str] = None
 
 

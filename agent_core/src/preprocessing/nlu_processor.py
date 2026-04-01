@@ -27,7 +27,8 @@ from src.models import NLUResult
 
 logger = logging.getLogger(__name__)
 
-_NLU_SYSTEM_PROMPT = """You are an NLU (Natural Language Understanding) classifier for an employment assistance chatbot.
+_NLU_SYSTEM_PROMPT_TEMPLATE = """{domain_instruction}
+
 Classify the user's latest message and return a JSON object only — no explanation, no markdown.
 
 Valid intents: {intents}
@@ -46,7 +47,7 @@ Rules:
 - Use "unknown" intent if no intent matches or confidence is below 0.5.
 - Only include entity types that are clearly present in the message.
 - Return an empty dict {{}} for entities if none are found.
-- Use the current workflow step and the last question asked (if provided) to resolve
+- Use the current subagent and the last question asked (if provided) to resolve
   follow-up or ambiguous messages (e.g. a one-word answer like "welder" after "what trade
   do you work in?" should be classified as a profile answer, not an unknown intent).
 - Never include keys outside the four specified (intent, entities, sentiment, confidence)."""
@@ -67,9 +68,10 @@ class NLUProcessor:
         self,
         normalised_input: str,
         current_question: str,
-        workflow_step: str,
+        current_subagent_id: str,
         config: dict,
         llm: LLMWrapperBase,
+        allowed_intents: list[str] | None = None,
     ) -> NLUResult:
         """
         Run NLU classification with workflow context.
@@ -79,10 +81,14 @@ class NLUProcessor:
             current_question: The last question the agent asked this session
                               (from session["current_question"]). Used to resolve
                               short follow-up answers like "welder" or "Hubli".
-            workflow_step:    Current workflow step (from session["current_node"]).
-                              Helps classify answers that are only meaningful in context.
+            current_subagent_id: Current subagent ID (from session["current_node"]).
+                                 Helps classify answers that are only meaningful in context.
             config:           Full agent_core config dict.
             llm:              LLM wrapper for direct LLM calls.
+            allowed_intents:  Optional list of allowed intents to use for the LLM system
+                              prompt and validation. If provided (not None and not empty),
+                              overrides the intents from config. If None or empty, falls
+                              back to reading intents from config for backward compatibility.
 
         Returns:
             NLUResult. On any failure: NLUResult(intent="unknown", confidence=0.0).
@@ -93,26 +99,38 @@ class NLUProcessor:
         if not normalised_input:
             return _fallback_nlu_result()
 
-        block_cfg = (
-            config.get("preprocessing", {})
-            .get("nlu_processor", {})
+        self._config = config or {}
+        nlu_config = self._config.get("preprocessing", {}).get("nlu_processor", {})
+        
+        self._model = nlu_config.get("model", "claude-haiku-4-5-20251001")
+        self._confidence_threshold = nlu_config.get("confidence_threshold", 0.5)
+        self._domain_instruction = nlu_config.get(
+            "domain_instruction", "You are an NLU (Natural Language Understanding) classifier."
         )
-        intents = block_cfg.get("intents", ["unknown"])
-        entities_list = block_cfg.get("entities", [])
-        sentiment_classes = block_cfg.get("sentiment_classes", ["neutral"])
-        model_override = block_cfg.get("model")
+        
+        # Hardcoded entities and sentiment classes from config (if any)
+        self._global_entities = nlu_config.get("entities", [])
+        self._sentiment_classes = nlu_config.get("sentiment_classes", ["neutral", "positive", "distressed", "frustrated"])
+
+        # Use allowed_intents if provided and non-empty; otherwise fall back to config
+        intents = (
+            allowed_intents
+            if allowed_intents is not None and len(allowed_intents) > 0
+            else nlu_config.get("intents", ["unknown"])
+        )
 
         try:
-            system_prompt = _NLU_SYSTEM_PROMPT.format(
+            system_prompt = _NLU_SYSTEM_PROMPT_TEMPLATE.format(
+                domain_instruction=self._domain_instruction,
                 intents=", ".join(intents),
-                entities=", ".join(entities_list),
-                sentiment_classes=", ".join(sentiment_classes),
+                entities=", ".join(self._global_entities),
+                sentiment_classes=", ".join(self._sentiment_classes),
             )
 
             # Build NLU context message with workflow and last-question grounding
             context_parts: list[str] = []
-            if workflow_step:
-                context_parts.append(f"Current workflow step: {workflow_step}")
+            if current_subagent_id:
+                context_parts.append(f"Current workflow step: {current_subagent_id}")
             if current_question:
                 context_parts.append(f"Last question asked: {current_question}")
             context_parts.append(f"User message: {normalised_input}")
@@ -125,7 +143,7 @@ class NLUProcessor:
                 messages=messages,
                 tools=[],
                 system=system_prompt,
-                model_override=model_override,
+                model_override=self._model,
             )
 
             if llm_response.stop_reason == "error" or not llm_response.content:

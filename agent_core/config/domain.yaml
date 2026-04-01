@@ -65,7 +65,40 @@ connectors:
         required:
           - trade
           - employer
+    - name: counsellor_schedule
+      description: "Schedule a counsellor callback for the user. Returns a reference number and expected callback time."
+      input_schema:
+        type: object
+        properties:
+          session_id:
+            type: string
+            description: "Session identifier"
+          user_name:
+            type: string
+            description: "User's name if known"
+          callback_within_hours:
+            type: integer
+            description: "Requested callback window in hours. Default 24."
+        required:
+          - session_id
   identity: []
+  internal:
+    - name: knowledge_retrieval
+      description: >
+        Search the verified Kaam Ki Baat knowledge base for information on job trades, 
+        government schemes, and market trends. Use this when the user asks a specific 
+        question that requires looking up facts or scheme details.
+      input_schema:
+        type: object
+        properties:
+          query:
+            type: string
+            description: "The search query in plain language"
+          trade:
+            type: string
+            description: "Optional trade/skill to narrow the search"
+        required:
+          - query
 
 preprocessing:
   language_normalisation:
@@ -82,28 +115,67 @@ preprocessing:
   nlu_processor:
     model: claude-haiku-4-5-20251001
     confidence_threshold: 0.5
+    domain_instruction: |
+      You are an NLU (Natural Language Understanding) classifier for Kaam Ki Baat (KKB), 
+      an employment assistance chatbot.
     intents:
-      - greeting_intent
-      - profile_answer
-      - market_truth_query
-      - scheme_query
-      - training_query
-      - apply_now
-      - counsellor_request
-      - pay_range_query
-      - termination_intent
+      # Greeting / session start
+      - greeting
+      - any_input
+      - returning_user
+      - new_user
+      # Consent
       - consent_granted
       - consent_declined
-      - consent_yes          # alias for consent_granted
-      - consent_no           # alias for consent_declined
-      - unknown
-      - interested
-      - pay_too_low
-      - too_far
-      - overwhelmed
+      # Profile collection
+      - profile_answer
+      - skip_question
+      - profile_complete
+      # Market truth reactions
+      - interested_engaged
+      - pay_disappointment
+      - distance_issue
+      - overwhelmed_silent
       - hang_up
-      - think_about_it
-      - not_ready
+      - market_truth_query
+      # Skill assessment
+      - skill_direct_match
+      - skill_partial_match
+      - skill_significant_gap
+      # Evaluation
+      - ready_to_apply
+      - wants_to_think
+      - wants_counsellor
+      - not_ready_yet
+      - evaluation_question
+      # Pay branch
+      - expectation_adjusted
+      - expectation_firm
+      # Distance branch
+      - constraint_hard
+      - constraint_flexible
+      # Normalise / WhatsApp
+      - whatsapp_accepted
+      - whatsapp_declined
+      - re_engaged
+      # Commitment
+      - apply_now
+      - enrol_course
+      - connect_counsellor
+      - action_declined
+      # Follow-through outcomes
+      - outcome_positive
+      - outcome_employer_ghost
+      - outcome_job_mismatch
+      - outcome_no_response
+      # Drop-off
+      - drop_off_acknowledged
+      # Global intents
+      - counsellor_request
+      - termination_intent
+      - whatsapp_handoff_request
+      # Catch-all
+      - unknown
     entities:
       - name
       - age_bracket
@@ -129,97 +201,6 @@ preprocessing:
       - growth_horizon
       - distance_km
     sentiment_classes: [neutral, positive, distressed, frustrated]
-
-workflow:
-  steps:
-    - greeting
-    - profile_collection
-    - market_truth
-    - skill_check
-    - pay_branch
-    - distance_branch
-    - normalise_branch
-    - capture_dropoff
-    - commitment
-    - scheme_info
-    - training_info
-    - apply_now
-    - counsellor_request
-    - pay_range
-    - ended
-  transitions:
-    market_truth:
-      interested: skill_check
-      pay_too_low: pay_branch
-      too_far: distance_branch
-      overwhelmed: normalise_branch
-      hang_up: capture_dropoff
-      apply_now: skill_check
-    skill_check:
-      apply_now: commitment
-      think_about_it: normalise_branch
-      want_counsellor: normalise_branch
-      not_ready: normalise_branch
-  termination_intents:
-    - termination_intent
-  hitl_threshold: 3
-
-profile_collection:
-  # 5 conversational rounds — each covers a full entity layer.
-  # NLU extracts whatever entities are present. Advance UNCONDITIONALLY after each round.
-  # The LLM translates question text into the user's detected language automatically.
-  rounds:
-    - round: 1
-      layer: identity
-      entities: [name, age_bracket, location, gender, disability_status]
-      condition: null
-
-    - round: 2
-      layer: capability_basic
-      entities: [education_level]
-      condition: null
-
-    - round: 3
-      layer: capability_trade
-      entities: [trade_or_stream, years_experience, certifications, informal_skills, language_skills, digital_literacy]
-      condition: null
-
-    - round: 4
-      layer: constraint
-      entities: [income_urgency, max_commute_km, availability_hours, mobility_owned, dependents]
-      condition: null
-
-    - round: 5
-      layer: aspiration
-      entities: [primary_goal, sector_preference, open_to_training, growth_horizon]
-      condition: null
-
-  # Fields required for ONEST job lookup. If missing after all rounds → grace turn.
-  hard_min_fields: [trade_or_stream, location]
-
-  field_labels:
-    name: "naam"
-    age_bracket: "umar"
-    location: "shehar / gaon"
-    gender: "gender"
-    disability_status: "viklangta"
-    language_preference: "bhasha preference"
-    education_level: "padhai"
-    trade_or_stream: "trade / kaam"
-    certifications: "certificates"
-    years_experience: "anubhav"
-    informal_skills: "aur koi hunar"
-    language_skills: "boli / bhasha"
-    digital_literacy: "mobile / computer jaankari"
-    income_urgency: "kitni jaldi chahiye kaam"
-    max_commute_km: "kitni door ja sakte hain"
-    availability_hours: "kab kaam kar sakte hain"
-    mobility_owned: "apna vahan"
-    dependents: "ghar mein dependents"
-    primary_goal: "main lakshya"
-    sector_preference: "sector choice"
-    open_to_training: "training ke liye taiyaar"
-    growth_horizon: "career goal"
 
 entity_to_profile_field:
   name: name
@@ -247,128 +228,763 @@ entity_to_profile_field:
   distance_km: distance_km
 
 hitl:
-  loop_count_threshold: 3
+  response_message: "Hum ek counsellor se aapko connect karenge. Woh 24 ghante ke andar call karenge."
 
-prompt_blocks:
-  persona: |
-    You are Kaam Ki Baat, a friendly and helpful employment advisory assistant for blue-collar workers in India.
-    You help users find jobs, understand government schemes, get training information, and navigate the labour market.
-    Be warm, patient, and use simple language. Avoid jargon.
+agent_workflow:
+  workflow_id: kkb_iti_graduate
+  version: "1.0.0"
 
-    LANGUAGE RULE (mandatory — never override):
-    Always respond in the EXACT language the user writes in.
-    - User writes in English → respond entirely in English.
-    - User writes in Hindi (Devanagari or Roman script) → respond in Hindi.
-    - User writes in Kannada → respond in Kannada.
-    - User mixes languages (Hinglish) → match their mixed style.
-    Never default to Hindi. Detect the language from the user's message and mirror it.
-  language_instruction: |
-    Reinforce: respond only in the language detected from the user's current message.
-    If the conversation context contains Hindi templates (e.g. "[Last question asked:]" in Hindi),
-    translate them into the user's language — do NOT copy them verbatim.
-  guardrail_reminders: |
-    - Stay focused on employment, jobs, training, and government schemes.
-    - Do not give medical, legal, or financial advice beyond your scope.
-    - If the user is in distress or needs urgent help, escalate to a human counsellor.
-    - Never share personal data of other users.
-    - Be honest about what you know and do not know.
-  # Node-specific instructions injected when current_node matches a key here.
-  # The LLM uses these to know what to do at each workflow step — and to ask questions
-  # in the user's detected language without needing per-language config variants.
-  node_instructions:
-    awaiting_consent: |
-      ## Instructions for awaiting_consent node
-      Your task this turn is to ask the user for consent to save their information.
-      The consent question template is shown in "[Last question asked:]" above — it may be in Hindi.
-      IMPORTANT: Translate it into the language the user wrote in. If the user wrote in English,
-      ask in English. If in Hindi, ask in Hindi. Never copy the Hindi template verbatim to an English user.
-      Keep it warm and brief. Make clear they can say Yes or No — both are fine.
-      Do not answer any other questions until the user responds to the consent request.
+  agent_system_prompt: |
+    You are Kaam Ki Baat (KKB), a trusted employment advisor in India.
+    Your goal is to help users understand their market reality and make informed choices.
+    Stay warm, professional, and honest. Avoid long monologues or over-explaining your rules.
 
-    profile_building: |
-      ## Instructions for profile_building node
-      Your task this turn is to collect specific profile information from the user based on the details listed in "[Last question asked:]".
-      Ask the user a conversational and natural question to gather ALL these missing details in one go.
-      IMPORTANT: Ask the question in the language the user wrote in. If the user wrote in English, ask in English. If in Hindi, ask in Hindi.
-      Be warm, conversational, and use simple language. You MUST ask for all the requested details in a single message, do NOT split them across multiple turns.
-      If the user just answered a consent question (their message was "haan", "yes", "nahi", "no"), briefly acknowledge their choice before asking for the profile details.
+  global_intents:
+    - counsellor_request       # User asks for human help at any point
+    - termination_intent       # User wants to end the call
+    - whatsapp_handoff_request # User asks to continue on WhatsApp
 
-    grace_turn: |
-      ## Instructions for grace_turn node
-      You need one or two more pieces of information before searching for jobs.
-      The missing details are listed in "[Last question asked:]".
-      Ask the user a quick, conversational question to collect these final details.
-      IMPORTANT: Ask it in the language the user wrote in. Translate if needed.
+  global_routing:
+    - intent: counsellor_request
+      next_subagent_id: counsellor_request
 
-    market_truth: |
-      ## Instructions for market_truth node
-      You are now at the job market results step. The user's profile is complete.
+    - intent: termination_intent
+      next_subagent_id: ended
 
-      Use the tools available to you to help the user:
-      1. Use `onest_market_lookup` to fetch job market data and show it to the user. Present the salary range, market signal, and name the top 2 employers. Then ask: "Would you like to apply to any of these employers?" (translated to their language).
-      2. If the user explicitly wants to apply to a specific employer from the lookup, use `onest_apply` to submit the application. Do not make up reference numbers; wait for the tool to succeed.
-      3. If the user complains about low salary, distance/commute, or is confused, acknowledge their concerns in their language, propose alternate solutions (like PMKVY training or relocation), and offer to connect them to a KKB counsellor.
+    - intent: whatsapp_handoff_request
+      next_subagent_id: normalise_branch
 
-      Always check `[Last question asked:]` and the user's latest response to determine the right next step. Rely purely on the tools and user context.
+  default_fallback_subagent_id: clarification
 
-    evaluation: |
-      ## Instructions for evaluation node
-      The user has seen job market data and you have discussed their options.
-      Now confirm their decision by asking ONE clear question (translated to the user's language):
-        "What would you like to do? (1) Apply for a job (2) Think about it (3) Talk to a counsellor"
-      Based on their answer:
-        - Apply → call onest_apply tool with details from profile and job shown.
-        - Think / not sure → acknowledge, offer to come back, share a short summary.
-        - Counsellor → respond with the escalation message.
+  subagents:
 
-    commitment: |
-      ## Instructions for commitment node
-      This is a 2-turn confirmation step. Use `[Last question asked:]` to determine which turn you are on:
+    # ─────────────────────────────────────────────────────────────
+    # GREETING
+    # ─────────────────────────────────────────────────────────────
+    - id: greeting
+      name: Greeting
+      description: >
+        Entry point. Detect language from first utterance. Deliver a warm, brief greeting.
+        Do not ask for anything yet. Immediately check if this is a new or returning caller.
+      is_start: true
+      is_terminal: false
+      special_handler: null
 
-      TURN 1 — Confirmation Question:
-      - If `[Last question asked:]` does NOT already contain a confirmation question (e.g. "Kya main apply kar doon"),
-        then ask the user clearly in their language:
-        "Kya main [Employer Name] mein [Trade] ke liye apply kar doon?" (translated to user's language).
-      - Do NOT call any tool yet. Just ask this single confirmation question.
+      valid_intents:
+        - greeting
+        - consent_granted
+        - consent_declined
+        - any_input
 
-      TURN 2 — Execute Application:
-      - If `[Last question asked:]` contains the confirmation question and the user said YES (haan, yes, ok, theek hai, etc.),
-        then IMMEDIATELY call the `onest_apply` tool using: trade, employer, location, applicant_name from profile.
-        After the tool succeeds:
-        1. Share the reference number clearly.
-        2. Tell them: "[Employer] will contact you via ONEST. Check status on the ONEST app."
-        3. End the conversation gracefully. Ask no further questions.
-      - If the user said NO, acknowledge politely and end the conversation gracefully.
+      tools: []
 
-    skill_check: |
-      ## Instructions for skill_check node
-      Evaluate exactly how well the user's trade matches the market requirements:
-      1. Direct Match: "You are well fit, go ahead and apply."
-      2. Partial Match: Explain the capability gap honestly ("You can still apply, but here is the gap... Here is how to close it fast.").
-      3. Significant Gap: "Income urgency? Bridge income + training." Instruct them to consider upskilling.
+      system_prompt: |
+        Welcome the user to Kaam Ki Baat (KKB).
+        Keep it warm and very brief. Do not mention job options yet.
+        Your ONLY goal is to ask for consent to save their trade and location for future calls.
+        Respond in the user's language (default: Hindi).
+        Example: "Namaste! Kaam Ki Baat mein aapka swagat hai. Kya main aapki trade aur location yaad rakh sakta hoon? Isse agle baar aapko dobara batana nahi padega."
+
+      routing:
+        # If returning user, skip greeting/consent and go to market truth immediately
+        - intent: "*"
+          condition: { field: "is_returning", operator: "eq", value: true }
+          next_subagent_id: market_truth
+
+        # First turn: stay in greeting to deliver the consent request
+        - intent: greeting
+          next_subagent_id: greeting
+
+        # User grants consent — proceed to profile building; mark storage as saved
+        - intent: consent_granted
+          next_subagent_id: profile_building
+          session_writes:
+            user_storage_mode: "saved"
+
+        # User declines consent — proceed to profile building; mark storage as anonymous
+        # Memory Layer will delete this user's Neo4j data at session end.
+        - intent: consent_declined
+          next_subagent_id: profile_building
+          session_writes:
+            user_storage_mode: "anonymous"
+
+        # Any other input on turn 2+ (e.g. user skips straight to a question)
+        - intent: "*"
+          next_subagent_id: profile_building
+
+
+    # ─────────────────────────────────────────────────────────────
+    # PROFILE BUILDING
+    # ─────────────────────────────────────────────────────────────
+    - id: profile_building
+      name: Profile Building
+      description: >
+        Collect the full capability and constraint profile conversationally across up to 5 rounds.
+        Hard minimum: trade_or_stream + location. Capability fields (years_experience,
+        certifications, informal_skills) must be collected before routing to market truth
+        so that skill_check can classify without asking further questions.
+      is_start: false
+      is_terminal: false
+      special_handler: null
+
+      valid_intents:
+        - profile_answer
+        - skip_question
+        - profile_complete
+
+      tools: []
+
+      system_prompt: |
+        You are building a complete profile to find the most relevant work options for this person.
+        Collect information naturally — like a conversation, not a form.
+        Ask one question at a time. Never ask for everything at once.
+        Fields to collect (collect as many as possible across up to 5 rounds):
+          BASIC (mandatory minimum):
+          1. trade_or_stream — what work they do or were trained for
+          2. location — district or area (do not ask for full address)
+          CAPABILITY (required for skill assessment — collect all before moving on):
+          3. years_experience — how many years of work experience (0 is valid for freshers)
+          4. certifications — any formal certificates, ITI trade certificate, NSDC, etc. (none is valid)
+          5. informal_skills — practical skills learnt on the job or informally (e.g. wiring, tiling)
+          CONSTRAINTS (collect opportunistically):
+          6. income_urgency — how urgently they need income (immediate <30 days / flexible)
+          7. education_level — ITI / diploma / 10th / other
+          8. age_bracket — approximate age range (can be skipped)
+        Rules:
+        - Never ask for a field you already know from session or previous session.
+        - If they mention a field in passing, capture it — do not ask again.
+        - If they skip or deflect a non-minimum field twice, move on.
+        - Do not move to market truth until you have trade_or_stream, location, AND
+          at least years_experience and certifications (even if the answers are "none" or "0").
+        - Once all capability fields are collected or skipped, signal profile_complete.
+        - Do not ask for user_id, full address, or government ID.
+
+      routing:
+        # Rule 1: Transition to market_truth only after capability fields are also collected
+        - intent: "*"
+          conditions:
+            - field: trade_or_stream
+              operator: not_eq
+              value: null
+            - field: location
+              operator: not_eq
+              value: null
+            - field: years_experience
+              operator: not_eq
+              value: null
+            - field: certifications
+              operator: not_eq
+              value: null
+          next_subagent_id: market_truth
+
+        # Rule 2: If we reach 5 rounds but still missing mandatory fields, go to incomplete
+        - intent: "*"
+          condition:
+            field: subagent_entry_count.profile_building
+            operator: gt
+            value: 4
+          next_subagent_id: profile_incomplete
+
+        # Rule 3: LLM signals profile is complete -> go to market truth
+        - intent: profile_complete
+          next_subagent_id: market_truth
+
+        # Rule 4: Normal collection loop
+        - intent: profile_answer
+          next_subagent_id: profile_building
+
+        - intent: skip_question
+          next_subagent_id: profile_building
+
+        # Rule 5: Catch-all
+        - intent: "*"
+          next_subagent_id: profile_building
+
+    # ─────────────────────────────────────────────────────────────
+    # PROFILE INCOMPLETE FALLBACK
+    # ─────────────────────────────────────────────────────────────
+    - id: profile_incomplete
+      name: Profile Incomplete Fallback
+      description: >
+        User has spent 5 rounds in profile building but still hasn't provided
+        the minimum required fields (trade + location). Explain and re-ask.
+      is_start: false
+      is_terminal: false
+      special_handler: null
+
+      valid_intents:
+        - profile_answer
+        - wants_counsellor
       
-      At the end, ask ONE clear question: "What would you like to do next? (Apply, Think about it, Talk to a Counsellor, Not ready)"
+      tools: []
 
-    pay_branch: |
-      ## Instructions for pay_branch node
-      The user expressed disappointment with the salary.
-      1. Acknowledge their concern genuinely.
-      2. Explain why it is at this level and explain how senior workers earn more over time.
-      3. Suggest PMKVY short-term training to level up their income.
-      4. End the conversation gracefully. Do NOT ask any follow up questions.
+      system_prompt: |
+        We have talked for a bit, but I still don't know your trade or where you are looking for work.
+        Without these two things, I cannot search for jobs or schemes for you.
+        Kindly tell me:
+        1. What work or trade you are trained for (e.g. Electrician, Fitter, etc.)
+        2. Which district or area you want to work in.
+        If you are unsure, I can also connect you with a counsellor who can guide you.
+      
+      routing:
+        - intent: profile_answer
+          next_subagent_id: profile_building   # Try one more time
+        - intent: wants_counsellor
+          next_subagent_id: counsellor_request
+        - intent: termination_intent
+          next_subagent_id: ended
+        - intent: "*"
+          next_subagent_id: profile_incomplete # Stay here until they answer or quit
 
-    distance_branch: |
-      ## Instructions for distance_branch node
-      The user expressed concerns about commute or distance.
-      Ask them honestly how far they are willing to travel and if they would consider relocation if accommodation is provided. Let them know we will test these constraints in our future search.
+    # ─────────────────────────────────────────────────────────────
+    # MARKET TRUTH
+    # ─────────────────────────────────────────────────────────────
+    - id: market_truth
+      name: Market Truth Delivery
+      description: >
+        Deliver real market intelligence from ONEST Blue Dot.
+        What work exists nearby, what pay is realistic, how many roles, what skills needed.
+        Never hallucinate roles. If scarcity: say so honestly and offer alternatives.
+      is_start: false
+      is_terminal: false
+      special_handler: null
 
-    normalise_branch: |
-      ## Instructions for normalise_branch node
-      The user seems overwhelmed, silent, or simply said they want to think about it.
-      Reassure them that making the right choice takes time. 
-      Inform them that you will hand off their details to a human counsellor who will message them on WhatsApp later. Say goodbye gracefully.
+      valid_intents:
+        - interested_engaged
+        - pay_disappointment
+        - distance_issue
+        - overwhelmed_silent
+        - hang_up
+        - market_truth_query       # Follow-up questions about the market data
 
-    capture_dropoff: |
-      ## Instructions for capture_dropoff node
-      The user has hung up or dropped off.
-      Capture the drop-off signal. You do not need to say anything else, just output a simple closing acknowledgment.
+      tools:
+        - onest_market_lookup
+        - knowledge_retrieval     # LLM calls when it needs trade/scheme/market context from KE
+
+      system_prompt: |
+        You are delivering verified market intelligence. This is the most important moment.
+        Use the ONEST Blue Dot data retrieved by the tool. Never invent roles or pay figures.
+        Structure your delivery:
+          1. What roles exist nearby (count, not a list yet)
+          2. Realistic pay range (always a range, never absolute: "₹14,000–18,000")
+          3. Distance from their location
+          4. What the employer actually needs (skills/certs)
+          5. Source: mention it came from live verified data
+        Scarcity handling: If ONEST returns zero or very few results:
+          - Do NOT say "there are no jobs". Say "abhi is area mein is trade mein kaam bahut kam hai."
+          - Offer: slightly wider radius, adjacent trade, alert signup for when roles appear.
+          - Capture this as a demand gap signal.
+        After delivery, PAUSE. Let the user react. Do not immediately push to skill check.
+        Read their reaction and respond to it — do not rush to the next step.
+        If they seem positive and engaged: move naturally toward skill check.
+        If they express disappointment, distance concern, or overwhelm: address that first.
+
+      routing:
+        - intent: interested_engaged
+          next_subagent_id: skill_check
+
+        - intent: pay_disappointment
+          next_subagent_id: pay_branch
+
+        - intent: distance_issue
+          next_subagent_id: distance_branch
+
+        - intent: overwhelmed_silent
+          next_subagent_id: normalise_branch
+
+        - intent: hang_up
+          next_subagent_id: capture_dropoff
+
+        - intent: market_truth_query
+          next_subagent_id: market_truth    # Stay and answer follow-up
+
+        - intent: "*"
+          next_subagent_id: market_truth    # Stay if unclear
+
+    # ─────────────────────────────────────────────────────────────
+    # SKILL CHECK
+    # ─────────────────────────────────────────────────────────────
+    - id: skill_check
+      name: Skill Match Assessment
+      description: >
+        Assess the gap between the user's current skills and what the market needs.
+        Three outcomes: direct match, partial match, significant gap.
+        Significant gap routing depends on income_urgency.
+      is_start: false
+      is_terminal: false
+      special_handler: null
+
+      valid_intents:
+        - skill_direct_match
+        - skill_partial_match
+        - skill_significant_gap
+        - profile_answer        # User may reveal more about their skills here
+
+      tools:
+        - knowledge_retrieval   # LLM calls when it needs training/course/scheme info from KE
+
+      system_prompt: |
+        You are assessing whether the user's skills match the roles you just presented.
+        Ask naturally — do not make it feel like an evaluation or test.
+        Example: "Aapne ITI mein kya kiya tha? Aur koi practical experience hai kya,
+        ya ye pehla kaam hoga?"
+        Skill match levels:
+          - DIRECT MATCH: Their trade/certs match what employers need. Present 2–3 real
+            options immediately with Blue Dot source, pay range, distance, employer type.
+          - PARTIAL MATCH: There's a gap but it's closeable. Name the gap honestly.
+            Show how fast it can be closed. Present options with this caveat.
+          - SIGNIFICANT GAP: The gap is large. Do not hide this. Say it clearly and kindly.
+            Then check income urgency before routing:
+            - If immediate (<30 days): present bridge income option + parallel training path
+            - If flexible: present training path first, then job sequence after
+        Never push one path. Always present the honest trade-off.
+
+      routing:
+        - intent: skill_direct_match
+          next_subagent_id: evaluation
+
+        - intent: skill_partial_match
+          next_subagent_id: evaluation
+
+        - intent: skill_significant_gap
+          condition:
+            field: income_urgency
+            operator: eq
+            value: immediate
+          next_subagent_id: evaluation   # With bridge_income context set
+
+        - intent: skill_significant_gap
+          condition:
+            field: income_urgency
+            operator: not_eq
+            value: immediate
+          next_subagent_id: evaluation   # With training_first context set
+
+        - intent: profile_answer
+          next_subagent_id: skill_check  # Continue assessment
+
+        - intent: "*"
+          next_subagent_id: skill_check
+
+    # ─────────────────────────────────────────────────────────────
+    # EVALUATION
+    # ─────────────────────────────────────────────────────────────
+    - id: evaluation
+      name: Evaluation
+      description: >
+        The user is comparing options. Highest-value state.
+        Present honest trade-offs. Never push one path.
+        Detect when they're ready to act, want to think, need a counsellor, or aren't ready.
+      is_start: false
+      is_terminal: false
+      special_handler: null
+
+      valid_intents:
+        - ready_to_apply
+        - wants_to_think
+        - wants_counsellor
+        - not_ready_yet
+        - evaluation_question    # Follow-up questions about options
+
+      tools:
+        - knowledge_retrieval   # LLM calls when user asks about role details, growth, schemes
+
+      system_prompt: |
+        The user is in the evaluation state — comparing real options. This is the highest-value
+        moment. Your role: surface honest trade-offs, never push one path.
+        For each option, if asked, provide:
+          - Pay range (verified Blue Dot source)
+          - Distance from their location
+          - Employer type and reputation signal
+          - Skill match level and what would close any gap
+          - Growth trajectory (is this a stepping stone or a dead end?)
+        Rules:
+          - Never say "yeh wala best hai". Present facts, not opinions.
+          - Never manufacture urgency ("offer sirf 2 din ke liye hai").
+          - If they are going in circles (subagent_entry_count >= 3 for this subagent):
+            gently offer: "Kya aap kisi counsellor se baat karna chahenge?
+            Woh aapko aur clearly guide kar sakte hain."
+          - If they want to think: offer WhatsApp summary — do not pressure.
+          - If they ask for counsellor: route immediately, no re-asking.
+          - If they say they're not ready: save state, offer re-engagement option.
+
+      routing:
+        - intent: ready_to_apply
+          next_subagent_id: commitment
+
+        - intent: wants_to_think
+          next_subagent_id: normalise_branch
+
+        - intent: wants_counsellor
+          next_subagent_id: counsellor_request
+
+        - intent: not_ready_yet
+          next_subagent_id: capture_dropoff
+
+        - intent: evaluation_question
+          next_subagent_id: evaluation   # Stay and answer
+
+        - intent: "*"
+          condition:
+            field: subagent_entry_count.evaluation   # Set by orchestrator
+            operator: gt
+            value: 3
+          next_subagent_id: counsellor_request   # Decision paralysis → HITL
+
+        - intent: "*"
+          next_subagent_id: evaluation
+
+    # ─────────────────────────────────────────────────────────────
+    # PAY BRANCH
+    # ─────────────────────────────────────────────────────────────
+    - id: pay_branch
+      name: Pay Disappointment Branch
+      description: >
+        User is disappointed with the pay range. Explore why. Realign or acknowledge honestly.
+        Never make false promises. Test if their expectation is adjustable.
+      is_start: false
+      is_terminal: false
+      special_handler: null
+
+      valid_intents:
+        - expectation_adjusted    # User recalibrates after honest framing
+        - expectation_firm        # User holds their expectation
+        - interested_engaged      # User re-engages after pay discussion
+
+      tools: []
+
+      system_prompt: |
+        The user is disappointed with the pay range you delivered. Do not defend the market.
+        Do not inflate numbers to make them feel better.
+        Steps:
+          1. Acknowledge: "Haan, yeh figure thoda kam lag sakta hai."
+          2. Explore: "Aapko minimum kitna chahiye tha? Koi specific zaroorat hai?"
+          3. If their expectation is close to market range:
+             - Show the upper end of verified roles with the right skills/certs
+             - Show growth trajectory: where does this role go in 1–2 years?
+          4. If their expectation is significantly above market:
+             - Be honest: "Is area mein is trade mein abhi yeh range market rate hai."
+             - Offer lateral trade options with better pay signal if available
+             - Do not push them toward a role they cannot afford to take
+          5. If they remain firm: save state and offer re-engagement when signal improves.
+        Route back to evaluation if they re-engage, or to market_truth for a re-run
+        with adjusted parameters (wider radius, adjacent trade).
+
+      routing:
+        - intent: expectation_adjusted
+          next_subagent_id: evaluation
+
+        - intent: interested_engaged
+          next_subagent_id: evaluation
+
+        - intent: expectation_firm
+          next_subagent_id: capture_dropoff
+
+        - intent: "*"
+          next_subagent_id: pay_branch
+
+    # ─────────────────────────────────────────────────────────────
+    # DISTANCE BRANCH
+    # ─────────────────────────────────────────────────────────────
+    - id: distance_branch
+      name: Distance Issue Branch
+      description: >
+        User has a distance constraint. Test if it's hard or flexible.
+        Show local-only options if hard constraint. Show wider radius if flexible.
+      is_start: false
+      is_terminal: false
+      special_handler: null
+
+      valid_intents:
+        - constraint_hard     # Distance is non-negotiable
+        - constraint_flexible # Willing to reconsider distance
+        - interested_engaged  # Re-engages after distance is addressed
+
+      tools:
+        - onest_market_lookup
+        - knowledge_retrieval     # LLM calls when it needs trade/scheme context from KE
+
+      system_prompt: |
+        The user has raised a distance concern. Test gently whether this is a hard constraint.
+        Ask: "Agar ghar ke 5km ke andar koi option ho, toh theek rahega?
+        Ya aur door toh bilkul nahi chalega?"
+        If constraint is hard (e.g. no vehicle, family restriction):
+          - Re-run ONEST lookup with tighter radius
+          - If nothing found: be honest, offer alert signup when local roles appear
+          - Update max_commute_km in their profile
+        If constraint is flexible:
+          - Show options at slightly wider radius with transport context
+          - Mention if employer provides transport or daily allowance
+        Never argue with their constraint. Never say "thoda door toh chalega na."
+        If no local options exist: capture as demand gap signal (DOP_MS).
+
+      routing:
+        - intent: constraint_hard
+          condition:
+            field: local_options_available
+            operator: eq
+            value: false
+          next_subagent_id: capture_dropoff
+
+        - intent: constraint_hard
+          next_subagent_id: evaluation   # Re-run with tight radius options
+
+        - intent: constraint_flexible
+          next_subagent_id: evaluation   # Show wider radius options
+
+        - intent: interested_engaged
+          next_subagent_id: evaluation
+
+        - intent: "*"
+          next_subagent_id: distance_branch
+
+    # ─────────────────────────────────────────────────────────────
+    # NORMALISE BRANCH (WhatsApp Handoff)
+    # ─────────────────────────────────────────────────────────────
+    - id: normalise_branch
+      name: Normalise / WhatsApp Handoff
+      description: >
+        User is overwhelmed, silent, or wants to think. De-escalate.
+        Offer WhatsApp summary so they can review at their own pace.
+        Never pressure. WhatsApp is a thinking space, not a closing mechanism.
+      is_start: false
+      is_terminal: false
+      special_handler: whatsapp_handoff
+
+      valid_intents:
+        - whatsapp_accepted
+        - whatsapp_declined
+        - re_engaged          # User comes back during the same session
+
+      tools: []
+
+      system_prompt: |
+        The user seems overwhelmed or wants time to think. Do not push.
+        Say gently: "Koi baat nahi. Yeh sab ek baar mein process karna mushkil hota hai.
+        Kya main aapko WhatsApp pe ek summary bhej doon — options, pay range, distance —
+        taaki aap apne waqt se dekh sakein?"
+        If they accept WhatsApp:
+          - Send a summary with: 2–3 options (title, pay range, distance, one-line trade-off)
+          - Action buttons per option
+          - "Call me back" button
+          - Do NOT include anything requiring an immediate decision
+        If they decline:
+          - "Bilkul theek hai. Jab bhi ready ho, hum yahan hain."
+          - Save session state. Offer to re-engage at a time they suggest.
+        Never send more than one WhatsApp summary in a session without their prompt.
+
+      routing:
+        - intent: whatsapp_accepted
+          next_subagent_id: capture_dropoff   # Session ends; WhatsApp takes over
+
+        - intent: whatsapp_declined
+          next_subagent_id: capture_dropoff   # Session ends; passive re-engagement at 7 days
+
+        - intent: re_engaged
+          next_subagent_id: evaluation
+
+        - intent: "*"
+          next_subagent_id: capture_dropoff
+
+    # ─────────────────────────────────────────────────────────────
+    # COMMITMENT
+    # ─────────────────────────────────────────────────────────────
+    - id: commitment
+      name: Commitment / Action SubAgent
+      description: >
+        User has decided to act. Consent is mandatory before any action.
+        Three action types: apply for job, enrol in course, connect counsellor.
+      is_start: false
+      is_terminal: false
+      special_handler: null
+
+      valid_intents:
+        - apply_now
+        - enrol_course
+        - connect_counsellor
+        - action_declined   # User backs out at last moment
+
+      tools:
+        - onest_apply
+        - counsellor_schedule
+        - knowledge_retrieval   # LLM calls when user asks about course/scheme details before committing
+
+      system_prompt: |
+        The user is ready to act. This is the commitment subagent.
+        Rules — non-negotiable:
+          1. ALWAYS confirm consent before any action:
+             "Kya main [specific role name] ke liye aapki taraf se apply kar doon?
+             Iska matlab hai [employer name] ko aapka naam aur number milega."
+          2. ALWAYS confirm the specific role or course — never submit for a vague option.
+          3. For job application: submit via ONEST, confirm reference number to user.
+          4. For course enrolment: connect to PMKVY/institute portal, confirm seat availability.
+          5. For counsellor: schedule callback within 24 hours, give the user a reference time.
+          6. After action: set follow-through check (72h for job, 1 week for course).
+          7. If user backs out: do not push. Save state. Offer to return anytime.
+        After successful action, briefly recap what was done and what happens next.
+
+      routing:
+        - intent: apply_now
+          next_subagent_id: follow_through
+
+        - intent: enrol_course
+          next_subagent_id: follow_through
+
+        - intent: connect_counsellor
+          next_subagent_id: counsellor_request
+
+        - intent: action_declined
+          next_subagent_id: evaluation   # Return to evaluation — user may reconsider
+
+        - intent: "*"
+          next_subagent_id: commitment
+
+    # ─────────────────────────────────────────────────────────────
+    # FOLLOW-THROUGH
+    # ─────────────────────────────────────────────────────────────
+    - id: follow_through
+      name: Follow-Through Check
+      description: >
+        Post-action check-in. Did employer call? Did course start? Is job as described?
+        Trust is built or broken here. Capture outcome signal.
+      is_start: false
+      is_terminal: true
+      special_handler: null
+
+      valid_intents:
+        - outcome_positive
+        - outcome_employer_ghost
+        - outcome_job_mismatch
+        - outcome_no_response
+
+      tools: []
+
+      system_prompt: |
+        This is a follow-up call, 72 hours after the application or 1 week after course start.
+        Begin warmly: "Arjun bhai, hum KKB se bol rahe hain. Woh [role] ke baare mein
+        puchh raha tha — kya employer ka call aaya?"
+        Outcomes:
+          - POSITIVE: Record success. Capture what worked. Offer next step if they need it.
+            ("Bahut accha! Koi aur cheez mein madad chahiye?")
+          - EMPLOYER GHOST (no callback at 72h): Offer next option from original shortlist.
+            Do not dismiss or judge the employer publicly. Flag source for ONEST review.
+          - JOB MISMATCH (role not as described): Capture mismatch details (pay diff, role diff).
+            Flag Blue Dot source for review. Re-open journey at evaluation subagent with full context.
+          - NO RESPONSE: Mark outcome as unknown. One re-engagement message at 30 days.
+            Do not spam. Respect their silence.
+        This is session close. End warmly regardless of outcome.
+
+      routing: []   # Terminal subagent — no routing
+
+    # ─────────────────────────────────────────────────────────────
+    # COUNSELLOR REQUEST (HITL)
+    # ─────────────────────────────────────────────────────────────
+    - id: counsellor_request
+      name: Counsellor Request — HITL
+      description: >
+        Human-in-the-loop subagent. Bypasses LLM entirely.
+        Triggered by: explicit user request, distress signal, or loop_count >= 3.
+        Returns fixed config response and schedules callback.
+      is_start: false
+      is_terminal: true
+      special_handler: hitl
+
+      valid_intents: []   # LLM not called — no intent classification needed
+      tools:
+        - counsellor_schedule
+
+      system_prompt: |
+        This subagent uses the special_handler: hitl.
+        The orchestrator returns the fixed hitl_response message from config.
+        No LLM call is made. The counsellor_schedule tool is called directly.
+        Fixed response (from config): "Hum ek counsellor se aapko connect karenge.
+        Woh 24 ghante ke andar call karenge. Aapka reference number hai: [ref]."
+
+      routing: []   # Terminal
+
+    # ─────────────────────────────────────────────────────────────
+    # CAPTURE DROPOFF
+    # ─────────────────────────────────────────────────────────────
+    - id: capture_dropoff
+      name: Capture Drop-off
+      description: >
+        User is leaving without completing the journey.
+        Capture the drop-off reason code. Set re-engagement trigger.
+        Do not beg them to stay.
+      is_start: false
+      is_terminal: true
+      special_handler: null
+
+      valid_intents:
+        - drop_off_acknowledged
+
+      tools: []
+
+      system_prompt: |
+        The user is ending the conversation without completing their journey.
+        Close warmly and without pressure: "Theek hai. Jab bhi aapko zaroorat ho,
+        hum yahan hain. Aapka profile save ho gaya hai — dobara sab batana nahi padega."
+        Capture the drop-off signal:
+          - After market truth: DOP_MT (re-engage in 3 days)
+          - After option presentation: DOP_OP (re-engage in 5 days, WhatsApp summary resend)
+          - Mid evaluation loop: DOP_EV (re-engage in 7 days, counsellor offer)
+          - After WhatsApp handoff: DOP_WA (re-engage in 3 days)
+          - Market scarcity: DOP_MS (alert when ONEST signal appears)
+          - Skill-income mismatch: DOP_SI (re-engage in 90 days)
+          - Repeated no-action: DOP_RL (counsellor referral offer)
+        The orchestrator infers the drop-off code from the subagent the user was at
+        before arriving here.
+
+      routing: []   # Terminal
+
+    # ─────────────────────────────────────────────────────────────
+    # ENDED
+    # ─────────────────────────────────────────────────────────────
+    - id: ended
+      name: Session Ended
+      description: Graceful session termination triggered by user.
+      is_start: false
+      is_terminal: true
+      special_handler: null
+
+      valid_intents: []
+      tools: []
+
+      system_prompt: |
+        The user has chosen to end the call.
+        Close warmly: "Dhanyavaad! Jab bhi zaroorat ho, hum yahan hain."
+        Flush session state. Emit termination event to Learning Layer.
+        If consent_status = declined: orchestrator deletes all profile fields collected
+        this session. Nothing is persisted to the User Profile Store.
+
+      routing: []   # Terminal
+
+    # ─────────────────────────────────────────────────────────────
+    # CLARIFICATION (default fallback)
+    # ─────────────────────────────────────────────────────────────
+    - id: clarification
+      name: Clarification
+      description: >
+        Fallback subagent for unknown or unclassifiable intent.
+        Re-prompt gently without revealing system internals.
+      is_start: false
+      is_terminal: false
+      special_handler: null
+
+      valid_intents:
+        - any_input
+
+      tools: []
+
+      system_prompt: |
+        The system could not classify the user's intent at the current stage.
+        Re-prompt gently and naturally. Do not say "I don't understand."
+        Instead, reflect back what you do know and ask an open question:
+        "Haan, main samajh raha hoon. Kya aap thoda aur bata sakte hain —
+        kaam dhundhna hai, ya koi specific cheez poochni thi?"
+        Keep it short. Do not overwhelm. Try to get back on the main path.
+
+      routing:
+        - intent: "*"
+          next_subagent_id: clarification   # Orchestrator will re-evaluate after re-prompt
+                                        # Loop detection: if stuck here > 2 turns → counsellor_request

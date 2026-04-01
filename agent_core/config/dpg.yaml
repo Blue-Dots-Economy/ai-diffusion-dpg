@@ -35,5 +35,5 @@ learning_client:
   timeout_ms: 2000
 
 action_gateway_client:
-  endpoint: "http://localhost:9999/onest/market_lookup"
+  endpoint: "http://localhost:9999/execute"
   timeout_ms: 5000
