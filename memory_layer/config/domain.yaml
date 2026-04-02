@@ -16,7 +16,7 @@ state:
       user_node:
         label: ""   # Required. Neo4j node label for the user. e.g. "User"
         key: ""     # Required. Property used as the unique user identifier. e.g. "user_id"
-      subnodes: {}  # Required. Map of subnode config. See dev-kit/configs/kkb/memory_layer.yaml for full example.
+      subnodes: {}  # Required. Map of subnode config. See dev-kit/configs/<domain>/memory_layer.yaml for full example.
 
     merge_on_session_end: []  # Required. List of {session_field, target} mappings promoted to
                                # Journey node on session close.
