@@ -1,0 +1,40 @@
+const BASE = '/api'
+
+async function request(method, path, body) {
+  const opts = {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+  }
+  if (body !== undefined) opts.body = JSON.stringify(body)
+  const res = await fetch(`${BASE}${path}`, opts)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || res.statusText)
+  }
+  return res.json()
+}
+
+export const api = {
+  // Projects
+  listProjects: () => request('GET', '/projects'),
+  createProject: (name, description) => request('POST', '/projects', { name, description }),
+  getProject: (slug) => request('GET', `/projects/${slug}`),
+  deleteProject: (slug) => request('DELETE', `/projects/${slug}`),
+
+  // Chat
+  chat: (slug, message) => request('POST', `/projects/${slug}/chat`, { message }),
+  getHistory: (slug) => request('GET', `/projects/${slug}/history`),
+
+  // Checkpoints
+  getCheckpoints: (slug) => request('GET', `/projects/${slug}/checkpoints`),
+  restoreCheckpoint: (slug, phase) => request('POST', `/projects/${slug}/checkpoints/${phase}/restore`),
+
+  // Configs
+  getConfigs: (slug) => request('GET', `/projects/${slug}/configs`),
+  getConfig: (slug, block) => request('GET', `/projects/${slug}/configs/${block}`),
+  updateConfig: (slug, block, content) => request('PUT', `/projects/${slug}/configs/${block}`, { content }),
+  validateConfigs: (slug) => request('POST', `/projects/${slug}/configs/validate`),
+
+  // Workflow graph
+  getGraph: (slug) => request('GET', `/projects/${slug}/workflow/graph`),
+}
