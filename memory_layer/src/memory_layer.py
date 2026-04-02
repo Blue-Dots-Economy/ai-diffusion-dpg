@@ -23,9 +23,9 @@ from typing import Any
 from neo4j import GraphDatabase
 
 from session_store import RedisSessionStore
-from neo4j_user_store import Neo4jUserStore
-from neo4j_journey_store import Neo4jJourneyStore
-from neo4j_context_store import Neo4jContextStore
+from graph_user_store import GraphUserStore
+from graph_journey_store import GraphJourneyStore
+from graph_context_store import GraphContextStore
 from audit_store_base import AuditStoreBase
 from audit_store import SQLiteAuditStore
 
@@ -100,21 +100,21 @@ class MemoryLayer:
         # Initialise Redis store
         self._redis = RedisSessionStore(config, self._ttl_seconds)
 
-        # Initialise Neo4j driver + stores
-        neo4j_cfg = config.get("neo4j", {})
-        neo4j_uri = neo4j_cfg.get("uri", "bolt://localhost:7687")
-        neo4j_user = neo4j_cfg.get("user", "neo4j")
-        neo4j_password = neo4j_cfg.get("password", "neo4j")
-        neo4j_timeout = neo4j_cfg.get("connection_timeout_s", 5)
+        # Initialise Memgraph driver + stores (neo4j driver connects via Bolt — Apache 2.0)
+        memgraph_cfg = config.get("memgraph", {})
+        memgraph_uri = memgraph_cfg.get("uri", "bolt://localhost:7687")
+        memgraph_user = memgraph_cfg.get("user", "memgraph")
+        memgraph_password = memgraph_cfg.get("password", "")
+        memgraph_timeout = memgraph_cfg.get("connection_timeout_s", 5)
 
-        self._neo4j_driver = GraphDatabase.driver(
-            neo4j_uri,
-            auth=(neo4j_user, neo4j_password),
-            connection_timeout=neo4j_timeout,
+        self._graph_driver = GraphDatabase.driver(
+            memgraph_uri,
+            auth=(memgraph_user, memgraph_password),
+            connection_timeout=memgraph_timeout,
         )
-        self._user_store = Neo4jUserStore(self._neo4j_driver, self._declared_fields)
-        self._journey_store = Neo4jJourneyStore(self._neo4j_driver, journey_children)
-        self._context_store = Neo4jContextStore(self._neo4j_driver)
+        self._user_store = GraphUserStore(self._graph_driver, self._declared_fields)
+        self._journey_store = GraphJourneyStore(self._graph_driver, journey_children)
+        self._context_store = GraphContextStore(self._graph_driver)
 
         # Initialise SQLite audit store
         audit_db = config.get("audit", {}).get("db_path", "audit.db")
