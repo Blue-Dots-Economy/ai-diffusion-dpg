@@ -121,6 +121,29 @@ def test_unknown_action_does_not_raise(audit_store):
     history = audit_store.get_history("s1")
     assert len(history) == 0  # no turns added
 
+def test_session_end_without_prior_start_creates_terminal_record(audit_store):
+    """record_session_event('end') with no prior start must insert a terminal row, not silently drop the event."""
+    # No 'start' has been called for this session
+    audit_store.record_session_event("s_never_started", "u1", "end", reason="flush")
+    with audit_store._get_connection() as conn:
+        row = conn.execute(
+            "SELECT status, end_reason FROM session_audit WHERE session_id = 's_never_started'"
+        ).fetchone()
+    assert row is not None, "terminal record must be inserted even without a prior start"
+    assert row["status"] == "ended"
+    assert row["end_reason"] == "flush"
+
+
+def test_session_escalate_without_prior_start_creates_terminal_record(audit_store):
+    """record_session_event('escalate') with no prior start must insert a terminal row."""
+    audit_store.record_session_event("s_escalate_only", "u1", "escalate", reason="hitl")
+    with audit_store._get_connection() as conn:
+        row = conn.execute(
+            "SELECT status FROM session_audit WHERE session_id = 's_escalate_only'"
+        ).fetchone()
+    assert row is not None
+    assert row["status"] == "escalated"
+
 
 def test_init_db_failure_sets_db_unavailable(tmp_path):
     """When _init_db fails (e.g., bad path), _db_available must be False."""

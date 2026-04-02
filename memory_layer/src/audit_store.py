@@ -13,10 +13,12 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from audit_store_base import AuditStoreBase
+
 logger = logging.getLogger(__name__)
 
 
-class SQLiteAuditStore:
+class SQLiteAuditStore(AuditStoreBase):
     """
     Thread-safe SQLite store for session and turn auditing.
     
@@ -149,7 +151,7 @@ class SQLiteAuditStore:
                         )
                     elif action in ("end", "escalate"):
                         status = "ended" if action == "end" else "escalated"
-                        conn.execute(
+                        cursor = conn.execute(
                             """
                             UPDATE session_audit
                             SET closed_at = ?,
@@ -160,6 +162,26 @@ class SQLiteAuditStore:
                             """,
                             (now, status, reason, consent_given, session_id),
                         )
+                        if cursor.rowcount == 0:
+                            # No start row existed — insert a terminal record so the event is not lost.
+                            logger.warning(
+                                "sqlite_audit_store.session_end_without_start",
+                                extra={
+                                    "operation": "audit_store.record_session",
+                                    "status": "skipped",
+                                    "session_id": session_id,
+                                    "action": action,
+                                    "error": "session_audit row missing at end/escalate — inserting terminal record",
+                                },
+                            )
+                            conn.execute(
+                                """
+                                INSERT INTO session_audit
+                                    (session_id, user_id, created_at, closed_at, status, end_reason, consent_given)
+                                VALUES (?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (session_id, user_id, now, now, status, reason, consent_given),
+                            )
                     else:
                         logger.warning(
                             "sqlite_audit_store.record_session_unknown_action",
@@ -318,12 +340,13 @@ class SQLiteAuditStore:
     def get_history(self, session_id: str) -> list[dict]:
         """Retrieve full chat history for a session, sorted by timestamp."""
         try:
-            with self._get_connection() as conn:
-                rows = conn.execute(
-                    "SELECT * FROM turn_audit WHERE session_id = ? ORDER BY timestamp ASC",
-                    (session_id,),
-                ).fetchall()
-                return [dict(row) for row in rows]
+            with self._lock:
+                with self._get_connection() as conn:
+                    rows = conn.execute(
+                        "SELECT * FROM turn_audit WHERE session_id = ? ORDER BY timestamp ASC",
+                        (session_id,),
+                    ).fetchall()
+                    return [dict(row) for row in rows]
         except Exception as e:
             logger.error(
                 "sqlite_audit_store.get_history_error",

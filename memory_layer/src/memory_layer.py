@@ -26,6 +26,7 @@ from session_store import RedisSessionStore
 from neo4j_user_store import Neo4jUserStore
 from neo4j_journey_store import Neo4jJourneyStore
 from neo4j_context_store import Neo4jContextStore
+from audit_store_base import AuditStoreBase
 from audit_store import SQLiteAuditStore
 
 logger = logging.getLogger(__name__)

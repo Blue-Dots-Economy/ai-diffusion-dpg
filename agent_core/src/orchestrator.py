@@ -709,12 +709,34 @@ class AgentCore(AgentCoreBase):
             if trust_output.action in ("block", "escalate"):
                 hitl_msg = self._safe_fallback_message()
             self._schedule_flush(session_id, user_id, "hitl_special_handler")
+            latency_ms = int((time.time() - start) * 1000)
+            turn_event = TurnEvent(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_text=hitl_msg,
+                tool_calls=[],
+                trust_input_result=trust_input,
+                trust_output_result=trust_output,
+                model_used="",
+                intent=intent,
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=latency_ms,
+                timestamp_ms=int(time.time() * 1000),
+            )
+            # NOTE: daemon thread means audit write may be lost on abrupt process exit.
+            thread = threading.Thread(
+                target=self._post_turn,
+                args=(session_id, user_id, turn_id, hitl_msg, turn_input.user_message, turn_event, False, ""),
+                daemon=True,
+            )
+            thread.start()
             return TurnResult(
                 session_id=session_id,
                 turn_id=turn_id,
                 response_text=hitl_msg,
                 was_escalated=True,
-                latency_ms=int((time.time() - start) * 1000),
+                latency_ms=latency_ms,
             )
 
         if handler == "whatsapp_handoff":
@@ -727,12 +749,34 @@ class AgentCore(AgentCoreBase):
             if trust_output.action in ("block", "escalate"):
                 handoff_msg = self._safe_fallback_message()
             self._schedule_flush(session_id, user_id, "whatsapp_handoff")
+            latency_ms = int((time.time() - start) * 1000)
+            turn_event = TurnEvent(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_text=handoff_msg,
+                tool_calls=[],
+                trust_input_result=trust_input,
+                trust_output_result=trust_output,
+                model_used="",
+                intent=intent,
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=latency_ms,
+                timestamp_ms=int(time.time() * 1000),
+            )
+            # NOTE: daemon thread means audit write may be lost on abrupt process exit.
+            thread = threading.Thread(
+                target=self._post_turn,
+                args=(session_id, user_id, turn_id, handoff_msg, turn_input.user_message, turn_event, False, ""),
+                daemon=True,
+            )
+            thread.start()
             return TurnResult(
                 session_id=session_id,
                 turn_id=turn_id,
                 response_text=handoff_msg,
                 was_escalated=False,
-                latency_ms=int((time.time() - start) * 1000),
+                latency_ms=latency_ms,
             )
 
         # Unknown handler — log and return a safe fallback.
@@ -744,12 +788,34 @@ class AgentCore(AgentCoreBase):
             "unknown_intent_message",
             "I didn't quite understand that. Could you tell me more?",
         )
+        latency_ms = int((time.time() - start) * 1000)
+        turn_event = TurnEvent(
+            session_id=session_id,
+            turn_id=turn_id,
+            response_text=fallback_msg,
+            tool_calls=[],
+            trust_input_result=trust_input,
+            trust_output_result=TrustCheckResult(passed=True, action="allow"),
+            model_used="",
+            intent=intent,
+            input_tokens=0,
+            output_tokens=0,
+            latency_ms=latency_ms,
+            timestamp_ms=int(time.time() * 1000),
+        )
+        # NOTE: daemon thread means audit write may be lost on abrupt process exit.
+        thread = threading.Thread(
+            target=self._post_turn,
+            args=(session_id, user_id, turn_id, fallback_msg, turn_input.user_message, turn_event, False, ""),
+            daemon=True,
+        )
+        thread.start()
         return TurnResult(
             session_id=session_id,
             turn_id=turn_id,
             response_text=fallback_msg,
             was_escalated=False,
-            latency_ms=int((time.time() - start) * 1000),
+            latency_ms=latency_ms,
         )
 
     # ------------------------------------------------------------------
