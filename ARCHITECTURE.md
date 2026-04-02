@@ -53,13 +53,13 @@ The reference domain is **KKB (Kaam Ki Baat)** — a labour-market assistant hel
 
 Language normalisation (dialect detection, code-switching, transliteration) runs in Agent Core (`preprocessing/language_normaliser.py`) using a haiku model override, before NLU.
 
-### Memory Layer: Redis + Neo4j (not in-process dict)
+### Memory Layer: Redis + Memgraph (not in-process dict)
 
 **Original design:** Memory Layer planned as in-process dict stub.
 
-**Current implementation:** Redis (session/profile store, RedisJSON) + Neo4j (context graph — typed attribute nodes per session). SQLite was specified in the design doc for audit/cross-session data; current implementation uses Neo4j for the persistent store instead.
+**Current implementation:** Redis (session/profile store, RedisJSON) + Memgraph (context graph — typed attribute nodes per session). SQLite was specified in the design doc for audit/cross-session data; current implementation uses Memgraph for the persistent store instead.
 
-**Neo4j context graph:** Each session is a `Session` node connected to `Attribute` nodes via typed relationship edges (e.g., `[:HAS_TRADE]`, `[:HAS_LOCATION]`). Edge types come from config (`profile_collection.profile_graph_relations`), never hardcoded. One graph query gives the LLM its complete context — no conversation history needed.
+**Memgraph context graph:** Each session is a `Session` node connected to `Attribute` nodes via typed relationship edges (e.g., `[:HAS_TRADE]`, `[:HAS_LOCATION]`). Edge types come from config (`profile_collection.profile_graph_relations`), never hardcoded. One graph query gives the LLM its complete context — no conversation history needed.
 
 ### Knowledge Engine — conditional call (known gap)
 
@@ -167,7 +167,7 @@ Manages state at three scopes. Agent Core reads at turn start and writes asynchr
 | Scope | Backing Store | Description |
 |---|---|---|
 | Turn/Session | Redis (RedisJSON, TTL) | Profile: permanent for consent=true, TTL 4h for consent=false. Session: TTL 24h / 4h. |
-| Context Graph | Neo4j | Typed attribute graph per session (`Session` node → `Attribute` nodes via domain edge types). One query gives full LLM context. |
+| Context Graph | Memgraph | Typed attribute graph per session (`Session` node → `Attribute` nodes via domain edge types). One query gives full LLM context. |
 | Audit / Cross-session | (design: SQLite) | Turn history written for compliance only; never read back into LLM context. Not yet implemented. |
 
 **Redis keys:**
@@ -175,12 +175,12 @@ Manages state at three scopes. Agent Core reads at turn start and writes asynchr
 - `session:{session_id}` — RedisJSON, workflow_step, collection_round, turn history
 - `user_sessions:{phone_number}` — Sorted Set, reverse index for session lookup by phone
 
-**Neo4j edge types (KKB, from config):** `HAS_TRADE`, `HAS_LOCATION`, `HAS_EDUCATION_LEVEL`, `HAS_EXPERIENCE_YEARS`, `HAS_INCOME_URGENCY`, `HAS_COMMUTE_PREFERENCE`, `HAS_SALARY_EXPECTATION`, `HAS_SECTOR_PREFERENCE`, `HAS_TRAINING_PREFERENCE`, `HAS_GROWTH_HORIZON`, `HAS_LANGUAGE_PREFERENCE`.
+**Memgraph edge types (KKB, from config):** `HAS_TRADE`, `HAS_LOCATION`, `HAS_EDUCATION_LEVEL`, `HAS_EXPERIENCE_YEARS`, `HAS_INCOME_URGENCY`, `HAS_COMMUTE_PREFERENCE`, `HAS_SALARY_EXPECTATION`, `HAS_SECTOR_PREFERENCE`, `HAS_TRAINING_PREFERENCE`, `HAS_GROWTH_HORIZON`, `HAS_LANGUAGE_PREFERENCE`.
 
 **Key files:**
 - `memory_layer/src/memory_layer.py` — 5-method public interface: `context_bundle()`, `write()`, `flush_session()`, `get_active_sessions()`, `delete_user()`
 - `memory_layer/src/session_store.py` — RedisSessionStore
-- `memory_layer/src/neo4j_user_store.py`, `neo4j_journey_store.py`, `neo4j_context_store.py`
+- `memory_layer/src/graph_user_store.py`, `graph_journey_store.py`, `graph_context_store.py`
 - `memory_layer/src/server.py` — FastAPI: `/session/read`, `/session/write`, `/profile/{session_id}`, `/session/{session_id}`, `/health`
 
 ---
@@ -439,7 +439,7 @@ A caller is always in one of five states. Detecting the correct state is the sys
 |---|---|---|
 | Agent Core | ✅ | Orchestrator, LLM wrapper, preprocessing, tool-use loop, HTTP server. 177 tests, 90% coverage. |
 | Knowledge Engine | ✅ | Glossary, ChromaDB RAG, HTTP server. 87 tests, ≥82% coverage. |
-| Memory Layer | ✅ | Redis (session/profile) + Neo4j (context graph). HTTP server. |
+| Memory Layer | ✅ | Redis (session/profile) + Memgraph (context graph). HTTP server. |
 | Trust Layer | 🟡 | Phrase-matching only. Consent always True. Fail-open. |
 | Action Gateway | 🟡 | Hardcoded fixture data. No real ONEST API. |
 | Reach Layer | 🟡 | CLI stdin/stdout only. |
@@ -460,7 +460,7 @@ A caller is always in one of five states. Detecting the correct state is the sys
 | KE conditional call (tool-only) | ❌ | KE called unconditionally; should only be called when `workflow_step = ready` |
 | Session state (turn + session) | ✅ | Redis with TTL |
 | Persistent profile store | ✅ | Redis RedisJSON |
-| Context graph | ✅ | Neo4j typed attribute graph |
+| Context graph | ✅ | Memgraph typed attribute graph |
 | Audit log / SQLite store | ⏳ | Design specifies SQLite for turn history/audit; not yet implemented |
 | Input trust check | ✅ | Correct interface, stub logic |
 | Output trust check | ✅ | Correct interface, stub logic |

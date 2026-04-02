@@ -8,11 +8,11 @@
 ## 1. Core Principles
 
 - **Memory Layer stores. It does not extract.** Agent Core (via LLM) decides what to extract from user input and calls `write()`. Memory Layer receives key/value/scope and stores it. No logic, no inference.
-- **Redis is the hot path.** Every turn reads from Redis — no Neo4j in the decision loop during an active session.
-- **Neo4j is the knowledge graph.** Persistent user identity, profile, journey history, and conversational signals all live in Neo4j across sessions. Raw conversation messages (user text, system text) are never stored.
+- **Redis is the hot path.** Every turn reads from Redis — no Memgraph in the decision loop during an active session.
+- **Memgraph is the knowledge graph.** Persistent user identity, profile, journey history, and conversational signals all live in Memgraph across sessions. Raw conversation messages (user text, system text) are never stored.
 - **Config-driven schema.** Declared fields come from `domain.yaml`. The Memory Layer code never hardcodes field names, node labels, or relationship types.
 - **Ad-hoc data is first-class.** Anything the user says that is relevant but not in the declared config schema is stored as a child attribute node — not discarded.
-- **`user_id` is the universal user key.** It flows from Reach Layer → Agent Core → Memory Layer via `TurnInput.user_id`. What `user_id` maps to (phone number, email, WhatsApp ID, or any other identifier) is determined by the Reach Layer config for each deployment. The Memory Layer receives `user_id` as an opaque string — it never knows or cares what type of identifier it is. Redis is keyed by `session_id`. Neo4j is keyed by `user_id`.
+- **`user_id` is the universal user key.** It flows from Reach Layer → Agent Core → Memory Layer via `TurnInput.user_id`. What `user_id` maps to (phone number, email, WhatsApp ID, or any other identifier) is determined by the Reach Layer config for each deployment. The Memory Layer receives `user_id` as an opaque string — it never knows or cares what type of identifier it is. Redis is keyed by `session_id`. Memgraph is keyed by `user_id`.
 - **A user can have multiple concurrent sessions, each with its own TTL.** `user:{user_id}` is a lightweight index in Redis of all active sessions for that user. Its TTL is set equal to the session TTL and is reset on every turn — so it expires naturally if no session has any activity for the configured TTL duration. On reconnect, the Reach Layer presents only the most recently accessed session — the user can continue it or start fresh. All sessions are stored; only the latest is surfaced to the user.
 
 ---
@@ -22,7 +22,7 @@
 | Store | Technology | What lives here | Lifetime |
 |---|---|---|---|
 | Session | Redis hash, TTL-bound | Hot session state — current node, collection round, current question, signals, language, consent, loop count | Session-scoped (TTL from config) |
-| Persistent | Neo4j | User identity, profile, journey history, context graph | Permanent (with consent) |
+| Persistent | Memgraph | User identity, profile, journey history, context graph | Permanent (with consent) |
 
 **Turn scope** is already handled by local variables inside Agent Core's `process_turn()` — `turn_id`, `current_user_message`, `normalised_input`, `nlu_result`, `rag_chunks`, `trust_input_result`. These are ephemeral Python variables that exist for one turn and are discarded after the response. No Memory Layer involvement needed. `turn_id` is generated as `uuid4()` at the start of each turn and passed to Learning Layer in `TurnEvent` for audit.
 
@@ -30,7 +30,7 @@
 
 ---
 
-## 3. Neo4j Graph Model
+## 3. Memgraph Graph Model
 
 ### 3.1 Full Structure
 
@@ -164,16 +164,16 @@ Fields (all stored as strings — type coercion on read):
 
 **Three categories of session fields:**
 
-| Category | Redis | Neo4j | Description |
+| Category | Redis | Memgraph | Description |
 |---|---|---|---|
 | Infrastructure | ✓ always present | ✗ | `user_id`, `journey_id`, `is_returning` — framework needs these regardless of domain |
-| Domain session fields | ✓ hot path | ✓ persistent copy | Fields extracted during the session that also need to survive across sessions (e.g. language preference). Written to Neo4j via `write(scope="persistent")`, cached in Redis for fast turn-by-turn access |
+| Domain session fields | ✓ hot path | ✓ persistent copy | Fields extracted during the session that also need to survive across sessions (e.g. language preference). Written to Memgraph via `write(scope="persistent")`, cached in Redis for fast turn-by-turn access |
 | Session outcome fields | ✓ tracked live | ✓ promoted on flush | Fields tracked during the session whose **final value** is saved to a Journey node when the session closes — via `merge_on_session_end` config rules |
 
 **On new session start:**
 1. `redis.exists(f"session:{session_id}")` → false
-2. Check Neo4j for `user_id` → determines `is_returning`
-3. Create Journey node in Neo4j under JourneyHistory
+2. Check Memgraph for `user_id` → determines `is_returning`
+3. Create Journey node in Memgraph under JourneyHistory
 4. `redis.hset(f"session:{session_id}", mapping=initial_state)`
 5. `redis.expire(f"session:{session_id}", ttl_seconds)`
 6. `redis.hset(f"user:{user_id}", session_id, now_iso8601())`  ← register in user index
@@ -185,7 +185,7 @@ Fields (all stored as strings — type coercion on read):
 - `redis.expire(f"user:{user_id}", ttl_seconds)`              ← reset user key TTL
 
 **On flush_session:**
-- Journey node closed in Neo4j
+- Journey node closed in Memgraph
 - `redis.delete(f"session:{session_id}")`
 - `redis.hdel(f"user:{user_id}", session_id)`  ← remove from user index
 - If no fields remain in `user:{user_id}`: `redis.delete(f"user:{user_id}")`
@@ -199,7 +199,7 @@ Fields (all stored as strings — type coercion on read):
 agent_core/src/interfaces/memory_layer.py
 
 The only API Agent Core ever calls. Five methods.
-Agent Core never touches Redis or Neo4j directly.
+Agent Core never touches Redis or Memgraph directly.
 """
 
 from abc import ABC, abstractmethod
@@ -215,14 +215,14 @@ class MemoryLayerBase(ABC):
         Called at the START of every turn.
 
         First call for a new session_id:
-          - Checks Neo4j for user_id (returning user?)
-          - Creates Journey node in Neo4j
+          - Checks Memgraph for user_id (returning user?)
+          - Creates Journey node in Memgraph
           - Initialises Redis hash with default session state
           - Loads prior journey summary if returning user
 
         All subsequent calls:
-          - Reads Redis hash (hot path — no Neo4j)
-          - Reads UserProfile from Neo4j (declared fields + UserAttribute nodes)
+          - Reads Redis hash (hot path — no Memgraph)
+          - Reads UserProfile from Memgraph (declared fields + UserAttribute nodes)
           - Returns ContextBundle
 
         Returns empty ContextBundle on any failure. Never raises.
@@ -237,7 +237,7 @@ class MemoryLayerBase(ABC):
           → Redis HSET on session:{session_id} + reset TTL
 
         scope="persistent"
-          → Neo4j MERGE on the correct node, resolved from entity_map config
+          → Memgraph MERGE on the correct node, resolved from entity_map config
           → If key matches a declared field: write as property on the node
           → If key does not match any declared field: create/update UserAttribute child node
 
@@ -317,7 +317,7 @@ class MemoryLayerBase(ABC):
 ### 6.1 ContextBundle
 
 ContextBundle is the **single object that `context_bundle()` returns to Agent Core at the start of every turn.**
-Instead of Agent Core making separate calls to Redis and Neo4j itself, Memory Layer assembles everything into
+Instead of Agent Core making separate calls to Redis and Memgraph itself, Memory Layer assembles everything into
 one package and hands it over. Think of it as: *"everything the LLM needs to know about this user right now."*
 
 Three fields, three different sources, three different time horizons:
@@ -325,14 +325,14 @@ Three fields, three different sources, three different time horizons:
 | Field | Source | Time horizon | What it represents |
 |---|---|---|---|
 | `session` | Redis hash | This session only | What's happening right now — current node, question, signals, language |
-| `profile` | Neo4j UserProfile | Across all sessions | Who this user is — trade, location, constraints, ad-hoc attributes |
-| `journey` | Neo4j JourneyHistory | Last session only | What happened last time — roles offered, outcome, drop-off point |
+| `profile` | Memgraph UserProfile | Across all sessions | Who this user is — trade, location, constraints, ad-hoc attributes |
+| `journey` | Memgraph JourneyHistory | Last session only | What happened last time — roles offered, outcome, drop-off point |
 
 **Why one object instead of separate calls:**
-Without ContextBundle, Agent Core would have to call Redis directly, call Neo4j directly for profile,
-call Neo4j again for journey summary, and know how to parse each store's response format. That violates
+Without ContextBundle, Agent Core would have to call Redis directly, call Memgraph directly for profile,
+call Memgraph again for journey summary, and know how to parse each store's response format. That violates
 the design rule — Memory Layer stores, Agent Core orchestrates. Agent Core must not know anything about
-Redis or Neo4j internals. `context_bundle()` is the single read boundary.
+Redis or Memgraph internals. `context_bundle()` is the single read boundary.
 
 ```python
 # agent_core/src/models.py
@@ -400,7 +400,7 @@ state:
       # ... one entry per domain session field
 
   persistent:
-    backend: neo4j
+    backend: memgraph
     graph:
       user_node:
         label: User
@@ -472,7 +472,7 @@ SCOPE_MAP = {
     "<field_name>":      "persistent",  # one entry per declared profile field
     # ...
 
-    # Signal (Neo4j ContextGraph — always this key)
+    # Signal (Memgraph ContextGraph — always this key)
     "signal":            "signal",
 
     # Journey events (from domain.yaml JourneyHistory.child.children)
@@ -491,13 +491,13 @@ SCOPE_MAP = {
 ```
 1. Agent Core calls context_bundle(session_id, user_id)
 2. Memory Layer: redis.exists("session:{session_id}") → false
-3. Memory Layer: neo4j.find_user(user_id) → None  (new user)
-4. Memory Layer: neo4j.create_user_graph(user_id)
+3. Memory Layer: memgraph.find_user(user_id) → None  (new user)
+4. Memory Layer: memgraph.create_user_graph(user_id)
    → CREATE (u:User)
    → CREATE (u)-[:HAS_PROFILE]->(up:UserProfile {user_id})
    → CREATE (u)-[:HAS_JOURNEY_HISTORY]->(jh:JourneyHistory)
    → CREATE (u)-[:HAS_CONTEXT]->(cg:ContextGraph)
-5. Memory Layer: neo4j.create_journey(user_id, journey_id)
+5. Memory Layer: memgraph.create_journey(user_id, journey_id)
    → MATCH (jh:JourneyHistory)<-[:HAS_JOURNEY_HISTORY]-(u:User {user_id})
    → CREATE (jh)-[:JOURNEY]->(j:Journey {journey_id, started_at})
 6. Memory Layer: redis.hset("session:{session_id}", initial_state)
@@ -514,11 +514,11 @@ SCOPE_MAP = {
 ```
 1. Agent Core calls context_bundle(session_id, user_id)
 2. Memory Layer: redis.exists → false (new session_id for new session)
-3. Memory Layer: neo4j.find_user(user_id) → User node found
-4. Memory Layer: neo4j.create_journey(user_id, journey_id)  (new Journey node)
-5. Memory Layer: neo4j.get_profile(user_id)
+3. Memory Layer: memgraph.find_user(user_id) → User node found
+4. Memory Layer: memgraph.create_journey(user_id, journey_id)  (new Journey node)
+5. Memory Layer: memgraph.get_profile(user_id)
    → reads UserProfile declared fields + all UserAttribute nodes
-6. Memory Layer: neo4j.get_last_journey_summary(user_id)
+6. Memory Layer: memgraph.get_last_journey_summary(user_id)
    → reads last Journey + its JourneyChild nodes + Signal nodes
    → builds journey summary dict
 7. Memory Layer: redis.hset with profile data pre-populated, is_returning="true"
@@ -545,11 +545,11 @@ Memory Layer:
   scope="session"      → redis.hset("session:{session_id}", key, value) + reset TTL
                           redis.hset("user:{user_id}", session_id, now_iso8601())  ← update last_accessed
                           redis.expire("user:{user_id}", ttl_seconds)              ← reset user key TTL
-  scope="persistent"   → neo4j.upsert_profile_field(user_id, key, value)
+  scope="persistent"   → memgraph.upsert_profile_field(user_id, key, value)
                           if key in declared_fields: SET up.{key} = $value
                           else: MERGE UserAttribute node
-  scope="signal"       → neo4j.create_signal(user_id, journey_id, value)
-  scope="journey_event"→ neo4j.create_journey_child(user_id, journey_id, key, value)
+  scope="signal"       → memgraph.create_signal(user_id, journey_id, value)
+  scope="journey_event"→ memgraph.create_journey_child(user_id, journey_id, key, value)
 ```
 
 ### 8.4 Session End (flush_session)
@@ -564,11 +564,11 @@ Memory Layer:
   1. session = redis.hgetall("session:{session_id}")
   2. For each rule in merge_on_session_end config:
        val = session.get(rule["session_field"])
-       if val: neo4j.upsert_path(user_id, journey_id, rule["target"], val)
-  3. neo4j.close_journey(user_id, journey_id, end_reason)
+       if val: memgraph.upsert_path(user_id, journey_id, rule["target"], val)
+  3. memgraph.close_journey(user_id, journey_id, end_reason)
        → MATCH Journey {journey_id} SET ended_at=$now, end_reason=$reason
   4. if session["consent"] == "false":
-       neo4j.delete_user(user_id)
+       memgraph.delete_user(user_id)
        → MATCH (u:User {user_id: $user_id}) DETACH DELETE u
   5. redis.delete("session:{session_id}")
   6. redis.hdel("user:{user_id}", session_id)          ← remove from user index
@@ -609,7 +609,7 @@ User reconnects (new inbound message with user_id, no session_id yet)
 4a. User chooses Continue:
      Agent Core calls context_bundle(sessions[0].session_id, user_id)
      Memory Layer: redis.exists("session:{session_id}") → true
-     → reads Redis hash directly (hot path — no Neo4j init needed)
+     → reads Redis hash directly (hot path — no Memgraph init needed)
      → resets TTL: redis.expire("session:{session_id}", ttl_seconds)
      → updates last_accessed: redis.hset("user:{user_id}", session_id, now_iso8601())
      → Returns ContextBundle with current session state restored
@@ -637,8 +637,8 @@ User reconnects (user_id known, no active sessions in Redis)
      → returns []
 
 3. Agent Core sees empty list → starts new session flow (8.1 or 8.2)
-   neo4j.find_user(user_id):
-     → User node exists: is_returning=true (returning user, prior journeys in Neo4j)
+   memgraph.find_user(user_id):
+     → User node exists: is_returning=true (returning user, prior journeys in Memgraph)
      → User node absent: is_returning=false (brand new user)
 ```
 
@@ -651,9 +651,9 @@ User reconnects (user_id known, no active sessions in Redis)
 | A1 | `ContextBundle` dataclass | `agent_core/src/models.py` | Replaces `SessionState` |
 | B1 | `MemoryLayerBase` (5 methods) | `agent_core/src/interfaces/memory_layer.py` | New interface |
 | K1 | `RedisSessionStore` | `memory_layer/src/session_store.py` | HSET/HGETALL/DELETE/EXPIRE on session keys; HSET/HDEL/HGETALL/DELETE on user index key (`user:{user_id}`) |
-| K2 | `Neo4jUserStore` | `memory_layer/src/neo4j_user_store.py` | CREATE user graph, get/upsert UserProfile + UserAttribute |
-| K3 | `Neo4jJourneyStore` | `memory_layer/src/neo4j_journey_store.py` | CREATE/CLOSE Journey, get last journey summary, Role/DropOff nodes |
-| K4 | `Neo4jContextStore` | `memory_layer/src/neo4j_context_store.py` | CREATE Signal + ContextAttribute nodes |
+| K2 | `GraphUserStore` | `memory_layer/src/graph_user_store.py` | CREATE user graph, get/upsert UserProfile + UserAttribute |
+| K3 | `GraphJourneyStore` | `memory_layer/src/graph_journey_store.py` | CREATE/CLOSE Journey, get last journey summary, Role/DropOff nodes |
+| K4 | `GraphContextStore` | `memory_layer/src/graph_context_store.py` | CREATE Signal + ContextAttribute nodes |
 | K5 | `MemoryLayer` | `memory_layer/src/memory_layer.py` | Implements MemoryLayerBase. Orchestrates K1–K4. |
 | K6 | `domain.yaml` | `memory_layer/config/domain.yaml` | Full KKB config (schema above) |
 | K7 | `MemoryLayerServer` | `memory_layer/src/server.py` | FastAPI — 4 endpoints mirroring the 4 methods |
@@ -699,9 +699,9 @@ User reconnects (user_id known, no active sessions in Redis)
 
 This will be implemented as a separate track immediately after the Memory Layer is done.
 
-- Neo4j for structured ONEST market data: `(Job)-[:REQUIRES_TRADE]→(Trade)`, `(Job)-[:LOCATED_IN]→(District)`
+- Memgraph for structured ONEST market data: `(Job)-[:REQUIRES_TRADE]→(Trade)`, `(Job)-[:LOCATED_IN]→(District)`
 - ChromaDB stays for document RAG (labour schemes, trade descriptions)
-- KE retrieval uses both: structured Neo4j query + semantic ChromaDB search, results merged before returning chunks
+- KE retrieval uses both: structured Memgraph query + semantic ChromaDB search, results merged before returning chunks
 - This is a KE change — does not affect the Memory Layer interface or implementation
 - Requires a separate design pass before implementation begins
 
@@ -731,7 +731,7 @@ state:
       consent:           { type: bool,    default: false }
 
   persistent:
-    backend: neo4j
+    backend: memgraph
     graph:
       user_node:
         label: User
