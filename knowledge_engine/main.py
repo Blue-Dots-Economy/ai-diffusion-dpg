@@ -4,7 +4,7 @@ knowledge_engine/main.py
 Startup entrypoint for the Knowledge Engine service.
 
 Responsibilities:
-- Load config from config/config.yaml
+- Load config from config/config.yaml (or CONFIG_FOLDER/knowledge_engine.yaml if set)
 - Instantiate KnowledgeEngine (no LLM proxy needed — Language Norm and NLU
   now run in Agent Core; KE runs only Glossary, Static KB, Multimodal)
 - Expose FastAPI endpoints: POST /retrieve, GET /health
@@ -16,9 +16,11 @@ Run:
 
 Environment:
     OPENAI_API_KEY — required only if embedding_provider=openai in config.yaml.
+    CONFIG_FOLDER  — optional path to a folder containing knowledge_engine.yaml.
 """
 
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -29,8 +31,9 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-# Load .env before anything reads environment variables.
-# Has no effect if .env does not exist (safe in production).
+# Load .env.local first (developer overrides), then .env (shared defaults).
+# Neither file is required; missing files are silently ignored.
+load_dotenv(Path(__file__).parent.parent / ".env.local")
 load_dotenv()
 
 from src.engine import KnowledgeEngine
@@ -103,6 +106,24 @@ def _deep_merge(base: dict, override: dict) -> dict:
         else:
             result[key] = value
     return result
+
+
+def _domain_config_path(service: str) -> Path:
+    """Resolve the domain config path.
+
+    Returns the path from CONFIG_FOLDER env var if set, otherwise the
+    block-local config/domain.yaml fallback.
+
+    Args:
+        service: Service name matching the filename in the configs folder.
+
+    Returns:
+        Absolute or relative Path to the domain config YAML file.
+    """
+    config_folder = os.getenv("CONFIG_FOLDER")
+    if config_folder:
+        return Path(config_folder) / f"{service}.yaml"
+    return Path("config/domain.yaml")  # relative to cwd, consistent with config/dpg.yaml loading
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +222,7 @@ def create_app(ke: KnowledgeEngine, config: dict) -> FastAPI:
 
 def _build_app():
     dpg_config = _load_config("config/dpg.yaml")
-    domain_config = _load_config("config/domain.yaml")
+    domain_config = _load_config(str(_domain_config_path("knowledge_engine")))
     config = _deep_merge(dpg_config, domain_config)
 
     knowledge_cfg = config.get("knowledge", {})
