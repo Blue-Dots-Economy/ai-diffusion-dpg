@@ -14,6 +14,7 @@ dependencies = [
     "pyyaml>=6.0",
     "redis>=4.0",        # session and user index store (RedisSessionStore)
     "neo4j>=5.0",        # persistent graph store (User, Journey, Context nodes)
+    "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]
