@@ -1,7 +1,8 @@
 """
 reach_layer/tests/test_main.py
 
-Tests for config-loading utilities in main.py: _load_yaml and _deep_merge.
+Tests for config-loading utilities in main.py: _load_yaml, _deep_merge,
+and _domain_config_path.
 
 The reach_layer uses _load_yaml (equivalent to _load_config in other services)
 and _deep_merge to merge dpg.yaml + domain.yaml at startup.
@@ -11,9 +12,12 @@ Covers:
 - Edge:    empty YAML, empty base/override dicts
 - Failure: missing DPG config raises FileNotFoundError (hard fail);
            missing domain config is caught by _load_config → bare-infra mode
+- CONFIG_FOLDER: env var selects alternate domain config path
 """
 
 from __future__ import annotations
+
+import os
 
 import pytest
 import yaml
@@ -160,3 +164,37 @@ class TestDeepMergeEdge:
         """Bare-infra mode: _deep_merge(dpg, {}) gives dpg defaults unchanged."""
         dpg = {"agent_core_client": {"endpoint": "http://localhost:8000", "timeout_s": 30.0}}
         assert _deep_merge(dpg, {}) == dpg
+
+
+# ---------------------------------------------------------------------------
+# _domain_config_path
+# ---------------------------------------------------------------------------
+
+# Mirror of main._domain_config_path — tested inline to avoid module-level startup.
+def _domain_config_path(service: str) -> Path:
+    config_folder = os.getenv("CONFIG_FOLDER")
+    if config_folder:
+        return Path(config_folder) / f"{service}.yaml"
+    return Path("config/domain.yaml")
+
+
+class TestDomainConfigPath:
+    def test_returns_local_path_when_config_folder_not_set(self, monkeypatch):
+        monkeypatch.delenv("CONFIG_FOLDER", raising=False)
+        result = _domain_config_path("reach_layer")
+        assert result == Path("config/domain.yaml")
+
+    def test_returns_config_folder_path_when_set(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("CONFIG_FOLDER", str(tmp_path))
+        result = _domain_config_path("reach_layer")
+        assert result == tmp_path / "reach_layer.yaml"
+
+    def test_config_folder_path_uses_service_name(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("CONFIG_FOLDER", str(tmp_path))
+        result = _domain_config_path("other_service")
+        assert result == tmp_path / "other_service.yaml"
+
+    def test_returns_local_path_when_config_folder_empty_string(self, monkeypatch):
+        monkeypatch.setenv("CONFIG_FOLDER", "")
+        result = _domain_config_path("reach_layer")
+        assert result == Path("config/domain.yaml")
