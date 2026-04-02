@@ -31,6 +31,7 @@ Prerequisites (all must be running before this starts):
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -41,7 +42,8 @@ from dotenv import load_dotenv
 # Load .env before anything reads ANTHROPIC_API_KEY from the environment.
 # Has no effect if .env does not exist (safe in production where the var is
 # injected by the orchestrator / secrets manager directly).
-load_dotenv()
+load_dotenv(Path(__file__).parent.parent / ".env.local")  # repo-root local dev overrides
+load_dotenv()  # .env in block dir or injected environment (Docker/prod)
 
 from src.llm_wrapper.claude_wrapper import ClaudeLLMWrapper
 from src.http_clients.knowledge_engine import HttpKnowledgeEngineClient
@@ -90,6 +92,25 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _domain_config_path(service: str) -> Path:
+    """Resolve the domain config path.
+
+    Returns the path from CONFIG_FOLDER env var if set, otherwise the
+    block-local config/domain.yaml fallback.
+
+    Args:
+        service: Service name matching the filename in the configs folder
+            (e.g. "agent_core").
+
+    Returns:
+        Absolute or relative Path to the domain config YAML file.
+    """
+    config_folder = os.getenv("CONFIG_FOLDER")
+    if config_folder:
+        return Path(config_folder) / f"{service}.yaml"
+    return Path("config/domain.yaml")
+
+
 # ---------------------------------------------------------------------------
 # App construction -- exposed at module level for uvicorn --reload
 # ---------------------------------------------------------------------------
@@ -97,7 +118,7 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 def _build_app():
     dpg_config = _load_config("config/dpg.yaml")
-    domain_config = _load_config("config/domain.yaml")
+    domain_config = _load_config(str(_domain_config_path("agent_core")))
     config = _deep_merge(dpg_config, domain_config)
 
     agent_cfg = config.get("agent", {})

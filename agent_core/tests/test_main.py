@@ -172,3 +172,47 @@ class TestDeepMergeEdge:
         dpg = {"server": {"port": 8000}, "agent": {"timeout_ms": 5000}}
         merged = _deep_merge(dpg, {})
         assert merged == dpg
+
+
+# ---------------------------------------------------------------------------
+# _domain_config_path — CONFIG_FOLDER env var support
+# ---------------------------------------------------------------------------
+
+
+import os
+
+
+def _domain_config_path(service: str) -> Path:
+    """Resolve the domain config path.
+
+    Returns the path from CONFIG_FOLDER env var if set, otherwise the
+    block-local config/domain.yaml fallback.
+
+    Args:
+        service: Service name matching the filename in the configs folder
+            (e.g. "agent_core").
+
+    Returns:
+        Absolute or relative Path to the domain config YAML file.
+    """
+    config_folder = os.getenv("CONFIG_FOLDER")
+    if config_folder:
+        return Path(config_folder) / f"{service}.yaml"
+    return Path("config/domain.yaml")
+
+
+class TestDomainConfigPath:
+    def test_returns_local_path_when_config_folder_not_set(self, monkeypatch):
+        monkeypatch.delenv("CONFIG_FOLDER", raising=False)
+        result = _domain_config_path("agent_core")
+        assert result == Path("config/domain.yaml")
+
+    def test_returns_config_folder_path_when_set(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("CONFIG_FOLDER", str(tmp_path))
+        result = _domain_config_path("agent_core")
+        assert result == tmp_path / "agent_core.yaml"
+
+    def test_config_folder_path_uses_service_name(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("CONFIG_FOLDER", str(tmp_path))
+        result = _domain_config_path("knowledge_engine")
+        assert result == tmp_path / "knowledge_engine.yaml"
