@@ -1,19 +1,39 @@
-# dev-kit/dpg/agent_core.yaml
-# DPG framework defaults for Agent Core — same for any domain deployment.
-# Never put domain-specific values here (model names, persona, intents, connectors).
+# agent_core/config/dpg.yaml — DPG framework defaults.
+# These values are the same for any domain deployment.
 
 server:
-  host: "0.0.0.0"
+  host: 0.0.0.0
   port: 8000
 
 agent:
-  timeout_ms: 10000                         # per-request LLM timeout (ms)
-  retry_attempts: 2                         # retries on rate-limit/timeout before fallback
-  retry_backoff_seconds: [0, 0.5, 1.0]     # delay per attempt (index = attempt number, 0-based)
-  max_tool_rounds: 1                        # max tool→LLM cycles per turn
+  timeout_ms: 10000
+  retry_attempts: 2
+  retry_backoff_seconds: [0, 0.5, 1.0]
+  max_tool_rounds: 1
 
 conversation:
   max_turns: 20
-  blocked_message: "I'm unable to help with that request."
-  escalation_message: "I'm connecting you to a human agent who can better assist you."
-  output_blocked_message: "I wasn't able to produce a safe response. Please try rephrasing your question."
+  # blocked_message, escalation_message, output_blocked_message are domain-specific
+  # persona text — they must be set in domain.yaml, not here.
+
+# Default service client endpoints (localhost for local dev).
+# Override in domain.yaml or deployment config for staging/production.
+ke_client:
+  endpoint: "http://knowledge_engine:8001/retrieve"
+  timeout_ms: 30000
+
+memory_client:
+  endpoint: "http://memory_layer:8002"
+  timeout_ms: 3000
+
+trust_client:
+  endpoint: "http://trust_layer:8003"
+  timeout_ms: 2000
+
+learning_client:
+  endpoint: "http://learning_layer:8004"
+  timeout_ms: 2000
+
+action_gateway_client:
+  endpoint: "http://action_gateway:9999/execute"
+  timeout_ms: 5000

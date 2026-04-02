@@ -3,7 +3,7 @@
 # Never put glossary mappings, persona, sources, or intent_filters here.
 
 server:
-  host: "0.0.0.0"
+  host: 0.0.0.0
   port: 8001
 
 knowledge:
@@ -13,13 +13,13 @@ knowledge:
   blocks:
     static_knowledge_base:
       vector_store: chromadb
-      embedding_provider: sentence_transformers
-      embedding_model: paraphrase-multilingual-MiniLM-L12-v2
+      embedding_provider: sentence_transformers  # openai also supported (set OPENAI_API_KEY; reduces KE RAM from 2 GB to ~256 MB)
+      embedding_model: paraphrase-multilingual-MiniLM-L12-v2  # if changed, delete chroma volume and re-ingest
       top_k: 3
       similarity_threshold: 0.65
       metadata_filters:
-        use_location_filter: true
-        use_intent_filter: true
+        use_location_filter: true   # narrows search to chunks matching the user's location entity; set false if KB has no district-level content
+        use_intent_filter: true     # narrows search to doc_types mapped to the detected intent (see intent_filters in domain config); set false to search all doc_types
 
     multimodal_input_handler:
       enabled: false

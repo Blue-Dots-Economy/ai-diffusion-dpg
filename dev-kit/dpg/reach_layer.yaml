@@ -1,10 +1,8 @@
-# dev-kit/dpg/reach_layer.yaml
-# DPG framework defaults for Reach Layer — same for any domain deployment.
-# Agent Core endpoint is domain/environment-specific — never put it here.
+# reach_layer/config/dpg.yaml — DPG framework defaults.
 
 server:
-  host: "0.0.0.0"
-  port: 8005                              # reserved port for future Reach Layer HTTP adapter
+  host: 0.0.0.0
+  port: 8005
 
 reach_layer:
   cli:
@@ -12,4 +10,5 @@ reach_layer:
     agent_prefix: "Agent: "
 
 agent_core_client:
+  endpoint: "http://agent_core:8000/process_turn"
   timeout_s: 30.0

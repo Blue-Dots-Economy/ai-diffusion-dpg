@@ -1,8 +1,128 @@
-# dev-kit/configs/kkb/memory_layer.yaml
-# KKB domain values for Memory Layer.
-# No KKB-specific overrides — DPG defaults apply.
-# To override session TTL or max_sessions for KKB, add them here.
+# memory_layer/config/domain.yaml — KKB (Kaam Ki Baat) deployment config.
 #
-# memory:
-#   session_ttl_seconds: 7200   # example: 2-hour sessions for KKB
-#   max_sessions: 5000
+# This file is the Domain Configuration Kit for the Memory Layer.
+# All field names, node labels, relationships, and TTL values live here.
+# The Memory Layer Python code reads this at startup and never hardcodes any value.
+
+state:
+  session:
+    ttl_minutes: 2880    # 2 days — allows users to continue sessions across days
+    schema:
+      # Infrastructure fields (user_id, journey_id, is_returning) are always
+      # present and do not need to be declared here — they are injected by the
+      # Memory Layer at session init regardless of what is in this schema.
+      #
+      # Declare all domain-specific session fields below.
+      # These are initialised with their defaults when a new session starts.
+      mental_state:      { type: enum,    values: [fog, orientation, evaluation, commitment, follow_through],  default: "fog" }
+      market_signal:     { type: enum,    values: [strong, weak, absent],                                      default: "absent" }
+      skill_match:       { type: enum,    values: [direct, partial, gap],                                      default: "gap" }
+      income_urgency:    { type: enum,    values: [immediate, short_term, flexible],                           default: "" }
+      collection_round:  { type: int,     default: 0 }
+      current_question:  { type: string,  default: "" }
+      options_presented: { type: list,    default: [] }
+      loop_count:        { type: int,     default: 0 }
+      # user_storage_mode is written by the agent_core routing rule session_writes
+      # when the user expresses a preference. Values: "saved" or "anonymous".
+      # If absent, Memory Layer falls back to user_data_persistence.default_mode.
+      user_storage_mode: { type: string,  default: "" }
+
+  persistent:
+    backend: neo4j
+    graph:
+      user_node:
+        label: User
+        key: user_id    # for KKB: user_id = phone number (set by Reach Layer)
+
+      subnodes:
+        UserProfile:
+          rel: HAS_PROFILE
+          declared_fields:
+            # Identity layer
+            - name
+            - age_bracket
+            - location
+            - gender
+            - disability_status
+            - language_preference
+            # Capability layer
+            - education_level
+            - trade_or_stream
+            - certifications
+            - years_experience
+            - informal_skills
+            - language_skills
+            - digital_literacy
+            # Constraint layer
+            - income_urgency
+            - max_commute_km
+            - availability_hours
+            - mobility_owned
+            - dependents
+            # Aspiration layer
+            - primary_goal
+            - sector_preference
+            - open_to_training
+            - growth_horizon
+          adhoc:
+            label: UserAttribute
+            rel: HAS_ATTRIBUTE
+            fields: [key, value, raw, turn, journey_id]
+
+        JourneyHistory:
+          rel: HAS_JOURNEY_HISTORY
+          grouping: true    # no properties on this node
+          child:
+            label: Journey
+            rel: JOURNEY
+            fields: [journey_id, started_at, ended_at, end_reason]
+            children:
+              - label: Role
+                rel: OFFERED
+                fields: [role_id, title, employer, pay_min, pay_max, shortlisted, committed, follow_up_outcome]
+              - label: DropOff
+                rel: DROPPED_AT
+                fields: [node, reason, timestamp]
+
+        ContextGraph:
+          rel: HAS_CONTEXT
+          grouping: true    # no properties on this node
+          child:
+            label: Signal
+            rel: SIGNAL
+            fields: [type, turn, raw, journey_id]
+            adhoc:
+              label: ContextAttribute
+              rel: HAS_ATTRIBUTE
+              fields: [key, value, raw, turn, journey_id]
+
+    merge_on_session_end:
+      # Promotes session fields to Journey node properties on flush_session().
+      # The final value of each listed session field is written to the Journey node
+      # when the session closes.
+      - session_field: mental_state
+        target: Journey.mental_state_at_end
+      - session_field: market_signal
+        target: Journey.branch_taken
+      - session_field: options_presented
+        target: Role    # creates OFFERED edges for each role_id in the list
+
+user_data_persistence:
+  # Default storage mode when user_storage_mode is absent from session.
+  # "saved"     — profile is retained in Neo4j across sessions.
+  # "anonymous" — Neo4j data is deleted at session end (DPDP-compliant).
+  default_mode: saved
+
+reengagement:
+    triggers:
+      - event: DOP_MT              # drop-off after market truth
+        delay_hours: 72
+        channel: outbound_call
+        message_template: kkb_reengagement_mt
+      - event: DOP_EG              # employer ghost
+        delay_hours: 72
+        channel: outbound_call
+        message_template: kkb_employer_ghost
+      - event: DOP_RL              # evaluation loop
+        loop_threshold: 3
+        action: hitl_counsellor
