@@ -5,12 +5,16 @@ configFolder: /app/config
 redis:
   url: redis://redis:6379/0
 
-# Neo4j connection — persistent user profile store.
-# Override password at install time: --set neo4j.password=<secret>
-neo4j:
-  uri: bolt://neo4j:7687
-  user: neo4j
-  password: dpg_password
+# Memgraph connection — persistent user profile store (open-source, Bolt-compatible).
+# Override password at install time: --set memgraph.password=<secret>
+memgraph:
+  uri: bolt://memgraph:7687
+  user: memgraph
+  password: ""
+  storageClass: ""          # leave empty to use cluster default
+  storageSize: 1Gi
+  image: memgraph/memgraph-platform
+  tag: latest
 
 replicaCount: 1
 
