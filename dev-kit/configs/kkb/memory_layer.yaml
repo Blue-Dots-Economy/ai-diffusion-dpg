@@ -28,7 +28,7 @@ state:
       user_storage_mode: { type: string,  default: "" }
 
   persistent:
-    backend: neo4j
+    backend: memgraph
     graph:
       user_node:
         label: User

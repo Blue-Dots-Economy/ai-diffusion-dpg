@@ -30,7 +30,7 @@ from src.memory_layer import MemoryLayer, _build_initial_session, _build_scope_m
 
 MINIMAL_CONFIG = {
     "redis": {"host": "localhost", "port": 6379, "db": 0},
-    "neo4j": {
+    "memgraph": {
         "uri": "bolt://localhost:7687",
         "user": "neo4j",
         "password": "test",
@@ -566,7 +566,7 @@ def test_get_active_sessions_redis_error_returns_empty():
 # delete_user
 # ---------------------------------------------------------------------------
 
-def test_delete_user_calls_neo4j_and_redis():
+def test_delete_user_calls_graph_and_redis():
     layer, stores = _make_layer()
     layer.delete_user("user-1")
     stores["user"].delete_user.assert_called_once_with("user-1")
