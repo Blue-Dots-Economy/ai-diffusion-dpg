@@ -78,6 +78,20 @@ def test_init_raises_on_none_config():
         ClaudeLLMWrapper(None)
 
 
+def test_init_raises_on_empty_primary_model():
+    config = VALID_CONFIG.copy()
+    config["primary_model"] = ""
+    with pytest.raises(ValueError, match="agent.primary_model is not set"):
+        ClaudeLLMWrapper(config)
+
+
+def test_init_raises_on_empty_fallback_model():
+    config = VALID_CONFIG.copy()
+    config["fallback_model"] = ""
+    with pytest.raises(ValueError, match="agent.fallback_model is not set"):
+        ClaudeLLMWrapper(config)
+
+
 # ---------------------------------------------------------------------------
 # Normal execution
 # ---------------------------------------------------------------------------

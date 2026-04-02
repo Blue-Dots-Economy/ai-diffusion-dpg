@@ -50,8 +50,23 @@ class ClaudeLLMWrapper(LLMWrapperBase):
         if not config:
             raise ValueError("ClaudeLLMWrapper requires a non-empty config dict")
 
-        self._primary_model: str = config["primary_model"]
-        self._fallback_model: str = config["fallback_model"]
+        primary_model = config.get("primary_model", "")
+        fallback_model = config.get("fallback_model", "")
+        if not primary_model:
+            raise ValueError(
+                "agent.primary_model is not set. Ensure your domain config has a valid "
+                "Claude model ID, or set CONFIG_FOLDER in .env.local to point to your "
+                "domain configs folder."
+            )
+        if not fallback_model:
+            raise ValueError(
+                "agent.fallback_model is not set. Ensure your domain config has a valid "
+                "Claude model ID, or set CONFIG_FOLDER in .env.local to point to your "
+                "domain configs folder."
+            )
+
+        self._primary_model: str = primary_model
+        self._fallback_model: str = fallback_model
         self._timeout_s: float = config["timeout_ms"] / 1000
         self._max_attempts: int = max(1, config["retry_attempts"])
         self._backoff_seconds: list[float] = config.get("retry_backoff_seconds", [0, 0.5, 1.0])
