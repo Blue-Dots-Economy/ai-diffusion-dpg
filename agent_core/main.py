@@ -108,7 +108,7 @@ def _domain_config_path(service: str) -> Path:
     config_folder = os.getenv("CONFIG_FOLDER")
     if config_folder:
         return Path(config_folder) / f"{service}.yaml"
-    return Path("config/domain.yaml")
+    return Path("config/domain.yaml")  # relative to cwd, consistent with config/dpg.yaml loading
 
 
 # ---------------------------------------------------------------------------

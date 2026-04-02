@@ -1,7 +1,7 @@
 """
 agent_core/tests/test_main.py
 
-Tests for config-loading utilities in main.py: _load_config and _deep_merge.
+Tests for config-loading utilities in main.py: _load_config, _deep_merge, and _domain_config_path.
 
 Covers:
 - Normal:  valid YAML files load correctly; dicts merge as expected
@@ -13,6 +13,7 @@ Covers:
 
 from __future__ import annotations
 
+import os
 import pytest
 import yaml
 from pathlib import Path
@@ -179,22 +180,8 @@ class TestDeepMergeEdge:
 # ---------------------------------------------------------------------------
 
 
-import os
-
-
+# Mirror of main._domain_config_path — tested inline to avoid module-level startup.
 def _domain_config_path(service: str) -> Path:
-    """Resolve the domain config path.
-
-    Returns the path from CONFIG_FOLDER env var if set, otherwise the
-    block-local config/domain.yaml fallback.
-
-    Args:
-        service: Service name matching the filename in the configs folder
-            (e.g. "agent_core").
-
-    Returns:
-        Absolute or relative Path to the domain config YAML file.
-    """
     config_folder = os.getenv("CONFIG_FOLDER")
     if config_folder:
         return Path(config_folder) / f"{service}.yaml"
@@ -204,6 +191,11 @@ def _domain_config_path(service: str) -> Path:
 class TestDomainConfigPath:
     def test_returns_local_path_when_config_folder_not_set(self, monkeypatch):
         monkeypatch.delenv("CONFIG_FOLDER", raising=False)
+        result = _domain_config_path("agent_core")
+        assert result == Path("config/domain.yaml")
+
+    def test_returns_local_path_when_config_folder_empty_string(self, monkeypatch):
+        monkeypatch.setenv("CONFIG_FOLDER", "")
         result = _domain_config_path("agent_core")
         assert result == Path("config/domain.yaml")
 
