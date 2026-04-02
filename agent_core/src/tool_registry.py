@@ -36,8 +36,11 @@ class ToolRegistry:
         self._tool_definitions = gateway.list_available_tools()
         
         # 3. Add internal tools from config (not handled by AG client)
-        internal_tools = self._load_internal_tools(config)
+        internal_tools, tool_routes = self._load_internal_tools(config)
         self._tool_definitions.extend(internal_tools)
+        # Maps tool name → route target (e.g. "knowledge_engine") for routing
+        # decisions in manager_agent. Only internal tools declare a route.
+        self._tool_routes: dict[str, str] = tool_routes
 
         logger.info(
             "tool_registry.initialized",
@@ -65,6 +68,15 @@ class ToolRegistry:
         """Check if a tool requires user consent."""
         return tool_name in self._consent_tools
 
+    def get_route(self, tool_name: str) -> str | None:
+        """Return the route target for a tool, or None if not declared.
+
+        Internal connectors may declare a ``route`` field in config to signal
+        which backend handles execution. The only currently-supported value is
+        ``"knowledge_engine"``. External (Action Gateway) tools return None.
+        """
+        return self._tool_routes.get(tool_name)
+
     def _build_consent_set(self, config: dict) -> set[str]:
         consent_tools: set[str] = set()
         connectors = config.get("connectors", {})
@@ -75,8 +87,17 @@ class ToolRegistry:
                         consent_tools.add(c["name"])
         return consent_tools
 
-    def _load_internal_tools(self, config: dict) -> list[dict]:
-        internal_tools = []
+    def _load_internal_tools(self, config: dict) -> tuple[list[dict], dict[str, str]]:
+        """Parse internal connector entries into tool definitions and a route map.
+
+        Returns:
+            Tuple of (tool_definitions, tool_routes) where tool_definitions are
+            Anthropic-compatible tool dicts and tool_routes maps tool name to its
+            declared route target (e.g. "knowledge_engine"), omitting tools that
+            have no route declared.
+        """
+        internal_tools: list[dict] = []
+        tool_routes: dict[str, str] = {}
         for c in config.get("connectors", {}).get("internal", []) or []:
             if c.get("name") and c.get("input_schema"):
                 internal_tools.append({
@@ -84,4 +105,6 @@ class ToolRegistry:
                     "description": c.get("description", ""),
                     "input_schema": c["input_schema"]
                 })
-        return internal_tools
+                if c.get("route"):
+                    tool_routes[c["name"]] = c["route"]
+        return internal_tools, tool_routes

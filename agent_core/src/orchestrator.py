@@ -99,7 +99,7 @@ class AgentCore(AgentCoreBase):
         # Language Normalisation and NLU run directly in Agent Core.
         # Stateless — instantiated once, reused across all sessions.
         self._language_normaliser = LanguageNormaliser()
-        self._nlu_processor = NLUProcessor()
+        self._nlu_processor = NLUProcessor(self._config)
 
     # ------------------------------------------------------------------
     # Public interface — single entry point
@@ -300,7 +300,6 @@ class AgentCore(AgentCoreBase):
             normalised_input=normalised_input,
             current_question=current_question,
             current_subagent_id=current_subagent_id,
-            config=self._config,
             llm=self._llm,
             allowed_intents=allowed_intents,
         )
@@ -316,6 +315,9 @@ class AgentCore(AgentCoreBase):
         # After NLU: write extracted entities synchronously so routing in Step 6
         # sees current-turn values, not only last-turn state.
         # Scope is config-driven — entity_persistence.scope in domain config.
+        # DPDP compliance is handled by Memory Layer at flush_session(): all entities
+        # are written to Neo4j during the session; if user_storage_mode == "anonymous"
+        # the Memory Layer DETACH DELETEs the user graph when the session ends.
         entity_scope: str = self._config.get("entity_persistence", {}).get("scope", "persistent")
         entity_map: dict = self._config.get("entity_to_profile_field", {})
         for entity_key, entity_val in (nlu_result.entities or {}).items():
@@ -683,6 +685,9 @@ class AgentCore(AgentCoreBase):
     ) -> TurnResult:
         """
         Handle subagents with special_handler set — bypasses Steps 3–9 (LLM/tools).
+
+        Trust Layer output check is still applied before returning — CLAUDE.md guideline
+        "Trust Layer runs on every I/O pass. Never skip either."
         """
         if handler == "hitl":
             hitl_msg = self._config.get("hitl", {}).get(
@@ -690,6 +695,9 @@ class AgentCore(AgentCoreBase):
                 "I'm connecting you with a counsellor who can better assist you.",
             )
             logger.info("  [STEP 2] special_handler=hitl → flushing session")
+            trust_output = self._trust.check_output(session_id, hitl_msg)
+            if trust_output.action in ("block", "escalate"):
+                hitl_msg = self._safe_fallback_message()
             self._schedule_flush(session_id, user_id, "hitl_special_handler")
             return TurnResult(
                 session_id=session_id,
@@ -704,6 +712,9 @@ class AgentCore(AgentCoreBase):
                 "We're sending you a WhatsApp message with all the details.",
             )
             logger.info("  [STEP 2] special_handler=whatsapp_handoff")
+            trust_output = self._trust.check_output(session_id, handoff_msg)
+            if trust_output.action in ("block", "escalate"):
+                handoff_msg = self._safe_fallback_message()
             self._schedule_flush(session_id, user_id, "whatsapp_handoff")
             return TurnResult(
                 session_id=session_id,

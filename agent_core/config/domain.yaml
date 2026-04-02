@@ -84,6 +84,7 @@ connectors:
   identity: []
   internal:
     - name: knowledge_retrieval
+      route: knowledge_engine
       description: >
         Search the verified Kaam Ki Baat knowledge base for information on job trades, 
         government schemes, and market trends. Use this when the user asks a specific 
@@ -813,7 +814,8 @@ agent_workflow:
       tools:
         - onest_apply
         - counsellor_schedule
-        - knowledge_retrieval   # LLM calls when user asks about course/scheme details before committing
+        # knowledge_retrieval intentionally excluded — LLM must call onest_apply/counsellor_schedule directly.
+        # System prompt handles any questions in one sentence without retrieval.
 
       system_prompt: |
         The user has decided to act. This is the final commitment stage.

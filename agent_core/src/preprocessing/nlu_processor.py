@@ -61,16 +61,34 @@ class NLUProcessor:
     Injects recent session history into the LLM prompt so the model can resolve
     context-dependent follow-up messages (e.g. "tell me more about that").
 
-    Instantiated once by AgentCore at startup — stateless, reused across all sessions.
-    Config section: preprocessing.nlu_processor
+    Instantiated once by AgentCore at startup — config is parsed once in __init__
+    and reused across all sessions. Config section: preprocessing.nlu_processor
     """
+
+    def __init__(self, config: dict) -> None:
+        """
+        Parse and cache NLU config values at startup.
+
+        Args:
+            config: Full agent_core config dict. Config is read once here and
+                    never re-parsed during request processing.
+        """
+        nlu_config = (config or {}).get("preprocessing", {}).get("nlu_processor", {})
+        self._model: str = nlu_config.get("model", "claude-haiku-4-5-20251001")
+        self._domain_instruction: str = nlu_config.get(
+            "domain_instruction", "You are an NLU (Natural Language Understanding) classifier."
+        )
+        self._global_entities: list[str] = nlu_config.get("entities", [])
+        self._sentiment_classes: list[str] = nlu_config.get(
+            "sentiment_classes", ["neutral", "positive", "distressed", "frustrated"]
+        )
+        self._default_intents: list[str] = nlu_config.get("intents", ["unknown"])
 
     def process(
         self,
         normalised_input: str,
         current_question: str,
         current_subagent_id: str,
-        config: dict,
         llm: LLMWrapperBase,
         allowed_intents: list[str] | None = None,
     ) -> NLUResult:
@@ -84,7 +102,6 @@ class NLUProcessor:
                               short follow-up answers like "welder" or "Hubli".
             current_subagent_id: Current subagent ID (from session["current_node"]).
                                  Helps classify answers that are only meaningful in context.
-            config:           Full agent_core config dict.
             llm:              LLM wrapper for direct LLM calls.
             allowed_intents:  Optional list of allowed intents to use for the LLM system
                               prompt and validation. If provided (not None and not empty),
@@ -100,24 +117,11 @@ class NLUProcessor:
         if not normalised_input:
             return _fallback_nlu_result()
 
-        self._config = config or {}
-        nlu_config = self._config.get("preprocessing", {}).get("nlu_processor", {})
-        
-        self._model = nlu_config.get("model", "claude-haiku-4-5-20251001")
-        self._confidence_threshold = nlu_config.get("confidence_threshold", 0.5)
-        self._domain_instruction = nlu_config.get(
-            "domain_instruction", "You are an NLU (Natural Language Understanding) classifier."
-        )
-        
-        # Hardcoded entities and sentiment classes from config (if any)
-        self._global_entities = nlu_config.get("entities", [])
-        self._sentiment_classes = nlu_config.get("sentiment_classes", ["neutral", "positive", "distressed", "frustrated"])
-
         # Use allowed_intents if provided and non-empty; otherwise fall back to config
         intents = (
             allowed_intents
             if allowed_intents is not None and len(allowed_intents) > 0
-            else nlu_config.get("intents", ["unknown"])
+            else self._default_intents
         )
 
         try:

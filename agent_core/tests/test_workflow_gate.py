@@ -191,6 +191,8 @@ def _make_orchestrator() -> tuple[AgentCore, MagicMock]:
     manager.run_turn.return_value            = ("LLM response", [])
     ke.retrieve.return_value                 = []
 
+    workflow = MagicMock()
+
     orch = AgentCore(
         config=BASE_CONFIG,
         llm_wrapper=llm,
@@ -200,6 +202,7 @@ def _make_orchestrator() -> tuple[AgentCore, MagicMock]:
         tool_registry=registry,
         manager_agent=manager,
         learning=learning,
+        workflow=workflow,
     )
     return orch, memory
 

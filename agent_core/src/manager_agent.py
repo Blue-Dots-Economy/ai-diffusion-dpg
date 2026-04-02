@@ -134,7 +134,7 @@ class ManagerAgent:
                 break
 
             for tool_call in current_response.tool_calls:
-                if tool_call.tool_name == "knowledge_retrieval":
+                if self._registry.get_route(tool_call.tool_name) == "knowledge_engine":
                     tool_result = self._execute_knowledge_retrieval(tool_call, ke_context)
                 else:
                     tool_result = self._execute_tool(tool_call, session_id)

@@ -71,7 +71,7 @@ def make_llm_returning(intent="unknown", entities=None, sentiment="neutral", con
 
 @pytest.fixture
 def processor():
-    return NLUProcessor()
+    return NLUProcessor(CONFIG)
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +81,7 @@ def processor():
 
 def test_market_truth_query_classified(processor):
     llm = make_llm_returning(intent="market_truth_query", entities={"location": "Hubli"})
-    result = processor.process("kaam chahiye Hubli mein", "", "", CONFIG, llm)
+    result = processor.process("kaam chahiye Hubli mein", "", "", llm)
     assert result.intent == "market_truth_query"
     assert result.entities.get("location") == "Hubli"
     assert result.confidence == 0.9
@@ -89,38 +89,38 @@ def test_market_truth_query_classified(processor):
 
 def test_scheme_query_classified(processor):
     llm = make_llm_returning(intent="scheme_query")
-    result = processor.process("PMKVY ke baare mein batao", "", "", CONFIG, llm)
+    result = processor.process("PMKVY ke baare mein batao", "", "", llm)
     assert result.intent == "scheme_query"
 
 
 def test_training_query_classified(processor):
     llm = make_llm_returning(intent="training_query", entities={"trade": "electrician"})
-    result = processor.process("electrician course kahan hai", "", "", CONFIG, llm)
+    result = processor.process("electrician course kahan hai", "", "", llm)
     assert result.intent == "training_query"
     assert result.entities.get("trade") == "electrician"
 
 
 def test_apply_now_classified(processor):
     llm = make_llm_returning(intent="apply_now")
-    result = processor.process("apply kar do", "", "", CONFIG, llm)
+    result = processor.process("apply kar do", "", "", llm)
     assert result.intent == "apply_now"
 
 
 def test_counsellor_request_classified(processor):
     llm = make_llm_returning(intent="counsellor_request")
-    result = processor.process("counsellor chahiye", "", "", CONFIG, llm)
+    result = processor.process("counsellor chahiye", "", "", llm)
     assert result.intent == "counsellor_request"
 
 
 def test_pay_range_query_classified(processor):
     llm = make_llm_returning(intent="pay_range_query")
-    result = processor.process("kitna milega", "", "", CONFIG, llm)
+    result = processor.process("kitna milega", "", "", llm)
     assert result.intent == "pay_range_query"
 
 
 def test_distress_sentiment_detected(processor):
     llm = make_llm_returning(intent="unknown", sentiment="distressed")
-    result = processor.process("bahut mushkil hai", "", "", CONFIG, llm)
+    result = processor.process("bahut mushkil hai", "", "", llm)
     assert result.sentiment == "distressed"
 
 
@@ -129,14 +129,14 @@ def test_multiple_entities_extracted(processor):
         intent="market_truth_query",
         entities={"trade": "welder", "location": "Dharwad"},
     )
-    result = processor.process("welder Dharwad mein kaam chahiye", "", "", CONFIG, llm)
+    result = processor.process("welder Dharwad mein kaam chahiye", "", "", llm)
     assert result.entities.get("trade") == "welder"
     assert result.entities.get("location") == "Dharwad"
 
 
 def test_model_override_passed_from_config(processor):
     llm = make_llm_returning(intent="market_truth_query")
-    processor.process("kaam chahiye", "", "", CONFIG, llm)
+    processor.process("kaam chahiye", "", "", llm)
     call_kwargs = llm.call.call_args[1]
     assert call_kwargs.get("model_override") == "claude-haiku-4-5-20251001"
 
@@ -149,7 +149,7 @@ def test_model_override_passed_from_config(processor):
 def test_current_question_injected_into_llm_message(processor):
     """NLU injects current_question so follow-up answers are resolved correctly."""
     llm = make_llm_returning(intent="profile_answer")
-    processor.process("welder", "Aap kaun sa kaam karte hain?", "profile_collection", CONFIG, llm)
+    processor.process("welder", "Aap kaun sa kaam karte hain?", "profile_collection", llm)
     call_kwargs = llm.call.call_args[1]
     messages_sent = call_kwargs.get("messages", [])
     assert len(messages_sent) == 1
@@ -161,7 +161,7 @@ def test_current_question_injected_into_llm_message(processor):
 def test_workflow_step_injected_into_llm_message(processor):
     """NLU injects workflow_step for context-aware classification."""
     llm = make_llm_returning(intent="profile_answer")
-    processor.process("electrician", "", "profile_collection", CONFIG, llm)
+    processor.process("electrician", "", "profile_collection", llm)
     call_kwargs = llm.call.call_args[1]
     messages_sent = call_kwargs.get("messages", [])
     content = messages_sent[0]["content"]
@@ -170,7 +170,7 @@ def test_workflow_step_injected_into_llm_message(processor):
 
 def test_empty_context_fields_do_not_crash(processor):
     llm = make_llm_returning(intent="market_truth_query")
-    result = processor.process("kaam chahiye", "", "", CONFIG, llm)
+    result = processor.process("kaam chahiye", "", "", llm)
     assert result.intent == "market_truth_query"
 
 
@@ -181,7 +181,7 @@ def test_empty_context_fields_do_not_crash(processor):
 
 def test_empty_input_returns_fallback_without_llm_call(processor):
     llm = MagicMock()
-    result = processor.process("", "", "", CONFIG, llm)
+    result = processor.process("", "", "", llm)
     assert result.intent == "unknown"
     assert result.confidence == 0.0
     llm.call.assert_not_called()
@@ -189,7 +189,7 @@ def test_empty_input_returns_fallback_without_llm_call(processor):
 
 def test_invalid_intent_from_llm_falls_back_to_unknown(processor):
     llm = make_llm_returning(intent="completely_invalid_intent", confidence=0.95)
-    result = processor.process("some message", "", "", CONFIG, llm)
+    result = processor.process("some message", "", "", llm)
     assert result.intent == "unknown"
 
 
@@ -205,13 +205,13 @@ def test_non_dict_entities_treated_as_empty(processor):
         stop_reason="end_turn",
         model_used="claude-haiku-4-5-20251001",
     )
-    result = processor.process("kaam chahiye", "", "", CONFIG, llm)
+    result = processor.process("kaam chahiye", "", "", llm)
     assert result.entities == {}
 
 
 def test_returns_nlu_result_type(processor):
     llm = make_llm_returning(intent="market_truth_query")
-    result = processor.process("kaam chahiye", "", "", CONFIG, llm)
+    result = processor.process("kaam chahiye", "", "", llm)
     assert isinstance(result, NLUResult)
 
 
@@ -223,7 +223,7 @@ def test_returns_nlu_result_type(processor):
 def test_llm_error_stop_reason_returns_fallback(processor):
     llm = MagicMock()
     llm.call.return_value = LLMResponse(content=None, stop_reason="error")
-    result = processor.process("kaam chahiye", "", "", CONFIG, llm)
+    result = processor.process("kaam chahiye", "", "", llm)
     assert result.intent == "unknown"
     assert result.confidence == 0.0
 
@@ -231,7 +231,7 @@ def test_llm_error_stop_reason_returns_fallback(processor):
 def test_llm_exception_returns_fallback_gracefully(processor):
     llm = MagicMock()
     llm.call.side_effect = RuntimeError("network error")
-    result = processor.process("kaam chahiye", "", "", CONFIG, llm)
+    result = processor.process("kaam chahiye", "", "", llm)
     assert result.intent == "unknown"
     assert result.confidence == 0.0
 
@@ -243,7 +243,7 @@ def test_malformed_json_returns_fallback(processor):
         stop_reason="end_turn",
         model_used="claude-haiku-4-5-20251001",
     )
-    result = processor.process("kaam chahiye", "", "", CONFIG, llm)
+    result = processor.process("kaam chahiye", "", "", llm)
     assert result.intent == "unknown"
     assert result.confidence == 0.0
 
@@ -254,7 +254,7 @@ def test_json_in_prose_extracted_and_parsed(processor):
     llm.call.return_value = LLMResponse(
         content=prose, stop_reason="end_turn", model_used="claude-haiku-4-5-20251001"
     )
-    result = processor.process("PMKVY batao", "", "", CONFIG, llm)
+    result = processor.process("PMKVY batao", "", "", llm)
     assert result.intent == "scheme_query"
     assert result.confidence == 0.85
 
@@ -263,5 +263,5 @@ def test_never_raises_on_unexpected_exception(processor):
     """process() must never propagate unexpected exceptions to the caller."""
     llm = MagicMock()
     llm.call.side_effect = Exception("totally unexpected")
-    result = processor.process("some input", "", "", CONFIG, llm)
+    result = processor.process("some input", "", "", llm)
     assert isinstance(result, NLUResult)

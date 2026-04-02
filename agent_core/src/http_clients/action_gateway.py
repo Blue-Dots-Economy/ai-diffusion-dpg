@@ -27,7 +27,10 @@ def _build_tool_definitions(config: dict) -> list[dict]:
     definitions: list[dict] = []
     connectors = config.get("connectors", {})
     
-    # Iterate through all connector types (read, write, identity)
+    # Iterate through external connector types only (read, write, identity).
+    # Internal connectors (e.g. knowledge_retrieval) are loaded separately by
+    # ToolRegistry._load_internal_tools() and routed to the Knowledge Engine,
+    # not through the Action Gateway /execute endpoint.
     for connector_type in ("read", "write", "identity"):
         for connector in connectors.get(connector_type, []) or []:
             name = connector.get("name")
