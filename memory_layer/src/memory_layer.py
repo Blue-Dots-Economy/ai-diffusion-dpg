@@ -4,8 +4,8 @@ memory_layer/src/memory_layer.py
 MemoryLayer — the top-level orchestrator for the Memory Layer DPG.
 
 Implements the same 5-method contract as MemoryLayerBase (agent_core interface),
-using RedisSessionStore (K1), Neo4jUserStore (K2), Neo4jJourneyStore (K3),
-and Neo4jContextStore (K4) as the backing stores.
+using RedisSessionStore (K1), GraphUserStore (K2), GraphJourneyStore (K3),
+and GraphContextStore (K4) as the backing stores.
 
 This class is the only entry point — server.py calls this, nothing else.
 All store classes are injected at construction time (testable via mocks).
@@ -68,7 +68,7 @@ class MemoryLayer:
         # Session schema defaults — used to build initial session state
         self._schema: dict = self._session_cfg.get("schema", {})
 
-        # Declared profile fields — used by Neo4jUserStore to route writes
+        # Declared profile fields — used by GraphUserStore to route writes
         subnodes = self._persistent_cfg.get("graph", {}).get("subnodes", {})
         self._declared_fields: list[str] = (
             subnodes.get("UserProfile", {}).get("declared_fields", [])
