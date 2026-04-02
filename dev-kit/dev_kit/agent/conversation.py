@@ -1,0 +1,182 @@
+"""
+dev-kit/dev_kit/agent/conversation.py
+
+ConversationEngine — manages the chat loop with Claude, dispatches tool calls,
+maintains conversation history, and persists state after each turn.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from dev_kit.agent.accumulator import ConfigAccumulator
+from dev_kit.agent.checkpoints import build_summary, list_checkpoints, save_checkpoint
+from dev_kit.agent.prompts.base import build_system_prompt
+from dev_kit.agent.renderer import render_all
+from dev_kit.agent.tools import TOOL_DEFINITIONS, ToolHandler
+
+if TYPE_CHECKING:
+    import anthropic
+
+_MODEL = "claude-opus-4-6"
+_MAX_TOKENS = 4096
+_HISTORY_WINDOW = 20  # Max recent messages to send per turn
+
+
+class ConversationEngine:
+    """Manages one project's conversation with Claude.
+
+    Holds message history, the config accumulator, and mutable engine
+    state (current phase, pending phase transitions). All tool calls are
+    dispatched synchronously; only the Claude API call is async.
+
+    Args:
+        project_path: Root directory of the project (configs/<slug>/).
+        client: Anthropic AsyncAnthropic client.
+    """
+
+    def __init__(self, project_path: Path, client: "anthropic.AsyncAnthropic") -> None:
+        self._project_path = project_path
+        self._client = client
+        self._history: list[dict] = []
+        self._state: dict = {
+            "phase": "overview",
+            "phase_changed": None,
+            "rollback_to": None,
+            "project_meta": {},
+        }
+        self.accumulator = ConfigAccumulator()
+        self._tool_handler = ToolHandler(self.accumulator, self._state)
+        self._load()
+
+    def _load(self) -> None:
+        """Load persisted accumulator and project meta from disk if they exist."""
+        acc_path = self._project_path / "_meta" / "accumulator.json"
+        if acc_path.exists():
+            self.accumulator = ConfigAccumulator.from_dict(json.loads(acc_path.read_text()))
+            self._tool_handler = ToolHandler(self.accumulator, self._state)
+
+        meta_path = self._project_path / "_meta" / "project.json"
+        if meta_path.exists():
+            meta = json.loads(meta_path.read_text())
+            self._state["project_meta"] = meta
+            self._state["phase"] = meta.get("current_phase", "overview")
+
+    def _save_accumulator(self) -> None:
+        """Persist the current accumulator state to disk."""
+        acc_path = self._project_path / "_meta" / "accumulator.json"
+        acc_path.parent.mkdir(parents=True, exist_ok=True)
+        acc_path.write_text(json.dumps(self.accumulator.to_dict(), ensure_ascii=False, indent=2))
+
+    def _save_project_meta(self) -> None:
+        """Persist current phase to project.json."""
+        meta_path = self._project_path / "_meta" / "project.json"
+        meta = self._state.get("project_meta", {})
+        meta["current_phase"] = self._state["phase"]
+        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2))
+
+    def _get_checkpoint_summaries(self) -> list[str]:
+        """Load summary text from all completed phase checkpoints."""
+        return [cp["summary"] for cp in list_checkpoints(self._project_path) if cp["summary"]]
+
+    def _build_system_prompt(self) -> str:
+        """Build the system prompt for the current phase and accumulator state."""
+        meta = self._state.get("project_meta", {})
+        connectors = list(
+            self.accumulator.get_block("agent_core").get("connectors", {}).keys()
+        )
+        return build_system_prompt(
+            project_name=meta.get("name", ""),
+            project_description=meta.get("description", ""),
+            accumulator=self.accumulator,
+            phase=self._state["phase"],
+            checkpoint_summaries=self._get_checkpoint_summaries(),
+            available_connectors=connectors or None,
+        )
+
+    async def chat(self, user_message: str) -> dict:
+        """Process a user message and return the agent's response.
+
+        Calls Claude, dispatches any tool calls, saves state, and re-renders
+        YAML config files.
+
+        Args:
+            user_message: The user's input text.
+
+        Returns:
+            Dict with keys: reply (str), phase (str), config_updates (list),
+            checkpoint_created (str | None), graph (dict).
+        """
+        self._history.append({"role": "user", "content": user_message})
+        self._state["phase_changed"] = None
+        self._state["rollback_to"] = None
+
+        system = self._build_system_prompt()
+        messages = self._history[-_HISTORY_WINDOW:]
+        config_updates: list[dict] = []
+        checkpoint_created: str | None = None
+
+        response = await self._client.messages.create(
+            model=_MODEL,
+            max_tokens=_MAX_TOKENS,
+            system=system,
+            messages=messages,
+            tools=TOOL_DEFINITIONS,
+        )
+
+        while response.stop_reason == "tool_use":
+            tool_results = []
+            for block in response.content:
+                if block.type == "tool_use":
+                    result_text = self._tool_handler.dispatch(block.name, block.input)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": result_text,
+                    })
+                    config_updates.append({"tool": block.name, "input": block.input})
+
+            self._history.append({"role": "assistant", "content": response.content})
+            self._history.append({"role": "user", "content": tool_results})
+
+            # Handle phase transition
+            if self._state["phase_changed"]:
+                old_phase = self._state["phase"]
+                new_phase = self._state["phase_changed"]
+                phase_list = ["overview", "language", "knowledge", "memory", "trust", "connectors", "workflow", "review"]
+                phase_number = phase_list.index(old_phase) + 1 if old_phase in phase_list else 0
+                phase_label = f"{phase_number:02d}_{old_phase}"
+                save_checkpoint(self._project_path, phase_label, self.accumulator, self._history[:-2])
+                checkpoint_created = phase_label
+                self._state["phase"] = new_phase
+                self._state["phase_changed"] = None
+                # Rebuild system prompt with new phase
+                system = self._build_system_prompt()
+
+            response = await self._client.messages.create(
+                model=_MODEL,
+                max_tokens=_MAX_TOKENS,
+                system=system,
+                messages=self._history[-_HISTORY_WINDOW:],
+                tools=TOOL_DEFINITIONS,
+            )
+
+        # Extract final text reply
+        reply = "".join(
+            block.text for block in response.content if hasattr(block, "text")
+        )
+        self._history.append({"role": "assistant", "content": reply})
+
+        # Persist state and re-render configs
+        self._save_accumulator()
+        self._save_project_meta()
+        render_all(self._project_path, self.accumulator)
+
+        return {
+            "reply": reply,
+            "phase": self._state["phase"],
+            "config_updates": config_updates,
+            "checkpoint_created": checkpoint_created,
+            "graph": self.accumulator.get_workflow_graph(),
+        }
