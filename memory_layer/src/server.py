@@ -55,6 +55,22 @@ class StatusResponse(BaseModel):
     status: str
 
 
+class AuditSessionRequest(BaseModel):
+    session_id: str
+    user_id: str
+    action: str
+    reason: Optional[str] = None
+
+
+class AuditTurnRequest(BaseModel):
+    session_id: str
+    user_id: str
+    turn_id: str
+    user_message: str
+    system_message: str
+    metadata: Optional[dict] = None
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -200,6 +216,47 @@ def create_app(memory: MemoryLayer) -> FastAPI:
             )
 
         return StatusResponse(status="ok")
+
+    @app.post("/audit/session")
+    def record_audit_session(request: AuditSessionRequest) -> StatusResponse:
+        """Record session lifecycle event in SQLite."""
+        try:
+            memory.record_audit_session(
+                session_id=request.session_id,
+                user_id=request.user_id,
+                action=request.action,
+                reason=request.reason,
+            )
+            return StatusResponse(status="ok")
+        except Exception as e:
+            logger.error(f"server.audit_session_error: {e}")
+            return StatusResponse(status="ok")  # Fail-soft for audit
+
+    @app.post("/audit/turn")
+    def record_audit_turn(request: AuditTurnRequest) -> StatusResponse:
+        """Record a single conversation turn in SQLite."""
+        try:
+            memory.record_audit_turn(
+                session_id=request.session_id,
+                user_id=request.user_id,
+                turn_id=request.turn_id,
+                user_message=request.user_message,
+                system_message=request.system_message,
+                metadata=request.metadata,
+            )
+            return StatusResponse(status="ok")
+        except Exception as e:
+            logger.error(f"server.audit_turn_error: {e}")
+            return StatusResponse(status="ok")  # Fail-soft for audit
+
+    @app.get("/audit/sessions/{session_id}/history")
+    def get_chat_history(session_id: str) -> list[dict]:
+        """Retrieve full chat history for a session."""
+        try:
+            return memory.get_chat_history(session_id)
+        except Exception as e:
+            logger.error(f"server.get_history_error: {e}")
+            return []
 
     @app.get("/sessions/{user_id}")
     def get_active_sessions(user_id: str) -> list[dict]:

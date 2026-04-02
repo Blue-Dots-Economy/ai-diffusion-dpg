@@ -359,3 +359,49 @@ class MemoryLayerHttpClient(MemoryLayerBase):
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
+
+    def record_audit_session(self, session_id: str, user_id: str, action: str, reason: str = None) -> None:
+        """
+        POST /audit/session. Logs and continues on failure. Never raises.
+        """
+        try:
+            httpx.post(
+                f"{self._endpoint}/audit/session",
+                json={
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "action": action,
+                    "reason": reason,
+                },
+                timeout=self._timeout_s,
+            )
+        except Exception as e:
+            logger.error(f"memory_http_client.record_audit_session_error: {e}")
+
+    def record_audit_turn(
+        self,
+        session_id: str,
+        user_id: str,
+        turn_id: str,
+        user_message: str,
+        system_message: str,
+        metadata: dict = None
+    ) -> None:
+        """
+        POST /audit/turn. Logs and continues on failure. Never raises.
+        """
+        try:
+            httpx.post(
+                f"{self._endpoint}/audit/turn",
+                json={
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "turn_id": turn_id,
+                    "user_message": user_message,
+                    "system_message": system_message,
+                    "metadata": metadata,
+                },
+                timeout=self._timeout_s,
+            )
+        except Exception as e:
+            logger.error(f"memory_http_client.record_audit_turn_error: {e}")

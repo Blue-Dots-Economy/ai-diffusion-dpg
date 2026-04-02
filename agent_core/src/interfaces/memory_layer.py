@@ -109,3 +109,23 @@ class MemoryLayerBase(ABC):
 
         Never raises.
         """
+
+    @abstractmethod
+    def record_audit_session(self, session_id: str, user_id: str, action: str, reason: str = None) -> None:
+        """
+        Record a session lifecycle event (start, end, escalate) in the audit store.
+        """
+
+    @abstractmethod
+    def record_audit_turn(
+        self,
+        session_id: str,
+        user_id: str,
+        turn_id: str,
+        user_message: str,
+        system_message: str,
+        metadata: dict = None
+    ) -> None:
+        """
+        Record a single conversation turn in the audit store.
+        """

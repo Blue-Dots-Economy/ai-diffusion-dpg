@@ -26,6 +26,7 @@ from session_store import RedisSessionStore
 from neo4j_user_store import Neo4jUserStore
 from neo4j_journey_store import Neo4jJourneyStore
 from neo4j_context_store import Neo4jContextStore
+from audit_store import SQLiteAuditStore
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,10 @@ class MemoryLayer:
         self._user_store = Neo4jUserStore(self._neo4j_driver, self._declared_fields)
         self._journey_store = Neo4jJourneyStore(self._neo4j_driver, journey_children)
         self._context_store = Neo4jContextStore(self._neo4j_driver)
+
+        # Initialise SQLite audit store
+        audit_db = config.get("audit", {}).get("db_path", "audit.db")
+        self._audit = SQLiteAuditStore(audit_db)
 
         logger.info(
             "memory_layer.init",
@@ -236,6 +241,8 @@ class MemoryLayer:
                 self._redis.init_session(session_id, initial_state)
                 # Register in user index
                 self._redis.register_session(user_id, session_id)
+                # Record session audit start
+                self._audit.record_session_event(session_id, user_id, "start")
 
                 bundle = {
                     "session": initial_state,
@@ -408,6 +415,14 @@ class MemoryLayer:
             # 6 + 7. Remove from user index (deletes user key if empty)
             self._redis.remove_session_from_user_index(user_id, session_id)
 
+            # 8. Record audit end
+            self._audit.record_session_event(
+                session_id=session_id, 
+                user_id=user_id, 
+                action="end" if end_reason != "escalation" else "escalate", 
+                reason=end_reason
+            )
+
             logger.info(
                 "memory_layer.flush_session",
                 extra={
@@ -512,6 +527,43 @@ class MemoryLayer:
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
+
+    def record_audit_session(self, session_id: str, user_id: str, action: str, reason: str = None) -> None:
+        """Record session lifecycle event in SQLite audit store."""
+        self._audit.record_session_event(session_id, user_id, action, reason)
+
+    def record_audit_turn(
+        self, 
+        session_id: str, 
+        user_id: str, 
+        turn_id: str, 
+        user_message: str, 
+        system_message: str,
+        metadata: dict = None
+    ) -> None:
+        """Record a single conversation turn in SQLite audit store."""
+        # Detect subagent, intent, model from metadata if available
+        subagent_id = metadata.get("subagent_id", "") if metadata else ""
+        intent = metadata.get("intent", "") if metadata else ""
+        model = metadata.get("model", "") if metadata else ""
+        latency_ms = metadata.get("latency_ms", 0) if metadata else 0
+        
+        self._audit.record_turn_history(
+            session_id=session_id,
+            user_id=user_id,
+            turn_id=turn_id,
+            user_msg=user_message,
+            system_msg=system_message,
+            subagent_id=subagent_id,
+            intent=intent,
+            model=model,
+            latency_ms=latency_ms,
+            metadata=metadata
+        )
+
+    def get_chat_history(self, session_id: str) -> list[dict]:
+        """Expose audit history retrieval for future UI use."""
+        return self._audit.get_history(session_id)
 
     def _coerce_session_types(self, session_data: dict[str, Any]) -> dict[str, Any]:
         """Coerce Redis strings back to native Python types (bool, dict, list)."""

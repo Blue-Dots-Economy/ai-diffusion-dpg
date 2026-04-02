@@ -178,6 +178,7 @@ class TurnResult:
     """Final result returned to the Reach Layer after a completed turn."""
 
     session_id: str
+    turn_id: str
     response_text: str
     was_escalated: bool               = False
     was_tool_used: bool               = False
@@ -201,11 +202,13 @@ class TurnEvent:
     """
 
     session_id: str
+    turn_id: str
     response_text: str
     tool_calls: list[ToolCall]
     trust_input_result: TrustCheckResult
     trust_output_result: TrustCheckResult
     model_used: str
+    intent: str
     input_tokens: int
     output_tokens: int
     latency_ms: int
