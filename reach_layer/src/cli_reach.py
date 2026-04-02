@@ -19,47 +19,17 @@ import logging
 import sys
 import time
 import uuid
-from typing import Any
+
+from src.base import ReachLayerBase, TurnInput, TurnResult
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Shared dataclasses — re-declared here so reach_layer is standalone
-# (In production integration, import TurnInput/TurnResult from agent_core.models)
-# ---------------------------------------------------------------------------
-
-# We keep the CLI stub standalone to avoid a cross-package import dependency.
-# The Agent Core uses duck-typing when calling receive() and deliver(), so the
-# returned objects just need to have the right attributes.
-
-from dataclasses import dataclass, field
-
-
-@dataclass
-class TurnInput:
-    session_id: str
-    user_message: str
-    channel: str
-    timestamp_ms: int
-    user_id: str | None = None
-
-
-@dataclass
-class TurnResult:
-    session_id: str
-    response_text: str
-    was_escalated: bool = False
-    was_tool_used: bool = False
-    model_used: str = ""
-    latency_ms: int = 0
 
 
 # ---------------------------------------------------------------------------
 # CLI Reach Layer
 # ---------------------------------------------------------------------------
 
-class CLIReachLayer:
+class CLIReachLayer(ReachLayerBase):
     """
     CLI-based Reach Layer stub.
 

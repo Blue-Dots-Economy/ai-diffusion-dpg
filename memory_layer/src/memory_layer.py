@@ -583,6 +583,29 @@ class MemoryLayer:
         """Expose audit history retrieval for future UI use."""
         return self._audit.get_history(session_id)
 
+    def get_history_for_active_session(self, user_id: str) -> dict:
+        """Return the most recent active session and its full chat history for a user.
+
+        Combines active session lookup with history retrieval to avoid multiple
+        round-trips from callers that need both the session_id and turn history.
+
+        Args:
+            user_id: The user identifier.
+
+        Returns:
+            Dict with session_id (str or None) and turns (list[dict]).
+            Returns {"session_id": None, "turns": []} if no active session exists
+            or user_id is empty.
+        """
+        if not user_id:
+            return {"session_id": None, "turns": []}
+        sessions = self.get_active_sessions(user_id)
+        if not sessions:
+            return {"session_id": None, "turns": []}
+        session_id = sessions[0]["session_id"]
+        turns = self.get_chat_history(session_id)
+        return {"session_id": session_id, "turns": turns}
+
     def _coerce_session_types(self, session_data: dict[str, Any]) -> dict[str, Any]:
         """Coerce Redis strings back to native Python types (bool, dict, list)."""
         data = dict(session_data)

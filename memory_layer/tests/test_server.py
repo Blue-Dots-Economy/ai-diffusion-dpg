@@ -304,3 +304,60 @@ def test_delete_user_memory_exception_still_returns_ok(client, mock_memory):
     response = client.delete("/user/user-1")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# GET /users/{user_id}/active-history — normal execution
+# ---------------------------------------------------------------------------
+
+def test_get_active_history_returns_session_and_turns(client, mock_memory):
+    mock_memory.get_history_for_active_session.return_value = {
+        "session_id": "sess-abc",
+        "turns": [
+            {"turn_id": "t1", "session_id": "sess-abc", "user_message": "hello",
+             "system_message": "hi there", "timestamp": "2026-04-02T10:00:00"},
+        ],
+    }
+    response = client.get("/users/user-1/active-history")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["session_id"] == "sess-abc"
+    assert len(data["turns"]) == 1
+    assert data["turns"][0]["user_message"] == "hello"
+
+
+# ---------------------------------------------------------------------------
+# GET /users/{user_id}/active-history — no active session
+# ---------------------------------------------------------------------------
+
+def test_get_active_history_no_session_returns_null_and_empty_turns(client, mock_memory):
+    mock_memory.get_history_for_active_session.return_value = {
+        "session_id": None,
+        "turns": [],
+    }
+    response = client.get("/users/new-user/active-history")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["session_id"] is None
+    assert data["turns"] == []
+
+
+# ---------------------------------------------------------------------------
+# GET /users/{user_id}/active-history — failure scenarios
+# ---------------------------------------------------------------------------
+
+def test_get_active_history_exception_returns_null(client, mock_memory):
+    mock_memory.get_history_for_active_session.side_effect = RuntimeError("redis down")
+    response = client.get("/users/user-1/active-history")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["session_id"] is None
+    assert data["turns"] == []
+
+
+def test_get_active_history_empty_user_id_returns_null(client):
+    response = client.get("/users/   /active-history")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["session_id"] is None
+    assert data["turns"] == []

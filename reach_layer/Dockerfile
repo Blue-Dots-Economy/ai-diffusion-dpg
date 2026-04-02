@@ -1,14 +1,11 @@
 # =============================================================================
-# Reach Layer DPG — CLI variant Dockerfile
+# Reach Layer DPG — Web UI + FastAPI server Dockerfile
 # =============================================================================
-# This is the CLI (stdin/stdout) channel adapter used in the PoC.
-# It is an interactive process, not a server — run with -it flags.
+# Runs the FastAPI web server (server.py) that serves the chat UI on port 8005.
+# The CLI adapter (main.py) remains available for local development use.
 #
-# In production the Reach Layer is replaced by a channel adapter
-# (WhatsApp, Web, VOIP) that runs as a long-lived HTTP service.
-#
-# Usage (interactive):
-#   docker run -it --network dpg_net reach_layer
+# Usage (server):
+#   docker run -p 8005:8005 --network dpg_net reach_layer
 #
 # Prerequisites: all backend services must be running and reachable on the
 # Docker network before starting this container.
@@ -45,7 +42,9 @@ WORKDIR /app
 # Copy the venv from builder
 COPY --from=builder /app/.venv /app/.venv
 
-COPY main.py ./
+COPY main.py server.py config_loader.py ./
+COPY src/ ./src/
+COPY web/ ./web/
 COPY config/ ./config/
 
 RUN chown -R reachlayer:reachlayer /app
@@ -58,7 +57,6 @@ ENV PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH" \
     VIRTUAL_ENV=/app/.venv
 
-# No EXPOSE — this is a CLI client, not a server.
-# stdin/stdout are the channel. Run with: docker run -it <image>
+EXPOSE 8005
 
-CMD ["uv", "run", "python", "main.py"]
+CMD ["uv", "run", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8005"]

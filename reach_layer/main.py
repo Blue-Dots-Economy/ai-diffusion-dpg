@@ -131,10 +131,13 @@ def _domain_config_path(service: str) -> Path:
 
 
 def _load_config() -> tuple[str, float]:
-    """
-    Read agent_core_client.endpoint and timeout_s from merged dpg.yaml + domain.yaml.
-    DPG config missing → hard failure. Domain config missing → runs with DPG defaults.
-    Returns (endpoint, timeout_s).
+    """Read agent_core_client.endpoint and timeout_s from merged YAML config.
+
+    DPG config missing raises FileNotFoundError. Domain config missing is silently
+    ignored and the server runs with DPG defaults.
+
+    Returns:
+        Tuple of (endpoint URL, timeout in seconds).
     """
     dpg_config = _load_yaml("config/dpg.yaml")
     domain_config = _load_yaml(str(_domain_config_path("reach_layer")))

@@ -7,3 +7,10 @@
 
 agent_core_client:
   endpoint: "http://agent_core:8000/process_turn"
+
+ui:
+  app_name: "KKB Assistant"
+  app_tagline: "Your financial companion"
+  app_icon: "🏦"
+  user_id_placeholder: "Enter your KKB user ID"
+  storage_key: "kkb_user_id"

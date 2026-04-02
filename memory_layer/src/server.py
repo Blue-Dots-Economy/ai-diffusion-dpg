@@ -339,6 +339,51 @@ def create_app(memory: MemoryLayer) -> FastAPI:
             )
             return []
 
+    @app.get("/users/{user_id}/active-history")
+    def get_active_history(user_id: str) -> dict:
+        """Return the most recent active session and its chat history for a user.
+
+        Intended for the web UI to restore a returning user's session in a single
+        call — avoids a separate session lookup and history fetch round-trip.
+
+        Args:
+            user_id: URL path parameter identifying the user.
+
+        Returns:
+            Dict with session_id (str or None) and turns (list[dict]).
+            Returns {"session_id": None, "turns": []} if no active session or error.
+        """
+        start = time.time()
+        user_id = user_id.strip()
+        if not user_id:
+            return {"session_id": None, "turns": []}
+        try:
+            result = memory.get_history_for_active_session(user_id)
+            logger.info(
+                "memory_server.get_active_history",
+                extra={
+                    "operation": "server.get_active_history",
+                    "status": "success",
+                    "user_id": user_id,
+                    "found": result["session_id"] is not None,
+                    "turn_count": len(result["turns"]),
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            return result
+        except Exception as e:
+            logger.error(
+                "memory_server.get_active_history_error",
+                extra={
+                    "operation": "server.get_active_history",
+                    "status": "failure",
+                    "user_id": user_id,
+                    "error": f"{type(e).__name__}: {e}",
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            return {"session_id": None, "turns": []}
+
     @app.delete("/user/{user_id}")
     def delete_user(user_id: str) -> StatusResponse:
         """DPDP right-to-erasure: delete all data for this user."""

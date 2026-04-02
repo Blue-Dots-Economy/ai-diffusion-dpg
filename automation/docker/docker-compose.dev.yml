@@ -260,14 +260,15 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # Reach Layer — interactive CLI (no HTTP port exposed)
-  # Run separately: docker compose run --rm reach_layer
+  # Reach Layer — Web UI + FastAPI server (port 8005)
   # ---------------------------------------------------------------------------
   reach_layer:
     image: srivatsak2002/dpg-reach-layer:latest
     container_name: reach_layer
     environment:
       - CONFIG_FOLDER=/app/config
+    ports:
+      - "8005:8005"
     volumes:
       - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/kkb/reach_layer.yaml:/app/config/domain.yaml:ro
@@ -281,10 +282,13 @@ services:
     depends_on:
       agent_core:
         condition: service_healthy
-    stdin_open: true
-    tty: true
-    profiles:
-      - cli                                # not started by default; run explicitly
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8005/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
 
 networks:
   dpg_net:

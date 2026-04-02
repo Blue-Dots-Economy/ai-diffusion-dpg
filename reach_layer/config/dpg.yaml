@@ -1,4 +1,6 @@
 # reach_layer/config/dpg.yaml — DPG framework defaults.
+# These values are the same for any domain deployment.
+# Domain-specific values (app_name, app_icon, etc.) belong in domain.yaml.
 
 server:
   host: 0.0.0.0
@@ -12,3 +14,20 @@ reach_layer:
 agent_core_client:
   endpoint: "http://localhost:8000/process_turn"
   timeout_s: 30.0
+
+memory_layer_client:
+  endpoint: "http://localhost:8002"
+  timeout_s: 10.0
+
+# UI framework defaults — avatars and copy that are the same across all deployments.
+# app_name, app_tagline, app_icon, user_id_placeholder must be set in domain.yaml.
+ui:
+  agent_avatar: "🤖"
+  user_avatar: "👤"
+  setup_heading: "Start a session"
+  setup_subtitle: "Enter your user ID to begin. Returning users will have their previous conversation restored automatically."
+  user_id_hint: "Use the same ID across sessions to restore your conversation history."
+  start_btn_label: "Start chatting →"
+  new_session_msg: "New session started. How can I help you today?"
+  returning_user_msg: "Welcome back! Continuing your previous conversation."
+  storage_key: "dpg_user_id"

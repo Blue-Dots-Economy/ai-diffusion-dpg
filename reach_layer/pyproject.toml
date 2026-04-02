@@ -8,9 +8,11 @@ version = "0.1.0"
 description = "Reach Layer stub — CLI REPL input/output for KKB PoC"
 requires-python = ">=3.11"
 dependencies = [
-    "httpx>=0.27.0",  # HTTP client for Agent Core POST /process_turn
-    "pyyaml>=6.0",    # config/dpg.yaml + config/domain.yaml loading
-    "python-dotenv>=1.0.0",
+    "httpx>=0.27.0",              # HTTP client for Agent Core + Memory Layer proxying
+    "pyyaml>=6.0",                # config/dpg.yaml + config/domain.yaml loading
+    "python-dotenv>=1.0.0",       # .env.local / .env loading for local dev
+    "fastapi>=0.111.0",           # web server for web channel adapter
+    "uvicorn[standard]>=0.29.0",  # ASGI server
 ]
 
 [project.optional-dependencies]
@@ -18,6 +20,8 @@ dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "pytest-mock>=3.0",
+    "httpx>=0.27.0",       # TestClient transport
+    "respx>=0.21.0",       # httpx mock for integration tests
 ]
 
 [tool.pytest.ini_options]
@@ -25,7 +29,7 @@ testpaths = ["tests"]
 pythonpath = ["."]
 
 [tool.coverage.run]
-source = ["src"]
+source = ["src", "server.py", "config_loader.py"]
 omit = [
     "*/tests/*",
     "*/__init__.py",
@@ -34,3 +38,11 @@ omit = [
 [tool.coverage.report]
 fail_under = 70
 show_missing = true
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "pytest-mock>=3.0",
+    "respx>=0.22.0",
+]

@@ -102,6 +102,13 @@ share/python-wheels/
 **/data/chroma_db/
 chroma_db/
 **/data
+
+# -----------------------------------------------------------------------------
+# SQLite audit databases — runtime-generated, never commit
+# -----------------------------------------------------------------------------
+**/*.db
+**/*.sqlite
+**/*.sqlite3
 # -----------------------------------------------------------------------------
 # Sentence-transformers model cache (if downloaded locally into project)
 # -----------------------------------------------------------------------------
