@@ -1,7 +1,7 @@
 """
-memory_layer/src/neo4j_journey_store.py
+memory_layer/src/graph_journey_store.py
 
-Neo4jJourneyStore — manages Journey nodes and their domain-specific child nodes.
+GraphJourneyStore — manages Journey nodes and their domain-specific child nodes.
 
 Responsibilities:
   - Create a new Journey node under JourneyHistory (create_journey)
@@ -34,7 +34,7 @@ from neo4j import Driver
 logger = logging.getLogger(__name__)
 
 
-class Neo4jJourneyStore:
+class GraphJourneyStore:
     """
     Manages Journey subgraph in Neo4j.
 
@@ -61,9 +61,9 @@ class Neo4jJourneyStore:
         }
 
         logger.info(
-            "neo4j_journey_store.init",
+            "graph_journey_store.init",
             extra={
-                "operation": "neo4j_journey_store.init",
+                "operation": "graph_journey_store.init",
                 "status": "success",
                 "child_types": list(self._children_by_label.keys()),
             },
@@ -97,9 +97,9 @@ class Neo4jJourneyStore:
                     started_at=now,
                 )
             logger.info(
-                "neo4j_journey_store.create_journey",
+                "graph_journey_store.create_journey",
                 extra={
-                    "operation": "neo4j_journey_store.create_journey",
+                    "operation": "graph_journey_store.create_journey",
                     "status": "success",
                     "journey_id": journey_id,
                     "latency_ms": int((time.time() - start) * 1000),
@@ -107,9 +107,9 @@ class Neo4jJourneyStore:
             )
         except Exception as e:
             logger.error(
-                "neo4j_journey_store.create_journey_error",
+                "graph_journey_store.create_journey_error",
                 extra={
-                    "operation": "neo4j_journey_store.create_journey",
+                    "operation": "graph_journey_store.create_journey",
                     "status": "failure",
                     "journey_id": journey_id,
                     "error": f"{type(e).__name__}: {e}",
@@ -135,9 +135,9 @@ class Neo4jJourneyStore:
                     end_reason=end_reason,
                 )
             logger.info(
-                "neo4j_journey_store.close_journey",
+                "graph_journey_store.close_journey",
                 extra={
-                    "operation": "neo4j_journey_store.close_journey",
+                    "operation": "graph_journey_store.close_journey",
                     "status": "success",
                     "journey_id": journey_id,
                     "end_reason": end_reason,
@@ -146,9 +146,9 @@ class Neo4jJourneyStore:
             )
         except Exception as e:
             logger.error(
-                "neo4j_journey_store.close_journey_error",
+                "graph_journey_store.close_journey_error",
                 extra={
-                    "operation": "neo4j_journey_store.close_journey",
+                    "operation": "graph_journey_store.close_journey",
                     "status": "failure",
                     "journey_id": journey_id,
                     "error": f"{type(e).__name__}: {e}",
@@ -219,9 +219,9 @@ class Neo4jJourneyStore:
                         })
 
             logger.info(
-                "neo4j_journey_store.get_last_journey_summary",
+                "graph_journey_store.get_last_journey_summary",
                 extra={
-                    "operation": "neo4j_journey_store.get_last_journey_summary",
+                    "operation": "graph_journey_store.get_last_journey_summary",
                     "status": "success",
                     "last_journey_id": last_journey_id,
                     "outcome_count": len(summary["outcomes"]),
@@ -232,9 +232,9 @@ class Neo4jJourneyStore:
 
         except Exception as e:
             logger.error(
-                "neo4j_journey_store.get_last_journey_summary_error",
+                "graph_journey_store.get_last_journey_summary_error",
                 extra={
-                    "operation": "neo4j_journey_store.get_last_journey_summary",
+                    "operation": "graph_journey_store.get_last_journey_summary",
                     "status": "failure",
                     "error": f"{type(e).__name__}: {e}",
                     "latency_ms": int((time.time() - start) * 1000),
@@ -266,9 +266,9 @@ class Neo4jJourneyStore:
         child_cfg = self._children_by_label.get(child_label)
         if not child_cfg:
             logger.error(
-                "neo4j_journey_store.create_journey_child_unknown_label",
+                "graph_journey_store.create_journey_child_unknown_label",
                 extra={
-                    "operation": "neo4j_journey_store.create_journey_child",
+                    "operation": "graph_journey_store.create_journey_child",
                     "status": "failure",
                     "child_label": child_label,
                     "error": f"Unknown child label: {child_label}. "
@@ -295,9 +295,9 @@ class Neo4jJourneyStore:
                     props=filtered,
                 )
             logger.info(
-                "neo4j_journey_store.create_journey_child",
+                "graph_journey_store.create_journey_child",
                 extra={
-                    "operation": "neo4j_journey_store.create_journey_child",
+                    "operation": "graph_journey_store.create_journey_child",
                     "status": "success",
                     "child_label": child_label,
                     "journey_id": journey_id,
@@ -306,9 +306,9 @@ class Neo4jJourneyStore:
             )
         except Exception as e:
             logger.error(
-                "neo4j_journey_store.create_journey_child_error",
+                "graph_journey_store.create_journey_child_error",
                 extra={
-                    "operation": "neo4j_journey_store.create_journey_child",
+                    "operation": "graph_journey_store.create_journey_child",
                     "status": "failure",
                     "child_label": child_label,
                     "journey_id": journey_id,
@@ -376,9 +376,9 @@ class Neo4jJourneyStore:
                 )
 
             logger.info(
-                "neo4j_journey_store.merge_session_fields",
+                "graph_journey_store.merge_session_fields",
                 extra={
-                    "operation": "neo4j_journey_store.merge_session_fields",
+                    "operation": "graph_journey_store.merge_session_fields",
                     "status": "success",
                     "journey_id": journey_id,
                     "fields_merged": list(updates.keys()),
@@ -387,9 +387,9 @@ class Neo4jJourneyStore:
             )
         except Exception as e:
             logger.error(
-                "neo4j_journey_store.merge_session_fields_error",
+                "graph_journey_store.merge_session_fields_error",
                 extra={
-                    "operation": "neo4j_journey_store.merge_session_fields",
+                    "operation": "graph_journey_store.merge_session_fields",
                     "status": "failure",
                     "journey_id": journey_id,
                     "error": f"{type(e).__name__}: {e}",

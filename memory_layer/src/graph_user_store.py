@@ -1,7 +1,7 @@
 """
-memory_layer/src/neo4j_user_store.py
+memory_layer/src/graph_user_store.py
 
-Neo4jUserStore — manages User, UserProfile, and UserAttribute nodes in Neo4j.
+GraphUserStore — manages User, UserProfile, and UserAttribute nodes in Neo4j.
 
 Responsibilities:
   - Check if a user exists (find_user)
@@ -29,7 +29,7 @@ from neo4j import GraphDatabase, Driver
 logger = logging.getLogger(__name__)
 
 
-class Neo4jUserStore:
+class GraphUserStore:
     """
     Manages User and UserProfile subgraph in Neo4j.
 
@@ -51,9 +51,9 @@ class Neo4jUserStore:
         self._declared_fields = set(declared_fields)
 
         logger.info(
-            "neo4j_user_store.init",
+            "graph_user_store.init",
             extra={
-                "operation": "neo4j_user_store.init",
+                "operation": "graph_user_store.init",
                 "status": "success",
                 "declared_field_count": len(declared_fields),
             },
@@ -75,9 +75,9 @@ class Neo4jUserStore:
                 record = result.single()
                 exists = record["cnt"] > 0 if record else False
             logger.info(
-                "neo4j_user_store.user_exists",
+                "graph_user_store.user_exists",
                 extra={
-                    "operation": "neo4j_user_store.user_exists",
+                    "operation": "graph_user_store.user_exists",
                     "status": "success",
                     "exists": exists,
                     "latency_ms": int((time.time() - start) * 1000),
@@ -86,9 +86,9 @@ class Neo4jUserStore:
             return exists
         except Exception as e:
             logger.error(
-                "neo4j_user_store.user_exists_error",
+                "graph_user_store.user_exists_error",
                 extra={
-                    "operation": "neo4j_user_store.user_exists",
+                    "operation": "graph_user_store.user_exists",
                     "status": "failure",
                     "error": f"{type(e).__name__}: {e}",
                     "latency_ms": int((time.time() - start) * 1000),
@@ -124,18 +124,18 @@ class Neo4jUserStore:
                     user_id=user_id,
                 )
             logger.info(
-                "neo4j_user_store.create_user_graph",
+                "graph_user_store.create_user_graph",
                 extra={
-                    "operation": "neo4j_user_store.create_user_graph",
+                    "operation": "graph_user_store.create_user_graph",
                     "status": "success",
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
         except Exception as e:
             logger.error(
-                "neo4j_user_store.create_user_graph_error",
+                "graph_user_store.create_user_graph_error",
                 extra={
-                    "operation": "neo4j_user_store.create_user_graph",
+                    "operation": "graph_user_store.create_user_graph",
                     "status": "failure",
                     "error": f"{type(e).__name__}: {e}",
                     "latency_ms": int((time.time() - start) * 1000),
@@ -206,9 +206,9 @@ class Neo4jUserStore:
                 profile["attributes"] = attributes
 
             logger.info(
-                "neo4j_user_store.get_profile",
+                "graph_user_store.get_profile",
                 extra={
-                    "operation": "neo4j_user_store.get_profile",
+                    "operation": "graph_user_store.get_profile",
                     "status": "success",
                     "field_count": len(profile) - 1,  # exclude attributes key
                     "attribute_count": len(attributes),
@@ -219,9 +219,9 @@ class Neo4jUserStore:
 
         except Exception as e:
             logger.error(
-                "neo4j_user_store.get_profile_error",
+                "graph_user_store.get_profile_error",
                 extra={
-                    "operation": "neo4j_user_store.get_profile",
+                    "operation": "graph_user_store.get_profile",
                     "status": "failure",
                     "error": f"{type(e).__name__}: {e}",
                     "latency_ms": int((time.time() - start) * 1000),
@@ -256,9 +256,9 @@ class Neo4jUserStore:
                 self._upsert_attribute(user_id, key, value, raw, turn, journey_id)
 
             logger.info(
-                "neo4j_user_store.upsert_profile_field",
+                "graph_user_store.upsert_profile_field",
                 extra={
-                    "operation": "neo4j_user_store.upsert_profile_field",
+                    "operation": "graph_user_store.upsert_profile_field",
                     "status": "success",
                     "key": key,
                     "is_declared": key in self._declared_fields,
@@ -267,9 +267,9 @@ class Neo4jUserStore:
             )
         except Exception as e:
             logger.error(
-                "neo4j_user_store.upsert_profile_field_error",
+                "graph_user_store.upsert_profile_field_error",
                 extra={
-                    "operation": "neo4j_user_store.upsert_profile_field",
+                    "operation": "graph_user_store.upsert_profile_field",
                     "status": "failure",
                     "key": key,
                     "error": f"{type(e).__name__}: {e}",
@@ -334,18 +334,18 @@ class Neo4jUserStore:
                     user_id=user_id,
                 )
             logger.info(
-                "neo4j_user_store.delete_user",
+                "graph_user_store.delete_user",
                 extra={
-                    "operation": "neo4j_user_store.delete_user",
+                    "operation": "graph_user_store.delete_user",
                     "status": "success",
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
         except Exception as e:
             logger.error(
-                "neo4j_user_store.delete_user_error",
+                "graph_user_store.delete_user_error",
                 extra={
-                    "operation": "neo4j_user_store.delete_user",
+                    "operation": "graph_user_store.delete_user",
                     "status": "failure",
                     "error": f"{type(e).__name__}: {e}",
                     "latency_ms": int((time.time() - start) * 1000),

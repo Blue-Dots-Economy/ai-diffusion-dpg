@@ -1,7 +1,7 @@
 """
-memory_layer/src/neo4j_context_store.py
+memory_layer/src/graph_context_store.py
 
-Neo4jContextStore — manages Signal and ContextAttribute nodes in Neo4j.
+GraphContextStore — manages Signal and ContextAttribute nodes in Neo4j.
 
 Responsibilities:
   - Create a Signal node under ContextGraph (create_signal)
@@ -30,7 +30,7 @@ from neo4j import Driver
 logger = logging.getLogger(__name__)
 
 
-class Neo4jContextStore:
+class GraphContextStore:
     """
     Manages ContextGraph subgraph in Neo4j.
 
@@ -44,9 +44,9 @@ class Neo4jContextStore:
         self._driver = driver
 
         logger.info(
-            "neo4j_context_store.init",
+            "graph_context_store.init",
             extra={
-                "operation": "neo4j_context_store.init",
+                "operation": "graph_context_store.init",
                 "status": "success",
             },
         )
@@ -122,9 +122,9 @@ class Neo4jContextStore:
                         )
 
             logger.info(
-                "neo4j_context_store.create_signal",
+                "graph_context_store.create_signal",
                 extra={
-                    "operation": "neo4j_context_store.create_signal",
+                    "operation": "graph_context_store.create_signal",
                     "status": "success",
                     "signal_type": signal_type,
                     "journey_id": journey_id,
@@ -134,9 +134,9 @@ class Neo4jContextStore:
             )
         except Exception as e:
             logger.error(
-                "neo4j_context_store.create_signal_error",
+                "graph_context_store.create_signal_error",
                 extra={
-                    "operation": "neo4j_context_store.create_signal",
+                    "operation": "graph_context_store.create_signal",
                     "status": "failure",
                     "signal_type": signal_type,
                     "journey_id": journey_id,
@@ -177,9 +177,9 @@ class Neo4jContextStore:
                 ]
 
             logger.info(
-                "neo4j_context_store.get_signals_for_journey",
+                "graph_context_store.get_signals_for_journey",
                 extra={
-                    "operation": "neo4j_context_store.get_signals_for_journey",
+                    "operation": "graph_context_store.get_signals_for_journey",
                     "status": "success",
                     "journey_id": journey_id,
                     "signal_count": len(signals),
@@ -190,9 +190,9 @@ class Neo4jContextStore:
 
         except Exception as e:
             logger.error(
-                "neo4j_context_store.get_signals_for_journey_error",
+                "graph_context_store.get_signals_for_journey_error",
                 extra={
-                    "operation": "neo4j_context_store.get_signals_for_journey",
+                    "operation": "graph_context_store.get_signals_for_journey",
                     "status": "failure",
                     "journey_id": journey_id,
                     "error": f"{type(e).__name__}: {e}",
