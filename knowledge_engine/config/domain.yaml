@@ -1,69 +1,21 @@
-# knowledge_engine/config/domain.yaml — KKB domain config (local dev).
-# In Docker/Kubernetes this file is replaced by dev-kit/configs/kkb/knowledge_engine.yaml.
+# knowledge_engine/config/domain.yaml — DPG domain configuration template.
+#
+# This file is the template a domain integrator fills in.
+# For local dev, set CONFIG_FOLDER in .env.local to point to your domain configs folder.
 
 knowledge:
   blocks:
     glossary:
       enabled: true
-      mappings:
-        - colloquial: ["kaam chahiye", "naukri chahiye", "job chahiye"]
-          canonical: "market_truth_query"
-        - colloquial: ["ITI", "tradesman", "technician"]
-          canonical: "iti_graduate"
-        - colloquial: ["course", "training", "sikhai"]
-          canonical: "training_query"
-        - colloquial: ["apply kar do", "form bharo"]
-          canonical: "apply_now"
-        - colloquial: ["counsellor chahiye", "kisi se baat karni hai"]
-          canonical: "counsellor_request"
-        - colloquial: ["kitna milega", "salary kya hai", "pay kya hai"]
-          canonical: "pay_range_query"
-        - colloquial: ["electrician", "bijli wala"]
-          canonical: "trade:electrician"
-        - colloquial: ["fitter"]
-          canonical: "trade:fitter"
-        - colloquial: ["welder"]
-          canonical: "trade:welder"
-        - colloquial: ["PMKVY", "Pradhan Mantri Kaushal"]
-          canonical: "scheme:pmkvy"
-        - colloquial: ["Hubli", "Dharwad", "Belgaum"]
-          canonical: "location:karnataka_north"
-      apply_to: [normalised_input, entities]
+      mappings: []  # Required. List of {colloquial: [...], canonical: "..."} entries.
+      apply_to: []  # Required. Fields to apply glossary to. e.g. [normalised_input, entities]
 
     static_knowledge_base:
       enabled: true
-      collection_name: kkb_knowledge
-      chroma_persist_dir: ./data/chroma_db
-      sources:
-        - path: ./data/labour_schemes.pdf
-          type: static
-          doc_type: scheme
-          refresh: manual
-        - path: ./data/trade_descriptions.pdf
-          type: static
-          doc_type: trade
-          refresh: annual
-        - path: ./data/training_institutes.csv
-          type: static
-          doc_type: institute
-          refresh: monthly
-        - path: ./data/bridge_income_options.pdf
-          type: static
-          doc_type: bridge_income
-          refresh: manual
-        - path: ./data/onest_market_truth_framing.md
-          type: always_include
-          doc_type: always_include
-          refresh: manual
-      intent_filters:
-        market_truth_query: [scheme, trade, bridge_income]
-        scheme_query: [scheme]
-        training_query: [trade, institute]
-        pay_range_query: [trade]
-        apply_now: [scheme, institute]
-        counsellor_request: []
-        unknown: []
+      collection_name: ""        # Required. ChromaDB collection name for this domain.
+      chroma_persist_dir: ""     # Required. Path to ChromaDB persistence directory.
+      sources: []                # Required. List of {path, type, doc_type, refresh} entries.
+      intent_filters: {}         # Required. Map of intent → list of doc_types to retrieve.
 
     multimodal_input_handler:
-      image_model: claude-haiku-4-5-20251001
-      # conversation section removed — persona + language instruction now live in agent_core/config/domain.yaml
+      image_model: ""  # Required. Claude model ID for image description.
