@@ -1,3 +1,17 @@
+# Path inside the container that holds dpg.yaml and domain.yaml config files.
+configFolder: /app/config
+
+# Redis connection — session/turn state store.
+redis:
+  url: redis://redis:6379/0
+
+# Neo4j connection — persistent user profile store.
+# Override password at install time: --set neo4j.password=<secret>
+neo4j:
+  uri: bolt://neo4j:7687
+  user: neo4j
+  password: dpg_password
+
 replicaCount: 1
 
 image:

@@ -21,6 +21,9 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - containerPort: 8003
+          env:
+            - name: CONFIG_FOLDER
+              value: {{ .Values.configFolder | quote }}
           volumeMounts:
             - name: dpg-config
               mountPath: /app/config/dpg.yaml

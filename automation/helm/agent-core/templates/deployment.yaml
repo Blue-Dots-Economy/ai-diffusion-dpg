@@ -27,6 +27,8 @@ spec:
                 secretKeyRef:
                   name: {{ .Release.Name }}-secrets
                   key: ANTHROPIC_API_KEY
+            - name: CONFIG_FOLDER
+              value: {{ .Values.configFolder | quote }}
           volumeMounts:
             - name: dpg-config
               mountPath: /app/config/dpg.yaml

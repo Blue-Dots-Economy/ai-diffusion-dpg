@@ -29,16 +29,73 @@
 services:
 
   # ---------------------------------------------------------------------------
+  # Redis — session state backend for Memory Layer
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Neo4j — persistent user profile store for Memory Layer
+  # ---------------------------------------------------------------------------
+  neo4j:
+    image: neo4j:5
+    container_name: neo4j
+    environment:
+      - NEO4J_AUTH=neo4j/dpg_password          # override at runtime for production
+    volumes:
+      - neo4j_data:/data
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.2'
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
   # Memory Layer — session state store (port 8002)
   # ---------------------------------------------------------------------------
   memory_layer:
     image: srivatsak2002/dpg-memory-layer:latest
     container_name: memory_layer
+    environment:
+      - CONFIG_FOLDER=/app/config
+      - REDIS_URL=redis://redis:6379/0
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=dpg_password            # must match NEO4J_AUTH above
     volumes:
       - ../../dev-kit/dpg/memory_layer.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/kkb/memory_layer.yaml:/app/config/domain.yaml:ro
     networks:
       - dpg_net
+    depends_on:
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
     deploy:
       resources:
         limits:
@@ -58,6 +115,8 @@ services:
   trust_layer:
     image: srivatsak2002/dpg-trust-layer:latest
     container_name: trust_layer
+    environment:
+      - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev-kit/dpg/trust_layer.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/kkb/trust_layer.yaml:/app/config/domain.yaml:ro
@@ -82,6 +141,8 @@ services:
   learning_layer:
     image: srivatsak2002/dpg-learning-layer:latest
     container_name: learning_layer
+    environment:
+      - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev-kit/dpg/learning_layer.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/kkb/learning_layer.yaml:/app/config/domain.yaml:ro
@@ -106,6 +167,8 @@ services:
   action_gateway:
     image: srivatsak2002/dpg-action-gateway:latest
     container_name: action_gateway
+    environment:
+      - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/kkb/action_gateway.yaml:/app/config/domain.yaml:ro
@@ -131,6 +194,8 @@ services:
   knowledge_engine:
     image: srivatsak2002/dpg-knowledge-engine:latest
     container_name: knowledge_engine
+    environment:
+      - CONFIG_FOLDER=/app/config
     user: root                               # needed to write to root-owned chroma_data named volume
     command: ["sh", "-c", "if [ ! -f /app/data/chroma_db/chroma.sqlite3 ]; then echo 'ChromaDB empty — running ingest...' && python -m scripts.ingest --config config/domain.yaml; else echo 'ChromaDB exists — skipping ingest.'; fi && python main.py"]
     volumes:
@@ -161,6 +226,7 @@ services:
     container_name: agent_core
     environment:
       - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
+      - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev-kit/dpg/agent_core.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/kkb/agent_core.yaml:/app/config/domain.yaml:ro
@@ -197,6 +263,8 @@ services:
   reach_layer:
     image: srivatsak2002/dpg-reach-layer:latest
     container_name: reach_layer
+    environment:
+      - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/kkb/reach_layer.yaml:/app/config/domain.yaml:ro
@@ -221,3 +289,4 @@ networks:
 
 volumes:
   chroma_data:                             # ChromaDB embeddings, persisted across container restarts
+  neo4j_data:                              # Neo4j graph database, persisted across container restarts

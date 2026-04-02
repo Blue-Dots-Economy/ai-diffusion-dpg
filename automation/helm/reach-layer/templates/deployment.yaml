@@ -21,6 +21,9 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           stdin: true
           tty: true
+          env:
+            - name: CONFIG_FOLDER
+              value: {{ .Values.configFolder | quote }}
           volumeMounts:
             - name: dpg-config
               mountPath: /app/config/dpg.yaml

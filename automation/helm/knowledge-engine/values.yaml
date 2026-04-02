@@ -1,6 +1,9 @@
 # automation/helm/knowledge-engine/values.yaml
 # Full merged config for Knowledge Engine in Kubernetes.
 
+# Path inside the container that holds dpg.yaml and domain.yaml config files.
+configFolder: /app/config
+
 replicaCount: 1
 
 image:

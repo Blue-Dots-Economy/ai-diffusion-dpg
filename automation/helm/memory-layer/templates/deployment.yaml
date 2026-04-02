@@ -21,6 +21,17 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - containerPort: 8002
+          env:
+            - name: CONFIG_FOLDER
+              value: {{ .Values.configFolder | quote }}
+            - name: REDIS_URL
+              value: {{ .Values.redis.url | quote }}
+            - name: NEO4J_URI
+              value: {{ .Values.neo4j.uri | quote }}
+            - name: NEO4J_USER
+              value: {{ .Values.neo4j.user | quote }}
+            - name: NEO4J_PASSWORD
+              value: {{ .Values.neo4j.password | quote }}
           volumeMounts:
             - name: dpg-config
               mountPath: /app/config/dpg.yaml

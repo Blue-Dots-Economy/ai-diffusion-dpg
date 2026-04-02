@@ -7,6 +7,9 @@
 
 # ANTHROPIC_API_KEY — do NOT set here. Pass at install time:
 # helm install agent-core ./agent-core -n agent-core --set anthropicApiKey=$ANTHROPIC_API_KEY
+# Path inside the container that holds dpg.yaml and domain.yaml config files.
+configFolder: /app/config
+
 anthropicApiKey: ""
 
 replicaCount: 1

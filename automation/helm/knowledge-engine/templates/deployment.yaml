@@ -21,6 +21,8 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["python", "-m", "scripts.ingest", "--config", "config/domain.yaml"]
           env:
+            - name: CONFIG_FOLDER
+              value: {{ .Values.configFolder | quote }}
             - name: HOME
               value: "/tmp"
             - name: HF_HOME
@@ -47,6 +49,8 @@ spec:
           ports:
             - containerPort: 8001
           env:
+            - name: CONFIG_FOLDER
+              value: {{ .Values.configFolder | quote }}
             - name: HOME
               value: "/tmp"
             - name: HF_HOME
