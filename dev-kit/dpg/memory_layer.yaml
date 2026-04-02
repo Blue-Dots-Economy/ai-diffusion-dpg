@@ -15,8 +15,8 @@ redis:
   socket_timeout_ms: 2000
   socket_connect_timeout_ms: 2000
 
-neo4j:
-  uri: "bolt://neo4j:7687"
-  user: "neo4j"
-  password: null               
+memgraph:
+  uri: "bolt://memgraph:7687"
+  user: "memgraph"
+  password: null
   connection_timeout_s: 5
