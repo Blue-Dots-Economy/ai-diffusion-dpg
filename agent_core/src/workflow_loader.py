@@ -387,6 +387,12 @@ class AgentWorkflowLoader:
             )
 
         session_writes: dict = raw.get("session_writes") or {}
+        for field_name, field_val in session_writes.items():
+            if isinstance(field_val, (dict, list)):
+                raise ConfigurationError(
+                    f"{context}: session_writes value for '{field_name}' must be a scalar "
+                    f"(str, int, float, or bool), not {type(field_val).__name__}"
+                )
 
         return RoutingRule(
             intent=str(intent),

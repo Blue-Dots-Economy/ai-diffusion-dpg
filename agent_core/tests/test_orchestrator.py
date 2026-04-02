@@ -61,6 +61,7 @@ VALID_CONFIG = {
     },
     "preprocessing": {
         "nlu_processor": {
+            "model": "claude-haiku-test",
             "confidence_threshold": 0.5,
         },
         "language_normalisation": {

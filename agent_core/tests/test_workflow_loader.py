@@ -685,3 +685,35 @@ def test_invalid_special_handler_raises(loader, registry):
     })
     with pytest.raises(ConfigurationError, match="special_handler"):
         loader.load(config, registry)
+
+
+def test_session_writes_dict_value_raises_config_error(loader, registry):
+    """session_writes value that is a dict must raise ConfigurationError at startup."""
+    config = _minimal_config(
+        routing=[
+            {
+                "intent": "greeting",
+                "next_subagent_id": "end",
+                "session_writes": {"metadata": {"nested": "value"}},
+            },
+            {"intent": "*", "next_subagent_id": "end"},
+        ]
+    )
+    with pytest.raises(ConfigurationError, match="session_writes"):
+        loader.load(config, registry)
+
+
+def test_session_writes_list_value_raises_config_error(loader, registry):
+    """session_writes value that is a list must raise ConfigurationError at startup."""
+    config = _minimal_config(
+        routing=[
+            {
+                "intent": "greeting",
+                "next_subagent_id": "end",
+                "session_writes": {"tags": ["a", "b"]},
+            },
+            {"intent": "*", "next_subagent_id": "end"},
+        ]
+    )
+    with pytest.raises(ConfigurationError, match="session_writes"):
+        loader.load(config, registry)

@@ -24,6 +24,7 @@ from typing import Any
 
 from src.llm_wrapper.base import LLMWrapperBase
 from src.models import NLUResult
+from src.exceptions import ConfigurationError
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,12 @@ class NLUProcessor:
                     never re-parsed during request processing.
         """
         nlu_config = (config or {}).get("preprocessing", {}).get("nlu_processor", {})
-        self._model: str = nlu_config.get("model", "claude-haiku-4-5-20251001")
+        self._model: str = nlu_config.get("model", "")
+        if not self._model:
+            raise ConfigurationError(
+                "preprocessing.nlu_processor.model is missing in domain configuration."
+            )
+
         self._domain_instruction: str = nlu_config.get(
             "domain_instruction", "You are an NLU (Natural Language Understanding) classifier."
         )
