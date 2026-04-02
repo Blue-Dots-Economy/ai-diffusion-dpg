@@ -17,10 +17,12 @@ Or from repo root:
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 import uvicorn
 import yaml
+from dotenv import load_dotenv
 
 from src.mock_server import app  # noqa: F401 — uvicorn imports the app object
 
@@ -51,15 +53,36 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _domain_config_path(service: str) -> Path:
+    """Resolve the domain config path.
+
+    Returns the path from CONFIG_FOLDER env var if set, otherwise the
+    block-local config/domain.yaml fallback.
+
+    Args:
+        service: Service name matching the filename in the configs folder.
+
+    Returns:
+        Absolute or relative Path to the domain config YAML file.
+    """
+    config_folder = os.getenv("CONFIG_FOLDER")
+    if config_folder:
+        return Path(config_folder) / f"{service}.yaml"
+    return Path("config/domain.yaml")  # relative to cwd, consistent with config/dpg.yaml loading
+
+
 def _build_config() -> tuple[dict, str, int]:
     dpg_config = _load_config("config/dpg.yaml")
-    domain_config = _load_config("config/domain.yaml")
+    domain_config = _load_config(str(_domain_config_path("action_gateway")))
     config = _deep_merge(dpg_config, domain_config)
     server_cfg = config.get("server", {})
     host = server_cfg.get("host", "0.0.0.0")
     port = server_cfg.get("port", 9999)
     return config, host, port
 
+
+load_dotenv(Path(__file__).parent.parent / ".env.local")  # repo-root local dev overrides
+load_dotenv()  # .env in block dir or injected environment (Docker/prod)
 
 if __name__ == "__main__":
     config, host, port = _build_config()
