@@ -1,17 +1,17 @@
 """
-tests/test_neo4j_stores.py
+tests/test_graph_stores.py
 
-Unit tests for Neo4jUserStore, Neo4jContextStore, and Neo4jJourneyStore.
-All tests mock the Neo4j driver — no real database connection required.
+Unit tests for GraphUserStore, GraphContextStore, and GraphJourneyStore.
+All tests mock the graph driver — no real database connection required.
 """
 
 import pytest
 from unittest.mock import MagicMock, patch, call
 from contextlib import contextmanager
 
-from src.neo4j_user_store import Neo4jUserStore
-from src.neo4j_context_store import Neo4jContextStore
-from src.neo4j_journey_store import Neo4jJourneyStore
+from src.graph_user_store import GraphUserStore
+from src.graph_context_store import GraphContextStore
+from src.graph_journey_store import GraphJourneyStore
 
 
 # ---------------------------------------------------------------------------
@@ -31,39 +31,39 @@ def make_driver(session_mock=None):
 
 
 # ---------------------------------------------------------------------------
-# Neo4jUserStore — constructor
+# GraphUserStore — constructor
 # ---------------------------------------------------------------------------
 
 
-class TestNeo4jUserStoreInit:
+class TestGraphUserStoreInit:
     def test_none_driver_raises(self):
         with pytest.raises(ValueError, match="driver must not be None"):
-            Neo4jUserStore(driver=None, declared_fields=["trade"])
+            GraphUserStore(driver=None, declared_fields=["trade"])
 
     def test_none_declared_fields_raises(self):
         driver, _ = make_driver()
         with pytest.raises(ValueError, match="declared_fields must not be None"):
-            Neo4jUserStore(driver=driver, declared_fields=None)
+            GraphUserStore(driver=driver, declared_fields=None)
 
     def test_init_success(self):
         driver, _ = make_driver()
-        store = Neo4jUserStore(driver=driver, declared_fields=["trade", "location"])
+        store = GraphUserStore(driver=driver, declared_fields=["trade", "location"])
         assert store is not None
 
 
 # ---------------------------------------------------------------------------
-# Neo4jUserStore — user_exists
+# GraphUserStore — user_exists
 # ---------------------------------------------------------------------------
 
 
-class TestNeo4jUserStoreUserExists:
+class TestGraphUserStoreUserExists:
     def test_user_exists_returns_true_when_count_positive(self):
         driver, session = make_driver()
         record = MagicMock()
         record.__getitem__ = MagicMock(side_effect=lambda k: 1 if k == "cnt" else None)
         session.run.return_value.single.return_value = record
 
-        store = Neo4jUserStore(driver=driver, declared_fields=[])
+        store = GraphUserStore(driver=driver, declared_fields=[])
         assert store.user_exists("user1") is True
 
     def test_user_exists_returns_false_when_count_zero(self):
@@ -72,50 +72,50 @@ class TestNeo4jUserStoreUserExists:
         record.__getitem__ = MagicMock(side_effect=lambda k: 0 if k == "cnt" else None)
         session.run.return_value.single.return_value = record
 
-        store = Neo4jUserStore(driver=driver, declared_fields=[])
+        store = GraphUserStore(driver=driver, declared_fields=[])
         assert store.user_exists("user1") is False
 
     def test_user_exists_returns_false_when_no_record(self):
         driver, session = make_driver()
         session.run.return_value.single.return_value = None
 
-        store = Neo4jUserStore(driver=driver, declared_fields=[])
+        store = GraphUserStore(driver=driver, declared_fields=[])
         assert store.user_exists("user1") is False
 
     def test_user_exists_returns_false_on_exception(self):
         driver = MagicMock()
         driver.session.side_effect = RuntimeError("DB down")
 
-        store = Neo4jUserStore(driver=driver, declared_fields=[])
+        store = GraphUserStore(driver=driver, declared_fields=[])
         assert store.user_exists("user1") is False
 
 
 # ---------------------------------------------------------------------------
-# Neo4jUserStore — create_user_graph
+# GraphUserStore — create_user_graph
 # ---------------------------------------------------------------------------
 
 
-class TestNeo4jUserStoreCreateUserGraph:
+class TestGraphUserStoreCreateUserGraph:
     def test_create_user_graph_runs_cypher(self):
         driver, session = make_driver()
-        store = Neo4jUserStore(driver=driver, declared_fields=[])
+        store = GraphUserStore(driver=driver, declared_fields=[])
         store.create_user_graph("user1")
         session.run.assert_called_once()
 
     def test_create_user_graph_absorbs_exception(self):
         driver = MagicMock()
         driver.session.side_effect = RuntimeError("DB down")
-        store = Neo4jUserStore(driver=driver, declared_fields=[])
+        store = GraphUserStore(driver=driver, declared_fields=[])
         # Should not raise
         store.create_user_graph("user1")
 
 
 # ---------------------------------------------------------------------------
-# Neo4jUserStore — get_profile
+# GraphUserStore — get_profile
 # ---------------------------------------------------------------------------
 
 
-class TestNeo4jUserStoreGetProfile:
+class TestGraphUserStoreGetProfile:
     def test_get_profile_returns_declared_fields(self):
         driver, session = make_driver()
 
@@ -133,7 +133,7 @@ class TestNeo4jUserStoreGetProfile:
 
         session.run.side_effect = [profile_result, attr_result]
 
-        store = Neo4jUserStore(driver=driver, declared_fields=["trade"])
+        store = GraphUserStore(driver=driver, declared_fields=["trade"])
         profile = store.get_profile("user1")
 
         assert profile.get("trade") == "electrician"
@@ -146,91 +146,91 @@ class TestNeo4jUserStoreGetProfile:
         result.single.return_value = None
         session.run.return_value = result
 
-        store = Neo4jUserStore(driver=driver, declared_fields=["trade"])
+        store = GraphUserStore(driver=driver, declared_fields=["trade"])
         assert store.get_profile("user1") == {}
 
     def test_get_profile_returns_empty_on_exception(self):
         driver = MagicMock()
         driver.session.side_effect = RuntimeError("DB down")
-        store = Neo4jUserStore(driver=driver, declared_fields=["trade"])
+        store = GraphUserStore(driver=driver, declared_fields=["trade"])
         assert store.get_profile("user1") == {}
 
 
 # ---------------------------------------------------------------------------
-# Neo4jUserStore — upsert_profile_field
+# GraphUserStore — upsert_profile_field
 # ---------------------------------------------------------------------------
 
 
-class TestNeo4jUserStoreUpsertProfileField:
+class TestGraphUserStoreUpsertProfileField:
     def test_upsert_declared_field_calls_set_declared(self):
         driver, session = make_driver()
-        store = Neo4jUserStore(driver=driver, declared_fields=["trade"])
+        store = GraphUserStore(driver=driver, declared_fields=["trade"])
         store.upsert_profile_field("user1", "trade", "electrician")
         session.run.assert_called_once()
 
     def test_upsert_undeclared_field_calls_upsert_attribute(self):
         driver, session = make_driver()
-        store = Neo4jUserStore(driver=driver, declared_fields=["trade"])
+        store = GraphUserStore(driver=driver, declared_fields=["trade"])
         store.upsert_profile_field("user1", "custom_field", "some_value")
         session.run.assert_called_once()
 
     def test_upsert_absorbs_exception(self):
         driver = MagicMock()
         driver.session.side_effect = RuntimeError("DB down")
-        store = Neo4jUserStore(driver=driver, declared_fields=["trade"])
+        store = GraphUserStore(driver=driver, declared_fields=["trade"])
         # Should not raise
         store.upsert_profile_field("user1", "trade", "electrician")
 
 
 # ---------------------------------------------------------------------------
-# Neo4jUserStore — delete_user
+# GraphUserStore — delete_user
 # ---------------------------------------------------------------------------
 
 
-class TestNeo4jUserStoreDeleteUser:
+class TestGraphUserStoreDeleteUser:
     def test_delete_user_runs_cypher(self):
         driver, session = make_driver()
-        store = Neo4jUserStore(driver=driver, declared_fields=[])
+        store = GraphUserStore(driver=driver, declared_fields=[])
         store.delete_user("user1")
         session.run.assert_called_once()
 
     def test_delete_user_absorbs_exception(self):
         driver = MagicMock()
         driver.session.side_effect = RuntimeError("DB down")
-        store = Neo4jUserStore(driver=driver, declared_fields=[])
+        store = GraphUserStore(driver=driver, declared_fields=[])
         # Should not raise
         store.delete_user("user1")
 
 
 # ---------------------------------------------------------------------------
-# Neo4jContextStore — constructor
+# GraphContextStore — constructor
 # ---------------------------------------------------------------------------
 
 
-class TestNeo4jContextStoreInit:
+class TestGraphContextStoreInit:
     def test_none_driver_raises(self):
         with pytest.raises(ValueError, match="driver must not be None"):
-            Neo4jContextStore(driver=None)
+            GraphContextStore(driver=None)
 
     def test_init_success(self):
         driver, _ = make_driver()
-        store = Neo4jContextStore(driver=driver)
+        store = GraphContextStore(driver=driver)
         assert store is not None
 
 
 # ---------------------------------------------------------------------------
-# Neo4jContextStore — create_signal
+# GraphContextStore — create_signal
 # ---------------------------------------------------------------------------
 
 
-class TestNeo4jContextStoreCreateSignal:
+class TestGraphContextStoreCreateSignal:
     def test_create_signal_calls_run(self):
         driver, session = make_driver()
         record = MagicMock()
         record.__getitem__ = MagicMock(return_value=42)
         session.run.return_value.single.return_value = record
 
-        store = Neo4jContextStore(driver=driver)
+        store = GraphContextStore(driver=driver)
         store.create_signal(
             user_id="user1",
             journey_id="sess1",
@@ -248,7 +248,7 @@ class TestNeo4jContextStoreCreateSignal:
         run_result.single.return_value = record
         session.run.return_value = run_result
 
-        store = Neo4jContextStore(driver=driver)
+        store = GraphContextStore(driver=driver)
         store.create_signal(
             user_id="user1",
             journey_id="sess1",
@@ -263,7 +263,7 @@ class TestNeo4jContextStoreCreateSignal:
     def test_create_signal_absorbs_exception(self):
         driver = MagicMock()
         driver.session.side_effect = RuntimeError("DB down")
-        store = Neo4jContextStore(driver=driver)
+        store = GraphContextStore(driver=driver)
         # Should not raise
         store.create_signal(
             user_id="user1",
@@ -275,11 +275,11 @@ class TestNeo4jContextStoreCreateSignal:
 
 
 # ---------------------------------------------------------------------------
-# Neo4jContextStore — get_signals_for_journey
+# GraphContextStore — get_signals_for_journey
 # ---------------------------------------------------------------------------
 
 
-class TestNeo4jContextStoreGetSignals:
+class TestGraphContextStoreGetSignals:
     def test_get_signals_returns_list(self):
         driver, session = make_driver()
         record1 = MagicMock()
@@ -289,7 +289,7 @@ class TestNeo4jContextStoreGetSignals:
         record1.get = MagicMock(side_effect=lambda k, default="": {"raw": "text"}.get(k, default))
         session.run.return_value.__iter__ = MagicMock(return_value=iter([record1]))
 
-        store = Neo4jContextStore(driver=driver)
+        store = GraphContextStore(driver=driver)
         signals = store.get_signals_for_journey("user1", "sess1")
         assert isinstance(signals, list)
         assert len(signals) == 1
@@ -297,12 +297,12 @@ class TestNeo4jContextStoreGetSignals:
     def test_get_signals_returns_empty_on_exception(self):
         driver = MagicMock()
         driver.session.side_effect = RuntimeError("DB down")
-        store = Neo4jContextStore(driver=driver)
+        store = GraphContextStore(driver=driver)
         assert store.get_signals_for_journey("user1", "sess1") == []
 
 
 # ---------------------------------------------------------------------------
-# Neo4jJourneyStore — constructor
+# GraphJourneyStore — constructor
 # ---------------------------------------------------------------------------
 
 
@@ -312,75 +312,75 @@ JOURNEY_CHILDREN = [
 ]
 
 
-class TestNeo4jJourneyStoreInit:
+class TestGraphJourneyStoreInit:
     def test_none_driver_raises(self):
         with pytest.raises(ValueError, match="driver must not be None"):
-            Neo4jJourneyStore(driver=None, journey_children=[])
+            GraphJourneyStore(driver=None, journey_children=[])
 
     def test_none_journey_children_raises(self):
         driver, _ = make_driver()
         with pytest.raises(ValueError, match="journey_children must not be None"):
-            Neo4jJourneyStore(driver=driver, journey_children=None)
+            GraphJourneyStore(driver=driver, journey_children=None)
 
     def test_init_success(self):
         driver, _ = make_driver()
-        store = Neo4jJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
+        store = GraphJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
         assert store is not None
 
 
 # ---------------------------------------------------------------------------
-# Neo4jJourneyStore — create_journey
+# GraphJourneyStore — create_journey
 # ---------------------------------------------------------------------------
 
 
-class TestNeo4jJourneyStoreCreateJourney:
+class TestGraphJourneyStoreCreateJourney:
     def test_create_journey_calls_run(self):
         driver, session = make_driver()
-        store = Neo4jJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
+        store = GraphJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
         store.create_journey("user1", "sess1")
         session.run.assert_called_once()
 
     def test_create_journey_absorbs_exception(self):
         driver = MagicMock()
         driver.session.side_effect = RuntimeError("DB down")
-        store = Neo4jJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
+        store = GraphJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
         # Should not raise
         store.create_journey("user1", "sess1")
 
 
 # ---------------------------------------------------------------------------
-# Neo4jJourneyStore — close_journey
+# GraphJourneyStore — close_journey
 # ---------------------------------------------------------------------------
 
 
-class TestNeo4jJourneyStoreCloseJourney:
+class TestGraphJourneyStoreCloseJourney:
     def test_close_journey_calls_run(self):
         driver, session = make_driver()
-        store = Neo4jJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
+        store = GraphJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
         store.close_journey("user1", "sess1", "termination_intent")
         session.run.assert_called_once()
 
     def test_close_journey_absorbs_exception(self):
         driver = MagicMock()
         driver.session.side_effect = RuntimeError("DB down")
-        store = Neo4jJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
+        store = GraphJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
         # Should not raise
         store.close_journey("user1", "sess1", "termination_intent")
 
 
 # ---------------------------------------------------------------------------
-# Neo4jJourneyStore — get_last_journey_summary
+# GraphJourneyStore — get_last_journey_summary
 # ---------------------------------------------------------------------------
 
 
-class TestNeo4jJourneyStoreGetLastJourneySummary:
+class TestGraphJourneyStoreGetLastJourneySummary:
     def test_returns_none_when_no_prior_journey(self):
         driver, session = make_driver()
         result = MagicMock()
         result.single.return_value = None
         session.run.return_value = result
 
-        store = Neo4jJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
+        store = GraphJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
         assert store.get_last_journey_summary("user1", "curr_sess") is None
 
     def test_returns_summary_dict_with_outcomes(self):
@@ -407,7 +407,7 @@ class TestNeo4jJourneyStoreGetLastJourneySummary:
 
         session.run.side_effect = [first_result, child_result, child_result]
 
-        store = Neo4jJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
+        store = GraphJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
         summary = store.get_last_journey_summary("user1", "curr_sess")
 
         assert summary is not None
@@ -417,19 +417,19 @@ class TestNeo4jJourneyStoreGetLastJourneySummary:
     def test_returns_none_on_exception(self):
         driver = MagicMock()
         driver.session.side_effect = RuntimeError("DB down")
-        store = Neo4jJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
+        store = GraphJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
         assert store.get_last_journey_summary("user1", "sess1") is None
 
 
 # ---------------------------------------------------------------------------
-# Neo4jJourneyStore — create_journey_child
+# GraphJourneyStore — create_journey_child
 # ---------------------------------------------------------------------------
 
 
-class TestNeo4jJourneyStoreCreateJourneyChild:
+class TestGraphJourneyStoreCreateJourneyChild:
     def test_create_known_child_calls_run(self):
         driver, session = make_driver()
-        store = Neo4jJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
+        store = GraphJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
         store.create_journey_child(
             "user1", "sess1", "Role", {"title": "Electrician", "location": "Hubli", "trade": "electrical"}
         )
@@ -437,7 +437,7 @@ class TestNeo4jJourneyStoreCreateJourneyChild:
 
     def test_create_unknown_child_label_skips_gracefully(self):
         driver, session = make_driver()
-        store = Neo4jJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
+        store = GraphJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
         store.create_journey_child("user1", "sess1", "UnknownLabel", {"key": "val"})
         # Should not call run at all
         session.run.assert_not_called()
@@ -445,20 +445,20 @@ class TestNeo4jJourneyStoreCreateJourneyChild:
     def test_create_journey_child_absorbs_exception(self):
         driver = MagicMock()
         driver.session.side_effect = RuntimeError("DB down")
-        store = Neo4jJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
+        store = GraphJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
         # Should not raise
         store.create_journey_child("user1", "sess1", "Role", {"title": "Cook"})
 
 
 # ---------------------------------------------------------------------------
-# Neo4jJourneyStore — merge_session_fields
+# GraphJourneyStore — merge_session_fields
 # ---------------------------------------------------------------------------
 
 
-class TestNeo4jJourneyStoreMergeSessionFields:
+class TestGraphJourneyStoreMergeSessionFields:
     def test_merge_journey_fields_calls_run(self):
         driver, session = make_driver()
-        store = Neo4jJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
+        store = GraphJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
         store.merge_session_fields(
             "user1", "sess1",
             session_state={"current_node": "profile_collection", "loop_count": 2},
@@ -470,7 +470,7 @@ class TestNeo4jJourneyStoreMergeSessionFields:
 
     def test_merge_skips_non_journey_targets(self):
         driver, session = make_driver()
-        store = Neo4jJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
+        store = GraphJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
         store.merge_session_fields(
             "user1", "sess1",
             session_state={"trade": "electrician"},
@@ -483,7 +483,7 @@ class TestNeo4jJourneyStoreMergeSessionFields:
 
     def test_merge_skips_empty_values(self):
         driver, session = make_driver()
-        store = Neo4jJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
+        store = GraphJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
         store.merge_session_fields(
             "user1", "sess1",
             session_state={"current_node": ""},  # empty string → skip
@@ -496,7 +496,7 @@ class TestNeo4jJourneyStoreMergeSessionFields:
     def test_merge_session_fields_absorbs_exception(self):
         driver = MagicMock()
         driver.session.side_effect = RuntimeError("DB down")
-        store = Neo4jJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
+        store = GraphJourneyStore(driver=driver, journey_children=JOURNEY_CHILDREN)
         # Should not raise
         store.merge_session_fields(
             "user1", "sess1",
