@@ -2,6 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Single source of truth for design, architecture, and implementation status: [`ARCHITECTURE.md`](ARCHITECTURE.md)**
+> Refer to ARCHITECTURE.md for current block responsibilities, design decisions (including deviations from original docs), runtime sequence, and what is ✅ complete / 🟡 stubbed / ⏳ pending.
+
 ---
 
 ## Commands
