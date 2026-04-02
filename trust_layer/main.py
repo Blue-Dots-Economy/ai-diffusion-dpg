@@ -3,22 +3,33 @@ trust_layer/main.py
 
 Entry point for the Trust Layer FastAPI service.
 
-Loads config from config/config.yaml, instantiates BasicTrustLayer,
-creates the FastAPI app, and starts uvicorn on the configured port (default 8003).
+Loads config from config/config.yaml (or CONFIG_FOLDER/trust_layer.yaml if set),
+instantiates BasicTrustLayer, creates the FastAPI app, and starts uvicorn on the
+configured port (default 8003).
 
 Run:
     python -m main                   (from trust_layer/ directory)
     uvicorn main:app --reload        (dev hot-reload)
+
+Environment:
+    CONFIG_FOLDER — optional path to a folder containing trust_layer.yaml.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 
 import uvicorn
 import yaml
+from dotenv import load_dotenv
+
+# Load .env.local first (developer overrides), then .env (shared defaults).
+# Neither file is required; missing files are silently ignored.
+load_dotenv(Path(__file__).parent.parent / ".env.local")
+load_dotenv()
 
 # Add src/ to path so imports within the package work cleanly.
 _SRC = str(Path(__file__).parent / "src")
@@ -64,6 +75,24 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _domain_config_path(service: str) -> Path:
+    """Resolve the domain config path.
+
+    Returns the path from CONFIG_FOLDER env var if set, otherwise the
+    block-local config/domain.yaml fallback.
+
+    Args:
+        service: Service name matching the filename in the configs folder.
+
+    Returns:
+        Absolute or relative Path to the domain config YAML file.
+    """
+    config_folder = os.getenv("CONFIG_FOLDER")
+    if config_folder:
+        return Path(config_folder) / f"{service}.yaml"
+    return Path("config/domain.yaml")  # relative to cwd, consistent with config/dpg.yaml loading
+
+
 # ---------------------------------------------------------------------------
 # App construction — exposed at module level for uvicorn --reload
 # ---------------------------------------------------------------------------
@@ -71,7 +100,7 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 def _build_app():
     dpg_config = _load_config("config/dpg.yaml")
-    domain_config = _load_config("config/domain.yaml")
+    domain_config = _load_config(str(_domain_config_path("trust_layer")))
     config = _deep_merge(dpg_config, domain_config)
 
     trust = BasicTrustLayer(config)
