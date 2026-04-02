@@ -1,8 +1,12 @@
-# action_gateway/config/domain.yaml — KKB domain config (local dev).
-# In Docker/Kubernetes this file is replaced by dev-kit/configs/kkb/action_gateway.yaml.
+# action_gateway/config/domain.yaml — DPG domain configuration template.
+#
+# This file is the template a domain integrator fills in.
+# For local dev, set CONFIG_FOLDER in .env.local to point to your domain configs folder.
 
 action_gateway:
-  connectors:
-    onest_market_lookup:
-      endpoint: "http://localhost:9999/onest/market_lookup"
-      timeout_ms: 5000
+  connectors: {}  # Required. Map of connector_name → {endpoint, timeout_ms}.
+                  # Keys must match connector names declared in agent_core domain config.
+                  # Example:
+                  #   my_connector:
+                  #     endpoint: "http://localhost:9999/my_connector"
+                  #     timeout_ms: 5000

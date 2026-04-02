@@ -1,25 +1,11 @@
-# trust_layer/config/domain.yaml — KKB domain config (local dev).
-# In Docker/Kubernetes this file is replaced by dev-kit/configs/kkb/trust_layer.yaml.
+# trust_layer/config/domain.yaml — DPG domain configuration template.
+#
+# This file is the template a domain integrator fills in.
+# For local dev, set CONFIG_FOLDER in .env.local to point to your domain configs folder.
 
 trust:
   input_rules:
-    blocked_phrases:
-      - "bomb"
-      - "weapon"
-      - "kill"
-      - "threat"
-      - "violence"
-    escalation_topics:
-      - "arrested"
-      - "police case"
-      - "court notice"
-      - "legal action"
-      - "FIR"
-      - "jail"
-      - "suicide"
+    blocked_phrases: []       # Required. List of strings that trigger input blocking.
+    escalation_topics: []     # Required. List of strings that trigger human escalation.
   output_rules:
-    blocked_phrases:
-      - "I cannot help with that"
-      - "as an AI, I"
-      - "guaranteed placement"
-      - "100% job guarantee"
+    blocked_phrases: []       # Required. List of strings that must not appear in LLM output.
