@@ -15,11 +15,11 @@ conversation:
   escalation_message: ""      # Required. Shown when escalating to a human agent.
   output_blocked_message: ""  # Required. Shown when LLM output is blocked by Trust Layer.
   unknown_intent_message: ""  # Required. Shown when NLU confidence is below threshold.
-  termination_message: ""     # Required. Shown when session ends. LLM translates to user language.
-  consent_message: ""         # Required. Shown to request user consent to save profile data.
-  consent_decline_ack: ""     # Required. Acknowledgement when user declines consent.
-  profile_complete_message: ""    # Required. Shown when profile collection completes.
-  returning_user_greeting: ""     # Required. Greeting for users whose profile is already saved.
+  termination_message: ""     # Planned. Not yet read by agent_core. Shown when session ends. LLM translates to user language.
+  consent_message: ""         # Planned. Not yet read by agent_core. Shown to request user consent to save profile data.
+  consent_decline_ack: ""     # Planned. Not yet read by agent_core. Acknowledgement when user declines consent.
+  profile_complete_message: ""    # Planned. Not yet read by agent_core. Shown when profile collection completes.
+  returning_user_greeting: ""     # Planned. Not yet read by agent_core. Greeting for users whose profile is already saved.
 
 connectors:
   read: []    # List of read connector tool definitions. Each entry: name, description, input_schema.
@@ -33,8 +33,8 @@ preprocessing:
     provider: ""           # Required. "llm_native" or "bhashini".
     default_language: ""   # Required. e.g. "hindi"
     supported_languages: []  # Required. List of supported language codes.
-    transliteration: true
-    code_switching: true
+    transliteration: true  # Reserved. Not yet implemented.
+    code_switching: true  # Reserved. Not yet implemented.
     bhashini:              # Required only if provider is "bhashini".
       api_key_env: ""      # Env var name holding the Bhashini API key.
       user_id_env: ""      # Env var name holding the Bhashini user ID.
@@ -52,11 +52,13 @@ entity_to_profile_field: {}  # Required. Map of entity name → UserProfile fiel
 
 hitl:
   response_message: ""  # Required. Message shown when handing off to a human agent.
+  # Note: "whatsapp_handoff" is a second available special_handler value for subagents.
+  # Its response is currently hardcoded in the orchestrator; no config key needed.
 
 agent_workflow:
   workflow_id: ""    # Required. Unique identifier for this workflow.
   version: ""        # Required. Version string e.g. "1.0.0".
-  agent_system_prompt: ""    # Required. System prompt used for all LLM calls in this workflow.
+  agent_system_prompt: ""    # Required. System prompt used for all LLM calls in this workflow. Use YAML block scalar (|) for multi-line prompts.
   global_intents: []         # Required. Intent IDs handled globally regardless of current subagent.
   global_routing: []         # Required. Routing rules for global intents. Each: intent, next_subagent_id.
   default_fallback_subagent_id: ""  # Required. Subagent to route to when no routing rule matches.
