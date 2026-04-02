@@ -24,6 +24,10 @@ import uvicorn
 import yaml
 from dotenv import load_dotenv
 
+_env_local = Path(__file__).parent.parent / ".env.local"
+_env_local_warn = _env_local.exists() and not load_dotenv(_env_local)
+load_dotenv()  # .env in block dir or injected environment (Docker/prod)
+
 from src.mock_server import app  # noqa: F401 — uvicorn imports the app object
 
 logging.basicConfig(
@@ -32,6 +36,16 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+if _env_local_warn:
+    logger.warning(
+        "config.env_local_not_loaded",
+        extra={
+            "operation": "load_dotenv",
+            "status": "skipped",
+            "error": f"{_env_local} exists but no variables were loaded — check for syntax errors.",
+        },
+    )
 
 
 def _load_config(path: str) -> dict:
@@ -57,17 +71,37 @@ def _domain_config_path(service: str) -> Path:
     """Resolve the domain config path.
 
     Returns the path from CONFIG_FOLDER env var if set, otherwise the
-    block-local config/domain.yaml fallback.
+    block-local config/domain.yaml fallback. An empty string CONFIG_FOLDER
+    is treated the same as unset.
 
     Args:
         service: Service name matching the filename in the configs folder.
 
     Returns:
         Absolute or relative Path to the domain config YAML file.
+
+    Raises:
+        ValueError: If CONFIG_FOLDER is set to a path that is not a directory.
+        FileNotFoundError: If CONFIG_FOLDER is set but the resolved service
+            YAML does not exist.
     """
     config_folder = os.getenv("CONFIG_FOLDER")
     if config_folder:
-        return Path(config_folder) / f"{service}.yaml"
+        config_dir = Path(config_folder)
+        if not config_dir.is_dir():
+            raise ValueError(
+                f"CONFIG_FOLDER='{config_folder}' is not a directory. "
+                f"Set CONFIG_FOLDER to the folder containing service YAML files, "
+                f"not a file path. Check .env.local."
+            )
+        resolved = config_dir / f"{service}.yaml"
+        if not resolved.exists():
+            raise FileNotFoundError(
+                f"CONFIG_FOLDER='{config_folder}' is set but "
+                f"'{resolved}' does not exist. "
+                f"Check CONFIG_FOLDER in .env.local."
+            )
+        return resolved
     return Path("config/domain.yaml")  # relative to cwd, consistent with config/dpg.yaml loading
 
 
@@ -80,9 +114,6 @@ def _build_config() -> tuple[dict, str, int]:
     port = server_cfg.get("port", 9999)
     return config, host, port
 
-
-load_dotenv(Path(__file__).parent.parent / ".env.local")  # repo-root local dev overrides
-load_dotenv()  # .env in block dir or injected environment (Docker/prod)
 
 if __name__ == "__main__":
     config, host, port = _build_config()
