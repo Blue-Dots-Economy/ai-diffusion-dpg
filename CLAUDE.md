@@ -85,6 +85,8 @@ Reach Layer (input)
 
 Only Agent Core initiates calls to other blocks. No other cross-module calls exist — do not introduce new ones.
 
+> **Approved exception — Reach Layer web channel (PR #29):** The web channel's session-restore feature (`GET /user-history/{user_id}` in `reach_layer/server.py`) makes a direct call to the Memory Layer to load chat history before the first turn. This is a deliberate, scoped exception for the dev/demo web adapter only. All other Reach Layer → Memory Layer calls are still prohibited. Future production channel adapters must route state retrieval through Agent Core.
+
 | Caller | Callee | Purpose |
 |---|---|---|
 | Agent Core | Memory Layer | Read state at turn start; write state after response (async) |

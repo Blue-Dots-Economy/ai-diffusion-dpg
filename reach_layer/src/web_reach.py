@@ -51,24 +51,31 @@ class WebReachLayer(ReachLayerBase):
     # ------------------------------------------------------------------
 
     def receive(self) -> TurnInput:
-        """Not used directly — the FastAPI server calls build_turn_input() instead.
+        """Not applicable for the web adapter.
 
-        Returns:
-            Empty TurnInput. Present to satisfy the ABC contract.
+        WebReachLayer is request-driven, not polling-driven. The FastAPI
+        server calls build_turn_input() per HTTP request instead of this
+        method.
+
+        Raises:
+            NotImplementedError: Always. Use build_turn_input() instead.
         """
-        return TurnInput(
-            session_id="",
-            user_message="",
-            channel="web",
-            timestamp_ms=int(time.time() * 1000),
+        raise NotImplementedError(
+            "WebReachLayer is request-driven. Use build_turn_input() instead of receive()."
         )
 
     def deliver(self, result: TurnResult) -> None:
-        """Not used directly — the FastAPI server calls format_result() instead.
+        """Not applicable for the web adapter.
 
-        Args:
-            result: Ignored. Present to satisfy the ABC contract.
+        WebReachLayer delivers responses via format_result() and the HTTP
+        response cycle, not via this push-style method.
+
+        Raises:
+            NotImplementedError: Always. Use format_result() instead.
         """
+        raise NotImplementedError(
+            "WebReachLayer is request-driven. Use format_result() instead of deliver()."
+        )
 
     # ------------------------------------------------------------------
     # Web-specific helpers called by server.py

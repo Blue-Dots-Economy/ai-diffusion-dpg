@@ -80,6 +80,16 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
 
     app = FastAPI(title="Reach Layer — Web Channel Adapter")
 
+    # Shared HTTP clients — created once at startup to enable connection pooling.
+    ac_client = httpx.Client(timeout=ac_timeout)
+    ml_client = httpx.Client(timeout=ml_timeout)
+
+    @app.on_event("shutdown")
+    def _close_clients() -> None:
+        """Close shared HTTP clients on shutdown."""
+        ac_client.close()
+        ml_client.close()
+
     # ------------------------------------------------------------------
     # GET /health
     # ------------------------------------------------------------------
@@ -158,70 +168,77 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
         if turn.user_id:
             payload["user_id"] = turn.user_id
 
-        try:
-            with httpx.Client() as client:
-                response = client.post(ac_endpoint, json=payload, timeout=ac_timeout)
+        # Retry once on timeout (exponential backoff: 1 s delay before retry).
+        _last_timeout: httpx.TimeoutException | None = None
+        data: dict = {}
+        for _attempt in range(2):
+            try:
+                response = ac_client.post(ac_endpoint, json=payload, timeout=ac_timeout)
                 response.raise_for_status()
                 data = response.json()
+                _last_timeout = None
+                break
+            except httpx.TimeoutException as _te:
+                _last_timeout = _te
+                if _attempt == 0:
+                    time.sleep(1.0)
+            except httpx.ConnectError:
+                logger.error(
+                    "reach_server.chat_connect_error",
+                    extra={
+                        "operation": "reach_server.chat",
+                        "status": "failure",
+                        "error": "Agent Core connection refused",
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+                return {"response_text": "[Could not reach Agent Core. Is the backend running?]",
+                        "was_escalated": False, "session_id": turn.session_id, "latency_ms": 0}
+            except Exception as e:
+                logger.error(
+                    "reach_server.chat_error",
+                    extra={
+                        "operation": "reach_server.chat",
+                        "status": "failure",
+                        "error": str(e),
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+                return {"response_text": f"[Unexpected error: {type(e).__name__}]",
+                        "was_escalated": False, "session_id": turn.session_id, "latency_ms": 0}
 
-            result = TurnResult(
-                session_id=turn.session_id,
-                response_text=data.get("response_text", ""),
-                was_escalated=data.get("was_escalated", False),
-                was_tool_used=data.get("was_tool_used", False),
-                model_used=data.get("model_used", ""),
-                latency_ms=int((time.time() - start) * 1000),
-            )
-            formatted = web_reach.format_result(result)
-            logger.info(
-                "reach_server.chat_success",
-                extra={
-                    "operation": "reach_server.chat",
-                    "status": "success",
-                    "session_id": turn.session_id,
-                    "latency_ms": formatted["latency_ms"],
-                },
-            )
-            return formatted
-
-        except httpx.TimeoutException:
+        if _last_timeout is not None:
             logger.error(
                 "reach_server.chat_timeout",
                 extra={
                     "operation": "reach_server.chat",
                     "status": "failure",
-                    "error": "Agent Core timeout",
+                    "error": "Agent Core timeout after retry",
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
             return {"response_text": "[Agent Core did not respond in time. Please try again.]",
                     "was_escalated": False, "session_id": turn.session_id, "latency_ms": 0}
 
-        except httpx.ConnectError:
-            logger.error(
-                "reach_server.chat_connect_error",
-                extra={
-                    "operation": "reach_server.chat",
-                    "status": "failure",
-                    "error": "Agent Core connection refused",
-                    "latency_ms": int((time.time() - start) * 1000),
-                },
-            )
-            return {"response_text": "[Could not reach Agent Core. Is the backend running?]",
-                    "was_escalated": False, "session_id": turn.session_id, "latency_ms": 0}
-
-        except Exception as e:
-            logger.error(
-                "reach_server.chat_error",
-                extra={
-                    "operation": "reach_server.chat",
-                    "status": "failure",
-                    "error": str(e),
-                    "latency_ms": int((time.time() - start) * 1000),
-                },
-            )
-            return {"response_text": f"[Unexpected error: {type(e).__name__}]",
-                    "was_escalated": False, "session_id": turn.session_id, "latency_ms": 0}
+        result = TurnResult(
+            session_id=turn.session_id,
+            response_text=data.get("response_text", ""),
+            was_escalated=data.get("was_escalated", False),
+            was_tool_used=data.get("was_tool_used", False),
+            model_used=data.get("model_used", ""),
+            latency_ms=int((time.time() - start) * 1000),
+        )
+        formatted = web_reach.format_result(result)
+        logger.info(
+            "reach_server.chat_success",
+            extra={
+                "operation": "reach_server.chat",
+                "status": "success",
+                "session_id": turn.session_id,
+                "latency_ms": formatted["latency_ms"],
+            },
+        )
+        return formatted
 
     # ------------------------------------------------------------------
     # GET /user-history/{user_id} — proxy to Memory Layer
@@ -246,13 +263,12 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
         if not user_id:
             return {"session_id": None, "turns": []}
         try:
-            with httpx.Client() as client:
-                response = client.get(
-                    f"{ml_endpoint}/users/{user_id}/active-history",
-                    timeout=ml_timeout,
-                )
-                response.raise_for_status()
-                data = response.json()
+            response = ml_client.get(
+                f"{ml_endpoint}/users/{user_id}/active-history",
+                timeout=ml_timeout,
+            )
+            response.raise_for_status()
+            data = response.json()
             logger.info(
                 "reach_server.user_history_success",
                 extra={

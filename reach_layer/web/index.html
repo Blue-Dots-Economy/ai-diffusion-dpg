@@ -787,8 +787,11 @@
 
   function updateHeaderMeta() {
     const el = document.getElementById("header-meta");
-    const uid = USER_ID ? ` · ${USER_ID}` : "";
-    el.innerHTML = `<span class="status-dot"></span>Connected${uid}`;
+    el.textContent = "";
+    const dot = document.createElement("span");
+    dot.className = "status-dot";
+    el.appendChild(dot);
+    el.appendChild(document.createTextNode("Connected" + (USER_ID ? ` · ${USER_ID}` : "")));
   }
 
   function switchUser() {
