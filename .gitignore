@@ -111,3 +111,6 @@ sentence_transformers_cache/
 # macOS extended attributes
 # -----------------------------------------------------------------------------
 **/.DS_Store
+
+# Git worktrees
+.worktrees/
