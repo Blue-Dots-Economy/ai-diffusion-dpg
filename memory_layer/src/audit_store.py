@@ -27,6 +27,7 @@ class SQLiteAuditStore:
     def __init__(self, db_path: str = "audit.db") -> None:
         self._db_path = db_path
         self._lock = threading.Lock()
+        self._db_available: bool = True
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
@@ -50,7 +51,8 @@ class SQLiteAuditStore:
                             created_at TIMESTAMP NOT NULL,
                             closed_at TIMESTAMP,
                             status TEXT DEFAULT 'active',
-                            end_reason TEXT
+                            end_reason TEXT,
+                            consent_given TEXT
                         )
                     """)
                     
@@ -81,33 +83,49 @@ class SQLiteAuditStore:
                 },
             )
         except Exception as e:
-            logger.error(
+            self._db_available = False
+            logger.critical(
                 "sqlite_audit_store.init_error",
                 extra={
                     "operation": "audit_store.init",
                     "status": "failure",
                     "error": str(e),
+                    "path": self._db_path,
                 },
             )
-            # We don't raise here to avoid crashing the whole service; 
-            # audit is secondary to core functionality.
 
     def record_session_event(
-        self, 
-        session_id: str, 
-        user_id: str, 
-        action: str, 
-        reason: Optional[str] = None
+        self,
+        session_id: str,
+        user_id: str,
+        action: str,
+        reason: Optional[str] = None,
+        consent_given: Optional[str] = None,
     ) -> None:
         """
         Record a session lifecycle event (start, end, escalate).
-        
+
         Args:
-            session_id: Session identifier.
-            user_id:    User identifier.
-            action:     'start', 'end', or 'escalate'.
-            reason:     Optional reason for the action.
+            session_id:    Session identifier.
+            user_id:       User identifier.
+            action:        'start', 'end', or 'escalate'.
+            reason:        Optional reason for the action.
+            consent_given: DPDP consent state — 'true', 'false', or None (pending).
+                           At session start this is typically None.
+                           At session end/escalate this reflects the user's final
+                           storage preference (user_storage_mode from Redis).
         """
+        if not self._db_available:
+            logger.warning(
+                "sqlite_audit_store.record_session_skipped",
+                extra={
+                    "operation": "audit_store.record_session",
+                    "status": "skipped",
+                    "session_id": session_id,
+                    "error": "audit store unavailable due to init failure",
+                },
+            )
+            return
         try:
             now = datetime.now(timezone.utc).isoformat()
             with self._lock:
@@ -115,25 +133,45 @@ class SQLiteAuditStore:
                     if action == "start":
                         conn.execute(
                             """
-                            INSERT INTO session_audit (session_id, user_id, created_at, status)
-                            VALUES (?, ?, ?, 'active')
-                            ON CONFLICT(session_id) DO UPDATE SET 
+                            INSERT INTO session_audit
+                                (session_id, user_id, created_at, status, consent_given)
+                            VALUES (?, ?, ?, 'active', ?)
+                            ON CONFLICT(session_id) DO UPDATE SET
                                 status = 'active',
                                 closed_at = NULL,
-                                end_reason = NULL
+                                end_reason = NULL,
+                                consent_given = COALESCE(
+                                    excluded.consent_given,
+                                    session_audit.consent_given
+                                )
                             """,
-                            (session_id, user_id, now),
+                            (session_id, user_id, now, consent_given),
                         )
                     elif action in ("end", "escalate"):
                         status = "ended" if action == "end" else "escalated"
                         conn.execute(
                             """
-                            UPDATE session_audit 
-                            SET closed_at = ?, status = ?, end_reason = ?
+                            UPDATE session_audit
+                            SET closed_at = ?,
+                                status = ?,
+                                end_reason = ?,
+                                consent_given = COALESCE(?, consent_given)
                             WHERE session_id = ?
                             """,
-                            (now, status, reason, session_id),
+                            (now, status, reason, consent_given, session_id),
                         )
+                    else:
+                        logger.warning(
+                            "sqlite_audit_store.record_session_unknown_action",
+                            extra={
+                                "operation": "audit_store.record_session",
+                                "status": "skipped",
+                                "session_id": session_id,
+                                "action": action,
+                                "error": f"unrecognised action: {action!r}",
+                            },
+                        )
+                        return
                     conn.commit()
             
             logger.info(
@@ -174,6 +212,18 @@ class SQLiteAuditStore:
         
         Note: Metadata is stored as a JSON string.
         """
+        if not self._db_available:
+            logger.warning(
+                "sqlite_audit_store.record_turn_skipped",
+                extra={
+                    "operation": "audit_store.record_turn",
+                    "status": "skipped",
+                    "session_id": session_id,
+                    "turn_id": turn_id,
+                    "error": "audit store unavailable due to init failure",
+                },
+            )
+            return
         try:
             now = datetime.now(timezone.utc).isoformat()
             meta_str = json.dumps(metadata) if metadata else None
@@ -213,6 +263,55 @@ class SQLiteAuditStore:
                     "session_id": session_id,
                     "turn_id": turn_id,
                     "error": str(e),
+                },
+            )
+
+    def update_consent(self, session_id: str, consent_given: str) -> None:
+        """
+        Persist the user's consent decision for an active session.
+
+        Called mid-session when user_storage_mode is written to Redis, so the
+        audit record is durable even if the session ends abruptly.
+
+        Args:
+            session_id:    Session identifier.
+            consent_given: 'true' if user accepted storage, 'false' if declined.
+        """
+        if not self._db_available:
+            logger.warning(
+                "sqlite_audit_store.update_consent_skipped",
+                extra={
+                    "operation": "audit_store.update_consent",
+                    "status": "skipped",
+                    "session_id": session_id,
+                    "error": "audit store unavailable due to init failure",
+                },
+            )
+            return
+        try:
+            with self._lock:
+                with self._get_connection() as conn:
+                    conn.execute(
+                        "UPDATE session_audit SET consent_given = ? WHERE session_id = ?",
+                        (consent_given, session_id),
+                    )
+                    conn.commit()
+            logger.info(
+                "sqlite_audit_store.update_consent",
+                extra={
+                    "operation": "audit_store.update_consent",
+                    "status": "success",
+                    "session_id": session_id,
+                },
+            )
+        except Exception as e:
+            logger.error(
+                "sqlite_audit_store.update_consent_error",
+                extra={
+                    "operation": "audit_store.update_consent",
+                    "status": "failure",
+                    "session_id": session_id,
+                    "error": f"{type(e).__name__}: {e}",
                 },
             )
 

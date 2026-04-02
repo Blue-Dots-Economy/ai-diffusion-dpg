@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -60,6 +60,7 @@ class AuditSessionRequest(BaseModel):
     user_id: str
     action: str
     reason: Optional[str] = None
+    consent_given: Optional[str] = None
 
 
 class AuditTurnRequest(BaseModel):
@@ -220,21 +221,33 @@ def create_app(memory: MemoryLayer) -> FastAPI:
     @app.post("/audit/session")
     def record_audit_session(request: AuditSessionRequest) -> StatusResponse:
         """Record session lifecycle event in SQLite."""
+        start = time.time()
         try:
             memory.record_audit_session(
                 session_id=request.session_id,
                 user_id=request.user_id,
                 action=request.action,
                 reason=request.reason,
+                consent_given=request.consent_given,
             )
             return StatusResponse(status="ok")
         except Exception as e:
-            logger.error(f"server.audit_session_error: {e}")
-            return StatusResponse(status="ok")  # Fail-soft for audit
+            logger.error(
+                "memory_server.audit_session_error",
+                extra={
+                    "operation": "server.audit_session",
+                    "status": "failure",
+                    "session_id": request.session_id,
+                    "error": f"{type(e).__name__}: {e}",
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            return StatusResponse(status="error")
 
     @app.post("/audit/turn")
     def record_audit_turn(request: AuditTurnRequest) -> StatusResponse:
         """Record a single conversation turn in SQLite."""
+        start = time.time()
         try:
             memory.record_audit_turn(
                 session_id=request.session_id,
@@ -246,16 +259,46 @@ def create_app(memory: MemoryLayer) -> FastAPI:
             )
             return StatusResponse(status="ok")
         except Exception as e:
-            logger.error(f"server.audit_turn_error: {e}")
-            return StatusResponse(status="ok")  # Fail-soft for audit
+            logger.error(
+                "memory_server.audit_turn_error",
+                extra={
+                    "operation": "server.audit_turn",
+                    "status": "failure",
+                    "session_id": request.session_id,
+                    "turn_id": request.turn_id,
+                    "error": f"{type(e).__name__}: {e}",
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            return StatusResponse(status="error")
 
     @app.get("/audit/sessions/{session_id}/history")
     def get_chat_history(session_id: str) -> list[dict]:
         """Retrieve full chat history for a session."""
+        start = time.time()
         try:
-            return memory.get_chat_history(session_id)
+            history = memory.get_chat_history(session_id)
+            logger.info(
+                "memory_server.get_chat_history",
+                extra={
+                    "operation": "server.get_chat_history",
+                    "status": "success",
+                    "session_id": session_id,
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            return history
         except Exception as e:
-            logger.error(f"server.get_history_error: {e}")
+            logger.error(
+                "memory_server.get_chat_history_error",
+                extra={
+                    "operation": "server.get_chat_history",
+                    "status": "failure",
+                    "session_id": session_id,
+                    "error": f"{type(e).__name__}: {e}",
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
             return []
 
     @app.get("/sessions/{user_id}")

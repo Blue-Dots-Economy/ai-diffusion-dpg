@@ -567,3 +567,77 @@ def test_learning_emit_scheduled_after_return():
     agent.process_turn(_turn_input())
     time.sleep(0.1)
     agent._learning.emit_turn.assert_called_once()
+
+# ---------------------------------------------------------------------------
+# Audit turn recording — Issue #1 regression tests
+# ---------------------------------------------------------------------------
+
+def test_blocked_input_records_audit_with_correct_user_id_and_message():
+    """record_audit_turn must be called with the real user_id and user_message, not session_id."""
+    USER_ID = "user_blocked_001"
+    USER_MSG = "What's the market price today?"
+    agent = _make_agent(trust_input=BLOCK)
+    ti = TurnInput(
+        session_id=SESSION_ID,
+        user_id=USER_ID,
+        user_message=USER_MSG,
+        channel="cli",
+        timestamp_ms=TIMESTAMP,
+    )
+    agent.process_turn(ti)
+    time.sleep(0.1)
+
+    agent._memory.record_audit_turn.assert_called_once()
+    call_kwargs = agent._memory.record_audit_turn.call_args
+    assert call_kwargs.kwargs["user_id"] == USER_ID, "user_id must not be session_id for blocked turns"
+    assert call_kwargs.kwargs["user_message"] == USER_MSG, "user_message must be the actual message, not 'BLOCKED'"
+    assert call_kwargs.kwargs["session_id"] == SESSION_ID
+    assert call_kwargs.kwargs["turn_id"] != SESSION_ID, "turn_id must be a UUID, not session_id"
+
+
+def test_escalated_input_records_audit_with_correct_user_id_and_message():
+    """record_audit_turn must be called with the real user_id and user_message for escalated turns."""
+    USER_ID = "user_escalated_001"
+    USER_MSG = "I want to talk to someone about my loan."
+    agent = _make_agent(trust_input=ESCALATE)
+    ti = TurnInput(
+        session_id=SESSION_ID,
+        user_id=USER_ID,
+        user_message=USER_MSG,
+        channel="cli",
+        timestamp_ms=TIMESTAMP,
+    )
+    agent.process_turn(ti)
+    time.sleep(0.1)
+
+    agent._memory.record_audit_turn.assert_called_once()
+    call_kwargs = agent._memory.record_audit_turn.call_args
+    assert call_kwargs.kwargs["user_id"] == USER_ID, "user_id must not be session_id for escalated turns"
+    assert call_kwargs.kwargs["user_message"] == USER_MSG, "user_message must be the actual message, not 'ESCALATED'"
+    assert call_kwargs.kwargs["turn_id"] != SESSION_ID, "turn_id must be a UUID, not session_id"
+
+
+def test_blocked_input_audit_has_non_empty_turn_id():
+    """turn_id in audit call must be a non-empty UUID string, not empty or session_id."""
+    agent = _make_agent(trust_input=BLOCK)
+    agent.process_turn(_turn_input())
+    time.sleep(0.1)
+
+    agent._memory.record_audit_turn.assert_called_once()
+    call_kwargs = agent._memory.record_audit_turn.call_args
+    turn_id = call_kwargs.kwargs["turn_id"]
+    assert turn_id, "turn_id must not be empty"
+    assert turn_id != SESSION_ID, "turn_id must not equal session_id"
+
+
+def test_escalated_input_audit_has_non_empty_turn_id():
+    """turn_id in audit call must be a non-empty UUID string."""
+    agent = _make_agent(trust_input=ESCALATE)
+    agent.process_turn(_turn_input())
+    time.sleep(0.1)
+
+    agent._memory.record_audit_turn.assert_called_once()
+    call_kwargs = agent._memory.record_audit_turn.call_args
+    turn_id = call_kwargs.kwargs["turn_id"]
+    assert turn_id, "turn_id must not be empty"
+    assert turn_id != SESSION_ID, "turn_id must not equal session_id"

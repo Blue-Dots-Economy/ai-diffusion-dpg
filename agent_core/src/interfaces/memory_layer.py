@@ -111,9 +111,23 @@ class MemoryLayerBase(ABC):
         """
 
     @abstractmethod
-    def record_audit_session(self, session_id: str, user_id: str, action: str, reason: str = None) -> None:
+    def record_audit_session(
+        self,
+        session_id: str,
+        user_id: str,
+        action: str,
+        reason: str = None,
+        consent_given: str = None,
+    ) -> None:
         """
         Record a session lifecycle event (start, end, escalate) in the audit store.
+
+        Args:
+            session_id:    Session identifier.
+            user_id:       User identifier.
+            action:        'start', 'end', or 'escalate'.
+            reason:        Optional reason for the action.
+            consent_given: DPDP consent state — 'true', 'false', or None (pending).
         """
 
     @abstractmethod
@@ -128,4 +142,16 @@ class MemoryLayerBase(ABC):
     ) -> None:
         """
         Record a single conversation turn in the audit store.
+        """
+
+    @abstractmethod
+    def get_chat_history(self, session_id: str) -> list[dict]:
+        """
+        Retrieve full chat history for a session, sorted by timestamp.
+
+        Args:
+            session_id: Session identifier.
+
+        Returns:
+            List of turn dicts sorted by timestamp ascending. Returns [] on failure.
         """

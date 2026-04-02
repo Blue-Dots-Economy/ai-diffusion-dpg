@@ -302,6 +302,11 @@ class MemoryLayer:
             if resolved_scope == "session":
                 self._redis.set_session_field(session_id, key, value)
                 self._redis.update_last_accessed(user_id, session_id)
+                # When the user's storage consent changes, persist it to SQLite immediately
+                # so the audit record is durable even if the session ends abruptly.
+                if key == "user_storage_mode" and value:
+                    consent_given = "true" if str(value) == "saved" else "false"
+                    self._audit.update_consent(session_id, consent_given)
 
             elif resolved_scope == "persistent":
                 journey_id = session_id  # journey_id == session_id
@@ -415,12 +420,17 @@ class MemoryLayer:
             # 6 + 7. Remove from user index (deletes user key if empty)
             self._redis.remove_session_from_user_index(user_id, session_id)
 
-            # 8. Record audit end
+            # 8. Record audit end — include final consent_given for DPDP compliance.
+            # storage_mode was already resolved above; derive consent_given from it.
+            # This acts as a safety net for sessions where consent was set before flush
+            # or where the in-session update_consent call was missed.
+            consent_given = "true" if storage_mode == "saved" else "false"
             self._audit.record_session_event(
-                session_id=session_id, 
-                user_id=user_id, 
-                action="end" if end_reason != "escalation" else "escalate", 
-                reason=end_reason
+                session_id=session_id,
+                user_id=user_id,
+                action="end" if end_reason != "escalation" else "escalate",
+                reason=end_reason,
+                consent_given=consent_given,
             )
 
             logger.info(
@@ -528,9 +538,16 @@ class MemoryLayer:
                 },
             )
 
-    def record_audit_session(self, session_id: str, user_id: str, action: str, reason: str = None) -> None:
+    def record_audit_session(
+        self,
+        session_id: str,
+        user_id: str,
+        action: str,
+        reason: str = None,
+        consent_given: str = None,
+    ) -> None:
         """Record session lifecycle event in SQLite audit store."""
-        self._audit.record_session_event(session_id, user_id, action, reason)
+        self._audit.record_session_event(session_id, user_id, action, reason, consent_given)
 
     def record_audit_turn(
         self, 

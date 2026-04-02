@@ -360,23 +360,51 @@ class MemoryLayerHttpClient(MemoryLayerBase):
                 },
             )
 
-    def record_audit_session(self, session_id: str, user_id: str, action: str, reason: str = None) -> None:
+    def record_audit_session(
+        self,
+        session_id: str,
+        user_id: str,
+        action: str,
+        reason: str = None,
+        consent_given: str = None,
+    ) -> None:
         """
         POST /audit/session. Logs and continues on failure. Never raises.
         """
+        if not session_id or not user_id or not action:
+            logger.error(
+                "memory_http_client.record_audit_session_invalid",
+                extra={
+                    "operation": "memory_http_client.record_audit_session",
+                    "status": "failure",
+                    "error": "session_id, user_id, and action must be non-empty",
+                },
+            )
+            return
         try:
-            httpx.post(
+            response = httpx.post(
                 f"{self._endpoint}/audit/session",
                 json={
                     "session_id": session_id,
                     "user_id": user_id,
                     "action": action,
                     "reason": reason,
+                    "consent_given": consent_given,
                 },
                 timeout=self._timeout_s,
             )
+            response.raise_for_status()
         except Exception as e:
-            logger.error(f"memory_http_client.record_audit_session_error: {e}")
+            logger.error(
+                "memory_http_client.record_audit_session_error",
+                extra={
+                    "operation": "memory_http_client.record_audit_session",
+                    "status": "failure",
+                    "session_id": session_id,
+                    "action": action,
+                    "error": f"{type(e).__name__}: {e}",
+                },
+            )
 
     def record_audit_turn(
         self,
@@ -390,8 +418,18 @@ class MemoryLayerHttpClient(MemoryLayerBase):
         """
         POST /audit/turn. Logs and continues on failure. Never raises.
         """
+        if not session_id or not user_id or not turn_id:
+            logger.error(
+                "memory_http_client.record_audit_turn_invalid",
+                extra={
+                    "operation": "memory_http_client.record_audit_turn",
+                    "status": "failure",
+                    "error": "session_id, user_id, and turn_id must be non-empty",
+                },
+            )
+            return
         try:
-            httpx.post(
+            response = httpx.post(
                 f"{self._endpoint}/audit/turn",
                 json={
                     "session_id": session_id,
@@ -403,5 +441,52 @@ class MemoryLayerHttpClient(MemoryLayerBase):
                 },
                 timeout=self._timeout_s,
             )
+            response.raise_for_status()
         except Exception as e:
-            logger.error(f"memory_http_client.record_audit_turn_error: {e}")
+            logger.error(
+                "memory_http_client.record_audit_turn_error",
+                extra={
+                    "operation": "memory_http_client.record_audit_turn",
+                    "status": "failure",
+                    "session_id": session_id,
+                    "turn_id": turn_id,
+                    "error": f"{type(e).__name__}: {e}",
+                },
+            )
+
+    def get_chat_history(self, session_id: str) -> list[dict]:
+        """
+        GET /audit/sessions/{session_id}/history. Returns [] on failure. Never raises.
+        """
+        if not session_id:
+            return []
+        start = time.time()
+        try:
+            response = httpx.get(
+                f"{self._endpoint}/audit/sessions/{session_id}/history",
+                timeout=self._timeout_s,
+            )
+            response.raise_for_status()
+            history = response.json()
+            logger.info(
+                "memory_http_client.get_chat_history",
+                extra={
+                    "operation": "memory_http_client.get_chat_history",
+                    "status": "success",
+                    "session_id": session_id,
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            return history if isinstance(history, list) else []
+        except Exception as e:
+            logger.error(
+                "memory_http_client.get_chat_history_error",
+                extra={
+                    "operation": "memory_http_client.get_chat_history",
+                    "status": "failure",
+                    "session_id": session_id,
+                    "error": f"{type(e).__name__}: {e}",
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            return []
