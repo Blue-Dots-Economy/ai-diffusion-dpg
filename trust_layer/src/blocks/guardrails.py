@@ -86,6 +86,9 @@ class GuardrailsBlock:
             prompt_constraints.extend(guardrail.get("prompt_constraints", []))
             required_disclosures.extend(guardrail.get("required_disclosures", []))
 
+            guardrail_action_gates = guardrail.get("action_gates", {})
+            action_gates.update(guardrail_action_gates)
+
             template = guardrail.get("refusal_template")
             if template:
                 refusal_templates[risk_id] = template

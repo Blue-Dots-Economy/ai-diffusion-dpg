@@ -95,3 +95,14 @@ def test_missing_policy_pack_returns_empty():
     block = GuardrailsBlock({})
     result = block.assemble_constraints("s1", "ready", ["false_certainty"], None)
     assert result["prompt_constraints"] == []
+
+
+def test_action_gates_key_present_in_result(block):
+    result = block.assemble_constraints(
+        session_id="s1",
+        workflow_step="ready",
+        active_risks=["false_certainty"],
+        user_segment=None,
+    )
+    assert "action_gates" in result
+    assert isinstance(result["action_gates"], dict)
