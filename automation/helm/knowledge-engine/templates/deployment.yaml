@@ -34,7 +34,7 @@ spec:
               mountPath: /app/config/domain.yaml
               subPath: domain.yaml
             - name: chroma-data
-              mountPath: /app/data/chroma_db
+              mountPath: /app/chroma_db
           resources:
             requests:
               cpu: {{ .Values.resources.requests.cpu }}
@@ -65,7 +65,7 @@ spec:
               mountPath: /app/config/domain.yaml
               subPath: domain.yaml
             - name: chroma-data
-              mountPath: /app/data/chroma_db
+              mountPath: /app/chroma_db
           resources:
             requests:
               cpu: {{ .Values.resources.requests.cpu }}

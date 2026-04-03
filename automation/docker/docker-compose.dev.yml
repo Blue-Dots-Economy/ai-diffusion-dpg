@@ -81,7 +81,7 @@ services:
   # Memory Layer — session state store (port 8002)
   # ---------------------------------------------------------------------------
   memory_layer:
-    image: srivatsak2002/dpg-memory-layer:latest
+    image: sanketikahub/dpg-memory-layer:0.1.0
     container_name: memory_layer
     environment:
       - CONFIG_FOLDER=/app/config
@@ -116,7 +116,7 @@ services:
   # Trust Layer — content safety gate (port 8003)
   # ---------------------------------------------------------------------------
   trust_layer:
-    image: srivatsak2002/dpg-trust-layer:latest
+    image: sanketikahub/dpg-trust-layer:0.1.0
     container_name: trust_layer
     environment:
       - CONFIG_FOLDER=/app/config
@@ -142,7 +142,7 @@ services:
   # Learning Layer — async observability (port 8004)
   # ---------------------------------------------------------------------------
   learning_layer:
-    image: srivatsak2002/dpg-learning-layer:latest
+    image: sanketikahub/dpg-learning-layer:0.1.0
     container_name: learning_layer
     environment:
       - CONFIG_FOLDER=/app/config
@@ -168,7 +168,7 @@ services:
   # Action Gateway — external API stub / ONEST mock (port 9999)
   # ---------------------------------------------------------------------------
   action_gateway:
-    image: srivatsak2002/dpg-action-gateway:latest
+    image: sanketikahub/dpg-action-gateway:0.1.0
     container_name: action_gateway
     environment:
       - CONFIG_FOLDER=/app/config
@@ -195,17 +195,17 @@ services:
   # On startup: runs ingest first, then starts the server.
   # ---------------------------------------------------------------------------
   knowledge_engine:
-    image: srivatsak2002/dpg-knowledge-engine:latest
+    image: sanketikahub/dpg-knowledge-engine:0.1.0
     container_name: knowledge_engine
     environment:
       - CONFIG_FOLDER=/app/config
     user: root                               # needed to write to root-owned chroma_data named volume
-    command: ["sh", "-c", "if [ ! -f /app/data/chroma_db/chroma.sqlite3 ]; then echo 'ChromaDB empty — running ingest...' && python -m scripts.ingest --config config/domain.yaml; else echo 'ChromaDB exists — skipping ingest.'; fi && python main.py"]
+    command: ["sh", "-c", "if [ ! -f /app/chroma_db/chroma.sqlite3 ]; then echo 'ChromaDB empty — running ingest...' && python -m scripts.ingest --config config/domain.yaml; else echo 'ChromaDB exists — skipping ingest.'; fi && python main.py"]
     volumes:
       - ../../dev-kit/dpg/knowledge_engine.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/kkb/knowledge_engine.yaml:/app/config/domain.yaml:ro
       - ../../knowledge_engine/data:/app/data:ro   # source docs (read-only)
-      - chroma_data:/app/data/chroma_db            # embeddings (writable, overrides :ro for this subdir)
+      - chroma_data:/app/chroma_db            # embeddings (writable, overrides :ro for this subdir)
     networks:
       - dpg_net
     deploy:
@@ -225,7 +225,7 @@ services:
   # Agent Core — orchestrator and LLM caller (port 8000)
   # ---------------------------------------------------------------------------
   agent_core:
-    image: srivatsak2002/dpg-agent-core:latest
+    image: sanketikahub/dpg-agent-core:0.1.0
     container_name: agent_core
     environment:
       - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
@@ -263,7 +263,7 @@ services:
   # Reach Layer — Web UI + FastAPI server (port 8005)
   # ---------------------------------------------------------------------------
   reach_layer:
-    image: srivatsak2002/dpg-reach-layer:latest
+    image: sanketikahub/dpg-reach-layer:0.1.0
     container_name: reach_layer
     environment:
       - CONFIG_FOLDER=/app/config
