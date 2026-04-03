@@ -171,7 +171,7 @@ class TestConversationEngineChat:
         # second call fails and rolls back those 2. The original user message from line 165 was NOT
         # rolled back (that only happens in the first-call failure path).
         # So history grows by 1 (the user message) — tool loop additions are rolled back.
-        assert len(engine._history) <= history_len_before + 3  # at most user + assistant + tool_results
+        assert len(engine._history) == history_len_before + 1
 
 
 class TestConversationEnginePersistence:

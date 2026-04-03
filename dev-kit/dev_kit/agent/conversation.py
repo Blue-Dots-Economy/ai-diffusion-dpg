@@ -16,7 +16,7 @@ import anthropic
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from dev_kit.agent.accumulator import ConfigAccumulator
-from dev_kit.agent.checkpoints import build_summary, list_checkpoints, save_checkpoint
+from dev_kit.agent.checkpoints import build_summary, list_checkpoints, restore_checkpoint, save_checkpoint
 from dev_kit.agent.errors import ConversationError
 from dev_kit.agent.prompts.base import build_system_prompt
 from dev_kit.agent.renderer import render_all
@@ -210,7 +210,6 @@ class ConversationEngine:
                 requested_phase = self._state["rollback_to"]
                 self._state["rollback_to"] = None
                 try:
-                    from dev_kit.agent.checkpoints import restore_checkpoint
                     restored_acc, _ = restore_checkpoint(self._project_path, requested_phase)
                     self.accumulator = restored_acc
                     self._tool_handler._acc = restored_acc
