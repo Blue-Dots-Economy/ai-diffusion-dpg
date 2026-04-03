@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from unittest.mock import MagicMock
 
 from server import create_app
-from guardrails import BasicTrustLayer
+from orchestrator import TrustLayer
 
 
 # ---------------------------------------------------------------------------
@@ -19,6 +19,7 @@ from guardrails import BasicTrustLayer
 
 MINIMAL_CONFIG = {
     "trust": {
+        "policy_pack": "",
         "input_rules": {
             "blocked_phrases": ["kill", "bomb"],
             "escalation_topics": ["suicide", "self harm"],
@@ -26,13 +27,16 @@ MINIMAL_CONFIG = {
         "output_rules": {
             "blocked_phrases": ["confidential"],
         },
+        "policy_packs": {},
+        "consent": {"consent_phrases": [], "decline_phrases": []},
+        "hitl": {"queue_backend": "log", "holding_message": "", "notification_webhook": None},
     }
 }
 
 
 @pytest.fixture
 def trust():
-    return BasicTrustLayer(MINIMAL_CONFIG)
+    return TrustLayer(MINIMAL_CONFIG)
 
 
 @pytest.fixture
@@ -302,3 +306,42 @@ def test_escalate_returns_ticket():
     assert data["queued"] is True
     assert data["holding_message"] == "Advisor ko connect kar rahe hain."
     assert data["ticket_id"].startswith("TKT-")
+
+
+# ── New endpoint error-path (fail-closed) tests ─────────────────────────────
+
+def test_assemble_constraints_exception_returns_empty():
+    from unittest.mock import MagicMock
+    mock_trust = MagicMock()
+    mock_trust.assemble_constraints.side_effect = RuntimeError("error")
+    app = create_app(mock_trust)
+    tc = TestClient(app)
+    resp = tc.post("/assemble_constraints", json={
+        "session_id": "s1", "workflow_step": "ready", "active_risks": [], "user_segment": None
+    })
+    assert resp.status_code == 200
+    assert resp.json()["prompt_constraints"] == []
+
+
+def test_consent_verify_exception_returns_false():
+    from unittest.mock import MagicMock
+    mock_trust = MagicMock()
+    mock_trust.verify_consent.side_effect = RuntimeError("error")
+    app = create_app(mock_trust)
+    tc = TestClient(app)
+    resp = tc.post("/consent/verify", json={"session_id": "s1", "user_message": "haan"})
+    assert resp.status_code == 200
+    assert resp.json()["granted"] is False  # fail-closed
+
+
+def test_escalate_exception_returns_not_queued():
+    from unittest.mock import MagicMock
+    mock_trust = MagicMock()
+    mock_trust.escalate.side_effect = RuntimeError("error")
+    app = create_app(mock_trust)
+    tc = TestClient(app)
+    resp = tc.post("/escalate", json={
+        "session_id": "s1", "escalation_reason": "r", "user_message": "m", "workflow_step": "ready"
+    })
+    assert resp.status_code == 200
+    assert resp.json()["queued"] is False  # fail-closed
