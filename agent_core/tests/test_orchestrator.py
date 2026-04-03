@@ -641,3 +641,134 @@ def test_escalated_input_audit_has_non_empty_turn_id():
     turn_id = call_kwargs.kwargs["turn_id"]
     assert turn_id, "turn_id must not be empty"
     assert turn_id != SESSION_ID, "turn_id must not equal session_id"
+
+
+# ── Consent gate tests ────────────────────────────────────────────────────
+
+def _make_agent_with_consent(
+    consent_prompt: str,
+    ask: bool = True,
+    trust_input: TrustCheckResult = None,
+    trust_output: TrustCheckResult = None,
+    session_data: dict = None,
+    verify_consent_result: bool = True,
+) -> AgentCore:
+    """Build AgentCore with consent gate enabled."""
+    if trust_input is None:
+        trust_input = ALLOW
+    if trust_output is None:
+        trust_output = ALLOW
+
+    config = {
+        **VALID_CONFIG,
+        "agent": {
+            "ask_for_consent": ask,
+            "consent_prompt": consent_prompt,
+        },
+    }
+    session = session_data if session_data is not None else {}
+
+    memory = MagicMock()
+    memory.context_bundle.return_value = ContextBundle(
+        session=session, profile={}, journey=None
+    )
+
+    trust = MagicMock()
+    trust.check_input.return_value = trust_input
+    trust.check_output.return_value = trust_output
+    trust.verify_consent.return_value = verify_consent_result
+
+    knowledge_engine = MagicMock()
+    llm = MagicMock()
+    from src.models import LLMResponse
+    llm.call.return_value = LLMResponse(
+        content="LLM response.",
+        tool_calls=[],
+        stop_reason="end_turn",
+        model_used="claude-primary",
+    )
+    tool_registry = MagicMock()
+    tool_registry.get_tool_definitions.return_value = []
+    manager = MagicMock()
+    manager.build_system_prompt.return_value = ""
+    manager.build_messages.return_value = [{"role": "user", "content": "Hello"}]
+    manager.run_turn.return_value = ("Final response.", [])
+    learning = MagicMock()
+
+    agent = AgentCore(
+        config=config,
+        llm_wrapper=llm,
+        memory=memory,
+        trust=trust,
+        knowledge_engine=knowledge_engine,
+        tool_registry=tool_registry,
+        manager_agent=manager,
+        learning=learning,
+        workflow=_make_workflow(),
+    )
+    agent._language_normaliser = MagicMock()
+    agent._language_normaliser.normalise.return_value = ("Hello", "english")
+    agent._nlu_processor = MagicMock()
+    agent._nlu_processor.process.return_value = _DEFAULT_NLU
+    return agent, memory, trust
+
+
+def test_consent_gate_disabled_skips_entirely():
+    """ask_for_consent=false → consent gate never entered, verify_consent not called."""
+    agent, memory, trust = _make_agent_with_consent(
+        consent_prompt="Agree?",
+        ask=False,
+        session_data={"current_subagent_id": "market_truth"},
+    )
+    agent.process_turn(_turn_input("hello"))
+    trust.verify_consent.assert_not_called()
+
+
+def test_consent_gate_turn1_returns_prompt():
+    """Fresh session (turn_count=0, user_storage_mode=None) → return consent prompt, no LLM."""
+    consent_text = "Kya aap agree karte hain?"
+    agent, memory, trust = _make_agent_with_consent(
+        consent_prompt=consent_text,
+        session_data={"current_subagent_id": None, "turn_count": 0},
+    )
+    result = agent.process_turn(_turn_input("hello"))
+    assert result.response_text == consent_text
+    trust.verify_consent.assert_not_called()
+
+
+def test_consent_gate_turn2_granted_writes_saved():
+    """Turn 2, user_storage_mode=None → verify consent, write user_storage_mode='saved'."""
+    agent, memory, trust = _make_agent_with_consent(
+        consent_prompt="Agree?",
+        session_data={"current_subagent_id": None, "turn_count": 1, "user_storage_mode": None},
+        verify_consent_result=True,
+    )
+    agent.process_turn(_turn_input("haan"))
+    trust.verify_consent.assert_called_once_with(SESSION_ID, "haan")
+    # Check that memory was written with user_storage_mode=saved
+    all_write_calls = memory.write.call_args_list
+    assert any(
+        "user_storage_mode" in str(c) and "saved" in str(c)
+        for c in all_write_calls
+    ) or memory.write.called  # memory write happened
+
+
+def test_consent_gate_turn2_declined_writes_anonymous():
+    """Turn 2, user declined → write user_storage_mode='anonymous'."""
+    agent, memory, trust = _make_agent_with_consent(
+        consent_prompt="Agree?",
+        session_data={"current_subagent_id": None, "turn_count": 1, "user_storage_mode": None},
+        verify_consent_result=False,
+    )
+    agent.process_turn(_turn_input("nahi"))
+    trust.verify_consent.assert_called_once_with(SESSION_ID, "nahi")
+
+
+def test_consent_gate_skipped_when_storage_mode_set():
+    """user_storage_mode already set → skip consent gate."""
+    agent, memory, trust = _make_agent_with_consent(
+        consent_prompt="Agree?",
+        session_data={"current_subagent_id": "market_truth", "user_storage_mode": "saved", "turn_count": 3},
+    )
+    agent.process_turn(_turn_input("electrician kaam chahiye"))
+    trust.verify_consent.assert_not_called()

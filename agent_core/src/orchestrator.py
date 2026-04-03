@@ -176,6 +176,48 @@ class AgentCore(AgentCoreBase):
             int((time.time() - t1) * 1000),
         )
 
+        # ── Consent gate (Step 1b) ────────────────────────────────────
+        ask_for_consent: bool = self._config.get("agent", {}).get("ask_for_consent", False)
+        if ask_for_consent:
+            user_storage_mode: str | None = bundle.session.get("user_storage_mode")
+            turn_count: int = bundle.session.get("turn_count", 0)
+
+            if user_storage_mode is None and turn_count == 0:
+                # Turn 1: deliver consent prompt, no LLM call, no Trust Layer call
+                consent_prompt_text: str = self._config.get("agent", {}).get("consent_prompt", "")
+                logger.info(
+                    "orchestrator.consent_gate",
+                    extra={
+                        "operation": "orchestrator.consent_gate",
+                        "status": "prompt_delivered",
+                        "session_id": session_id,
+                    },
+                )
+                return TurnResult(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_text=consent_prompt_text,
+                    latency_ms=int((time.time() - start) * 1000),
+                )
+
+            if user_storage_mode is None and turn_count > 0:
+                # Turn 2: evaluate response, write storage mode, continue to workflow
+                granted: bool = self._trust.verify_consent(session_id, turn_input.user_message)
+                new_storage_mode = "saved" if granted else "anonymous"
+                logger.info(
+                    "orchestrator.consent_gate",
+                    extra={
+                        "operation": "orchestrator.consent_gate",
+                        "status": "consent_evaluated",
+                        "session_id": session_id,
+                        "granted": granted,
+                        "user_storage_mode": new_storage_mode,
+                    },
+                )
+                self._write_memory_sync(session_id, user_id, "session", "user_storage_mode", new_storage_mode)
+                bundle.session["user_storage_mode"] = new_storage_mode
+            # if user_storage_mode is set → fall through, skip consent gate entirely
+
         # ── Step 2: Resolve current subagent + special handler ────────
         current_subagent: SubAgent = self._workflow.subagents[current_subagent_id]
         logger.info(
