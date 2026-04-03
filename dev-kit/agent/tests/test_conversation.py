@@ -198,3 +198,17 @@ class TestConversationEnginePersistence:
         )
         engine = ConversationEngine(project_path, mock_client)
         assert engine.accumulator.get_block("trust_layer")["trust"]["input_rules"]["blocked_phrases"] == ["preloaded"]
+
+    def test_load_handles_corrupt_accumulator_json(self, project_path, mock_client):
+        """_load() must not crash on a corrupt accumulator.json — falls back to empty accumulator."""
+        (project_path / "_meta" / "accumulator.json").write_text("NOT VALID JSON {{{{")
+        # Should not raise
+        engine = ConversationEngine(project_path, mock_client)
+        assert engine.accumulator is not None
+        assert engine.accumulator.get_block("trust_layer") == {}
+
+    def test_load_handles_corrupt_project_json(self, project_path, mock_client):
+        """_load() must not crash on a corrupt project.json — falls back to default phase."""
+        (project_path / "_meta" / "project.json").write_text("{broken")
+        engine = ConversationEngine(project_path, mock_client)
+        assert engine._state["phase"] == "overview"

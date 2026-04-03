@@ -65,17 +65,42 @@ class ConversationEngine:
         self._load()
 
     def _load(self) -> None:
-        """Load persisted accumulator and project meta from disk if they exist."""
+        """Load persisted accumulator and project meta from disk if they exist.
+
+        Logs a warning and falls back to defaults if either file is corrupt.
+        """
         acc_path = self._project_path / "_meta" / "accumulator.json"
         if acc_path.exists():
-            self.accumulator = ConfigAccumulator.from_dict(json.loads(acc_path.read_text()))
-            self._tool_handler = ToolHandler(self.accumulator, self._state)
+            try:
+                self.accumulator = ConfigAccumulator.from_dict(json.loads(acc_path.read_text()))
+                self._tool_handler = ToolHandler(self.accumulator, self._state)
+            except (json.JSONDecodeError, KeyError, ValueError) as exc:
+                logger.warning(
+                    "accumulator_load_failed",
+                    extra={
+                        "operation": "conversation._load",
+                        "status": "failure",
+                        "error": str(exc),
+                        "path": str(acc_path),
+                    },
+                )
 
         meta_path = self._project_path / "_meta" / "project.json"
         if meta_path.exists():
-            meta = json.loads(meta_path.read_text())
-            self._state["project_meta"] = meta
-            self._state["phase"] = meta.get("current_phase", "overview")
+            try:
+                meta = json.loads(meta_path.read_text())
+                self._state["project_meta"] = meta
+                self._state["phase"] = meta.get("current_phase", "overview")
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    "project_meta_load_failed",
+                    extra={
+                        "operation": "conversation._load",
+                        "status": "failure",
+                        "error": str(exc),
+                        "path": str(meta_path),
+                    },
+                )
 
     def _save_accumulator(self) -> None:
         """Persist the current accumulator state to disk."""
