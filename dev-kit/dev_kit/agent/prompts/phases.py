@@ -1,12 +1,13 @@
 """
 dev-kit/dev_kit/agent/prompts/phases.py
 
-Phase-specific additions to the system prompt. Each phase adds focused
-schema context so the LLM knows exactly what fields to collect.
+Phase-specific additions to the system prompt. Each phase injects the
+relevant YAML template sections so Claude sees the exact valid field names
+and fills in values only — never inventing or renaming keys.
 """
 from __future__ import annotations
 
-from dev_kit.loader import get_schema_descriptions
+from dev_kit.schemas.loader import get_valid_sections, load_template_text
 
 _WORKFLOW_EXAMPLE = """
 Example subagent (condensed from KKB reference):
@@ -63,6 +64,10 @@ Example subagent (condensed from KKB reference):
 def get_phase_addition(phase: str, available_connectors: list[str] | None = None) -> str:
     """Return schema context to append to the base system prompt for a given phase.
 
+    Injects the YAML template for the relevant block(s) so Claude sees the
+    exact field names to use. Values must be filled in; keys must never be
+    renamed or invented.
+
     Args:
         phase: Current conversation phase name.
         available_connectors: Connector names declared in agent_core (used in workflow phase).
@@ -74,90 +79,66 @@ def get_phase_addition(phase: str, available_connectors: list[str] | None = None
         return ""
 
     if phase == "language":
-        agent_desc = get_schema_descriptions("agent_core")
-        ke_desc = get_schema_descriptions("knowledge_engine")
-        relevant = {
-            k: v for k, v in {**agent_desc, **ke_desc}.items()
-            if any(kw in k for kw in ["primary_model", "fallback_model", "language", "model", "transliteration"])
-        }
-        lines = ["## Schema context for Language & Models phase", ""]
-        for path, desc in relevant.items():
-            lines.append(f"- `{path}`: {desc}")
-        return "\n".join(lines)
+        return (
+            "## Language & Models phase — valid fields\n\n"
+            "Use `update_config` with block=`agent_core`. "
+            f"Valid top-level sections: {', '.join(get_valid_sections('agent_core'))}\n\n"
+            "Set `agent` and `preprocessing` sections only. "
+            "Use EXACTLY the key names shown in the template below — do not rename any key:\n\n"
+            "```yaml\n"
+            + _extract_template_sections("agent_core", ["agent", "preprocessing"])
+            + "```"
+        )
 
     if phase == "knowledge":
-        desc = get_schema_descriptions("knowledge_engine")
-        lines = ["## Schema context for Knowledge phase", ""]
-        for path, desc_text in desc.items():
-            lines.append(f"- `{path}`: {desc_text}")
-        lines += [
-            "",
-            "## Glossary format",
-            "Each mapping: `{colloquial: [list of synonyms], canonical: standard_identifier}`",
-            "",
-            "## Source types",
-            "- `static` — PDF/CSV/markdown ingested into the vector store",
-            "- `always_include` — always retrieved regardless of intent",
-            "",
-            "## Intent filter format",
-            "Map of intent → list of doc_types to retrieve, e.g. `{job_query: [role, employer]}`",
-        ]
-        return "\n".join(lines)
+        return (
+            "## Knowledge phase — valid fields\n\n"
+            "Use `update_config` with block=`knowledge_engine`. "
+            f"Valid top-level sections: {', '.join(get_valid_sections('knowledge_engine'))}\n\n"
+            "Use EXACTLY the key names shown in the template below — do not rename any key:\n\n"
+            "```yaml\n"
+            + load_template_text("knowledge_engine")
+            + "```"
+        )
 
     if phase == "memory":
-        lines = [
-            "## Schema context for Memory phase",
-            "",
-            "## Session schema field types",
-            "- `{type: enum, values: [...], default: value}` — for categorical fields",
-            "- `{type: string, default: ''}` — for free-text fields",
-            "- `{type: int, default: 0}` — for counters",
-            "- `{type: list, default: []}` — for list fields",
-            "",
-            "## Persistent graph structure",
-            "- `user_node.label` — Neo4j/Memgraph label for the user node (e.g. 'User')",
-            "- `user_node.key` — unique user identifier property (e.g. 'user_id')",
-            "- `subnodes` — map of subnode name → {rel, declared_fields, [child]}",
-            "",
-            "## merge_on_session_end",
-            "List of {session_field, target} — promotes session values to graph nodes on close.",
-        ]
-        return "\n".join(lines)
+        return (
+            "## Memory phase — valid fields\n\n"
+            "Use `update_config` with block=`memory_layer`. "
+            f"Valid top-level sections: {', '.join(get_valid_sections('memory_layer'))}\n\n"
+            "Use EXACTLY the key names shown in the template below — do not rename any key:\n\n"
+            "```yaml\n"
+            + load_template_text("memory_layer")
+            + "```"
+        )
 
     if phase == "trust":
-        desc = get_schema_descriptions("trust_layer")
-        lines = ["## Schema context for Trust phase", ""]
-        for path, desc_text in desc.items():
-            lines.append(f"- `{path}`: {desc_text}")
-        lines += [
-            "",
-            "Note: trust_layer config is STATUS: draft — block template not yet finalised.",
-            "Collect blocked phrases, escalation topics, and output restrictions.",
-        ]
-        return "\n".join(lines)
+        return (
+            "## Trust phase — valid fields\n\n"
+            "Use `update_config` with block=`trust_layer`. "
+            f"Valid top-level sections: {', '.join(get_valid_sections('trust_layer'))}\n\n"
+            "Use EXACTLY the key names shown in the template below — do not rename any key:\n\n"
+            "```yaml\n"
+            + load_template_text("trust_layer")
+            + "```"
+        )
 
     if phase == "connectors":
-        agent_desc = get_schema_descriptions("agent_core")
-        gw_desc = get_schema_descriptions("action_gateway")
-        relevant = {k: v for k, v in {**agent_desc, **gw_desc}.items() if "connector" in k.lower()}
-        lines = [
-            "## Schema context for Connectors phase",
-            "",
-            "## Connector types",
-            "- `read` — retrieves data (no consent required)",
-            "- `write` — modifies external state (Trust Layer consent required before call)",
-            "- `identity` — identity verification connectors",
-            "- `internal` — routes to another DPG block (e.g. knowledge_retrieval → knowledge_engine)",
-            "",
-        ]
-        for path, desc_text in relevant.items():
-            lines.append(f"- `{path}`: {desc_text}")
-        lines += [
-            "",
-            "Note: action_gateway config is STATUS: draft.",
-            "Collect connector names, descriptions, and input_schema for each connector.",
-        ]
-        return "\n".join(lines)
+        return (
+            "## Connectors phase — valid fields\n\n"
+            "For agent_core connectors, use `update_config` with block=`agent_core`, "
+            "section=`connectors`. "
+            "For action_gateway endpoints, use block=`action_gateway`.\n\n"
+            "Use EXACTLY the key names shown in the templates below — do not rename any key:\n\n"
+            "**agent_core connectors section:**\n"
+            "```yaml\n"
+            + _extract_template_sections("agent_core", ["connectors"])
+            + "```\n\n"
+            "**action_gateway template:**\n"
+            "```yaml\n"
+            + load_template_text("action_gateway")
+            + "```"
+        )
 
     if phase == "workflow":
         connector_note = ""
@@ -166,16 +147,18 @@ def get_phase_addition(phase: str, available_connectors: list[str] | None = None
         return (
             "## Workflow Design phase\n\n"
             "Build the subagent state machine step by step:\n"
-            "1. Propose an initial flow based on everything you know about this domain.\n"
-            "2. Walk through each subagent: purpose, system_prompt, valid_intents, routing rules.\n"
-            "3. Use `create_subagent` for each node and `add_routing_rule` for each edge.\n"
-            "4. Suggest intents based on the conversation flow. Keep them specific to this domain.\n"
-            "5. After the graph is built, use `update_config` to set `agent_workflow.workflow_id`,\n"
+            "1. Use `create_subagent` for each node and `add_routing_rule` for each edge.\n"
+            "2. After the graph is built, use `update_config` to set `agent_workflow.workflow_id`,\n"
             "   `agent_workflow.version`, `agent_workflow.agent_system_prompt`, `agent_workflow.global_intents`,\n"
             "   `agent_workflow.global_routing`, and `agent_workflow.default_fallback_subagent_id`.\n"
-            "6. Also set `preprocessing.nlu_processor.intents` (flat list) and `preprocessing.nlu_processor.entities`.\n\n"
-            + _WORKFLOW_EXAMPLE
+            "3. Also set `preprocessing.nlu_processor.intents` (flat list) and `preprocessing.nlu_processor.entities`.\n\n"
+            "Use EXACTLY the key names shown in the template below for each subagent — do not rename any key:\n\n"
+            "```yaml\n"
+            + _extract_template_sections("agent_core", ["agent_workflow"])
+            + "```"
             + connector_note
+            + "\n\n"
+            + _WORKFLOW_EXAMPLE
         )
 
     if phase == "review":
@@ -188,3 +171,39 @@ def get_phase_addition(phase: str, available_connectors: list[str] | None = None
         )
 
     return ""
+
+
+def _extract_template_sections(block: str, sections: list[str]) -> str:
+    """Extract specific top-level sections from a YAML template as a string.
+
+    Reads the template file and returns only the lines belonging to the
+    requested top-level sections, preserving comments.
+
+    Args:
+        block: Block name.
+        sections: List of top-level section names to extract.
+
+    Returns:
+        YAML string containing only the requested sections.
+    """
+    full_text = load_template_text(block)
+    lines = full_text.splitlines()
+
+    result_lines: list[str] = []
+    current_section: str | None = None
+    in_target = False
+
+    for line in lines:
+        # Detect top-level section headers (non-indented keys)
+        if line and not line.startswith(" ") and not line.startswith("\t") and not line.startswith("#"):
+            key = line.split(":")[0].strip()
+            current_section = key
+            in_target = key in sections
+
+        if in_target:
+            result_lines.append(line)
+        elif current_section not in sections and line.startswith("#") and not result_lines:
+            # Skip file-level header comments before we've entered a target section
+            pass
+
+    return "\n".join(result_lines) + "\n"

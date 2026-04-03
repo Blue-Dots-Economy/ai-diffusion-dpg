@@ -1,0 +1,9 @@
+# trust_layer domain config — TEMPLATE
+# Fill in values only. Do NOT rename, add, or remove any keys.
+
+trust:
+  input_rules:
+    blocked_phrases: []         # exact strings that block user input and return blocked_message
+    escalation_topics: []       # strings that trigger immediate escalation to a human agent
+  output_rules:
+    blocked_phrases: []         # strings that must not appear in LLM output

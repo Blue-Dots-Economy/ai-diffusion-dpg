@@ -1,0 +1,9 @@
+# action_gateway domain config — TEMPLATE
+# Fill in values only. Do NOT rename, add, or remove any keys.
+# Add one entry per connector declared in agent_core connectors (read/write/identity).
+
+action_gateway:
+  connectors:                   # map of connector_name → endpoint config
+    connector_name:             # replace with actual connector name (must match agent_core connector key)
+      endpoint: ""              # required — full HTTP URL of the connector endpoint
+      timeout_ms: 5000          # request timeout in milliseconds

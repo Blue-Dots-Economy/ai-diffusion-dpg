@@ -245,7 +245,7 @@ async def chat(slug: str, body: ChatRequest) -> dict:
         )
         raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
     except Exception as exc:
-        logger.error(
+        logger.exception(
             "chat_turn_unexpected",
             extra={
                 "operation": "app.chat",
@@ -256,7 +256,7 @@ async def chat(slug: str, body: ChatRequest) -> dict:
                 "slug": slug,
             },
         )
-        raise HTTPException(status_code=500, detail={"error": "Internal server error"}) from exc
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
 
 
 @app.get("/api/projects/{slug}/history")

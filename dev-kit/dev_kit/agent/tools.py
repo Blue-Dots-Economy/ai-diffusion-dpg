@@ -7,6 +7,7 @@ DPG conversation agent. All 10 tools are defined here.
 from __future__ import annotations
 
 from dev_kit.agent.accumulator import BLOCKS, ConfigAccumulator, ConfigStatus
+from dev_kit.schemas.loader import get_valid_sections
 
 # ---------------------------------------------------------------------------
 # Tool JSON schema definitions passed to the Claude API
@@ -30,14 +31,25 @@ TOOL_DEFINITIONS: list[dict] = [
     },
     {
         "name": "update_config",
-        "description": "Update a section of a block's domain config. Values are deep-merged into the current state for that block.",
+        "description": (
+            "Update a section of a block's domain config. Values are deep-merged into the current state for that block.\n\n"
+            "Valid top-level sections per block (the first segment of the dot-notation path):\n"
+            + "\n".join(
+                f"  - {block}: {', '.join(get_valid_sections(block))}"
+                for block in BLOCKS
+            )
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "block": {"type": "string", "enum": BLOCKS},
                 "section": {
                     "type": "string",
-                    "description": "Dot-notation path to the config section, e.g. 'preprocessing.nlu_processor' or 'conversation'",
+                    "description": (
+                        "Dot-notation path to the config section. "
+                        "The first segment MUST be one of the valid top-level sections listed in the tool description. "
+                        "Examples: 'agent', 'preprocessing.nlu_processor', 'agent_workflow', 'trust', 'state.session'"
+                    ),
                 },
                 "values": {"type": "object", "description": "Key-value pairs to merge into the section"},
             },

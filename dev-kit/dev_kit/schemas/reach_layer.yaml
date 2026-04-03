@@ -1,0 +1,12 @@
+# reach_layer domain config — TEMPLATE
+# Fill in values only. Do NOT rename, add, or remove any keys.
+
+agent_core_client:
+  endpoint: ""                  # required — HTTP URL to Agent Core process_turn endpoint
+
+ui:
+  app_name: ""                  # display name of the application
+  app_tagline: ""               # short subtitle shown under the app name
+  app_icon: ""                  # emoji or icon identifier e.g. 🏥
+  user_id_placeholder: ""       # placeholder text in the user ID input field
+  storage_key: ""               # localStorage key for persisting user ID

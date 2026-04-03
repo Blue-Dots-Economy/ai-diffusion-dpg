@@ -22,7 +22,7 @@ from dev_kit.agent.prompts.base import build_system_prompt
 from dev_kit.agent.renderer import render_all
 from dev_kit.agent.tools import TOOL_DEFINITIONS, ToolHandler
 
-_MODEL = _os.environ.get("DEVKIT_MODEL", "claude-opus-4-6")
+_MODEL = _os.environ.get("DEVKIT_MODEL", "claude-haiku-4-5-20251001")
 _MAX_TOKENS = int(_os.environ.get("DEVKIT_MAX_TOKENS", "4096"))
 _HISTORY_WINDOW = int(_os.environ.get("DEVKIT_HISTORY_WINDOW", "20"))  # Max recent messages to send per turn
 
@@ -214,7 +214,11 @@ class ConversationEngine:
                     })
                     config_updates.append({"tool": block.name, "input": block.input})
 
-            self._history.append({"role": "assistant", "content": response.content})
+            serialized_content = [
+                block.model_dump() if hasattr(block, "model_dump") else block
+                for block in response.content
+            ]
+            self._history.append({"role": "assistant", "content": serialized_content})
             self._history.append({"role": "user", "content": tool_results})
 
             # Handle phase transition

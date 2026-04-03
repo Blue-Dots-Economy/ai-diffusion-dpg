@@ -11,8 +11,10 @@ from pathlib import Path
 import yaml
 
 from dev_kit.agent.accumulator import BLOCKS, DRAFT_BLOCKS, ConfigAccumulator, ConfigStatus
+from dev_kit.schema import validate_partial
 
 _DRAFT_HEADER = "# STATUS: draft — block template not yet finalized\n"
+_STALE_HEADER_TPL = "# STATUS: stale — validation errors detected:\n{errors}\n"
 
 
 def render_all(project_path: Path, accumulator: ConfigAccumulator) -> dict[str, ConfigStatus]:
@@ -56,6 +58,14 @@ def render_block(project_path: Path, block: str, accumulator: ConfigAccumulator)
         return
 
     yaml_content = yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+    errors = validate_partial(block, data)
+    if errors:
+        error_lines = "\n".join(f"#   - {e}" for e in errors)
+        header = _STALE_HEADER_TPL.format(errors=error_lines)
+        out_path.write_text(header + yaml_content)
+        accumulator.set_status(block, ConfigStatus.STALE)
+        return
 
     if block in DRAFT_BLOCKS:
         out_path.write_text(_DRAFT_HEADER + yaml_content)

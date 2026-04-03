@@ -9,7 +9,8 @@ async function request(method, path, body) {
   const res = await fetch(`${BASE}${path}`, opts)
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || res.statusText)
+    const detail = err.detail
+    throw new Error(typeof detail === 'string' ? detail : (detail?.error || res.statusText))
   }
   return res.json()
 }

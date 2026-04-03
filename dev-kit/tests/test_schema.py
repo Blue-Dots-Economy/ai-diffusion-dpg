@@ -8,8 +8,8 @@ class TestValidatePartial:
         assert validate_partial("trust_layer", {}) == []
 
     def test_valid_trust_config_returns_no_errors(self):
+        # Domain config contains only domain-values keys (no DPG framework keys like 'server')
         data = {
-            "server": {"host": "0.0.0.0", "port": 8003},
             "trust": {
                 "input_rules": {"blocked_phrases": ["spam"]},
                 "output_rules": {"blocked_phrases": []},
@@ -35,7 +35,7 @@ class TestValidatePartial:
         assert "Unknown block" in errors[0]
 
     def test_nested_type_error_is_reported(self):
-        # port must be int
-        data = {"server": {"host": "0.0.0.0", "port": "not-an-int"}}
+        # blocked_phrases items must be strings, not ints
+        data = {"trust": {"input_rules": {"blocked_phrases": [123]}}}
         errors = validate_partial("trust_layer", data)
         assert len(errors) > 0

@@ -19,9 +19,9 @@ One top-level model per service:
 
 from __future__ import annotations
 
-from typing import Any
-
 from pydantic import BaseModel, Field, ValidationError
+
+from dev_kit.schemas.loader import load_template
 
 
 # ---------------------------------------------------------------------------
@@ -326,19 +326,42 @@ _BLOCK_MODEL_MAP: dict[str, type] = {
 def validate_partial(block: str, data: dict) -> list[str]:
     """Validate partial config data for a block without requiring completeness.
 
-    Runs schema validation but filters out missing-field errors so configs
-    that are still being built do not fail.
+    Runs two checks in order:
+    1. Template structural check — every key in ``data`` must exist in the
+       YAML template. Catches renamed keys (e.g. ``blocked_msg`` instead of
+       ``blocked_message``) at every nesting level.
+    2. Pydantic type check — validates value types; filters out missing-field
+       errors so partial data is accepted.
 
     Args:
         block: Block name, e.g. "agent_core" or "trust_layer".
         data: Partial config dict to validate.
 
     Returns:
-        List of error strings for type/value violations. Empty list means valid so far.
+        List of error strings. Empty list means valid so far.
     """
+    # --- Block existence check ---
+    try:
+        load_template(block)
+    except ValueError:
+        return [f"Unknown block: {block!r}"]
+
+    if not data:
+        return []
+
+    # --- 1. YAML template structural check: catch wrong key names at all levels ---
+    try:
+        template = load_template(block)
+        key_errors = _check_keys_against_template(data, template, path="")
+        if key_errors:
+            return key_errors
+    except (ValueError, FileNotFoundError):
+        pass
+
+    # --- 2. Pydantic type/value check (filters out missing-field errors) ---
     model_cls = _BLOCK_MODEL_MAP.get(block)
     if model_cls is None:
-        return [f"Unknown block: {block!r}"]
+        return []
     try:
         model_cls.model_validate(data)
         return []
@@ -348,3 +371,67 @@ def validate_partial(block: str, data: dict) -> list[str]:
             for err in exc.errors()
             if err["type"] != "missing"
         ]
+
+
+# Open-map sentinel: template value is a dict/list whose keys are examples,
+# not fixed field names. We detect these by looking for placeholder key names.
+_OPEN_MAP_PLACEHOLDER_KEYS = frozenset({
+    "field_name", "param_name", "connector_name", "NodeName",
+    "intent_name", "doc_type_name", "value_one",
+})
+
+
+def _check_keys_against_template(
+    data: object,
+    template: object,
+    path: str,
+) -> list[str]:
+    """Recursively check that every key in ``data`` exists in ``template``.
+
+    Detects renamed or invented keys at any nesting level. Skips open maps
+    (template dicts whose only keys are placeholder names) since those accept
+    arbitrary user-defined keys.
+
+    Args:
+        data: The generated config value (any type).
+        template: The corresponding template value.
+        path: Dot-notation path for error messages.
+
+    Returns:
+        List of error strings. Empty list means all keys are valid.
+    """
+    errors: list[str] = []
+
+    if not isinstance(data, dict) or not isinstance(template, dict):
+        # Not both dicts — nothing to key-check at this level.
+        # If data is a list, recurse into each item against the template list item.
+        if isinstance(data, list) and isinstance(template, list) and template:
+            item_template = template[0]
+            for i, item in enumerate(data):
+                child_path = f"{path}[{i}]" if path else f"[{i}]"
+                errors.extend(_check_keys_against_template(item, item_template, child_path))
+        return errors
+
+    # Check if this is an open map (template has only placeholder keys).
+    template_keys = set(template.keys())
+    if template_keys and template_keys.issubset(_OPEN_MAP_PLACEHOLDER_KEYS):
+        # Open map — any user-defined key is valid; recurse into values.
+        placeholder_key = next(iter(template_keys))
+        item_template = template[placeholder_key]
+        for key, value in data.items():
+            child_path = f"{path}.{key}" if path else key
+            errors.extend(_check_keys_against_template(value, item_template, child_path))
+        return errors
+
+    # Fixed-key dict — every key in data must be in the template.
+    for key in data:
+        child_path = f"{path}.{key}" if path else key
+        if key not in template:
+            errors.append(
+                f"Unknown key '{child_path}' — not in the {path.split('.')[0] if path else 'root'} template. "
+                f"Valid keys here: {sorted(template.keys())}"
+            )
+        else:
+            errors.extend(_check_keys_against_template(data[key], template[key], child_path))
+
+    return errors
