@@ -13,7 +13,9 @@ import json
 import logging
 import os
 import re
+import shutil
 import time
+import yaml
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +30,7 @@ from pydantic import BaseModel
 from dev_kit.agent.accumulator import BLOCKS, ConfigAccumulator
 from dev_kit.agent.checkpoints import list_checkpoints, restore_checkpoint
 from dev_kit.agent.conversation import ConversationEngine
+from dev_kit.agent.errors import ConversationError
 from dev_kit.agent.renderer import load_block_from_file, render_all
 from dev_kit.schema import validate_partial
 
@@ -118,7 +121,7 @@ def _load_project_meta(slug: str) -> dict:
     except json.JSONDecodeError as exc:
         logger.error(
             "project_meta_corrupt",
-            extra={"operation": "_load_project_meta", "status": "failure", "error": str(exc)},
+            extra={"operation": "_load_project_meta", "status": "failure", "error": str(exc), "latency_ms": 0},
         )
         raise HTTPException(status_code=500, detail="Project metadata is corrupt") from exc
 
@@ -180,6 +183,7 @@ def list_projects() -> list[dict]:
                         "operation": "list_projects",
                         "status": "failure",
                         "error": str(exc),
+                        "latency_ms": 0,
                         "path": str(meta_file),
                     },
                 )
@@ -198,7 +202,6 @@ def get_project(slug: str) -> dict:
 @app.delete("/api/projects/{slug}")
 def delete_project(slug: str) -> dict:
     """Delete a project and all its files."""
-    import shutil
     project_path = _get_project_path(slug)
     if not project_path.exists():
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
@@ -215,7 +218,6 @@ def delete_project(slug: str) -> dict:
 @app.post("/api/projects/{slug}/chat")
 async def chat(slug: str, body: ChatRequest) -> dict:
     """Send a user message and receive the agent response."""
-    from dev_kit.agent.errors import ConversationError
     engine = _get_engine(slug)
     start = time.time()
     try:
@@ -242,6 +244,19 @@ async def chat(slug: str, body: ChatRequest) -> dict:
             },
         )
         raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    except Exception as exc:
+        logger.error(
+            "chat_turn_unexpected",
+            extra={
+                "operation": "app.chat",
+                "status": "failure",
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+                "latency_ms": int((time.time() - start) * 1000),
+                "slug": slug,
+            },
+        )
+        raise HTTPException(status_code=500, detail={"error": "Internal server error"}) from exc
 
 
 @app.get("/api/projects/{slug}/history")
@@ -331,7 +346,6 @@ def update_config_file(slug: str, block: str, body: UpdateConfigRequest) -> dict
     """
     if block not in BLOCKS:
         raise HTTPException(status_code=400, detail=f"Unknown block: {block}")
-    import yaml
     from dev_kit.agent.accumulator import ConfigStatus, DRAFT_BLOCKS
     # Parse before writing — reject invalid YAML with 400
     try:
