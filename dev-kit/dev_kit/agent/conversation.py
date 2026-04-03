@@ -7,7 +7,9 @@ maintains conversation history, and persists state after each turn.
 from __future__ import annotations
 
 import json
+import logging
 import os as _os
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,6 +25,8 @@ if TYPE_CHECKING:
 _MODEL = _os.environ.get("DEVKIT_MODEL", "claude-opus-4-6")
 _MAX_TOKENS = int(_os.environ.get("DEVKIT_MAX_TOKENS", "4096"))
 _HISTORY_WINDOW = int(_os.environ.get("DEVKIT_HISTORY_WINDOW", "20"))  # Max recent messages to send per turn
+
+logger = logging.getLogger(__name__)
 
 
 class ConversationEngine:

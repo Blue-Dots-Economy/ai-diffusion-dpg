@@ -10,8 +10,10 @@ ConversationEngine instances keyed by project slug.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +43,8 @@ _STATIC_DIR = Path(__file__).parent / "static"
 
 _anthropic_client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
 _engines: dict[str, ConversationEngine] = {}
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # App
