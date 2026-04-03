@@ -435,7 +435,28 @@ class AgentCore(AgentCoreBase):
 
         # Check for resumption signal from Memory Layer
         is_resumption = bundle.session.get("was_adopted", False)
-        
+
+        # ── Step 6b: Assemble guardrail constraints (pre-LLM) ─────────
+        guardrail_constraints: dict | None = None
+        if nlu_result.active_risks:
+            guardrail_constraints = self._trust.assemble_constraints(
+                session_id=session_id,
+                workflow_step=next_subagent_id,
+                active_risks=nlu_result.active_risks,
+                user_segment=bundle.profile.get("user_segment"),
+            )
+            logger.info(
+                "orchestrator.guardrails_assembled",
+                extra={
+                    "operation": "orchestrator.assemble_constraints",
+                    "status": "success",
+                    "session_id": session_id,
+                    "active_risks": nlu_result.active_risks,
+                    "constraints_count": len(guardrail_constraints.get("prompt_constraints", [])),
+                    "latency_ms": 0,
+                },
+            )
+
         system = self._manager_agent.build_system_prompt(
             agent_system_prompt=self._workflow.agent_system_prompt,
             subagent_system_prompt=next_subagent.system_prompt,
@@ -443,6 +464,7 @@ class AgentCore(AgentCoreBase):
             channel=turn_input.channel,
             profile=profile_context,
             is_resumption=is_resumption,
+            guardrail_constraints=guardrail_constraints,
         )
 
         # Clear resumption flag in session so it only affects the first turn

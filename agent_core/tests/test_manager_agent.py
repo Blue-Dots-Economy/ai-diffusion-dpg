@@ -341,3 +341,71 @@ def test_build_messages_no_current_question_no_prefix():
     msgs = agent.build_messages("hello", "")
     content = msgs[0]["content"]
     assert "Last question asked" not in content
+
+
+# ---------------------------------------------------------------------------
+# Guardrail constraint injection
+# ---------------------------------------------------------------------------
+
+def test_system_prompt_includes_guardrail_constraints():
+    """prompt_constraints are appended to system prompt when guardrail_constraints provided."""
+    manager = _make_manager_for_prompt()
+    constraints = {
+        "prompt_constraints": ["MUST NOT guarantee outcomes"],
+        "required_disclosures": ["Hiring decisions rest with employer"],
+        "action_gates": {},
+        "refusal_templates": {},
+    }
+    result = manager.build_system_prompt(
+        agent_system_prompt="You are an assistant.",
+        subagent_system_prompt="Help with jobs.",
+        detected_language="hindi",
+        channel="cli",
+        profile={},
+        guardrail_constraints=constraints,
+    )
+    assert "MUST NOT guarantee outcomes" in result
+    assert "Hiring decisions rest with employer" in result
+    assert "Guardrail Constraints" in result
+
+
+def test_system_prompt_empty_guardrails_unchanged():
+    """Empty constraints do not alter the system prompt."""
+    manager = _make_manager_for_prompt()
+    base_prompt = "You are an assistant."
+    empty_constraints = {
+        "prompt_constraints": [],
+        "required_disclosures": [],
+        "action_gates": {},
+        "refusal_templates": {},
+    }
+    result_with_empty = manager.build_system_prompt(
+        agent_system_prompt=base_prompt,
+        subagent_system_prompt="",
+        detected_language="hindi",
+        channel="cli",
+        profile={},
+        guardrail_constraints=empty_constraints,
+    )
+    result_without = manager.build_system_prompt(
+        agent_system_prompt=base_prompt,
+        subagent_system_prompt="",
+        detected_language="hindi",
+        channel="cli",
+        profile={},
+        guardrail_constraints=None,
+    )
+    assert result_with_empty == result_without
+
+
+def test_system_prompt_no_guardrails_backward_compatible():
+    """build_system_prompt works without guardrail_constraints arg (default None)."""
+    manager = _make_manager_for_prompt()
+    result = manager.build_system_prompt(
+        agent_system_prompt="You are an assistant.",
+        subagent_system_prompt="Help with jobs.",
+        detected_language="hindi",
+        channel="cli",
+        profile={},
+    )
+    assert "You are an assistant." in result
