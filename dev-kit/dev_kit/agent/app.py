@@ -41,7 +41,13 @@ load_dotenv()
 CONFIGS_DIR = Path(__file__).parent.parent.parent / "configs"
 _STATIC_DIR = Path(__file__).parent / "static"
 
-_anthropic_client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+if not _api_key:
+    raise EnvironmentError(
+        "ANTHROPIC_API_KEY environment variable is not set. "
+        "Set it before starting the server."
+    )
+_anthropic_client = anthropic.AsyncAnthropic(api_key=_api_key)
 _engines: dict[str, ConversationEngine] = {}
 
 logger = logging.getLogger(__name__)
@@ -93,10 +99,28 @@ def _get_project_path(slug: str) -> Path:
 
 
 def _load_project_meta(slug: str) -> dict:
+    """Load project.json for the given slug.
+
+    Args:
+        slug: Project slug.
+
+    Returns:
+        Parsed project metadata dict.
+
+    Raises:
+        HTTPException: 404 if project not found, 500 if metadata is corrupt.
+    """
     path = _get_project_path(slug) / "_meta" / "project.json"
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
-    return json.loads(path.read_text())
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        logger.error(
+            "project_meta_corrupt",
+            extra={"operation": "_load_project_meta", "status": "failure", "error": str(exc)},
+        )
+        raise HTTPException(status_code=500, detail="Project metadata is corrupt") from exc
 
 
 def _get_engine(slug: str) -> ConversationEngine:
@@ -138,7 +162,7 @@ def create_project(body: CreateProjectRequest) -> dict:
 
 @app.get("/api/projects")
 def list_projects() -> list[dict]:
-    """List all projects."""
+    """List all projects, skipping any with unreadable metadata."""
     projects = []
     if not CONFIGS_DIR.exists():
         return projects
@@ -147,7 +171,18 @@ def list_projects() -> list[dict]:
             continue
         meta_file = project_path / "_meta" / "project.json"
         if meta_file.exists():
-            projects.append(json.loads(meta_file.read_text()))
+            try:
+                projects.append(json.loads(meta_file.read_text()))
+            except json.JSONDecodeError as exc:
+                logger.error(
+                    "project_meta_corrupt",
+                    extra={
+                        "operation": "list_projects",
+                        "status": "failure",
+                        "error": str(exc),
+                        "path": str(meta_file),
+                    },
+                )
     return projects
 
 
@@ -180,8 +215,33 @@ def delete_project(slug: str) -> dict:
 @app.post("/api/projects/{slug}/chat")
 async def chat(slug: str, body: ChatRequest) -> dict:
     """Send a user message and receive the agent response."""
+    from dev_kit.agent.errors import ConversationError
     engine = _get_engine(slug)
-    return await engine.chat(body.message)
+    start = time.time()
+    try:
+        result = await engine.chat(body.message)
+        logger.info(
+            "chat_turn",
+            extra={
+                "operation": "app.chat",
+                "status": "success",
+                "latency_ms": int((time.time() - start) * 1000),
+                "slug": slug,
+            },
+        )
+        return result
+    except ConversationError as exc:
+        logger.error(
+            "chat_turn_failed",
+            extra={
+                "operation": "app.chat",
+                "status": "failure",
+                "error": str(exc),
+                "latency_ms": int((time.time() - start) * 1000),
+                "slug": slug,
+            },
+        )
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
 
 
 @app.get("/api/projects/{slug}/history")
@@ -266,20 +326,26 @@ def get_config(slug: str, block: str) -> dict:
 def update_config_file(slug: str, block: str, body: UpdateConfigRequest) -> dict:
     """Manually update a config file and reverse-sync the accumulator.
 
-    Writes the YAML file regardless of validation errors.
-    If validation fails, sets the block status to STALE.
+    Parses YAML before writing to prevent corrupting the stored file.
+    If schema validation fails, sets the block status to STALE.
     """
     if block not in BLOCKS:
         raise HTTPException(status_code=400, detail=f"Unknown block: {block}")
     import yaml
+    from dev_kit.agent.accumulator import ConfigStatus, DRAFT_BLOCKS
+    # Parse before writing — reject invalid YAML with 400
+    try:
+        parsed = yaml.safe_load(body.content) or {}
+    except yaml.YAMLError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid YAML: {exc}") from exc
+
     project_path = _get_project_path(slug)
     config_file = project_path / f"{block}.yaml"
     config_file.write_text(body.content)
+
     engine = _get_engine(slug)
-    data = load_block_from_file(project_path, block)
-    engine.accumulator._data[block] = data
-    errors = validate_partial(block, data)
-    from dev_kit.agent.accumulator import ConfigStatus, DRAFT_BLOCKS
+    engine.accumulator._data[block] = parsed
+    errors = validate_partial(block, parsed)
     if errors:
         engine.accumulator.set_status(block, ConfigStatus.STALE)
     elif block in DRAFT_BLOCKS:
