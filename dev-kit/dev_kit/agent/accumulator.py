@@ -189,14 +189,23 @@ class ConfigAccumulator:
                 return
         raise ValueError(f"no subagent with id {subagent_id!r}")
 
-    def remove_subagent(self, subagent_id: str) -> None:
-        """Remove a subagent. No-op if not found.
+    def remove_subagent(self, subagent_id: str) -> bool:
+        """Remove a subagent by ID.
 
         Args:
             subagent_id: ID of the subagent to remove.
+
+        Returns:
+            True if the subagent was found and removed, False if not found.
         """
-        workflow = self._data.get("agent_core", {}).get("agent_workflow", {})
-        workflow["subagents"] = [sa for sa in workflow.get("subagents", []) if sa.get("id") != subagent_id]
+        subagents = (
+            self._data.get("agent_core", {})
+            .get("agent_workflow", {})
+            .get("subagents", [])
+        )
+        original_len = len(subagents)
+        subagents[:] = [sa for sa in subagents if sa.get("id") != subagent_id]
+        return len(subagents) < original_len
 
     def add_routing_rule(
         self,

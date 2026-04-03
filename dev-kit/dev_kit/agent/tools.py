@@ -220,8 +220,8 @@ class ToolHandler:
         return handler(tool_input)
 
     def _handle_set_project_meta(self, inputs: dict) -> str:
-        self._state["project_meta"] = inputs
-        return f"Project meta set: {inputs.get('name', '')} ({inputs.get('slug', '')})"
+        self._state["project_meta"].update(inputs)
+        return f"Project meta updated: {inputs.get('name', '')} ({inputs.get('slug', '')})"
 
     def _handle_update_config(self, inputs: dict) -> str:
         self._acc.update(inputs["block"], inputs["section"], inputs["values"])
@@ -286,7 +286,9 @@ class ToolHandler:
             return str(exc)
 
     def _handle_remove_subagent(self, inputs: dict) -> str:
-        self._acc.remove_subagent(inputs["id"])
+        removed = self._acc.remove_subagent(inputs["id"])
+        if not removed:
+            return f"error: subagent '{inputs['id']}' not found — nothing removed."
         return f"Subagent '{inputs['id']}' removed."
 
     def _handle_finalize_config(self, inputs: dict) -> str:

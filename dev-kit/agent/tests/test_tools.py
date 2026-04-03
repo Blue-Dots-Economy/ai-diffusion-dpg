@@ -101,6 +101,50 @@ class TestToolHandlerSubagents:
         assert routing[0]["intent"] == "consent_granted"
 
 
+def test_set_project_meta_merges_not_replaces():
+    """_handle_set_project_meta must merge inputs into existing state, not replace it."""
+    from dev_kit.agent.tools import ToolHandler
+    from dev_kit.agent.accumulator import ConfigAccumulator
+    state = {
+        "phase": "overview",
+        "phase_changed": None,
+        "rollback_to": None,
+        "project_meta": {
+            "slug": "test",
+            "name": "Old Name",
+            "current_phase": "overview",
+            "phases_completed": ["overview"],
+        },
+    }
+    handler = ToolHandler(ConfigAccumulator(), state)
+    handler.dispatch("set_project_meta", {"name": "New Name", "description": "A desc"})
+    meta = state["project_meta"]
+    assert meta["phases_completed"] == ["overview"]
+    assert meta["name"] == "New Name"
+    assert meta["slug"] == "test"
+
+
+def test_remove_subagent_returns_error_for_unknown_id():
+    """_handle_remove_subagent must return an error string if the ID is not found."""
+    from dev_kit.agent.tools import ToolHandler
+    from dev_kit.agent.accumulator import ConfigAccumulator
+    state = {"phase": "overview", "phase_changed": None, "rollback_to": None, "project_meta": {}}
+    handler = ToolHandler(ConfigAccumulator(), state)
+    result = handler.dispatch("remove_subagent", {"id": "nonexistent"})
+    assert "not found" in result.lower() or "error" in result.lower()
+
+
+def test_dispatch_unknown_tool_raises_value_error():
+    """dispatch() must raise ValueError for an unrecognised tool name."""
+    import pytest
+    from dev_kit.agent.tools import ToolHandler
+    from dev_kit.agent.accumulator import ConfigAccumulator
+    state = {"phase": "overview", "phase_changed": None, "rollback_to": None, "project_meta": {}}
+    handler = ToolHandler(ConfigAccumulator(), state)
+    with pytest.raises(ValueError, match="Unknown tool"):
+        handler.dispatch("totally_made_up_tool", {})
+
+
 class TestToolHandlerFinalizeConfig:
     def test_sets_block_complete(self):
         acc = ConfigAccumulator()
