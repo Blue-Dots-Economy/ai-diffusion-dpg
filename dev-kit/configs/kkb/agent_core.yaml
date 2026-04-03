@@ -4,6 +4,8 @@
 agent:
   primary_model: claude-haiku-4-5-20251001
   fallback_model: claude-haiku-4-5-20251001
+  ask_for_consent: true
+  consent_prompt: "Namaste! Kya main aapki trade aur location yaad rakh sakta hoon? Isse agle baar aapko dobara batana nahi padega."
 
 conversation:
   blocked_message: "Maafi kijiye, main is vishay mein madad nahi kar sakta."
@@ -126,9 +128,6 @@ preprocessing:
       - any_input
       - returning_user
       - new_user
-      # Consent
-      - consent_granted
-      - consent_declined
       # Profile collection
       - profile_answer
       - skip_question
@@ -261,58 +260,6 @@ agent_workflow:
   subagents:
 
     # ─────────────────────────────────────────────────────────────
-    # GREETING
-    # ─────────────────────────────────────────────────────────────
-    - id: greeting
-      name: Greeting
-      description: >
-        Entry point. Detect language from first utterance. Deliver a warm, brief greeting.
-        Do not ask for anything yet. Immediately check if this is a new or returning caller.
-      is_start: true
-      is_terminal: false
-      special_handler: null
-
-      valid_intents:
-        - greeting
-        - consent_granted
-        - consent_declined
-        - any_input
-
-      tools: []
-
-      system_prompt: |
-        Welcome the user to Kaam Ki Baat (KKB).
-        Keep it warm and very brief. Do not mention job options yet.
-        Your ONLY goal is to ask for consent to save their trade and location for future calls.
-        Respond in the user's language (default: Hindi).
-        Example: "Namaste! Kaam Ki Baat mein aapka swagat hai. Kya main aapki trade aur location yaad rakh sakta hoon? Isse agle baar aapko dobara batana nahi padega."
-
-      routing:
-        # No special returning user skip here — Orchestrator adoption handles it.
-
-        # First turn: stay in greeting to deliver the consent request
-        - intent: greeting
-          next_subagent_id: greeting
-
-        # User grants consent — proceed to profile building; mark storage as saved
-        - intent: consent_granted
-          next_subagent_id: profile_building
-          session_writes:
-            user_storage_mode: "saved"
-
-        # User declines consent — proceed to profile building; mark storage as anonymous
-        # Memory Layer will delete this user's Neo4j data at session end.
-        - intent: consent_declined
-          next_subagent_id: profile_building
-          session_writes:
-            user_storage_mode: "anonymous"
-
-        # Any other input on turn 2+ (e.g. user skips straight to a question)
-        - intent: "*"
-          next_subagent_id: profile_building
-
-
-    # ─────────────────────────────────────────────────────────────
     # PROFILE BUILDING
     # ─────────────────────────────────────────────────────────────
     - id: profile_building
@@ -322,7 +269,7 @@ agent_workflow:
         Hard minimum: trade_or_stream + location. Capability fields (years_experience,
         certifications, informal_skills) must be collected before routing to market truth
         so that skill_check can classify without asking further questions.
-      is_start: false
+      is_start: true
       is_terminal: false
       special_handler: null
 
