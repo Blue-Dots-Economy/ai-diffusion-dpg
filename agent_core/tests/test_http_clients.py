@@ -129,24 +129,24 @@ class TestTrustCheckInput:
         assert result.passed is False
         assert result.action == "block"
 
-    def test_timeout_fails_open(self):
+    def test_timeout_fails_closed(self):
         client = TrustLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=httpx.TimeoutException("timeout")):
             result = client.check_input("s1", "hello")
-        assert result.passed is True
-        assert result.action == "allow"
+        assert result.passed is False
+        assert result.action == "block"
 
-    def test_http_error_fails_open(self):
+    def test_http_error_fails_closed(self):
         client = TrustLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=_mock_http_error(500)):
             result = client.check_input("s1", "hello")
-        assert result.passed is True
+        assert result.passed is False
 
-    def test_generic_error_fails_open(self):
+    def test_generic_error_fails_closed(self):
         client = TrustLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=RuntimeError("boom")):
             result = client.check_input("s1", "hello")
-        assert result.passed is True
+        assert result.passed is False
 
     def test_none_session_id_raises(self):
         client = TrustLayerHttpClient(_BASE_CONFIG)
@@ -161,11 +161,12 @@ class TestTrustCheckOutput:
             result = client.check_output("s1", "Good response.")
         assert result.passed is True
 
-    def test_timeout_fails_open(self):
+    def test_timeout_fails_closed(self):
         client = TrustLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=httpx.TimeoutException("timeout")):
             result = client.check_output("s1", "response")
-        assert result.passed is True
+        assert result.passed is False
+        assert result.action == "block"
 
     def test_none_session_id_raises(self):
         client = TrustLayerHttpClient(_BASE_CONFIG)
@@ -180,16 +181,96 @@ class TestTrustCheckConsent:
             result = client.check_consent("s1", "job_apply")
         assert result is True
 
-    def test_timeout_fails_open(self):
+    def test_timeout_fails_closed(self):
         client = TrustLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=httpx.TimeoutException("timeout")):
             result = client.check_consent("s1", "job_apply")
-        assert result is True
+        assert result is False
 
     def test_none_session_id_raises(self):
         client = TrustLayerHttpClient(_BASE_CONFIG)
         with pytest.raises(ValueError):
             client.check_consent(None, "connector")
+
+
+class TestTrustAssembleConstraints:
+    def test_success_returns_constraints(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with patch("httpx.post", return_value=_mock_response({
+            "prompt_constraints": ["MUST NOT guarantee outcomes"],
+            "required_disclosures": ["Hiring rest with employer"],
+            "action_gates": {},
+            "refusal_templates": {},
+        })):
+            result = client.assemble_constraints("s1", "ready", ["false_certainty"], None)
+        assert "MUST NOT guarantee outcomes" in result["prompt_constraints"]
+
+    def test_timeout_returns_empty_constraints(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with patch("httpx.post", side_effect=httpx.TimeoutException("timeout")):
+            result = client.assemble_constraints("s1", "ready", ["false_certainty"], None)
+        assert result["prompt_constraints"] == []
+
+    def test_http_error_returns_empty_constraints(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with patch("httpx.post", side_effect=_mock_http_error(500)):
+            result = client.assemble_constraints("s1", "ready", [], None)
+        assert result["required_disclosures"] == []
+
+    def test_none_session_id_raises(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with pytest.raises(ValueError):
+            client.assemble_constraints(None, "ready", [], None)
+
+
+class TestTrustVerifyConsent:
+    def test_granted_returns_true(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with patch("httpx.post", return_value=_mock_response({"granted": True})):
+            assert client.verify_consent("s1", "haan") is True
+
+    def test_not_granted_returns_false(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with patch("httpx.post", return_value=_mock_response({"granted": False})):
+            assert client.verify_consent("s1", "nahi") is False
+
+    def test_timeout_returns_false(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with patch("httpx.post", side_effect=httpx.TimeoutException("timeout")):
+            assert client.verify_consent("s1", "haan") is False
+
+    def test_none_session_id_raises(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with pytest.raises(ValueError):
+            client.verify_consent(None, "haan")
+
+
+class TestTrustEscalate:
+    def test_success_returns_queued(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with patch("httpx.post", return_value=_mock_response({
+            "queued": True, "ticket_id": "TKT-001", "holding_message": "Wait..."
+        })):
+            result = client.escalate("s1", "reason", "msg", "ready")
+        assert result["queued"] is True
+        assert result["ticket_id"] == "TKT-001"
+
+    def test_timeout_returns_not_queued(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with patch("httpx.post", side_effect=httpx.TimeoutException("timeout")):
+            result = client.escalate("s1", "reason", "msg", "ready")
+        assert result["queued"] is False
+
+    def test_http_error_returns_not_queued(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with patch("httpx.post", side_effect=_mock_http_error(503)):
+            result = client.escalate("s1", "reason", "msg", "ready")
+        assert result["queued"] is False
+
+    def test_none_session_id_raises(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with pytest.raises(ValueError):
+            client.escalate(None, "reason", "msg", "ready")
 
 
 # ===========================================================================
