@@ -86,6 +86,11 @@ def test_check_output_empty(block):
     assert result["action"] == "allow"
 
 
+def test_check_output_none_message(block):
+    result = block.check_output("s1", None)
+    assert result["action"] == "allow"
+
+
 # ── failure: missing config sections ─────────────────────────────────────
 def test_missing_trust_config():
     block = ContentBlock({})

@@ -28,6 +28,7 @@ class ContentBlock:
     """
 
     def __init__(self, config: dict) -> None:
+        start = time.time()
         trust_cfg = (config or {}).get("trust", {})
         input_cfg = trust_cfg.get("input_rules", {})
         output_cfg = trust_cfg.get("output_rules", {})
@@ -50,6 +51,7 @@ class ContentBlock:
                 "blocked_input_count": len(self._blocked_input),
                 "escalation_count": len(self._escalation_topics),
                 "blocked_output_count": len(self._blocked_output),
+                "latency_ms": int((time.time() - start) * 1000),
             },
         )
 
