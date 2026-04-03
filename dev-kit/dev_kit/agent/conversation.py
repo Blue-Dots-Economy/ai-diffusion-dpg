@@ -11,22 +11,31 @@ import logging
 import os as _os
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+
+import anthropic
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from dev_kit.agent.accumulator import ConfigAccumulator
 from dev_kit.agent.checkpoints import build_summary, list_checkpoints, save_checkpoint
+from dev_kit.agent.errors import ConversationError
 from dev_kit.agent.prompts.base import build_system_prompt
 from dev_kit.agent.renderer import render_all
 from dev_kit.agent.tools import TOOL_DEFINITIONS, ToolHandler
-
-if TYPE_CHECKING:
-    import anthropic
 
 _MODEL = _os.environ.get("DEVKIT_MODEL", "claude-opus-4-6")
 _MAX_TOKENS = int(_os.environ.get("DEVKIT_MAX_TOKENS", "4096"))
 _HISTORY_WINDOW = int(_os.environ.get("DEVKIT_HISTORY_WINDOW", "20"))  # Max recent messages to send per turn
 
 logger = logging.getLogger(__name__)
+
+_llm_retry = retry(
+    retry=retry_if_exception_type(
+        (anthropic.RateLimitError, anthropic.APIConnectionError, anthropic.APITimeoutError)
+    ),
+    stop=stop_after_attempt(2),
+    wait=wait_exponential(multiplier=1, min=1, max=4),
+    reraise=True,
+)
 
 
 class ConversationEngine:
@@ -116,19 +125,6 @@ class ConversationEngine:
         Raises:
             ConversationError: If the Anthropic API call fails after retries.
         """
-        import anthropic as _anthropic
-        from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-        from dev_kit.agent.errors import ConversationError
-
-        _llm_retry = retry(
-            retry=retry_if_exception_type(
-                (_anthropic.RateLimitError, _anthropic.APIConnectionError, _anthropic.APITimeoutError)
-            ),
-            stop=stop_after_attempt(2),
-            wait=wait_exponential(multiplier=1, min=1, max=4),
-            reraise=True,
-        )
-
         async def _call_llm(system: str, messages: list) -> object:
             start = time.time()
             try:
@@ -147,6 +143,9 @@ class ConversationEngine:
                         "status": "success",
                         "latency_ms": int((time.time() - start) * 1000),
                         "phase": self._state["phase"],
+                        "model": resp.model,
+                        "input_tokens": resp.usage.input_tokens,
+                        "output_tokens": resp.usage.output_tokens,
                     },
                 )
                 return resp
@@ -157,6 +156,7 @@ class ConversationEngine:
                         "operation": "conversation.chat.llm_call",
                         "status": "failure",
                         "error": str(exc),
+                        "error_type": type(exc).__name__,
                         "latency_ms": int((time.time() - start) * 1000),
                     },
                 )
@@ -237,6 +237,10 @@ class ConversationEngine:
             try:
                 response = await _call_llm(system, self._history[-_HISTORY_WINDOW:])
             except ConversationError:
+                # Roll back the two entries appended this iteration (assistant + tool_results)
+                if len(self._history) >= 2:
+                    self._history.pop()  # tool_results user message
+                    self._history.pop()  # assistant content block
                 raise
 
         # Extract final text reply
