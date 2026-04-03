@@ -1,20 +1,17 @@
 """
 action_gateway/src/mock_server.py
 
+POC DEMO STUB — Domain-specific fixture data. Not production framework code.
+Replace with real connector implementations for production deployments.
+
 Mock ONEST FastAPI server — PoC stub for external connector API.
 
 Runs on port 9999 (configurable). Endpoints:
     POST /onest/market_lookup  — job market data lookup
     POST /onest/apply          — mock job application (always succeeds)
 
-Returns hardcoded fixture JSON for KKB demo trades (electrician, welder, fitter).
+Returns hardcoded fixture JSON for sample trades (electrician, welder, fitter).
 Falls back to a default fixture for any other trade.
-
-Fixture data sourced from KKB PoC plan (Task 2.6):
-    electrician → ₹15k–₹28k, steady signal 12% QoQ
-    welder      → ₹13k–₹22k, 8% QoQ
-    fitter      → ₹14k–₹24k, 10% QoQ
-    default     → ₹12k–₹20k, stable
 
 Run standalone:
     python -m action_gateway.src.mock_server      (from repo root)
@@ -35,7 +32,7 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Hardcoded fixture data — from KKB PoC plan Task 2.6
+# Hardcoded fixture data — PoC demo stub
 # ---------------------------------------------------------------------------
 
 _FIXTURES: dict[str, dict] = {
@@ -175,7 +172,7 @@ def create_mock_server() -> FastAPI:
 
     app = FastAPI(
         title="ONEST Mock Server",
-        description="Synthetic ONEST job market data for KKB PoC Action Gateway stub.",
+        description="Synthetic ONEST job market data — PoC Action Gateway stub.",
         version="0.1.0",
         docs_url="/docs",
     )
@@ -219,7 +216,7 @@ def create_mock_server() -> FastAPI:
         Always succeeds with a generated reference number.
         In production this will call ONEST's actual apply API.
         """
-        ref = "KKB-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+        ref = "APP-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
         name_part = f" for {request.applicant_name}" if request.applicant_name else ""
         message = (
             f"Application submitted{name_part} to {request.employer} "

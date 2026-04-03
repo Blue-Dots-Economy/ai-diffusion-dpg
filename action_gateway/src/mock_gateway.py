@@ -1,6 +1,9 @@
 """
 action_gateway/src/mock_gateway.py
 
+POC DEMO STUB — Domain-specific fixture data. Not production framework code.
+Replace with real connector implementations for production deployments.
+
 MockActionGateway — PoC stub for the Action Gateway DPG.
 
 Implements the ActionGatewayBase interface. Makes HTTP calls to the mock ONEST

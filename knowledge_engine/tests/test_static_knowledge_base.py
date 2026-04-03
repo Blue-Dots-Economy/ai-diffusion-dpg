@@ -23,7 +23,7 @@ CONFIG = {
             "static_knowledge_base": {
                 "enabled": True,
                 "vector_store": "chromadb",
-                "collection_name": "kkb_knowledge",
+                "collection_name": "dpg_knowledge",
                 "chroma_persist_dir": "/tmp/test_chroma",
                 "embedding_provider": "sentence_transformers",
                 "embedding_model": "paraphrase-multilingual-MiniLM-L12-v2",

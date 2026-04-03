@@ -1,5 +1,5 @@
 """
-reach_layer/run.py — KKB PoC CLI Reach Layer with phone-based user identity.
+reach_layer/run.py — CLI Reach Layer with phone-based user identity.
 
 Entry point that accepts --phone <number> as the persistent user identifier.
 The phone number is passed to Agent Core as user_id so the Memory Layer can

@@ -1,5 +1,5 @@
 """
-reach_layer/main.py — KKB PoC CLI Reach Layer
+reach_layer/main.py — CLI Reach Layer
 
 Thin terminal client that talks to the Agent Core orchestration service.
 Domain config loaded from CONFIG_FOLDER/reach_layer.yaml if CONFIG_FOLDER is set,
@@ -19,10 +19,6 @@ Prerequisites (run each in a separate terminal before this):
 
 Then run from reach_layer/:
     python main.py
-
-KKB demo scenario (profile: electrician, Hubli, Hindi):
-    "mujhe kaam chahiye" → market_truth_query → ONEST lookup → salary range
-    "PMKVY ke baare mein batao" → scheme_query → schemes RAG context
 """
 
 from __future__ import annotations

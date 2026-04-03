@@ -264,7 +264,7 @@ class StaticKnowledgeBaseBlock(KnowledgeBlock):
             return self._collection
 
         persist_dir = block_cfg.get("chroma_persist_dir", "./data/chroma_db")
-        collection_name = block_cfg.get("collection_name", "kkb_knowledge")
+        collection_name = block_cfg.get("collection_name", "dpg_knowledge")
 
         os.makedirs(persist_dir, exist_ok=True)
         client = chromadb.PersistentClient(path=persist_dir)

@@ -177,12 +177,12 @@ def test_llm_call_passes_system_prompt_to_wrapper():
         "/internal/llm/call",
         json={
             "messages": VALID_MESSAGES,
-            "system": "You are a KKB counsellor.",
+            "system": "You are a domain agent.",
         },
     )
 
     _, kwargs = mock_llm.call.call_args
-    assert kwargs.get("system") == "You are a KKB counsellor."
+    assert kwargs.get("system") == "You are a domain agent."
 
 
 def test_llm_call_passes_tools_to_wrapper():

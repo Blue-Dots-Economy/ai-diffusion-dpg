@@ -17,7 +17,7 @@ from src.models import SessionState
 # Fixtures
 # ---------------------------------------------------------------------------
 
-KKB_MAPPINGS = [
+SAMPLE_MAPPINGS = [
     {"colloquial": ["kaam chahiye", "naukri chahiye", "job chahiye"], "canonical": "market_truth_query"},
     {"colloquial": ["ITI", "tradesman", "technician"], "canonical": "iti_graduate"},
     {"colloquial": ["course", "training", "sikhai"], "canonical": "training_query"},
@@ -36,7 +36,7 @@ CONFIG = {
         "blocks": {
             "glossary": {
                 "enabled": True,
-                "mappings": KKB_MAPPINGS,
+                "mappings": SAMPLE_MAPPINGS,
                 "apply_to": ["normalised_input", "entities"],
             }
         }
@@ -71,7 +71,7 @@ def mock_llm():
 
 
 # ---------------------------------------------------------------------------
-# Normal execution — all 11 KKB mappings
+# Normal execution — all 11 sample mappings
 # ---------------------------------------------------------------------------
 
 
@@ -230,7 +230,7 @@ def test_disabled_block_passes_context_unchanged(block, mock_llm):
             "blocks": {
                 "glossary": {
                     "enabled": False,
-                    "mappings": KKB_MAPPINGS,
+                    "mappings": SAMPLE_MAPPINGS,
                     "apply_to": ["normalised_input", "entities"],
                 }
             }
@@ -267,7 +267,7 @@ def test_apply_to_normalised_input_only(block, mock_llm):
             "blocks": {
                 "glossary": {
                     "enabled": True,
-                    "mappings": KKB_MAPPINGS,
+                    "mappings": SAMPLE_MAPPINGS,
                     "apply_to": ["normalised_input"],
                 }
             }

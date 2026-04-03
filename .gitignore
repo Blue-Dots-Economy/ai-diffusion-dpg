@@ -133,3 +133,4 @@ package-lock.json
 # Local developer overrides
 # -----------------------------------------------------------------------------
 .env.local
+**/settings.json

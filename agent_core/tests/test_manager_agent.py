@@ -281,7 +281,7 @@ def test_build_system_prompt_subagent_prompt_included():
     """Subagent system prompt is appended after agent-level prompt."""
     agent = _make_manager_for_prompt()
     result = agent.build_system_prompt(
-        "You are KKB.",
+        "You are a domain agent.",
         "## Market truth guidance\nShow ONEST results.",
         "hindi", "cli", {},
     )
@@ -292,7 +292,7 @@ def test_build_system_prompt_subagent_prompt_included():
 def test_build_system_prompt_empty_subagent_prompt_adds_no_extra():
     """Empty subagent prompt does not add extra text to output."""
     agent = _make_manager_for_prompt()
-    result = agent.build_system_prompt("You are KKB.", "", "hindi", "cli", {})
+    result = agent.build_system_prompt("You are a domain agent.", "", "hindi", "cli", {})
     assert "Market truth guidance" not in result
 
 

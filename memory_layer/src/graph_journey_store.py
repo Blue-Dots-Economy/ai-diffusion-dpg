@@ -257,7 +257,7 @@ class GraphJourneyStore:
         Create a domain-specific child node under the Journey node.
 
         child_label must be one of the configured journey child labels
-        (e.g. "Role", "DropOff" for KKB). Unknown labels are logged and skipped.
+        (e.g. "Role", "DropOff"). Unknown labels are logged and skipped.
 
         properties: dict of field values for the child node. Any fields not in
                     the configured field list for this child type are ignored.

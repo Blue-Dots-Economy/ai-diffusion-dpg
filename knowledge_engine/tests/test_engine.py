@@ -41,7 +41,7 @@ CONFIG = {
             "static_knowledge_base": {
                 "enabled": True,
                 "chroma_persist_dir": "/tmp/test_chroma_engine",
-                "collection_name": "kkb_test",
+                "collection_name": "test_collection",
                 "embedding_provider": "sentence_transformers",
                 "embedding_model": "paraphrase-multilingual-MiniLM-L12-v2",
                 "top_k": 3,

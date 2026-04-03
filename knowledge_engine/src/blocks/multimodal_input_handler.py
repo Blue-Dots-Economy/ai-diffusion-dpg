@@ -6,9 +6,9 @@ Block 5 — Multimodal Input Handler
 Extracts text from non-text inputs (PDF, image) sent mid-conversation and
 appends the extracted content to context.raw_input.
 
-PoC status: Built and registered but enabled: false for KKB (voice channel
-sends text only). Demonstrates config-driven enable/disable — a different
-deployment (e.g. construction safety bot receiving photos) would enable this.
+PoC status: Built and registered but disabled by default via config (`enabled: false`).
+Enable for deployments that receive image or audio input
+(e.g. a construction safety bot receiving photos).
 
 Supported in PoC:
 - PDF → extract text using PyMuPDF (fitz), append to context.raw_input
