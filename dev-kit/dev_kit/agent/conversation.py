@@ -7,6 +7,7 @@ maintains conversation history, and persists state after each turn.
 from __future__ import annotations
 
 import json
+import os as _os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -19,9 +20,9 @@ from dev_kit.agent.tools import TOOL_DEFINITIONS, ToolHandler
 if TYPE_CHECKING:
     import anthropic
 
-_MODEL = "claude-opus-4-6"
-_MAX_TOKENS = 4096
-_HISTORY_WINDOW = 20  # Max recent messages to send per turn
+_MODEL = _os.environ.get("DEVKIT_MODEL", "claude-opus-4-6")
+_MAX_TOKENS = int(_os.environ.get("DEVKIT_MAX_TOKENS", "4096"))
+_HISTORY_WINDOW = int(_os.environ.get("DEVKIT_HISTORY_WINDOW", "20"))  # Max recent messages to send per turn
 
 
 class ConversationEngine:

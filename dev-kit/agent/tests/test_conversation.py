@@ -6,6 +6,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from dev_kit.agent.conversation import ConversationEngine
 
 
+def test_model_read_from_env(monkeypatch):
+    """ConversationEngine must not hardcode the model name."""
+    import importlib
+    import dev_kit.agent.conversation as conv_module
+    monkeypatch.setenv("DEVKIT_MODEL", "claude-haiku-4-5-20251001")
+    importlib.reload(conv_module)
+    assert conv_module._MODEL == "claude-haiku-4-5-20251001"
+    # Restore
+    monkeypatch.delenv("DEVKIT_MODEL", raising=False)
+    importlib.reload(conv_module)
+
+
 def _make_text_response(text: str):
     """Build a mock Anthropic message response with stop_reason=end_turn."""
     block = MagicMock()
