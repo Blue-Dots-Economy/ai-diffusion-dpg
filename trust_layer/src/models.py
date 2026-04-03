@@ -8,10 +8,8 @@ which is the safety gate for the DPG framework. These models enforce type
 safety, validation, and clear contracts between Agent Core and the Trust Layer.
 """
 
-from __future__ import annotations
-
-from typing import Optional
-from pydantic import BaseModel
+from typing import Literal
+from pydantic import BaseModel, Field
 
 
 class InputCheckRequest(BaseModel):
@@ -28,7 +26,7 @@ class InputCheckRequest(BaseModel):
 
     session_id: str
     message: str
-    active_risks: Optional[list[str]] = None
+    active_risks: list[str] | None = None
 
 
 class OutputCheckRequest(BaseModel):
@@ -72,8 +70,8 @@ class TrustCheckResponse(BaseModel):
     """
 
     passed: bool
-    action: str  # "allow" | "block" | "escalate"
-    reason: Optional[str] = None
+    action: Literal["allow", "block", "escalate"]
+    reason: str | None = None
 
 
 class ConsentResponse(BaseModel):
@@ -104,7 +102,7 @@ class AssembleConstraintsRequest(BaseModel):
     session_id: str
     workflow_step: str
     active_risks: list[str]
-    user_segment: Optional[str] = None
+    user_segment: str | None = None
 
 
 class GuardrailConstraints(BaseModel):
@@ -119,10 +117,10 @@ class GuardrailConstraints(BaseModel):
         refusal_templates: Dict of refusal template names to template text.
     """
 
-    prompt_constraints: list[str] = []
-    required_disclosures: list[str] = []
-    action_gates: dict[str, bool] = {}
-    refusal_templates: dict[str, str] = {}
+    prompt_constraints: list[str] = Field(default_factory=list)
+    required_disclosures: list[str] = Field(default_factory=list)
+    action_gates: dict[str, bool] = Field(default_factory=dict)
+    refusal_templates: dict[str, str] = Field(default_factory=dict)
 
 
 class ConsentVerifyRequest(BaseModel):
