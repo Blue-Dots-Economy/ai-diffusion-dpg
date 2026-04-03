@@ -122,3 +122,6 @@ sentence_transformers_cache/
 
 # Git worktrees
 .worktrees/
+
+# Local developer overrides
+.env.local
