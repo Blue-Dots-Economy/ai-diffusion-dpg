@@ -205,17 +205,19 @@ class TestTrustAssembleConstraints:
             result = client.assemble_constraints("s1", "ready", ["false_certainty"], None)
         assert "MUST NOT guarantee outcomes" in result["prompt_constraints"]
 
-    def test_timeout_returns_empty_constraints(self):
+    def test_timeout_raises_constraint_error(self):
+        from src.http_clients.trust_layer import TrustLayerConstraintError
         client = TrustLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=httpx.TimeoutException("timeout")):
-            result = client.assemble_constraints("s1", "ready", ["false_certainty"], None)
-        assert result["prompt_constraints"] == []
+            with pytest.raises(TrustLayerConstraintError):
+                client.assemble_constraints("s1", "ready", ["false_certainty"], None)
 
-    def test_http_error_returns_empty_constraints(self):
+    def test_http_error_raises_constraint_error(self):
+        from src.http_clients.trust_layer import TrustLayerConstraintError
         client = TrustLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=_mock_http_error(500)):
-            result = client.assemble_constraints("s1", "ready", [], None)
-        assert result["required_disclosures"] == []
+            with pytest.raises(TrustLayerConstraintError):
+                client.assemble_constraints("s1", "ready", [], None)
 
     def test_none_session_id_raises(self):
         client = TrustLayerHttpClient(_BASE_CONFIG)

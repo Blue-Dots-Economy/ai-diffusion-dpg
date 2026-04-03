@@ -15,6 +15,7 @@ from blocks.content import ContentBlock
 from blocks.guardrails import GuardrailsBlock
 from blocks.consent import ConsentBlock
 from blocks.hitl import HiTLBlock
+from consent_store import ConsentStore
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,9 @@ class TrustLayer:
         self._guardrails = GuardrailsBlock(config)
         self._consent = ConsentBlock(config)
         self._hitl = HiTLBlock(config)
+        trust_cfg = (config or {}).get("trust", {})
+        db_path = trust_cfg.get("consent_store", {}).get("db_path", "/tmp/dpg_consent.db")
+        self._consent_store = ConsentStore(db_path)
 
         logger.info(
             "trust_layer.init",
@@ -73,22 +77,21 @@ class TrustLayer:
         return self._content.check_output(session_id, llm_response)
 
     def check_consent(self, session_id: str, connector_name: str) -> bool:
-        """Connector-level consent check.
-
-        Returns True (consent assumed granted) until a real consent store is implemented.
+        """Connector-level consent check backed by the SQLite consent store.
 
         Args:
             session_id: Unique identifier for the conversation session.
             connector_name: The name of the connector requiring consent check.
 
         Returns:
-            True if consent is granted.
+            True if a consent record exists for this session, False otherwise.
 
         Raises:
             ValueError: If session_id is None.
         """
         if session_id is None:
             raise ValueError("session_id must not be None")
+        granted = self._consent_store.has_consent(session_id)
         logger.info(
             "trust_layer.check_consent",
             extra={
@@ -96,9 +99,10 @@ class TrustLayer:
                 "status": "success",
                 "session_id": session_id,
                 "connector_name": connector_name,
+                "granted": granted,
             },
         )
-        return True
+        return granted
 
     def assemble_constraints(
         self,
@@ -123,7 +127,7 @@ class TrustLayer:
         )
 
     def verify_consent(self, session_id: str, user_message: str) -> bool:
-        """Delegate to ConsentBlock.verify_consent.
+        """Delegate to ConsentBlock.verify_consent and persist consent if granted.
 
         Args:
             session_id: Unique identifier for the conversation session.
@@ -132,7 +136,10 @@ class TrustLayer:
         Returns:
             True if consent is verified.
         """
-        return self._consent.verify_consent(session_id, user_message)
+        granted = self._consent.verify_consent(session_id, user_message)
+        if granted:
+            self._consent_store.record_consent(session_id)
+        return granted
 
     def escalate(
         self,

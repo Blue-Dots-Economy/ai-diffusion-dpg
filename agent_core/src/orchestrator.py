@@ -31,6 +31,7 @@ from src.interfaces.learning_layer import LearningLayerBase
 from src.interfaces.memory_layer import MemoryLayerBase
 from src.interfaces.reach_layer import ReachLayerBase
 from src.interfaces.trust_layer import TrustLayerBase
+from src.http_clients.trust_layer import TrustLayerConstraintError
 from src.preprocessing.language_normalisation import LanguageNormaliser
 from src.llm_wrapper.base import LLMWrapperBase
 from src.manager_agent import ManagerAgent
@@ -439,23 +440,40 @@ class AgentCore(AgentCoreBase):
         # ── Step 6b: Assemble guardrail constraints (pre-LLM) ─────────
         guardrail_constraints: dict | None = None
         if nlu_result.active_risks:
-            guardrail_constraints = self._trust.assemble_constraints(
-                session_id=session_id,
-                workflow_step=next_subagent_id,
-                active_risks=nlu_result.active_risks,
-                user_segment=bundle.profile.get("user_segment"),
-            )
-            logger.info(
-                "orchestrator.guardrails_assembled",
-                extra={
-                    "operation": "orchestrator.assemble_constraints",
-                    "status": "success",
-                    "session_id": session_id,
-                    "active_risks": nlu_result.active_risks,
-                    "constraints_count": len(guardrail_constraints.get("prompt_constraints", [])),
-                    "latency_ms": 0,
-                },
-            )
+            try:
+                guardrail_constraints = self._trust.assemble_constraints(
+                    session_id=session_id,
+                    workflow_step=next_subagent_id,
+                    active_risks=nlu_result.active_risks,
+                    user_segment=bundle.profile.get("user_segment"),
+                )
+                logger.info(
+                    "orchestrator.guardrails_assembled",
+                    extra={
+                        "operation": "orchestrator.assemble_constraints",
+                        "status": "success",
+                        "session_id": session_id,
+                        "active_risks": nlu_result.active_risks,
+                        "constraints_count": len(guardrail_constraints.get("prompt_constraints", [])),
+                        "latency_ms": 0,
+                    },
+                )
+            except Exception as e:
+                logger.error(
+                    "orchestrator.assemble_constraints_failed",
+                    extra={
+                        "operation": "orchestrator.assemble_constraints",
+                        "status": "failure",
+                        "session_id": session_id,
+                        "error": f"{type(e).__name__}: {e}",
+                    },
+                )
+                return self._blocked_response(
+                    session_id, None, start, None, turn_id,
+                    intent="guardrail_unavailable",
+                    user_id=user_id,
+                    user_message=turn_input.user_message,
+                )
 
         system = self._manager_agent.build_system_prompt(
             agent_system_prompt=self._workflow.agent_system_prompt,
@@ -578,6 +596,8 @@ class AgentCore(AgentCoreBase):
         )
 
         if trust_output.action in ("block", "escalate"):
+            # TODO(GH-hitl): When action=="escalate", call self._trust.escalate(...) to
+            # queue a HiTL ticket. Currently deferred — tracked in the HiTL queue issue.
             logger.info(
                 "  [STEP 10] OUTPUT %s — replacing with safe fallback",
                 trust_output.action.upper(),

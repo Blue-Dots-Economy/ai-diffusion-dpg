@@ -745,12 +745,10 @@ def test_consent_gate_turn2_granted_writes_saved():
     )
     agent.process_turn(_turn_input("haan"))
     trust.verify_consent.assert_called_once_with(SESSION_ID, "haan")
-    # Check that memory was written with user_storage_mode=saved
-    all_write_calls = memory.write.call_args_list
-    assert any(
-        "user_storage_mode" in str(c) and "saved" in str(c)
-        for c in all_write_calls
-    ) or memory.write.called  # memory write happened
+    # Verify user_storage_mode="saved" was written
+    write_calls = [str(c) for c in memory.write.call_args_list]
+    assert any("user_storage_mode" in c and "saved" in c for c in write_calls), \
+        "Expected user_storage_mode='saved' to be written to memory"
 
 
 def test_consent_gate_turn2_declined_writes_anonymous():
@@ -762,6 +760,10 @@ def test_consent_gate_turn2_declined_writes_anonymous():
     )
     agent.process_turn(_turn_input("nahi"))
     trust.verify_consent.assert_called_once_with(SESSION_ID, "nahi")
+    # Verify user_storage_mode="anonymous" was written
+    write_calls = [str(c) for c in memory.write.call_args_list]
+    assert any("user_storage_mode" in c and "anonymous" in c for c in write_calls), \
+        "Expected user_storage_mode='anonymous' to be written to memory"
 
 
 def test_consent_gate_skipped_when_storage_mode_set():

@@ -165,9 +165,11 @@ def test_check_output_reason_none_for_clean_response(client):
 # ---------------------------------------------------------------------------
 
 def test_check_consent_returns_granted(client):
+    # No consent recorded for this session yet — check_consent is backed by
+    # the SQLite consent store and returns False until verify_consent is called.
     response = client.post("/check/consent", json={"session_id": "s1", "connector_name": "job_apply"})
     assert response.status_code == 200
-    assert response.json()["granted"] is True
+    assert response.json()["granted"] is False
 
 
 def test_check_consent_exception_fails_closed():

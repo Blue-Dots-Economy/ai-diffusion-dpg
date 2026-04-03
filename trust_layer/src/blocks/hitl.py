@@ -121,6 +121,10 @@ class HiTLBlock:
                 },
             )
         else:
+            # TODO(GH-hitl): Implement redis and webhook backends.
+            # Returning queued=True for unsupported backends is a known gap tracked in
+            # the HiTL queue implementation issue. The caller (escalate) returns True
+            # to avoid breaking the turn; a real backend will either deliver or return queued=False.
             logger.warning(
                 "hitl_block.unsupported_backend",
                 extra={

@@ -207,7 +207,9 @@ Mandatory safety gate. Stateless. Runs on every turn — never skipped. Structur
 
 **Known gaps:**
 - No ML-based semantic matching (ContentBlock uses phrase-match only).
-- GuardrailsBlock, ConsentBlock, HiTLBlock not yet implemented — stubs pending.
+- HiTL queue: `log` backend only. `redis` and `webhook` backends reserved — tracked in GH issue "feat(trust-layer): implement production HiTL escalation queue".
+- HiTL queue: output-check escalation (`trust_output.action == "escalate"`) does not yet call `self._trust.escalate(...)` — deferred to HiTL queue issue.
+- `check_consent`: SQLite consent store writes consent when `verify_consent` returns True. Cross-session consent persistence is in-process only; a shared consent store is needed for multi-instance deployments.
 
 **Key files:**
 - `trust_layer/src/trust_layer.py` — TrustLayer orchestrator
