@@ -1,8 +1,7 @@
 # dev-kit/configs/kkb/trust_layer.yaml
-# KKB domain values for Trust Layer.
-# Merged with dev-kit/dpg/trust_layer.yaml by loader.py before deployment.
-
 trust:
+  policy_pack: "kkb_advisory_jobs"
+
   input_rules:
     blocked_phrases:
       - "bomb"
@@ -11,17 +10,94 @@ trust:
       - "threat"
       - "violence"
     escalation_topics:
+      - "suicide"
       - "arrested"
       - "police case"
-      - "court notice"
-      - "legal action"
       - "FIR"
       - "jail"
-      - "suicide"
+    blocked_input_message: "Yeh baat main handle nahi kar sakta."
 
   output_rules:
     blocked_phrases:
-      - "I cannot help with that"
-      - "as an AI, I"
       - "guaranteed placement"
       - "100% job guarantee"
+      - "as an AI, I"
+    output_blocked_message: "Mujhe yeh jawab dene mein dikkat aa rahi hai."
+
+  policy_packs:
+    kkb_advisory_jobs:
+      risks:
+        - false_certainty
+        - hallucinated_reality
+        - emotional_overreach
+        - dignity_harm
+        - agency_violation
+
+      guardrails:
+        false_certainty:
+          id: "GR-001"
+          severity: "blocker"
+          failure_mode: "block"
+          prompt_constraints:
+            - "MUST NOT guarantee or imply certainty about job outcomes"
+            - "MUST frame all opportunities as possibilities, not certainties"
+          required_disclosures:
+            - "Hiring decisions rest with the employer"
+          refusal_template: "Main kisi bhi naukri ki guarantee nahi de sakta."
+
+        hallucinated_reality:
+          id: "GR-002"
+          severity: "blocker"
+          failure_mode: "block"
+          prompt_constraints:
+            - "MUST NOT infer or generalise from missing data"
+            - "MUST only reference verified signals available in context"
+          required_disclosures:
+            - "Information is based only on verified data"
+          refusal_template: "Is baare mein koi verified data available nahi hai."
+
+        emotional_overreach:
+          id: "GR-003"
+          severity: "warning"
+          failure_mode: "constrain"
+          prompt_constraints:
+            - "MUST NOT provide counselling or motivational language"
+            - "MUST limit empathetic language to one brief acknowledgement"
+          required_disclosures: []
+          refusal_template: null
+
+        dignity_harm:
+          id: "GR-004"
+          severity: "blocker"
+          failure_mode: "block"
+          prompt_constraints:
+            - "MUST NOT imply blame, deficiency, or judgment about the user"
+          required_disclosures: []
+          refusal_template: null
+
+        agency_violation:
+          id: "GR-005"
+          severity: "blocker"
+          failure_mode: "block"
+          prompt_constraints:
+            - "MUST NOT act without explicit user confirmation"
+            - "MUST present options and wait for user decision before any action"
+          required_disclosures:
+            - "Any action requires your explicit confirmation"
+          refusal_template: null
+
+  consent:
+    consent_phrases:
+      - "haan"
+      - "yes"
+      - "theek hai"
+      - "manzoor hai"
+    decline_phrases:
+      - "nahi"
+      - "no"
+      - "nahi chahiye"
+
+  hitl:
+    queue_backend: "log"
+    holding_message: "Aapki baat ek advisor tak pahunch rahi hai. Thodi der mein aapse sampark hoga."
+    notification_webhook: null
