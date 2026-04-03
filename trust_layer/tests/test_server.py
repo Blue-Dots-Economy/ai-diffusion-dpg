@@ -95,7 +95,7 @@ def test_check_input_empty_message_returns_allow(client):
     assert response.json()["passed"] is True
 
 
-def test_check_input_exception_fails_open():
+def test_check_input_exception_fails_closed():
     mock_trust = MagicMock()
     mock_trust.check_input.side_effect = RuntimeError("trust error")
     app = create_app(mock_trust)
@@ -103,8 +103,8 @@ def test_check_input_exception_fails_open():
     response = tc.post("/check/input", json={"session_id": "s1", "message": "hello"})
     assert response.status_code == 200
     data = response.json()
-    assert data["passed"] is True
-    assert data["action"] == "allow"
+    assert data["passed"] is False
+    assert data["action"] == "block"
 
 
 def test_check_input_response_has_required_keys(client):
@@ -140,15 +140,15 @@ def test_check_output_empty_response_returns_allow(client):
     assert response.json()["passed"] is True
 
 
-def test_check_output_exception_fails_open():
+def test_check_output_exception_fails_closed():
     mock_trust = MagicMock()
     mock_trust.check_output.side_effect = RuntimeError("output error")
     app = create_app(mock_trust)
     tc = TestClient(app)
     response = tc.post("/check/output", json={"session_id": "s1", "response": "hello"})
     assert response.status_code == 200
-    assert response.json()["passed"] is True
-    assert response.json()["action"] == "allow"
+    assert response.json()["passed"] is False
+    assert response.json()["action"] == "block"
 
 
 def test_check_output_reason_none_for_clean_response(client):
@@ -166,14 +166,14 @@ def test_check_consent_returns_granted(client):
     assert response.json()["granted"] is True
 
 
-def test_check_consent_exception_fails_open():
+def test_check_consent_exception_fails_closed():
     mock_trust = MagicMock()
     mock_trust.check_consent.side_effect = RuntimeError("consent error")
     app = create_app(mock_trust)
     tc = TestClient(app)
     response = tc.post("/check/consent", json={"session_id": "s1", "connector_name": "job_apply"})
     assert response.status_code == 200
-    assert response.json()["granted"] is True
+    assert response.json()["granted"] is False
 
 
 def test_check_consent_response_has_granted_key(client):
@@ -193,3 +193,112 @@ def test_check_input_block_is_case_insensitive(client):
 def test_check_output_block_is_case_insensitive(client):
     response = client.post("/check/output", json={"session_id": "s1", "response": "CONFIDENTIAL info here"})
     assert response.json()["action"] == "block"
+
+
+# ---------------------------------------------------------------------------
+# New endpoints: /assemble_constraints, /consent/verify, /escalate
+# ---------------------------------------------------------------------------
+
+FULL_CONFIG = {
+    "trust": {
+        "policy_pack": "kkb_advisory_jobs",
+        "input_rules": {
+            "blocked_phrases": ["bomb"],
+            "escalation_topics": ["suicide"],
+            "blocked_input_message": "Cannot help.",
+        },
+        "output_rules": {
+            "blocked_phrases": ["guaranteed placement"],
+            "output_blocked_message": "Bad output.",
+        },
+        "policy_packs": {
+            "kkb_advisory_jobs": {
+                "risks": ["false_certainty"],
+                "guardrails": {
+                    "false_certainty": {
+                        "id": "GR-001",
+                        "severity": "blocker",
+                        "failure_mode": "block",
+                        "prompt_constraints": ["MUST NOT guarantee outcomes"],
+                        "required_disclosures": ["Hiring decisions rest with employer"],
+                        "refusal_template": "Main guarantee nahi de sakta.",
+                    }
+                },
+            }
+        },
+        "consent": {
+            "consent_phrases": ["haan", "yes"],
+            "decline_phrases": ["nahi", "no"],
+        },
+        "hitl": {
+            "queue_backend": "log",
+            "holding_message": "Advisor ko connect kar rahe hain.",
+            "notification_webhook": None,
+        },
+    }
+}
+
+
+def test_assemble_constraints_known_risk():
+    from orchestrator import TrustLayer
+    tl = TrustLayer(FULL_CONFIG)
+    client = TestClient(create_app(tl))
+    resp = client.post("/assemble_constraints", json={
+        "session_id": "s1",
+        "workflow_step": "ready",
+        "active_risks": ["false_certainty"],
+        "user_segment": None,
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "MUST NOT guarantee outcomes" in data["prompt_constraints"]
+    assert data["refusal_templates"]["false_certainty"] == "Main guarantee nahi de sakta."
+
+
+def test_assemble_constraints_empty_risks():
+    from orchestrator import TrustLayer
+    tl = TrustLayer(FULL_CONFIG)
+    client = TestClient(create_app(tl))
+    resp = client.post("/assemble_constraints", json={
+        "session_id": "s1",
+        "workflow_step": "ready",
+        "active_risks": [],
+        "user_segment": None,
+    })
+    assert resp.status_code == 200
+    assert resp.json()["prompt_constraints"] == []
+
+
+def test_consent_verify_granted():
+    from orchestrator import TrustLayer
+    tl = TrustLayer(FULL_CONFIG)
+    client = TestClient(create_app(tl))
+    resp = client.post("/consent/verify", json={"session_id": "s1", "user_message": "haan"})
+    assert resp.status_code == 200
+    assert resp.json()["granted"] is True
+
+
+def test_consent_verify_denied():
+    from orchestrator import TrustLayer
+    tl = TrustLayer(FULL_CONFIG)
+    client = TestClient(create_app(tl))
+    resp = client.post("/consent/verify", json={"session_id": "s1", "user_message": "nahi"})
+    assert resp.status_code == 200
+    assert resp.json()["granted"] is False
+
+
+def test_escalate_returns_ticket():
+    from orchestrator import TrustLayer
+    tl = TrustLayer(FULL_CONFIG)
+    client = TestClient(create_app(tl))
+    resp = client.post("/escalate", json={
+        "session_id": "s1",
+        "escalation_reason": "escalation_topic:suicide",
+        "user_message": "pareshaan hoon",
+        "workflow_step": "ready",
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["queued"] is True
+    assert data["holding_message"] == "Advisor ko connect kar rahe hain."
+    assert data["ticket_id"].startswith("TKT-")
