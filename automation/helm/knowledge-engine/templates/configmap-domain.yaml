@@ -7,5 +7,5 @@ metadata:
     app: {{ .Release.Name }}
     layer: domain-config
 data:
-  domain.yaml: |
+  knowledge_engine.yaml: |
 {{ .Values.config | toYaml | indent 4 }}

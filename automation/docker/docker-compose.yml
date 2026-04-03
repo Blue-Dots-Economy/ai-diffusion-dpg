@@ -58,7 +58,7 @@ services:
   # Memgraph — persistent user profile store for Memory Layer
   # ---------------------------------------------------------------------------
   memgraph:
-    image: memgraph/memgraph-platform
+    image: memgraph/memgraph
     container_name: memgraph
     command: [
       "/usr/lib/memgraph/memgraph",
@@ -75,7 +75,7 @@ services:
           cpus: '0.2'
           memory: 512M
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:7444 || exit 1"]
+      test: ["CMD-SHELL", "echo 'RETURN 1;' | mgconsole --host 127.0.0.1 --port 7687 2>/dev/null || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 5
@@ -98,7 +98,7 @@ services:
       - MEMGRAPH_PASSWORD=
     volumes:
       - ../../dev-kit/dpg/memory_layer.yaml:/app/config/dpg.yaml:ro #ro = read only
-      - ../../dev-kit/configs/kkb/memory_layer.yaml:/app/config/domain.yaml:ro
+      - ../../dev-kit/configs/kkb/memory_layer.yaml:/app/config/memory_layer.yaml:ro
     networks:
       - dpg_net
     depends_on:
@@ -131,7 +131,7 @@ services:
       - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev-kit/dpg/trust_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/kkb/trust_layer.yaml:/app/config/domain.yaml:ro
+      - ../../dev-kit/configs/kkb/trust_layer.yaml:/app/config/trust_layer.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -159,7 +159,7 @@ services:
       - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev-kit/dpg/learning_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/kkb/learning_layer.yaml:/app/config/domain.yaml:ro
+      - ../../dev-kit/configs/kkb/learning_layer.yaml:/app/config/learning_layer.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -187,7 +187,7 @@ services:
       - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/kkb/action_gateway.yaml:/app/config/domain.yaml:ro
+      - ../../dev-kit/configs/kkb/action_gateway.yaml:/app/config/action_gateway.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -218,7 +218,7 @@ services:
     command: ["sh", "-c", "if [ ! -f /app/chroma_db/chroma.sqlite3 ]; then echo 'ChromaDB empty — running ingest...' && python -m scripts.ingest --config config/domain.yaml; else echo 'ChromaDB exists — skipping ingest.'; fi && python main.py"]
     volumes:
       - ../../dev-kit/dpg/knowledge_engine.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/kkb/knowledge_engine.yaml:/app/config/domain.yaml:ro
+      - ../../dev-kit/configs/kkb/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
       - ../../knowledge_engine/data:/app/data:ro   # source docs (read-only)
       - chroma_data:/app/chroma_db                 # embeddings (separate path, not inside the :ro bind mount)
     networks:
@@ -249,7 +249,7 @@ services:
       - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev-kit/dpg/agent_core.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/kkb/agent_core.yaml:/app/config/domain.yaml:ro
+      - ../../dev-kit/configs/kkb/agent_core.yaml:/app/config/agent_core.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -289,7 +289,7 @@ services:
       - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/kkb/reach_layer.yaml:/app/config/domain.yaml:ro
+      - ../../dev-kit/configs/kkb/reach_layer.yaml:/app/config/reach_layer.yaml:ro
     networks:
       - dpg_net
     deploy:

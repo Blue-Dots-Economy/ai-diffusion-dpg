@@ -263,7 +263,11 @@ class StaticKnowledgeBaseBlock(KnowledgeBlock):
         if self._collection is not None and not recreate:
             return self._collection
 
-        persist_dir = block_cfg.get("chroma_persist_dir", "./data/chroma_db")
+        persist_dir = (
+            os.environ.get("CHROMA_PERSIST_DIR")
+            or block_cfg.get("chroma_persist_dir")
+            or "./data/chroma_db"
+        )
         collection_name = block_cfg.get("collection_name", "dpg_knowledge")
 
         os.makedirs(persist_dir, exist_ok=True)
