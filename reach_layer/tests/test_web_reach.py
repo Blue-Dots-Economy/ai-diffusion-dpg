@@ -180,15 +180,15 @@ def test_format_result_none_returns_safe_fallback(web_reach):
 
 
 # ---------------------------------------------------------------------------
-# receive / deliver — ABC contract satisfied
+# receive / deliver — raise NotImplementedError (WebReachLayer is request-driven)
 # ---------------------------------------------------------------------------
 
-def test_receive_returns_turn_input(web_reach):
-    turn = web_reach.receive()
-    assert isinstance(turn, TurnInput)
-    assert turn.channel == "web"
+def test_receive_raises_not_implemented(web_reach):
+    with pytest.raises(NotImplementedError):
+        web_reach.receive()
 
 
-def test_deliver_is_no_op(web_reach):
+def test_deliver_raises_not_implemented(web_reach):
     result = TurnResult(session_id="sess-1", response_text="Hi")
-    web_reach.deliver(result)  # should not raise
+    with pytest.raises(NotImplementedError):
+        web_reach.deliver(result)

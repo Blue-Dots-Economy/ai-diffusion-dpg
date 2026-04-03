@@ -27,6 +27,7 @@ def _make_mock_agent_core() -> MagicMock:
     ac = MagicMock()
     ac.process_turn.return_value = TurnResult(
         session_id="s1",
+        turn_id="t1",
         response_text="Here are some jobs.",
         was_escalated=False,
         was_tool_used=False,
