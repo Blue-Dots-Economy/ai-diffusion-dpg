@@ -112,7 +112,56 @@ class ConversationEngine:
         Returns:
             Dict with keys: reply (str), phase (str), config_updates (list),
             checkpoint_created (str | None), graph (dict).
+
+        Raises:
+            ConversationError: If the Anthropic API call fails after retries.
         """
+        import anthropic as _anthropic
+        from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+        from dev_kit.agent.errors import ConversationError
+
+        _llm_retry = retry(
+            retry=retry_if_exception_type(
+                (_anthropic.RateLimitError, _anthropic.APIConnectionError, _anthropic.APITimeoutError)
+            ),
+            stop=stop_after_attempt(2),
+            wait=wait_exponential(multiplier=1, min=1, max=4),
+            reraise=True,
+        )
+
+        async def _call_llm(system: str, messages: list) -> object:
+            start = time.time()
+            try:
+                resp = await _llm_retry(self._client.messages.create)(
+                    model=_MODEL,
+                    max_tokens=_MAX_TOKENS,
+                    system=system,
+                    messages=messages,
+                    tools=TOOL_DEFINITIONS,
+                    timeout=30.0,
+                )
+                logger.info(
+                    "llm_call",
+                    extra={
+                        "operation": "conversation.chat.llm_call",
+                        "status": "success",
+                        "latency_ms": int((time.time() - start) * 1000),
+                        "phase": self._state["phase"],
+                    },
+                )
+                return resp
+            except Exception as exc:
+                logger.error(
+                    "llm_call_failed",
+                    extra={
+                        "operation": "conversation.chat.llm_call",
+                        "status": "failure",
+                        "error": str(exc),
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+                raise ConversationError(f"LLM call failed: {exc}") from exc
+
         self._history.append({"role": "user", "content": user_message})
         self._state["phase_changed"] = None
         self._state["rollback_to"] = None
@@ -122,13 +171,11 @@ class ConversationEngine:
         config_updates: list[dict] = []
         checkpoint_created: str | None = None
 
-        response = await self._client.messages.create(
-            model=_MODEL,
-            max_tokens=_MAX_TOKENS,
-            system=system,
-            messages=messages,
-            tools=TOOL_DEFINITIONS,
-        )
+        try:
+            response = await _call_llm(system, messages)
+        except ConversationError:
+            self._history.pop()  # roll back the appended user message
+            raise
 
         while response.stop_reason == "tool_use":
             tool_results = []
@@ -156,16 +203,41 @@ class ConversationEngine:
                 checkpoint_created = phase_label
                 self._state["phase"] = new_phase
                 self._state["phase_changed"] = None
-                # Rebuild system prompt with new phase
                 system = self._build_system_prompt()
 
-            response = await self._client.messages.create(
-                model=_MODEL,
-                max_tokens=_MAX_TOKENS,
-                system=system,
-                messages=self._history[-_HISTORY_WINDOW:],
-                tools=TOOL_DEFINITIONS,
-            )
+            # Handle rollback requested by tool
+            if self._state["rollback_to"]:
+                requested_phase = self._state["rollback_to"]
+                self._state["rollback_to"] = None
+                try:
+                    from dev_kit.agent.checkpoints import restore_checkpoint
+                    restored_acc, _ = restore_checkpoint(self._project_path, requested_phase)
+                    self.accumulator = restored_acc
+                    self._tool_handler._acc = restored_acc
+                    self._history = []
+                    self._state["phase"] = requested_phase.split("_", 1)[-1] if "_" in requested_phase else requested_phase
+                    logger.info(
+                        "checkpoint_restored_via_tool",
+                        extra={
+                            "operation": "conversation.chat.rollback",
+                            "status": "success",
+                            "phase": requested_phase,
+                        },
+                    )
+                except FileNotFoundError:
+                    logger.warning(
+                        "checkpoint_not_found",
+                        extra={
+                            "operation": "conversation.chat.rollback",
+                            "status": "failure",
+                            "error": f"checkpoint '{requested_phase}' not found",
+                        },
+                    )
+
+            try:
+                response = await _call_llm(system, self._history[-_HISTORY_WINDOW:])
+            except ConversationError:
+                raise
 
         # Extract final text reply
         reply = "".join(

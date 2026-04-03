@@ -124,6 +124,29 @@ class TestConversationEngineChat:
         assert len(engine._history) == 4  # 2 user + 2 assistant
 
 
+    @pytest.mark.asyncio
+    async def test_chat_raises_conversation_error_on_api_failure(self, project_path, mock_client):
+        """chat() must raise ConversationError (not a raw Anthropic exception) on API failure."""
+        import anthropic
+        from dev_kit.agent.errors import ConversationError
+        mock_client.messages.create.side_effect = anthropic.APIConnectionError(request=MagicMock())
+        engine = ConversationEngine(project_path, mock_client)
+        with pytest.raises(ConversationError):
+            await engine.chat("Hello")
+
+    @pytest.mark.asyncio
+    async def test_chat_rolls_back_history_on_api_failure(self, project_path, mock_client):
+        """On API failure the user message appended to history must be rolled back."""
+        import anthropic
+        from dev_kit.agent.errors import ConversationError
+        mock_client.messages.create.side_effect = anthropic.APIConnectionError(request=MagicMock())
+        engine = ConversationEngine(project_path, mock_client)
+        history_len_before = len(engine._history)
+        with pytest.raises(ConversationError):
+            await engine.chat("Hello")
+        assert len(engine._history) == history_len_before
+
+
 class TestConversationEnginePersistence:
     @pytest.mark.asyncio
     async def test_accumulator_persisted_after_tool_call(self, project_path, mock_client):
