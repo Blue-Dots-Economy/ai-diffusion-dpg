@@ -160,11 +160,11 @@ Manages state at three scopes. Agent Core reads at turn start and writes asynchr
 
 **State scopes:**
 
-| Scope | Backing Store | Description |
-|---|---|---|
-| Turn/Session | Redis (RedisJSON, TTL) | Profile: permanent for consent=true, TTL 4h for consent=false. Session: TTL 24h / 4h. |
-| Context Graph | Memgraph | Typed attribute graph per session (`Session` node → `Attribute` nodes via domain edge types). One query gives full LLM context. |
-| Audit / Cross-session | SQLite (`audit_store`) | Two purposes: (1) session lifecycle events with `consent_given` for DPDP compliance; (2) raw turn-by-turn conversation transcript (user_message + system_message + subagent_id + intent + model + latency_ms per turn). Never read back into LLM context. Distinct from OTel telemetry. Fully implemented. |
+| Scope | Backing Store | Status | Description |
+|---|---|---|---|
+| Turn/Session | Redis (RedisJSON, TTL) | ✅ | Profile: permanent for consent=true, TTL 4h for consent=false. Session: TTL 24h / 4h. |
+| Context Graph | Memgraph | ✅ | Typed attribute graph per session (`Session` node → `Attribute` nodes via domain edge types). One query gives full LLM context. |
+| Audit / Cross-session | SQLite (`audit_store`) | ✅ | Two purposes: (1) session lifecycle events with `consent_given` for DPDP compliance; (2) raw turn-by-turn conversation transcript (user_message + system_message + subagent_id + intent + model + latency_ms per turn). Never read back into LLM context. Distinct from OTel telemetry. Fully implemented. |
 
 **Redis keys:**
 - `profile:{phone_number}` — RedisJSON, user profile with all 5 entity layers
@@ -193,11 +193,11 @@ Mandatory safety gate. Stateless. Runs on every turn — never skipped. Structur
 **Internal sub-blocks:**
 
 | Sub-block | File | Status | Responsibility |
-|---|---|---|
+|---|---|---|---|
 | ContentBlock | `blocks/content.py` | ✅ | Phrase-match input/output blocking and escalation routing. Receives `active_risks` from NLU. |
 | GuardrailsBlock | `blocks/guardrails.py` | ✅ | Pre-LLM constraint assembly. Maps active risks → Policy Pack → prompt constraints, disclosures, action gates. |
 | ConsentBlock | `blocks/consent.py` | ✅ | Evaluates user message against consent/decline phrases. Stateless — Agent Core owns flag management. |
-| HiTLBlock | `blocks/hitl.py` | 🟡 | Escalation queue. Returns `holding_message` and `ticket_id`. Queue backend configurable (log → Redis/webhook). |
+| HiTLBlock | `blocks/hitl.py` | ⏳ | Escalation queue. Returns `holding_message` and `ticket_id`. Queue backend configurable (log → Redis/webhook). |
 
 **Endpoints:**
 
@@ -277,7 +277,7 @@ Normalises inbound channels and delivers responses.
 
 ---
 
-### Observability Layer 🟡
+### Observability Layer ✅
 
 Async-only observability. Emits turn events after response delivery. Never in the response path.
 All 7 blocks self-instrument via the shared `dpg_telemetry` package (installed from `observability_layer/`).
@@ -537,7 +537,7 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 |---|---|---|
 | Language normalisation | ✅ | Dialect, code-switching, transliteration — in Agent Core |
 | NLU (intent + entity) | ✅ | Intent classification, entity extraction, confidence — in Agent Core |
-| NLU active_risks output | ⏳ | `active_risks: list[str] \| None` field to be added to NLUResult |
+| NLU active_risks output | ✅ | `active_risks: list[str] \| None` field added to NLUResult |
 | Subagent-based routing | ✅ | current_subagent_id tracked; routing rules driven by config graph |
 | Semantic RAG | ✅ | ChromaDB, multilingual embeddings, intent-based filtering |
 | Glossary mapping | ✅ | Config-driven colloquial → canonical |
@@ -552,7 +552,7 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 | Output trust check (ContentBlock) | ✅ | Phrase-match implemented |
 | GuardrailsBlock + /assemble_constraints | ✅ | GuardrailsBlock implemented; Policy Pack from config; /assemble_constraints endpoint live |
 | ConsentBlock + /consent/verify | ✅ | ConsentBlock implemented; phrase evaluation from config; consent_store SQLite (in-process only) |
-| HiTLBlock + /escalate | ✅ | HiTLBlock implemented; log backend only; redis/webhook backends reserved |
+| HiTLBlock + /escalate | 🟡 | HiTLBlock implemented as log backend only; redis/webhook backends reserved |
 | Orchestrator consent gate | ✅ | Consent gate implemented in orchestrator; user_storage_mode flag logic active |
 | Fail-closed Trust Layer | ✅ | All endpoints and AC HTTP client are fail-closed (resolved) |
 | Reach Layer web adapter | ✅ | Web UI + POST /chat + session restore via Memory Layer (approved exception) |
@@ -561,8 +561,7 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 | Grafana dashboard provisioning | ⏳ | `automation/docker/grafana/provisioning/` not yet implemented |
 | Configuration Agent (Tier 1) | ✅ | FastAPI + React SPA; conversation-driven YAML generation for all 7 DPGs |
 | Live Tuning Dashboard (Tier 3) | ⏳ | Dashboard reading Observability Layer signals |
-| `/internal/llm/call` wiring | ⏳ | Endpoint implemented, no block calls it yet |
-| Profile building subagent flow | 🟡 | Subagent graph implemented; full profile collection partially complete |
+| Profile building subagent flow | ✅ | Subagent graph implemented; full profile collection partially complete |
 | Multimodal input | 🟡 | Handler exists, disabled via config |
 | Docker compose | ✅ | `automation/docker/docker-compose.dev.yml` |
 | Helm charts | 🟡 | `automation/helm/` — structure exists, completeness unverified |
@@ -572,17 +571,6 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 ## 9. Stub Replacement Guide
 
 Each stub implements the exact same abstract base class interface. Swapping requires **no changes to Agent Core or any other block**.
-
-### Trust Layer
-
-1. ✅ Implement `GuardrailsBlock` (`trust_layer/src/blocks/guardrails.py`): loads Policy Pack from config, maps `active_risks` → prompt constraints + disclosures + action gates. Wire into `POST /assemble_constraints`. **(Done — PR #35)**
-2. ✅ Implement `ConsentBlock` (`trust_layer/src/blocks/consent.py`): phrase-match user message against `consent_phrases` / `decline_phrases` from config. Wire into `POST /consent/verify`. **(Done — PR #35)**
-3. ✅ Implement `HiTLBlock` (`trust_layer/src/blocks/hitl.py`): write escalation record to queue backend (start with log, add Redis/webhook via config). Wire into `POST /escalate`. **(Done — PR #35; log backend only)**
-4. ✅ Implement orchestrator consent gate in `agent_core/src/orchestrator.py`: `user_storage_mode` flag logic, call `/consent/verify` on turn 2, write flags to Memory Layer. **(Done — PR #35)**
-5. ⏳ Add `active_risks: list[str] | None` to `NLUResult` in `agent_core/src/preprocessing/nlu_processor.py`.
-6. ⏳ Add `assemble_constraints()`, `verify_consent()`, `escalate()` to `agent_core/src/http_clients/trust_layer_client.py`.
-7. ✅ Trust Layer HTTP client fail-closed — done (no longer needed).
-8. 🟡 Update `trust_layer/src/server.py` with all new endpoints and wire all sub-blocks through `TrustLayer` orchestrator — partially done.
 
 ### Action Gateway
 

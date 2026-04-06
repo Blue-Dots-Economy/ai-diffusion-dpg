@@ -13,9 +13,9 @@ Reference domain: **KKB (Kaam Ki Baat)** — a labour-market assistant for infor
 | **Agent Core** | Orchestration | 8000 | ✅ | Sole orchestrator + LLM caller. Language Normalisation, NLU, tool-use loop, subagent routing. Stateless. |
 | **Knowledge Engine** | Intelligence | 8001 | ✅ | Semantic RAG retrieval (ChromaDB) + glossary mapping. Assembles retrieval context for the LLM prompt. |
 | **Memory Layer** | State | 8002 | ✅ | Redis (session/profile) + Memgraph (context graph) + SQLite (audit). 3-scope state management. 10 HTTP endpoints. |
-| **Trust Layer** | Trust | 8003 | 🟡 | 4 sub-blocks: ContentBlock, GuardrailsBlock, ConsentBlock, HiTLBlock. Fail-closed. 7 endpoints. |
-| **Observability Layer** | Learning | 8004 | 🟡 | OTel instrumentation + Loki/Jaeger audit trail functional via shared `dpg_telemetry` package. OutcomeTracker. Grafana dashboards pending. |
-| **Reach Layer** | Channels | 8005 | 🟡 | CLI (stdin/stdout) + Web adapter (port 8005). Outbound channels pending. |
+| **Observability Layer** | Learning | 8004 | ✅ | OTel instrumentation + Loki/Jaeger audit trail functional via shared `dpg_telemetry` package. OutcomeTracker. Grafana dashboards pending. |
+| **Trust Layer** | Trust | 8003 | 🟡 | 4 sub-blocks: ContentBlock, GuardrailsBlock, ConsentBlock, HiTLBlock(todo). Fail-closed. 7 endpoints. |
+| **Reach Layer** | Channels | 8005 | 🟡 | CLI (stdin/stdout) + Web adapter (port 8005). Outbound channels (voice) pending. |
 | **Action Gateway** | Integration | 9999 | 🟡 | Mock ONEST API: market lookup + job apply. 10 fixture trades. No real connectors yet. |
 
 ---
