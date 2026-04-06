@@ -166,7 +166,7 @@ Manages state at three scopes. Agent Core reads at turn start and writes asynchr
 |---|---|---|
 | Turn/Session | Redis (RedisJSON, TTL) | Profile: permanent for consent=true, TTL 4h for consent=false. Session: TTL 24h / 4h. |
 | Context Graph | Memgraph | Typed attribute graph per session (`Session` node → `Attribute` nodes via domain edge types). One query gives full LLM context. |
-| Audit / Cross-session | SQLite (`audit_store`) | Turn history written for compliance only; never read back into LLM context. Fully implemented. |
+| Audit / Cross-session | SQLite (`audit_store`) | Two purposes: (1) session lifecycle events with `consent_given` for DPDP compliance; (2) raw turn-by-turn conversation transcript (user_message + system_message + subagent_id + intent + model + latency_ms per turn). Never read back into LLM context. Distinct from OTel telemetry. Fully implemented. |
 
 **Redis keys:**
 - `profile:{phone_number}` — RedisJSON, user profile with all 5 entity layers
@@ -540,7 +540,7 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 | Session state (turn + session) | ✅ | Redis with TTL |
 | Persistent profile store | ✅ | Redis RedisJSON |
 | Context graph | ✅ | Memgraph typed attribute graph |
-| Audit log / SQLite store | ⏳ | Design specifies SQLite for turn history/audit; not yet implemented |
+| Audit log / SQLite store | ✅ | SQLiteAuditStore fully implemented — session lifecycle events (DPDP consent) + raw turn-by-turn conversation transcript |
 | Input trust check (ContentBlock) | ✅ | Phrase-match implemented |
 | Output trust check (ContentBlock) | ✅ | Phrase-match implemented |
 | GuardrailsBlock + /assemble_constraints | ✅ | GuardrailsBlock implemented; Policy Pack from config; /assemble_constraints endpoint live |

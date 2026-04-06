@@ -105,10 +105,19 @@ Edge types: `HAS_PROFILE`, `HAS_JOURNEY_HISTORY`, `HAS_CONTEXT`, `JOURNEY`, `HAS
 
 ### SQLite — audit log
 
+`SQLiteAuditStore` serves two distinct purposes:
+
+1. **Session lifecycle events** — records session start, end, and escalate events with `consent_given` flag for DPDP Act compliance (`session_audit` table).
+2. **Raw conversation turn history** — records every turn's user message, agent response, subagent_id, intent, model, and latency_ms (`turn_audit` table). This is the conversation transcript log, used for DPDP audit, conversation replay, and retrieval via the history endpoints below.
+
 Two tables:
 
 - `session_audit` — session_id (PK), user_id, created_at, closed_at, status, end_reason, consent_given.
 - `turn_audit` — turn_id (PK), session_id (FK), user_message, system_message, timestamp, subagent_id, intent, model, latency_ms, metadata (JSON).
+
+This is distinct from the OTel pipeline (Loki/Jaeger), which handles structured observability telemetry — spans, metrics, and traces. The SQLite store holds the raw conversation transcript; the OTel pipeline holds instrumentation data. Both are needed and serve different purposes.
+
+Accessed via `POST /audit/session`, `POST /audit/turn`, `GET /audit/sessions/{session_id}/history`, and `GET /users/{user_id}/active-history`.
 
 All four `AuditStoreBase` abstract methods are fully implemented — no stubs, no `NotImplementedError`.
 

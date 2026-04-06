@@ -259,6 +259,9 @@ Requires Python 3.11+.
 
 ### Audit trail
 
-The audit trail is the OTel pipeline itself — each DPG self-instruments via `dpg_telemetry`, emitting structured spans and logs to the OTel Collector sidecar over OTLP/gRPC. The Collector forwards logs to Loki and traces to Jaeger. Loki and Jaeger are the persistent audit store; no separate custom audit DB is needed.
+Two separate audit systems exist and serve different purposes — both are needed:
 
-The `SQLiteAuditStore` in `memory_layer/` is a narrow DPDP consent store for consent records and session lifecycle events (start/end/escalate with `consent_given`). It is not an audit replacement for the OTel pipeline.
+- **OTel → Loki/Jaeger** (this layer): structured observability telemetry — spans, metrics, and traces. Each DPG self-instruments via `dpg_telemetry`, emitting data to the OTel Collector over OTLP/gRPC. The Collector forwards logs to Loki and traces to Jaeger.
+- **SQLiteAuditStore in `memory_layer/`**: raw conversation transcript — every turn's user message and agent response, plus subagent_id, intent, model, and latency_ms per turn (`turn_audit` table). Also records session lifecycle events (start/end/escalate) with `consent_given` for DPDP Act compliance (`session_audit` table). Accessed via `GET /audit/sessions/{session_id}/history` and `GET /users/{user_id}/active-history`.
+
+The SQLite store is the conversation transcript log used for DPDP audit and conversation replay. It is not replaced by the OTel pipeline, which holds instrumentation telemetry rather than raw message content.
