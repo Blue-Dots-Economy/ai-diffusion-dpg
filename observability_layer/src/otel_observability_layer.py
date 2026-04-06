@@ -1,6 +1,4 @@
 """
-observability_layer/src/otel_observability_layer.py
-
 OtelObservabilityLayer — concrete implementation of ObservabilityLayerBase.
 
 Replaces ConsoleLogger. Processes TurnEvents through the OutcomeTracker
@@ -64,12 +62,25 @@ class OtelObservabilityLayer(ObservabilityLayerBase):
 
         start = time.time()
         try:
-            self._outcome_tracker.process(event)
-
             def _get(key: str, default: Any = None) -> Any:
                 if isinstance(event, dict):
                     return event.get(key, default)
                 return getattr(event, key, default)
+
+            trace_id = _get("trace_id", "")
+            session_id = _get("session_id", "")
+
+            if not trace_id:
+                logger.warning(
+                    "observability_layer.emit_turn_no_trace_id",
+                    extra={
+                        "operation": "otel_observability_layer.emit_turn",
+                        "status": "skipped_span_attachment",
+                        "session_id": session_id,
+                    },
+                )
+
+            self._outcome_tracker.process(event)
 
             logger.info(
                 "observability_layer.turn_event",

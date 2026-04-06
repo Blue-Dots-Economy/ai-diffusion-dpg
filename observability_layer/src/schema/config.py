@@ -102,7 +102,9 @@ class AuditConfig(BaseModel):
     telemetry for dashboarding.
     """
 
-    retention_days: int = 90
+    model_config = ConfigDict(frozen=True)
+
+    retention_days: int = Field(default=90, gt=0)
     pii_fields_excluded: list[str] = Field(
         default_factory=lambda: ["user_message", "user_id"]
     )
@@ -113,6 +115,8 @@ class TelemetryConfig(BaseModel):
 
     user_id is allowed in traces for dashboarding but excluded from audit log.
     """
+
+    model_config = ConfigDict(frozen=True)
 
     pii_fields_excluded: list[str] = Field(
         default_factory=lambda: ["user_message"]
@@ -130,9 +134,11 @@ class OtelConfig(BaseModel):
         export_interval_ms: Metrics export interval in milliseconds.
     """
 
+    model_config = ConfigDict(frozen=True)
+
     collector_endpoint: str = "http://localhost:4317"
-    sample_rate: float = 1.0
-    export_interval_ms: int = 5000
+    sample_rate: float = Field(default=1.0, ge=0.0, le=1.0)
+    export_interval_ms: int = Field(default=5000, gt=0)
 
 
 class ObservabilityConfig(BaseModel):
@@ -150,6 +156,8 @@ class ObservabilityConfig(BaseModel):
         audit: Audit log PII exclusions and retention.
         telemetry: Telemetry PII exclusions (less strict than audit).
     """
+
+    model_config = ConfigDict(frozen=True)
 
     domain: str = "unknown"
     otel: OtelConfig = Field(default_factory=OtelConfig)

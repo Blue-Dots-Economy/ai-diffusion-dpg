@@ -14,12 +14,11 @@ from outcome_tracker import OutcomeTracker
 
 
 def _make_config(lifecycle=None, metrics=None):
-    cfg = ObservabilityConfig()
-    if lifecycle:
-        cfg.outcomes.lifecycle = lifecycle
-    if metrics:
-        cfg.outcomes.metrics = metrics
-    return cfg
+    outcomes = OutcomesConfig(
+        lifecycle=lifecycle or [],
+        metrics=metrics or [],
+    )
+    return ObservabilityConfig(outcomes=outcomes)
 
 
 def _make_event(tool_calls=None, intent="market_truth", session_id="s1"):

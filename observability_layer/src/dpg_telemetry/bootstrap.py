@@ -33,6 +33,7 @@ def init_otel(service_name: str, config: dict) -> None:
     Configures TracerProvider with OTLP gRPC export and ratio-based sampling,
     MeterProvider with periodic OTLP export, and W3C propagator. Failure never
     raises — a misconfigured Collector must not prevent service startup.
+    If initialisation fails, the provider is left in a no-op state and the next call will retry.
 
     Args:
         service_name: Service name for Resource attributes (e.g. "trust_layer").
@@ -89,6 +90,12 @@ def init_otel(service_name: str, config: dict) -> None:
             )
 
         except Exception as e:
+            import sys
+            print(
+                f"[dpg_telemetry] OTel init failed for '{service_name}': "
+                f"{type(e).__name__}: {e}. Observability disabled.",
+                file=sys.stderr,
+            )
             logger.error(
                 "dpg_telemetry.init_error",
                 extra={

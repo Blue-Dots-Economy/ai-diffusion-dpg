@@ -89,3 +89,17 @@ def test_metric_definition_default_unit_is_empty():
     m = MetricDefinition(name="foo", instrument=InstrumentType.counter, description="bar")
     assert m.unit == ""
     assert m.attributes == []
+
+
+def test_otel_config_rejects_invalid_sample_rate():
+    from pydantic import ValidationError
+    from schema.config import OtelConfig
+    with pytest.raises(ValidationError):
+        OtelConfig(sample_rate=2.0)
+
+
+def test_sli_config_rejects_negative_latency():
+    from pydantic import ValidationError
+    from schema.config import SLIConfig
+    with pytest.raises(ValidationError):
+        SLIConfig(turn_latency_p99_ms=-1)
