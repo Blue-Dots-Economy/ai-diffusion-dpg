@@ -1,21 +1,24 @@
-# Trust Layer DPG
+# Trust Layer
 
-Mandatory safety and compliance gate. Every input and every output passes through this layer — never skipped.
+Mandatory safety and compliance gate. Runs on every turn — never skipped. **Fail-closed:** any internal exception causes the endpoint to return `block` or `deny`, never `allow`.
 
 ---
 
 ## What this service does
 
-The Trust Layer enforces content safety, consent, and escalation rules on every turn. Agent Core calls it twice per turn — once on the raw user input (before the LLM sees it) and once on the LLM output (before it reaches the user). Neither check is skippable.
+Agent Core calls the Trust Layer twice per turn:
 
-The Trust Layer is composed of four sub-blocks:
+1. **Before the LLM** — input check + constraint assembly.
+2. **After the LLM** — output check before the response reaches the user.
 
-- **ContentBlock** (`blocks/content.py`): Phrase-match input/output blocking and escalation routing. Receives `active_risks` from NLU when available.
-- **GuardrailsBlock** (`blocks/guardrails.py`): Pre-LLM constraint assembly. Maps active risks → Policy Pack → prompt constraints, required disclosures, action gates, and refusal templates.
-- **ConsentBlock** (`blocks/consent.py`): Evaluates user message against consent/decline phrases from config. Stateless — Agent Core owns flag management and writes `user_storage_mode` to Memory Layer.
-- **HiTLBlock** (`blocks/hitl.py`): Escalation queue. Returns `holding_message` and `ticket_id`. Queue backend is configurable (`log` → `redis` → `webhook`).
+Neither check is skippable. The Trust Layer is composed of four internal sub-blocks wired together by the `TrustLayer` orchestrator:
 
-**Fail-closed:** All endpoints return `block` or `deny` on internal error. A failing Trust Layer never allows a turn through.
+- **ContentBlock** — phrase-match input/output blocking and escalation routing.
+- **GuardrailsBlock** — maps active risk signals to Policy Pack guardrails; returns prompt constraints, required disclosures, action gates, and refusal templates for injection into the system prompt.
+- **ConsentBlock** — stateless evaluation of whether a user message contains consent or decline phrases.
+- **HiTLBlock** — escalation queue; generates a ticket and returns a holding message.
+
+Consent state is persisted in a SQLite store (`ConsentStore`) by the orchestrator after `ConsentBlock` returns `granted=True`.
 
 ---
 
@@ -23,46 +26,55 @@ The Trust Layer is composed of four sub-blocks:
 
 ```
 trust_layer/
-├── main.py                 # Uvicorn entrypoint (port 8003)
+├── main.py
 ├── pyproject.toml
 ├── config/
-│   └── config.yaml         # Blocked phrases, escalation topics, consent phrases, Policy Pack
+│   ├── dpg.yaml          # Server host/port
+│   └── domain.yaml       # Trust rules: blocked phrases, escalation topics, policy packs, consent phrases
 ├── src/
-│   ├── orchestrator.py     # TrustLayer orchestrator — routes requests to sub-blocks
-│   ├── models.py           # All Pydantic request/response types
-│   ├── consent_store.py    # SQLite consent store (in-process only)
-│   ├── blocks/
-│   │   ├── content.py      # ContentBlock
-│   │   ├── guardrails.py   # GuardrailsBlock
-│   │   ├── consent.py      # ConsentBlock
-│   │   └── hitl.py         # HiTLBlock
-│   └── server.py           # FastAPI app (all endpoints)
+│   ├── models.py         # All Pydantic request/response schemas for all 7 endpoints
+│   ├── server.py         # FastAPI app — all 7 endpoints, fail-closed error handling
+│   ├── orchestrator.py   # TrustLayer orchestrator — wires all 4 sub-blocks
+│   ├── consent_store.py  # SQLite-backed consent persistence (session_id → granted_at)
+│   ├── guardrails.py     # BasicTrustLayer — legacy PoC stub (deprecated; not used by TrustLayer)
+│   └── blocks/
+│       ├── content.py    # ContentBlock
+│       ├── guardrails.py # GuardrailsBlock
+│       ├── consent.py    # ConsentBlock
+│       └── hitl.py       # HiTLBlock
 └── tests/
-    ├── test_content.py
-    ├── test_guardrails.py
-    ├── test_consent.py
-    ├── test_hitl.py
-    └── test_server.py
+    ├── test_models.py
+    ├── test_server.py
+    ├── test_main.py
+    ├── test_guardrails.py   # tests legacy BasicTrustLayer
+    └── blocks/
+        ├── test_content.py
+        ├── test_guardrails.py
+        ├── test_consent.py
+        └── test_hitl.py
 ```
 
 ---
 
 ## HTTP API
 
-The service runs on port **8003**.
+The service runs on port **8003**. All endpoints are fail-closed — an unhandled exception returns the deny/block response shown, never a 500 that could be misread as allowed.
+
+---
 
 ### `POST /check/input`
 
-Pre-LLM phrase-match and risk-signal input check. Returns `allow`, `block`, or `escalate`.
+Pre-LLM input check. Returns `allow`, `block`, or `escalate`.
 
 **Request:**
 ```json
 {
   "session_id": "sess-abc123",
-  "message": "electrician ka kaam chahiye",
-  "active_risks": []
+  "message": "I need help finding a job",
+  "active_risks": ["job_scam_risk"]
 }
 ```
+`active_risks` is optional (nullable). Accepted by ContentBlock but not currently acted upon (reserved for future semantic matching).
 
 **Response — allowed:**
 ```json
@@ -74,56 +86,59 @@ Pre-LLM phrase-match and risk-signal input check. Returns `allow`, `block`, or `
 { "passed": false, "action": "block", "reason": "Input contains blocked phrase: 'bomb'" }
 ```
 
-**Response — escalate to human:**
+**Response — escalate:**
 ```json
 { "passed": false, "action": "escalate", "reason": "Escalation topic detected: 'suicide'" }
 ```
 
-### `POST /assemble_constraints`
+**Fail-closed response:**
+```json
+{ "passed": false, "action": "block" }
+```
 
-Pre-LLM, called after input passes. Returns guardrail control artifacts for injection into the system prompt.
+---
+
+### `POST /check/output`
+
+Post-LLM output phrase-match check. Returns `allow` or `block`.
 
 **Request:**
 ```json
 {
   "session_id": "sess-abc123",
-  "active_risks": ["job_scam_risk"]
+  "response": "The salary range for electricians is ₹15,000–₹28,000/month."
 }
 ```
 
-**Response:**
-```json
-{
-  "prompt_constraints": ["Do not promise guaranteed placements."],
-  "required_disclosures": ["This is an AI assistant. All information is advisory only."],
-  "action_gates": [],
-  "refusal_templates": {}
-}
-```
-
-### `POST /check/output`
-
-Post-LLM output phrase-match and guardrail contract check.
-
-**Request:**
-```json
-{ "session_id": "sess-abc123", "response": "The salary range for electricians is ₹15,000–₹28,000/month." }
-```
-
-**Response:**
+**Response — allowed:**
 ```json
 { "passed": true, "action": "allow", "reason": null }
 ```
 
-If blocked, Agent Core replaces the response with the configured `output_blocked_message`.
+**Response — blocked:**
+```json
+{ "passed": false, "action": "block", "reason": "Output contains blocked phrase: 'guaranteed placement'" }
+```
 
-### `POST /consent/verify`
+**Fail-closed response:**
+```json
+{ "passed": false, "action": "block" }
+```
 
-Turn 2 of a fresh session. Evaluates the user's response against configured consent/decline phrases. Returns `granted: bool`. Agent Core owns writing the result to Memory Layer.
+Note: `action: "escalate"` is a valid ContentBlock return for output, but Agent Core does not currently call `/escalate` in response to it — see Known gaps.
+
+---
+
+### `POST /check/consent`
+
+Checks whether a session has previously granted connector-level consent. Called before any write or identity connector executes.
 
 **Request:**
 ```json
-{ "session_id": "sess-abc123", "message": "haan, theek hai" }
+{
+  "session_id": "sess-abc123",
+  "connector_name": "onest_apply"
+}
 ```
 
 **Response:**
@@ -131,36 +146,105 @@ Turn 2 of a fresh session. Evaluates the user's response against configured cons
 { "granted": true }
 ```
 
-### `POST /check/consent`
+**Fail-closed response:**
+```json
+{ "granted": false }
+```
 
-Before write or identity tool execution. Verifies connector-level consent. Fail-closed — returns `granted: false` on any internal error.
+Behavior: queries SQLite `consent_store` for `session_id`. Does not re-evaluate the user message.
+
+---
+
+### `POST /assemble_constraints`
+
+Pre-LLM, called after input passes. Maps active risk signals to Policy Pack guardrails and returns control artifacts for injection into the system prompt.
 
 **Request:**
 ```json
-{ "session_id": "sess-abc123", "connector_name": "onest_apply" }
+{
+  "session_id": "sess-abc123",
+  "workflow_step": "job_search",
+  "active_risks": ["job_scam_risk"],
+  "user_segment": null
+}
+```
+`workflow_step` and `user_segment` are accepted but not currently used for filtering — informational only.
+
+**Response:**
+```json
+{
+  "prompt_constraints": ["Do not promise guaranteed placements."],
+  "required_disclosures": ["This is an AI assistant. All information is advisory only."],
+  "action_gates": {},
+  "refusal_templates": {}
+}
+```
+
+Unknown `risk_id` values are silently skipped. Empty `active_risks` returns empty lists/dicts.
+
+**Fail-closed response:** empty constraints — all four fields as empty lists/dicts.
+
+---
+
+### `POST /consent/verify`
+
+Evaluates a user message against configured consent and decline phrases. If consent is detected, writes to SQLite `consent_store`.
+
+**Request:**
+```json
+{
+  "session_id": "sess-abc123",
+  "user_message": "haan, theek hai"
+}
 ```
 
 **Response:**
 ```json
-{ "granted": true, "reason": null }
+{ "granted": true }
 ```
+
+Behavior: case-insensitive substring match against `trust.consent.consent_phrases` and `trust.consent.decline_phrases`. `ConsentBlock` is stateless — the orchestrator calls `consent_store.record_consent()` only when `granted=True`.
+
+**Fail-closed response:**
+```json
+{ "granted": false }
+```
+
+---
 
 ### `POST /escalate`
 
-Called when `/check/input` returns `"escalate"`. Queues a HiTL escalation record and returns a holding message.
+Queues a Human-in-the-Loop escalation record and returns a holding message. Called when `/check/input` returns `action: "escalate"`.
 
 **Request:**
 ```json
-{ "session_id": "sess-abc123", "reason": "Escalation topic detected: 'suicide'" }
+{
+  "session_id": "sess-abc123",
+  "escalation_reason": "Escalation topic detected: 'suicide'",
+  "user_message": "I don't want to go on",
+  "workflow_step": "job_search"
+}
 ```
 
 **Response:**
 ```json
 {
-  "holding_message": "Main aapki baat samajh raha hoon. Ek counsellor se aapko connect karta hoon.",
-  "ticket_id": "ticket-abc123"
+  "queued": true,
+  "ticket_id": "TKT-20240406-3FA2B1C0",
+  "holding_message": "Main aapki baat samajh raha hoon. Ek counsellor se aapko connect karta hoon."
 }
 ```
+
+Ticket ID format: `TKT-YYYYMMDD-8HEXCHARS`.
+
+Backend behavior: `log` backend writes a structured warning log. `redis` and `webhook` backends log a warning ("unsupported backend") but still return `queued: true` — see Known gaps.
+
+**Fail-closed response:**
+```json
+{ "queued": false, "ticket_id": "", "holding_message": "" }
+```
+
+---
 
 ### `GET /health`
 
@@ -168,50 +252,67 @@ Returns `{"status": "ok"}` when the service is running.
 
 ---
 
-## Rules (configured in YAML)
+## Rules — how config drives each sub-block
 
-All rules are loaded from `config/config.yaml` at startup. Nothing is hardcoded.
+### ContentBlock
 
-### Input rules
+Loaded from config at startup; never re-read on requests.
 
-| Rule type | Config key | Behaviour |
+| Rule type | Config key | Behavior |
 |---|---|---|
-| Blocked phrases | `trust.input_rules.blocked_phrases` | Case-insensitive substring match. Returns `action: block`. |
-| Escalation topics | `trust.input_rules.escalation_topics` | Case-insensitive substring match. Returns `action: escalate`. |
+| Input blocked phrases | `trust.input_rules.blocked_phrases` | Case-insensitive substring match → `action: block` |
+| Input escalation topics | `trust.input_rules.escalation_topics` | Case-insensitive substring match → `action: escalate` |
+| Output blocked phrases | `trust.output_rules.blocked_phrases` | Case-insensitive substring match → `action: block` |
 
-### Output rules
+Empty or `None` input always returns `allow`. `active_risks` is accepted but not acted upon (phrase-match only).
 
-| Rule type | Config key | Behaviour |
-|---|---|---|
-| Blocked phrases | `trust.output_rules.blocked_phrases` | Blocks LLM responses containing these strings. |
-
-### Consent rules
-
-| Rule type | Config key | Behaviour |
-|---|---|---|
-| Consent phrases | `trust.consent_rules.consent_phrases` | Phrases indicating user consent (e.g. "haan", "theek hai"). |
-| Decline phrases | `trust.consent_rules.decline_phrases` | Phrases indicating user decline. |
-
-### Guardrail rules
+### GuardrailsBlock
 
 | Config key | Description |
 |---|---|
-| `trust.policy_packs` | Risk taxonomy → Policy Pack mapping. Each pack defines prompt constraints, required disclosures, action gates, and refusal templates. |
+| `trust.policy_pack` | Name of the active Policy Pack |
+| `trust.policy_packs.{name}.guardrails.{risk_id}.prompt_constraints` | List of constraint strings added to system prompt |
+| `trust.policy_packs.{name}.guardrails.{risk_id}.required_disclosures` | List of disclosure strings |
+| `trust.policy_packs.{name}.guardrails.{risk_id}.action_gates` | Dict of gated actions |
+| `trust.policy_packs.{name}.guardrails.{risk_id}.refusal_template` | Template string for refusals |
+
+`assemble_constraints` iterates `active_risks`, looks each up in the guardrail dict, and merges results. Unknown risk IDs are silently skipped.
+
+### ConsentBlock
+
+| Config key | Description |
+|---|---|
+| `trust.consent.consent_phrases` | Phrases that indicate user consent |
+| `trust.consent.decline_phrases` | Phrases that indicate user decline |
+
+Case-insensitive substring match. Stateless — no store access.
+
+### HiTLBlock
+
+| Config key | Description |
+|---|---|
+| `trust.hitl.queue_backend` | `log` (default), `redis`, or `webhook` |
+| `trust.hitl.holding_message` | Message returned to Agent Core while human review is pending |
+| `trust.hitl.notification_webhook` | Webhook URL (used when backend is `webhook`) |
 
 ---
 
-## Configuration
+## Configuration table
 
 | Key | Description |
 |---|---|
-| `server.port` | HTTP port (default: 8003) |
-| `trust.input_rules.blocked_phrases` | List of phrases that block the input entirely |
+| `server.host` / `server.port` | FastAPI bind address (default port: 8003) |
+| `trust.input_rules.blocked_phrases` | List of phrases that block the input |
 | `trust.input_rules.escalation_topics` | List of phrases that trigger human handoff |
 | `trust.output_rules.blocked_phrases` | List of phrases that block the LLM output |
-| `trust.consent_rules.consent_phrases` | Phrases that indicate consent |
-| `trust.consent_rules.decline_phrases` | Phrases that indicate decline |
-| `trust.policy_packs` | Risk → constraint/disclosure/gate mapping |
-| `trust.hitl.queue_backend` | Escalation queue backend: `log` (default), `redis`, `webhook` |
+| `trust.policy_pack` | Active policy pack name |
+| `trust.policy_packs.{name}.guardrails.{risk_id}.*` | Per-risk guardrail definitions |
+| `trust.consent.consent_phrases` | Phrases indicating consent |
+| `trust.consent.decline_phrases` | Phrases indicating decline |
+| `trust.hitl.queue_backend` | Escalation backend: `log`, `redis`, or `webhook` |
+| `trust.hitl.holding_message` | Holding message for escalated sessions |
+| `trust.hitl.notification_webhook` | Webhook URL for `webhook` backend |
+| `trust.consent_store.db_path` | SQLite DB path (default: `/tmp/dpg_consent.db`) |
 
 ---
 
@@ -222,6 +323,8 @@ cd trust_layer
 uv run uvicorn src.server:app --port 8003
 ```
 
+No external dependencies are required at startup. SQLite is created in-process on first use.
+
 ---
 
 ## Running tests
@@ -231,17 +334,20 @@ cd trust_layer
 uv run pytest tests/ -v --cov=src --cov-report=term-missing
 ```
 
-Expected: 39 tests, 100% line coverage (ContentBlock). GuardrailsBlock, ConsentBlock, and HiTLBlock test suites are pending.
+All external dependencies are mocked. No running services are required.
 
 ---
 
 ## Dependencies
 
 ```
-fastapi   >= 0.110
-uvicorn   >= 0.29
-pydantic  >= 2.0
-pyyaml    >= 6.0
+fastapi                                  >= 0.110
+uvicorn[standard]                        >= 0.29
+pydantic                                 >= 2.0
+pyyaml                                   >= 6.0
+python-dotenv                            >= 1.0.0
+observability-layer                      (local path)
+opentelemetry-instrumentation-fastapi
 ```
 
 Requires Python 3.11+.
@@ -250,7 +356,10 @@ Requires Python 3.11+.
 
 ## Known gaps
 
-- **No ML-based semantic matching.** ContentBlock uses phrase-match only; a production deployment would use an ML classifier for context-aware risk detection.
-- **HiTL queue: `log` backend only.** The `redis` and `webhook` backends are reserved for a future issue.
-- **`consent_store` is in-process only.** The SQLite consent store writes consent state locally. Multi-instance deployments need a shared consent store (e.g. Redis or PostgreSQL).
-- **Output-check escalation not wired.** When `trust_output.action == "escalate"`, the orchestrator does not yet call `HiTLBlock.escalate()` — deferred to the HiTL queue issue.
+**ContentBlock uses phrase-match only.** No semantic or ML-based matching. A production deployment would use a classifier for context-aware risk detection.
+
+**HiTL `redis` and `webhook` backends are not implemented.** Both log a warning and return `queued: true` without actually queuing. Only the `log` backend is functional.
+
+**Output-check escalation is not wired in Agent Core.** When `/check/output` returns `action: "escalate"`, Agent Core does not call `/escalate`. This path is deferred.
+
+**ConsentStore is in-process SQLite.** Consent state is local to the process. Multi-instance deployments require a shared store (e.g. Redis or PostgreSQL) to avoid consent being silently lost across instances.

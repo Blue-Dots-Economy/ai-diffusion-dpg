@@ -21,15 +21,14 @@ Ports: Agent Core `:8000`, Knowledge Engine `:8001`, Memory Layer `:8002`, Trust
 **Run tests (per module):**
 ```bash
 cd agent_core          # or knowledge_engine/, memory_layer/, etc.
-pip install -e ".[dev]"
-pytest                                          # all tests
-pytest tests/test_orchestrator.py              # single file
-pytest --cov=src --cov-report=term-missing     # with coverage
+uv run pytest                                          # all tests
+uv run pytest tests/test_orchestrator.py              # single file
+uv run pytest --cov=src --cov-report=term-missing     # with coverage
 ```
 
 **KE document ingestion:**
 ```bash
-cd knowledge_engine && python -m scripts.ingest --config config/domain.yaml
+cd knowledge_engine && uv run python scripts/ingest.py --config config/domain.yaml
 ```
 
 **Config loading:** Each module deep-merges two YAML files at startup — `dev-kit/dpg/<module>.yaml` (framework defaults) overridden by `dev-kit/configs/<domain>/<module>.yaml` (domain values). Reference domain: `dev-kit/configs/kkb/`.
@@ -104,12 +103,13 @@ Only Agent Core initiates calls to other blocks. No other cross-module calls exi
 - **Tool execution pattern:** LLM returns a `tool_use` block → Agent Core routes to Tool Registry → calls Action Gateway → appends `tool_result` → second LLM call. LLM sees only normalised results, never raw API responses.
 - **Latency target:** 800–1200ms per turn (voice-first). One LLM call for most turns, two for tool turns.
 - **Hard routing:** Escalation topics are enforced by Trust Layer before the LLM is called. LLM-driven routing handles everything else via tool selection.
+- **Three-Tier config model:** Tier 1 (Configuration Agent) is implemented as a FastAPI + React app in `dev-kit/dev_kit/agent/`. Tier 2 (YAML) is the runtime source of truth. Tier 3 (Live Tuning Dashboard) is not yet built.
 
 ### PoC scope
 
-Full implementations: **Agent Core**, **Knowledge Engine**, **Domain Configuration Kit**.
+Full implementations: **Agent Core** (414 tests), **Knowledge Engine** (117 tests), **Memory Layer** (200 tests, Redis + Memgraph + SQLite), **Domain Configuration Kit**.
 
-Stubs (same interfaces, lightweight behaviour): Memory Layer (Redis + Memgraph context graph), Trust Layer (ContentBlock, GuardrailsBlock, ConsentBlock, HiTLBlock — phrase-match + guardrail assembly + consent evaluation + escalation queue), Action Gateway (mock JSON responses), Reach Layer (CLI stdin/stdout), Observability Layer (OTel instrumentation).
+Stubs (same interfaces, lightweight behaviour): Trust Layer (39 tests — ContentBlock, GuardrailsBlock, ConsentBlock, HiTLBlock; sub-block test suites pending), Action Gateway (mock JSON responses), Reach Layer (CLI stdin/stdout + web adapter), Observability Layer (OTel instrumentation; audit trail via Loki + Jaeger through OTel Collector; Grafana dashboards pending).
 
 **Stub interfaces must exactly match the real interface** — they must be replaceable without changing Agent Core or other modules.
 
