@@ -1,9 +1,9 @@
+/* highlight.js theme — GitHub Dark */
+@import 'highlight.js/styles/github-dark.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
-/* highlight.js theme — GitHub Dark */
-@import 'highlight.js/styles/github-dark.css';
 
 /* ------------------------------------------------------------------ */
 /* Light mode token overrides (applied when <html> lacks .dark class)  */
