@@ -1,6 +1,4 @@
 """
-observability_layer/src/dpg_telemetry/bootstrap.py
-
 OTel SDK bootstrap — configures TracerProvider and MeterProvider.
 Belongs to the Observability Layer DPG block.
 """

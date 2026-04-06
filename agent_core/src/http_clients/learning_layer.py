@@ -257,7 +257,7 @@ def _serialise_turn_event(event: Any) -> dict:
     return {
         "session_id": _get("session_id", ""),
         "turn_id": _get("turn_id", ""),
-        "trace_id": _get("trace_id", ""),
+        "trace_id": _get("trace_id") or "",
         "response_text": _get("response_text", ""),
         "tool_calls": _serialise_tool_calls(_get("tool_calls", [])),
         "trust_input_result": _serialise_trust_result(_get("trust_input_result")),

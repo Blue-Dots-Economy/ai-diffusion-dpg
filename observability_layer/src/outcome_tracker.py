@@ -1,6 +1,4 @@
 """
-observability_layer/src/outcome_tracker.py
-
 OutcomeTracker — maps TurnEvent tool calls to domain lifecycle state
 transitions and increments the corresponding OTel metric instruments.
 

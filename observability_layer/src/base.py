@@ -1,6 +1,4 @@
 """
-observability_layer/src/base.py
-
 Abstract base class for the Observability Layer DPG block.
 
 All implementations must honour the contract: never block, never raise.

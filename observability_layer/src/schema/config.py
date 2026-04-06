@@ -1,6 +1,4 @@
 """
-observability_layer/src/schema/config.py
-
 ObservabilityConfig — the domain config schema for the Observability Layer.
 
 Domain implementors (e.g. KKB) fill in this schema via YAML. The framework

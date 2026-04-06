@@ -1,6 +1,4 @@
 """
-observability_layer/src/dpg_telemetry/__init__.py
-
 Public API for the dpg_telemetry bootstrap package.
 
 Every DPG block imports this package to initialise OTel SDK and obtain

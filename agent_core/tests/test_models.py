@@ -4,7 +4,7 @@ agent_core/tests/test_models.py
 Unit tests for dataclasses in src.models.
 
 Coverage:
-- TurnEvent: trace_id field exists with default empty string
+- TurnEvent: trace_id field exists with default None
 - TurnEvent: trace_id field can be set and retrieved
 """
 
@@ -35,8 +35,8 @@ def test_turn_event_has_trace_id_field():
     assert event.trace_id == "abc123def456"
 
 
-def test_turn_event_trace_id_defaults_to_empty_string():
-    """Test that TurnEvent.trace_id defaults to empty string when not provided."""
+def test_turn_event_trace_id_defaults_to_none():
+    """Test that TurnEvent.trace_id defaults to None when not provided."""
     event = TurnEvent(
         session_id="s1",
         turn_id="t1",
@@ -51,4 +51,4 @@ def test_turn_event_trace_id_defaults_to_empty_string():
         latency_ms=800,
         timestamp_ms=1700000000000,
     )
-    assert event.trace_id == ""
+    assert event.trace_id is None

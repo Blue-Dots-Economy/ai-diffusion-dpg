@@ -1,6 +1,4 @@
 """
-learning_layer/src/console_logger.py
-
 ConsoleLogger — PoC stub for the Learning Layer DPG.
 
 Implements the LearningLayerBase interface. Writes all observability events to the
@@ -22,10 +20,12 @@ import logging
 import time
 from typing import Any
 
+from base import ObservabilityLayerBase
+
 logger = logging.getLogger(__name__)
 
 
-class ConsoleLogger:
+class ConsoleLogger(ObservabilityLayerBase):
     """
     Console-logging Learning Layer stub.
 

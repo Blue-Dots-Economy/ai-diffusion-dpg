@@ -200,7 +200,7 @@ class TurnEvent:
 
     NOTE: user_message is intentionally excluded.
     PII is routed only through the Learning Layer's designated audit log path.
-    trace_id links outcome metrics to the distributed trace.
+    trace_id links outcome metrics to the distributed trace; None if span context unavailable.
     """
 
     session_id: str
@@ -215,4 +215,4 @@ class TurnEvent:
     output_tokens: int
     latency_ms: int
     timestamp_ms: int
-    trace_id: str = ""
+    trace_id: Optional[str] = None
