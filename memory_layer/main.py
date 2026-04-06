@@ -134,6 +134,9 @@ def _build_app():
     domain_config = _load_config(str(_domain_config_path("memory_layer")))
     config = _deep_merge(dpg_config, domain_config)
 
+    from dpg_telemetry import init_otel
+    init_otel(service_name="memory_layer", config=config)
+
     memory = MemoryLayer(config)
     app = create_app(memory)
 

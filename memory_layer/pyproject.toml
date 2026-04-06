@@ -16,6 +16,8 @@ dependencies = [
     "neo4j>=5.0", # Apache 2.0 — connects to Memgraph via Bolt; Neo4j server not used
     "python-dotenv>=1.0.0",
     "httpx>=0.28.1",
+    "observability-layer",
+    "opentelemetry-instrumentation-fastapi>=0.61b0",
 ]
 
 [project.optional-dependencies]
@@ -39,3 +41,6 @@ omit = [
 [tool.coverage.report]
 fail_under = 70
 show_missing = true
+
+[tool.uv.sources]
+observability-layer = { path = "../observability_layer" }
