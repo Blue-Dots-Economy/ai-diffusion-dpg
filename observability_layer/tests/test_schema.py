@@ -80,7 +80,7 @@ def test_pii_fields_excluded_defaults():
 
 def test_from_config_with_none_raises():
     from schema.config import ObservabilityConfig
-    with pytest.raises((TypeError, AttributeError)):
+    with pytest.raises(TypeError):
         ObservabilityConfig.from_config(None)
 
 

@@ -61,14 +61,26 @@ class MetricDefinition(BaseModel):
 
 
 class OutcomesConfig(BaseModel):
-    """Domain-specific outcome lifecycle and metrics configuration."""
+    """Domain-specific outcome lifecycle and metrics configuration.
+
+    Attributes:
+        lifecycle: Ordered list of lifecycle states. Entry state has trigger_tool=None.
+        metrics: OTel metric instruments to create and track.
+    """
 
     lifecycle: list[LifecycleState] = Field(default_factory=list)
     metrics: list[MetricDefinition] = Field(default_factory=list)
 
 
 class SLIConfig(BaseModel):
-    """Service Level Indicator thresholds for alerting."""
+    """Service Level Indicator thresholds used for alerting and dashboards.
+
+    Attributes:
+        turn_latency_p99_ms: P99 turn latency threshold in milliseconds.
+            Turns exceeding this value are flagged in the dashboard.
+        trust_block_rate_max: Maximum acceptable fraction of turns blocked
+            by the Trust Layer (0.0–1.0). Exceeding this triggers an alert.
+    """
 
     turn_latency_p99_ms: int = 1200
     trust_block_rate_max: float = 0.05
@@ -100,7 +112,15 @@ class TelemetryConfig(BaseModel):
 
 
 class OtelConfig(BaseModel):
-    """OTel exporter and sampling configuration."""
+    """OTel SDK exporter and sampling configuration.
+
+    Attributes:
+        collector_endpoint: gRPC endpoint for the OTel Collector
+            (e.g. "http://otelcol:4317").
+        sample_rate: Fraction of traces to sample (0.0–1.0). 1.0 means
+            all traces are recorded.
+        export_interval_ms: Metrics export interval in milliseconds.
+    """
 
     collector_endpoint: str = "http://localhost:4317"
     sample_rate: float = 1.0
@@ -144,5 +164,7 @@ class ObservabilityConfig(BaseModel):
             pydantic.ValidationError: If the observability section is malformed.
             TypeError: If config is None.
         """
+        if config is None:
+            raise TypeError("config must be a dict, got None")
         obs = config.get("observability", {})
         return cls.model_validate(obs)
