@@ -87,11 +87,13 @@ Every call to `process_turn()` runs this fixed 13-step sequence:
                                 confidence score
 5.  Routing                     Deterministic — NLU result + session conditions select subagent
 6.  Assemble constraints        Trust Layer.assemble_constraints if active_risks are present
-7.  Build system prompt         Subagent prompt + guardrail constraints + required disclosures;
-                                Knowledge Engine retrieval injected here
+7.  Build system prompt         Subagent prompt + guardrail constraints + required disclosures
 8.  LLM call #1                 ClaudeLLMWrapper — primary model with retry and fallback
-9.  Tool-use loop               ManagerAgent — if LLM returns tool_use: call Action Gateway,
-                                append result, LLM call #2; bounded by max_tool_rounds
+9.  Tool-use loop               ManagerAgent — if LLM returns tool_use: route via ToolRegistry;
+                                knowledge_retrieval → KE (_execute_knowledge_retrieval);
+                                all other tools → Action Gateway; append result, LLM call #2;
+                                bounded by max_tool_rounds; KE only called when subagent tool
+                                list includes knowledge_retrieval
 10. Trust check output          Trust Layer — mandatory; replaces response with fallback if blocked
 11. Return TurnResult           Response delivered to caller; steps 12–13 run asynchronously
 

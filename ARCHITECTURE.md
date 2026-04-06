@@ -61,13 +61,11 @@ Language normalisation (dialect detection, code-switching, transliteration) runs
 
 **Memgraph context graph:** Each session is a `Session` node connected to `Attribute` nodes via typed relationship edges (e.g., `[:HAS_TRADE]`, `[:HAS_LOCATION]`). Edge types come from config (`profile_collection.profile_graph_relations`), never hardcoded. One graph query gives the LLM its complete context — no conversation history needed.
 
-### Knowledge Engine — conditional call (known gap)
+### Knowledge Engine — conditional call (resolved)
 
 **Design spec:** KE RAG is a tool the LLM calls only when domain knowledge is needed. Subagents whose tool list does not include knowledge tools (e.g. `profile_building`) should never call KE.
 
-**Current implementation:** KE is called unconditionally on every turn, wasting latency on profile-building and other non-retrieval subagent turns.
-
-**Required fix:** KE should only be called when the active subagent's tool list includes knowledge tools. Subagent tool lists are defined in `dev-kit/configs/<domain>/agent_core.yaml`.
+**Implementation:** KE retrieval is now an internal LLM tool (`knowledge_retrieval`, connector type `internal`). The LLM invokes it only when the active subagent's tool list includes `knowledge_retrieval`. `ToolRegistry.get_route()` returns `"knowledge_engine"` for this tool, and `ManagerAgent` routes it to `_execute_knowledge_retrieval()` instead of the Action Gateway. Subagents without `knowledge_retrieval` in their tool list never trigger a KE call. Subagent tool lists are defined in `dev-kit/configs/<domain>/agent_core.yaml`.
 
 ### Fail-Closed Trust Layer
 
@@ -536,7 +534,7 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 | Glossary mapping | ✅ | Config-driven colloquial → canonical |
 | LLM call with retry/fallback | ✅ | Exponential backoff, primary/fallback model switching |
 | Tool-use loop | ✅ | Bounded by `max_tool_rounds`, action_gates from Trust Layer applied |
-| KE conditional call (tool-only) | ❌ | KE called unconditionally; should only be called when subagent tool list includes knowledge tools |
+| KE conditional call (tool-only) | ✅ | `knowledge_retrieval` internal tool; LLM decides when to call KE; subagents without `knowledge_retrieval` never trigger KE |
 | Session state (turn + session) | ✅ | Redis with TTL |
 | Persistent profile store | ✅ | Redis RedisJSON |
 | Context graph | ✅ | Memgraph typed attribute graph |

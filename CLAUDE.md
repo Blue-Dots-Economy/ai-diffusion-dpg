@@ -49,7 +49,7 @@ The framework assembles AI-powered voice/chat systems from **7 standardised DPG 
 
 ### Block responsibilities
 
-**Agent Core** — sole orchestrator and sole LLM caller. Runs Language Normalisation and NLU internally, then calls Knowledge Engine to assemble the prompt. Owns the tool execution loop (LLM → tool → LLM), retry, and fallback model switching. Stateless between turns — any instance can handle any session. All Anthropic API calls go through `agent_core/src/llm_wrapper/claude_wrapper.py`. Also exposes `POST /internal/llm/call` as a future LLM proxy (implemented, not yet wired).
+**Agent Core** — sole orchestrator and sole LLM caller. Runs Language Normalisation and NLU internally, then builds the system prompt. Owns the tool execution loop (LLM → tool → LLM), retry, and fallback model switching. Knowledge Engine is called only when the LLM invokes the `knowledge_retrieval` internal tool (subagents that do not include `knowledge_retrieval` in their tool list never trigger a KE call). Stateless between turns — any instance can handle any session. All Anthropic API calls go through `agent_core/src/llm_wrapper/claude_wrapper.py`. Also exposes `POST /internal/llm/call` as a future LLM proxy (implemented, not yet wired).
 
 **Knowledge Engine** — assembles the full LLM prompt. Receives NLU results and session state from Agent Core in the request body; does **not** call Memory Layer directly. Stateless. Internal components: Glossary & Domain Vocabulary, Static Knowledge Base (semantic RAG), Multimodal Input Handler.
 
