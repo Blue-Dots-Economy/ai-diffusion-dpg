@@ -34,7 +34,7 @@ The reference domain is **KKB (Kaam Ki Baat)** — a labour-market assistant hel
 | Knowledge Engine | 8001 |
 | Memory Layer | 8002 |
 | Trust Layer | 8003 |
-| Learning Layer | 8004 |
+| Observability Layer | 8004 |
 | Action Gateway | 9999 |
 
 ---
@@ -86,7 +86,7 @@ Agent Core exposes `POST /internal/llm/call` as an LLM proxy for future blocks. 
 The configuration toolchain is **not part of the runtime architecture**. It operates outside the deployed system:
 - **Tier 1 — Configuration Agent:** An AI interviewer that turns a domain expert's natural-language answers into structured YAML. Not yet built.
 - **Tier 2 — YAML Configuration:** The canonical runtime source of truth. Read by Agent Core at startup. This is what the 7 DPGs consume.
-- **Tier 3 — Live Tuning Dashboard:** A management UI that reads Learning Layer signals and patches YAML post-deployment. Not yet built.
+- **Tier 3 — Live Tuning Dashboard:** A management UI that reads Observability Layer signals and patches YAML post-deployment. Not yet built.
 
 ---
 
@@ -110,7 +110,7 @@ Sole orchestrator and sole LLM caller. Stateless between turns.
 - Output safety check via Trust Layer (mandatory).
 - Deliver response.
 - Write state to Memory Layer (async, after response) — includes `current_subagent_id` and `user_storage_mode`.
-- Emit turn event to Learning Layer (async, after response). Block/escalate turns also emit — observability never skipped.
+- Emit turn event to Observability Layer (async, after response). Block/escalate turns also emit — observability never skipped.
 
 **Key files:**
 - `agent_core/src/orchestrator.py` — main turn handler
@@ -253,19 +253,47 @@ Normalises inbound channels and delivers responses.
 
 ---
 
-### Learning Layer 🟡
+### Observability Layer 🟡
 
 Async-only observability. Emits turn events after response delivery. Never in the response path.
+All 7 blocks self-instrument via the shared `dpg_telemetry` package (installed from `observability_layer/`).
+Telemetry flows via OTLP/gRPC to an OTel Collector sidecar.
 
-**Current stub:** `ConsoleLogger` — logs all TurnEvent fields at INFO level as structured JSON.
+**`dpg_telemetry` package:** Exposes `init_otel(service_name, config)`, `get_tracer()`, `get_meter()`.
+Every block calls `init_otel()` at startup. Configures TracerProvider, MeterProvider, OTLP exporter,
+W3C propagator, and resource attributes from config.
 
-**Planned production capabilities:** Audit log DB (DPDP Act compliance), quality scores, outcome tracking (job placement rate, drop-off taxonomy), Langfuse or custom eval backend. Drives Tier 3 Live Tuning Dashboard signals.
+**Block instrumentation:**
+
+| Block | Key spans | Key metrics |
+|---|---|---|
+| `agent_core` | `orchestrator.turn`, `llm.call` | `llm.tokens`, `turn.latency_ms` |
+| `trust_layer` | `trust.input_check`, `trust.output_check` | `trust.blocks` |
+| `knowledge_engine` | `ke.prompt_assemble`, `ke.rag_retrieve` | `rag.retrieved_docs` |
+| `memory_layer` | `memory.read`, `memory.write` | `memory.latency_ms` |
+| `action_gateway` | `action.execute` | `action.calls` |
+| `reach_layer` | `reach.inbound`, `reach.outbound` | `reach.sessions` |
+
+**Domain config schema:** `ObservabilityConfig` (Pydantic v2) defines the full outcome lifecycle,
+metric instrument types, SLI thresholds, and PII field exclusions (separate lists for telemetry
+vs. audit log — `user_id` allowed in traces for dashboarding, excluded from audit for DPDP Act compliance).
+
+**HTTP service (port 8004):** `/emit/turn` (backward-compatible; routes to `OutcomeTracker`),
+`/emit/signal`, `/validate-config`, `/health`.
+
+**Current stub:** `OtelObservabilityLayer` with `OutcomeTracker` — functional OTel instrumentation,
+no persistent audit DB yet.
+
+**Planned production additions:** Audit log DB (DPDP Act), persistent outcome store, Grafana dashboards.
 
 **Key files:**
-- `learning_layer/src/console_logger.py`
-- `learning_layer/src/server.py` — FastAPI: `/emit/turn`, `/emit/signal`, `/health`
+- `observability_layer/src/dpg_telemetry/` — shared bootstrap package
+- `observability_layer/src/schema/config.py` — `ObservabilityConfig` schema
+- `observability_layer/src/outcome_tracker.py` — lifecycle state machine
+- `observability_layer/src/otel_observability_layer.py` — `OtelObservabilityLayer`
+- `observability_layer/src/server.py` — FastAPI: `/emit/turn`, `/emit/signal`, `/validate-config`, `/health`
 
-**Tests:** 34 tests, ≥96% coverage.
+**Tests:** ≥70% coverage.
 
 ---
 
@@ -314,7 +342,7 @@ Agent Core: POST /check/output → Trust Layer              [MANDATORY]
 Agent Core: deliver response → Reach Layer
   │
   ├─ [async] write state → Memory Layer                   [current_subagent_id, user_storage_mode, session data]
-  └─ [async] emit TurnEvent → Learning Layer              [all turns including blocked/escalated]
+  └─ [async] emit TurnEvent → Observability Layer         [all turns including blocked/escalated; carries trace_id]
 ```
 
 **Latency target:** 800–1200ms per turn (voice-first).
@@ -332,7 +360,7 @@ Only Agent Core initiates calls to other blocks. No other cross-module calls exi
 | Agent Core | Trust Layer | Check input (before LLM); check output (before user) |
 | Agent Core | Knowledge Engine | Assemble retrieval context (NLU results + session state in body) |
 | Agent Core | Action Gateway | Execute LLM-requested tool calls |
-| Agent Core | Learning Layer | Emit turn metadata (async, daemon thread) |
+| Agent Core | Observability Layer | Emit turn metadata (async, daemon thread) |
 | Reach Layer | Agent Core | POST /process_turn (blocking) |
 | Action Gateway | External systems | Only on instruction from Agent Core |
 
@@ -348,7 +376,7 @@ Only Agent Core initiates calls to other blocks. No other cross-module calls exi
 |---|---|---|
 | Tier 1 — Configuration Agent | AI interviewer that generates YAML from domain expert's natural language | ⏳ Not yet built |
 | Tier 2 — YAML Configuration | Canonical runtime source of truth. Read by Agent Core at startup. | ✅ |
-| Tier 3 — Live Tuning Dashboard | Management UI reading Learning Layer signals to patch YAML post-deployment | ⏳ Not yet built |
+| Tier 3 — Live Tuning Dashboard | Management UI reading Observability Layer signals to patch YAML post-deployment | ⏳ Not yet built |
 
 These tiers are **configuration tooling — not runtime DPGs**. The 7 DPGs remain the architecture.
 
@@ -368,7 +396,7 @@ dev-kit/
 │       ├── trust_layer.yaml      # blocked phrases, escalation topics, consent phrases
 │       ├── action_gateway.yaml   # connector endpoints, timeout
 │       ├── reach_layer.yaml      # CLI prompts, Agent Core endpoint
-│       └── learning_layer.yaml   # log level, emit settings
+│       └── observability_layer.yaml # OTel config, outcome lifecycle, SLI thresholds
 └── loader.py                     # Deep-merge: dpg/*.yaml overridden by configs/<domain>/*.yaml
 ```
 
@@ -382,7 +410,7 @@ dev-kit/
 | `connectors` | Action Gateway |
 | `conversation` | Agent Core + Knowledge Engine |
 | `trust` | Trust Layer |
-| `evaluation` + `observability` | Learning Layer |
+| `observability` | Observability Layer |
 | `state` | Memory Layer |
 
 ### Rule: nothing domain-specific may be hardcoded
@@ -476,7 +504,7 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 | Trust Layer | 🟡 | ContentBlock (phrase-match) implemented. GuardrailsBlock, ConsentBlock, HiTLBlock pending. Fail-open (must be fail-closed). |
 | Action Gateway | 🟡 | Hardcoded fixture data. No real ONEST API. |
 | Reach Layer | 🟡 | CLI stdin/stdout only. |
-| Learning Layer | 🟡 | Console logging only. |
+| Observability Layer | 🟡 | OTel instrumentation across all blocks. OutcomeTracker with KKB lifecycle config. No persistent audit DB yet. |
 
 ### By feature
 
@@ -504,9 +532,9 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 | Fail-closed Trust Layer | ⏳ | All endpoints and AC HTTP client must block on error, not allow |
 | Real ONEST connector | ⏳ | Replace MockActionGateway |
 | WhatsApp/VOIP/Web channels | ⏳ | Replace CLIReachLayer |
-| Audit log / eval pipeline | ⏳ | Replace ConsoleLogger with backend + eval service |
+| Audit log / eval pipeline | ⏳ | Persistent audit DB + eval service in Observability Layer |
 | Configuration Agent (Tier 1) | ⏳ | AI YAML generator tool for domain experts |
-| Live Tuning Dashboard (Tier 3) | ⏳ | Dashboard reading Learning Layer signals |
+| Live Tuning Dashboard (Tier 3) | ⏳ | Dashboard reading Observability Layer signals |
 | `/internal/llm/call` wiring | ⏳ | Endpoint implemented, no block calls it yet |
 | Profile building subagent flow | 🟡 | Subagent graph implemented; full profile collection partially complete |
 | Multimodal input | 🟡 | Handler exists, disabled via config |
@@ -542,11 +570,12 @@ Each stub implements the exact same abstract base class interface. Swapping requ
 2. Implement per-channel adapter (WhatsApp webhook, VOIP SIP, etc.).
 3. Wire into the reach layer entrypoint.
 
-### Learning Layer
+### Observability Layer
 
-1. Implement `LearningLayerBase` (`agent_core/src/interfaces/learning_layer.py`): `emit_turn()`, `emit_signal()`.
-2. Write to audit DB and eval service.
-3. Wire into `learning_layer/src/server.py`.
+1. Implement persistent audit DB writer in `observability_layer/src/audit_store.py` implementing `AuditStoreBase`.
+2. Wire into `OtelObservabilityLayer.emit_turn()` — write PII-excluded fields to audit DB asynchronously.
+3. Implement Grafana dashboard provisioning in `automation/docker/grafana/provisioning/`.
+4. Implement `OutcomeTracker` placement.rate gauge computation (ratio of placed/total sessions).
 
 ---
 
