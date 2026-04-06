@@ -16,6 +16,7 @@ dependencies = [
     "observability-layer",
     "opentelemetry-instrumentation-fastapi>=0.61b0",
     "opentelemetry-instrumentation-httpx>=0.61b0",
+    "aiofiles>=23.0.0",
 ]
 
 [project.optional-dependencies]
