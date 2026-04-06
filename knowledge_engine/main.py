@@ -22,6 +22,7 @@ Environment:
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -29,6 +30,8 @@ import uvicorn
 import yaml
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from opentelemetry import trace as otel_trace
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from pydantic import BaseModel
 
 # Load .env.local first (developer overrides), then .env (shared defaults).
@@ -37,6 +40,7 @@ _env_local = Path(__file__).parent.parent / ".env.local"
 _env_local_warn = _env_local.exists() and not load_dotenv(_env_local)
 load_dotenv()
 
+from dpg_telemetry import init_otel
 from src.engine import KnowledgeEngine
 from src.models import RetrievalChunk
 
@@ -179,12 +183,15 @@ def create_app(ke: KnowledgeEngine, config: dict) -> FastAPI:
         version="0.1.0",
         docs_url="/docs",
     )
+    FastAPIInstrumentor.instrument_app(app)
     app.state.ke = ke
     app.state.config = config
 
     # ----------------------------------------------------------------
     # POST /retrieve
     # ----------------------------------------------------------------
+
+    _tracer = otel_trace.get_tracer(__name__)
 
     @app.post("/retrieve", response_model=RetrieveResponse)
     def retrieve(request: RetrieveRequest) -> RetrieveResponse:
@@ -198,41 +205,57 @@ def create_app(ke: KnowledgeEngine, config: dict) -> FastAPI:
         if not request.session_id:
             raise HTTPException(status_code=422, detail="session_id must not be empty")
 
-        chunks = app.state.ke.retrieve(
-            session_id=request.session_id,
-            user_message=request.user_message,
-            profile=request.profile,
-            session=request.session,
-            intent=request.intent,
-            entities=request.entities,
-            sentiment=request.sentiment,
-            confidence=request.confidence,
-            normalised_input=request.normalised_input,
-            detected_language=request.detected_language,
-        )
-
-        logger.info(
-            "ke_server.retrieve",
-            extra={
-                "operation": "ke_server.retrieve",
-                "status": "success",
-                "session_id": request.session_id,
-                "chunk_count": len(chunks),
-            },
-        )
-
-        return RetrieveResponse(
-            session_id=request.session_id,
-            chunks=[
-                RetrievalChunkSchema(
-                    text=c.text,
-                    doc_type=c.doc_type,
-                    source=c.source,
-                    always_include=c.always_include,
+        with _tracer.start_as_current_span("ke.prompt_assemble") as span:
+            span.set_attribute("session_id", request.session_id)
+            span.set_attribute("intent", request.intent or "")
+            start = time.time()
+            try:
+                chunks = app.state.ke.retrieve(
+                    session_id=request.session_id,
+                    user_message=request.user_message,
+                    profile=request.profile,
+                    session=request.session,
+                    intent=request.intent,
+                    entities=request.entities,
+                    sentiment=request.sentiment,
+                    confidence=request.confidence,
+                    normalised_input=request.normalised_input,
+                    detected_language=request.detected_language,
                 )
-                for c in chunks
-            ],
-        )
+                logger.info(
+                    "ke_server.retrieve",
+                    extra={
+                        "operation": "ke_server.retrieve",
+                        "status": "success",
+                        "session_id": request.session_id,
+                        "chunk_count": len(chunks),
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+                return RetrieveResponse(
+                    session_id=request.session_id,
+                    chunks=[
+                        RetrievalChunkSchema(
+                            text=c.text,
+                            doc_type=c.doc_type,
+                            source=c.source,
+                            always_include=c.always_include,
+                        )
+                        for c in chunks
+                    ],
+                )
+            except Exception as e:
+                span.record_exception(e)
+                logger.error(
+                    "ke_server.retrieve_error",
+                    extra={
+                        "operation": "ke_server.retrieve",
+                        "status": "failure",
+                        "error": f"{type(e).__name__}: {e}",
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+                raise
 
     # ----------------------------------------------------------------
     # GET /health
@@ -255,6 +278,8 @@ def _build_app():
     dpg_config = _load_config("config/dpg.yaml")
     domain_config = _load_config(str(_domain_config_path("knowledge_engine")))
     config = _deep_merge(dpg_config, domain_config)
+
+    init_otel(service_name="knowledge_engine", config=config)
 
     knowledge_cfg = config.get("knowledge", {})
     if not knowledge_cfg:
