@@ -1,0 +1,148 @@
+"""
+observability_layer/src/schema/config.py
+
+ObservabilityConfig — the domain config schema for the Observability Layer.
+
+Domain implementors (e.g. KKB) fill in this schema via YAML. The framework
+validates it at startup via Pydantic v2. Invalid config raises at startup,
+never at runtime.
+
+Belongs to the Observability Layer DPG block.
+"""
+from __future__ import annotations
+
+from enum import Enum
+from typing import Optional
+
+from pydantic import BaseModel, Field
+
+
+class InstrumentType(str, Enum):
+    """OTel metric instrument type."""
+
+    counter = "counter"
+    gauge = "gauge"
+    histogram = "histogram"
+
+
+class LifecycleState(BaseModel):
+    """One state in the domain outcome lifecycle state machine.
+
+    Args:
+        state: State name (e.g. "applied", "placed").
+        trigger_tool: Tool name whose execution transitions into this state.
+            None for the initial/entry state.
+        trigger_condition: Optional condition expression evaluated against
+            the tool call result. None means any invocation of trigger_tool
+            transitions to this state.
+    """
+
+    state: str
+    trigger_tool: Optional[str] = None
+    trigger_condition: Optional[str] = None
+
+
+class MetricDefinition(BaseModel):
+    """A domain-defined OTel metric instrument.
+
+    Args:
+        name: Metric name (e.g. "placement.applications").
+        instrument: OTel instrument type: counter, gauge, or histogram.
+        description: Human-readable description.
+        unit: Optional UCUM unit string (e.g. "%", "ms").
+        attributes: Attribute keys recorded on this metric.
+    """
+
+    name: str
+    instrument: InstrumentType
+    description: str
+    unit: str = ""
+    attributes: list[str] = Field(default_factory=list)
+
+
+class OutcomesConfig(BaseModel):
+    """Domain-specific outcome lifecycle and metrics configuration."""
+
+    lifecycle: list[LifecycleState] = Field(default_factory=list)
+    metrics: list[MetricDefinition] = Field(default_factory=list)
+
+
+class SLIConfig(BaseModel):
+    """Service Level Indicator thresholds for alerting."""
+
+    turn_latency_p99_ms: int = 1200
+    trust_block_rate_max: float = 0.05
+
+
+class AuditConfig(BaseModel):
+    """Audit log configuration.
+
+    Fields listed in pii_fields_excluded are never written to the audit log
+    (DPDP Act compliance). user_id is excluded from audit but allowed in
+    telemetry for dashboarding.
+    """
+
+    retention_days: int = 90
+    pii_fields_excluded: list[str] = Field(
+        default_factory=lambda: ["user_message", "user_id"]
+    )
+
+
+class TelemetryConfig(BaseModel):
+    """OTel telemetry PII configuration.
+
+    user_id is allowed in traces for dashboarding but excluded from audit log.
+    """
+
+    pii_fields_excluded: list[str] = Field(
+        default_factory=lambda: ["user_message"]
+    )
+
+
+class OtelConfig(BaseModel):
+    """OTel exporter and sampling configuration."""
+
+    collector_endpoint: str = "http://localhost:4317"
+    sample_rate: float = 1.0
+    export_interval_ms: int = 5000
+
+
+class ObservabilityConfig(BaseModel):
+    """Full observability configuration validated at service startup.
+
+    Any domain implementing this schema must provide an ``observability``
+    section in their domain YAML. Validated by Pydantic v2 at startup —
+    invalid config raises, never at request time.
+
+    Args:
+        domain: Domain identifier (e.g. "kkb").
+        otel: OTel exporter and sampling settings.
+        outcomes: Domain outcome lifecycle and metric definitions.
+        sli: SLI thresholds.
+        audit: Audit log PII exclusions and retention.
+        telemetry: Telemetry PII exclusions (less strict than audit).
+    """
+
+    domain: str = "unknown"
+    otel: OtelConfig = Field(default_factory=OtelConfig)
+    outcomes: OutcomesConfig = Field(default_factory=OutcomesConfig)
+    sli: SLIConfig = Field(default_factory=SLIConfig)
+    audit: AuditConfig = Field(default_factory=AuditConfig)
+    telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
+
+    @classmethod
+    def from_config(cls, config: dict) -> "ObservabilityConfig":
+        """Parse the observability section of a merged config dict.
+
+        Args:
+            config: Full merged config dict (dpg + domain YAMLs deep-merged).
+
+        Returns:
+            Validated ObservabilityConfig instance.
+
+        Raises:
+            pydantic.ValidationError: If the observability section is malformed.
+            TypeError: If config is None.
+        """
+        obs = config.get("observability", {})
+        return cls.model_validate(obs)
