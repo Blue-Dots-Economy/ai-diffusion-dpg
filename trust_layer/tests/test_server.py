@@ -375,6 +375,9 @@ def test_check_input_emits_trust_span():
     spans = exporter.get_finished_spans()
     span_names = [s.name for s in spans]
     assert "trust.input_check" in span_names
+    input_check_span = next(s for s in spans if s.name == "trust.input_check")
+    assert input_check_span.attributes.get("session_id") == "s1"
+    assert input_check_span.attributes.get("trust.action") is not None
 
 
 def test_check_output_emits_trust_span():
@@ -399,3 +402,6 @@ def test_check_output_emits_trust_span():
     spans = exporter.get_finished_spans()
     span_names = [s.name for s in spans]
     assert "trust.output_check" in span_names
+    output_check_span = next(s for s in spans if s.name == "trust.output_check")
+    assert output_check_span.attributes.get("session_id") == "s1"
+    assert output_check_span.attributes.get("trust.action") is not None

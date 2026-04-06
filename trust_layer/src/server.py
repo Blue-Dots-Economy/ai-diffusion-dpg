@@ -238,6 +238,7 @@ def create_app(trust: TrustLayer) -> FastAPI:
                 extra={
                     "operation": "server.consent_verify",
                     "status": "failure",
+                    "session_id": request.session_id,
                     "error": f"{type(e).__name__}: {e}",
                     "latency_ms": int((time.time() - start) * 1000),
                 },
