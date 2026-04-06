@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, useEffect } from 'react'
 
 /**
  * Chat input area.
@@ -18,6 +18,13 @@ import { useRef, useState } from 'react'
 export function InputArea({ onSend, onClear, disabled, placeholder }) {
   const [text, setText] = useState('')
   const textareaRef = useRef(null)
+
+  // Restore focus when the textarea becomes enabled again (after send completes)
+  useEffect(() => {
+    if (!disabled) {
+      textareaRef.current?.focus()
+    }
+  }, [disabled])
 
   const handleSend = () => {
     const trimmed = text.trim()

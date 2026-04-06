@@ -1,35 +1,14 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState } from 'react'
 import { MarkdownRenderer } from '../markdown/MarkdownRenderer'
 import { formatTime, formatFullTime } from '../../utils'
 
 const COLLAPSE_LINE_THRESHOLD = 15
 
 /**
- * Render individual words of text with a fade-in animation.
- * Used only for the newest agent message (isNew=true).
- */
-function WordReveal({ text }) {
-  const words = text.split(' ')
-  return (
-    <>
-      {words.map((word, i) => (
-        <span
-          key={i}
-          className="word-reveal-word"
-          style={{ animationDelay: `${i * 18}ms` }}
-        >
-          {word}{i < words.length - 1 ? ' ' : ''}
-        </span>
-      ))}
-    </>
-  )
-}
-
-/**
  * Single message bubble — supports user and agent roles.
  * Agent bubbles render Markdown; user bubbles render plain text.
  * Features: latency badge, tool-use badge, escalation style,
- * timestamps (hover full), collapsible long responses, word-reveal on new messages.
+ * timestamps (hover full), collapsible long responses, fade-in on new messages.
  *
  * @param {{
  *   message: Object,
@@ -47,17 +26,6 @@ export function MessageBubble({ message, isNew, agentAvatar, userAvatar }) {
   const isLong = lineCount > COLLAPSE_LINE_THRESHOLD || wordCount > 200
   const [expanded, setExpanded] = useState(false)
   const [showFullTime, setShowFullTime] = useState(false)
-  const [revealed, setRevealed] = useState(!isNew)
-  const revealTimerRef = useRef(null)
-
-  // After word-reveal animation completes, switch to normal MarkdownRenderer
-  useEffect(() => {
-    if (!isNew) { setRevealed(true); return }
-    const wc = text.split(' ').length
-    const duration = wc * 18 + 400
-    revealTimerRef.current = setTimeout(() => setRevealed(true), duration)
-    return () => clearTimeout(revealTimerRef.current)
-  }, [isNew, text])
 
   const bubbleBase = 'px-3.5 py-2.5 rounded-2xl text-sm leading-relaxed break-words'
   const agentBubbleStyle = wasEscalated
@@ -96,13 +64,9 @@ export function MessageBubble({ message, isNew, agentAvatar, userAvatar }) {
           {isAgent ? (
             <>
               <div className={isLong && !expanded ? 'max-h-52 overflow-hidden relative' : ''}>
-                {isNew && !revealed ? (
-                  <div className="leading-relaxed">
-                    <WordReveal text={text} />
-                  </div>
-                ) : (
+                <div className={isNew ? 'message-new' : ''}>
                   <MarkdownRenderer text={text} />
-                )}
+                </div>
                 {isLong && !expanded && (
                   <div className="absolute bottom-0 left-0 right-0 h-14 bg-gradient-to-t from-[var(--bubble-agent-bg)] to-transparent pointer-events-none" />
                 )}

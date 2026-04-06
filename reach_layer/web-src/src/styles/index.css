@@ -100,13 +100,18 @@ body {
 }
 
 /* ------------------------------------------------------------------ */
-/* Word-reveal animation                                                */
+/* Message animations                                                   */
 /* ------------------------------------------------------------------ */
 @keyframes fadeInWord {
   from { opacity: 0; transform: translateY(2px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-.word-reveal-word {
-  display: inline;
-  animation: fadeInWord 0.15s ease forwards;
+
+/* Fade-in for new agent messages — no flash from plain→markdown swap */
+@keyframes messageFadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.message-new {
+  animation: messageFadeIn 0.25s ease forwards;
 }
