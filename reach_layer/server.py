@@ -323,8 +323,15 @@ try:
         try:
             HTTPXClientInstrumentor().instrument()
             _HTTPX_INSTRUMENTED = True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(
+                "reach_server.httpx_instrumentation_failed",
+                extra={
+                    "operation": "server.httpx_instrumentation",
+                    "status": "failure",
+                    "error": str(e),
+                },
+            )
 except Exception as _otel_err:
     logger.warning(
         "reach_server.otel_init_skipped",
