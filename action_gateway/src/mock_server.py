@@ -29,6 +29,7 @@ from typing import Optional
 
 from fastapi import FastAPI
 from opentelemetry import trace as otel_trace
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from pydantic import BaseModel
 
 _tracer = otel_trace.get_tracer(__name__)
@@ -180,6 +181,8 @@ def create_mock_server() -> FastAPI:
         version="0.1.0",
         docs_url="/docs",
     )
+
+    FastAPIInstrumentor.instrument_app(app)
 
     @app.post("/onest/market_lookup", response_model=MarketLookupResponse)
     def market_lookup(request: MarketLookupRequest) -> MarketLookupResponse:

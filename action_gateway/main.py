@@ -24,6 +24,8 @@ import uvicorn
 import yaml
 from dotenv import load_dotenv
 
+from dpg_telemetry import init_otel
+
 _env_local = Path(__file__).parent.parent / ".env.local"
 _env_local_warn = _env_local.exists() and not load_dotenv(_env_local)
 load_dotenv()  # .env in block dir or injected environment (Docker/prod)
@@ -117,6 +119,8 @@ def _build_config() -> tuple[dict, str, int]:
 
 if __name__ == "__main__":
     config, host, port = _build_config()
+
+    init_otel(service_name="action_gateway", config=config)
 
     logger.info(
         "action_gateway.startup",
