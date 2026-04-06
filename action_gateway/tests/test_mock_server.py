@@ -138,3 +138,79 @@ class TestBadRequests:
             headers={"Content-Type": "application/json"},
         )
         assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# OTel span instrumentation
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def otel_setup():
+    """Set up a shared in-memory OTel provider for the test module."""
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry import trace
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    trace.set_tracer_provider(provider)
+
+    # Re-bind the module-level tracer to pick up the new provider.
+    import src.mock_server as ms
+    ms._tracer = provider.get_tracer(ms.__name__)
+
+    return exporter
+
+
+class TestOtelSpans:
+    def test_execute_tool_emits_action_span(self, client: TestClient, otel_setup) -> None:
+        """The /execute endpoint must emit an action.execute span with required attributes."""
+        exporter = otel_setup
+        exporter.clear()
+
+        resp = client.post(
+            "/execute",
+            json={
+                "tool_name": "onest_market_lookup",
+                "tool_use_id": "test-id-001",
+                "input_params": {"trade": "electrician", "location": "Hubli"},
+                "session_id": "test-session",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True
+
+        spans = exporter.get_finished_spans()
+        span_names = [s.name for s in spans]
+        assert "action.execute" in span_names, f"Expected 'action.execute' span, got: {span_names}"
+
+        action_span = next(s for s in spans if s.name == "action.execute")
+        attrs = dict(action_span.attributes or {})
+        assert attrs.get("dpg.tool_name") == "onest_market_lookup"
+        assert attrs.get("dpg.tool_status") == "success"
+
+    def test_execute_unknown_tool_emits_failure_span(self, client: TestClient, otel_setup) -> None:
+        """Unknown tool calls must emit an action.execute span with dpg.tool_status=failure."""
+        exporter = otel_setup
+        exporter.clear()
+
+        resp = client.post(
+            "/execute",
+            json={
+                "tool_name": "unknown_tool",
+                "tool_use_id": "test-id-002",
+                "input_params": {},
+            },
+        )
+        assert resp.status_code == 200
+
+        spans = exporter.get_finished_spans()
+        span_names = [s.name for s in spans]
+        assert "action.execute" in span_names, f"Expected 'action.execute' span, got: {span_names}"
+
+        action_span = next(s for s in spans if s.name == "action.execute")
+        attrs = dict(action_span.attributes or {})
+        assert attrs.get("dpg.tool_name") == "unknown_tool"
+        assert attrs.get("dpg.tool_status") == "failure"
