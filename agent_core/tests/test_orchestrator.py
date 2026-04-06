@@ -798,3 +798,7 @@ def test_process_turn_emits_orchestrator_span():
     spans = exporter.get_finished_spans()
     span_names = [s.name for s in spans]
     assert "orchestrator.turn" in span_names, f"Expected 'orchestrator.turn' in {span_names}"
+    turn_span = next(s for s in spans if s.name == "orchestrator.turn")
+    assert turn_span.attributes.get("session_id") is not None
+    assert turn_span.attributes.get("turn_id") is not None
+    assert turn_span.attributes.get("dpg.domain") is not None

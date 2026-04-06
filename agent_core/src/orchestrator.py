@@ -115,8 +115,15 @@ class AgentCore(AgentCoreBase):
             try:
                 HTTPXClientInstrumentor().instrument()
                 _HTTPX_INSTRUMENTED = True
-            except Exception:
-                pass  # Already instrumented — safe to ignore.
+            except Exception as e:
+                logger.warning(
+                    "orchestrator.httpx_instrumentation_failed",
+                    extra={
+                        "operation": "orchestrator.init",
+                        "status": "failure",
+                        "error": f"{type(e).__name__}: {e}",
+                    },
+                )
 
     # ------------------------------------------------------------------
     # Public interface — single entry point
