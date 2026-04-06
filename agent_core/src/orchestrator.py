@@ -47,8 +47,13 @@ from src.models import (
 from src.preprocessing.nlu_processor import NLUProcessor
 from src.tool_registry import ToolRegistry
 from src.workflow_loader import AgentWorkflow, RoutingCondition, RoutingRule, SubAgent
+from opentelemetry import trace as otel_trace
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
 logger = logging.getLogger(__name__)
+
+# Module-level guard to prevent double-instrumentation in test environments.
+_HTTPX_INSTRUMENTED = False
 
 
 class AgentCore(AgentCoreBase):
@@ -103,6 +108,16 @@ class AgentCore(AgentCoreBase):
         self._language_normaliser = LanguageNormaliser()
         self._nlu_processor = NLUProcessor(self._config)
 
+        # Instrument HTTPX once per process so all downstream HTTP calls are
+        # automatically traced as child spans of orchestrator.turn.
+        global _HTTPX_INSTRUMENTED
+        if not _HTTPX_INSTRUMENTED:
+            try:
+                HTTPXClientInstrumentor().instrument()
+                _HTTPX_INSTRUMENTED = True
+            except Exception:
+                pass  # Already instrumented — safe to ignore.
+
     # ------------------------------------------------------------------
     # Public interface — single entry point
     # ------------------------------------------------------------------
@@ -131,11 +146,35 @@ class AgentCore(AgentCoreBase):
         if turn_input.user_message is None:
             raise ValueError("turn_input.user_message must not be None")
 
+        _tracer = otel_trace.get_tracer(__name__)
+        with _tracer.start_as_current_span("orchestrator.turn") as _span:
+            return self._process_turn_inner(turn_input, _span)
+
+    def _process_turn_inner(self, turn_input: TurnInput, _span: otel_trace.Span) -> TurnResult:
+        """Execute the instrumented turn body inside the orchestrator.turn span.
+
+        Args:
+            turn_input: Validated inbound message from the Reach Layer.
+            _span:      Active OTel span to attach attributes to.
+
+        Returns:
+            TurnResult delivered to the Reach Layer.
+        """
         start = time.time()
         session_id = turn_input.session_id
         # PoC fallback: use session_id as user_id if caller didn't provide one
         user_id: str = turn_input.user_id or session_id
         turn_id = str(uuid.uuid4())
+
+        # Attach span attributes and extract trace_id for TurnEvent propagation.
+        _span.set_attribute("session_id", session_id)
+        _span.set_attribute("turn_id", turn_id)
+        _span.set_attribute("user_id", getattr(turn_input, "user_id", "") or "")
+        _span.set_attribute(
+            "dpg.domain",
+            self._config.get("observability", {}).get("domain", "unknown"),
+        )
+        _trace_id: str = self._current_trace_id()
 
         logger.info(
             "orchestrator.turn_start",
@@ -517,6 +556,7 @@ class AgentCore(AgentCoreBase):
                 tool_calls=[],
                 trust_input=trust_input,
                 trust_output=TrustCheckResult(passed=True, action="allow"),
+                trace_id=_trace_id,
             )
 
         # ── Step 8: LLM call #1 with scoped tools ────────────────────
@@ -628,6 +668,7 @@ class AgentCore(AgentCoreBase):
             tool_calls=tool_calls,
             trust_input=trust_input,
             trust_output=trust_output,
+            trace_id=_trace_id,
         )
 
         logger.info(
@@ -807,6 +848,7 @@ class AgentCore(AgentCoreBase):
                 output_tokens=0,
                 latency_ms=latency_ms,
                 timestamp_ms=int(time.time() * 1000),
+                trace_id=self._current_trace_id(),
             )
             # NOTE: daemon thread means audit write may be lost on abrupt process exit.
             thread = threading.Thread(
@@ -847,6 +889,7 @@ class AgentCore(AgentCoreBase):
                 output_tokens=0,
                 latency_ms=latency_ms,
                 timestamp_ms=int(time.time() * 1000),
+                trace_id=self._current_trace_id(),
             )
             # NOTE: daemon thread means audit write may be lost on abrupt process exit.
             thread = threading.Thread(
@@ -886,6 +929,7 @@ class AgentCore(AgentCoreBase):
             output_tokens=0,
             latency_ms=latency_ms,
             timestamp_ms=int(time.time() * 1000),
+            trace_id=self._current_trace_id(),
         )
         # NOTE: daemon thread means audit write may be lost on abrupt process exit.
         thread = threading.Thread(
@@ -947,6 +991,7 @@ class AgentCore(AgentCoreBase):
             "I'm unable to help with that request.",
         )
         latency_ms = int((time.time() - start) * 1000)
+        _trace_id = self._current_trace_id()
 
         # Assemble TurnEvent for audit (Step 11b / async logging)
         turn_event = TurnEvent(
@@ -962,6 +1007,7 @@ class AgentCore(AgentCoreBase):
             output_tokens=0,
             latency_ms=latency_ms,
             timestamp_ms=int(time.time() * 1000),
+            trace_id=_trace_id,
         )
 
         # NOTE: daemon thread means audit write may be lost on abrupt process exit.
@@ -1026,6 +1072,7 @@ class AgentCore(AgentCoreBase):
             "I'm connecting you to a human agent who can better assist you.",
         )
         latency_ms = int((time.time() - start) * 1000)
+        _trace_id = self._current_trace_id()
 
         # Assemble TurnEvent for audit (Step 11b / async logging)
         turn_event = TurnEvent(
@@ -1041,6 +1088,7 @@ class AgentCore(AgentCoreBase):
             output_tokens=0,
             latency_ms=latency_ms,
             timestamp_ms=int(time.time() * 1000),
+            trace_id=_trace_id,
         )
 
         # NOTE: daemon thread means audit write may be lost on abrupt process exit.
@@ -1064,6 +1112,16 @@ class AgentCore(AgentCoreBase):
             latency_ms=latency_ms,
         )
 
+
+    def _current_trace_id(self) -> str:
+        """Extract the W3C trace-id hex string from the active OTel span context.
+
+        Returns:
+            32-character lowercase hex trace-id string, or empty string if no
+            valid span context is active.
+        """
+        ctx = otel_trace.get_current_span().get_span_context()
+        return format(ctx.trace_id, "032x") if ctx and ctx.is_valid else ""
 
     def _safe_fallback_message(self) -> str:
         """
@@ -1143,6 +1201,7 @@ class AgentCore(AgentCoreBase):
         trust_output: TrustCheckResult,
         do_flush: bool = False,
         flush_reason: str = "",
+        trace_id: str = "",
     ) -> TurnResult:
         """
         Construct the TurnResult and schedule async post-turn work.
@@ -1193,6 +1252,7 @@ class AgentCore(AgentCoreBase):
             output_tokens=0,
             latency_ms=latency_ms,
             timestamp_ms=turn_input.timestamp_ms,
+            trace_id=trace_id,
         )
 
         thread = threading.Thread(

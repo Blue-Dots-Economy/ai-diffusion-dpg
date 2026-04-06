@@ -151,6 +151,9 @@ def _build_app():
     domain_config = _load_config(str(_domain_config_path("agent_core")))
     config = _deep_merge(dpg_config, domain_config)
 
+    from dpg_telemetry import init_otel
+    init_otel(service_name="agent_core", config=config)
+
     agent_cfg = config.get("agent", {})
 
     llm = ClaudeLLMWrapper(agent_cfg)

@@ -774,3 +774,27 @@ def test_consent_gate_skipped_when_storage_mode_set():
     )
     agent.process_turn(_turn_input("electrician kaam chahiye"))
     trust.verify_consent.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# OTel span instrumentation
+# ---------------------------------------------------------------------------
+
+def test_process_turn_emits_orchestrator_span():
+    """orchestrator.turn span must be created for every turn."""
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry import trace
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    trace.set_tracer_provider(provider)
+
+    agent = _make_agent()
+    agent.process_turn(_turn_input())
+
+    spans = exporter.get_finished_spans()
+    span_names = [s.name for s in spans]
+    assert "orchestrator.turn" in span_names, f"Expected 'orchestrator.turn' in {span_names}"
