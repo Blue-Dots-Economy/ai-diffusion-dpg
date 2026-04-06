@@ -38,6 +38,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# OpenTelemetry instrumentation guard — module-level flag set once at startup
+_HTTPX_INSTRUMENTED = False
+
 
 # ---------------------------------------------------------------------------
 # Request / response models
@@ -318,7 +321,6 @@ try:
 
     init_otel(service_name="reach_layer", config=_config)
 
-    _HTTPX_INSTRUMENTED = False
     if not _HTTPX_INSTRUMENTED:
         try:
             HTTPXClientInstrumentor().instrument()
