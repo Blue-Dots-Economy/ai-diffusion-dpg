@@ -1,9 +1,0 @@
-# dev-kit/dpg/learning_layer.yaml
-# DPG framework defaults for Learning Layer — same for any domain deployment.
-
-server:
-  host: "0.0.0.0"
-  port: 8004
-
-learning_layer:
-  log_level: "INFO"
