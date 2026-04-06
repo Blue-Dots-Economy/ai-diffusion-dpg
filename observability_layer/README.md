@@ -1,4 +1,4 @@
-# Learning Layer DPG
+# Observability Layer DPG
 
 Asynchronous observability layer. Runs entirely out-of-band — never in the response path.
 
@@ -6,9 +6,9 @@ Asynchronous observability layer. Runs entirely out-of-band — never in the res
 
 ## What this service does
 
-The Learning Layer receives turn metadata and feedback signals from Agent Core after each response is delivered. It logs these events for audit, quality evaluation, and future model improvement.
+The Observability Layer receives turn metadata and feedback signals from Agent Core after each response is delivered. It logs these events for audit, quality evaluation, and future model improvement.
 
-**Critical constraint:** Agent Core calls this layer asynchronously in a daemon thread, after the user response has already been returned. The Learning Layer must never be in the response path — a slow or unavailable Learning Layer must not affect turn latency.
+**Critical constraint:** Agent Core calls this layer asynchronously in a daemon thread, after the user response has already been returned. The Observability Layer must never be in the response path — a slow or unavailable Observability Layer must not affect turn latency.
 
 For the PoC, this is `ConsoleLogger`: structured JSON output to stdout. The interface is identical to what a production observability pipeline (e.g. sending events to a data warehouse, LLM evaluation service, or feedback store) would implement.
 
@@ -17,13 +17,13 @@ For the PoC, this is `ConsoleLogger`: structured JSON output to stdout. The inte
 ## Folder structure
 
 ```
-learning_layer/
+observability_layer/
 ├── main.py                 # Uvicorn entrypoint (port 8004)
 ├── pyproject.toml
 ├── config/
 │   └── config.yaml         # Log level
 ├── src/
-│   ├── console_logger.py   # ConsoleLogger — LearningLayerBase implementation
+│   ├── console_logger.py   # ConsoleLogger — ObservabilityLayerBase implementation
 │   └── server.py           # FastAPI app (all endpoints)
 └── tests/
     ├── test_console_logger.py
@@ -131,7 +131,7 @@ The `ConsoleLogger` emits structured log entries for every event:
 
 ```bash
 source ../.venv/bin/activate
-cd learning_layer
+cd observability_layer
 uvicorn src.server:app --port 8004
 ```
 
@@ -141,7 +141,7 @@ uvicorn src.server:app --port 8004
 
 ```bash
 source ../.venv/bin/activate
-cd learning_layer
+cd observability_layer
 pytest tests/ -v --cov=src --cov-report=term-missing
 ```
 
@@ -166,7 +166,7 @@ Requires Python 3.11+.
 
 To replace `ConsoleLogger` with a production observability pipeline:
 
-1. Create a class that inherits from `LearningLayerBase` (defined in `agent_core/src/interfaces/learning_layer.py`).
+1. Create a class that inherits from `ObservabilityLayerBase` (defined in `agent_core/src/interfaces/observability_layer.py`).
 2. Implement `emit_turn` and `emit_signal` with identical signatures.
 3. Wire the new class into `src/server.py` — no other files need to change.
 

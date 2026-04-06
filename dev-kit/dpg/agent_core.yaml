@@ -33,7 +33,7 @@ trust_client:
   timeout_ms: 2000
 
 learning_client:
-  endpoint: "http://learning_layer:8004"
+  endpoint: "http://observability_layer:8004"
   timeout_ms: 2000
 
 action_gateway_client:

@@ -29,7 +29,7 @@ agent_core/
 │   │   ├── knowledge_engine.py
 │   │   ├── action_gateway.py
 │   │   ├── reach_layer.py
-│   │   └── learning_layer.py
+│   │   └── observability_layer.py
 │   ├── llm_wrapper/            # LLM inferencing
 │   │   ├── base.py             # LLMWrapperBase ABC
 │   │   └── claude_wrapper.py   # Anthropic SDK implementation (only file that imports anthropic)
@@ -74,7 +74,7 @@ Every call to `process_turn()` runs this fixed sequence:
 9. Return response to caller
 ── async (daemon thread) ──────────────────────────────────────────────────────
 10. Write updated session state (Memory Layer)
-11. Emit turn event             (Learning Layer)
+11. Emit turn event             (Observability Layer)
 ```
 
 **Hard rules:**

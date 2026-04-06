@@ -1,5 +1,5 @@
 """
-learning_layer/tests/test_console_logger.py
+observability_layer/tests/test_console_logger.py
 
 Tests for ConsoleLogger.
 
@@ -47,7 +47,7 @@ class _FakeTurnEvent:
 # Helpers
 # ---------------------------------------------------------------------------
 
-_BASE_CONFIG: dict = {"learning_layer": {"log_level": "INFO"}}
+_BASE_CONFIG: dict = {"observability_layer": {"log_level": "INFO"}}
 
 
 def _make_logger() -> ConsoleLogger:
@@ -79,7 +79,7 @@ class TestConstructor:
         assert ll._log_level == "INFO"
 
     def test_reads_log_level_from_config(self) -> None:
-        ll = ConsoleLogger({"learning_layer": {"log_level": "DEBUG"}})
+        ll = ConsoleLogger({"observability_layer": {"log_level": "DEBUG"}})
         assert ll._log_level == "DEBUG"
 
 

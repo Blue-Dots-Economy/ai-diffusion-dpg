@@ -7,7 +7,7 @@ All httpx network calls are mocked — no real HTTP traffic.
 Clients under test:
   - MemoryLayerHttpClient   (src/http_clients/memory_layer.py)
   - TrustLayerHttpClient    (src/http_clients/trust_layer.py)
-  - LearningLayerHttpClient (src/http_clients/learning_layer.py)
+  - ObservabilityLayerHttpClient (src/http_clients/observability_layer.py)
   - HttpKnowledgeEngineClient (src/http_clients/knowledge_engine.py)
   - ActionGatewayHttpClient (src/http_clients/action_gateway.py)
 
@@ -28,7 +28,7 @@ import httpx
 
 from src.http_clients.memory_layer import MemoryLayerHttpClient
 from src.http_clients.trust_layer import TrustLayerHttpClient
-from src.http_clients.learning_layer import LearningLayerHttpClient
+from src.http_clients.observability_layer import ObservabilityLayerHttpClient
 from src.http_clients.knowledge_engine import HttpKnowledgeEngineClient
 from src.http_clients.action_gateway import ActionGatewayHttpClient
 from src.models import ContextBundle, TrustCheckResult, TurnEvent, ToolCall, ToolResult, RetrievalChunk
@@ -276,13 +276,13 @@ class TestTrustEscalate:
 
 
 # ===========================================================================
-# LearningLayerHttpClient
+# ObservabilityLayerHttpClient
 # ===========================================================================
 
-class TestLearningLayerHttpClientInit:
+class TestObservabilityLayerHttpClientInit:
     def test_none_config_raises(self):
         with pytest.raises(ValueError, match="config must not be None"):
-            LearningLayerHttpClient(None)
+            ObservabilityLayerHttpClient(None)
 
 
 class TestLearningEmitTurn:
@@ -301,47 +301,47 @@ class TestLearningEmitTurn:
         }
 
     def test_success_does_not_raise(self):
-        client = LearningLayerHttpClient(_BASE_CONFIG)
+        client = ObservabilityLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", return_value=_mock_response({"status": "ok"})):
             client.emit_turn(self._make_event())
 
     def test_none_event_does_not_raise(self):
-        client = LearningLayerHttpClient(_BASE_CONFIG)
+        client = ObservabilityLayerHttpClient(_BASE_CONFIG)
         client.emit_turn(None)  # must not raise
 
     def test_timeout_does_not_raise(self):
-        client = LearningLayerHttpClient(_BASE_CONFIG)
+        client = ObservabilityLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=httpx.TimeoutException("timeout")):
             client.emit_turn(self._make_event())
 
     def test_http_error_does_not_raise(self):
-        client = LearningLayerHttpClient(_BASE_CONFIG)
+        client = ObservabilityLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=_mock_http_error(500)):
             client.emit_turn(self._make_event())
 
     def test_generic_exception_does_not_raise(self):
-        client = LearningLayerHttpClient(_BASE_CONFIG)
+        client = ObservabilityLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=RuntimeError("boom")):
             client.emit_turn(self._make_event())
 
 
 class TestLearningEmitSignal:
     def test_success_does_not_raise(self):
-        client = LearningLayerHttpClient(_BASE_CONFIG)
+        client = ObservabilityLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", return_value=_mock_response({"status": "ok"})):
             client.emit_signal("drop_off", {"turn": 3})
 
     def test_none_signal_type_does_not_raise(self):
-        client = LearningLayerHttpClient(_BASE_CONFIG)
+        client = ObservabilityLayerHttpClient(_BASE_CONFIG)
         client.emit_signal(None, {})  # must not raise
 
     def test_timeout_does_not_raise(self):
-        client = LearningLayerHttpClient(_BASE_CONFIG)
+        client = ObservabilityLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=httpx.TimeoutException("timeout")):
             client.emit_signal("test", {})
 
     def test_generic_exception_does_not_raise(self):
-        client = LearningLayerHttpClient(_BASE_CONFIG)
+        client = ObservabilityLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=RuntimeError("boom")):
             client.emit_signal("test", {})
 

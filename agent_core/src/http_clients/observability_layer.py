@@ -1,8 +1,8 @@
 """
-agent_core/src/learning_http_client.py
+agent_core/src/observability_http_client.py
 
-HTTP client for the Learning Layer service at port 8004.
-Implements the same interface as LearningLayerBase.
+HTTP client for the Observability Layer service at port 8004.
+Implements the same interface as ObservabilityLayerBase.
 
 Called from daemon threads (async post-turn). Must never raise.
 Must never block the response path.
@@ -20,17 +20,17 @@ from typing import Any
 
 import httpx
 
-from src.interfaces.learning_layer import LearningLayerBase
+from src.interfaces.observability_layer import ObservabilityLayerBase
 from src.models import TurnEvent, TrustCheckResult, ToolCall
 
 logger = logging.getLogger(__name__)
 
 
-class LearningLayerHttpClient(LearningLayerBase):
+class ObservabilityLayerHttpClient(ObservabilityLayerBase):
     """
-    HTTP client that calls the Learning Layer service.
+    HTTP client that calls the Observability Layer service.
 
-    Implements the LearningLayerBase interface contract so it can be swapped
+    Implements the ObservabilityLayerBase interface contract so it can be swapped
     with any other implementation without changing the orchestrator.
 
     Args:
@@ -57,12 +57,12 @@ class LearningLayerHttpClient(LearningLayerBase):
         )
 
     # ------------------------------------------------------------------
-    # Public interface — mirrors LearningLayerBase
+    # Public interface — mirrors ObservabilityLayerBase
     # ------------------------------------------------------------------
 
     def emit_turn(self, event: TurnEvent) -> None:
         """
-        POST /emit/turn — serialise TurnEvent and send to Learning Layer service.
+        POST /emit/turn — serialise TurnEvent and send to Observability Layer service.
         Logs errors and continues. Never raises.
         """
         if event is None:

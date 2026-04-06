@@ -148,18 +148,18 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # Learning Layer — async observability (port 8004)
+  # Observability Layer — async observability (port 8004)
   # ---------------------------------------------------------------------------
-  learning_layer:
+  observability_layer:
     build:
-      context: ../../learning_layer
+      context: ../../observability_layer
       dockerfile: Dockerfile
-    container_name: learning_layer
+    container_name: observability_layer
     environment:
       - CONFIG_FOLDER=/app/config
     volumes:
-      - ../../dev-kit/dpg/learning_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/kkb/learning_layer.yaml:/app/config/learning_layer.yaml:ro
+      - ../../dev-kit/dpg/observability_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../dev-kit/configs/kkb/observability_layer.yaml:/app/config/observability_layer.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -264,7 +264,7 @@ services:
         condition: service_healthy
       trust_layer:
         condition: service_healthy
-      learning_layer:
+      observability_layer:
         condition: service_healthy
       action_gateway:
         condition: service_healthy

@@ -195,11 +195,11 @@ class TurnResult:
 @dataclass
 class TurnEvent:
     """
-    Audit payload emitted to the Learning Layer after every turn.
+    Audit payload emitted to the Observability Layer after every turn.
     Emitted asynchronously — never in the response path.
 
     NOTE: user_message is intentionally excluded.
-    PII is routed only through the Learning Layer's designated audit log path.
+    PII is routed only through the Observability Layer's designated audit log path.
     trace_id links outcome metrics to the distributed trace; None if span context unavailable.
     """
 

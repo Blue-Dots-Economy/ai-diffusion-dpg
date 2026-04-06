@@ -27,4 +27,4 @@ logger.info("llm_call", extra={
 })
 ```
 
-Never log PII, phone numbers, or message content outside the designated audit log path managed by the Learning Layer.
+Never log PII, phone numbers, or message content outside the designated audit log path managed by the Observability Layer.

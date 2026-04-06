@@ -4,7 +4,7 @@ configFolder: /app/config
 replicaCount: 1
 
 image:
-  repository: srivatsak2002/dpg-learning-layer
+  repository: srivatsak2002/dpg-observability-layer
   tag: latest
   pullPolicy: IfNotPresent
 
@@ -21,7 +21,7 @@ dpgConfig:
   server:
     host: "0.0.0.0"
     port: 8004
-  learning_layer:
+  observability_layer:
     log_level: "INFO"
 
 # Domain-specific config — mounted as /app/config/domain.yaml inside the pod.
@@ -30,5 +30,5 @@ config:
     host: "0.0.0.0"
     port: 8004
 
-  learning_layer:
+  observability_layer:
     log_level: "INFO"

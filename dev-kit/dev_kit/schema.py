@@ -12,7 +12,7 @@ One top-level model per service:
   KnowledgeEngineConfig
   TrustLayerConfig
   MemoryLayerConfig
-  LearningLayerConfig
+  ObservabilityLayerConfig
   ActionGatewayConfig
   ReachLayerConfig
 """
@@ -250,16 +250,16 @@ class MemoryLayerConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Learning Layer
+# Observability Layer
 # ---------------------------------------------------------------------------
 
-class LearningLayerSettings(BaseModel):
+class ObservabilityLayerSettings(BaseModel):
     log_level: str = Field(default="INFO", description="Logging level: DEBUG, INFO, WARNING, ERROR")
 
 
-class LearningLayerConfig(BaseModel):
+class ObservabilityLayerConfig(BaseModel):
     server: ServerConfig
-    learning_layer: LearningLayerSettings
+    observability_layer: ObservabilityLayerSettings
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +317,7 @@ _BLOCK_MODEL_MAP: dict[str, type] = {
     "knowledge_engine": KnowledgeEngineConfig,
     "trust_layer": TrustLayerConfig,
     "memory_layer": MemoryLayerConfig,
-    "learning_layer": LearningLayerConfig,
+    "observability_layer": ObservabilityLayerConfig,
     "action_gateway": ActionGatewayConfig,
     "reach_layer": ReachLayerConfig,
 }

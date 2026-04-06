@@ -16,7 +16,7 @@ cd automation/docker
 docker compose -f docker-compose.dev.yml up -d                    # all services except reach_layer
 docker compose -f docker-compose.dev.yml run --rm reach_layer     # interactive CLI session
 ```
-Ports: Agent Core `:8000`, Knowledge Engine `:8001`, Memory Layer `:8002`, Trust Layer `:8003`, Learning Layer `:8004`, Action Gateway `:9999`.
+Ports: Agent Core `:8000`, Knowledge Engine `:8001`, Memory Layer `:8002`, Trust Layer `:8003`, Observability Layer `:8004`, Action Gateway `:9999`.
 
 **Run tests (per module):**
 ```bash
@@ -46,7 +46,7 @@ The framework assembles AI-powered voice/chat systems from **7 standardised DPG 
 | Orchestration & Trust | Agent Core, Trust Layer |
 | State & Memory | Memory Layer |
 | Channels & Reach | Reach Layer |
-| Learning & Observability | Learning Layer |
+| Learning & Observability | Observability Layer |
 
 ### Block responsibilities
 
@@ -62,7 +62,7 @@ The framework assembles AI-powered voice/chat systems from **7 standardised DPG 
 
 **Reach Layer** — normalises inbound channels (VOIP, WhatsApp, Web, Mobile SDK) and delivers responses. Manages outbound campaigns and cross-channel handoffs.
 
-**Learning Layer** — async-only observability. Emits turn events after response delivery; never in the response path. Produces audit log, quality scores, feedback signals, and outcome tracking.
+**Observability Layer** — async-only observability. Emits turn events after response delivery; never in the response path. Produces audit log, quality scores, feedback signals, and outcome tracking.
 
 ### Runtime turn sequence
 
@@ -78,7 +78,7 @@ Reach Layer (input)
   → Agent Core: output safety check → Trust Layer
   → Agent Core: deliver response → Reach Layer
   → [async] write state → Memory Layer
-  → [async] emit events → Learning Layer
+  → [async] emit events → Observability Layer
 ```
 
 ### Module interaction rules
@@ -93,7 +93,7 @@ Only Agent Core initiates calls to other blocks. No other cross-module calls exi
 | Agent Core | Trust Layer | Check input; check output |
 | Agent Core | Knowledge Engine | Assemble prompt (NLU results + session state in request body) |
 | Agent Core | Action Gateway | Execute LLM-requested tool calls |
-| Agent Core | Learning Layer | Emit turn metadata (async) |
+| Agent Core | Observability Layer | Emit turn metadata (async) |
 | Action Gateway | External systems | Only on instruction from Agent Core |
 
 ### Key design decisions
@@ -107,7 +107,7 @@ Only Agent Core initiates calls to other blocks. No other cross-module calls exi
 
 Full implementations: **Agent Core**, **Knowledge Engine**, **Domain Configuration Kit**.
 
-Stubs (same interfaces, lightweight behaviour): Memory Layer (in-process store), Trust Layer (blocked-phrase checks), Action Gateway (mock JSON responses), Reach Layer (CLI stdin/stdout), Learning Layer (console logging).
+Stubs (same interfaces, lightweight behaviour): Memory Layer (in-process store), Trust Layer (blocked-phrase checks), Action Gateway (mock JSON responses), Reach Layer (CLI stdin/stdout), Observability Layer (OTel instrumentation).
 
 **Stub interfaces must exactly match the real interface** — they must be replaceable without changing Agent Core or other modules.
 
@@ -124,7 +124,7 @@ ASR/TTS pipeline, model training, infrastructure provisioning, multi-tenancy, te
 3. **All external access goes through Action Gateway.** LLM expresses intent via tool definitions only.
 4. **Trust Layer runs on every I/O pass.** Input before LLM, output before user. Never skip either.
 5. **Agent Core is stateless.** All state lives in Memory Layer. Instances scale horizontally.
-6. **Learning Layer is always async.** Never in the response path.
+6. **Observability Layer is always async.** Never in the response path.
 7. **Config drives all runtime behaviour.** No hardcoded domain values in Python source.
 8. **Write connectors require consent.** Gate `write`/`identity` connectors via Trust Layer before execution.
 9. **Keep blocks loosely coupled.** Call through the defined interface only; never reach into internals.

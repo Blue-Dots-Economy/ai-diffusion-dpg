@@ -24,8 +24,8 @@ helm install memory-layer ./memory-layer -n memory-layer --create-namespace
 # Trust Layer
 helm install trust-layer ./trust-layer -n trust-layer --create-namespace
 
-# Learning Layer
-helm install learning-layer ./learning-layer -n learning-layer --create-namespace
+# Observability Layer
+helm install observability-layer ./observability-layer -n observability-layer --create-namespace
 
 # Action Gateway
 helm install action-gateway ./action-gateway -n action-gateway --create-namespace
@@ -110,6 +110,6 @@ helm uninstall agent-core       -n agent-core
 helm uninstall reach-layer      -n reach-layer
 helm uninstall action-gateway   -n action-gateway
 helm uninstall trust-layer      -n trust-layer
-helm uninstall learning-layer   -n learning-layer
+helm uninstall observability-layer   -n observability-layer
 helm uninstall memory-layer     -n memory-layer
 ```

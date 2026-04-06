@@ -1,5 +1,5 @@
 """
-learning_layer/tests/test_main.py
+observability_layer/tests/test_main.py
 
 Tests for config-loading utilities in main.py: _load_config, _deep_merge,
 and _domain_config_path.
@@ -187,13 +187,13 @@ def _domain_config_path(service: str) -> Path:
 class TestDomainConfigPath:
     def test_returns_local_path_when_config_folder_not_set(self, monkeypatch):
         monkeypatch.delenv("CONFIG_FOLDER", raising=False)
-        result = _domain_config_path("learning_layer")
+        result = _domain_config_path("observability_layer")
         assert result == Path("config/domain.yaml")
 
     def test_returns_config_folder_path_when_set(self, monkeypatch, tmp_path):
         monkeypatch.setenv("CONFIG_FOLDER", str(tmp_path))
-        result = _domain_config_path("learning_layer")
-        assert result == tmp_path / "learning_layer.yaml"
+        result = _domain_config_path("observability_layer")
+        assert result == tmp_path / "observability_layer.yaml"
 
     def test_config_folder_path_uses_service_name(self, monkeypatch, tmp_path):
         monkeypatch.setenv("CONFIG_FOLDER", str(tmp_path))
@@ -202,5 +202,5 @@ class TestDomainConfigPath:
 
     def test_returns_local_path_when_config_folder_empty_string(self, monkeypatch):
         monkeypatch.setenv("CONFIG_FOLDER", "")
-        result = _domain_config_path("learning_layer")
+        result = _domain_config_path("observability_layer")
         assert result == Path("config/domain.yaml")

@@ -1,7 +1,7 @@
 """
-ConsoleLogger — PoC stub for the Learning Layer DPG.
+ConsoleLogger — PoC stub for the Observability Layer DPG.
 
-Implements the LearningLayerBase interface. Writes all observability events to the
+Implements the ObservabilityLayerBase interface. Writes all observability events to the
 Python logging system (structured JSON-compatible key-value pairs via `extra`).
 
 In production this is replaced by an async pipeline that writes to an audit database,
@@ -27,25 +27,25 @@ logger = logging.getLogger(__name__)
 
 class ConsoleLogger(ObservabilityLayerBase):
     """
-    Console-logging Learning Layer stub.
+    Console-logging Observability Layer stub.
 
     Accepts any dict-shaped event (to avoid a hard dependency on agent_core.models)
     and logs it as a structured entry. Attributes are accessed via getattr with
     a fallback to dict .get() so both dataclasses and plain dicts are supported.
 
     Args:
-        config: Full config dict. Reads learning_layer section.
+        config: Full config dict. Reads observability_layer section.
     """
 
     def __init__(self, config: dict) -> None:
         if config is None:
             raise ValueError("config must not be None")
 
-        ll_cfg = config.get("learning_layer", {})
+        ll_cfg = config.get("observability_layer", {})
         self._log_level: str = ll_cfg.get("log_level", "INFO").upper()
 
         logger.info(
-            "learning_layer.init",
+            "observability_layer.init",
             extra={
                 "operation": "console_logger.init",
                 "status": "success",
@@ -54,7 +54,7 @@ class ConsoleLogger(ObservabilityLayerBase):
         )
 
     # ------------------------------------------------------------------
-    # Public interface — mirrors LearningLayerBase
+    # Public interface — mirrors ObservabilityLayerBase
     # ------------------------------------------------------------------
 
     def emit_turn(self, event: Any) -> None:
@@ -67,7 +67,7 @@ class ConsoleLogger(ObservabilityLayerBase):
         try:
             if event is None:
                 logger.warning(
-                    "learning_layer.emit_turn_skipped",
+                    "observability_layer.emit_turn_skipped",
                     extra={
                         "operation": "console_logger.emit_turn",
                         "status": "skipped",
@@ -132,7 +132,7 @@ class ConsoleLogger(ObservabilityLayerBase):
             )
 
             logger.info(
-                "learning_layer.turn_event",
+                "observability_layer.turn_event",
                 extra={
                     "operation": "console_logger.emit_turn",
                     "status": "success",
@@ -150,9 +150,9 @@ class ConsoleLogger(ObservabilityLayerBase):
             )
 
         except Exception as e:
-            # Learning Layer must never crash the caller
+            # Observability Layer must never crash the caller
             logger.error(
-                "learning_layer.emit_turn_error",
+                "observability_layer.emit_turn_error",
                 extra={
                     "operation": "console_logger.emit_turn",
                     "status": "failure",
@@ -174,7 +174,7 @@ class ConsoleLogger(ObservabilityLayerBase):
         try:
             if signal_type is None:
                 logger.warning(
-                    "learning_layer.emit_signal_skipped",
+                    "observability_layer.emit_signal_skipped",
                     extra={
                         "operation": "console_logger.emit_signal",
                         "status": "skipped",
@@ -184,7 +184,7 @@ class ConsoleLogger(ObservabilityLayerBase):
                 return
 
             logger.info(
-                "learning_layer.signal_event",
+                "observability_layer.signal_event",
                 extra={
                     "operation": "console_logger.emit_signal",
                     "status": "success",
@@ -195,7 +195,7 @@ class ConsoleLogger(ObservabilityLayerBase):
 
         except Exception as e:
             logger.error(
-                "learning_layer.emit_signal_error",
+                "observability_layer.emit_signal_error",
                 extra={
                     "operation": "console_logger.emit_signal",
                     "status": "failure",

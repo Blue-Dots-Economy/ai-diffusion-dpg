@@ -16,7 +16,7 @@ The framework conceptually organizes the 7 DPG building blocks into functional a
 *   **Orchestration & Trust:** Agent Core and Trust Layer.
 *   **State & Memory:** Memory Layer.
 *   **Channels & Reach:** Reach Layer.
-*   **Learning & Observability:** Learning Layer.
+*   **Learning & Observability:** Observability Layer.
 
 The **Domain Configuration Kit** acts as the blueprint, configuring all 7 DPGs to serve a specific domain. The **Agent Core** serves as the central orchestrator, managing the flow of information between these blocks to process user interactions.
 
@@ -68,7 +68,7 @@ The **Domain Configuration Kit** acts as the blueprint, configuring all 7 DPGs t
 *   **Internal Components:** Campaign Orchestrator (for outbound tasks), Channel Adapter (normalizing across VOIP, WhatsApp, Web, etc.), Handoff Manager (for cross-channel transitions).
 *   **Interactions:** Receives user messages, normalizes them for the Agent Core, and delivers the processed responses to the user.
 
-### Learning Layer
+### Observability Layer
 **Role:** Asynchronous logging and observability layer that measures quality and feeds the improvement loop.
 *   **Output Streams:**
     *   **Audit Log:** Timstamped records of every prompt, response, and routing decision.
@@ -89,7 +89,7 @@ The standard processing flow for a single turn is as follows:
 7.  **Safety check (output):** Mandatory validation of LLM response via Trust Layer output rules.
 8.  **Response delivery:** Reach Layer delivers the response to the user's channel.
 9.  **State update (async):** Agent Core writes back to the Memory Layer.
-10. **Observability events (async):** Turn metadata and metrics are emitted to the Learning Layer.
+10. **Observability events (async):** Turn metadata and metrics are emitted to the Observability Layer.
 
 ## 6. Configuration Architecture
 
@@ -115,7 +115,7 @@ Each DPG maintains its own `config.yaml` for **operational settings that belong 
 | **Trust Layer** | Rule evaluation order, ML model thresholds, escalation sensitivity |
 | **Action Gateway** | Connector timeout, retry policy, circuit breaker settings |
 | **Reach Layer** | Channel adapter settings, handoff timeout, max message length |
-| **Learning Layer** | Emit batch size, flush interval, log retention settings |
+| **Observability Layer** | Emit batch size, flush interval, log retention settings |
 
 **Rule:** Domain Configuration Kit overrides service config where there is overlap. Service config provides defaults; the Domain Kit provides deployment-specific values.
 
@@ -133,7 +133,7 @@ The system uses a **Tool Execution Pattern** where the LLM does not touch extern
 *   The **Trust Layer** operates as a mandatory firewall for every I/O pass.
 *   The **Memory Layer** persists state across scopes and is updated asynchronously by the **Agent Core**.
 *   The **Action Gateway** is isolated from the LLM, acting only on instructions from the **Agent Core**.
-*   The **Learning Layer** runs entirely out-of-band (asynchronously) to prevent adding to the response latency.
+*   The **Observability Layer** runs entirely out-of-band (asynchronously) to prevent adding to the response latency.
 
 ### LLM Proxy
 Agent Core exposes an internal LLM proxy endpoint (`POST /internal/llm/call`). Any DPG service that needs LLM access in the future calls this endpoint instead of holding its own Anthropic API key — Agent Core remains the sole owner of the key and the sole caller of the Anthropic API.
@@ -181,6 +181,6 @@ The following layers are implemented as stubs that mimic their final interfaces 
 | **Trust Layer** | Basic rule checks (e.g., blocked phrases); no ML evaluation. |
 | **Action Gateway** | Mock API server returning synthetic responses for external calls. |
 | **Reach Layer** | CLI-based input/output (stdin/stdout). |
-| **Learning Layer** | Console logging of events; no full observability pipeline. |
+| **Observability Layer** | OTel instrumentation; no full observability pipeline. |
 
 **Architectural Continuity Rule:** Stub interfaces must strictly match the expected interface of their real implementations. This allows them to be replaced in future milestones without requiring changes to the Agent Core or other core modules.

@@ -24,7 +24,7 @@
 | Session | Redis hash, TTL-bound | Hot session state — current node, collection round, current question, signals, language, consent, loop count | Session-scoped (TTL from config) |
 | Persistent | Memgraph | User identity, profile, journey history, context graph | Permanent (with consent) |
 
-**Turn scope** is already handled by local variables inside Agent Core's `process_turn()` — `turn_id`, `current_user_message`, `normalised_input`, `nlu_result`, `rag_chunks`, `trust_input_result`. These are ephemeral Python variables that exist for one turn and are discarded after the response. No Memory Layer involvement needed. `turn_id` is generated as `uuid4()` at the start of each turn and passed to Learning Layer in `TurnEvent` for audit.
+**Turn scope** is already handled by local variables inside Agent Core's `process_turn()` — `turn_id`, `current_user_message`, `normalised_input`, `nlu_result`, `rag_chunks`, `trust_input_result`. These are ephemeral Python variables that exist for one turn and are discarded after the response. No Memory Layer involvement needed. `turn_id` is generated as `uuid4()` at the start of each turn and passed to Observability Layer in `TurnEvent` for audit.
 
 **Broadcast scope** is out of scope for this implementation.
 

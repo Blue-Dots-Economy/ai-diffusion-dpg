@@ -16,7 +16,7 @@ spec:
         app: {{ .Release.Name }}
     spec:
       containers:
-        - name: learning-layer
+        - name: observability-layer
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:

@@ -12,7 +12,7 @@ This CLI variant reads from stdin and POSTs to Agent Core via HTTP.
 Prerequisites (run each in a separate terminal before this):
     Terminal 1: cd memory_layer   && python main.py   (port 8002)
     Terminal 2: cd trust_layer    && python main.py   (port 8003)
-    Terminal 3: cd learning_layer && python main.py   (port 8004)
+    Terminal 3: cd observability_layer && python main.py   (port 8004)
     Terminal 4: cd knowledge_engine && python main.py (port 8001)
     Terminal 5: cd action_gateway && python main.py   (port 9999)
     Terminal 6: cd agent_core     && python main.py   (port 8000)

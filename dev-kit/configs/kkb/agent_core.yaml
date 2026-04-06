@@ -949,7 +949,7 @@ agent_workflow:
       system_prompt: |
         The user has chosen to end the call.
         Close warmly: "Dhanyavaad! Jab bhi zaroorat ho, hum yahan hain."
-        Flush session state. Emit termination event to Learning Layer.
+        Flush session state. Emit termination event to Observability Layer.
         If user_storage_mode = anonymous: Memory Layer will delete all profile data
         collected this session from Neo4j at flush time (DPDP-compliant erasure).
 

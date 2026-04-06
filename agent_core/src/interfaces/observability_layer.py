@@ -1,7 +1,7 @@
 """
-agent_core/interfaces/learning_layer.py
+agent_core/interfaces/observability_layer.py
 
-Contract that Agent Core requires from the Learning Layer DPG.
+Contract that Agent Core requires from the Observability Layer DPG.
 emit_turn() is always called asynchronously — after the response is delivered.
 Implementations must be non-blocking. Any blocking I/O must be done in a
 background thread or queue inside the implementation, not in this call.
@@ -13,7 +13,7 @@ from typing import Any
 from src.models import TurnEvent
 
 
-class LearningLayerBase(ABC):
+class ObservabilityLayerBase(ABC):
 
     @abstractmethod
     def emit_turn(self, event: TurnEvent) -> None:

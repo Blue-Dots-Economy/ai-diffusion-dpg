@@ -1,5 +1,5 @@
 # =============================================================================
-# Learning Layer DPG — Multi-stage Dockerfile
+# Observability Layer DPG — Multi-stage Dockerfile
 # =============================================================================
 # Stage 1 (builder): install dependencies into a venv via uv sync.
 # Stage 2 (runtime): copy only the venv and source — no build tools.
