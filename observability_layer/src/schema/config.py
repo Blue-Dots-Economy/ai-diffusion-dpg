@@ -14,7 +14,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class InstrumentType(str, Enum):
@@ -26,15 +26,17 @@ class InstrumentType(str, Enum):
 
 
 class LifecycleState(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     """One state in the domain outcome lifecycle state machine.
 
     Args:
         state: State name (e.g. "applied", "placed").
         trigger_tool: Tool name whose execution transitions into this state.
             None for the initial/entry state.
-        trigger_condition: Optional condition expression evaluated against
-            the tool call result. None means any invocation of trigger_tool
-            transitions to this state.
+        trigger_condition: Optional condition expression. Reserved for future
+            use — currently ignored. Any invocation of ``trigger_tool`` triggers
+            the state transition regardless of result.
     """
 
     state: str
@@ -43,6 +45,8 @@ class LifecycleState(BaseModel):
 
 
 class MetricDefinition(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     """A domain-defined OTel metric instrument.
 
     Args:
@@ -61,6 +65,8 @@ class MetricDefinition(BaseModel):
 
 
 class OutcomesConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     """Domain-specific outcome lifecycle and metrics configuration.
 
     Attributes:
@@ -82,8 +88,10 @@ class SLIConfig(BaseModel):
             by the Trust Layer (0.0–1.0). Exceeding this triggers an alert.
     """
 
-    turn_latency_p99_ms: int = 1200
-    trust_block_rate_max: float = 0.05
+    model_config = ConfigDict(frozen=True)
+
+    turn_latency_p99_ms: int = Field(default=1200, gt=0)
+    trust_block_rate_max: float = Field(default=0.05, ge=0.0, le=1.0)
 
 
 class AuditConfig(BaseModel):

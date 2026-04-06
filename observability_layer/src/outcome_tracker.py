@@ -39,13 +39,19 @@ class OutcomeTracker:
         self._counters: dict = {}
         self._gauges: dict = {}
         self._histograms: dict = {}
+        # Counters that carry a "state" attribute — used for per-state increments.
+        # Populated during __init__ from MetricDefinition.attributes.
+        self._state_counters: dict = {}
 
         for m in config.outcomes.metrics:
             try:
                 if m.instrument == InstrumentType.counter:
-                    self._counters[m.name] = meter.create_counter(
+                    instrument = meter.create_counter(
                         name=m.name, description=m.description, unit=m.unit,
                     )
+                    self._counters[m.name] = instrument
+                    if "state" in m.attributes:
+                        self._state_counters[m.name] = instrument
                 elif m.instrument == InstrumentType.gauge:
                     self._gauges[m.name] = meter.create_gauge(
                         name=m.name, description=m.description, unit=m.unit,
@@ -114,9 +120,16 @@ class OutcomeTracker:
         """
         for state_def in self._lifecycle:
             if state_def.trigger_tool and state_def.trigger_tool == tool_name:
-                attrs = {"intent": intent, "state": state_def.state}
+                # NOTE: trigger_condition evaluation is not yet implemented.
+                # Currently any invocation of trigger_tool triggers the state transition.
+                # Future: evaluate condition against tool call result dict.
+                attrs = {"intent": intent, "state": state_def.state, "session_id": session_id}
+                # Only increment counters that declare "state" as an attribute —
+                # these are per-state counters. Fall back to all counters if none
+                # are tagged with "state" (e.g. a config with no attribute annotations).
+                target_counters = self._state_counters if self._state_counters else self._counters
                 try:
-                    for counter in self._counters.values():
+                    for counter in target_counters.values():
                         counter.add(1, attrs)
                 except Exception as e:
                     logger.error(
