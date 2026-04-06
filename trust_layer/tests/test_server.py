@@ -347,3 +347,55 @@ def test_escalate_exception_returns_not_queued():
     })
     assert resp.status_code == 200
     assert resp.json()["queued"] is False  # fail-closed
+
+
+# ---------------------------------------------------------------------------
+# OTel span instrumentation tests
+# ---------------------------------------------------------------------------
+
+def test_check_input_emits_trust_span():
+    """POST /check/input must produce a trust.input_check span."""
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry import trace
+    from dpg_telemetry import _reset_for_testing
+
+    _reset_for_testing()
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    trace.set_tracer_provider(provider)
+
+    tl = TrustLayer(MINIMAL_CONFIG)
+    tc = TestClient(create_app(tl))
+    response = tc.post("/check/input", json={"session_id": "s1", "message": "hello"})
+    assert response.status_code == 200
+    spans = exporter.get_finished_spans()
+    span_names = [s.name for s in spans]
+    assert "trust.input_check" in span_names
+
+
+def test_check_output_emits_trust_span():
+    """POST /check/output must produce a trust.output_check span."""
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry import trace
+    from dpg_telemetry import _reset_for_testing
+
+    _reset_for_testing()
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    trace.set_tracer_provider(provider)
+
+    tl = TrustLayer(MINIMAL_CONFIG)
+    tc = TestClient(create_app(tl))
+    response = tc.post("/check/output", json={"session_id": "s1", "response": "Good answer."})
+    assert response.status_code == 200
+    spans = exporter.get_finished_spans()
+    span_names = [s.name for s in spans]
+    assert "trust.output_check" in span_names

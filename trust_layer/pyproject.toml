@@ -13,6 +13,8 @@ dependencies = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
     "python-dotenv>=1.0.0",
+    "observability-layer",
+    "opentelemetry-instrumentation-fastapi>=0.61b0",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +38,9 @@ omit = [
 [tool.coverage.report]
 fail_under = 70
 show_missing = true
+
+[tool.uv.sources]
+observability-layer = { path = "../observability_layer" }
 
 [dependency-groups]
 dev = [

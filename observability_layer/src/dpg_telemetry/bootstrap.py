@@ -101,11 +101,24 @@ def init_otel(service_name: str, config: dict) -> None:
 
 
 def reset_for_testing() -> None:
-    """Reset global OTel state. For use in tests only — do not call in production."""
+    """Reset global OTel state. For use in tests only — do not call in production.
+
+    Clears the "set-once" guards in the OTel API so that tests can install
+    their own TracerProvider and MeterProvider via the standard API calls.
+    After calling this function, the next ``trace.set_tracer_provider()`` and
+    ``metrics.set_meter_provider()`` calls will succeed without warnings.
+    """
     global _initialised
-    from opentelemetry.sdk.metrics import MeterProvider as _MeterProvider
-    from opentelemetry.sdk.trace import TracerProvider as _TracerProvider
+    import opentelemetry.trace as _trace_module
+    import opentelemetry.metrics._internal as _metrics_module
     with _lock:
         _initialised = False
-        trace.set_tracer_provider(_TracerProvider())
-        metrics.set_meter_provider(_MeterProvider())
+        # Clear the "set once" guards so test code can install custom providers.
+        if hasattr(_trace_module, "_TRACER_PROVIDER_SET_ONCE"):
+            _trace_module._TRACER_PROVIDER_SET_ONCE._done = False
+        if hasattr(_trace_module, "_TRACER_PROVIDER"):
+            _trace_module._TRACER_PROVIDER = None
+        if hasattr(_metrics_module, "_METER_PROVIDER_SET_ONCE"):
+            _metrics_module._METER_PROVIDER_SET_ONCE._done = False
+        if hasattr(_metrics_module, "_METER_PROVIDER"):
+            _metrics_module._METER_PROVIDER = None

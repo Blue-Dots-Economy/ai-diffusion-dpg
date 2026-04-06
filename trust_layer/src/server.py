@@ -22,6 +22,8 @@ import logging
 import time
 
 from fastapi import FastAPI
+from opentelemetry import trace as otel_trace
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
 from orchestrator import TrustLayer
 from models import (
@@ -63,75 +65,89 @@ def create_app(trust: TrustLayer) -> FastAPI:
         version="0.2.0",
     )
 
+    FastAPIInstrumentor.instrument_app(app)
+
     @app.post("/check/input")
     def check_input(request: InputCheckRequest) -> TrustCheckResponse:
         """Evaluate raw user input against content rules and topic firewall."""
         start = time.time()
         session_id = request.session_id
-        try:
-            result = trust.check_input(session_id, request.message, request.active_risks)
-            logger.info(
-                "trust_server.check_input",
-                extra={
-                    "operation": "server.check_input",
-                    "status": "success",
-                    "session_id": session_id,
-                    "action": result.get("action", "allow"),
-                    "latency_ms": int((time.time() - start) * 1000),
-                },
-            )
-            return TrustCheckResponse(
-                passed=result.get("passed", False),
-                action=result.get("action", "block"),
-                reason=result.get("reason"),
-            )
-        except Exception as e:
-            logger.error(
-                "trust_server.check_input_error",
-                extra={
-                    "operation": "server.check_input",
-                    "status": "failure",
-                    "session_id": session_id,
-                    "error": f"{type(e).__name__}: {e}",
-                    "latency_ms": int((time.time() - start) * 1000),
-                },
-            )
-            return TrustCheckResponse(passed=False, action="block")  # fail-closed
+        with otel_trace.get_tracer(__name__).start_as_current_span("trust.input_check") as span:
+            span.set_attribute("session_id", session_id)
+            try:
+                result = trust.check_input(session_id, request.message, request.active_risks)
+                action = result.get("action", "allow")
+                span.set_attribute("trust.action", action)
+                logger.info(
+                    "trust_server.check_input",
+                    extra={
+                        "operation": "server.check_input",
+                        "status": "success",
+                        "session_id": session_id,
+                        "action": action,
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+                return TrustCheckResponse(
+                    passed=result.get("passed", False),
+                    action=action,
+                    reason=result.get("reason"),
+                )
+            except Exception as e:
+                span.set_attribute("trust.action", "block")
+                span.record_exception(e)
+                logger.error(
+                    "trust_server.check_input_error",
+                    extra={
+                        "operation": "server.check_input",
+                        "status": "failure",
+                        "session_id": session_id,
+                        "error": f"{type(e).__name__}: {e}",
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+                return TrustCheckResponse(passed=False, action="block")  # fail-closed
 
     @app.post("/check/output")
     def check_output(request: OutputCheckRequest) -> TrustCheckResponse:
         """Evaluate LLM-generated response against output safety rules."""
         start = time.time()
         session_id = request.session_id
-        try:
-            result = trust.check_output(session_id, request.response)
-            logger.info(
-                "trust_server.check_output",
-                extra={
-                    "operation": "server.check_output",
-                    "status": "success",
-                    "session_id": session_id,
-                    "action": result.get("action", "allow"),
-                    "latency_ms": int((time.time() - start) * 1000),
-                },
-            )
-            return TrustCheckResponse(
-                passed=result.get("passed", False),
-                action=result.get("action", "block"),
-                reason=result.get("reason"),
-            )
-        except Exception as e:
-            logger.error(
-                "trust_server.check_output_error",
-                extra={
-                    "operation": "server.check_output",
-                    "status": "failure",
-                    "session_id": session_id,
-                    "error": f"{type(e).__name__}: {e}",
-                    "latency_ms": int((time.time() - start) * 1000),
-                },
-            )
-            return TrustCheckResponse(passed=False, action="block")  # fail-closed
+        with otel_trace.get_tracer(__name__).start_as_current_span("trust.output_check") as span:
+            span.set_attribute("session_id", session_id)
+            try:
+                result = trust.check_output(session_id, request.response)
+                action = result.get("action", "allow")
+                span.set_attribute("trust.action", action)
+                logger.info(
+                    "trust_server.check_output",
+                    extra={
+                        "operation": "server.check_output",
+                        "status": "success",
+                        "session_id": session_id,
+                        "action": action,
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+                return TrustCheckResponse(
+                    passed=result.get("passed", False),
+                    action=action,
+                    reason=result.get("reason"),
+                )
+            except Exception as e:
+                span.set_attribute("trust.action", "block")
+                span.record_exception(e)
+                logger.error(
+                    "trust_server.check_output_error",
+                    extra={
+                        "operation": "server.check_output",
+                        "status": "failure",
+                        "session_id": session_id,
+                        "error": f"{type(e).__name__}: {e}",
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+                return TrustCheckResponse(passed=False, action="block")  # fail-closed
 
     @app.post("/check/consent")
     def check_consent(request: ConsentCheckRequest) -> ConsentResponse:
