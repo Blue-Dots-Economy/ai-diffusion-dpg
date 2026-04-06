@@ -192,12 +192,12 @@ Mandatory safety gate. Stateless. Runs on every turn — never skipped. Structur
 
 **Internal sub-blocks:**
 
-| Sub-block | File | Responsibility |
+| Sub-block | File | Status | Responsibility |
 |---|---|---|
-| ContentBlock | `blocks/content.py` | Phrase-match input/output blocking and escalation routing. Receives `active_risks` from NLU. |
-| GuardrailsBlock | `blocks/guardrails.py` | Pre-LLM constraint assembly. Maps active risks → Policy Pack → prompt constraints, disclosures, action gates. |
-| ConsentBlock | `blocks/consent.py` | Evaluates user message against consent/decline phrases. Stateless — Agent Core owns flag management. |
-| HiTLBlock | `blocks/hitl.py` | Escalation queue. Returns `holding_message` and `ticket_id`. Queue backend configurable (log → Redis/webhook). |
+| ContentBlock | `blocks/content.py` | ✅ | Phrase-match input/output blocking and escalation routing. Receives `active_risks` from NLU. |
+| GuardrailsBlock | `blocks/guardrails.py` | ✅ | Pre-LLM constraint assembly. Maps active risks → Policy Pack → prompt constraints, disclosures, action gates. |
+| ConsentBlock | `blocks/consent.py` | ✅ | Evaluates user message against consent/decline phrases. Stateless — Agent Core owns flag management. |
+| HiTLBlock | `blocks/hitl.py` | 🟡 | Escalation queue. Returns `holding_message` and `ticket_id`. Queue backend configurable (log → Redis/webhook). |
 
 **Endpoints:**
 
@@ -258,7 +258,16 @@ Normalises inbound channels and delivers responses.
 
 **Approved exception:** The web adapter's session-restore feature calls Memory Layer `GET /users/{user_id}/active-history` directly before the first turn. This is a scoped exception for the dev/demo web adapter only — all other state access routes through Agent Core.
 
-**Planned production channels:** WhatsApp (Gupshup/Twilio), VOIP (Exotel/Twilio, inbound 5226), Mobile SDK. Outbound campaigns: re-engagement, alerts, follow-through.
+**Channel implementation status:**
+
+| Channel | Status | Notes |
+|---------|--------|-------|
+| CLI (stdin/stdout) | ✅ | `CLIReachLayer` — dev/test REPL |
+| Web UI | ✅ | FastAPI + single-page chat UI on port 8005; session restore via `GET /user-history/{user_id}` |
+| Voice / VOIP | ⏳ | Exotel/Twilio, inbound 5226 — pending |
+| WhatsApp | ⏳ | Gupshup/Twilio webhook — pending |
+| Mobile SDK | ⏳ | Pending |
+| Outbound campaigns | ⏳ | Re-engagement, alerts, follow-through — pending |
 
 **Key files:**
 - `reach_layer/src/cli_reach.py` — CLI stdin/stdout adapter
