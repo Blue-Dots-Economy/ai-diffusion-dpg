@@ -139,18 +139,21 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # Learning Layer — async observability (port 8004)
+  # Observability Layer — async observability (port 8004)
   # ---------------------------------------------------------------------------
-  learning_layer:
-    image: sanketikahub/dpg-learning-layer:0.1.0
-    container_name: learning_layer
+  observability_layer:
+    image: sanketikahub/dpg-observability-layer:0.1.0
+    container_name: observability_layer
     environment:
       - CONFIG_FOLDER=/app/config
     volumes:
-      - ../../dev-kit/dpg/learning_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/kkb/learning_layer.yaml:/app/config/learning_layer.yaml:ro
+      - ../../dev-kit/dpg/observability_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../dev-kit/configs/kkb/observability_layer.yaml:/app/config/observability_layer.yaml:ro
     networks:
       - dpg_net
+    depends_on:
+      otelcol:
+        condition: service_healthy
     deploy:
       resources:
         limits:
@@ -247,7 +250,7 @@ services:
         condition: service_healthy
       trust_layer:
         condition: service_healthy
-      learning_layer:
+      observability_layer:
         condition: service_healthy
       action_gateway:
         condition: service_healthy
@@ -288,6 +291,109 @@ services:
       timeout: 8s
       retries: 3
       start_period: 15s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # OTel Collector — receives OTLP, fans out to Jaeger / Prometheus / Loki
+  # ---------------------------------------------------------------------------
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:0.96.0
+    container_name: otelcol
+    command: ["--config=/etc/otelcol/otelcol-config.yaml"]
+    volumes:
+      - ./otelcol/otelcol-config.yaml:/etc/otelcol/otelcol-config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # Prometheus metrics scrape endpoint
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133/"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Jaeger — distributed trace UI (port 16686)
+  # ---------------------------------------------------------------------------
+  jaeger:
+    image: jaegertracing/all-in-one:1.55
+    container_name: jaeger
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "14250:14250"   # gRPC from Collector
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 256M
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Prometheus — metrics store (port 9090)
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.50.1
+    container_name: prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 256M
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Loki — log aggregation (port 3100)
+  # ---------------------------------------------------------------------------
+  loki:
+    image: grafana/loki:2.9.4
+    container_name: loki
+    ports:
+      - "3100:3100"
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 256M
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Grafana — dashboards UI (port 3000)
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:10.3.3
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 256M
     restart: unless-stopped
 
 networks:
