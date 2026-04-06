@@ -58,3 +58,15 @@ def test_init_otel_empty_config_does_not_raise():
     from dpg_telemetry import init_otel, _reset_for_testing
     _reset_for_testing()
     init_otel("svc", {})  # empty config should use defaults, not raise
+
+
+def test_build_resource_none_config_does_not_raise():
+    from dpg_telemetry.resource import build_resource
+    resource = build_resource("agent_core", None)
+    assert resource.attributes["dpg.domain"] == "unknown"
+
+
+def test_init_otel_none_config_does_not_raise():
+    from dpg_telemetry import init_otel, _reset_for_testing
+    _reset_for_testing()
+    init_otel("svc", None)  # must not raise

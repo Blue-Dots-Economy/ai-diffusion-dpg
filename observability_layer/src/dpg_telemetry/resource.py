@@ -21,9 +21,10 @@ def build_resource(service_name: str, config: dict) -> Resource:
     """
     obs_cfg = (config or {}).get("observability", {})
     domain = obs_cfg.get("domain", "unknown")
+    version = obs_cfg.get("service_version", "0.1.0")
     return Resource.create({
         "service.name": service_name,
         "dpg.block": service_name,
         "dpg.domain": domain,
-        "service.version": "0.1.0",
+        "service.version": version,
     })

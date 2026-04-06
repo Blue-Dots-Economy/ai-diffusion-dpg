@@ -31,7 +31,7 @@ def init_otel(service_name: str, config: dict) -> None:
     _bootstrap_init(service_name, config)
 
 
-def get_tracer(name: str):
+def get_tracer(name: str) -> "trace.Tracer":
     """Return an OTel Tracer for the given instrumentation scope.
 
     Args:
@@ -43,7 +43,7 @@ def get_tracer(name: str):
     return trace.get_tracer(name)
 
 
-def get_meter(name: str):
+def get_meter(name: str) -> "metrics.Meter":
     """Return an OTel Meter for the given instrumentation scope.
 
     Args:
