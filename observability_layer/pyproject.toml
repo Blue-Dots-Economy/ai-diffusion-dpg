@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "learning_layer"
+name = "observability-layer"
 version = "0.1.0"
-description = "Learning Layer stub — console logger for KKB PoC observability"
+description = "Observability Layer — OpenTelemetry-compliant observability DPG block"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110",
@@ -13,11 +13,10 @@ dependencies = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
     "python-dotenv>=1.0.0",
+    "opentelemetry-api>=1.20",
+    "opentelemetry-sdk>=1.20",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.20",
 ]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = [".", "src"]
 
 [project.optional-dependencies]
 dev = [
@@ -25,6 +24,13 @@ dev = [
     "pytest-cov>=5.0",
     "pytest-mock>=3.0",
 ]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "src"]
 
 [tool.coverage.run]
 source = ["src"]
@@ -36,3 +42,8 @@ omit = [
 [tool.coverage.report]
 fail_under = 70
 show_missing = true
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+]

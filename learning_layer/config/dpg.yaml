@@ -1,8 +1,0 @@
-# learning_layer/config/dpg.yaml — DPG framework defaults.
-
-server:
-  host: "0.0.0.0"
-  port: 8004
-
-learning_layer:
-  log_level: "INFO"
