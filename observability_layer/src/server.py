@@ -1,15 +1,17 @@
 """
-learning_layer/src/server.py
+observability_layer/src/server.py
 
-FastAPI server wrapping ConsoleLogger.
+FastAPI server wrapping OtelObservabilityLayer.
 Port: 8004
 
 Exposes:
-  POST /emit/turn    — log a TurnEvent
-  POST /emit/signal  — log a discrete signal event
-  GET  /health       — liveness probe
-"""
+  POST /emit/turn      — process a TurnEvent (outcome tracking + metrics)
+  POST /emit/signal    — process a discrete signal event
+  GET  /validate-config — return loaded domain name (config validation check)
+  GET  /health         — liveness probe
 
+Belongs to the Observability Layer DPG block.
+"""
 from __future__ import annotations
 
 import logging
@@ -19,13 +21,14 @@ from typing import Any, List, Optional
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from console_logger import ConsoleLogger
+from otel_observability_layer import OtelObservabilityLayer
+from schema.config import ObservabilityConfig
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Pydantic schemas
+# Pydantic request/response schemas
 # ---------------------------------------------------------------------------
 
 
@@ -43,11 +46,14 @@ class TrustCheckResultSchema(BaseModel):
 
 class TurnEventRequest(BaseModel):
     session_id: str
+    turn_id: str = ""
+    trace_id: str = ""
     response_text: str
     tool_calls: List[ToolCallSchema] = []
     trust_input_result: TrustCheckResultSchema
     trust_output_result: TrustCheckResultSchema
     model_used: str
+    intent: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
     latency_ms: int = 0
@@ -63,52 +69,52 @@ class StatusResponse(BaseModel):
     status: str
 
 
+class ConfigValidationResponse(BaseModel):
+    status: str
+    domain: str
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
 
 
-def create_app(learning: ConsoleLogger) -> FastAPI:
-    """
-    Factory that wires the ConsoleLogger instance into the FastAPI app.
+def create_app(observability: OtelObservabilityLayer, obs_config: ObservabilityConfig) -> FastAPI:
+    """Create the FastAPI application wired to OtelObservabilityLayer.
 
     Args:
-        learning: Pre-constructed ConsoleLogger instance.
+        observability: Pre-constructed OtelObservabilityLayer instance.
+        obs_config: Validated ObservabilityConfig for this domain.
 
     Returns:
         Configured FastAPI application.
+
+    Raises:
+        ValueError: If observability or obs_config is None.
     """
-    if learning is None:
-        raise ValueError("learning must not be None")
+    if observability is None:
+        raise ValueError("observability must not be None")
+    if obs_config is None:
+        raise ValueError("obs_config must not be None")
 
     app = FastAPI(
-        title="Learning Layer Service",
-        description="Observability and audit logging service for the DPG AI framework.",
+        title="Observability Layer Service",
+        description="OpenTelemetry-compliant observability DPG block.",
         version="0.1.0",
     )
 
-    # ------------------------------------------------------------------
-    # Endpoints
-    # ------------------------------------------------------------------
-
     @app.post("/emit/turn")
     def emit_turn(request: TurnEventRequest) -> StatusResponse:
-        """Log turn-level observability data."""
+        """Process a turn event — outcome tracking and OTel metrics."""
         start = time.time()
-        session_id = request.session_id
-
         try:
-            # Build a dict compatible with ConsoleLogger.emit_turn()
-            # ConsoleLogger accepts both dataclasses and plain dicts via _get()
             event_dict = {
-                "session_id": session_id,
+                "session_id": request.session_id,
+                "turn_id": request.turn_id,
+                "trace_id": request.trace_id,
                 "response_text": request.response_text,
                 "tool_calls": [
-                    {
-                        "tool_name": tc.tool_name,
-                        "tool_use_id": tc.tool_use_id,
-                        "input_params": tc.input_params,
-                    }
+                    {"tool_name": tc.tool_name, "tool_use_id": tc.tool_use_id, "input_params": tc.input_params}
                     for tc in request.tool_calls
                 ],
                 "trust_input_result": {
@@ -122,48 +128,43 @@ def create_app(learning: ConsoleLogger) -> FastAPI:
                     "reason": request.trust_output_result.reason,
                 },
                 "model_used": request.model_used,
+                "intent": request.intent,
                 "input_tokens": request.input_tokens,
                 "output_tokens": request.output_tokens,
                 "latency_ms": request.latency_ms,
                 "timestamp_ms": request.timestamp_ms,
             }
-
-            learning.emit_turn(event_dict)
-
+            observability.emit_turn(event_dict)
             logger.info(
-                "learning_server.emit_turn",
+                "observability_server.emit_turn",
                 extra={
                     "operation": "server.emit_turn",
                     "status": "success",
-                    "session_id": session_id,
+                    "session_id": request.session_id,
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
-
         except Exception as e:
             logger.error(
-                "learning_server.emit_turn_error",
+                "observability_server.emit_turn_error",
                 extra={
                     "operation": "server.emit_turn",
                     "status": "failure",
-                    "session_id": session_id,
+                    "session_id": request.session_id,
                     "error": f"{type(e).__name__}: {e}",
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
-
         return StatusResponse(status="ok")
 
     @app.post("/emit/signal")
     def emit_signal(request: SignalRequest) -> StatusResponse:
-        """Log a discrete signal event."""
+        """Process a discrete signal event."""
         start = time.time()
-
         try:
-            learning.emit_signal(request.signal_type, request.data)
-
+            observability.emit_signal(request.signal_type, request.data)
             logger.info(
-                "learning_server.emit_signal",
+                "observability_server.emit_signal",
                 extra={
                     "operation": "server.emit_signal",
                     "status": "success",
@@ -171,10 +172,9 @@ def create_app(learning: ConsoleLogger) -> FastAPI:
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
-
         except Exception as e:
             logger.error(
-                "learning_server.emit_signal_error",
+                "observability_server.emit_signal_error",
                 extra={
                     "operation": "server.emit_signal",
                     "status": "failure",
@@ -183,8 +183,12 @@ def create_app(learning: ConsoleLogger) -> FastAPI:
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
-
         return StatusResponse(status="ok")
+
+    @app.get("/validate-config")
+    def validate_config() -> ConfigValidationResponse:
+        """Return the loaded domain name as a config validation check."""
+        return ConfigValidationResponse(status="ok", domain=obs_config.domain)
 
     @app.get("/health")
     def health() -> StatusResponse:

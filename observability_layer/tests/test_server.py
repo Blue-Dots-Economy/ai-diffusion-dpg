@@ -1,28 +1,28 @@
 """
-learning_layer/tests/test_server.py
+observability_layer/tests/test_server.py
 
-Unit tests for the Learning Layer FastAPI server (src/server.py).
+Unit tests for the Observability Layer FastAPI server (src/server.py).
 Uses FastAPI TestClient — no real HTTP calls made.
 """
 
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from server import create_app
-from console_logger import ConsoleLogger
+from schema.config import ObservabilityConfig
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-MINIMAL_CONFIG = {"learning_layer": {"log_level": "INFO"}}
-
 _TRUST_ALLOW = {"passed": True, "action": "allow", "reason": None}
 
 _VALID_TURN_PAYLOAD = {
-    "session_id": "sess-learn-1",
+    "session_id": "sess-obs-1",
+    "turn_id": "t1",
+    "trace_id": "abc",
     "response_text": "Hubli mein electrician kaam milta hai.",
     "tool_calls": [],
     "trust_input_result": _TRUST_ALLOW,
@@ -35,14 +35,30 @@ _VALID_TURN_PAYLOAD = {
 }
 
 
-@pytest.fixture
-def learning():
-    return ConsoleLogger(MINIMAL_CONFIG)
+def _make_layer():
+    with patch("otel_observability_layer.get_tracer", return_value=MagicMock()), \
+         patch("otel_observability_layer.get_meter", return_value=MagicMock()):
+        from otel_observability_layer import OtelObservabilityLayer
+        return OtelObservabilityLayer({})
+
+
+def _make_obs_config():
+    return ObservabilityConfig.from_config({})
 
 
 @pytest.fixture
-def client(learning):
-    app = create_app(learning)
+def observability():
+    return _make_layer()
+
+
+@pytest.fixture
+def obs_config():
+    return _make_obs_config()
+
+
+@pytest.fixture
+def client(observability, obs_config):
+    app = create_app(observability, obs_config)
     return TestClient(app)
 
 
@@ -50,9 +66,14 @@ def client(learning):
 # create_app validation
 # ---------------------------------------------------------------------------
 
-def test_create_app_none_raises():
-    with pytest.raises(ValueError, match="learning must not be None"):
-        create_app(None)
+def test_create_app_none_observability_raises():
+    with pytest.raises(ValueError, match="observability must not be None"):
+        create_app(None, _make_obs_config())
+
+
+def test_create_app_none_obs_config_raises():
+    with pytest.raises(ValueError, match="obs_config must not be None"):
+        create_app(_make_layer(), None)
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +84,18 @@ def test_health_returns_ok(client):
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# GET /validate-config
+# ---------------------------------------------------------------------------
+
+def test_validate_config_returns_domain(client):
+    response = client.get("/validate-config")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert "domain" in body
 
 
 # ---------------------------------------------------------------------------
@@ -92,18 +125,18 @@ def test_emit_turn_empty_tool_calls_returns_ok(client):
     assert response.status_code == 200
 
 
-def test_emit_turn_calls_learning_emit_turn(learning):
-    learning.emit_turn = MagicMock()
-    app = create_app(learning)
+def test_emit_turn_calls_observability_emit_turn(observability, obs_config):
+    observability.emit_turn = MagicMock()
+    app = create_app(observability, obs_config)
     tc = TestClient(app)
     tc.post("/emit/turn", json=_VALID_TURN_PAYLOAD)
-    learning.emit_turn.assert_called_once()
+    observability.emit_turn.assert_called_once()
 
 
-def test_emit_turn_exception_still_returns_ok():
-    mock_learning = MagicMock()
-    mock_learning.emit_turn.side_effect = RuntimeError("emit error")
-    app = create_app(mock_learning)
+def test_emit_turn_exception_still_returns_ok(obs_config):
+    mock_obs = MagicMock()
+    mock_obs.emit_turn.side_effect = RuntimeError("emit error")
+    app = create_app(mock_obs, obs_config)
     tc = TestClient(app)
     response = tc.post("/emit/turn", json=_VALID_TURN_PAYLOAD)
     assert response.status_code == 200
@@ -141,18 +174,18 @@ def test_emit_signal_empty_data_returns_ok(client):
     assert response.json()["status"] == "ok"
 
 
-def test_emit_signal_calls_learning_emit_signal(learning):
-    learning.emit_signal = MagicMock()
-    app = create_app(learning)
+def test_emit_signal_calls_observability_emit_signal(observability, obs_config):
+    observability.emit_signal = MagicMock()
+    app = create_app(observability, obs_config)
     tc = TestClient(app)
     tc.post("/emit/signal", json={"signal_type": "escalation_triggered", "data": {"reason": "topic"}})
-    learning.emit_signal.assert_called_once_with("escalation_triggered", {"reason": "topic"})
+    observability.emit_signal.assert_called_once_with("escalation_triggered", {"reason": "topic"})
 
 
-def test_emit_signal_exception_still_returns_ok():
-    mock_learning = MagicMock()
-    mock_learning.emit_signal.side_effect = RuntimeError("signal error")
-    app = create_app(mock_learning)
+def test_emit_signal_exception_still_returns_ok(obs_config):
+    mock_obs = MagicMock()
+    mock_obs.emit_signal.side_effect = RuntimeError("signal error")
+    app = create_app(mock_obs, obs_config)
     tc = TestClient(app)
     response = tc.post("/emit/signal", json={"signal_type": "test", "data": {}})
     assert response.status_code == 200
