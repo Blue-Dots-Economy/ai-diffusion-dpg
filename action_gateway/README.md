@@ -8,9 +8,9 @@ The framework's only interface with the external world. All external API calls g
 
 The Action Gateway executes external API calls on behalf of the LLM. The LLM expresses intent by returning a `tool_use` block — it never calls external systems directly. Agent Core detects the tool request, routes it to the Action Gateway, and feeds the normalised result back into the conversation.
 
-For the PoC, this is a mock FastAPI server (`mock_server.py`) that returns hardcoded fixture data for the ONEST market lookup API. The fixture data mirrors what the real ONEST API would return for the Hubli labour market.
+For the PoC, this is a mock FastAPI server (`mock_server.py`) that returns hardcoded fixture data. The PoC includes two connectors: `onest_market_lookup` (read) and `onest_apply` (write, requires Trust Layer consent).
 
-**Write connector rule:** Any connector of type `write` or `identity` requires explicit user consent via the Trust Layer before execution. The PoC only includes a `read` connector (market lookup), so no consent flow is triggered.
+**Write connector rule:** Any connector of type `write` or `identity` requires explicit user consent via Trust Layer `POST /check/consent` before Agent Core will execute it. The PoC always returns `granted: true` for non-blocked connectors.
 
 ---
 
@@ -61,6 +61,30 @@ This endpoint simulates the real ONEST network API. In production, this call wou
 }
 ```
 
+### `POST /onest/apply`
+
+Submits a job application for a user to an employer on the ONEST network. Requires Trust Layer consent before Agent Core will call this endpoint.
+
+**Request:**
+```json
+{
+  "user_id": "user-abc123",
+  "trade": "electrician",
+  "employer": "Hubli Distribution Co",
+  "location": "Hubli"
+}
+```
+
+**Response:**
+```json
+{
+  "applied": true,
+  "application_id": "app-mock-001",
+  "employer": "Hubli Distribution Co",
+  "status": "submitted"
+}
+```
+
 ---
 
 ## Fixture data (PoC)
@@ -97,7 +121,25 @@ connectors:
         distance_km:
           type: integer
           description: "Search radius in kilometres (default 50)"
+  write:
+    - name: onest_apply
+      description: "Submit a job application for a user to an employer on the ONEST network"
+      parameters:
+        user_id:
+          type: string
+          description: "Unique user identifier"
+        trade:
+          type: string
+          description: "Trade or occupation"
+        employer:
+          type: string
+          description: "Employer name to apply to"
+        location:
+          type: string
+          description: "Location of the job"
 ```
+
+> **Note:** Write connectors (`onest_apply`) require explicit user consent via Trust Layer `POST /check/consent` before Agent Core will execute them. The PoC always returns `granted: true` for non-blocked connectors.
 
 ---
 
@@ -113,9 +155,8 @@ connectors:
 ## Running the service
 
 ```bash
-source ../.venv/bin/activate
 cd action_gateway
-uvicorn src.mock_server:app --port 9999
+uv run uvicorn src.mock_server:app --port 9999
 ```
 
 ---

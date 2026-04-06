@@ -54,13 +54,13 @@ The framework assembles AI-powered voice/chat systems from **7 standardised DPG 
 
 **Knowledge Engine** — assembles the full LLM prompt. Receives NLU results and session state from Agent Core in the request body; does **not** call Memory Layer directly. Stateless. Internal components: Glossary & Domain Vocabulary, Static Knowledge Base (semantic RAG), Multimodal Input Handler.
 
-**Memory Layer** — manages state at three scopes: Turn (current cycle), Session (conversation), Persistent (cross-session user profile). Agent Core reads at turn start and writes asynchronously after response delivery.
+**Memory Layer** — manages state at three scopes: Turn/Session (Redis with RedisJSON, TTL), Context Graph (Memgraph — typed attribute nodes per session), and Persistent cross-session profile. Agent Core reads at turn start and writes asynchronously after response delivery.
 
-**Trust Layer** — mandatory safety gate. Runs **twice per turn**: once on input before the LLM, once on output before delivery. Never skipped. Enforces content rules, output rules, consent rules (DPDP Act), escalation rules, and topic firewall.
+**Trust Layer** — mandatory safety gate. Runs **twice per turn**: once on input before the LLM, once on output before delivery. Never skipped. Four sub-blocks: ContentBlock, GuardrailsBlock, ConsentBlock, HiTLBlock. Exposes endpoints: `/check/input`, `/assemble_constraints`, `/check/output`, `/consent/verify`, `/check/consent`, `/escalate`. Enforces content rules, output rules, consent rules (DPDP Act), escalation rules, and topic firewall.
 
 **Action Gateway** — sole interface with external systems. Executes tool calls expressed by the LLM; the LLM never calls APIs directly. Returns normalised results to Agent Core. Write/identity connectors require Trust Layer consent before execution.
 
-**Reach Layer** — normalises inbound channels (VOIP, WhatsApp, Web, Mobile SDK) and delivers responses. Manages outbound campaigns and cross-channel handoffs.
+**Reach Layer** — normalises inbound channels (VOIP, WhatsApp, Web, Mobile SDK) and delivers responses. Manages outbound campaigns and cross-channel handoffs. Also includes a web channel adapter; see approved exception below regarding `GET /user-history` calling Memory Layer directly.
 
 **Observability Layer** — async-only observability. Emits turn events after response delivery; never in the response path. Produces audit log, quality scores, feedback signals, and outcome tracking.
 
@@ -69,13 +69,15 @@ The framework assembles AI-powered voice/chat systems from **7 standardised DPG 
 ```
 Reach Layer (input)
   → Agent Core: read state ← Memory Layer
-  → Agent Core: input safety check → Trust Layer
+  → Agent Core: consent gate (if ask_for_consent: true in config)
+  → Agent Core: NLU (internal) → early exit if low-confidence
+  → Agent Core: input safety check → Trust Layer /check/input
   → Agent Core: Language Normalisation (internal)
-  → Agent Core: NLU (internal) → early exit if unknown/low-confidence
-  → Agent Core: assemble prompt → Knowledge Engine
+  → Agent Core: POST /assemble_constraints → Trust Layer (if active_risks present)
+  → Agent Core: Manager Agent selects subagent + tools
   → Agent Core: LLM call #1
   → [tool_use] Agent Core: execute tool → Action Gateway → LLM call #2
-  → Agent Core: output safety check → Trust Layer
+  → Agent Core: output safety check → Trust Layer /check/output
   → Agent Core: deliver response → Reach Layer
   → [async] write state → Memory Layer
   → [async] emit events → Observability Layer
@@ -107,7 +109,7 @@ Only Agent Core initiates calls to other blocks. No other cross-module calls exi
 
 Full implementations: **Agent Core**, **Knowledge Engine**, **Domain Configuration Kit**.
 
-Stubs (same interfaces, lightweight behaviour): Memory Layer (in-process store), Trust Layer (blocked-phrase checks), Action Gateway (mock JSON responses), Reach Layer (CLI stdin/stdout), Observability Layer (OTel instrumentation).
+Stubs (same interfaces, lightweight behaviour): Memory Layer (Redis + Memgraph context graph), Trust Layer (ContentBlock, GuardrailsBlock, ConsentBlock, HiTLBlock — phrase-match + guardrail assembly + consent evaluation + escalation queue), Action Gateway (mock JSON responses), Reach Layer (CLI stdin/stdout), Observability Layer (OTel instrumentation).
 
 **Stub interfaces must exactly match the real interface** — they must be replaceable without changing Agent Core or other modules.
 

@@ -8,7 +8,9 @@ Manages inbound and outbound communication channels. For the PoC: a CLI REPL ove
 
 The Reach Layer normalises communication across all channels (WhatsApp, VOIP, Web, Mobile SDK) and presents a uniform interface to Agent Core. In the other direction, it delivers Agent Core's response back to the user on the originating channel.
 
-For the PoC, the only channel is a CLI REPL (`CLIReachLayer`). It reads one line from stdin, sends it to Agent Core via HTTP, and prints the response to stdout. The interface is identical to what a production channel adapter would implement.
+For the PoC, two adapters are included:
+- **CLI REPL** (`CLIReachLayer` in `src/cli_reach.py`): Reads one line from stdin, sends it to Agent Core via HTTP, and prints the response to stdout.
+- **Web channel adapter** (`server.py`): A FastAPI app that includes a `GET /user-history/{user_id}` endpoint. This endpoint calls the Memory Layer directly to restore chat history before the first turn. This is a deliberate, scoped exception for the dev/demo web adapter — all other cross-module state access must go through Agent Core. Future production channel adapters must route state retrieval through Agent Core.
 
 Each CLI session generates a UUID session ID at startup and reuses it for the entire conversation. This maintains conversation continuity — Agent Core can retrieve the session state from Memory Layer on every turn.
 
@@ -19,6 +21,7 @@ Each CLI session generates a UUID session ID at startup and reuses it for the en
 ```
 reach_layer/
 ├── main.py                 # CLI entrypoint — starts the REPL loop
+├── server.py               # FastAPI web channel adapter (GET /user-history/{user_id})
 ├── pyproject.toml
 ├── config/
 │   └── config.yaml         # CLI prompts, agent_core endpoint, timeout
@@ -33,12 +36,11 @@ reach_layer/
 
 ## Running the CLI
 
-Start all backend services first (Agent Core, Knowledge Engine, Memory, Trust, Learning, Action Gateway), then:
+Start all backend services first (Agent Core, Knowledge Engine, Memory, Trust, Observability, Action Gateway), then:
 
 ```bash
-source ../.venv/bin/activate
 cd reach_layer
-python main.py
+uv run python main.py
 ```
 
 The REPL starts with `You: `. Type any message and press Enter. The agent's response is printed after `Agent: `. Type `quit` or `exit` to end the session, or press Ctrl+D.

@@ -1,6 +1,6 @@
 # Trust Layer DPG
 
-Mandatory safety and compliance gate. Every input and every output passes through this layer.
+Mandatory safety and compliance gate. Every input and every output passes through this layer — never skipped.
 
 ---
 
@@ -8,9 +8,14 @@ Mandatory safety and compliance gate. Every input and every output passes throug
 
 The Trust Layer enforces content safety, consent, and escalation rules on every turn. Agent Core calls it twice per turn — once on the raw user input (before the LLM sees it) and once on the LLM output (before it reaches the user). Neither check is skippable.
 
-For the PoC, this is `BasicTrustLayer`: phrase-based matching with no ML model. The interface is identical to what a production ML-backed guardrails engine would implement.
+The Trust Layer is composed of four sub-blocks:
 
-**Fail-open behaviour:** If the Trust Layer service is unreachable, Agent Core's HTTP client returns a default "allow" result rather than blocking the turn. This prevents the Trust Layer from becoming a hard dependency that crashes the conversation. Production deployments should change this to fail-closed.
+- **ContentBlock** (`blocks/content.py`): Phrase-match input/output blocking and escalation routing. Receives `active_risks` from NLU when available.
+- **GuardrailsBlock** (`blocks/guardrails.py`): Pre-LLM constraint assembly. Maps active risks → Policy Pack → prompt constraints, required disclosures, action gates, and refusal templates.
+- **ConsentBlock** (`blocks/consent.py`): Evaluates user message against consent/decline phrases from config. Stateless — Agent Core owns flag management and writes `user_storage_mode` to Memory Layer.
+- **HiTLBlock** (`blocks/hitl.py`): Escalation queue. Returns `holding_message` and `ticket_id`. Queue backend is configurable (`log` → `redis` → `webhook`).
+
+**Fail-closed:** All endpoints return `block` or `deny` on internal error. A failing Trust Layer never allows a turn through.
 
 ---
 
@@ -21,12 +26,22 @@ trust_layer/
 ├── main.py                 # Uvicorn entrypoint (port 8003)
 ├── pyproject.toml
 ├── config/
-│   └── config.yaml         # Blocked phrases, escalation topics, output rules
+│   └── config.yaml         # Blocked phrases, escalation topics, consent phrases, Policy Pack
 ├── src/
-│   ├── guardrails.py       # BasicTrustLayer — TrustLayerBase implementation
+│   ├── orchestrator.py     # TrustLayer orchestrator — routes requests to sub-blocks
+│   ├── models.py           # All Pydantic request/response types
+│   ├── consent_store.py    # SQLite consent store (in-process only)
+│   ├── blocks/
+│   │   ├── content.py      # ContentBlock
+│   │   ├── guardrails.py   # GuardrailsBlock
+│   │   ├── consent.py      # ConsentBlock
+│   │   └── hitl.py         # HiTLBlock
 │   └── server.py           # FastAPI app (all endpoints)
 └── tests/
+    ├── test_content.py
     ├── test_guardrails.py
+    ├── test_consent.py
+    ├── test_hitl.py
     └── test_server.py
 ```
 
@@ -38,11 +53,15 @@ The service runs on port **8003**.
 
 ### `POST /check/input`
 
-Check a user message before it reaches the LLM.
+Pre-LLM phrase-match and risk-signal input check. Returns `allow`, `block`, or `escalate`.
 
 **Request:**
 ```json
-{ "session_id": "sess-abc123", "message": "electrician ka kaam chahiye" }
+{
+  "session_id": "sess-abc123",
+  "message": "electrician ka kaam chahiye",
+  "active_risks": []
+}
 ```
 
 **Response — allowed:**
@@ -60,9 +79,31 @@ Check a user message before it reaches the LLM.
 { "passed": false, "action": "escalate", "reason": "Escalation topic detected: 'suicide'" }
 ```
 
+### `POST /assemble_constraints`
+
+Pre-LLM, called after input passes. Returns guardrail control artifacts for injection into the system prompt.
+
+**Request:**
+```json
+{
+  "session_id": "sess-abc123",
+  "active_risks": ["job_scam_risk"]
+}
+```
+
+**Response:**
+```json
+{
+  "prompt_constraints": ["Do not promise guaranteed placements."],
+  "required_disclosures": ["This is an AI assistant. All information is advisory only."],
+  "action_gates": [],
+  "refusal_templates": {}
+}
+```
+
 ### `POST /check/output`
 
-Check the LLM-generated response before it reaches the user.
+Post-LLM output phrase-match and guardrail contract check.
 
 **Request:**
 ```json
@@ -76,9 +117,23 @@ Check the LLM-generated response before it reaches the user.
 
 If blocked, Agent Core replaces the response with the configured `output_blocked_message`.
 
+### `POST /consent/verify`
+
+Turn 2 of a fresh session. Evaluates the user's response against configured consent/decline phrases. Returns `granted: bool`. Agent Core owns writing the result to Memory Layer.
+
+**Request:**
+```json
+{ "session_id": "sess-abc123", "message": "haan, theek hai" }
+```
+
+**Response:**
+```json
+{ "granted": true }
+```
+
 ### `POST /check/consent`
 
-Check whether a user has granted consent for a specific write or identity connector action.
+Before write or identity tool execution. Verifies connector-level consent. Fail-closed — returns `granted: false` on any internal error.
 
 **Request:**
 ```json
@@ -90,7 +145,22 @@ Check whether a user has granted consent for a specific write or identity connec
 { "granted": true, "reason": null }
 ```
 
-For the PoC stub, consent is always granted for any connector not in the blocked list.
+### `POST /escalate`
+
+Called when `/check/input` returns `"escalate"`. Queues a HiTL escalation record and returns a holding message.
+
+**Request:**
+```json
+{ "session_id": "sess-abc123", "reason": "Escalation topic detected: 'suicide'" }
+```
+
+**Response:**
+```json
+{
+  "holding_message": "Main aapki baat samajh raha hoon. Ek counsellor se aapko connect karta hoon.",
+  "ticket_id": "ticket-abc123"
+}
+```
 
 ### `GET /health`
 
@@ -109,17 +179,24 @@ All rules are loaded from `config/config.yaml` at startup. Nothing is hardcoded.
 | Blocked phrases | `trust.input_rules.blocked_phrases` | Case-insensitive substring match. Returns `action: block`. |
 | Escalation topics | `trust.input_rules.escalation_topics` | Case-insensitive substring match. Returns `action: escalate`. |
 
-Current PoC blocked phrases: `bomb`, `weapon`, `kill`, `threat`, `violence`
-
-Current PoC escalation topics: `arrested`, `police case`, `court notice`, `FIR`, `jail`, `suicide`
-
 ### Output rules
 
 | Rule type | Config key | Behaviour |
 |---|---|---|
 | Blocked phrases | `trust.output_rules.blocked_phrases` | Blocks LLM responses containing these strings. |
 
-Current PoC output blocked phrases: `cannot help`, `as an AI I`, `guaranteed placement`, `100% job guarantee`
+### Consent rules
+
+| Rule type | Config key | Behaviour |
+|---|---|---|
+| Consent phrases | `trust.consent_rules.consent_phrases` | Phrases indicating user consent (e.g. "haan", "theek hai"). |
+| Decline phrases | `trust.consent_rules.decline_phrases` | Phrases indicating user decline. |
+
+### Guardrail rules
+
+| Config key | Description |
+|---|---|
+| `trust.policy_packs` | Risk taxonomy → Policy Pack mapping. Each pack defines prompt constraints, required disclosures, action gates, and refusal templates. |
 
 ---
 
@@ -131,15 +208,18 @@ Current PoC output blocked phrases: `cannot help`, `as an AI I`, `guaranteed pla
 | `trust.input_rules.blocked_phrases` | List of phrases that block the input entirely |
 | `trust.input_rules.escalation_topics` | List of phrases that trigger human handoff |
 | `trust.output_rules.blocked_phrases` | List of phrases that block the LLM output |
+| `trust.consent_rules.consent_phrases` | Phrases that indicate consent |
+| `trust.consent_rules.decline_phrases` | Phrases that indicate decline |
+| `trust.policy_packs` | Risk → constraint/disclosure/gate mapping |
+| `trust.hitl.queue_backend` | Escalation queue backend: `log` (default), `redis`, `webhook` |
 
 ---
 
 ## Running the service
 
 ```bash
-source ../.venv/bin/activate
 cd trust_layer
-uvicorn src.server:app --port 8003
+uv run uvicorn src.server:app --port 8003
 ```
 
 ---
@@ -147,12 +227,11 @@ uvicorn src.server:app --port 8003
 ## Running tests
 
 ```bash
-source ../.venv/bin/activate
 cd trust_layer
-pytest tests/ -v --cov=src --cov-report=term-missing
+uv run pytest tests/ -v --cov=src --cov-report=term-missing
 ```
 
-Expected: 39 tests, 100% line coverage.
+Expected: 39 tests, 100% line coverage (ContentBlock). GuardrailsBlock, ConsentBlock, and HiTLBlock test suites are pending.
 
 ---
 
@@ -169,10 +248,9 @@ Requires Python 3.11+.
 
 ---
 
-## Replacing the stub
+## Known gaps
 
-To replace `BasicTrustLayer` with an ML-backed guardrails engine:
-
-1. Create a class that inherits from `TrustLayerBase` (defined in `agent_core/src/interfaces/trust_layer.py`).
-2. Implement `check_input`, `check_output`, and `check_consent` with identical signatures and return shapes.
-3. Wire the new class into `src/server.py` — no other files need to change.
+- **No ML-based semantic matching.** ContentBlock uses phrase-match only; a production deployment would use an ML classifier for context-aware risk detection.
+- **HiTL queue: `log` backend only.** The `redis` and `webhook` backends are reserved for a future issue.
+- **`consent_store` is in-process only.** The SQLite consent store writes consent state locally. Multi-instance deployments need a shared consent store (e.g. Redis or PostgreSQL).
+- **Output-check escalation not wired.** When `trust_output.action == "escalate"`, the orchestrator does not yet call `HiTLBlock.escalate()` — deferred to the HiTL queue issue.

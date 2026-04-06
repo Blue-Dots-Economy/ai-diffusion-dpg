@@ -217,7 +217,7 @@ Mandatory safety gate. Stateless. Runs on every turn — never skipped. Structur
 - `trust_layer/src/server.py` — FastAPI: all endpoints above
 - `trust_layer/src/models.py` — all Pydantic request/response types
 
-**Tests:** 39 tests, 100% coverage (ContentBlock only; new sub-blocks require new test suites).
+**Tests:** 39 tests, 100% coverage (ContentBlock). GuardrailsBlock/ConsentBlock/HiTLBlock coverage pending.
 
 ---
 
@@ -501,7 +501,7 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 | Agent Core | ✅ | Orchestrator, LLM wrapper, preprocessing, tool-use loop, HTTP server. 177 tests, 90% coverage. |
 | Knowledge Engine | ✅ | Glossary, ChromaDB RAG, HTTP server. 87 tests, ≥82% coverage. |
 | Memory Layer | ✅ | Redis (session/profile) + Memgraph (context graph). HTTP server. |
-| Trust Layer | 🟡 | ContentBlock (phrase-match) implemented. GuardrailsBlock, ConsentBlock, HiTLBlock pending. Fail-open (must be fail-closed). |
+| Trust Layer | 🟡 | All 4 sub-blocks implemented (ContentBlock, GuardrailsBlock, ConsentBlock, HiTLBlock). Fail-closed. HiTL queue: log backend only. consent_store in-process only. |
 | Action Gateway | 🟡 | Hardcoded fixture data. No real ONEST API. |
 | Reach Layer | 🟡 | CLI stdin/stdout only. |
 | Observability Layer | 🟡 | OTel instrumentation across all blocks. OutcomeTracker with KKB lifecycle config. No persistent audit DB yet. |
@@ -525,10 +525,10 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 | Audit log / SQLite store | ⏳ | Design specifies SQLite for turn history/audit; not yet implemented |
 | Input trust check (ContentBlock) | ✅ | Phrase-match implemented |
 | Output trust check (ContentBlock) | ✅ | Phrase-match implemented |
-| GuardrailsBlock + /assemble_constraints | ⏳ | Pre-LLM constraint assembly; Risk Taxonomy + Policy Pack from config |
-| ConsentBlock + /consent/verify | ⏳ | DPDP consent phrase evaluation |
-| HiTLBlock + /escalate | ⏳ | Escalation queue with holding_message |
-| Orchestrator consent gate | ⏳ | user_storage_mode flag logic; replaces greeting subagent |
+| GuardrailsBlock + /assemble_constraints | 🟡 | GuardrailsBlock implemented; Policy Pack from config; /assemble_constraints endpoint live |
+| ConsentBlock + /consent/verify | 🟡 | ConsentBlock implemented; phrase evaluation from config; consent_store SQLite (in-process only) |
+| HiTLBlock + /escalate | 🟡 | HiTLBlock implemented; log backend only; redis/webhook backends reserved |
+| Orchestrator consent gate | 🟡 | Consent gate implemented in orchestrator; user_storage_mode flag logic active |
 | Fail-closed Trust Layer | ⏳ | All endpoints and AC HTTP client must block on error, not allow |
 | Real ONEST connector | ⏳ | Replace MockActionGateway |
 | WhatsApp/VOIP/Web channels | ⏳ | Replace CLIReachLayer |
@@ -549,14 +549,14 @@ Each stub implements the exact same abstract base class interface. Swapping requ
 
 ### Trust Layer
 
-1. Implement `GuardrailsBlock` (`trust_layer/src/blocks/guardrails.py`): loads Policy Pack from config, maps `active_risks` → prompt constraints + disclosures + action gates. Wire into `POST /assemble_constraints`.
-2. Implement `ConsentBlock` (`trust_layer/src/blocks/consent.py`): phrase-match user message against `consent_phrases` / `decline_phrases` from config. Wire into `POST /consent/verify`.
-3. Implement `HiTLBlock` (`trust_layer/src/blocks/hitl.py`): write escalation record to queue backend (start with log, add Redis/webhook via config). Wire into `POST /escalate`.
-4. Implement orchestrator consent gate in `agent_core/src/orchestrator.py`: `user_storage_mode` flag logic, call `/consent/verify` on turn 2, write flags to Memory Layer. Remove `greeting` subagent.
+1. ✅ Implement `GuardrailsBlock` (`trust_layer/src/blocks/guardrails.py`): loads Policy Pack from config, maps `active_risks` → prompt constraints + disclosures + action gates. Wire into `POST /assemble_constraints`. **(Done — PR #35)**
+2. ✅ Implement `ConsentBlock` (`trust_layer/src/blocks/consent.py`): phrase-match user message against `consent_phrases` / `decline_phrases` from config. Wire into `POST /consent/verify`. **(Done — PR #35)**
+3. ✅ Implement `HiTLBlock` (`trust_layer/src/blocks/hitl.py`): write escalation record to queue backend (start with log, add Redis/webhook via config). Wire into `POST /escalate`. **(Done — PR #35; log backend only)**
+4. ✅ Implement orchestrator consent gate in `agent_core/src/orchestrator.py`: `user_storage_mode` flag logic, call `/consent/verify` on turn 2, write flags to Memory Layer. **(Done — PR #35)**
 5. Add `active_risks: list[str] | None` to `NLUResult` in `agent_core/src/preprocessing/nlu_processor.py`.
 6. Add `assemble_constraints()`, `verify_consent()`, `escalate()` to `agent_core/src/http_clients/trust_layer_client.py`.
 7. Change all Trust Layer HTTP error handlers in Agent Core from fail-open to **fail-closed**.
-8. Update `trust_layer/src/server.py` with all new endpoints and wire all sub-blocks through `TrustLayer` orchestrator in `trust_layer/src/trust_layer.py`.
+8. Update `trust_layer/src/server.py` with all new endpoints and wire all sub-blocks through `TrustLayer` orchestrator in `trust_layer/src/orchestrator.py`.
 
 ### Action Gateway
 
