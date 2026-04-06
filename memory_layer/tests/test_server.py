@@ -386,8 +386,13 @@ def test_context_bundle_emits_memory_read_span(mock_memory):
     test_client = TestClient(app)
     test_client.post("/context_bundle", json={"session_id": "sess-1", "user_id": "user-1"})
 
-    span_names = [s.name for s in exporter.get_finished_spans()]
+    spans = exporter.get_finished_spans()
+    span_names = [s.name for s in spans]
     assert "memory.read" in span_names
+
+    read_span = next(s for s in spans if s.name == "memory.read")
+    assert read_span.attributes.get("session_id") is not None
+    assert read_span.attributes.get("db.system") == "redis"
 
     _reset_for_testing()
 
@@ -416,7 +421,12 @@ def test_write_emits_memory_write_span(mock_memory):
         "value": "bar",
     })
 
-    span_names = [s.name for s in exporter.get_finished_spans()]
+    spans = exporter.get_finished_spans()
+    span_names = [s.name for s in spans]
     assert "memory.write" in span_names
+
+    write_span = next(s for s in spans if s.name == "memory.write")
+    assert write_span.attributes.get("session_id") is not None
+    assert write_span.attributes.get("db.system") == "redis"
 
     _reset_for_testing()
