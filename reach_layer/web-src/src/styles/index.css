@@ -1,0 +1,117 @@
+/* highlight.js theme — GitHub Dark */
+@import 'highlight.js/styles/github-dark.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ------------------------------------------------------------------ */
+/* Light mode token overrides (applied when <html> lacks .dark class)  */
+/* ------------------------------------------------------------------ */
+:root {
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --surface-2: #f1f5f9;
+  --border: #e2e8f0;
+  --text: #0f172a;
+  --text-muted: #64748b;
+  --bubble-agent-bg: #f1f5f9;
+  --bubble-agent-border: #e2e8f0;
+  --bubble-agent-text: #0f172a;
+}
+
+/* ------------------------------------------------------------------ */
+/* Dark mode tokens                                                     */
+/* ------------------------------------------------------------------ */
+.dark {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --surface-2: #242736;
+  --border: #2e3147;
+  --text: #e8eaf6;
+  --text-muted: #8b91b0;
+  --bubble-agent-bg: #242736;
+  --bubble-agent-border: #2e3147;
+  --bubble-agent-text: #e8eaf6;
+}
+
+/* ------------------------------------------------------------------ */
+/* Global resets                                                        */
+/* ------------------------------------------------------------------ */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ------------------------------------------------------------------ */
+/* Scrollbar styling                                                    */
+/* ------------------------------------------------------------------ */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* ------------------------------------------------------------------ */
+/* Markdown table — fix highlight.js overriding table cell padding      */
+/* ------------------------------------------------------------------ */
+.prose-agent table {
+  border-collapse: collapse;
+  width: 100%;
+}
+.prose-agent th,
+.prose-agent td {
+  border: 1px solid var(--border);
+  padding: 6px 12px;
+  text-align: left;
+}
+.prose-agent thead {
+  background: var(--surface-2);
+}
+.prose-agent tr:nth-child(even) td {
+  background: rgba(255,255,255,0.03);
+}
+
+/* ------------------------------------------------------------------ */
+/* Code block wrapper                                                   */
+/* ------------------------------------------------------------------ */
+.code-block-wrapper {
+  position: relative;
+}
+.code-block-wrapper .copy-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.code-block-wrapper:hover .copy-btn {
+  opacity: 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Message animations                                                   */
+/* ------------------------------------------------------------------ */
+@keyframes fadeInWord {
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Fade-in for new agent messages — no flash from plain→markdown swap */
+@keyframes messageFadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.message-new {
+  animation: messageFadeIn 0.25s ease forwards;
+}

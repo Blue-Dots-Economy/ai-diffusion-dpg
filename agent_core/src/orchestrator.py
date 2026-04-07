@@ -227,7 +227,7 @@ class AgentCore(AgentCoreBase):
         ask_for_consent: bool = self._config.get("agent", {}).get("ask_for_consent", False)
         if ask_for_consent:
             user_storage_mode: str | None = bundle.session.get("user_storage_mode")
-            turn_count: int = bundle.session.get("turn_count", 0)
+            turn_count: int = int(bundle.session.get("turn_count", 0) or 0)
 
             if user_storage_mode is None and turn_count == 0:
                 # Turn 1: deliver consent prompt, no LLM call, no Trust Layer call
@@ -240,6 +240,7 @@ class AgentCore(AgentCoreBase):
                         "session_id": session_id,
                     },
                 )
+                self._write_memory_sync(session_id, user_id, "session", "turn_count", 1)
                 return TurnResult(
                     session_id=session_id,
                     turn_id=turn_id,

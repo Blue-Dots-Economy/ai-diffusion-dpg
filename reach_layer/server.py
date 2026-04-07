@@ -20,6 +20,7 @@ from typing import Any, Optional
 import httpx
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from opentelemetry import trace as otel_trace
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from pydantic import BaseModel
@@ -86,6 +87,14 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
     app = FastAPI(title="Reach Layer — Web Channel Adapter")
     FastAPIInstrumentor.instrument_app(app)
 
+    # Paths to the React production build
+    _dist = Path(__file__).parent / "web" / "dist"
+    _assets = _dist / "assets"
+
+    # Mount /assets — serves JS/CSS bundles built by Vite
+    if _assets.exists():
+        app.mount("/assets", StaticFiles(directory=str(_assets)), name="assets")
+
     # Shared HTTP clients — created once at startup to enable connection pooling.
     ac_client = httpx.Client(timeout=ac_timeout)
     ml_client = httpx.Client(timeout=ml_timeout)
@@ -128,9 +137,8 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
 
     @app.get("/")
     def index() -> FileResponse:
-        """Serve the single-page chat UI."""
-        html_path = Path(__file__).parent / "web" / "index.html"
-        return FileResponse(str(html_path), media_type="text/html")
+        """Serve the React SPA entry point."""
+        return FileResponse(str(_dist / "index.html"), media_type="text/html")
 
     # ------------------------------------------------------------------
     # POST /chat — proxy turn to Agent Core
