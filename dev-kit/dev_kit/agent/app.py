@@ -9,6 +9,7 @@ ConversationEngine instances keyed by project slug.
 """
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ import re
 import shutil
 import time
 import yaml
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +25,7 @@ import anthropic
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -43,6 +45,7 @@ load_dotenv()
 
 CONFIGS_DIR = Path(__file__).parent.parent.parent / "configs"
 _STATIC_DIR = Path(__file__).parent / "static"
+_SCHEMAS_DIR = Path(__file__).parent.parent / "schemas"
 
 _api_key = os.environ.get("ANTHROPIC_API_KEY", "")
 if not _api_key:
@@ -303,6 +306,52 @@ def restore_checkpoint_route(slug: str, phase: str) -> dict:
     return {"restored": phase, "summary": summary}
 
 
+@app.get("/api/projects/{slug}/checkpoints/{phase}/preview")
+def preview_checkpoint(slug: str, phase: str) -> list[dict]:
+    """Return what configs would look like after restoring a checkpoint, without restoring.
+
+    Loads the checkpoint accumulator from disk and returns a list of
+    ``{block, status, content}`` dicts — the same shape as
+    ``GET /api/projects/{slug}/configs`` — so the frontend can diff the
+    current state against the checkpoint before committing to a restore.
+
+    Args:
+        slug: Project slug.
+        phase: Checkpoint phase directory name, e.g. ``01_overview``.
+
+    Returns:
+        List of dicts with ``block``, ``status``, and ``content`` keys.
+
+    Raises:
+        HTTPException: 404 if the checkpoint directory does not exist.
+    """
+    project_path = _get_project_path(slug)
+    cp_dir = project_path / "_meta" / "checkpoints" / phase
+    if not cp_dir.exists():
+        raise HTTPException(status_code=404, detail=f"Checkpoint '{phase}' not found")
+
+    acc_file = cp_dir / "accumulator.json"
+    try:
+        acc = ConfigAccumulator.from_dict(json.loads(acc_file.read_text()))
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        logger.error(
+            "checkpoint_preview_corrupt",
+            extra={"operation": "preview_checkpoint", "status": "failure", "error": str(exc), "latency_ms": 0},
+        )
+        raise HTTPException(status_code=404, detail=f"Checkpoint '{phase}' accumulator unreadable") from exc
+
+    result = []
+    for block in BLOCKS:
+        data = acc.get_block(block)
+        content = yaml.dump(data, allow_unicode=True, default_flow_style=False) if data else ""
+        result.append({
+            "block": block,
+            "status": acc.get_status(block).value,
+            "content": content,
+        })
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Config routes
 # ---------------------------------------------------------------------------
@@ -323,6 +372,40 @@ def get_configs(slug: str) -> list[dict]:
             "content": content,
         })
     return result
+
+
+@app.get("/api/projects/{slug}/configs/export")
+def export_configs(slug: str) -> StreamingResponse:
+    """Download all 7 config YAML files as a ZIP archive.
+
+    For blocks with no file on disk, a placeholder comment is included in
+    the archive so every block is always represented.
+
+    Args:
+        slug: Project slug.
+
+    Returns:
+        StreamingResponse containing a ZIP archive with one YAML file per block.
+    """
+    _load_project_meta(slug)  # raises 404 if project not found
+    project_path = _get_project_path(slug)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for block in BLOCKS:
+            config_file = project_path / f"{block}.yaml"
+            if config_file.exists():
+                content = config_file.read_text()
+            else:
+                content = f"# {block}.yaml — not yet configured\n"
+            zf.writestr(f"{block}.yaml", content)
+    buf.seek(0)
+
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={slug}-configs.zip"},
+    )
 
 
 @app.get("/api/projects/{slug}/configs/{block}")
@@ -392,6 +475,41 @@ def get_workflow_graph(slug: str) -> dict:
     """Return the subagent workflow as nodes and edges for the frontend graph."""
     engine = _get_engine(slug)
     return engine.accumulator.get_workflow_graph()
+
+
+# ---------------------------------------------------------------------------
+# Schema routes
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/schemas/{block}")
+def get_schema_descriptions(block: str) -> dict:
+    """Parse inline comments from a block's YAML template and return key→description map.
+
+    Template lines are expected to follow the pattern::
+
+        key: ""   # description text
+
+    If the template file does not exist (e.g. an unrecognised block name),
+    an empty descriptions dict is returned instead of a 404.
+
+    Args:
+        block: DPG block name, e.g. ``reach_layer``.
+
+    Returns:
+        Dict with ``block`` and ``descriptions`` keys. ``descriptions`` maps
+        field names to their inline comment strings.
+    """
+    template_file = _SCHEMAS_DIR / f"{block}.yaml"
+    descriptions: dict[str, str] = {}
+    if template_file.exists():
+        pattern = re.compile(r'\s+(\w+):\s+"[^"]*"\s*#\s*(.+)')
+        for line in template_file.read_text().splitlines():
+            match = pattern.match(line)
+            if match:
+                key, description = match.group(1), match.group(2).strip()
+                descriptions[key] = description
+    return {"block": block, "descriptions": descriptions}
 
 
 # ---------------------------------------------------------------------------
