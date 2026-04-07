@@ -533,7 +533,7 @@ class ObservabilityLayerSettings(BaseModel):
 
 class ObservabilityLayerConfig(BaseModel):
     server: ServerConfig
-    observability_layer: ObservabilityLayerSettings
+    observability: ObservabilityLayerSettings
 
 
 # ---------------------------------------------------------------------------

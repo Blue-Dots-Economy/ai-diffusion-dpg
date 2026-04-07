@@ -19,11 +19,14 @@ One top-level model per service:
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
 from dev_kit.schemas.loader import load_template
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -804,8 +807,12 @@ def validate_partial(block: str, data: dict) -> list[str]:
         key_errors = _check_keys_against_template(data, template, path="")
         if key_errors:
             return key_errors
-    except (ValueError, FileNotFoundError):
-        pass
+    except (ValueError, FileNotFoundError) as exc:
+        logger.warning(
+            "validate_partial: template load failed for block %r — skipping key check",
+            block,
+            extra={"operation": "validate_partial", "status": "skipped", "error": str(exc)},
+        )
 
     # --- 2. Pydantic type/value check (filters out missing-field errors) ---
     model_cls = _BLOCK_MODEL_MAP.get(block)
