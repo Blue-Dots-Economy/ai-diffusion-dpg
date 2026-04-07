@@ -453,6 +453,8 @@ class StaticKnowledgeBaseBlock(KnowledgeBlock):
             return self._chunk_csv(path, doc_type)
         elif ext in (".md", ".txt"):
             return self._chunk_text_file(path, doc_type)
+        elif ext == ".json":
+            return self._chunk_json(path, doc_type)
         else:
             logger.warning(
                 "static_kb.unsupported_format",
@@ -514,6 +516,49 @@ class StaticKnowledgeBaseBlock(KnowledgeBlock):
                         metadata["district"] = row["district"]
                     chunks.append({"text": text, "metadata": metadata})
 
+        return chunks
+
+    def _chunk_json(self, path: str, doc_type: str) -> list[dict]:
+        """Load a JSON file and convert each item to a searchable text chunk.
+
+        Supports a JSON array of objects. Each object is serialised as
+        ``key: value`` lines and stored as one chunk. Non-array JSON is
+        treated as a single chunk.
+
+        Args:
+            path: Path to the .json file.
+            doc_type: Document type tag stored in ChromaDB metadata.
+
+        Returns:
+            List of chunk dicts with ``text`` and ``metadata`` keys.
+        """
+        import json
+
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+
+        items = data if isinstance(data, list) else [data]
+        chunks = []
+        for item in items:
+            if isinstance(item, dict):
+                lines = []
+                for k, v in item.items():
+                    if isinstance(v, list):
+                        lines.append(f"{k}: {', '.join(str(x) for x in v)}")
+                    elif v is not None:
+                        lines.append(f"{k}: {v}")
+                text = "\n".join(lines)
+            else:
+                text = str(item)
+
+            if text.strip():
+                chunks.append({
+                    "text": text,
+                    "metadata": {
+                        "doc_type": doc_type,
+                        "source": os.path.basename(path),
+                    },
+                })
         return chunks
 
     def _chunk_text_file(self, path: str, doc_type: str) -> list[dict]:

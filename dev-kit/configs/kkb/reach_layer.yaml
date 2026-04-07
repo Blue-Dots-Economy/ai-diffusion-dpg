@@ -1,25 +1,19 @@
 # dev-kit/configs/kkb/reach_layer.yaml
 # KKB domain values for Reach Layer.
 # Merged with dev-kit/dpg/reach_layer.yaml by loader.py before deployment.
-#
-# Endpoint uses Docker Compose service name.
-# For Kubernetes, update in automation/helm/reach-layer/values.yaml.
-
-agent_core_client:
-  endpoint: "http://agent_core:8000/process_turn"
 
 ui:
-  app_name: "KKB Assistant"
-  app_tagline: "Your financial companion"
-  app_icon: "🏦"
-  agent_avatar: "🏦"
+  app_name: "Kaam Ki Baat"
+  app_tagline: "DPG Skill-Jobs AI"
+  app_icon: "💼"
+  agent_avatar: "💼"
   user_avatar: "👤"
-  setup_heading: "KKB में आपका स्वागत है · Welcome to KKB"
+  setup_heading: "Kaam Ki Baat में आपका स्वागत है · Welcome to Kaam Ki Baat"
   setup_subtitle: "अपना यूज़र ID दर्ज करें · Enter your user ID to begin or resume a conversation."
-  user_id_placeholder: "Enter your KKB user ID"
-  user_id_hint: "Use your KKB account ID or registered mobile number."
+  user_id_placeholder: "e.g. rahul_electrician"
+  user_id_hint: "Use your name and trade, e.g. rahul_electrician"
   start_btn_label: "बातचीत शुरू करें · Start chatting →"
-  new_session_msg: "नमस्ते! मैं KKB Assistant हूँ। आज मैं आपकी कैसे मदद कर सकता हूँ? · Hello! I'm KKB Assistant. How can I help you today?"
+  new_session_msg: "नमस्ते! मैं Kaam Ki Baat हूँ। आज मैं आपकी कैसे मदद कर सकता हूँ? · Hello! I'm Kaam Ki Baat. How can I help you today?"
   returning_user_msg: "वापस आने पर स्वागत है! · Welcome back! Continuing your previous conversation."
   storage_key: "kkb_user_id"
   theme_storage_key: "kkb_theme"

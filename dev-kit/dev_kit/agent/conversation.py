@@ -225,7 +225,7 @@ class ConversationEngine:
             if self._state["phase_changed"]:
                 old_phase = self._state["phase"]
                 new_phase = self._state["phase_changed"]
-                phase_list = ["overview", "language", "knowledge", "memory", "trust", "connectors", "workflow", "review"]
+                phase_list = ["overview", "language", "knowledge", "memory", "trust", "connectors", "workflow", "observability", "reach", "review"]
                 phase_number = phase_list.index(old_phase) + 1 if old_phase in phase_list else 0
                 phase_label = f"{phase_number:02d}_{old_phase}"
                 save_checkpoint(self._project_path, phase_label, self.accumulator, self._history[:-2])

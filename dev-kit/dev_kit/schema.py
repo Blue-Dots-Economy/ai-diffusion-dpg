@@ -19,6 +19,8 @@ One top-level model per service:
 
 from __future__ import annotations
 
+from typing import Any, Literal
+
 from pydantic import BaseModel, Field, ValidationError
 
 from dev_kit.schemas.loader import load_template
@@ -45,12 +47,31 @@ class ClientConfig(BaseModel):
 class ConnectorDef(BaseModel):
     name: str = Field(..., description="Connector name matching a key in action_gateway.connectors")
     description: str = Field(default="", description="Description shown to LLM explaining when to call this connector")
+    input_schema: dict[str, Any] = Field(
+        default_factory=dict,
+        description="JSON Schema object for the tool's input. Passed verbatim to the Anthropic tools API.",
+    )
+
+
+class InternalConnectorDef(BaseModel):
+    name: str = Field(..., description="Internal connector name, e.g. knowledge_retrieval")
+    route: str = Field(..., description="Internal routing destination, e.g. knowledge_engine")
+    description: str = Field(default="", description="Description shown to LLM explaining when to call this connector")
+    input_schema: dict[str, Any] = Field(
+        default_factory=dict,
+        description="JSON Schema object for the tool's input.",
+    )
 
 
 class ConnectorsConfig(BaseModel):
     read: list[ConnectorDef] = []
     write: list[ConnectorDef] = []
     identity: list[ConnectorDef] = []
+    internal: list[InternalConnectorDef] = Field(
+        default=[],
+        description="Internal connectors routed by Agent Core (e.g. knowledge_retrieval). "
+                    "Not sent to Action Gateway.",
+    )
 
 
 class AgentConfig(BaseModel):
@@ -60,13 +81,21 @@ class AgentConfig(BaseModel):
     retry_attempts: int = Field(default=2, description="Number of retry attempts on transient failure")
     retry_backoff_seconds: list[float] = Field(default=[0, 0.5, 1.0])
     max_tool_rounds: int = Field(default=1, description="Maximum tool call rounds per turn")
+    ask_for_consent: bool = Field(
+        default=False,
+        description="If True, Agent Core asks new users for DPDP consent before storing any data.",
+    )
+    consent_prompt: str = Field(
+        default="",
+        description="Message shown to the user when requesting consent. Used when ask_for_consent is True.",
+    )
 
 
 class ConversationAgentConfig(BaseModel):
     max_turns: int = Field(default=20)
     blocked_message: str = Field(
         default="I'm unable to help with that request.",
-        description="Shown to user when input is blocked by Trust Layer. Translate to user language.",
+        description="Shown to user when input is blocked by Trust Layer.",
     )
     escalation_message: str = Field(
         default="I'm connecting you to a human agent who can better assist you.",
@@ -75,6 +104,30 @@ class ConversationAgentConfig(BaseModel):
     output_blocked_message: str = Field(
         default="I wasn't able to produce a safe response. Please try rephrasing your question.",
         description="Shown when LLM output is blocked by Trust Layer.",
+    )
+    unknown_intent_message: str = Field(
+        default="I'm sorry, I didn't understand that. Could you please rephrase?",
+        description="Shown when the NLU classifier returns unknown intent below confidence threshold.",
+    )
+    termination_message: str = Field(
+        default="Thank you! Goodbye.",
+        description="Shown when the user ends the session via termination_intent.",
+    )
+    consent_message: str = Field(
+        default="",
+        description="Consent request shown to new users before profile collection.",
+    )
+    consent_decline_ack: str = Field(
+        default="",
+        description="Acknowledgement shown when user declines consent.",
+    )
+    profile_complete_message: str = Field(
+        default="",
+        description="Shown to user when profile collection is complete and processing begins.",
+    )
+    returning_user_greeting: str = Field(
+        default="",
+        description="Personalised greeting for returning users whose profile already exists.",
     )
 
 
@@ -87,6 +140,10 @@ class BhashiniConfig(BaseModel):
 class LanguageNormalisationConfig(BaseModel):
     model: str = Field(..., description="Claude model ID for language normalisation")
     provider: str = Field(default="llm_native", description="Normalisation provider: llm_native or bhashini")
+    default_language: str = Field(
+        default="",
+        description="Default language used when none is detected from user input, e.g. hindi",
+    )
     supported_languages: list[str] = Field(..., description="Languages the agent supports, e.g. [hindi, english, kannada, hinglish]")
     transliteration: bool = Field(default=True, description="Normalise transliterated input to canonical script")
     code_switching: bool = Field(default=True, description="Handle mixed-language input within a single message")
@@ -97,14 +154,144 @@ class NLUProcessorConfig(BaseModel):
     model: str = Field(..., description="Claude model ID for NLU classification")
     confidence_threshold: float = Field(default=0.5, description="Float 0-1. Intents below this are treated as unknown")
     history_turns: int = Field(default=2)
+    domain_instruction: str = Field(
+        default="",
+        description="Domain-specific instruction prepended to the NLU classification prompt",
+    )
     intents: list[str] = Field(..., description="List of intent identifiers for this domain, e.g. greeting, profile_answer, apply_now")
     entities: list[str] = Field(..., description="List of entity identifiers to extract, e.g. name, location, trade_or_stream")
-    sentiment_classes: list[str] = Field(..., description="Sentiment classes to classify, e.g. [neutral, positive, distressed]")
+    sentiment_classes: list[str] = Field(
+        default=["neutral", "positive", "distressed"],
+        description="Sentiment classes to classify, e.g. [neutral, positive, distressed]",
+    )
 
 
 class PreprocessingConfig(BaseModel):
     language_normalisation: LanguageNormalisationConfig
     nlu_processor: NLUProcessorConfig
+
+
+class HitlConfig(BaseModel):
+    response_message: str = Field(
+        ...,
+        description="Fixed message returned to the user when the HITL subagent is triggered. "
+                    "No LLM call is made — this text is returned verbatim.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Agent Workflow — full structural validation for agent_workflow block
+# ---------------------------------------------------------------------------
+
+class RoutingConditionSchema(BaseModel):
+    """A single predicate evaluated against a session field at routing time."""
+
+    field: str = Field(
+        ...,
+        description="Session field name to evaluate, e.g. income_urgency or subagent_entry_count.commitment",
+    )
+    operator: Literal["eq", "not_eq", "in", "lt", "gt"] = Field(
+        ...,
+        description="Comparison operator. One of: eq, not_eq, in, lt, gt",
+    )
+    value: Any = Field(..., description="Scalar or list value to compare the session field against")
+
+
+class RoutingRuleSchema(BaseModel):
+    """A single routing decision mapping an intent (or catch-all) to the next subagent."""
+
+    intent: str = Field(..., description="Intent to match, or '*' for catch-all")
+    next_subagent_id: str = Field(..., description="ID of the destination subagent")
+    condition: RoutingConditionSchema | None = Field(
+        default=None,
+        description="Optional single condition that must be true for this rule to fire",
+    )
+    conditions: list[RoutingConditionSchema] = Field(
+        default=[],
+        description="Optional list of conditions — ALL must be true for this rule to fire",
+    )
+    session_writes: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Session field/value pairs written when this rule fires. "
+                    "Values must be scalars (str, int, float, bool).",
+    )
+
+
+class SubAgentSchema(BaseModel):
+    """Configuration for a single subagent node in the workflow graph."""
+
+    id: str = Field(..., description="Unique subagent identifier within this workflow")
+    name: str = Field(default="", description="Human-readable display name")
+    description: str = Field(default="", description="Short description of this subagent's role")
+    is_start: bool = Field(
+        default=False,
+        description="True if this is the entry subagent for new sessions. "
+                    "Exactly ONE subagent in the workflow must have is_start: true.",
+    )
+    is_terminal: bool = Field(
+        default=False,
+        description="True if this subagent ends the conversation. "
+                    "Terminal subagents must have an empty routing list.",
+    )
+    special_handler: Literal["hitl", "whatsapp_handoff"] | None = Field(
+        default=None,
+        description="Optional framework-level handler. "
+                    "'hitl' bypasses the LLM and returns hitl.response_message. "
+                    "'whatsapp_handoff' triggers a channel handoff.",
+    )
+    valid_intents: list[str] = Field(
+        default=[],
+        description="Intents this subagent handles. Must be declared in preprocessing.nlu_processor.intents. "
+                    "Must not overlap with agent_workflow.global_intents.",
+    )
+    tools: list[str] = Field(
+        default=[],
+        description="Tool names available in this subagent. Each name must match a connector in "
+                    "connectors.read, connectors.write, connectors.identity, or connectors.internal.",
+    )
+    system_prompt: str = Field(
+        default="",
+        description="System prompt injected for LLM calls in this subagent",
+    )
+    output_format: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional JSON schema for structured LLM output validation. None means free-form text.",
+    )
+    routing: list[RoutingRuleSchema] = Field(
+        default=[],
+        description="Routing rules from this subagent. "
+                    "Terminal subagents must have an empty list. "
+                    "Non-terminal subagents must have at least one rule.",
+    )
+
+
+class AgentWorkflowConfig(BaseModel):
+    """Full structural definition of the multi-subagent workflow for a domain."""
+
+    workflow_id: str = Field(..., description="Unique workflow identifier, e.g. kkb_iti_graduate")
+    version: str = Field(..., description="Semantic version string, e.g. '1.0.0'")
+    agent_system_prompt: str = Field(
+        default="",
+        description="Top-level system prompt for the orchestrating LLM. Injected on every turn.",
+    )
+    global_intents: list[str] = Field(
+        default=[],
+        description="Intents handled globally before subagent routing. "
+                    "Must not appear in any subagent's valid_intents.",
+    )
+    global_routing: list[RoutingRuleSchema] = Field(
+        default=[],
+        description="Routing rules applied globally when a global_intent fires",
+    )
+    default_fallback_subagent_id: str = Field(
+        default="",
+        description="Subagent to route to when no routing rule matches the current intent",
+    )
+    subagents: list[SubAgentSchema] = Field(
+        ...,
+        min_length=1,
+        description="All subagent definitions. Must contain exactly one subagent with is_start: true.",
+    )
 
 
 class AgentCoreConfig(BaseModel):
@@ -118,6 +305,16 @@ class AgentCoreConfig(BaseModel):
     learning_client: ClientConfig
     action_gateway_client: ClientConfig
     preprocessing: PreprocessingConfig
+    entity_to_profile_field: dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps NLU entity names to UserProfile declared_fields in the Memory Layer. "
+                    "e.g. {trade_or_stream: trade_or_stream, location: location}",
+    )
+    hitl: HitlConfig | None = Field(
+        default=None,
+        description="HITL config. Required if any subagent uses special_handler: hitl.",
+    )
+    agent_workflow: AgentWorkflowConfig
 
 
 # ---------------------------------------------------------------------------
@@ -197,11 +394,14 @@ class KnowledgeConfig(BaseModel):
 
 
 class PersonaConfig(BaseModel):
-    text: str
+    text: str = Field(default="", description="Persona text injected into the LLM system prompt")
 
 
 class ConversationKEConfig(BaseModel):
-    persona: PersonaConfig
+    persona: PersonaConfig = Field(
+        default_factory=PersonaConfig,
+        description="Persona definition for the LLM. The text is injected verbatim into every prompt.",
+    )
     language_instruction: str = ""
     guardrail_reminders: list[str] = []
 
@@ -209,7 +409,11 @@ class ConversationKEConfig(BaseModel):
 class KnowledgeEngineConfig(BaseModel):
     server: ServerConfig
     knowledge: KnowledgeConfig
-    conversation: ConversationKEConfig
+    conversation: ConversationKEConfig = Field(
+        default_factory=ConversationKEConfig,
+        description="LLM persona and prompt configuration for this domain. "
+                    "Provide persona.text for best quality responses.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -219,15 +423,75 @@ class KnowledgeEngineConfig(BaseModel):
 class InputRulesConfig(BaseModel):
     blocked_phrases: list[str] = Field(default=[], description="Strings that block user input and return blocked_message")
     escalation_topics: list[str] = Field(default=[], description="Strings that trigger human agent escalation")
+    blocked_input_message: str = Field(
+        default="",
+        description="Message returned to the user when their input is blocked by Trust Layer.",
+    )
 
 
 class OutputRulesConfig(BaseModel):
     blocked_phrases: list[str] = Field(default=[], description="Strings that must not appear in LLM output")
+    output_blocked_message: str = Field(
+        default="",
+        description="Message returned to the user when LLM output is blocked by Trust Layer.",
+    )
+
+
+class GuardrailConfig(BaseModel):
+    """A single guardrail rule within a policy pack."""
+
+    id: str = Field(..., description="Unique guardrail identifier, e.g. GR-001")
+    severity: str = Field(..., description="Guardrail severity: blocker or warning")
+    failure_mode: str = Field(..., description="Action on failure: block or constrain")
+    prompt_constraints: list[str] = Field(default=[], description="MUST/MUST NOT instructions injected into the LLM prompt")
+    required_disclosures: list[str] = Field(default=[], description="Disclosure strings appended to LLM output when this guardrail fires")
+    refusal_template: str | None = Field(default=None, description="Fixed refusal text returned when failure_mode is block")
+
+
+class PolicyPackConfig(BaseModel):
+    """A named policy pack grouping related risk categories and guardrail rules."""
+
+    risks: list[str] = Field(default=[], description="Risk identifiers active in this policy pack")
+    guardrails: dict[str, GuardrailConfig] = Field(
+        default_factory=dict,
+        description="Map of risk_name → GuardrailConfig. Keys must match entries in risks.",
+    )
+
+
+class ConsentConfig(BaseModel):
+    """Phrase lists used by the consent classifier."""
+
+    consent_phrases: list[str] = Field(default=[], description="Phrases that indicate user consent, e.g. ['yes', 'haan']")
+    decline_phrases: list[str] = Field(default=[], description="Phrases that indicate declined consent, e.g. ['no', 'nahi']")
+
+
+class HitlTrustConfig(BaseModel):
+    """Human-in-the-loop queue and notification configuration."""
+
+    queue_backend: str = Field(default="log", description="Backend for queuing HITL requests: log, redis, or webhook")
+    holding_message: str = Field(default="", description="Message shown to user while waiting for a human agent")
+    notification_webhook: str | None = Field(default=None, description="Webhook URL notified when an HITL case is queued")
 
 
 class TrustConfig(BaseModel):
+    policy_pack: str = Field(
+        default="",
+        description="Name of the active policy pack from policy_packs. Must match a key in policy_packs if set.",
+    )
     input_rules: InputRulesConfig = InputRulesConfig()
     output_rules: OutputRulesConfig = OutputRulesConfig()
+    policy_packs: dict[str, PolicyPackConfig] = Field(
+        default_factory=dict,
+        description="Map of policy_pack_name → PolicyPackConfig. Each pack defines risks and guardrail rules.",
+    )
+    consent: ConsentConfig = Field(
+        default_factory=ConsentConfig,
+        description="Consent phrase lists used by the consent classifier.",
+    )
+    hitl: HitlTrustConfig | None = Field(
+        default=None,
+        description="HITL queue config. Required if agent_core uses special_handler: hitl.",
+    )
 
 
 class TrustLayerConfig(BaseModel):
@@ -239,27 +503,206 @@ class TrustLayerConfig(BaseModel):
 # Memory Layer
 # ---------------------------------------------------------------------------
 
-class MemoryConfig(BaseModel):
-    session_ttl_seconds: int = 3600
-    max_sessions: int = 1000
+class RedisConfig(BaseModel):
+    host: str = Field(default="redis", description="Redis hostname or IP address")
+    port: int = Field(default=6379)
+    db: int = Field(default=0, description="Redis database index")
+    password: str | None = Field(default=None, description="Redis password. Set via env or deployment secret.")
+    socket_timeout_ms: int = Field(default=2000, description="Socket read/write timeout in milliseconds")
+    socket_connect_timeout_ms: int = Field(default=2000, description="Socket connection timeout in milliseconds")
+
+
+class MemgraphConfig(BaseModel):
+    uri: str = Field(default="bolt://memgraph:7687", description="Bolt URI for the Memgraph instance")
+    user: str = Field(default="memgraph")
+    password: str | None = Field(default=None, description="Memgraph password. Set via env or deployment secret.")
+    connection_timeout_s: int = Field(default=5, description="Connection timeout in seconds")
+
+
+class SessionStateConfig(BaseModel):
+    model_config = {"populate_by_name": True}
+
+    ttl_minutes: int = Field(
+        default=60,
+        description="Session TTL in minutes. Redis evicts inactive sessions after this period.",
+    )
+    # Field named 'schema' in YAML; aliased to avoid shadowing BaseModel.schema()
+    session_schema: dict[str, Any] = Field(
+        default_factory=dict,
+        alias="schema",
+        description="Domain-specific session fields. Each key is a field name; value declares "
+                    "{type, default} or {type, values, default} for enums. "
+                    "Infrastructure fields (user_id, journey_id, is_returning) are auto-injected.",
+    )
+
+
+class UserNodeConfig(BaseModel):
+    label: str = Field(..., description="Memgraph node label for the root user node, e.g. 'User'")
+    key: str = Field(..., description="Property used as the unique user identifier, e.g. 'user_id'")
+
+
+class GraphConfig(BaseModel):
+    user_node: UserNodeConfig
+    subnodes: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Named subnode definitions attached to the user node. "
+                    "Each entry declares rel, declared_fields, adhoc, child, and/or grouping. "
+                    "Recognised names: UserProfile, JourneyHistory, ContextGraph.",
+    )
+
+
+class MergeRuleConfig(BaseModel):
+    session_field: str = Field(..., description="Session field whose final value is promoted at flush_session()")
+    target: str = Field(
+        ...,
+        description="Destination property or node label, e.g. 'Journey.mental_state_at_end' or 'Role'",
+    )
+
+
+class PersistentStateConfig(BaseModel):
+    backend: str = Field(default="memgraph", description="Persistent storage backend identifier")
+    graph: GraphConfig
+    merge_on_session_end: list[MergeRuleConfig] = Field(
+        default=[],
+        description="Rules for promoting session fields to graph node properties when the session is flushed",
+    )
+
+
+class StateConfig(BaseModel):
+    session: SessionStateConfig = Field(default_factory=SessionStateConfig)
+    persistent: PersistentStateConfig
+
+
+class UserDataPersistenceConfig(BaseModel):
+    default_mode: Literal["saved", "anonymous"] = Field(
+        default="saved",
+        description="Default storage mode. 'saved' retains Memgraph data across sessions. "
+                    "'anonymous' deletes all graph data at session end (DPDP-compliant erasure).",
+    )
+
+
+class AuditConfig(BaseModel):
+    db_path: str = Field(default="audit.db", description="Path to the SQLite audit log database file")
+
+
+class ReengagementTriggerConfig(BaseModel):
+    event: str = Field(..., description="Drop-off event code that triggers this rule, e.g. DOP_MT, DOP_EG, DOP_RL")
+    delay_hours: int | None = Field(default=None, description="Hours after the event before re-engagement fires")
+    loop_threshold: int | None = Field(default=None, description="Loop count threshold before action fires (used for DOP_RL)")
+    channel: str | None = Field(default=None, description="Re-engagement channel, e.g. outbound_call, whatsapp")
+    message_template: str | None = Field(default=None, description="Message template identifier for the re-engagement message")
+    action: str | None = Field(default=None, description="Framework action to perform, e.g. hitl_counsellor")
+
+
+class ReengagementConfig(BaseModel):
+    triggers: list[ReengagementTriggerConfig] = Field(
+        default=[],
+        description="List of re-engagement trigger rules executed after drop-off events",
+    )
 
 
 class MemoryLayerConfig(BaseModel):
     server: ServerConfig
-    memory: MemoryConfig
+    redis: RedisConfig = Field(
+        default_factory=RedisConfig,
+        description="Redis connection config for session (turn/session scope) storage",
+    )
+    memgraph: MemgraphConfig = Field(
+        default_factory=MemgraphConfig,
+        description="Memgraph connection config for persistent (cross-session) user profile storage",
+    )
+    state: StateConfig = Field(
+        ...,
+        description="Session and persistent state configuration. Must be provided in domain config.",
+    )
+    user_data_persistence: UserDataPersistenceConfig = Field(
+        default_factory=UserDataPersistenceConfig,
+        description="Controls the default user data retention policy (saved vs anonymous)",
+    )
+    audit: AuditConfig = Field(
+        default_factory=AuditConfig,
+        description="SQLite audit log configuration for DPDP-compliant consent and data access records",
+    )
+    reengagement: ReengagementConfig | None = Field(
+        default=None,
+        description="Re-engagement trigger rules. Optional — omit if not using re-engagement.",
+    )
 
 
 # ---------------------------------------------------------------------------
 # Observability Layer
 # ---------------------------------------------------------------------------
 
-class ObservabilityLayerSettings(BaseModel):
-    log_level: str = Field(default="INFO", description="Logging level: DEBUG, INFO, WARNING, ERROR")
+class OtelConfig(BaseModel):
+    """OpenTelemetry collector connection settings."""
+
+    collector_endpoint: str = Field(default="http://otelcol:4317", description="gRPC endpoint of the OTEL collector")
+    sample_rate: float = Field(default=1.0, description="Trace sampling rate, 0.0–1.0")
+    export_interval_ms: int = Field(default=5000, description="Metric export interval in milliseconds")
+
+
+class TelemetryConfig(BaseModel):
+    pii_fields_excluded: list[str] = Field(
+        default=["user_message"],
+        description="Field names stripped from telemetry spans before export",
+    )
+
+
+class SliConfig(BaseModel):
+    turn_latency_p99_ms: int = Field(default=1200, description="P99 turn latency SLI threshold in milliseconds")
+    trust_block_rate_max: float = Field(default=0.05, description="Maximum acceptable Trust Layer block rate (0.0–1.0)")
+
+
+class AuditObsConfig(BaseModel):
+    pii_fields_excluded: list[str] = Field(
+        default=["user_message", "user_id"],
+        description="Field names stripped from audit log entries",
+    )
+    retention_days: int = Field(default=90, description="Days to retain audit records before deletion")
+
+
+class LifecycleStateConfig(BaseModel):
+    state: str = Field(..., description="Outcome lifecycle state name, e.g. enquiry, applied, placed")
+    trigger_tool: str | None = Field(default=None, description="Tool call that triggers this state transition. None means set on session start.")
+    trigger_condition: str | None = Field(default=None, description="Python-style condition expression evaluated against tool result")
+
+
+class MetricConfig(BaseModel):
+    name: str = Field(..., description="Metric name, e.g. placement.applications")
+    instrument: str = Field(..., description="OTEL instrument type: counter, gauge, or histogram")
+    description: str = Field(default="", description="Human-readable metric description")
+    unit: str = Field(default="", description="Optional unit string, e.g. '%', 'ms'")
+    attributes: list[str] = Field(default=[], description="OTEL attribute keys attached to each data point")
+
+
+class OutcomesConfig(BaseModel):
+    lifecycle: list[LifecycleStateConfig] = Field(
+        default=[],
+        description="Ordered list of domain outcome states and their trigger conditions",
+    )
+    metrics: list[MetricConfig] = Field(
+        default=[],
+        description="Custom OTEL metrics emitted by the Outcome Tracker",
+    )
+
+
+class ObservabilitySettings(BaseModel):
+    """Top-level observability settings — merged from DPG defaults and domain config."""
+
+    domain: str = Field(default="", description="Domain identifier attached to all telemetry spans and metrics")
+    otel: OtelConfig = Field(default_factory=OtelConfig, description="OpenTelemetry collector connection settings")
+    telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig, description="Telemetry PII exclusion settings")
+    audit: AuditObsConfig = Field(default_factory=AuditObsConfig, description="Audit log PII exclusion and retention settings")
+    sli: SliConfig = Field(default_factory=SliConfig, description="SLI/SLO threshold definitions")
+    outcomes: OutcomesConfig = Field(
+        default_factory=OutcomesConfig,
+        description="Domain outcome lifecycle and custom metric definitions",
+    )
 
 
 class ObservabilityLayerConfig(BaseModel):
     server: ServerConfig
-    observability_layer: ObservabilityLayerSettings
+    observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +749,12 @@ class ReachLayerConfig(BaseModel):
     server: ServerConfig
     reach_layer: ReachLayerSettings
     agent_core_client: AgentCoreClientConfig
+    ui: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Web UI configuration for the web channel adapter. "
+                    "Keys vary by domain. Common keys: app_name, app_tagline, app_icon, "
+                    "storage_key, setup_heading, new_session_msg, returning_user_msg.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -378,6 +827,8 @@ def validate_partial(block: str, data: dict) -> list[str]:
 _OPEN_MAP_PLACEHOLDER_KEYS = frozenset({
     "field_name", "param_name", "connector_name", "NodeName",
     "intent_name", "doc_type_name", "value_one",
+    # Trust Layer open maps
+    "policy_pack_name", "guardrail_name",
 })
 
 
@@ -412,15 +863,18 @@ def _check_keys_against_template(
                 errors.extend(_check_keys_against_template(item, item_template, child_path))
         return errors
 
-    # Check if this is an open map (template has only placeholder keys).
+    # Check if this is an open map (template has only placeholder keys, or is
+    # an empty dict {} which means "any keys accepted").
     template_keys = set(template.keys())
-    if template_keys and template_keys.issubset(_OPEN_MAP_PLACEHOLDER_KEYS):
+    if not template_keys or template_keys.issubset(_OPEN_MAP_PLACEHOLDER_KEYS):
         # Open map — any user-defined key is valid; recurse into values.
-        placeholder_key = next(iter(template_keys))
-        item_template = template[placeholder_key]
-        for key, value in data.items():
-            child_path = f"{path}.{key}" if path else key
-            errors.extend(_check_keys_against_template(value, item_template, child_path))
+        # Empty template dict ({}) means "accept any keys, no sub-structure to validate".
+        if template_keys:
+            placeholder_key = next(iter(template_keys))
+            item_template = template[placeholder_key]
+            for key, value in data.items():
+                child_path = f"{path}.{key}" if path else key
+                errors.extend(_check_keys_against_template(value, item_template, child_path))
         return errors
 
     # Fixed-key dict — every key in data must be in the template.

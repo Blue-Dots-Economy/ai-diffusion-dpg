@@ -29,7 +29,8 @@ Important rules:
 - Never make up connector names, API endpoints, or model IDs. Ask the user.
 - When designing the workflow, propose an initial state machine based on what you know, then refine.
 - Keep system prompts in subagents concise (3-8 sentences). They guide the LLM per state.
-- Trust Layer and Action Gateway configs are STATUS: draft — collect them anyway for future use.
+- You MUST complete every phase in order. Do NOT skip any phase. Each phase configures a different DPG block.
+- Do NOT pre-empt future phases. Build the workflow only in the workflow phase, not in overview.
 """.strip()
 
 

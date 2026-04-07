@@ -33,9 +33,9 @@ state:
             rel: HAS_ADHOC
             fields:
               - field_name
-  merge_on_session_end:         # promotes session values to graph nodes on session close
-    - session_field: ""         # required — session field name
-      target: ""                # required — graph path e.g. Profile.name or Role
+    merge_on_session_end:       # promotes session fields to graph nodes on session close
+      - session_field: ""       # required — session field name e.g. name, trade
+        target: ""              # required — graph path e.g. UserProfile.name or Role
 
 user_data_persistence:
   default_mode: saved           # required — saved | anonymous (DPDP-compliant erasure on session end)

@@ -6,6 +6,8 @@
 agent:
   primary_model: ""             # required — Claude model ID for primary inference
   fallback_model: ""            # required — Claude model ID used if primary call fails
+  ask_for_consent: false        # true to ask new users for DPDP data-storage consent before saving anything
+  consent_prompt: ""            # message shown when asking for consent (used when ask_for_consent is true)
 
 conversation:
   blocked_message: ""           # shown when user input is blocked by Trust Layer
@@ -111,7 +113,7 @@ agent_workflow:
           next_subagent_id: ""  # required — target subagent id
           condition:            # optional single condition — omit key if not needed
             field: ""           # session field name e.g. subagent_entry_count.greeting
-            operator: eq        # eq | not_eq | gt | lt | gte | lte | in
+            operator: eq        # eq | not_eq | gt | lt | in
             value: null         # scalar or list to compare against
           conditions: []        # optional list of conditions — ALL must be true
                                 # each item: {field, operator, value}

@@ -2,7 +2,7 @@
 FROM node:20-slim AS frontend
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
-RUN npm ci
+RUN npm install
 COPY frontend/ ./
 RUN npm run build
 # After build, static files are at /app/dev_kit/agent/static (due to outDir: '../dev_kit/agent/static')

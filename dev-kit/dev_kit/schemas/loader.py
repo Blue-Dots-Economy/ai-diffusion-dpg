@@ -23,7 +23,7 @@ _TEMPLATE_FILES: dict[str, str] = {
     "trust_layer": "trust_layer.yaml",
     "action_gateway": "action_gateway.yaml",
     "reach_layer": "reach_layer.yaml",
-    "learning_layer": "learning_layer.yaml",
+    "observability_layer": "observability_layer.yaml",
 }
 
 # Caches — loaded once on first access

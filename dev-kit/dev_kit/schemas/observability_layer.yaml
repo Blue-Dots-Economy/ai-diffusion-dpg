@@ -1,0 +1,26 @@
+# observability_layer domain config — TEMPLATE
+# Fill in values only. Do NOT rename, add, or remove any keys.
+# otel/telemetry/audit PII fields are DPG framework defaults — not needed here.
+
+observability:
+  domain: ""                          # required — short identifier for this deployment, e.g. kkb, fasal_doctor
+
+  sli:
+    turn_latency_p99_ms: 1200         # P99 latency threshold in ms — override if your domain needs stricter/looser
+    trust_block_rate_max: 0.05        # max acceptable fraction of turns blocked by Trust Layer
+
+  audit:
+    retention_days: 90                # days to retain audit log records before deletion
+
+  outcomes:
+    lifecycle:                        # ordered user journey states — first state is the entry state
+      - state: ""                     # required — state name, e.g. enquiry, applied, placed, registered
+        trigger_tool: null            # tool call that transitions INTO this state; null = set at session start
+        trigger_condition: null       # optional condition on tool result, e.g. "result == 'success'"
+
+    metrics:                          # domain-defined OTel metric instruments
+      - name: ""                      # required — dot-separated metric name, e.g. registrations.total
+        instrument: counter           # counter | gauge | histogram
+        description: ""               # human-readable description of what this metric measures
+        unit: ""                      # optional UCUM unit, e.g. '%', 'ms', '1'
+        attributes: []                # OTel attribute keys attached to each data point, e.g. [intent, state]

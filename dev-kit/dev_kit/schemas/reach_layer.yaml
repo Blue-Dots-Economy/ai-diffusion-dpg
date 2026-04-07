@@ -1,12 +1,19 @@
 # reach_layer domain config — TEMPLATE
 # Fill in values only. Do NOT rename, add, or remove any keys.
-
-agent_core_client:
-  endpoint: ""                  # required — HTTP URL to Agent Core process_turn endpoint
+# agent_core_client and memory_layer_client endpoints are DPG defaults — not needed here.
 
 ui:
-  app_name: ""                  # display name of the application
-  app_tagline: ""               # short subtitle shown under the app name
-  app_icon: ""                  # emoji or icon identifier e.g. 🏥
-  user_id_placeholder: ""       # placeholder text in the user ID input field
-  storage_key: ""               # localStorage key for persisting user ID
+  app_name: ""                  # required — display name shown in browser tab and chat header
+  app_tagline: ""               # required — short subtitle shown under the app name
+  app_icon: ""                  # required — emoji representing the app, e.g. 🌾 💊 💼
+  agent_avatar: ""              # emoji shown on agent chat bubbles, e.g. 🌾 💊 💼
+  user_avatar: "👤"             # emoji shown on user chat bubbles
+  setup_heading: ""             # heading shown on the user ID setup screen
+  setup_subtitle: ""            # subtitle shown under the setup heading
+  user_id_placeholder: ""       # hint text in the user ID input field, e.g. e.g. rahul_electrician
+  user_id_hint: ""              # secondary hint below the user ID field
+  start_btn_label: ""           # label on the start/enter button
+  new_session_msg: ""           # first message shown to a brand new user
+  returning_user_msg: ""        # first message shown to a returning user
+  storage_key: ""               # localStorage key for persisting the user ID, e.g. kkb_user_id
+  theme_storage_key: ""         # localStorage key for persisting the theme, e.g. kkb_theme

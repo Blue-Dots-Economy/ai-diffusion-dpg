@@ -1,0 +1,49 @@
+state:
+  session:
+    ttl_minutes: 120
+    schema:
+      current_symptom:
+        type: string
+        default: ''
+      current_crop:
+        type: string
+        default: ''
+      diagnosis_certainty:
+        type: enum
+        values:
+        - high
+        - medium
+        - low
+        default: medium
+      clarification_needed:
+        type: boolean
+        default: false
+      consent_status:
+        type: enum
+        values:
+        - pending
+        - granted
+        - declined
+        default: pending
+  persistent:
+    backend: memgraph
+    graph:
+      user_node:
+        label: Farmer
+        key: user_id
+      subnodes:
+        Profile:
+          rel: HAS_PROFILE
+          declared_fields:
+          - location_district
+          - location_state
+          - crops
+    merge_on_session_end:
+    - session_field: current_crop
+      target: Profile.crops
+    - session_field: location_district
+      target: Profile.location_district
+    - session_field: location_state
+      target: Profile.location_state
+user_data_persistence:
+  default_mode: saved

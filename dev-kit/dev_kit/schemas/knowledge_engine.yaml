@@ -27,3 +27,10 @@ knowledge:
     multimodal_input_handler:
       enabled: false
       image_model: ""           # Claude model ID for image understanding (if enabled)
+
+conversation:
+  persona:
+    text: ""                    # required — system prompt persona text injected into every LLM call
+  language_instruction: ""      # optional — additional language/style instruction e.g. "Respond in Hindi"
+  guardrail_reminders:          # optional — safety reminders appended to the prompt
+    - ""

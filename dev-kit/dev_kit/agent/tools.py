@@ -6,7 +6,7 @@ DPG conversation agent. All 10 tools are defined here.
 """
 from __future__ import annotations
 
-from dev_kit.agent.accumulator import BLOCKS, ConfigAccumulator, ConfigStatus
+from dev_kit.agent.accumulator import BLOCKS, PHASES, ConfigAccumulator, ConfigStatus
 from dev_kit.schemas.loader import get_valid_sections
 
 # ---------------------------------------------------------------------------
@@ -64,7 +64,7 @@ TOOL_DEFINITIONS: list[dict] = [
             "properties": {
                 "phase": {
                     "type": "string",
-                    "enum": ["overview", "language", "knowledge", "memory", "trust", "connectors", "workflow", "review"],
+                    "enum": ["overview", "language", "knowledge", "memory", "trust", "connectors", "workflow", "observability", "reach", "review"],
                 },
             },
             "required": ["phase"],
@@ -115,7 +115,7 @@ TOOL_DEFINITIONS: list[dict] = [
                         "type": "object",
                         "properties": {
                             "field": {"type": "string"},
-                            "operator": {"type": "string", "enum": ["eq", "not_eq", "gt", "lt", "gte", "lte"]},
+                            "operator": {"type": "string", "enum": ["eq", "not_eq", "gt", "lt", "in"]},
                             "value": {},
                         },
                         "required": ["field", "operator", "value"],
@@ -236,12 +236,55 @@ class ToolHandler:
         return f"Project meta updated: {inputs.get('name', '')} ({inputs.get('slug', '')})"
 
     def _handle_update_config(self, inputs: dict) -> str:
-        self._acc.update(inputs["block"], inputs["section"], inputs["values"])
-        return f"ok: updated {inputs['block']}.{inputs['section']}"
+        from dev_kit.schema import validate_partial
+
+        block = inputs["block"]
+        section = inputs["section"]
+        values = inputs["values"]
+
+        # Build the nested partial and validate key names before writing.
+        partial: dict = {}
+        node = partial
+        parts = section.split(".")
+        for part in parts[:-1]:
+            node[part] = {}
+            node = node[part]
+        node[parts[-1]] = values
+
+        errors = validate_partial(block, partial)
+        if errors:
+            error_lines = "\n".join(f"  - {e}" for e in errors)
+            return (
+                f"ERROR — config NOT written. Invalid key names detected:\n{error_lines}\n\n"
+                f"Refer to the YAML template shown in the phase prompt for the exact key names. "
+                f"Correct the section path or key names and retry update_config."
+            )
+
+        self._acc.update(block, section, values)
+        return f"ok: updated {block}.{section}"
 
     def _handle_set_phase(self, inputs: dict) -> str:
-        self._state["phase_changed"] = inputs["phase"]
-        return f"Phase advancing to: {inputs['phase']}"
+        requested = inputs["phase"]
+        current = self._state.get("phase", "overview")
+        current_idx = PHASES.index(current) if current in PHASES else 0
+        requested_idx = PHASES.index(requested) if requested in PHASES else -1
+
+        # Only allow moving to the immediately next phase (or staying on the same one).
+        # Skipping phases is not permitted — each phase must be visited in order.
+        if requested_idx > current_idx + 1:
+            next_phase = PHASES[current_idx + 1]
+            return (
+                f"ERROR — cannot skip from '{current}' to '{requested}'. "
+                f"You must complete '{next_phase}' next. "
+                f"Call set_phase('{next_phase}') when you are ready."
+            )
+        if requested_idx < current_idx:
+            return (
+                f"ERROR — cannot go back from '{current}' to '{requested}'. "
+                f"Use rollback_to_checkpoint if you need to revisit an earlier phase."
+            )
+        self._state["phase_changed"] = requested
+        return f"Phase advancing to: {requested}"
 
     def _handle_create_subagent(self, inputs: dict) -> str:
         existing = [

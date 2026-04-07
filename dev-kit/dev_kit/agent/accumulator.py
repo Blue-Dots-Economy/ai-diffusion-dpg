@@ -23,7 +23,7 @@ BLOCKS: list[str] = [
     "observability_layer",
 ]
 
-DRAFT_BLOCKS: set[str] = {"trust_layer", "action_gateway", "reach_layer", "observability_layer"}
+DRAFT_BLOCKS: set[str] = {"trust_layer", "action_gateway"}
 
 PHASES: list[str] = [
     "overview",
@@ -33,6 +33,8 @@ PHASES: list[str] = [
     "trust",
     "connectors",
     "workflow",
+    "observability",
+    "reach",
     "review",
 ]
 
