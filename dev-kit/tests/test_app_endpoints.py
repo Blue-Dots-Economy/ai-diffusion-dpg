@@ -51,10 +51,8 @@ def project_path(tmp_path):
 
 
 class TestExportConfigsZip:
-    def test_export_configs_returns_zip(self, client, tmp_path, monkeypatch, project_path):
+    def test_export_configs_returns_zip(self, client, tmp_path, project_path):
         """Status 200, content-type application/zip, ZIP contains agent_core.yaml."""
-        monkeypatch.setattr(app_module, "CONFIGS_DIR", tmp_path)
-        app_module._engines.clear()
         slug = project_path.name
 
         # Write one real config file
@@ -68,11 +66,11 @@ class TestExportConfigsZip:
         with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
             names = zf.namelist()
         assert "agent_core.yaml" in names
+        assert "attachment" in response.headers.get("content-disposition", "")
+        assert f"{slug}-configs.zip" in response.headers.get("content-disposition", "")
 
-    def test_export_includes_placeholder_for_missing_block(self, client, tmp_path, monkeypatch, project_path):
+    def test_export_includes_placeholder_for_missing_block(self, client, tmp_path, project_path):
         """Blocks without files on disk get a placeholder comment in the ZIP."""
-        monkeypatch.setattr(app_module, "CONFIGS_DIR", tmp_path)
-        app_module._engines.clear()
         slug = project_path.name
 
         # Write only agent_core.yaml — all other blocks are missing
@@ -116,8 +114,6 @@ class TestCheckpointPreview:
 
     def test_checkpoint_preview_returns_configs(self, client, tmp_path, monkeypatch, project_path):
         """Returns list with correct block/status/content shape."""
-        monkeypatch.setattr(app_module, "CONFIGS_DIR", tmp_path)
-        app_module._engines.clear()
         slug = project_path.name
         phase = self._create_checkpoint(project_path)
 
@@ -146,8 +142,6 @@ class TestCheckpointPreview:
 
     def test_checkpoint_preview_404_for_missing_phase(self, client, tmp_path, monkeypatch, project_path):
         """Returns 404 when checkpoint does not exist."""
-        monkeypatch.setattr(app_module, "CONFIGS_DIR", tmp_path)
-        app_module._engines.clear()
         slug = project_path.name
 
         response = client.get(f"/api/projects/{slug}/checkpoints/99_nonexistent/preview")
@@ -180,3 +174,32 @@ class TestSchemaDescriptions:
         data = response.json()
         assert data["block"] == "nonexistent_block"
         assert data["descriptions"] == {}
+
+
+def test_export_configs_404_for_missing_project(client):
+    """Export endpoint returns 404 when the project does not exist."""
+    res = client.get("/api/projects/nonexistent-project-xyz/configs/export")
+    assert res.status_code == 404
+
+
+def test_checkpoint_preview_corrupt_accumulator(client, tmp_path, monkeypatch):
+    """Preview endpoint returns 500 or 404 when accumulator.json is corrupt JSON."""
+    import dev_kit.agent.app as app_module
+    monkeypatch.setattr(app_module, "CONFIGS_DIR", tmp_path)
+
+    slug = "test-corrupt"
+    project_path = tmp_path / slug
+    project_path.mkdir()
+    (project_path / "_meta").mkdir()
+    (project_path / "_meta" / "project.json").write_text(
+        '{"name": "Test", "description": "", "created_at": "2026-01-01T00:00:00Z"}'
+    )
+    phase = "01_overview"
+    cp_dir = project_path / "_meta" / "checkpoints" / phase
+    cp_dir.mkdir(parents=True)
+    (cp_dir / "accumulator.json").write_text("NOT VALID JSON {{{{")
+    (cp_dir / "summary.txt").write_text("summary")
+    (cp_dir / "timestamp.json").write_text('{"created_at": "2026-01-01T00:00:00Z"}')
+
+    res = client.get(f"/api/projects/{slug}/checkpoints/{phase}/preview")
+    assert res.status_code in (404, 500)  # endpoint handles corrupt JSON

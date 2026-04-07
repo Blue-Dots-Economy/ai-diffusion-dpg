@@ -375,34 +375,36 @@ def get_configs(slug: str) -> list[dict]:
 
 
 @app.get("/api/projects/{slug}/configs/export")
-def export_configs(slug: str) -> StreamingResponse:
-    """Download all 7 config YAML files as a ZIP archive.
-
-    For blocks with no file on disk, a placeholder comment is included in
-    the archive so every block is always represented.
+def export_configs(slug: str):
+    """Return all config YAML files for a project as a ZIP archive.
 
     Args:
-        slug: Project slug.
+        slug: Project identifier.
 
     Returns:
-        StreamingResponse containing a ZIP archive with one YAML file per block.
+        StreamingResponse containing a ZIP file with one YAML file per block.
+
+    Raises:
+        HTTPException: 404 if the project does not exist.
     """
     _load_project_meta(slug)  # raises 404 if project not found
     project_path = _get_project_path(slug)
-
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for block in BLOCKS:
             config_file = project_path / f"{block}.yaml"
-            if config_file.exists():
-                content = config_file.read_text()
-            else:
-                content = f"# {block}.yaml — not yet configured\n"
+            content = config_file.read_text() if config_file.exists() else f"# {block}.yaml — not yet configured\n"
             zf.writestr(f"{block}.yaml", content)
     buf.seek(0)
 
+    def _iter_and_close():
+        try:
+            yield from buf
+        finally:
+            buf.close()
+
     return StreamingResponse(
-        buf,
+        _iter_and_close(),
         media_type="application/zip",
         headers={"Content-Disposition": f"attachment; filename={slug}-configs.zip"},
     )
