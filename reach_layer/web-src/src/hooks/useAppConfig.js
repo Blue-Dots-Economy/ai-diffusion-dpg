@@ -16,6 +16,7 @@ const DEFAULTS = {
   new_session_msg: 'New session started. How can I help you today?',
   returning_user_msg: 'Welcome back! Continuing your previous conversation.',
   storage_key: 'dpg_user_id',
+  theme_storage_key: 'dpg_theme',
 }
 
 /**
@@ -30,8 +31,8 @@ export function useAppConfig() {
   useEffect(() => {
     fetchAppConfig()
       .then(data => setConfig(prev => ({ ...prev, ...data })))
-      .catch(() => {
-        // silently fall back to defaults — server may not have ui config
+      .catch(err => {
+        console.warn('[useAppConfig] /app-config fetch failed, using defaults:', err)
       })
       .finally(() => setConfigLoading(false))
   }, [])

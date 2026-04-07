@@ -13,6 +13,10 @@ agent_core_client:
   endpoint: "http://agent_core:8000/process_turn"
   timeout_s: 30.0
 
+memory_layer_client:
+  endpoint: "http://memory_layer:8002"
+  timeout_s: 10.0
+
 ui:
   agent_avatar: "🤖"
   user_avatar: "👤"
@@ -23,3 +27,4 @@ ui:
   new_session_msg: "New session started. How can I help you?"
   returning_user_msg: "Welcome back! How can I help you today?"
   storage_key: "dpg_user_id"
+  theme_storage_key: "dpg_theme"

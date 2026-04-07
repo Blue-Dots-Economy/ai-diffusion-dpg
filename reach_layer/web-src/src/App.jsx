@@ -14,8 +14,8 @@ import { ToastContainer } from './components/ui/Toast'
  * Holds all shared state: userId, screen, system message.
  */
 export default function App() {
-  const { theme, toggle: toggleTheme } = useTheme()
   const { config, configLoading } = useAppConfig()
+  const { theme, toggle: toggleTheme } = useTheme(config.theme_storage_key)
   const { toasts, addToast, removeToast } = useToast()
 
   const [screen, setScreen] = useState('loading') // 'loading' | 'setup' | 'chat'

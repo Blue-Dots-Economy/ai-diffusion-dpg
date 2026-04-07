@@ -2,11 +2,17 @@ import { useState, useEffect } from 'react'
 
 /**
  * Persist and apply dark/light theme via .dark class on <html>.
+ * The localStorage key is read from the domain config so it can vary
+ * per deployment without touching source code.
+ *
+ * @param {string} storageKey - localStorage key sourced from /app-config
+ *   (config.theme_storage_key). Defaults to 'dpg_theme' only as a
+ *   last-resort fallback when config has not yet loaded.
  * @returns {{ theme: 'dark'|'light', toggle: () => void }}
  */
-export function useTheme() {
+export function useTheme(storageKey = 'dpg_theme') {
   const [theme, setTheme] = useState(
-    () => localStorage.getItem('dpg_theme') || 'dark'
+    () => localStorage.getItem(storageKey) || 'dark'
   )
 
   useEffect(() => {
@@ -16,8 +22,8 @@ export function useTheme() {
     } else {
       root.classList.remove('dark')
     }
-    localStorage.setItem('dpg_theme', theme)
-  }, [theme])
+    localStorage.setItem(storageKey, theme)
+  }, [theme, storageKey])
 
   const toggle = () => setTheme(t => (t === 'dark' ? 'light' : 'dark'))
 

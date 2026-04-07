@@ -58,8 +58,8 @@ export function useChat({ onError }) {
         setMessages(historyMsgs)
         return { isReturning: historyMsgs.length > 0 }
       }
-    } catch {
-      // ignore — fall through to fresh session
+    } catch (err) {
+      console.warn('[useChat] loadHistory failed, starting fresh session:', err)
     }
     setSessionId(generateUUID())
     return { isReturning: false }
