@@ -29,13 +29,18 @@ export const api = {
   // Checkpoints
   getCheckpoints: (slug) => request('GET', `/projects/${slug}/checkpoints`),
   restoreCheckpoint: (slug, phase) => request('POST', `/projects/${slug}/checkpoints/${phase}/restore`),
+  getCheckpointPreview: (slug, phase) => request('GET', `/projects/${slug}/checkpoints/${phase}/preview`),
 
   // Configs
   getConfigs: (slug) => request('GET', `/projects/${slug}/configs`),
   getConfig: (slug, block) => request('GET', `/projects/${slug}/configs/${block}`),
   updateConfig: (slug, block, content) => request('PUT', `/projects/${slug}/configs/${block}`, { content }),
   validateConfigs: (slug) => request('POST', `/projects/${slug}/configs/validate`),
+  exportConfigs: (slug) => `${BASE}/projects/${slug}/configs/export`, // returns URL string for native browser download
 
   // Workflow graph
   getGraph: (slug) => request('GET', `/projects/${slug}/workflow/graph`),
+
+  // Schema
+  getSchemaDescriptions: (block) => request('GET', `/schemas/${block}`),
 }
