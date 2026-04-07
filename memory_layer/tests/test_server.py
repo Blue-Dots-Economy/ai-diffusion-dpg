@@ -361,3 +361,72 @@ def test_get_active_history_empty_user_id_returns_null(client):
     data = response.json()
     assert data["session_id"] is None
     assert data["turns"] == []
+
+
+# ---------------------------------------------------------------------------
+# OTel span instrumentation
+# ---------------------------------------------------------------------------
+
+def test_context_bundle_emits_memory_read_span(mock_memory):
+    """The /context_bundle endpoint must emit a memory.read span."""
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry import trace
+    from dpg_telemetry import _reset_for_testing
+
+    _reset_for_testing()
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    trace.set_tracer_provider(provider)
+
+    mock_memory.context_bundle.return_value = {"session": {}, "profile": {}, "journey": None}
+    app = create_app(mock_memory)
+    test_client = TestClient(app)
+    test_client.post("/context_bundle", json={"session_id": "sess-1", "user_id": "user-1"})
+
+    spans = exporter.get_finished_spans()
+    span_names = [s.name for s in spans]
+    assert "memory.read" in span_names
+
+    read_span = next(s for s in spans if s.name == "memory.read")
+    assert read_span.attributes.get("session_id") is not None
+    assert read_span.attributes.get("db.system") == "redis"
+
+    _reset_for_testing()
+
+
+def test_write_emits_memory_write_span(mock_memory):
+    """The /write endpoint must emit a memory.write span."""
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry import trace
+    from dpg_telemetry import _reset_for_testing
+
+    _reset_for_testing()
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    trace.set_tracer_provider(provider)
+
+    app = create_app(mock_memory)
+    test_client = TestClient(app)
+    test_client.post("/write", json={
+        "session_id": "sess-1",
+        "user_id": "user-1",
+        "scope": "session",
+        "key": "foo",
+        "value": "bar",
+    })
+
+    spans = exporter.get_finished_spans()
+    span_names = [s.name for s in spans]
+    assert "memory.write" in span_names
+
+    write_span = next(s for s in spans if s.name == "memory.write")
+    assert write_span.attributes.get("session_id") is not None
+    assert write_span.attributes.get("db.system") == "redis"
+
+    _reset_for_testing()

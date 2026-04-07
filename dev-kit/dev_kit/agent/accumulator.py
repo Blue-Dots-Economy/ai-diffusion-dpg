@@ -20,10 +20,10 @@ BLOCKS: list[str] = [
     "trust_layer",
     "action_gateway",
     "reach_layer",
-    "learning_layer",
+    "observability_layer",
 ]
 
-DRAFT_BLOCKS: set[str] = {"trust_layer", "action_gateway", "reach_layer", "learning_layer"}
+DRAFT_BLOCKS: set[str] = {"trust_layer", "action_gateway", "reach_layer", "observability_layer"}
 
 PHASES: list[str] = [
     "overview",

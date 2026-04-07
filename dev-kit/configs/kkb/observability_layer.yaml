@@ -1,0 +1,50 @@
+# dev-kit/configs/kkb/observability_layer.yaml
+# KKB domain observability config — implements ObservabilityConfig schema.
+# Defines the full KKB outcome lifecycle, custom metrics, and SLI thresholds.
+
+observability:
+  domain: "kkb"
+
+  outcomes:
+    lifecycle:
+      - state: "enquiry"
+        trigger_tool: null
+
+      - state: "applied"
+        trigger_tool: "onest_apply"
+        trigger_condition: "result == 'success'"
+
+      - state: "shortlisted"
+        trigger_tool: "onest_status_check"
+        trigger_condition: "status == 'shortlisted'"
+
+      - state: "placed"
+        trigger_tool: "onest_status_check"
+        trigger_condition: "status == 'placed'"
+
+    metrics:
+      - name: "placement.applications"
+        instrument: counter
+        description: "Total job applications submitted via ONEST"
+        attributes:
+          - "intent"
+          - "state"
+
+      - name: "placement.rate"
+        instrument: gauge
+        description: "Percentage of sessions reaching placed state, computed by OutcomeTracker as placed_sessions / total_sessions"
+        unit: "%"
+
+      - name: "drop_off.by_stage"
+        instrument: counter
+        description: "Sessions that ended at each lifecycle stage"
+        attributes:
+          - "stage"
+          - "intent"
+
+  sli:
+    turn_latency_p99_ms: 1200
+    trust_block_rate_max: 0.05
+
+  audit:
+    retention_days: 90

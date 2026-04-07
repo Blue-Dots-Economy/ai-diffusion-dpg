@@ -37,6 +37,7 @@ _SRC = str(Path(__file__).parent / "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
+from dpg_telemetry import init_otel
 from guardrails import BasicTrustLayer
 from server import create_app
 
@@ -133,6 +134,8 @@ def _build_app():
     dpg_config = _load_config("config/dpg.yaml")
     domain_config = _load_config(str(_domain_config_path("trust_layer")))
     config = _deep_merge(dpg_config, domain_config)
+
+    init_otel(service_name="trust_layer", config=config)
 
     trust = BasicTrustLayer(config)
     app = create_app(trust)

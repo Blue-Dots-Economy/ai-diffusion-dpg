@@ -292,3 +292,43 @@ def test_app_config_returns_empty_dict_when_no_ui_section(client):
 def test_app_config_response_is_json(client):
     response = client.get("/app-config")
     assert "application/json" in response.headers["content-type"]
+
+
+# ---------------------------------------------------------------------------
+# OTel span — reach.inbound
+# ---------------------------------------------------------------------------
+
+@respx.mock
+def test_handle_message_emits_reach_span(web_reach, config):
+    """The /chat endpoint must emit a reach.inbound span."""
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry import trace
+    from unittest.mock import patch
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    # Patch get_tracer_provider so the handler uses our test provider directly.
+    with patch("opentelemetry.trace.get_tracer", lambda name, **_kw: provider.get_tracer(name)):
+        respx.post("http://agent-core-test/process_turn").mock(
+            return_value=httpx.Response(200, json={"response_text": "Hello!", "was_escalated": False})
+        )
+
+        app = create_app(web_reach, config)
+        test_client = TestClient(app)
+        test_client.post("/chat", json={
+            "session_id": "sess-otel",
+            "user_id": "user-otel",
+            "message": "ping",
+        })
+
+    spans = exporter.get_finished_spans()
+    span_names = [s.name for s in spans]
+    assert "reach.inbound" in span_names
+
+    reach_span = next(s for s in spans if s.name == "reach.inbound")
+    assert reach_span.attributes.get("session_id") == "sess-otel"
+    assert reach_span.attributes.get("dpg.channel") == "web"

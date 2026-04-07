@@ -20,11 +20,24 @@ import time
 from typing import Any, Optional
 
 from fastapi import FastAPI
+from opentelemetry import trace as otel_trace
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from pydantic import BaseModel
 
 from src.memory_layer import MemoryLayer
 
 logger = logging.getLogger(__name__)
+
+
+def _get_tracer() -> "otel_trace.Tracer":
+    """Return the OTel tracer for the memory layer server.
+
+    Resolved lazily so tests can install a TracerProvider before the first call.
+
+    Returns:
+        opentelemetry.trace.Tracer for this instrumentation scope.
+    """
+    return otel_trace.get_tracer(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +108,7 @@ def create_app(memory: MemoryLayer) -> FastAPI:
         description="Redis + Neo4j state management for the DPG AI framework.",
         version="2.0.0",
     )
+    FastAPIInstrumentor.instrument_app(app)
 
     # ------------------------------------------------------------------
     # Endpoints
@@ -114,30 +128,34 @@ def create_app(memory: MemoryLayer) -> FastAPI:
         if not session_id or not user_id:
             return {"session": {}, "profile": {}, "journey": None}
 
-        try:
-            bundle = memory.context_bundle(session_id, user_id)
-            logger.info(
-                "memory_server.context_bundle",
-                extra={
-                    "operation": "server.context_bundle",
-                    "status": "success",
-                    "session_id": session_id,
-                    "latency_ms": int((time.time() - start) * 1000),
-                },
-            )
-            return bundle
-        except Exception as e:
-            logger.error(
-                "memory_server.context_bundle_error",
-                extra={
-                    "operation": "server.context_bundle",
-                    "status": "failure",
-                    "session_id": session_id,
-                    "error": f"{type(e).__name__}: {e}",
-                    "latency_ms": int((time.time() - start) * 1000),
-                },
-            )
-            return {"session": {}, "profile": {}, "journey": None}
+        with _get_tracer().start_as_current_span("memory.read") as span:
+            span.set_attribute("session_id", session_id)
+            span.set_attribute("db.system", "redis")
+            try:
+                bundle = memory.context_bundle(session_id, user_id)
+                logger.info(
+                    "memory_server.context_bundle",
+                    extra={
+                        "operation": "server.context_bundle",
+                        "status": "success",
+                        "session_id": session_id,
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+                return bundle
+            except Exception as e:
+                span.record_exception(e)
+                logger.error(
+                    "memory_server.context_bundle_error",
+                    extra={
+                        "operation": "server.context_bundle",
+                        "status": "failure",
+                        "session_id": session_id,
+                        "error": f"{type(e).__name__}: {e}",
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+                return {"session": {}, "profile": {}, "journey": None}
 
     @app.post("/write")
     def write(request: WriteRequest) -> StatusResponse:
@@ -152,31 +170,35 @@ def create_app(memory: MemoryLayer) -> FastAPI:
         if not session_id or not user_id or not request.key:
             return StatusResponse(status="ok")
 
-        try:
-            memory.write(session_id, user_id, request.scope, request.key, request.value)
-            logger.info(
-                "memory_server.write",
-                extra={
-                    "operation": "server.write",
-                    "status": "success",
-                    "session_id": session_id,
-                    "key": request.key,
-                    "scope": request.scope,
-                    "latency_ms": int((time.time() - start) * 1000),
-                },
-            )
-        except Exception as e:
-            logger.error(
-                "memory_server.write_error",
-                extra={
-                    "operation": "server.write",
-                    "status": "failure",
-                    "session_id": session_id,
-                    "key": request.key,
-                    "error": f"{type(e).__name__}: {e}",
-                    "latency_ms": int((time.time() - start) * 1000),
-                },
-            )
+        with _get_tracer().start_as_current_span("memory.write") as span:
+            span.set_attribute("session_id", session_id)
+            span.set_attribute("db.system", "redis")
+            try:
+                memory.write(session_id, user_id, request.scope, request.key, request.value)
+                logger.info(
+                    "memory_server.write",
+                    extra={
+                        "operation": "server.write",
+                        "status": "success",
+                        "session_id": session_id,
+                        "key": request.key,
+                        "scope": request.scope,
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+            except Exception as e:
+                span.record_exception(e)
+                logger.error(
+                    "memory_server.write_error",
+                    extra={
+                        "operation": "server.write",
+                        "status": "failure",
+                        "session_id": session_id,
+                        "key": request.key,
+                        "error": f"{type(e).__name__}: {e}",
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
 
         return StatusResponse(status="ok")
 

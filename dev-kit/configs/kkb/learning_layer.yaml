@@ -1,7 +1,0 @@
-# dev-kit/configs/kkb/learning_layer.yaml
-# KKB domain values for Learning Layer.
-# No KKB-specific overrides — DPG defaults apply.
-# To override log level for KKB, add it here.
-#
-# learning_layer:
-#   log_level: "DEBUG"

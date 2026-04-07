@@ -1,16 +1,14 @@
-# Reach Layer DPG
+# Reach Layer
 
-Manages inbound and outbound communication channels. For the PoC: a CLI REPL over stdin/stdout.
+Normalises inbound channels and delivers responses. Two adapters are included in the PoC: a CLI REPL over stdin/stdout and a FastAPI web server with a single-page chat UI.
 
 ---
 
 ## What this service does
 
-The Reach Layer normalises communication across all channels (WhatsApp, VOIP, Web, Mobile SDK) and presents a uniform interface to Agent Core. In the other direction, it delivers Agent Core's response back to the user on the originating channel.
+The Reach Layer is the channel boundary. On the inbound side it normalises raw user input from any channel into a `TurnInput` struct. On the outbound side it delivers Agent Core's `TurnResult` back to the user on the originating channel.
 
-For the PoC, the only channel is a CLI REPL (`CLIReachLayer`). It reads one line from stdin, sends it to Agent Core via HTTP, and prints the response to stdout. The interface is identical to what a production channel adapter would implement.
-
-Each CLI session generates a UUID session ID at startup and reuses it for the entire conversation. This maintains conversation continuity — Agent Core can retrieve the session state from Memory Layer on every turn.
+All state access (except the one approved exception below) must go through Agent Core. The Reach Layer never calls Knowledge Engine, Trust Layer, or other blocks directly.
 
 ---
 
@@ -18,92 +16,197 @@ Each CLI session generates a UUID session ID at startup and reuses it for the en
 
 ```
 reach_layer/
-├── main.py                 # CLI entrypoint — starts the REPL loop
+├── main.py              # CLI entry point — starts REPL loop
+├── run.py               # CLI entry point with --phone argument
+├── server.py            # FastAPI web server (port 8005)
+├── config_loader.py     # Shared YAML loading + deep-merge utilities
 ├── pyproject.toml
+├── Dockerfile           # Container for web server
 ├── config/
-│   └── config.yaml         # CLI prompts, agent_core endpoint, timeout
+│   ├── dpg.yaml         # DPG defaults: CLI prompts, Agent Core endpoint, Memory Layer endpoint, UI config
+│   └── domain.yaml      # KKB overrides: app_name, app_tagline, storage_key
 ├── src/
-│   ├── cli_reach.py        # CLIReachLayer — ReachLayerBase implementation
-│   └── agent_core_client.py  # HTTP client for Agent Core POST /process_turn
+│   ├── base.py          # ReachLayerBase ABC — receive() → TurnInput, deliver(TurnResult) → None
+│   ├── cli_reach.py     # CLIReachLayer — reads stdin, writes stdout
+│   └── web_reach.py     # WebReachLayer — request-driven (build_turn_input, format_result)
+├── web/
+│   └── index.html       # Single-page chat UI served at GET /
 └── tests/
-    └── test_cli_reach.py
+    ├── test_cli_reach.py      (~22 tests)
+    ├── test_server.py         (~30 tests)
+    ├── test_web_reach.py      (~28 tests)
+    ├── test_config_loader.py  (~27 tests)
+    └── test_main.py           (~18 tests)
 ```
 
 ---
 
-## Running the CLI
+## CLI adapter
 
-Start all backend services first (Agent Core, Knowledge Engine, Memory, Trust, Learning, Action Gateway), then:
+`CLIReachLayer` in `src/cli_reach.py` implements the `ReachLayerBase` interface for stdin/stdout use.
 
-```bash
-source ../.venv/bin/activate
-cd reach_layer
-python main.py
+**How it works:**
+
+1. `receive()` — reads one line from stdin, wraps it in a `TurnInput` (fields: `session_id`, `user_message`, `channel="cli"`, `timestamp_ms`).
+2. Agent Core is called via HTTP `POST /process_turn`.
+3. `deliver(result)` — prints `{agent_prefix}{response_text}` to stdout. If `was_escalated=True`, prepends `[ESCALATED TO HUMAN AGENT]` before the response.
+
+**Session management:**
+
+- A UUID session ID is generated once at construction time and reused for every turn in that process.
+- Restarting `main.py` generates a new session ID — prior context is not recovered automatically.
+- `user_id` is optional; passed at construction and forwarded on every turn.
+
+---
+
+## Web adapter
+
+`server.py` is a FastAPI app on port **8005**. It serves the single-page chat UI and proxies messages to Agent Core.
+
+### `POST /chat`
+
+Proxies a user message to Agent Core and returns the response.
+
+**Request:**
+```json
+{
+  "session_id": "sess-abc123",
+  "user_id": "rahul_electrician",
+  "message": "electrician ka kaam chahiye"
+}
 ```
 
-The REPL starts with `You: `. Type any message and press Enter. The agent's response is printed after `Agent: `. Type `quit` or `exit` to end the session, or press Ctrl+D.
+`user_id` is optional.
 
-**Example session:**
+**Response:**
+```json
+{
+  "response_text": "Hubli mein electrician ke liye salary ₹15,000–₹28,000/month hai.",
+  "was_escalated": false,
+  "was_tool_used": true,
+  "session_id": "sess-abc123",
+  "latency_ms": 1102
+}
 ```
-You: electrician ka kaam chahiye Hubli mein
-Agent: Hubli mein electrician ke liye current salary ₹15,000–₹28,000 per month hai.
-       Demand strong hai — 12% QoQ growth. Top employers: Hubli Distribution Co,
-       Karnataka Power. Kya aap apply karna chahte hain?
 
-You: PMKVY kya hai?
-Agent: PMKVY (Pradhan Mantri Kaushal Vikas Yojana) ek free skill training scheme hai.
-       Indian citizen hona chahiye, age 15–45, school dropout ya unemployed.
-       Training ke baad certificate milta hai aur ₹8,000 tak ka reward.
+On failure, returns a safe error message rather than propagating the exception. Retries once on timeout with a 1-second backoff.
 
-You: quit
+Emits OTel span `reach.inbound` with `session_id` and `dpg.channel` attributes.
+
+---
+
+### `GET /user-history/{user_id}`
+
+Returns the user's active session ID and prior turns.
+
+**Response:**
+```json
+{
+  "session_id": "sess-abc123",
+  "turns": [ ... ]
+}
+```
+
+**Approved exception:** This endpoint calls Memory Layer `GET /users/{user_id}/active-history` directly, bypassing Agent Core. This is a deliberate, scoped exception for the dev/demo web adapter only — the browser uses it to restore a prior conversation before the first message. All other state access in all other channel adapters must go through Agent Core.
+
+---
+
+### `GET /app-config`
+
+Returns the `ui:` section of the merged config (used by the web UI to set the app title, tagline, and icon).
+
+---
+
+### `GET /`
+
+Serves `web/index.html` — the single-page chat UI.
+
+---
+
+### `GET /health`
+
+```json
+{ "status": "ok" }
 ```
 
 ---
 
-## How it works
+## HTTP clients
 
-```
-1. User types a message (stdin)
-2. CLIReachLayer wraps it in a TurnInput (session_id, message, channel="cli", timestamp)
-3. AgentCoreClient sends POST /process_turn to Agent Core (port 8000)
-4. Agent Core runs the full pipeline and returns a TurnResult
-5. CLIReachLayer prints the response_text to stdout
-6. If was_escalated=true, a special escalation notice is printed
-```
+| Client | Target | Timeout | Retry |
+|--------|--------|---------|-------|
+| Agent Core client | `POST /process_turn` | 30s (configurable) | Once on `TimeoutException` with 1s backoff |
+| Memory Layer client | `GET /users/{user_id}/active-history` | 10s (configurable) | None |
 
-The HTTP call has a configurable timeout (default: 60 seconds) to accommodate cold-start latency on the first turn (LLM model loading, ChromaDB initialisation).
+Both use a persistent `httpx.Client` instance.
+
+---
+
+## Session management
+
+| Adapter | Session ID origin | Persistence |
+|---------|-------------------|-------------|
+| CLI | UUID generated at `CLIReachLayer` construction | In-process; new session on restart |
+| Web | Provided by the browser (stored in `localStorage`) | Browser calls `GET /user-history/{user_id}` before first message to restore prior turns |
 
 ---
 
 ## Configuration
 
 | Key | Description |
-|---|---|
-| `reach_layer.cli.prompt` | Input prompt displayed to user (default: `"You: "`) |
+|-----|-------------|
+| `reach_layer.cli.prompt` | Input prompt shown to user (default: `"You: "`) |
 | `reach_layer.cli.agent_prefix` | Prefix for agent responses (default: `"Agent: "`) |
 | `agent_core_client.endpoint` | Agent Core URL (default: `http://localhost:8000/process_turn`) |
-| `agent_core_client.timeout_s` | HTTP timeout in seconds (default: 60.0) |
-| `server.port` | Reserved port for future HTTP channel adapter (default: 8005) |
+| `agent_core_client.timeout_s` | HTTP timeout for Agent Core calls (default: `30.0`) |
+| `memory_layer_client.endpoint` | Memory Layer base URL (default: `http://localhost:8002`) |
+| `memory_layer_client.timeout_s` | HTTP timeout for Memory Layer calls (default: `10.0`) |
+| `server.port` | Web server port (default: `8005`) |
+| `ui.app_name` | Application name shown in the chat UI |
+| `ui.app_tagline` | Tagline shown in the chat UI |
+| `ui.app_icon` | Icon shown in the chat UI |
+| `ui.user_id_placeholder` | Placeholder text for the user ID input |
+| `ui.storage_key` | `localStorage` key used by the web UI to persist session state |
 
-The 60-second timeout is intentional: the first request after a cold start can take 30–45 seconds due to LLM model loading and ChromaDB initialisation. Subsequent requests are typically 1–3 seconds.
+Config is loaded once at startup by deep-merging `config/dpg.yaml` (framework defaults) with `config/domain.yaml` (domain overrides).
 
 ---
 
-## Session management
+## Running the CLI
 
-- Each `python main.py` invocation creates a **new session** with a fresh UUID.
-- The session ID is reused for every turn within that invocation.
-- When the process exits, the session persists in the Memory Layer until its TTL expires (1 hour by default).
-- Restarting `main.py` starts a completely new session — previous context is not recovered.
+Start all backend services first (Agent Core, Knowledge Engine, Memory Layer, Trust Layer, Observability Layer, Action Gateway), then:
+
+```bash
+cd reach_layer
+uv run python main.py
+```
+
+With an optional phone/user identifier:
+
+```bash
+uv run python run.py --phone rahul_electrician
+```
+
+Type any message and press Enter. Type `quit` or `exit`, or press Ctrl+D, to end the session.
+
+---
+
+## Running the web server
+
+```bash
+cd reach_layer
+uv run uvicorn server:app --host 0.0.0.0 --port 8005
+```
+
+Then open `http://localhost:8005` in a browser.
 
 ---
 
 ## Running tests
 
 ```bash
-source ../.venv/bin/activate
 cd reach_layer
-pytest tests/ -v --cov=src --cov-report=term-missing
+uv run pytest tests/ -v --cov=src --cov-report=term-missing
 ```
 
 ---
@@ -111,20 +214,25 @@ pytest tests/ -v --cov=src --cov-report=term-missing
 ## Dependencies
 
 ```
-httpx    >= 0.27    # HTTP client for Agent Core
-pyyaml   >= 6.0    # Config loading
+httpx                                    >= 0.27.0
+pyyaml                                   >= 6.0
+python-dotenv                            >= 1.0.0
+fastapi                                  >= 0.111.0
+uvicorn[standard]                        >= 0.29.0
+observability-layer                      (local path)
+opentelemetry-instrumentation-fastapi
+opentelemetry-instrumentation-httpx
+respx                                    >= 0.22.0  (dev only)
 ```
 
 Requires Python 3.11+.
 
 ---
 
-## Replacing the stub
+## Adding new channels
 
-To add a new channel (e.g. WhatsApp via a webhook):
-
-1. Create a class that inherits from `ReachLayerBase` (defined in `agent_core/src/interfaces/reach_layer.py`).
-2. Implement `receive() → TurnInput` and `deliver(TurnResult) → None` with identical signatures.
-3. Wire the new class into `main.py` alongside or instead of `CLIReachLayer`.
-
-The Agent Core and all other services require no changes — they only interact with the reach layer through `AgentCoreClient.process_turn()`.
+1. Create a class that inherits from `ReachLayerBase` (defined in `src/base.py`).
+2. Implement `receive() -> TurnInput` and `deliver(result: TurnResult) -> None` with identical signatures.
+3. All state access must go through Agent Core — do not call Memory Layer or other blocks directly (the `GET /user-history` exception is scoped to the web adapter only).
+4. Wire the new class into the appropriate entry point alongside or instead of the existing adapters.
+5. Agent Core and all other services require no changes.

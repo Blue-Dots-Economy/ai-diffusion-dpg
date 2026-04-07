@@ -93,7 +93,7 @@ docker compose -f docker-compose.dev.yml up -d
 |---|---|---|
 | memory_layer | 512 MB | 0.1 |
 | trust_layer | 512 MB | 0.1 |
-| learning_layer | 512 MB | 0.1 |
+| observability_layer | 512 MB | 0.1 |
 | action_gateway | 512 MB | 0.1 |
 | knowledge_engine | **2 GB** | 0.5 |
 | agent_core | 512 MB | 0.1 |

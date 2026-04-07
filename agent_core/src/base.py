@@ -29,7 +29,7 @@ class AgentCoreBase(ABC):
 
         After return (async, non-blocking):
             8. Write updated session state to Memory Layer
-            9. Emit TurnEvent to Learning Layer
+            9. Emit TurnEvent to Observability Layer
 
         Guarantees:
         - Always returns TurnResult. Never raises to the caller.

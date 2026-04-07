@@ -27,10 +27,11 @@ from typing import Any, Optional
 from src.base import AgentCoreBase
 from src.interfaces.action_gateway import ActionGatewayBase
 from src.interfaces.knowledge_engine import KnowledgeEngineBase
-from src.interfaces.learning_layer import LearningLayerBase
+from src.interfaces.observability_layer import ObservabilityLayerBase
 from src.interfaces.memory_layer import MemoryLayerBase
 from src.interfaces.reach_layer import ReachLayerBase
 from src.interfaces.trust_layer import TrustLayerBase
+from src.http_clients.trust_layer import TrustLayerConstraintError
 from src.preprocessing.language_normalisation import LanguageNormaliser
 from src.llm_wrapper.base import LLMWrapperBase
 from src.manager_agent import ManagerAgent
@@ -46,8 +47,13 @@ from src.models import (
 from src.preprocessing.nlu_processor import NLUProcessor
 from src.tool_registry import ToolRegistry
 from src.workflow_loader import AgentWorkflow, RoutingCondition, RoutingRule, SubAgent
+from opentelemetry import trace as otel_trace
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
 logger = logging.getLogger(__name__)
+
+# Module-level guard to prevent double-instrumentation in test environments.
+_HTTPX_INSTRUMENTED = False
 
 
 class AgentCore(AgentCoreBase):
@@ -66,7 +72,7 @@ class AgentCore(AgentCoreBase):
         knowledge_engine: Knowledge Engine interface.
         tool_registry:    Pre-built tool registry (initialised at startup).
         manager_agent:    Prompt assembly + tool-use loop handler.
-        learning:         Learning Layer interface (async emit).
+        learning:         Observability Layer interface (async emit).
         workflow:         Pre-parsed and validated AgentWorkflow loaded at startup.
     """
 
@@ -79,7 +85,7 @@ class AgentCore(AgentCoreBase):
         knowledge_engine: KnowledgeEngineBase,
         tool_registry: ToolRegistry,
         manager_agent: ManagerAgent,
-        learning: LearningLayerBase,
+        learning: ObservabilityLayerBase,
         workflow: AgentWorkflow,
     ) -> None:
         if config is None:
@@ -101,6 +107,23 @@ class AgentCore(AgentCoreBase):
         # Stateless — instantiated once, reused across all sessions.
         self._language_normaliser = LanguageNormaliser()
         self._nlu_processor = NLUProcessor(self._config)
+
+        # Instrument HTTPX once per process so all downstream HTTP calls are
+        # automatically traced as child spans of orchestrator.turn.
+        global _HTTPX_INSTRUMENTED
+        if not _HTTPX_INSTRUMENTED:
+            try:
+                HTTPXClientInstrumentor().instrument()
+                _HTTPX_INSTRUMENTED = True
+            except Exception as e:
+                logger.warning(
+                    "orchestrator.httpx_instrumentation_failed",
+                    extra={
+                        "operation": "orchestrator.init",
+                        "status": "failure",
+                        "error": f"{type(e).__name__}: {e}",
+                    },
+                )
 
     # ------------------------------------------------------------------
     # Public interface — single entry point
@@ -130,11 +153,35 @@ class AgentCore(AgentCoreBase):
         if turn_input.user_message is None:
             raise ValueError("turn_input.user_message must not be None")
 
+        _tracer = otel_trace.get_tracer(__name__)
+        with _tracer.start_as_current_span("orchestrator.turn") as _span:
+            return self._process_turn_inner(turn_input, _span)
+
+    def _process_turn_inner(self, turn_input: TurnInput, _span: otel_trace.Span) -> TurnResult:
+        """Execute the instrumented turn body inside the orchestrator.turn span.
+
+        Args:
+            turn_input: Validated inbound message from the Reach Layer.
+            _span:      Active OTel span to attach attributes to.
+
+        Returns:
+            TurnResult delivered to the Reach Layer.
+        """
         start = time.time()
         session_id = turn_input.session_id
         # PoC fallback: use session_id as user_id if caller didn't provide one
         user_id: str = turn_input.user_id or session_id
         turn_id = str(uuid.uuid4())
+
+        # Attach span attributes and extract trace_id for TurnEvent propagation.
+        _span.set_attribute("session_id", session_id)
+        _span.set_attribute("turn_id", turn_id)
+        _span.set_attribute("user_id", getattr(turn_input, "user_id", "") or "")
+        _span.set_attribute(
+            "dpg.domain",
+            self._config.get("observability", {}).get("domain", "unknown"),
+        )
+        _trace_id: str = self._current_trace_id()
 
         logger.info(
             "orchestrator.turn_start",
@@ -175,6 +222,48 @@ class AgentCore(AgentCoreBase):
             bundle.session.get("is_returning", False),
             int((time.time() - t1) * 1000),
         )
+
+        # ── Consent gate (Step 1b) ────────────────────────────────────
+        ask_for_consent: bool = self._config.get("agent", {}).get("ask_for_consent", False)
+        if ask_for_consent:
+            user_storage_mode: str | None = bundle.session.get("user_storage_mode")
+            turn_count: int = bundle.session.get("turn_count", 0)
+
+            if user_storage_mode is None and turn_count == 0:
+                # Turn 1: deliver consent prompt, no LLM call, no Trust Layer call
+                consent_prompt_text: str = self._config.get("agent", {}).get("consent_prompt", "")
+                logger.info(
+                    "orchestrator.consent_gate",
+                    extra={
+                        "operation": "orchestrator.consent_gate",
+                        "status": "prompt_delivered",
+                        "session_id": session_id,
+                    },
+                )
+                return TurnResult(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_text=consent_prompt_text,
+                    latency_ms=int((time.time() - start) * 1000),
+                )
+
+            if user_storage_mode is None and turn_count > 0:
+                # Turn 2: evaluate response, write storage mode, continue to workflow
+                granted: bool = self._trust.verify_consent(session_id, turn_input.user_message)
+                new_storage_mode = "saved" if granted else "anonymous"
+                logger.info(
+                    "orchestrator.consent_gate",
+                    extra={
+                        "operation": "orchestrator.consent_gate",
+                        "status": "consent_evaluated",
+                        "session_id": session_id,
+                        "granted": granted,
+                        "user_storage_mode": new_storage_mode,
+                    },
+                )
+                self._write_memory_sync(session_id, user_id, "session", "user_storage_mode", new_storage_mode)
+                bundle.session["user_storage_mode"] = new_storage_mode
+            # if user_storage_mode is set → fall through, skip consent gate entirely
 
         # ── Step 2: Resolve current subagent + special handler ────────
         current_subagent: SubAgent = self._workflow.subagents[current_subagent_id]
@@ -393,7 +482,45 @@ class AgentCore(AgentCoreBase):
 
         # Check for resumption signal from Memory Layer
         is_resumption = bundle.session.get("was_adopted", False)
-        
+
+        # ── Step 6b: Assemble guardrail constraints (pre-LLM) ─────────
+        guardrail_constraints: dict | None = None
+        if nlu_result.active_risks:
+            try:
+                guardrail_constraints = self._trust.assemble_constraints(
+                    session_id=session_id,
+                    workflow_step=next_subagent_id,
+                    active_risks=nlu_result.active_risks,
+                    user_segment=bundle.profile.get("user_segment"),
+                )
+                logger.info(
+                    "orchestrator.guardrails_assembled",
+                    extra={
+                        "operation": "orchestrator.assemble_constraints",
+                        "status": "success",
+                        "session_id": session_id,
+                        "active_risks": nlu_result.active_risks,
+                        "constraints_count": len(guardrail_constraints.get("prompt_constraints", [])),
+                        "latency_ms": 0,
+                    },
+                )
+            except Exception as e:
+                logger.error(
+                    "orchestrator.assemble_constraints_failed",
+                    extra={
+                        "operation": "orchestrator.assemble_constraints",
+                        "status": "failure",
+                        "session_id": session_id,
+                        "error": f"{type(e).__name__}: {e}",
+                    },
+                )
+                return self._blocked_response(
+                    session_id, None, start, None, turn_id,
+                    intent="guardrail_unavailable",
+                    user_id=user_id,
+                    user_message=turn_input.user_message,
+                )
+
         system = self._manager_agent.build_system_prompt(
             agent_system_prompt=self._workflow.agent_system_prompt,
             subagent_system_prompt=next_subagent.system_prompt,
@@ -401,6 +528,7 @@ class AgentCore(AgentCoreBase):
             channel=turn_input.channel,
             profile=profile_context,
             is_resumption=is_resumption,
+            guardrail_constraints=guardrail_constraints,
         )
 
         # Clear resumption flag in session so it only affects the first turn
@@ -435,6 +563,7 @@ class AgentCore(AgentCoreBase):
                 tool_calls=[],
                 trust_input=trust_input,
                 trust_output=TrustCheckResult(passed=True, action="allow"),
+                trace_id=_trace_id,
             )
 
         # ── Step 8: LLM call #1 with scoped tools ────────────────────
@@ -514,6 +643,8 @@ class AgentCore(AgentCoreBase):
         )
 
         if trust_output.action in ("block", "escalate"):
+            # TODO(GH-hitl): When action=="escalate", call self._trust.escalate(...) to
+            # queue a HiTL ticket. Currently deferred — tracked in the HiTL queue issue.
             logger.info(
                 "  [STEP 10] OUTPUT %s — replacing with safe fallback",
                 trust_output.action.upper(),
@@ -544,6 +675,7 @@ class AgentCore(AgentCoreBase):
             tool_calls=tool_calls,
             trust_input=trust_input,
             trust_output=trust_output,
+            trace_id=_trace_id,
         )
 
         logger.info(
@@ -723,6 +855,7 @@ class AgentCore(AgentCoreBase):
                 output_tokens=0,
                 latency_ms=latency_ms,
                 timestamp_ms=int(time.time() * 1000),
+                trace_id=self._current_trace_id(),
             )
             # NOTE: daemon thread means audit write may be lost on abrupt process exit.
             thread = threading.Thread(
@@ -763,6 +896,7 @@ class AgentCore(AgentCoreBase):
                 output_tokens=0,
                 latency_ms=latency_ms,
                 timestamp_ms=int(time.time() * 1000),
+                trace_id=self._current_trace_id(),
             )
             # NOTE: daemon thread means audit write may be lost on abrupt process exit.
             thread = threading.Thread(
@@ -802,6 +936,7 @@ class AgentCore(AgentCoreBase):
             output_tokens=0,
             latency_ms=latency_ms,
             timestamp_ms=int(time.time() * 1000),
+            trace_id=self._current_trace_id(),
         )
         # NOTE: daemon thread means audit write may be lost on abrupt process exit.
         thread = threading.Thread(
@@ -863,6 +998,7 @@ class AgentCore(AgentCoreBase):
             "I'm unable to help with that request.",
         )
         latency_ms = int((time.time() - start) * 1000)
+        _trace_id = self._current_trace_id()
 
         # Assemble TurnEvent for audit (Step 11b / async logging)
         turn_event = TurnEvent(
@@ -878,6 +1014,7 @@ class AgentCore(AgentCoreBase):
             output_tokens=0,
             latency_ms=latency_ms,
             timestamp_ms=int(time.time() * 1000),
+            trace_id=_trace_id,
         )
 
         # NOTE: daemon thread means audit write may be lost on abrupt process exit.
@@ -942,6 +1079,7 @@ class AgentCore(AgentCoreBase):
             "I'm connecting you to a human agent who can better assist you.",
         )
         latency_ms = int((time.time() - start) * 1000)
+        _trace_id = self._current_trace_id()
 
         # Assemble TurnEvent for audit (Step 11b / async logging)
         turn_event = TurnEvent(
@@ -957,6 +1095,7 @@ class AgentCore(AgentCoreBase):
             output_tokens=0,
             latency_ms=latency_ms,
             timestamp_ms=int(time.time() * 1000),
+            trace_id=_trace_id,
         )
 
         # NOTE: daemon thread means audit write may be lost on abrupt process exit.
@@ -980,6 +1119,16 @@ class AgentCore(AgentCoreBase):
             latency_ms=latency_ms,
         )
 
+
+    def _current_trace_id(self) -> str:
+        """Extract the W3C trace-id hex string from the active OTel span context.
+
+        Returns:
+            32-character lowercase hex trace-id string, or empty string if no
+            valid span context is active.
+        """
+        ctx = otel_trace.get_current_span().get_span_context()
+        return format(ctx.trace_id, "032x") if ctx and ctx.is_valid else ""
 
     def _safe_fallback_message(self) -> str:
         """
@@ -1059,6 +1208,7 @@ class AgentCore(AgentCoreBase):
         trust_output: TrustCheckResult,
         do_flush: bool = False,
         flush_reason: str = "",
+        trace_id: str = "",
     ) -> TurnResult:
         """
         Construct the TurnResult and schedule async post-turn work.
@@ -1109,6 +1259,7 @@ class AgentCore(AgentCoreBase):
             output_tokens=0,
             latency_ms=latency_ms,
             timestamp_ms=turn_input.timestamp_ms,
+            trace_id=trace_id,
         )
 
         thread = threading.Thread(
@@ -1138,7 +1289,7 @@ class AgentCore(AgentCoreBase):
         Run Steps 12-13 asynchronously after the TurnResult is returned.
 
         Writes last_response to the Memory Layer (Step 12) and emits a turn
-        event to the Learning Layer (Step 13). Entity writes, current_subagent_id,
+        event to the Observability Layer (Step 13). Entity writes, current_subagent_id,
         and subagent_entry_count are written synchronously in process_turn and
         are not repeated here.
 
@@ -1150,7 +1301,7 @@ class AgentCore(AgentCoreBase):
             session_id:    Session identifier.
             user_id:       User identifier.
             response_text: Final response text delivered this turn.
-            turn_event:    Pre-assembled TurnEvent to emit to Learning Layer.
+            turn_event:    Pre-assembled TurnEvent to emit to Observability Layer.
             do_flush:      If True, call flush_session after memory writes.
             flush_reason:  Reason string passed to flush_session.
         """
@@ -1158,7 +1309,7 @@ class AgentCore(AgentCoreBase):
             self._config.get("memory_client", {}).get("endpoint", "http://memory_layer:8002")
         )
         learning_endpoint = (
-            self._config.get("learning_client", {}).get("endpoint", "http://learning_layer:8004")
+            self._config.get("learning_client", {}).get("endpoint", "http://observability_layer:8004")
         )
 
         # ── Step 11b: Record Audit Turn ─────────────────────────────
@@ -1237,9 +1388,9 @@ class AgentCore(AgentCoreBase):
                     },
                 )
 
-        # ── Step 13: Emit to Learning Layer ───────────────────────────
+        # ── Step 13: Emit to Observability Layer ───────────────────────────
         logger.info(
-            "  [STEP 13] [async] Learning Emit  →  POST %s/emit/turn  (session=%s)",
+            "  [STEP 13] [async] Observability Emit  →  POST %s/emit/turn  (session=%s)",
             learning_endpoint, session_id,
         )
         try:

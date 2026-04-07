@@ -83,7 +83,7 @@ config:
     timeout_ms: 2000
 
   learning_client:
-    endpoint: "http://learning-layer.learning-layer.svc.cluster.local:8004"
+    endpoint: "http://observability-layer.observability-layer.svc.cluster.local:8004"
     timeout_ms: 2000
 
   action_gateway_client:

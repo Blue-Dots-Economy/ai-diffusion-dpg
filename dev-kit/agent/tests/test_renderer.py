@@ -43,7 +43,7 @@ class TestRenderAll:
         acc = ConfigAccumulator()
         render_all(tmp_path, acc)
         for block in ["agent_core", "knowledge_engine", "memory_layer",
-                      "trust_layer", "action_gateway", "reach_layer", "learning_layer"]:
+                      "trust_layer", "action_gateway", "reach_layer", "observability_layer"]:
             assert (tmp_path / f"{block}.yaml").exists()
 
     def test_returns_status_dict_for_all_blocks(self, tmp_path):
@@ -51,5 +51,5 @@ class TestRenderAll:
         statuses = render_all(tmp_path, acc)
         assert set(statuses.keys()) == {
             "agent_core", "knowledge_engine", "memory_layer",
-            "trust_layer", "action_gateway", "reach_layer", "learning_layer",
+            "trust_layer", "action_gateway", "reach_layer", "observability_layer",
         }

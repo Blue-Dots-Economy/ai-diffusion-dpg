@@ -24,10 +24,15 @@ import json
 import logging
 import random
 import string
+import time
 from typing import Optional
 
 from fastapi import FastAPI
+from opentelemetry import trace as otel_trace
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from pydantic import BaseModel
+
+_tracer = otel_trace.get_tracer(__name__)
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +182,8 @@ def create_mock_server() -> FastAPI:
         docs_url="/docs",
     )
 
+    FastAPIInstrumentor.instrument_app(app)
+
     @app.post("/onest/market_lookup", response_model=MarketLookupResponse)
     def market_lookup(request: MarketLookupRequest) -> MarketLookupResponse:
         """
@@ -247,6 +254,8 @@ def create_mock_server() -> FastAPI:
         """
         Generic tool execution router.
         Bridges the generic Agent Core call to specific domain connectors.
+        Emits an ``action.execute`` OpenTelemetry span with ``dpg.tool_name``
+        and ``dpg.tool_status`` attributes on every invocation.
         """
         logger.info(
             "mock_server.execute",
@@ -257,55 +266,97 @@ def create_mock_server() -> FastAPI:
             },
         )
 
-        try:
-            if request.tool_name == "onest_market_lookup":
-                # Convert generic dict to specific Pydantic model
-                lookup_req = MarketLookupRequest(**request.input_params)
-                res = market_lookup(lookup_req)
-                
+        with _tracer.start_as_current_span("action.execute") as span:
+            span.set_attribute("dpg.tool_name", request.tool_name)
+            start = time.time()
+            try:
+                if request.tool_name == "onest_market_lookup":
+                    lookup_req = MarketLookupRequest(**request.input_params)
+                    res = market_lookup(lookup_req)
+
+                    logger.info(
+                        "mock_server.tool_result",
+                        extra={
+                            "tool": "onest_market_lookup",
+                            "trade_requested": lookup_req.trade,
+                            "match_found": lookup_req.trade.lower() in _FIXTURES,
+                        },
+                    )
+
+                    span.set_attribute("dpg.tool_status", "success")
+                    logger.info(
+                        "mock_server.execute",
+                        extra={
+                            "operation": "server.execute_tool",
+                            "status": "success",
+                            "tool_name": request.tool_name,
+                            "latency_ms": int((time.time() - start) * 1000),
+                        },
+                    )
+                    return ExecuteResponse(
+                        tool_use_id=request.tool_use_id,
+                        success=True,
+                        result=res.model_dump(),
+                        result_text=json.dumps(res.model_dump()),
+                    )
+
+                if request.tool_name == "onest_apply":
+                    apply_req = ApplyRequest(**request.input_params)
+                    res = apply(apply_req)
+                    span.set_attribute("dpg.tool_status", "success")
+                    logger.info(
+                        "mock_server.execute",
+                        extra={
+                            "operation": "server.execute_tool",
+                            "status": "success",
+                            "tool_name": request.tool_name,
+                            "latency_ms": int((time.time() - start) * 1000),
+                        },
+                    )
+                    return ExecuteResponse(
+                        tool_use_id=request.tool_use_id,
+                        success=True,
+                        result=res.model_dump(),
+                        result_text=json.dumps(res.model_dump()),
+                    )
+
+                # Fallback for unknown tools
+                span.set_attribute("dpg.tool_status", "failure")
                 logger.info(
-                    "mock_server.tool_result",
+                    "mock_server.execute",
                     extra={
-                        "tool": "onest_market_lookup",
-                        "trade_requested": lookup_req.trade,
-                        "match_found": lookup_req.trade.lower() in _FIXTURES
-                    }
+                        "operation": "server.execute_tool",
+                        "status": "failure",
+                        "tool_name": request.tool_name,
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
                 )
-                
                 return ExecuteResponse(
                     tool_use_id=request.tool_use_id,
-                    success=True,
-                    result=res.dict(),
-                    result_text=json.dumps(res.dict()),
+                    success=False,
+                    result_text="",
+                    error=f"Unknown tool: {request.tool_name}",
                 )
 
-            if request.tool_name == "onest_apply":
-                # Convert generic dict to specific Pydantic model
-                apply_req = ApplyRequest(**request.input_params)
-                res = apply(apply_req)
+            except Exception as e:
+                span.set_attribute("dpg.tool_status", "failure")
+                span.record_exception(e)
+                logger.error(
+                    "mock_server.execute_error",
+                    extra={
+                        "operation": "server.execute_tool",
+                        "status": "failure",
+                        "tool_name": request.tool_name,
+                        "error": f"{type(e).__name__}: {e}",
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
                 return ExecuteResponse(
                     tool_use_id=request.tool_use_id,
-                    success=True,
-                    result=res.dict(),
-                    result_text=json.dumps(res.dict()),
+                    success=False,
+                    result_text="",
+                    error=f"Execution failed: {str(e)}",
                 )
-
-            # Fallback for unknown tools
-            return ExecuteResponse(
-                tool_use_id=request.tool_use_id,
-                success=False,
-                result_text="",
-                error=f"Unknown tool: {request.tool_name}",
-            )
-
-        except Exception as e:
-            logger.error("mock_server.execute_error", extra={"error": str(e)})
-            return ExecuteResponse(
-                tool_use_id=request.tool_use_id,
-                success=False,
-                result_text="",
-                error=f"Execution failed: {str(e)}",
-            )
 
     @app.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:

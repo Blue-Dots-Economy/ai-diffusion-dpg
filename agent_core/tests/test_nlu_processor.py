@@ -265,3 +265,21 @@ def test_never_raises_on_unexpected_exception(processor):
     llm.call.side_effect = Exception("totally unexpected")
     result = processor.process("some input", "", "", llm)
     assert isinstance(result, NLUResult)
+
+
+# ---------------------------------------------------------------------------
+# NLUResult.active_risks field
+# ---------------------------------------------------------------------------
+
+
+def test_nlu_result_active_risks_default_none():
+    result = NLUResult(intent="greeting", entities={}, sentiment="neutral", confidence=0.9)
+    assert result.active_risks is None
+
+
+def test_nlu_result_active_risks_set():
+    result = NLUResult(
+        intent="greeting", entities={}, sentiment="neutral",
+        confidence=0.9, active_risks=["false_certainty"]
+    )
+    assert result.active_risks == ["false_certainty"]

@@ -1,0 +1,23 @@
+# dev-kit/dpg/observability_layer.yaml
+# DPG framework defaults for Observability Layer — same for any domain deployment.
+
+server:
+  host: "0.0.0.0"
+  port: 8004
+
+observability:
+  otel:
+    collector_endpoint: "http://otelcol:4317"
+    sample_rate: 1.0
+    export_interval_ms: 5000
+  telemetry:
+    pii_fields_excluded:
+      - "user_message"
+  audit:
+    pii_fields_excluded:
+      - "user_message"
+      - "user_id"
+    retention_days: 90
+  sli:
+    turn_latency_p99_ms: 1200
+    trust_block_rate_max: 0.05

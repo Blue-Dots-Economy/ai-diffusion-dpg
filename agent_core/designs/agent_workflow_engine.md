@@ -199,7 +199,7 @@ Step 10: Safety check on output (Trust Layer) — unchanged
 Step 11: Return TurnResult
 
 Step 12: [async] Write session state including next_subagent_id → Memory Layer
-Step 13: [async] Emit turn event → Learning Layer
+Step 13: [async] Emit turn event → Observability Layer
 ```
 
 ---

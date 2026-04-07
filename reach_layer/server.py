@@ -20,6 +20,8 @@ from typing import Any, Optional
 import httpx
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
+from opentelemetry import trace as otel_trace
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from pydantic import BaseModel
 
 from config_loader import load_config
@@ -35,6 +37,9 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 logger = logging.getLogger(__name__)
+
+# OpenTelemetry instrumentation guard — module-level flag set once at startup
+_HTTPX_INSTRUMENTED = False
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +84,7 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
     ml_timeout = float(ml_cfg.get("timeout_s", 10.0))
 
     app = FastAPI(title="Reach Layer — Web Channel Adapter")
+    FastAPIInstrumentor.instrument_app(app)
 
     # Shared HTTP clients — created once at startup to enable connection pooling.
     ac_client = httpx.Client(timeout=ac_timeout)
@@ -145,58 +151,15 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
             Returns a safe error response on any failure.
         """
         start = time.time()
-        try:
-            turn = web_reach.build_turn_input(req.session_id, req.user_id, req.message)
-        except ValueError as e:
-            logger.warning(
-                "reach_server.chat_invalid",
-                extra={
-                    "operation": "reach_server.chat",
-                    "status": "failure",
-                    "error": str(e),
-                    "latency_ms": int((time.time() - start) * 1000),
-                },
-            )
-            return {"response_text": f"[Invalid request: {e}]", "was_escalated": False,
-                    "session_id": req.session_id or "", "latency_ms": 0}
-
-        payload: dict = {
-            "session_id": turn.session_id,
-            "user_message": turn.user_message,
-            "channel": turn.channel,
-        }
-        if turn.user_id:
-            payload["user_id"] = turn.user_id
-
-        # Retry once on timeout (exponential backoff: 1 s delay before retry).
-        _last_timeout: httpx.TimeoutException | None = None
-        data: dict = {}
-        for _attempt in range(2):
+        with otel_trace.get_tracer(__name__).start_as_current_span("reach.inbound") as span:
+            span.set_attribute("session_id", req.session_id or "")
+            span.set_attribute("dpg.channel", "web")
             try:
-                response = ac_client.post(ac_endpoint, json=payload, timeout=ac_timeout)
-                response.raise_for_status()
-                data = response.json()
-                _last_timeout = None
-                break
-            except httpx.TimeoutException as _te:
-                _last_timeout = _te
-                if _attempt == 0:
-                    time.sleep(1.0)
-            except httpx.ConnectError:
-                logger.error(
-                    "reach_server.chat_connect_error",
-                    extra={
-                        "operation": "reach_server.chat",
-                        "status": "failure",
-                        "error": "Agent Core connection refused",
-                        "latency_ms": int((time.time() - start) * 1000),
-                    },
-                )
-                return {"response_text": "[Could not reach Agent Core. Is the backend running?]",
-                        "was_escalated": False, "session_id": turn.session_id, "latency_ms": 0}
-            except Exception as e:
-                logger.error(
-                    "reach_server.chat_error",
+                turn = web_reach.build_turn_input(req.session_id, req.user_id, req.message)
+            except ValueError as e:
+                span.record_exception(e)
+                logger.warning(
+                    "reach_server.chat_invalid",
                     extra={
                         "operation": "reach_server.chat",
                         "status": "failure",
@@ -204,41 +167,91 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
                         "latency_ms": int((time.time() - start) * 1000),
                     },
                 )
-                return {"response_text": f"[Unexpected error: {type(e).__name__}]",
+                return {"response_text": f"[Invalid request: {e}]", "was_escalated": False,
+                        "session_id": req.session_id or "", "latency_ms": 0}
+
+            payload: dict = {
+                "session_id": turn.session_id,
+                "user_message": turn.user_message,
+                "channel": turn.channel,
+            }
+            if turn.user_id:
+                payload["user_id"] = turn.user_id
+
+            # Retry once on timeout (exponential backoff: 1 s delay before retry).
+            _last_timeout: httpx.TimeoutException | None = None
+            data: dict = {}
+            for _attempt in range(2):
+                try:
+                    response = ac_client.post(ac_endpoint, json=payload, timeout=ac_timeout)
+                    response.raise_for_status()
+                    data = response.json()
+                    _last_timeout = None
+                    break
+                except httpx.TimeoutException as _te:
+                    _last_timeout = _te
+                    if _attempt == 0:
+                        time.sleep(1.0)
+                except httpx.ConnectError as e:
+                    span.record_exception(e)
+                    logger.error(
+                        "reach_server.chat_connect_error",
+                        extra={
+                            "operation": "reach_server.chat",
+                            "status": "failure",
+                            "error": "Agent Core connection refused",
+                            "latency_ms": int((time.time() - start) * 1000),
+                        },
+                    )
+                    return {"response_text": "[Could not reach Agent Core. Is the backend running?]",
+                            "was_escalated": False, "session_id": turn.session_id, "latency_ms": 0}
+                except Exception as e:
+                    span.record_exception(e)
+                    logger.error(
+                        "reach_server.chat_error",
+                        extra={
+                            "operation": "reach_server.chat",
+                            "status": "failure",
+                            "error": str(e),
+                            "latency_ms": int((time.time() - start) * 1000),
+                        },
+                    )
+                    return {"response_text": f"[Unexpected error: {type(e).__name__}]",
+                            "was_escalated": False, "session_id": turn.session_id, "latency_ms": 0}
+
+            if _last_timeout is not None:
+                span.record_exception(_last_timeout)
+                logger.error(
+                    "reach_server.chat_timeout",
+                    extra={
+                        "operation": "reach_server.chat",
+                        "status": "failure",
+                        "error": "Agent Core timeout after retry",
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+                return {"response_text": "[Agent Core did not respond in time. Please try again.]",
                         "was_escalated": False, "session_id": turn.session_id, "latency_ms": 0}
 
-        if _last_timeout is not None:
-            logger.error(
-                "reach_server.chat_timeout",
+            result = TurnResult(
+                session_id=turn.session_id,
+                response_text=data.get("response_text", ""),
+                was_escalated=data.get("was_escalated", False),
+                was_tool_used=data.get("was_tool_used", False),
+                model_used=data.get("model_used", ""),
+                latency_ms=int((time.time() - start) * 1000),
+            )
+            formatted = web_reach.format_result(result)
+            logger.info(
+                "reach_server.chat_success",
                 extra={
                     "operation": "reach_server.chat",
-                    "status": "failure",
-                    "error": "Agent Core timeout after retry",
-                    "latency_ms": int((time.time() - start) * 1000),
+                    "status": "success",
+                    "session_id": turn.session_id,
+                    "latency_ms": formatted["latency_ms"],
                 },
             )
-            return {"response_text": "[Agent Core did not respond in time. Please try again.]",
-                    "was_escalated": False, "session_id": turn.session_id, "latency_ms": 0}
-
-        result = TurnResult(
-            session_id=turn.session_id,
-            response_text=data.get("response_text", ""),
-            was_escalated=data.get("was_escalated", False),
-            was_tool_used=data.get("was_tool_used", False),
-            model_used=data.get("model_used", ""),
-            latency_ms=int((time.time() - start) * 1000),
-        )
-        formatted = web_reach.format_result(result)
-        logger.info(
-            "reach_server.chat_success",
-            extra={
-                "operation": "reach_server.chat",
-                "status": "success",
-                "session_id": turn.session_id,
-                "latency_ms": formatted["latency_ms"],
-            },
-        )
-        return formatted
+            return formatted
 
     # ------------------------------------------------------------------
     # GET /user-history/{user_id} — proxy to Memory Layer
@@ -298,5 +311,38 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
 # ---------------------------------------------------------------------------
 
 _config = load_config("config/dpg.yaml", "config/domain.yaml")
+
+# ---------------------------------------------------------------------------
+# OpenTelemetry initialisation
+# ---------------------------------------------------------------------------
+try:
+    from dpg_telemetry import init_otel
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+    init_otel(service_name="reach_layer", config=_config)
+
+    if not _HTTPX_INSTRUMENTED:
+        try:
+            HTTPXClientInstrumentor().instrument()
+            _HTTPX_INSTRUMENTED = True
+        except Exception as e:
+            logger.warning(
+                "reach_server.httpx_instrumentation_failed",
+                extra={
+                    "operation": "server.httpx_instrumentation",
+                    "status": "failure",
+                    "error": str(e),
+                },
+            )
+except Exception as _otel_err:
+    logger.warning(
+        "reach_server.otel_init_skipped",
+        extra={
+            "operation": "server.otel_init",
+            "status": "skipped",
+            "error": str(_otel_err),
+        },
+    )
+
 _web_reach = WebReachLayer(_config)
 app = create_app(_web_reach, _config)

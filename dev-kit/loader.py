@@ -33,7 +33,7 @@ from dev_kit.schema import (
     ActionGatewayConfig,
     AgentCoreConfig,
     KnowledgeEngineConfig,
-    LearningLayerConfig,
+    ObservabilityLayerConfig,
     MemoryLayerConfig,
     ReachLayerConfig,
     TrustLayerConfig,
@@ -118,10 +118,10 @@ def load_memory_layer(domain: str) -> MemoryLayerConfig:
     return MemoryLayerConfig(**merged)
 
 
-def load_learning_layer(domain: str) -> LearningLayerConfig:
-    """Load and validate merged Learning Layer config for the given domain."""
-    merged = _load_and_merge(domain, "learning_layer")
-    return LearningLayerConfig(**merged)
+def load_observability_layer(domain: str) -> ObservabilityLayerConfig:
+    """Load and validate merged Observability Layer config for the given domain."""
+    merged = _load_and_merge(domain, "observability_layer")
+    return ObservabilityLayerConfig(**merged)
 
 
 def load_action_gateway(domain: str) -> ActionGatewayConfig:
@@ -145,7 +145,7 @@ _LOADERS = {
     "knowledge_engine": load_knowledge_engine,
     "trust_layer": load_trust_layer,
     "memory_layer": load_memory_layer,
-    "learning_layer": load_learning_layer,
+    "observability_layer": load_observability_layer,
     "action_gateway": load_action_gateway,
     "reach_layer": load_reach_layer,
 }

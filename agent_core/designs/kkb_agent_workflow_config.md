@@ -793,7 +793,7 @@ agent_workflow:
       system_prompt: |
         The user has chosen to end the call.
         Close warmly: "Dhanyavaad! Jab bhi zaroorat ho, hum yahan hain."
-        Flush session state. Emit termination event to Learning Layer.
+        Flush session state. Emit termination event to Observability Layer.
         If consent_status = declined: orchestrator deletes all profile fields collected
         this session. Nothing is persisted to the User Profile Store.
 

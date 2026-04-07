@@ -177,6 +177,7 @@ class ManagerAgent:
         channel: str,
         profile: dict,
         is_resumption: bool = False,
+        guardrail_constraints: dict | None = None,
     ) -> str:
         """
         Build the system prompt for one LLM call.
@@ -189,11 +190,15 @@ class ManagerAgent:
         Also injects known profile fields as grounding context between layers.
 
         Args:
-            agent_system_prompt:   Workflow-level system prompt.
+            agent_system_prompt:    Workflow-level system prompt.
             subagent_system_prompt: Active subagent's system prompt.
-            detected_language:     Language detected by Language Normaliser.
-            channel:               Channel type (e.g. "cli", "whatsapp", "voip").
-            profile:               User profile dict for known field injection.
+            detected_language:      Language detected by Language Normaliser.
+            channel:                Channel type (e.g. "cli", "whatsapp", "voip").
+            profile:                User profile dict for known field injection.
+            is_resumption:          Whether the user is resuming an ongoing session.
+            guardrail_constraints:  Optional dict with prompt_constraints and
+                                    required_disclosures from the Trust Layer.
+                                    When present, appended to the system prompt.
 
         Returns:
             Assembled system prompt string.
@@ -240,6 +245,19 @@ class ManagerAgent:
 
         if subagent_system_prompt:
             parts.append(subagent_system_prompt.strip())
+
+        if guardrail_constraints:
+            constraints = guardrail_constraints.get("prompt_constraints", [])
+            disclosures = guardrail_constraints.get("required_disclosures", [])
+
+            if constraints:
+                parts.append(
+                    "## Guardrail Constraints\n" + "\n".join(f"- {c}" for c in constraints)
+                )
+            if disclosures:
+                parts.append(
+                    "## Required Disclosures\n" + "\n".join(f"- {d}" for d in disclosures)
+                )
 
         return "\n\n".join(parts)
 

@@ -6,7 +6,7 @@ Startup entrypoint for the Agent Core orchestration service.
 Responsibilities:
 - Load config from config/config.yaml
 - Instantiate ClaudeLLMWrapper with agent config
-- Create HTTP clients for Memory Layer, Trust Layer, Learning Layer, Knowledge Engine,
+- Create HTTP clients for Memory Layer, Trust Layer, Observability Layer, Knowledge Engine,
   and Action Gateway
 - Wire ToolRegistry, AgentWorkflowLoader, ManagerAgent, and AgentCore
 - Create the FastAPI orchestration app via create_orchestration_app()
@@ -23,7 +23,7 @@ Environment:
 Prerequisites (all must be running before this starts):
     memory_layer/main.py     (port 8002)
     trust_layer/main.py      (port 8003)
-    learning_layer/main.py   (port 8004)
+    observability_layer/main.py   (port 8004)
     knowledge_engine/main.py (port 8001)
     action_gateway/main.py   (port 9999)
 """
@@ -50,7 +50,7 @@ from src.llm_wrapper.claude_wrapper import ClaudeLLMWrapper
 from src.http_clients.knowledge_engine import HttpKnowledgeEngineClient
 from src.http_clients.memory_layer import MemoryLayerHttpClient
 from src.http_clients.trust_layer import TrustLayerHttpClient
-from src.http_clients.learning_layer import LearningLayerHttpClient
+from src.http_clients.observability_layer import ObservabilityLayerHttpClient
 from src.http_clients.action_gateway import ActionGatewayHttpClient
 from src.tool_registry import ToolRegistry
 from src.manager_agent import ManagerAgent
@@ -151,13 +151,16 @@ def _build_app():
     domain_config = _load_config(str(_domain_config_path("agent_core")))
     config = _deep_merge(dpg_config, domain_config)
 
+    from dpg_telemetry import init_otel
+    init_otel(service_name="agent_core", config=config)
+
     agent_cfg = config.get("agent", {})
 
     llm = ClaudeLLMWrapper(agent_cfg)
 
     memory   = MemoryLayerHttpClient(config)
     trust    = TrustLayerHttpClient(config)
-    learning = LearningLayerHttpClient(config)
+    learning = ObservabilityLayerHttpClient(config)
     ke       = HttpKnowledgeEngineClient(config)
     gateway  = ActionGatewayHttpClient(config)
 

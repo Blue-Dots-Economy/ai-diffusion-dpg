@@ -1,0 +1,4 @@
+# observability_layer/config/domain.yaml — DPG domain configuration template.
+#
+# No domain-specific keys required. DPG defaults in config/dpg.yaml apply.
+# Add domain overrides here if needed.

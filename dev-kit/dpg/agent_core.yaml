@@ -6,6 +6,8 @@ server:
   port: 8000
 
 agent:
+  ask_for_consent: false
+  consent_prompt: ""
   timeout_ms: 10000
   retry_attempts: 2
   retry_backoff_seconds: [0, 0.5, 1.0]
@@ -31,7 +33,7 @@ trust_client:
   timeout_ms: 2000
 
 learning_client:
-  endpoint: "http://learning_layer:8004"
+  endpoint: "http://observability_layer:8004"
   timeout_ms: 2000
 
 action_gateway_client:

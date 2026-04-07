@@ -69,7 +69,7 @@ class BasicTrustLayer:
     # Public interface — mirrors TrustLayerBase
     # ------------------------------------------------------------------
 
-    def check_input(self, session_id: str, user_message: str) -> dict:
+    def check_input(self, session_id: str, user_message: str, active_risks: list | None = None) -> dict:
         """
         Evaluate raw user input against content rules and topic firewall.
 

@@ -1,0 +1,19 @@
+# observability_layer/config/dpg.yaml — DPG framework defaults.
+
+server:
+  host: "0.0.0.0"
+  port: 8004
+
+observability:
+  otel:
+    collector_endpoint: "http://localhost:4317"
+    sample_rate: 1.0
+    export_interval_ms: 5000
+  telemetry:
+    pii_fields_excluded:
+      - "user_message"
+  audit:
+    pii_fields_excluded:
+      - "user_message"
+      - "user_id"
+    retention_days: 90

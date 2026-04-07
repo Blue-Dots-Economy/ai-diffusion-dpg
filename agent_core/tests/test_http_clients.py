@@ -7,7 +7,7 @@ All httpx network calls are mocked — no real HTTP traffic.
 Clients under test:
   - MemoryLayerHttpClient   (src/http_clients/memory_layer.py)
   - TrustLayerHttpClient    (src/http_clients/trust_layer.py)
-  - LearningLayerHttpClient (src/http_clients/learning_layer.py)
+  - ObservabilityLayerHttpClient (src/http_clients/observability_layer.py)
   - HttpKnowledgeEngineClient (src/http_clients/knowledge_engine.py)
   - ActionGatewayHttpClient (src/http_clients/action_gateway.py)
 
@@ -28,7 +28,7 @@ import httpx
 
 from src.http_clients.memory_layer import MemoryLayerHttpClient
 from src.http_clients.trust_layer import TrustLayerHttpClient
-from src.http_clients.learning_layer import LearningLayerHttpClient
+from src.http_clients.observability_layer import ObservabilityLayerHttpClient
 from src.http_clients.knowledge_engine import HttpKnowledgeEngineClient
 from src.http_clients.action_gateway import ActionGatewayHttpClient
 from src.models import ContextBundle, TrustCheckResult, TurnEvent, ToolCall, ToolResult, RetrievalChunk
@@ -129,24 +129,24 @@ class TestTrustCheckInput:
         assert result.passed is False
         assert result.action == "block"
 
-    def test_timeout_fails_open(self):
+    def test_timeout_fails_closed(self):
         client = TrustLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=httpx.TimeoutException("timeout")):
             result = client.check_input("s1", "hello")
-        assert result.passed is True
-        assert result.action == "allow"
+        assert result.passed is False
+        assert result.action == "block"
 
-    def test_http_error_fails_open(self):
+    def test_http_error_fails_closed(self):
         client = TrustLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=_mock_http_error(500)):
             result = client.check_input("s1", "hello")
-        assert result.passed is True
+        assert result.passed is False
 
-    def test_generic_error_fails_open(self):
+    def test_generic_error_fails_closed(self):
         client = TrustLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=RuntimeError("boom")):
             result = client.check_input("s1", "hello")
-        assert result.passed is True
+        assert result.passed is False
 
     def test_none_session_id_raises(self):
         client = TrustLayerHttpClient(_BASE_CONFIG)
@@ -161,11 +161,12 @@ class TestTrustCheckOutput:
             result = client.check_output("s1", "Good response.")
         assert result.passed is True
 
-    def test_timeout_fails_open(self):
+    def test_timeout_fails_closed(self):
         client = TrustLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=httpx.TimeoutException("timeout")):
             result = client.check_output("s1", "response")
-        assert result.passed is True
+        assert result.passed is False
+        assert result.action == "block"
 
     def test_none_session_id_raises(self):
         client = TrustLayerHttpClient(_BASE_CONFIG)
@@ -180,11 +181,11 @@ class TestTrustCheckConsent:
             result = client.check_consent("s1", "job_apply")
         assert result is True
 
-    def test_timeout_fails_open(self):
+    def test_timeout_fails_closed(self):
         client = TrustLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=httpx.TimeoutException("timeout")):
             result = client.check_consent("s1", "job_apply")
-        assert result is True
+        assert result is False
 
     def test_none_session_id_raises(self):
         client = TrustLayerHttpClient(_BASE_CONFIG)
@@ -192,14 +193,96 @@ class TestTrustCheckConsent:
             client.check_consent(None, "connector")
 
 
+class TestTrustAssembleConstraints:
+    def test_success_returns_constraints(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with patch("httpx.post", return_value=_mock_response({
+            "prompt_constraints": ["MUST NOT guarantee outcomes"],
+            "required_disclosures": ["Hiring rest with employer"],
+            "action_gates": {},
+            "refusal_templates": {},
+        })):
+            result = client.assemble_constraints("s1", "ready", ["false_certainty"], None)
+        assert "MUST NOT guarantee outcomes" in result["prompt_constraints"]
+
+    def test_timeout_raises_constraint_error(self):
+        from src.http_clients.trust_layer import TrustLayerConstraintError
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with patch("httpx.post", side_effect=httpx.TimeoutException("timeout")):
+            with pytest.raises(TrustLayerConstraintError):
+                client.assemble_constraints("s1", "ready", ["false_certainty"], None)
+
+    def test_http_error_raises_constraint_error(self):
+        from src.http_clients.trust_layer import TrustLayerConstraintError
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with patch("httpx.post", side_effect=_mock_http_error(500)):
+            with pytest.raises(TrustLayerConstraintError):
+                client.assemble_constraints("s1", "ready", [], None)
+
+    def test_none_session_id_raises(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with pytest.raises(ValueError):
+            client.assemble_constraints(None, "ready", [], None)
+
+
+class TestTrustVerifyConsent:
+    def test_granted_returns_true(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with patch("httpx.post", return_value=_mock_response({"granted": True})):
+            assert client.verify_consent("s1", "haan") is True
+
+    def test_not_granted_returns_false(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with patch("httpx.post", return_value=_mock_response({"granted": False})):
+            assert client.verify_consent("s1", "nahi") is False
+
+    def test_timeout_returns_false(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with patch("httpx.post", side_effect=httpx.TimeoutException("timeout")):
+            assert client.verify_consent("s1", "haan") is False
+
+    def test_none_session_id_raises(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with pytest.raises(ValueError):
+            client.verify_consent(None, "haan")
+
+
+class TestTrustEscalate:
+    def test_success_returns_queued(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with patch("httpx.post", return_value=_mock_response({
+            "queued": True, "ticket_id": "TKT-001", "holding_message": "Wait..."
+        })):
+            result = client.escalate("s1", "reason", "msg", "ready")
+        assert result["queued"] is True
+        assert result["ticket_id"] == "TKT-001"
+
+    def test_timeout_returns_not_queued(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with patch("httpx.post", side_effect=httpx.TimeoutException("timeout")):
+            result = client.escalate("s1", "reason", "msg", "ready")
+        assert result["queued"] is False
+
+    def test_http_error_returns_not_queued(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with patch("httpx.post", side_effect=_mock_http_error(503)):
+            result = client.escalate("s1", "reason", "msg", "ready")
+        assert result["queued"] is False
+
+    def test_none_session_id_raises(self):
+        client = TrustLayerHttpClient(_BASE_CONFIG)
+        with pytest.raises(ValueError):
+            client.escalate(None, "reason", "msg", "ready")
+
+
 # ===========================================================================
-# LearningLayerHttpClient
+# ObservabilityLayerHttpClient
 # ===========================================================================
 
-class TestLearningLayerHttpClientInit:
+class TestObservabilityLayerHttpClientInit:
     def test_none_config_raises(self):
         with pytest.raises(ValueError, match="config must not be None"):
-            LearningLayerHttpClient(None)
+            ObservabilityLayerHttpClient(None)
 
 
 class TestLearningEmitTurn:
@@ -218,47 +301,47 @@ class TestLearningEmitTurn:
         }
 
     def test_success_does_not_raise(self):
-        client = LearningLayerHttpClient(_BASE_CONFIG)
+        client = ObservabilityLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", return_value=_mock_response({"status": "ok"})):
             client.emit_turn(self._make_event())
 
     def test_none_event_does_not_raise(self):
-        client = LearningLayerHttpClient(_BASE_CONFIG)
+        client = ObservabilityLayerHttpClient(_BASE_CONFIG)
         client.emit_turn(None)  # must not raise
 
     def test_timeout_does_not_raise(self):
-        client = LearningLayerHttpClient(_BASE_CONFIG)
+        client = ObservabilityLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=httpx.TimeoutException("timeout")):
             client.emit_turn(self._make_event())
 
     def test_http_error_does_not_raise(self):
-        client = LearningLayerHttpClient(_BASE_CONFIG)
+        client = ObservabilityLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=_mock_http_error(500)):
             client.emit_turn(self._make_event())
 
     def test_generic_exception_does_not_raise(self):
-        client = LearningLayerHttpClient(_BASE_CONFIG)
+        client = ObservabilityLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=RuntimeError("boom")):
             client.emit_turn(self._make_event())
 
 
 class TestLearningEmitSignal:
     def test_success_does_not_raise(self):
-        client = LearningLayerHttpClient(_BASE_CONFIG)
+        client = ObservabilityLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", return_value=_mock_response({"status": "ok"})):
             client.emit_signal("drop_off", {"turn": 3})
 
     def test_none_signal_type_does_not_raise(self):
-        client = LearningLayerHttpClient(_BASE_CONFIG)
+        client = ObservabilityLayerHttpClient(_BASE_CONFIG)
         client.emit_signal(None, {})  # must not raise
 
     def test_timeout_does_not_raise(self):
-        client = LearningLayerHttpClient(_BASE_CONFIG)
+        client = ObservabilityLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=httpx.TimeoutException("timeout")):
             client.emit_signal("test", {})
 
     def test_generic_exception_does_not_raise(self):
-        client = LearningLayerHttpClient(_BASE_CONFIG)
+        client = ObservabilityLayerHttpClient(_BASE_CONFIG)
         with patch("httpx.post", side_effect=RuntimeError("boom")):
             client.emit_signal("test", {})
 
