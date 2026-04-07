@@ -1,6 +1,0 @@
-# learning_layer domain config — TEMPLATE
-# Fill in values only. Do NOT rename, add, or remove any keys.
-# This block is optional — only set if you need to override the DPG default log level.
-
-learning_layer:
-  log_level: INFO               # DEBUG | INFO | WARNING | ERROR
