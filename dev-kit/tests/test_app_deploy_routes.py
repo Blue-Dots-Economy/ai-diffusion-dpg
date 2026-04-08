@@ -14,6 +14,7 @@ Covers:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import unittest.mock as mock
@@ -387,17 +388,22 @@ class TestGetDeployPreview:
         assert isinstance(parsed, dict)
         assert "services" in parsed
 
-    def test_unknown_target_returns_empty_preview(self, client_with_project):
-        """Unknown target returns empty preview dict."""
+    def test_kubernetes_target_returns_preview_dict(self, client_with_project):
+        """Kubernetes target returns preview dict with all 14 services."""
+        async def _mock_run_helm(cmd):
+            return {"success": True, "stdout": "# mocked template output\n", "stderr": ""}
+
         client, slug = client_with_project
-        res = client.post(
-            f"/api/projects/{slug}/deploy/preview",
-            json={"target": "kubernetes"},
-        )
+        with mock.patch("dev_kit.agent.deployer.helm.run_helm_command", side_effect=_mock_run_helm):
+            res = client.post(
+                f"/api/projects/{slug}/deploy/preview",
+                json={"target": "kubernetes"},
+            )
         assert res.status_code == 200
         data = res.json()
         assert data["target"] == "kubernetes"
-        assert data["preview"] == {}
+        assert isinstance(data["preview"], dict)
+        assert len(data["preview"]) == 14
 
     def test_default_target_is_docker(self, client_with_project):
         """Omitting target defaults to docker."""
@@ -419,10 +425,11 @@ class TestExecuteDeploy:
     def test_returns_started_status(self, client_with_project):
         """Execute deploy returns started status."""
         client, slug = client_with_project
-        res = client.post(
-            f"/api/projects/{slug}/deploy/execute",
-            json={"target": "docker"},
-        )
+        with mock.patch.object(app_module, "_run_docker_deploy", new_callable=mock.AsyncMock):
+            res = client.post(
+                f"/api/projects/{slug}/deploy/execute",
+                json={"target": "docker"},
+            )
         assert res.status_code == 200
         data = res.json()
         assert data["status"] == "started"
@@ -431,7 +438,8 @@ class TestExecuteDeploy:
     def test_default_target_is_docker(self, client_with_project):
         """Omitting target defaults to docker."""
         client, slug = client_with_project
-        res = client.post(f"/api/projects/{slug}/deploy/execute", json={})
+        with mock.patch.object(app_module, "_run_docker_deploy", new_callable=mock.AsyncMock):
+            res = client.post(f"/api/projects/{slug}/deploy/execute", json={})
         assert res.status_code == 200
         assert res.json()["target"] == "docker"
 
@@ -442,11 +450,28 @@ class TestExecuteDeploy:
 
 
 class TestGetDeployStatus:
-    def test_returns_idle_status_and_empty_services(self, client_with_project):
-        """Status endpoint returns idle status and empty services dict."""
+    def test_returns_idle_when_no_deployment(self, client_with_project):
+        """Status endpoint returns idle when no deployment is active."""
+        from dev_kit.agent.deployer.state import clear_state
+
         client, slug = client_with_project
+        clear_state(slug)
         res = client.get(f"/api/projects/{slug}/deploy/status")
         assert res.status_code == 200
         data = res.json()
-        assert data["status"] == "idle"
-        assert data["services"] == {}
+        assert data["overall"] == "idle"
+        assert data["services"] == []
+
+    def test_returns_deploying_after_execute(self, client_with_project):
+        """Status endpoint returns deploying state after execute is called."""
+        client, slug = client_with_project
+        with mock.patch.object(app_module, "_run_docker_deploy", new_callable=mock.AsyncMock):
+            client.post(
+                f"/api/projects/{slug}/deploy/execute",
+                json={"target": "docker"},
+            )
+        res = client.get(f"/api/projects/{slug}/deploy/status")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["overall"] in ("deploying", "complete", "failed")
+        assert isinstance(data["services"], list)

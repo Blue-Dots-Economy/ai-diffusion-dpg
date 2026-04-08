@@ -9,6 +9,7 @@ ConversationEngine instances keyed by project slug.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -672,8 +673,8 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
             ``resources``, ``secrets``, and ``infra_configs``.
 
     Returns:
-        Dict with ``target`` and ``preview`` keys. For docker target, preview
-        contains the generated ``docker-compose.yml`` string.
+        Dict with ``target`` and ``preview`` keys. Preview contains rendered
+        deployment manifests keyed by filename.
     """
     target = body.get("target", "docker")
     if target == "docker":
@@ -688,42 +689,319 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
             infra_configs=body.get("infra_configs", {}),
         )
         return {"target": target, "preview": {"docker-compose.yml": preview}}
-    return {"target": target, "preview": {}}
+
+    # Kubernetes — render all 14 charts via helm template
+    from dev_kit.agent.deployer.helm import build_template_command, run_helm_command
+
+    _helm_base = Path(__file__).resolve().parent.parent.parent.parent / "automation" / "helm"
+    secrets = body.get("secrets", {})
+    resources = body.get("resources", {})
+    preview: dict[str, str] = {}
+
+    # Infra charts
+    for svc_name in ["redis", "memgraph", "otel_collector", "jaeger", "prometheus", "loki", "grafana"]:
+        chart_dir = svc_name.replace("_", "-")
+        chart_path = str(_helm_base / "infra" / chart_dir)
+        cmd = build_template_command(chart_path, svc_name.replace("_", "-"))
+        result = await run_helm_command(cmd)
+        preview[svc_name] = result["stdout"] if result["success"] else f"# Error: {result['stderr']}"
+
+    # DPG charts — inject dpgConfig, domainConfig, and secrets via --set-file / --set
+    for block_name in BLOCKS:
+        chart_dir = block_name.replace("_", "-")
+        chart_path = str(_helm_base / "dpg" / chart_dir)
+        set_values: dict[str, str] = {}
+        set_files: dict[str, str] = {}
+
+        dpg_file = DPG_DIR / f"{block_name}.yaml"
+        domain_file = CONFIGS_DIR / slug / f"{block_name}.yaml"
+        if dpg_file.exists():
+            set_files["dpgConfig"] = str(dpg_file)
+        if domain_file.exists():
+            set_files["domainConfig"] = str(domain_file)
+        if secrets.get("anthropic_api_key"):
+            set_values["anthropicApiKey"] = secrets["anthropic_api_key"]
+
+        block_res = resources.get(block_name, {})
+        limits = block_res.get("limits", {})
+        requests = block_res.get("requests", {})
+        if limits.get("cpu"):
+            set_values["resources.limits.cpu"] = limits["cpu"]
+        if limits.get("memory"):
+            set_values["resources.limits.memory"] = limits["memory"]
+        if requests.get("cpu"):
+            set_values["resources.requests.cpu"] = requests["cpu"]
+        if requests.get("memory"):
+            set_values["resources.requests.memory"] = requests["memory"]
+
+        cmd = build_template_command(chart_path, chart_dir, set_values=set_values or None, set_files=set_files or None)
+        result = await run_helm_command(cmd)
+        preview[block_name] = result["stdout"] if result["success"] else f"# Error: {result['stderr']}"
+
+    return {"target": target, "preview": preview}
 
 
 @app.post("/api/projects/{slug}/deploy/execute")
 async def execute_deploy(slug: str, body: dict) -> dict:
     """Trigger deployment of all 14 services.
 
+    Starts an async background task that deploys services phase-by-phase.
+    Returns immediately with ``status: started``. Poll ``/deploy/status``
+    to track progress.
+
     Args:
         slug: Project slug identifying the deployment target.
-        body: Dict with optional ``target`` key (``docker`` or ``kubernetes``).
+        body: Dict with ``target``, ``secrets``, ``resources``, and
+            optionally ``kubeconfig`` (for kubernetes target).
 
     Returns:
         Dict with ``status: started`` and the resolved target name.
-
-    Note:
-        Full async deployment logic will be wired in a future iteration.
-        Currently returns a started acknowledgement immediately.
     """
-    return {"status": "started", "target": body.get("target", "docker")}
+    import tempfile
+    from dev_kit.agent.deployer.state import start_deploy
+
+    target = body.get("target", "docker")
+    state = start_deploy(slug, target)
+    secrets = body.get("secrets", {})
+    resources = body.get("resources", {})
+
+    # Mark all services as queued initially
+    all_services = [
+        "redis", "memgraph", "otel_collector", "jaeger", "prometheus", "loki", "grafana",
+        "agent_core", "knowledge_engine", "memory_layer", "trust_layer",
+        "action_gateway", "reach_layer", "observability_layer",
+    ]
+    for svc in all_services:
+        state.set_service(svc, "queued")
+
+    if target == "docker":
+        asyncio.create_task(_run_docker_deploy(slug, state, secrets, resources))
+    else:
+        kubeconfig_content = body.get("kubeconfig", "")
+        namespace = body.get("namespace", "dpg")
+        asyncio.create_task(_run_k8s_deploy(slug, state, secrets, resources, kubeconfig_content, namespace))
+
+    return {"status": "started", "target": target}
+
+
+async def _run_docker_deploy(slug: str, state, secrets: dict, resources: dict) -> None:
+    """Background task: generate compose file and run docker compose up."""
+    from dev_kit.agent.deployer.compose import generate_compose, run_compose_up, DEPENDS_ON
+    from dev_kit.agent.deployer.helm import DEPLOY_PHASES
+
+    try:
+        compose_content = generate_compose(
+            project_slug=slug,
+            dpg_dir=str(DPG_DIR),
+            domain_dir=str(CONFIGS_DIR / slug),
+            resources=resources,
+            secrets=secrets,
+            infra_configs={},
+        )
+
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False, prefix=f"dpg-{slug}-")
+        tmp.write(compose_content)
+        tmp.flush()
+        tmp.close()
+        state.compose_file_path = tmp.name
+
+        # Mark all as starting
+        for phase in DEPLOY_PHASES:
+            for svc in phase["services"]:
+                state.set_service(svc, "starting")
+
+        result = await run_compose_up(tmp.name, project_name=f"dpg-{slug}")
+        if result["success"]:
+            for svc_name in state.services:
+                state.set_service(svc_name, "running")
+            state.overall = "complete"
+        else:
+            for svc_name in state.services:
+                state.set_service(svc_name, "failed", result["stderr"][:200])
+            state.overall = "failed"
+            logger.error(
+                "docker_deploy_failed",
+                extra={"operation": "_run_docker_deploy", "status": "failure", "error": result["stderr"][:500]},
+            )
+    except Exception as exc:
+        for svc_name in state.services:
+            state.set_service(svc_name, "failed", str(exc)[:200])
+        state.overall = "failed"
+        logger.error(
+            "docker_deploy_exception",
+            extra={"operation": "_run_docker_deploy", "status": "failure", "error": str(exc)},
+        )
+
+
+async def _run_k8s_deploy(slug: str, state, secrets: dict, resources: dict, kubeconfig_content: str, namespace: str) -> None:
+    """Background task: deploy all 14 charts via helm upgrade --install in phase order."""
+    import tempfile
+    from dev_kit.agent.deployer.helm import DEPLOY_PHASES, build_helm_command, run_helm_command
+
+    _helm_base = Path(__file__).resolve().parent.parent.parent.parent / "automation" / "helm"
+    state.namespace = namespace
+
+    # Write kubeconfig to a temp file
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False, prefix="kubeconfig-")
+    tmp.write(kubeconfig_content)
+    tmp.flush()
+    tmp.close()
+    state.kubeconfig_path = tmp.name
+
+    infra_services = {"redis", "memgraph", "otel_collector", "jaeger", "prometheus", "loki", "grafana"}
+
+    try:
+        for phase in DEPLOY_PHASES:
+            for svc_name in phase["services"]:
+                state.set_service(svc_name, "starting")
+
+                chart_dir = svc_name.replace("_", "-")
+                if svc_name in infra_services:
+                    chart_path = str(_helm_base / "infra" / chart_dir)
+                else:
+                    chart_path = str(_helm_base / "dpg" / chart_dir)
+
+                release_name = chart_dir
+                set_values: dict[str, str] = {}
+                set_files: dict[str, str] = {}
+
+                # DPG charts need config injection
+                if svc_name not in infra_services:
+                    dpg_file = DPG_DIR / f"{svc_name}.yaml"
+                    domain_file = CONFIGS_DIR / slug / f"{svc_name}.yaml"
+                    if dpg_file.exists():
+                        set_files["dpgConfig"] = str(dpg_file)
+                    if domain_file.exists():
+                        set_files["domainConfig"] = str(domain_file)
+                    if secrets.get("anthropic_api_key"):
+                        set_values["anthropicApiKey"] = secrets["anthropic_api_key"]
+
+                    block_res = resources.get(svc_name, {})
+                    limits = block_res.get("limits", {})
+                    requests = block_res.get("requests", {})
+                    if limits.get("cpu"):
+                        set_values["resources.limits.cpu"] = limits["cpu"]
+                    if limits.get("memory"):
+                        set_values["resources.limits.memory"] = limits["memory"]
+                    if requests.get("cpu"):
+                        set_values["resources.requests.cpu"] = requests["cpu"]
+                    if requests.get("memory"):
+                        set_values["resources.requests.memory"] = requests["memory"]
+
+                cmd = build_helm_command(
+                    chart_path=chart_path,
+                    release_name=release_name,
+                    namespace=namespace,
+                    kubeconfig_path=tmp.name,
+                    set_values=set_values or None,
+                    set_files=set_files or None,
+                    upgrade=True,
+                )
+
+                result = await run_helm_command(cmd)
+                if result["success"]:
+                    state.set_service(svc_name, "running")
+                else:
+                    state.set_service(svc_name, "failed", result["stderr"][:200])
+                    logger.error(
+                        "k8s_deploy_service_failed",
+                        extra={
+                            "operation": "_run_k8s_deploy",
+                            "status": "failure",
+                            "service": svc_name,
+                            "error": result["stderr"][:500],
+                        },
+                    )
+
+        # Determine overall status
+        statuses = {s["status"] for s in state.services.values()}
+        if "failed" in statuses:
+            state.overall = "failed"
+        else:
+            state.overall = "complete"
+
+    except Exception as exc:
+        for svc_name in state.services:
+            if state.services[svc_name]["status"] == "queued":
+                state.set_service(svc_name, "failed", str(exc)[:200])
+        state.overall = "failed"
+        logger.error(
+            "k8s_deploy_exception",
+            extra={"operation": "_run_k8s_deploy", "status": "failure", "error": str(exc)},
+        )
 
 
 @app.get("/api/projects/{slug}/deploy/status")
 async def get_deploy_status(slug: str) -> dict:
     """Poll deployment status of all services.
 
+    For Docker deployments, polls ``docker compose ps`` for live container state.
+    For Kubernetes deployments, polls ``kubectl get pods`` for pod status.
+    Falls back to the in-memory deployment state if no active deployment.
+
     Args:
         slug: Project slug identifying the deployment to query.
 
     Returns:
-        Dict with ``services`` mapping and overall ``status`` string.
-
-    Note:
-        Full status tracking via project.json deployment state will be
-        wired in a future iteration. Currently returns idle state.
+        Dict with ``services`` (list of dicts with name/status/error) and
+        ``overall`` (deploying|complete|failed) keys.
     """
-    return {"services": {}, "status": "idle"}
+    from dev_kit.agent.deployer.state import get_state
+
+    state = get_state(slug)
+    if not state:
+        return {"services": [], "overall": "idle"}
+
+    # For completed/failed deployments, also try to get live status
+    if state.overall in ("complete", "failed"):
+        if state.target == "docker" and state.compose_file_path:
+            from dev_kit.agent.deployer.compose import get_compose_status
+
+            containers = await get_compose_status(state.compose_file_path, project_name=f"dpg-{slug}")
+            if containers:
+                for c in containers:
+                    svc_name = c.get("Service", c.get("Name", ""))
+                    c_state = c.get("State", "")
+                    c_status = c.get("Status", "")
+                    if c_state == "running":
+                        status = "healthy" if "healthy" in c_status.lower() else "running"
+                    elif c_state == "exited":
+                        status = "failed"
+                    else:
+                        status = c_state
+                    state.set_service(svc_name, status)
+                statuses = {s["status"] for s in state.services.values()}
+                state.overall = "failed" if "failed" in statuses else "complete"
+
+        elif state.target == "kubernetes" and state.kubeconfig_path:
+            from dev_kit.agent.deployer.helm import get_pod_status
+
+            pods = await get_pod_status(state.namespace, state.kubeconfig_path)
+            if pods:
+                for pod in pods:
+                    # Map pod name back to service (release name is prefix)
+                    pod_name = pod["name"]
+                    matched_svc = None
+                    for svc_name in state.services:
+                        release = svc_name.replace("_", "-")
+                        if pod_name.startswith(release):
+                            matched_svc = svc_name
+                            break
+                    if matched_svc:
+                        if pod["ready"]:
+                            state.set_service(matched_svc, "healthy")
+                        elif pod["status"] == "Running":
+                            state.set_service(matched_svc, "running")
+                        elif pod["status"] in ("Pending", "ContainerCreating"):
+                            state.set_service(matched_svc, "starting")
+                        else:
+                            state.set_service(matched_svc, "failed", pod["status"])
+
+                statuses = {s["status"] for s in state.services.values()}
+                state.overall = "failed" if "failed" in statuses else "complete"
+
+    return state.to_response()
 
 
 # ---------------------------------------------------------------------------
