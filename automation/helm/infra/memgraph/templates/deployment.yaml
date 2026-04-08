@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Release.Name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: memgraph
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - "--also-log-to-stderr"
+            - "--wal-enabled={{ .Values.flags.walEnabled }}"
+            - "--storage-snapshot-interval-sec={{ .Values.flags.snapshotIntervalSec }}"
+            {{- if .Values.password }}
+            - "--password-encryption-algorithm=bcrypt"
+            {{- end }}
+          ports:
+            - name: bolt
+              containerPort: {{ .Values.service.boltPort }}
+            - name: http
+              containerPort: {{ .Values.service.httpPort }}
+          livenessProbe:
+            httpGet:
+              path: /
+              port: {{ .Values.service.httpPort }}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /
+              port: {{ .Values.service.httpPort }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/memgraph
+          resources:
+            requests:
+              cpu: {{ .Values.resources.requests.cpu }}
+              memory: {{ .Values.resources.requests.memory }}
+            limits:
+              cpu: {{ .Values.resources.limits.cpu }}
+              memory: {{ .Values.resources.limits.memory }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-pvc

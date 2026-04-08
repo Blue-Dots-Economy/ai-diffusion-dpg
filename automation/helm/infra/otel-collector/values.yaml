@@ -1,0 +1,16 @@
+image:
+  repository: otel/opentelemetry-collector-contrib
+  tag: "0.96.0"
+  pullPolicy: IfNotPresent
+service:
+  grpcPort: 4317
+  httpPort: 4318
+  metricsPort: 8889
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+config: ""

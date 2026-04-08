@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Release.Name }}
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ .Release.Name }}
+  ports:
+    - name: bolt
+      port: {{ .Values.service.boltPort }}
+      targetPort: {{ .Values.service.boltPort }}
+      protocol: TCP
+    - name: http
+      port: {{ .Values.service.httpPort }}
+      targetPort: {{ .Values.service.httpPort }}
+      protocol: TCP

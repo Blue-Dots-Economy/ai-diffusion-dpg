@@ -1,12 +1,14 @@
-# Path inside the container that holds dpg.yaml and domain.yaml config files.
+# Config-agnostic: dpgConfig and domainConfig injected at deploy time via --set-file
 configFolder: /app/config
-
 replicaCount: 1
 
 image:
-  repository: srivatsak2002/dpg-trust-layer
-  tag: latest
+  repository: sanketikahub/dpg-trust-layer
+  tag: "0.1.0"
   pullPolicy: IfNotPresent
+
+service:
+  port: 8003
 
 resources:
   requests:
@@ -16,37 +18,14 @@ resources:
     cpu: 500m
     memory: 1Gi
 
-# DPG framework defaults — mounted as /app/config/dpg.yaml inside the pod.
-dpgConfig:
-  server:
-    host: "0.0.0.0"
-    port: 8003
+healthCheck:
+  readiness:
+    initialDelaySeconds: 15
+    periodSeconds: 10
+  liveness:
+    initialDelaySeconds: 30
+    periodSeconds: 20
 
-# Domain-specific config — mounted as /app/config/domain.yaml inside the pod.
-config:
-  server:
-    host: "0.0.0.0"
-    port: 8003
-
-  trust:
-    input_rules:
-      blocked_phrases:
-        - "bomb"
-        - "weapon"
-        - "kill"
-        - "threat"
-        - "violence"
-      escalation_topics:
-        - "arrested"
-        - "police case"
-        - "court notice"
-        - "legal action"
-        - "FIR"
-        - "jail"
-        - "suicide"
-    output_rules:
-      blocked_phrases:
-        - "I cannot help with that"
-        - "as an AI, I"
-        - "guaranteed placement"
-        - "100% job guarantee"
+# Injected at deploy time — do not set here
+dpgConfig: ""
+domainConfig: ""

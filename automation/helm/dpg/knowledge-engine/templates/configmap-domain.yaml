@@ -5,7 +5,6 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     app: {{ .Release.Name }}
-    layer: domain-config
 data:
-  knowledge_engine.yaml: |
-{{ .Values.config | toYaml | indent 4 }}
+  domain.yaml: |
+{{ .Values.domainConfig | indent 4 }}

@@ -11,6 +11,6 @@ spec:
     app: {{ .Release.Name }}
   ports:
     - name: http
-      port: 8002
-      targetPort: 8002
+      port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.port }}
       protocol: TCP
