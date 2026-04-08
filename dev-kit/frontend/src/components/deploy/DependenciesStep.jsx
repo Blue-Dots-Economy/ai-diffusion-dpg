@@ -15,9 +15,9 @@ function ServiceCard({ slug, name, config }) {
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
   const containerRef = useRef(null)
-  const yamlContent = typeof config === 'string' ? config : JSON.stringify(config, null, 2)
+  const yamlContent = typeof config === 'string' ? config : (config?.config || '')
   const { startEdit, cancelEdit, getContent, setReadOnly } = useYamlEditor(
-    containerRef, yamlContent, { readOnly: true }
+    containerRef, expanded ? yamlContent : null, { readOnly: true }
   )
 
   function handleEdit() {

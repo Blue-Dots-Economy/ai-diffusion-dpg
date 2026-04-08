@@ -1,0 +1,52 @@
+state:
+  session:
+    ttl_minutes: 1440
+    schema:
+      crop_type:
+        type: enum
+        values:
+        - rice
+        - sugarcane
+        - cotton
+        - wheat
+        - maize
+        - soybean
+        - chickpea
+        - pigeon_pea
+        - onion
+        - tomato
+        - chilli
+        - potato
+        - other
+        default: other
+      farm_location:
+        type: string
+        default: ''
+      language_preference:
+        type: enum
+        values:
+        - hindi
+        - kannada
+        - english
+        - hinglish
+        default: detected
+      symptom_description:
+        type: string
+        default: ''
+      disease_diagnosed:
+        type: string
+        default: ''
+      escalation_triggered:
+        type: enum
+        values:
+        - 'yes'
+        - 'no'
+        default: 'no'
+      treatment_recommended:
+        type: string
+        default: ''
+      consultation_count:
+        type: int
+        default: 0
+user_data_persistence:
+  default_mode: saved

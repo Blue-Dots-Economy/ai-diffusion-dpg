@@ -1,0 +1,68 @@
+observability:
+  domain: farmer_friendly
+  sli:
+    turn_latency_p99_ms: 1200
+    trust_block_rate_max: 0.05
+  audit:
+    retention_days: 90
+  outcomes:
+    lifecycle:
+    - state: enquiry
+      trigger_tool: null
+      trigger_condition: null
+    - state: diagnosed
+      trigger_tool: knowledge_retrieval
+      trigger_condition: result != null
+    - state: treated_advised
+      trigger_tool: knowledge_retrieval
+      trigger_condition: result.treatment_options != null
+    - state: escalated
+      trigger_tool: null
+      trigger_condition: null
+    - state: completed
+      trigger_tool: null
+      trigger_condition: null
+    metrics:
+    - name: diagnoses.by_crop_type
+      instrument: counter
+      description: Total number of diagnoses provided, grouped by crop type (e.g.,
+        rice, sugarcane, cotton)
+      unit: '1'
+      attributes:
+      - crop_type
+      - state
+    - name: escalation.rate
+      instrument: gauge
+      description: Percentage of sessions escalated to Krishi Seva Kendra due to agent
+        uncertainty
+      unit: '%'
+      attributes:
+      - region
+    - name: diseases.top5_weekly
+      instrument: counter
+      description: Weekly count of top 5 most frequently queried diseases
+      unit: '1'
+      attributes:
+      - disease_name
+      - week
+    - name: session.duration_seconds
+      instrument: histogram
+      description: Average duration of a farmer session from enquiry to completion
+        or escalation
+      unit: s
+      attributes:
+      - outcome_state
+    - name: knowledge_base.hit_rate
+      instrument: gauge
+      description: Percentage of knowledge_retrieval calls that return relevant answers
+        vs fallback to escalation
+      unit: '%'
+      attributes:
+      - query_type
+    - name: language.distribution
+      instrument: counter
+      description: Count of sessions by language preference (Hindi, English, Kannada,
+        Hinglish)
+      unit: '1'
+      attributes:
+      - language

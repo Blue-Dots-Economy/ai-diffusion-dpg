@@ -23,7 +23,7 @@ BLOCKS: list[str] = [
     "observability_layer",
 ]
 
-DRAFT_BLOCKS: set[str] = {"trust_layer", "action_gateway"}
+DRAFT_BLOCKS: set[str] = set()
 
 PHASES: list[str] = [
     "overview",

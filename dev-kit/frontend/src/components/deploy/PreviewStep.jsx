@@ -21,8 +21,8 @@ export default function PreviewStep({ slug, data }) {
       setPreview(result)
       if (result.services?.length > 0) {
         setActiveTab(result.services[0].name)
-      } else if (result.compose) {
-        setActiveTab('compose')
+      } else if (result.preview) {
+        setActiveTab(Object.keys(result.preview)[0] || 'compose')
       }
       setLoading(false)
     }).catch(e => {
@@ -40,12 +40,13 @@ export default function PreviewStep({ slug, data }) {
   }
 
   const isDocker = data.target === 'docker'
+  const previewFiles = preview?.preview || {}
   const tabs = isDocker
-    ? [{ key: 'compose', label: 'docker-compose.yml' }]
+    ? Object.keys(previewFiles).map(k => ({ key: k, label: k }))
     : (preview?.services || []).map(s => ({ key: s.name, label: s.name }))
 
   const activeContent = isDocker
-    ? preview?.compose || ''
+    ? previewFiles[activeTab] || ''
     : preview?.services?.find(s => s.name === activeTab)?.template || ''
 
   const serviceCount = isDocker ? 14 : (preview?.services?.length || 0)
