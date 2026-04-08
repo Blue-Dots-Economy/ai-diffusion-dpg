@@ -50,7 +50,9 @@ export default function Chat({ slug, onDashboard, onBack }) {
     setLoading(true)
     try {
       const res = await api.chat(slug, userText)
-      setMessages(m => [...m, { role: 'assistant', text: res.reply }])
+      if (res.reply) {
+        setMessages(m => [...m, { role: 'assistant', text: res.reply }])
+      }
       setPhase(res.phase)
       if (res.graph) setGraph(res.graph)
       if (res.checkpoint_created) {
