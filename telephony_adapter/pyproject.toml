@@ -17,6 +17,7 @@ dependencies = [
     "observability-layer",
     "opentelemetry-instrumentation-fastapi>=0.61b0",
     "opentelemetry-instrumentation-httpx>=0.61b0",
+    "python-multipart>=0.0.24",
 ]
 
 [project.optional-dependencies]
