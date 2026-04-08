@@ -37,7 +37,10 @@ class RayaTTSService:
         if not api_key:
             raise ValueError("telephony_adapter.raya.api_key is required")
         self._api_key = api_key
-        self._base_url = raya_cfg.get("tts_base_url", "https://hub.getraya.app/v1")
+        tts_base_url = raya_cfg.get("tts_base_url", "")
+        if not tts_base_url:
+            raise ValueError("telephony_adapter.raya.tts_base_url is required")
+        self._base_url = tts_base_url
         self._voice_id = raya_cfg.get("voice_id", "voice_001")
         self._language = raya_cfg.get("language", "hi")
         self._speed = float(raya_cfg.get("tts_speed", 1.0))

@@ -39,7 +39,10 @@ class RayaSTTService:
         if not api_key:
             raise ValueError("telephony_adapter.raya.api_key is required")
         self._api_key = api_key
-        self._wss_url = raya_cfg.get("stt_wss_url", "wss://hub.getraya.app/transcribe")
+        wss_url = raya_cfg.get("stt_wss_url", "")
+        if not wss_url:
+            raise ValueError("telephony_adapter.raya.stt_wss_url is required")
+        self._wss_url = wss_url
         self._language = raya_cfg.get("language", "hi")
         self._max_retries = 2
 
