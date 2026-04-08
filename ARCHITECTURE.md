@@ -35,6 +35,7 @@ The reference domain is **KKB (Kaam Ki Baat)** — a labour-market assistant hel
 | Memory Layer | 8002 |
 | Trust Layer | 8003 |
 | Observability Layer | 8004 |
+| Telephony Adapter | 8006 |
 | Action Gateway | 9999 |
 
 ---
@@ -70,10 +71,6 @@ Language normalisation (dialect detection, code-switching, transliteration) runs
 ### Fail-Closed Trust Layer
 
 All Trust Layer endpoints return `block` / `deny` on internal error. The Agent Core's `TrustLayerHttpClient` is fail-closed. This was a known gap (formerly "Fail-Open Trust Layer") that has been resolved.
-
-### `/internal/llm/call` endpoint implemented but not wired
-
-Agent Core exposes `POST /internal/llm/call` as an LLM proxy for future blocks. Implemented in `servers/orchestration_server.py` but no block calls it yet.
 
 ### Multimodal Input Handler disabled
 
@@ -125,7 +122,6 @@ Sole orchestrator and sole LLM caller. Stateless between turns.
 **Tests:** 414 tests, ≥70% line coverage.
 
 **Known gaps:**
-- Bhashini language provider raises `NotImplementedError` (not yet implemented).
 - HiTL escalation for output path not wired: `orchestrator.py` line 646 — output escalation TODO deferred to HiTL queue issue.
 
 ---
@@ -264,7 +260,8 @@ Normalises inbound channels and delivers responses.
 |---------|--------|-------|
 | CLI (stdin/stdout) | ✅ | `CLIReachLayer` — dev/test REPL |
 | Web UI | ✅ | FastAPI + single-page chat UI on port 8005; session restore via `GET /user-history/{user_id}` |
-| Voice / VOIP | ⏳ | Exotel/Twilio, inbound 5226 — pending |
+| Telephony (VoBiz/Exotel) | 🟡 | `telephony_adapter/` — WebSocket media stream, STT (Raya), TTS (Raya), Agent Core integration; port 8006. `POST /campaign` for outbound. Build from repo root: `docker build -f telephony_adapter/Dockerfile -t telephony_adapter .` |
+| Voice / VOIP | ⏳ | Production SIP/PSTN integration (Exotel inbound 5226) — pending |
 | WhatsApp | ⏳ | Gupshup/Twilio webhook — pending |
 | Mobile SDK | ⏳ | Pending |
 | Outbound campaigns | ⏳ | Re-engagement, alerts, follow-through — pending |
@@ -528,7 +525,7 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 | Memory Layer | ✅ | Redis (session/profile) + Memgraph (context graph) + SQLite (audit). 10 HTTP endpoints. 200 tests. |
 | Trust Layer | 🟡 | All 4 sub-blocks implemented. Fail-closed. HiTL: log backend only. Consent: in-process SQLite. |
 | Action Gateway | 🟡 | Mock ONEST API: market_lookup + apply. 10 fixture trades. 64 tests. |
-| Reach Layer | 🟡 | CLI + Web (port 8005). Web calls Memory Layer for session restore (approved exception). |
+| Reach Layer | 🟡 | CLI + Web (port 8005). Web calls Memory Layer for session restore (approved exception). Telephony Adapter (port 8006): WebSocket media stream, STT/TTS via Raya, 48 tests, 92% coverage. |
 | Observability Layer | 🟡 | OTel instrumentation functional. Audit = Loki+Jaeger via OTel Collector. Grafana dashboards pending. |
 
 ### By feature
@@ -557,7 +554,8 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 | Fail-closed Trust Layer | ✅ | All endpoints and AC HTTP client are fail-closed (resolved) |
 | Reach Layer web adapter | ✅ | Web UI + POST /chat + session restore via Memory Layer (approved exception) |
 | Real ONEST connector | ⏳ | Replace MockActionGateway |
-| WhatsApp/VOIP/Mobile channels | ⏳ | Replace CLIReachLayer for production |
+| Telephony adapter (VoBiz/Exotel) | 🟡 | `telephony_adapter/` — WebSocket media stream, STT/TTS, Agent Core integration, outbound campaign endpoint |
+| WhatsApp/Mobile channels | ⏳ | Replace CLIReachLayer for production |
 | Grafana dashboard provisioning | ⏳ | `automation/docker/grafana/provisioning/` not yet implemented |
 | Configuration Agent (Tier 1) | ✅ | FastAPI + React SPA; conversation-driven YAML generation for all 7 DPGs |
 | Live Tuning Dashboard (Tier 3) | ⏳ | Dashboard reading Observability Layer signals |
