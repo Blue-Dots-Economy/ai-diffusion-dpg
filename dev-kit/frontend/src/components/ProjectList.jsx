@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../api'
+import ConfirmModal from './ConfirmModal'
 
 export default function ProjectList({ onOpen }) {
   const [projects, setProjects] = useState([])
@@ -8,6 +9,7 @@ export default function ProjectList({ onOpen }) {
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState(null)
   const [deletingSlug, setDeletingSlug] = useState(null)
+  const [deleteModal, setDeleteModal] = useState(null)  // null | { slug, name }
 
   useEffect(() => {
     api.listProjects().then(setProjects).catch(() => setProjects([]))
@@ -31,9 +33,15 @@ export default function ProjectList({ onOpen }) {
     }
   }
 
-  async function handleDelete(e, slug) {
+  function handleDelete(e, slug, name) {
     e.stopPropagation()
-    if (!window.confirm(`Delete project "${slug}"? This cannot be undone.`)) return
+    setDeleteModal({ slug, name })
+  }
+
+  async function confirmDelete() {
+    if (!deleteModal) return
+    const { slug } = deleteModal
+    setDeleteModal(null)
     setDeletingSlug(slug)
     try {
       await api.deleteProject(slug)
@@ -114,7 +122,7 @@ export default function ProjectList({ onOpen }) {
                 <div className="flex items-center gap-2 ml-4 shrink-0">
                   <span className="text-xs text-gray-500 group-hover:text-gray-300 transition-colors">Open →</span>
                   <button
-                    onClick={e => handleDelete(e, p.slug)}
+                    onClick={e => handleDelete(e, p.slug, p.name)}
                     disabled={deletingSlug === p.slug}
                     className="text-xs text-gray-600 hover:text-red-400 disabled:opacity-50 px-2 py-1 rounded-lg hover:bg-red-950/40 transition-colors opacity-0 group-hover:opacity-100"
                     title="Delete project"
@@ -130,6 +138,21 @@ export default function ProjectList({ onOpen }) {
 
       {projects.length === 0 && (
         <p className="text-gray-600 text-sm">No projects yet. Create one above.</p>
+      )}
+
+      {deleteModal && (
+        <ConfirmModal
+          title="Delete project?"
+          message={`"${deleteModal.name}" will be permanently deleted.`}
+          bullets={[
+            'All conversation history will be lost',
+            'All generated YAML configs will be deleted',
+            'This action cannot be undone',
+          ]}
+          confirmLabel="Delete project"
+          onConfirm={confirmDelete}
+          onCancel={() => setDeleteModal(null)}
+        />
       )}
     </div>
   )

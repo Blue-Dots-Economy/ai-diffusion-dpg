@@ -1,5 +1,6 @@
 // dev-kit/frontend/src/components/DiffModal.jsx
 import React, { useState } from 'react'
+import ConfirmModal from './ConfirmModal'
 
 const BLOCK_LABELS = {
   agent_core: 'Agent Core',
@@ -49,6 +50,7 @@ function lineDiff(oldText, newText) {
 
 export default function DiffModal({ currentConfigs, previewConfigs, checkpointPhase, onConfirm, onCancel }) {
   const [activeBlock, setActiveBlock] = useState('agent_core')
+  const [confirming, setConfirming] = useState(false)
 
   const current = currentConfigs.find(c => c.block === activeBlock) || { content: '', status: 'pending' }
   const preview = previewConfigs.find(c => c.block === activeBlock) || { content: '', status: 'pending' }
@@ -65,10 +67,11 @@ export default function DiffModal({ currentConfigs, previewConfigs, checkpointPh
   )
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-      <div className="bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl w-full max-w-4xl mx-4 flex flex-col max-h-[90vh]">
+    <div className="fixed inset-0 z-50 flex flex-col items-center justify-start bg-black/70 backdrop-blur-sm overflow-y-auto py-8 px-4">
+      <div className="bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl w-full max-w-4xl flex flex-col" style={{ maxHeight: 'calc(100vh - 4rem)' }}>
+
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 shrink-0">
           <div>
             <h2 className="font-semibold text-base">Restore Checkpoint</h2>
             <p className="text-gray-400 text-xs mt-0.5">
@@ -83,7 +86,7 @@ export default function DiffModal({ currentConfigs, previewConfigs, checkpointPh
         </div>
 
         {/* Block tabs */}
-        <div className="flex gap-0 overflow-x-auto border-b border-gray-800 bg-gray-900">
+        <div className="flex overflow-x-auto border-b border-gray-800 bg-gray-900 shrink-0">
           {Object.keys(BLOCK_LABELS).map(block => {
             const isChanged = changedBlocks.has(block)
             const isActive = block === activeBlock
@@ -92,7 +95,7 @@ export default function DiffModal({ currentConfigs, previewConfigs, checkpointPh
                 key={block}
                 onClick={() => setActiveBlock(block)}
                 className={[
-                  'px-3 py-2.5 text-xs font-medium whitespace-nowrap border-b-2 transition-colors',
+                  'px-3 py-2.5 text-xs font-medium whitespace-nowrap border-b-2 transition-colors shrink-0',
                   isActive ? 'border-blue-500 text-white bg-gray-800' : 'border-transparent text-gray-400 hover:text-gray-200 hover:bg-gray-800/50',
                   isChanged && !isActive ? 'text-yellow-400' : '',
                 ].filter(Boolean).join(' ')}
@@ -105,7 +108,7 @@ export default function DiffModal({ currentConfigs, previewConfigs, checkpointPh
         </div>
 
         {/* Status row */}
-        <div className="flex items-center gap-3 px-6 py-2 bg-gray-950 text-xs border-b border-gray-800">
+        <div className="flex items-center gap-3 px-6 py-2 bg-gray-950 text-xs border-b border-gray-800 shrink-0">
           <span className="text-gray-500">Current:</span>
           <span className={`px-2 py-0.5 rounded-full border ${STATUS_PILL[current.status] || STATUS_PILL.pending}`}>
             {current.status}
@@ -142,7 +145,7 @@ export default function DiffModal({ currentConfigs, previewConfigs, checkpointPh
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-800">
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-800 shrink-0">
           <button
             onClick={onCancel}
             className="px-4 py-2 text-sm bg-gray-800 hover:bg-gray-700 rounded-xl transition-colors"
@@ -150,12 +153,28 @@ export default function DiffModal({ currentConfigs, previewConfigs, checkpointPh
             Cancel
           </button>
           <button
-            onClick={onConfirm}
+            onClick={() => setConfirming(true)}
             className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 rounded-xl font-medium transition-colors"
           >
             Restore Checkpoint
           </button>
         </div>
+
+        {/* Confirmation popup */}
+        {confirming && (
+          <ConfirmModal
+            title="Restore checkpoint?"
+            message={`This will roll back your project to the "${checkpointPhase}" checkpoint.`}
+            bullets={[
+              `${changedBlocks.size} config block${changedBlocks.size !== 1 ? 's' : ''} will be overwritten with checkpoint values`,
+              'Your entire conversation history will be rolled back to this point',
+              'All work done after this checkpoint will be permanently lost',
+            ]}
+            confirmLabel="Yes, restore and lose progress"
+            onConfirm={onConfirm}
+            onCancel={() => setConfirming(false)}
+          />
+        )}
       </div>
     </div>
   )

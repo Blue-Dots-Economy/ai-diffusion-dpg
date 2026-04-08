@@ -1,10 +1,12 @@
 // dev-kit/frontend/src/components/ConfigEditor.jsx
 import React, { useEffect, useRef, useState } from 'react'
-import { EditorState } from '@codemirror/state'
+import { Compartment, EditorState } from '@codemirror/state'
 import { EditorView, basicSetup } from 'codemirror'
 import { yaml } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { api } from '../api'
+import { useTheme } from '../ThemeContext'
+import ConfirmModal from './ConfirmModal'
 
 const STATUS_PILL = {
   complete: 'bg-green-900 text-green-300 border-green-700',
@@ -16,14 +18,17 @@ const STATUS_PILL = {
 const DRAFT_BLOCKS = new Set(['trust_layer', 'action_gateway', 'reach_layer'])
 
 export default function ConfigEditor({ slug, block, onBack }) {
+  const { theme } = useTheme()
   const editorRef = useRef(null)
   const viewRef = useRef(null)
   const originalRef = useRef('')
+  const editableCompartment = useRef(new Compartment())
+  const readOnlyCompartment = useRef(new Compartment())
   const [status, setStatus] = useState('pending')
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [validationErrors, setValidationErrors] = useState([])
   const [saveMsg, setSaveMsg] = useState(null)
+  const [validationModal, setValidationModal] = useState(null)  // null | string[]
   const [copied, setCopied] = useState(false)
   const [showGuide, setShowGuide] = useState(false)
   const [descriptions, setDescriptions] = useState({})
@@ -31,16 +36,22 @@ export default function ConfigEditor({ slug, block, onBack }) {
   useEffect(() => {
     api.getConfig(slug, block).then(({ content, status: s }) => {
       setStatus(s)
-      if (viewRef.current) viewRef.current.destroy()
+      viewRef.current?.destroy()
       if (!editorRef.current) return
       const state = EditorState.create({
         doc: content || '',
-        extensions: [basicSetup, yaml(), oneDark, EditorView.editable.of(false)],
+        extensions: [
+          basicSetup,
+          yaml(),
+          ...(theme === 'dark' ? [oneDark] : []),
+          editableCompartment.current.of(EditorView.editable.of(false)),
+          readOnlyCompartment.current.of(EditorState.readOnly.of(true)),
+        ],
       })
       viewRef.current = new EditorView({ state, parent: editorRef.current })
     }).catch(() => {})
     return () => { viewRef.current?.destroy(); viewRef.current = null }
-  }, [slug, block])
+  }, [slug, block, theme])
 
   useEffect(() => {
     api.getSchemaDescriptions(block)
@@ -52,39 +63,49 @@ export default function ConfigEditor({ slug, block, onBack }) {
     if (!viewRef.current) return
     originalRef.current = viewRef.current.state.doc.toString()
     viewRef.current.dispatch({
-      effects: EditorView.editable.reconfigure(EditorView.editable.of(true)),
+      effects: [
+        editableCompartment.current.reconfigure(EditorView.editable.of(true)),
+        readOnlyCompartment.current.reconfigure(EditorState.readOnly.of(false)),
+      ],
     })
     setEditing(true)
     setSaveMsg(null)
-    setValidationErrors([])
   }
 
   function cancelEdit() {
     if (!viewRef.current) return
     viewRef.current.dispatch({
       changes: { from: 0, to: viewRef.current.state.doc.length, insert: originalRef.current },
-      effects: EditorView.editable.reconfigure(EditorView.editable.of(false)),
+      effects: [
+        editableCompartment.current.reconfigure(EditorView.editable.of(false)),
+        readOnlyCompartment.current.reconfigure(EditorState.readOnly.of(true)),
+      ],
     })
     setEditing(false)
-    setValidationErrors([])
     setSaveMsg(null)
   }
 
   async function handleSave() {
     if (!viewRef.current) return
     setSaving(true)
-    setValidationErrors([])
     setSaveMsg(null)
     const content = viewRef.current.state.doc.toString()
     try {
       const result = await api.updateConfig(slug, block, content)
+      if (result.validation_errors?.length > 0) {
+        // Stay in edit mode — show popup, block save until errors are fixed
+        setValidationModal(result.validation_errors)
+        return
+      }
       setStatus(result.status)
       viewRef.current.dispatch({
-        effects: EditorView.editable.reconfigure(EditorView.editable.of(false)),
+        effects: [
+          editableCompartment.current.reconfigure(EditorView.editable.of(false)),
+          readOnlyCompartment.current.reconfigure(EditorState.readOnly.of(true)),
+        ],
       })
       setEditing(false)
-      setValidationErrors(result.validation_errors || [])
-      setSaveMsg(result.validation_errors?.length > 0 ? 'Saved with validation errors.' : 'Saved successfully.')
+      setSaveMsg('Saved successfully.')
     } catch (err) {
       setSaveMsg(`Error: ${err.message}`)
     } finally {
@@ -94,12 +115,24 @@ export default function ConfigEditor({ slug, block, onBack }) {
 
   async function handleCopy() {
     const content = viewRef.current?.state.doc.toString() || ''
-    await navigator.clipboard.writeText(content)
+    try {
+      await navigator.clipboard.writeText(content)
+    } catch {
+      const ta = document.createElement('textarea')
+      ta.value = content
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
 
   return (
+    <>
     <div className="flex flex-col h-screen bg-gray-950 text-gray-100">
       {/* Top bar */}
       <div className="flex items-center justify-between px-4 py-2.5 bg-gray-900 border-b border-gray-800 shrink-0">
@@ -165,11 +198,8 @@ export default function ConfigEditor({ slug, block, onBack }) {
       )}
 
       {saveMsg && (
-        <div className={`px-4 py-1.5 text-xs border-b shrink-0 ${
-          validationErrors.length > 0 ? 'bg-red-950 text-red-300 border-red-800' : 'bg-green-950 text-green-300 border-green-800'
-        }`}>
+        <div className="px-4 py-1.5 text-xs border-b shrink-0 bg-green-950 text-green-300 border-green-800">
           {saveMsg}
-          {validationErrors.map((e, i) => <div key={i} className="mt-0.5 pl-2">• {e}</div>)}
         </div>
       )}
 
@@ -188,5 +218,18 @@ export default function ConfigEditor({ slug, block, onBack }) {
         </div>
       )}
     </div>
+
+    {validationModal && (
+      <ConfirmModal
+        title="Validation errors — cannot save"
+        message={`Fix the following errors in ${block}.yaml before saving:`}
+        bullets={validationModal}
+        confirmLabel="OK, I'll fix them"
+        confirmClass="bg-blue-600 hover:bg-blue-500 text-white"
+        onConfirm={() => setValidationModal(null)}
+        onCancel={() => setValidationModal(null)}
+      />
+    )}
+    </>
   )
 }

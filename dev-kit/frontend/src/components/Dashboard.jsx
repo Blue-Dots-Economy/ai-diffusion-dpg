@@ -101,8 +101,8 @@ export default function Dashboard({ slug, onChat, onEditConfig, onBack }) {
       {/* Header */}
       <div className="flex items-start justify-between mb-6">
         <div>
-          <button onClick={onBack} className="text-gray-400 hover:text-white text-sm mb-2 block transition-colors">
-            ← Projects
+          <button onClick={onChat} className="text-gray-400 hover:text-white text-sm mb-2 block transition-colors">
+            ← Back to Chat
           </button>
           <h1 className="text-2xl font-bold">{project?.name || slug}</h1>
           {project?.description && (
@@ -111,17 +111,17 @@ export default function Dashboard({ slug, onChat, onEditConfig, onBack }) {
         </div>
         <div className="flex gap-2 mt-6">
           <button
+            onClick={onBack}
+            className="text-sm bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-2 rounded-xl transition-colors"
+          >
+            ← Projects
+          </button>
+          <button
             onClick={handleExport}
             disabled={exporting}
             className="text-sm bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-300 px-3 py-2 rounded-xl transition-colors"
           >
             {exporting ? 'Exporting…' : '↓ Export ZIP'}
-          </button>
-          <button
-            onClick={onChat}
-            className="text-sm bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded-xl font-medium transition-colors"
-          >
-            Continue Configuration
           </button>
         </div>
       </div>

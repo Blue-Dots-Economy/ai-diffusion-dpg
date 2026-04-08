@@ -1,12 +1,16 @@
 // dev-kit/frontend/src/components/Chat.jsx
 import React, { useEffect, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { api } from '../api'
 import PhaseBar from './PhaseBar'
 import FlowGraph from './FlowGraph'
 import YamlPanel from './YamlPanel'
 import DiffModal from './DiffModal'
+import { useTheme } from '../ThemeContext'
 
 export default function Chat({ slug, onDashboard, onBack }) {
+  const { theme, toggle: toggleTheme } = useTheme()
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -18,6 +22,7 @@ export default function Chat({ slug, onDashboard, onBack }) {
   const [showYaml, setShowYaml] = useState(false)
   const [diffModal, setDiffModal] = useState(null)  // null | {phase, currentConfigs, previewConfigs}
   const bottomRef = useRef(null)
+  const textareaRef = useRef(null)
 
   useEffect(() => {
     api.getHistory(slug).then(history => {
@@ -37,6 +42,10 @@ export default function Chat({ slug, onDashboard, onBack }) {
     if (!input.trim() || loading) return
     const userText = input.trim()
     setInput('')
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto'
+      textareaRef.current.focus()
+    }
     setMessages(m => [...m, { role: 'user', text: userText }])
     setLoading(true)
     try {
@@ -53,6 +62,7 @@ export default function Chat({ slug, onDashboard, onBack }) {
       setMessages(m => [...m, { role: 'error', text: `Error: ${err.message}` }])
     } finally {
       setLoading(false)
+      setTimeout(() => textareaRef.current?.focus(), 0)
     }
   }
 
@@ -129,19 +139,27 @@ export default function Chat({ slug, onDashboard, onBack }) {
             {showYaml ? 'Hide YAML' : 'YAML'}
           </button>
           <button
+            onClick={toggleTheme}
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            className="text-xs px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors"
+          >
+            {theme === 'dark' ? '☀' : '☾'}
+          </button>
+          <button
             onClick={onDashboard}
-            className="text-xs bg-blue-600 hover:bg-blue-500 px-3 py-1.5 rounded-lg transition-colors font-medium"
+            className="text-xs bg-blue-600 hover:bg-blue-500 px-3 py-1.5 rounded-lg transition-colors font-medium text-white"
           >
             Dashboard
           </button>
         </div>
       </div>
 
-      <PhaseBar currentPhase={phase} checkpoints={checkpoints} onRestoreCheckpoint={handleRestoreCheckpoint} />
-
       <div className="flex flex-1 overflow-hidden min-h-0">
+        {/* Phase sidebar */}
+        <PhaseBar currentPhase={phase} checkpoints={checkpoints} onRestoreCheckpoint={handleRestoreCheckpoint} />
+
         {/* Chat column */}
-        <div className={`flex flex-col ${showSidePanel ? 'w-1/2' : 'w-full'} overflow-hidden`}>
+        <div className={`flex flex-col ${showSidePanel ? 'w-1/2' : 'flex-1'} overflow-hidden min-w-0`}>
           <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
             {messages.length === 0 && (
               <p className="text-gray-500 text-center text-sm mt-12">
@@ -151,12 +169,38 @@ export default function Chat({ slug, onDashboard, onBack }) {
             {messages.map((m, i) => (
               <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                 <div className={[
-                  'max-w-xl rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap',
-                  m.role === 'user' ? 'bg-blue-600 text-white' : '',
+                  'max-w-xl rounded-2xl px-4 py-2.5 text-sm leading-relaxed',
+                  m.role === 'user' ? 'bg-blue-600 text-white whitespace-pre-wrap' : '',
                   m.role === 'assistant' ? 'bg-gray-800 text-gray-100' : '',
-                  m.role === 'error' ? 'bg-red-900/60 text-red-200 border border-red-700' : '',
+                  m.role === 'error' ? 'bg-red-900/60 text-red-200 border border-red-700 whitespace-pre-wrap' : '',
                 ].filter(Boolean).join(' ')}>
-                  {m.text}
+                  {m.role === 'assistant' ? (
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                        ul: ({ children }) => <ul className="list-disc pl-4 mb-2 space-y-0.5">{children}</ul>,
+                        ol: ({ children }) => <ol className="list-decimal pl-4 mb-2 space-y-0.5">{children}</ol>,
+                        li: ({ children }) => <li className="text-sm">{children}</li>,
+                        strong: ({ children }) => <strong className="font-semibold text-white">{children}</strong>,
+                        em: ({ children }) => <em className="italic text-gray-300">{children}</em>,
+                        pre: ({ children }) => <pre className="bg-gray-900 rounded-lg p-3 mt-1 mb-2 overflow-x-auto text-xs font-mono text-green-300 whitespace-pre">{children}</pre>,
+                        code: ({ children }) => <code className="bg-gray-700 text-green-300 px-1 py-0.5 rounded text-xs font-mono">{children}</code>,
+                        h1: ({ children }) => <h1 className="text-base font-bold mb-1 mt-2">{children}</h1>,
+                        h2: ({ children }) => <h2 className="text-sm font-bold mb-1 mt-2">{children}</h2>,
+                        h3: ({ children }) => <h3 className="text-sm font-semibold mb-1 mt-1.5">{children}</h3>,
+                        hr: () => <hr className="border-gray-600 my-2" />,
+                        blockquote: ({ children }) => <blockquote className="border-l-2 border-gray-500 pl-3 text-gray-300 italic my-2">{children}</blockquote>,
+                        table: ({ children }) => <div className="overflow-x-auto my-2"><table className="text-xs border-collapse w-full">{children}</table></div>,
+                        thead: ({ children }) => <thead className="bg-gray-700">{children}</thead>,
+                        th: ({ children }) => <th className="border border-gray-600 px-2 py-1 text-left font-semibold">{children}</th>,
+                        td: ({ children }) => <td className="border border-gray-600 px-2 py-1">{children}</td>,
+                        a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-400 underline hover:text-blue-300">{children}</a>,
+                      }}
+                    >
+                      {m.text}
+                    </ReactMarkdown>
+                  ) : m.text}
                 </div>
               </div>
             ))}
@@ -175,17 +219,30 @@ export default function Chat({ slug, onDashboard, onBack }) {
           </div>
 
           <form onSubmit={send} className="flex gap-2 px-4 py-3 border-t border-gray-800 bg-gray-900 shrink-0">
-            <input
-              className="flex-1 bg-gray-800 rounded-xl px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-500"
-              placeholder="Type your message…"
+            <textarea
+              ref={textareaRef}
+              rows={1}
+              className="flex-1 bg-gray-800 rounded-xl px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-500 resize-none overflow-hidden"
+              style={{ lineHeight: '1.5rem' }}
+              placeholder="Type your message… (Shift+Enter for new line)"
               value={input}
-              onChange={e => setInput(e.target.value)}
+              onChange={e => {
+                setInput(e.target.value)
+                e.target.style.height = 'auto'
+                e.target.style.height = Math.min(e.target.scrollHeight, 160) + 'px'
+              }}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  send(e)
+                }
+              }}
               disabled={loading}
             />
             <button
               type="submit"
               disabled={loading || !input.trim()}
-              className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded-xl px-4 py-2 text-sm font-medium transition-colors"
+              className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded-xl px-4 py-2 text-sm font-medium transition-colors text-white self-end"
             >
               Send
             </button>
