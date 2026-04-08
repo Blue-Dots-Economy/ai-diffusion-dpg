@@ -41,7 +41,7 @@ telephony_adapter/
 └── Dockerfile
 ```
 
-**Port:** `8005` (configurable).
+**Port:** `8006` (8005 is taken by Reach Layer web adapter; all ports configurable).
 
 ---
 
@@ -148,7 +148,7 @@ Exposed via `POST /campaign` on the telephony service. The Action Gateway can ca
 
 ```yaml
 telephony_adapter:
-  port: 8005
+  port: 8006
   public_url: ${PUBLIC_URL}
   vobiz:
     auth_id: ${VOBIZ_AUTH_ID}
@@ -221,6 +221,40 @@ This service is a Reach Layer channel adapter. It:
 - **Exposes** `POST /campaign` for Action Gateway to call as a connector tool.
 
 The approved exception pattern (Reach Layer → Memory Layer for session restore, per PR #29) does **not** apply here. The telephony adapter is stateless between calls; session state lives in Memory Layer via Agent Core.
+
+---
+
+## Observability
+
+The telephony adapter instruments itself using the shared `dpg_telemetry` package (from `observability_layer/`), exactly as all other DPG blocks do.
+
+**Initialisation** (`server.py` startup): `init_otel(service_name="telephony_adapter", config=config)`.
+
+**Spans emitted:**
+
+| Span | When | Key attributes |
+|---|---|---|
+| `telephony.inbound_call` | Call answered | `call_sid`, `channel=telephony` |
+| `telephony.turn` | Per-utterance turn (wraps STT → Agent Core → TTS) | `session_id`, `call_sid`, `latency_ms` |
+| `telephony.stt` | Raya STT call | `status`, `latency_ms`, `language` |
+| `telephony.agent_core_call` | POST /process_turn | `status`, `latency_ms`, `was_escalated` |
+| `telephony.tts` | Raya TTS call | `status`, `latency_ms`, `voice_id` |
+| `telephony.outbound_call` | Campaign call triggered | `to_number` (no PII), `status` |
+
+**Metrics emitted:**
+
+| Metric | Type | Description |
+|---|---|---|
+| `telephony.active_calls` | Gauge | Concurrent live calls |
+| `telephony.turn.latency_ms` | Histogram | End-to-end per-turn latency |
+| `telephony.stt.latency_ms` | Histogram | Raya STT round-trip |
+| `telephony.tts.latency_ms` | Histogram | Raya TTS streaming start latency |
+| `telephony.agent_core.latency_ms` | Histogram | Agent Core HTTP call latency |
+| `telephony.campaign.calls_initiated` | Counter | Outbound calls triggered |
+
+**PII rules:** Phone numbers (`caller_id`, `to_number`) are excluded from all spans and metrics. Only `session_id` and `call_sid` (opaque identifiers) appear in telemetry. This matches the `observability.telemetry.pii_fields_excluded` contract in ARCHITECTURE.md.
+
+Telemetry flows via OTLP/gRPC to the OTel Collector sidecar (same as all other blocks). No direct calls to the Observability Layer HTTP API — instrumentation only.
 
 ---
 
