@@ -7,29 +7,8 @@ import { oneDark } from '@codemirror/theme-one-dark'
 import { api } from '../api'
 import { useTheme } from '../ThemeContext'
 import ConfirmModal from './ConfirmModal'
-
-const BLOCKS = ['agent_core', 'knowledge_engine', 'memory_layer', 'trust_layer', 'action_gateway', 'reach_layer', 'observability_layer']
-const BLOCK_LABELS = {
-  agent_core: 'Agent Core',
-  knowledge_engine: 'Knowledge Engine',
-  memory_layer: 'Memory Layer',
-  trust_layer: 'Trust Layer',
-  action_gateway: 'Action Gateway',
-  reach_layer: 'Reach Layer',
-  observability_layer: 'Observability',
-}
-const STATUS_PILL = {
-  complete: 'bg-green-900 text-green-300 border-green-700',
-  draft: 'bg-yellow-900 text-yellow-300 border-yellow-700',
-  pending: 'bg-gray-800 text-gray-400 border-gray-700',
-  stale: 'bg-red-900 text-red-300 border-red-700',
-}
-const STATUS_DOT = {
-  complete: 'bg-green-400',
-  draft: 'bg-yellow-400',
-  stale: 'bg-red-400',
-  pending: 'bg-gray-600',
-}
+import { BLOCKS, BLOCK_LABELS, STATUS_PILL, STATUS_DOT } from '../constants'
+import StatusBadge from './shared/StatusBadge'
 
 export default function YamlPanel({ slug, configs, onSaved }) {
   const { theme } = useTheme()
@@ -245,9 +224,7 @@ export default function YamlPanel({ slug, configs, onSaved }) {
       <div className="flex items-center justify-between px-3 py-1.5 bg-gray-900 border-b border-gray-800 shrink-0">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="font-mono text-xs text-gray-500">{activeBlock}.yaml</span>
-          <span className={`text-xs px-1.5 py-0.5 rounded-full border ${STATUS_PILL[activeConfig.status] || STATUS_PILL.pending}`}>
-            {activeConfig.status}
-          </span>
+          <StatusBadge status={activeConfig.status} />
           {blockValidation && (
             <span className={`text-xs px-1.5 py-0.5 rounded-full border font-medium ${
               blockValidation.valid
