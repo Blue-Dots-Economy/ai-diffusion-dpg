@@ -45,6 +45,16 @@ class VobizTelephonyAdapter(TelephonyAdapterBase):
         self._tts = RayaTTSService(config)
         self._ac = AgentCoreLLMService(config)
         self._active_calls: dict[str, dict] = {}
+        from opentelemetry import metrics as _otel_metrics
+        _meter = _otel_metrics.get_meter("telephony_adapter")
+        self._active_calls_gauge = _meter.create_up_down_counter(
+            "telephony.active_calls",
+            description="Number of concurrent active calls",
+        )
+        self._turn_latency_hist = _meter.create_histogram(
+            "telephony.turn.latency_ms",
+            description="End-to-end per-turn latency in milliseconds",
+        )
 
     async def handle_call(self, call_sid: str, caller_id: str, websocket) -> None:
         """Handle the full lifecycle of a Vobiz call over a WebSocket connection.
@@ -65,22 +75,13 @@ class VobizTelephonyAdapter(TelephonyAdapterBase):
         Raises:
             TelephonyError: If the WebSocket cannot be read.
         """
-        from opentelemetry import trace as _otel_trace, metrics as _otel_metrics
+        from opentelemetry import trace as _otel_trace
         tracer = _otel_trace.get_tracer("telephony_adapter")
-        meter = _otel_metrics.get_meter("telephony_adapter")
-        active_calls_gauge = meter.create_up_down_counter(
-            "telephony.active_calls",
-            description="Number of concurrent active calls",
-        )
-        turn_latency_hist = meter.create_histogram(
-            "telephony.turn.latency_ms",
-            description="End-to-end per-turn latency in milliseconds",
-        )
 
         session_id = str(uuid.uuid4())
         self._active_calls[call_sid] = {"session_id": session_id}
         audio_buffer: list[bytes] = []
-        active_calls_gauge.add(1)
+        self._active_calls_gauge.add(1)
 
         logger.info(
             "telephony_adapter.call_start",
@@ -95,9 +96,17 @@ class VobizTelephonyAdapter(TelephonyAdapterBase):
         try:
             async for message in websocket:
                 try:
-                    import json as _json
-                    event = _json.loads(message).get("event", "")
-                except Exception:
+                    event = json.loads(message).get("event", "")
+                except json.JSONDecodeError as e:
+                    logger.warning(
+                        "telephony_adapter.message_parse_error",
+                        extra={
+                            "operation": "telephony_adapter.handle_call",
+                            "status": "failure",
+                            "call_sid": call_sid,
+                            "error": f"JSONDecodeError: {e}",
+                        },
+                    )
                     continue
 
                 if event == "media":
@@ -105,8 +114,16 @@ class VobizTelephonyAdapter(TelephonyAdapterBase):
                         chunk = self._serializer.parse_media(message)
                         if chunk:
                             audio_buffer.append(chunk)
-                    except ValueError:
-                        pass
+                    except ValueError as e:
+                        logger.warning(
+                            "telephony_adapter.media_parse_error",
+                            extra={
+                                "operation": "telephony_adapter.handle_call",
+                                "status": "failure",
+                                "call_sid": call_sid,
+                                "error": f"{type(e).__name__}: {e}",
+                            },
+                        )
 
                 elif event == "stop":
                     if not audio_buffer:
@@ -147,7 +164,7 @@ class VobizTelephonyAdapter(TelephonyAdapterBase):
                             await websocket.send(out_msg)
 
                         turn_ms = int((time.time() - turn_start) * 1000)
-                        turn_latency_hist.record(turn_ms)
+                        self._turn_latency_hist.record(turn_ms)
                         span.set_attribute("latency_ms", turn_ms)
                         span.set_attribute("was_escalated", ac_result.was_escalated)
                         span.set_attribute("status", "success")
@@ -168,8 +185,16 @@ class VobizTelephonyAdapter(TelephonyAdapterBase):
                     try:
                         metadata = self._serializer.parse_start(message)
                         self._active_calls[call_sid]["stream_sid"] = metadata.stream_sid
-                    except ValueError:
-                        pass
+                    except ValueError as e:
+                        logger.warning(
+                            "telephony_adapter.start_parse_error",
+                            extra={
+                                "operation": "telephony_adapter.handle_call",
+                                "status": "failure",
+                                "call_sid": call_sid,
+                                "error": f"{type(e).__name__}: {e}",
+                            },
+                        )
 
         except Exception as e:
             logger.error(
@@ -182,7 +207,7 @@ class VobizTelephonyAdapter(TelephonyAdapterBase):
                 },
             )
         finally:
-            active_calls_gauge.add(-1)
+            self._active_calls_gauge.add(-1)
             await self.teardown(call_sid)
 
     async def teardown(self, call_sid: str) -> None:

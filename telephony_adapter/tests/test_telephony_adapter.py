@@ -152,3 +152,48 @@ async def test_handle_call_empty_transcript_skips_ac(config):
         await adapter.handle_call("CA1", "+91999", ws)
 
     MockAC.return_value.process_turn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_call_empty_buffer_on_stop_skips_stt(config):
+    """stop event with no buffered media must not call STT or Agent Core."""
+    ws = _make_ws([_start_msg(), _stop_msg()])
+
+    with patch("src.telephony_adapter.RayaSTTService") as MockSTT, \
+         patch("src.telephony_adapter.AgentCoreLLMService") as MockAC, \
+         patch("src.telephony_adapter.RayaTTSService") as MockTTS:
+
+        MockSTT.return_value.transcribe = AsyncMock()
+        MockAC.return_value.process_turn = AsyncMock()
+        MockTTS.return_value.synthesize = AsyncMock()
+
+        adapter = VobizTelephonyAdapter(config)
+        await adapter.handle_call("CA_empty", "+91999", ws)
+
+    MockSTT.return_value.transcribe.assert_not_called()
+    MockAC.return_value.process_turn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_call_teardown_called_on_exception(config):
+    """teardown must be called even when the WebSocket raises mid-loop."""
+    class _ErrorWS:
+        async def __aiter__(self):
+            raise OSError("connection reset")
+            yield  # make it an async generator
+
+        async def send(self, data):
+            pass
+
+        async def close(self):
+            pass
+
+    with patch("src.telephony_adapter.RayaSTTService"), \
+         patch("src.telephony_adapter.AgentCoreLLMService"), \
+         patch("src.telephony_adapter.RayaTTSService"):
+
+        adapter = VobizTelephonyAdapter(config)
+        adapter._active_calls["CA_err"] = {"session_id": "s-err"}
+        await adapter.handle_call("CA_err", "+91999", _ErrorWS())
+
+    assert "CA_err" not in adapter._active_calls

@@ -115,3 +115,20 @@ async def test_process_turn_escalation_flag_propagated(config):
 async def test_missing_config_raises():
     with pytest.raises(ValueError, match="base_url"):
         AgentCoreLLMService({})
+
+
+@pytest.mark.asyncio
+async def test_process_turn_connect_error_returns_fallback(config):
+    """ConnectError from Agent Core must return fallback, not raise."""
+    import httpx as _httpx
+    import respx
+
+    with respx.mock:
+        respx.post("http://agent_core:8000/process_turn").mock(
+            side_effect=_httpx.ConnectError("refused")
+        )
+        svc = AgentCoreLLMService(config)
+        result = await svc.process_turn("s1", "hello", "CA1", "+91999")
+
+    assert result.response_text == "Sorry, I could not process that."
+    assert result.was_escalated is False

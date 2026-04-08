@@ -90,6 +90,8 @@ def create_app(config: dict | None = None) -> FastAPI:
     _campaign_manager = CampaignManager(config)
 
     public_url: str = config.get("telephony_adapter", {}).get("public_url", "")
+    if not public_url:
+        raise ValueError("telephony_adapter.public_url is required in config")
     # Convert http(s) scheme to ws(s) for the Stream URL
     ws_url = public_url.replace("https://", "wss://").replace("http://", "ws://")
 

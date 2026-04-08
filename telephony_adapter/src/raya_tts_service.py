@@ -44,6 +44,7 @@ class RayaTTSService:
         self._voice_id = raya_cfg.get("voice_id", "voice_001")
         self._language = raya_cfg.get("language", "hi")
         self._speed = float(raya_cfg.get("tts_speed", 1.0))
+        self._tts_timeout = float(raya_cfg.get("tts_timeout_s", 30.0))
 
     async def synthesize(self, text: str) -> bytes:
         """Convert text to audio bytes via the Raya SSE streaming TTS API.
@@ -79,7 +80,7 @@ class RayaTTSService:
             span.set_attribute("voice_id", self._voice_id)
             span.set_attribute("language", self._language)
             try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
+                async with httpx.AsyncClient(timeout=self._tts_timeout) as client:
                     response = await client.post(url, json=payload, headers=headers)
 
                 if response.status_code != 200:
@@ -95,7 +96,15 @@ class RayaTTSService:
                         continue
                     try:
                         chunk_data = json.loads(raw)
-                    except json.JSONDecodeError:
+                    except json.JSONDecodeError as e:
+                        logger.warning(
+                            "raya_tts.chunk_parse_error",
+                            extra={
+                                "operation": "raya_tts_service.synthesize",
+                                "status": "failure",
+                                "error": f"JSONDecodeError: {e}",
+                            },
+                        )
                         continue
                     if chunk_data.get("type") == "chunk" and "data" in chunk_data:
                         audio_chunks.append(base64.b64decode(chunk_data["data"]))

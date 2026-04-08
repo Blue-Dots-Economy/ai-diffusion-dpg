@@ -39,11 +39,18 @@ class CampaignManager:
         if not auth_id:
             raise ValueError("telephony_adapter.vobiz.auth_id is required")
         self._auth_id = auth_id
-        self._auth_token = vobiz_cfg.get("auth_token", "")
-        self._api_base = vobiz_cfg.get("api_base", "").rstrip("/")
-        self._from_number = vobiz_cfg.get("from_number", "")
+        auth_token = vobiz_cfg.get("auth_token", "")
+        api_base = vobiz_cfg.get("api_base", "").rstrip("/")
+        from_number = vobiz_cfg.get("from_number", "")
+        if not api_base:
+            raise ValueError("telephony_adapter.vobiz.api_base is required")
+        if not from_number:
+            raise ValueError("telephony_adapter.vobiz.from_number is required")
+        self._auth_token = auth_token
+        self._api_base = api_base
+        self._from_number = from_number
         self._public_url = config.get("telephony_adapter", {}).get("public_url", "")
-        self._max_retries = 3
+        self._max_retries = int(vobiz_cfg.get("max_retries", 3))
 
     async def initiate_call(self, to_number: str) -> dict:
         """Trigger an outbound call to the given number via the Vobiz REST API.

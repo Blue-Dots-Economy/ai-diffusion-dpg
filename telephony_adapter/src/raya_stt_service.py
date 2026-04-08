@@ -135,7 +135,12 @@ class RayaSTTService:
             "language": self._language,
         })
 
-        async with websockets.connect(self._wss_url, additional_headers=headers) as ws:
+        async with websockets.connect(
+            self._wss_url,
+            additional_headers=headers,
+            open_timeout=5,
+            close_timeout=5,
+        ) as ws:
             await ws.send(payload)
             raw_response = await ws.recv()
 
