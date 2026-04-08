@@ -1,0 +1,24 @@
+telephony_adapter:
+  port: 8006
+  public_url: ${PUBLIC_URL}
+  vobiz:
+    auth_id: ${VOBIZ_AUTH_ID}
+    auth_token: ${VOBIZ_AUTH_TOKEN}
+    api_base: https://api.vobiz.ai/api/v1
+    from_number: ${VOBIZ_FROM_NUMBER}
+  raya:
+    api_key: ${RAYA_API_KEY}
+    stt_wss_url: wss://hub.getraya.app/transcribe
+    tts_base_url: https://hub.getraya.app/v1
+    language: hi
+    voice_id: voice_001
+    tts_speed: 1.0
+  agent_core:
+    base_url: http://agent_core:8000
+    timeout_ms: 5000
+    fallback_phrase: "I'm sorry, I couldn't process that. Please try again."
+observability:
+  otel:
+    collector_endpoint: http://otel-collector:4317
+    sample_rate: 1.0
+    export_interval_ms: 5000
