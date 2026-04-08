@@ -13,6 +13,7 @@ Outbound audio is sent back as {"event": "media", "media": {"payload": "<base64>
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import logging
 from dataclasses import dataclass
@@ -90,7 +91,7 @@ class VobizFrameSerializer:
 
         try:
             return base64.b64decode(payload)
-        except Exception as e:
+        except (ValueError, binascii.Error) as e:
             raise ValueError(f"Invalid base64 in media payload: {e}") from e
 
     def build_media_message(self, stream_sid: str, audio: bytes) -> str:

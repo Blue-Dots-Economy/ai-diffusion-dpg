@@ -77,3 +77,9 @@ def test_is_stop_event():
 def test_is_stop_event_on_invalid_json_returns_false():
     serializer = VobizFrameSerializer()
     assert serializer.is_stop_event("not json") is False
+
+
+def test_parse_start_invalid_json_raises():
+    serializer = VobizFrameSerializer()
+    with pytest.raises(ValueError, match="Invalid JSON"):
+        serializer.parse_start("not valid json {{")
