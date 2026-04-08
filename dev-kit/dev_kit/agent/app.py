@@ -44,6 +44,7 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 
 CONFIGS_DIR = Path(__file__).parent.parent.parent / "configs"
+DPG_DIR = Path(__file__).parent.parent.parent / "dpg"
 _STATIC_DIR = Path(__file__).parent / "static"
 _SCHEMAS_DIR = Path(__file__).parent.parent / "schemas"
 
@@ -512,6 +513,217 @@ def get_schema_descriptions(block: str) -> dict:
                 key, description = match.group(1), match.group(2).strip()
                 descriptions[key] = description
     return {"block": block, "descriptions": descriptions}
+
+
+# ---------------------------------------------------------------------------
+# Deploy endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/projects/{slug}/deploy/dpg-values")
+async def get_dpg_values(slug: str) -> list:
+    """Return all 7 DPG framework YAML files.
+
+    Args:
+        slug: Project slug (unused; endpoint is project-scoped for consistency).
+
+    Returns:
+        List of dicts with ``block`` and ``content`` keys for each DPG block.
+    """
+    results = []
+    for block in BLOCKS:
+        path = DPG_DIR / f"{block}.yaml"
+        content = path.read_text() if path.exists() else ""
+        results.append({"block": block, "content": content})
+    return results
+
+
+@app.put("/api/projects/{slug}/deploy/dpg-values/{block}")
+async def update_dpg_value(slug: str, block: str, body: dict) -> dict:
+    """Update a DPG framework YAML file.
+
+    Args:
+        slug: Project slug (unused; endpoint is project-scoped for consistency).
+        block: DPG block name to update.
+        body: Dict with ``content`` key containing the YAML string.
+
+    Returns:
+        Dict with ``status: ok`` on success.
+
+    Raises:
+        HTTPException: 400 if block name is not recognised.
+    """
+    if block not in BLOCKS:
+        raise HTTPException(status_code=400, detail=f"Unknown block: {block}")
+    path = DPG_DIR / f"{block}.yaml"
+    path.write_text(body["content"])
+    return {"status": "ok"}
+
+
+@app.get("/api/projects/{slug}/deploy/dependencies")
+async def get_dependencies(slug: str) -> dict:
+    """Return all infrastructure service configs.
+
+    Args:
+        slug: Project slug (unused; endpoint is project-scoped for consistency).
+
+    Returns:
+        Dict mapping each service name to its current config YAML and defaults.
+    """
+    from dev_kit.agent.deployer.dependencies import get_defaults, get_service_config
+
+    defaults = get_defaults()
+    result = {}
+    for name in defaults:
+        result[name] = {"config": get_service_config(name), "defaults": defaults[name]}
+    return result
+
+
+@app.put("/api/projects/{slug}/deploy/dependencies/{service}")
+async def update_dependency(slug: str, service: str, body: dict) -> dict:
+    """Update an infrastructure service config.
+
+    Args:
+        slug: Project slug (unused; endpoint is project-scoped for consistency).
+        service: Infrastructure service name to update.
+        body: Dict with ``content`` key containing the YAML override string.
+
+    Returns:
+        Dict with ``status: ok`` on success.
+
+    Raises:
+        HTTPException: 400 if service name is unknown or YAML is invalid.
+    """
+    from dev_kit.agent.deployer.dependencies import update_service_config
+
+    try:
+        update_service_config(service, body["content"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "ok"}
+
+
+@app.get("/api/projects/{slug}/deploy/resource-presets")
+async def get_resource_presets(slug: str) -> dict:
+    """Return the 3 resource preset definitions.
+
+    Args:
+        slug: Project slug (unused; endpoint is project-scoped for consistency).
+
+    Returns:
+        Dict with low/medium/high tiers, each mapping block names to resource specs.
+    """
+    from dev_kit.agent.deployer.presets import PRESETS
+
+    return PRESETS
+
+
+@app.post("/api/projects/{slug}/deploy/resource-presets/{tier}")
+async def apply_resource_preset_endpoint(slug: str, tier: str) -> dict:
+    """Apply a resource preset to all 7 DPG layers.
+
+    Args:
+        slug: Project slug (unused; endpoint is project-scoped for consistency).
+        tier: Preset tier name — one of ``low``, ``medium``, or ``high``.
+
+    Returns:
+        Dict mapping each DPG block to its requests/limits resource spec.
+
+    Raises:
+        HTTPException: 400 if tier is not a known preset name.
+    """
+    from dev_kit.agent.deployer.presets import apply_preset
+
+    try:
+        return apply_preset(tier)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/projects/{slug}/deploy/validate-kubeconfig")
+async def validate_kubeconfig_endpoint(slug: str, body: dict) -> dict:
+    """Validate a kubeconfig and return cluster info.
+
+    Args:
+        slug: Project slug (unused; endpoint is project-scoped for consistency).
+        body: Dict with ``content`` key containing the kubeconfig YAML string.
+
+    Returns:
+        Dict with cluster validation details from the kubeconfig.
+
+    Raises:
+        HTTPException: 400 if the kubeconfig is invalid or cannot be parsed.
+    """
+    from dev_kit.agent.deployer.kubeconfig import validate_kubeconfig
+
+    try:
+        return await validate_kubeconfig(body["content"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/projects/{slug}/deploy/preview")
+async def get_deploy_preview(slug: str, body: dict) -> dict:
+    """Run helm template or generate docker-compose preview.
+
+    Args:
+        slug: Project slug used to scope domain config paths.
+        body: Dict with optional keys: ``target`` (``docker`` or ``kubernetes``),
+            ``resources``, ``secrets``, and ``infra_configs``.
+
+    Returns:
+        Dict with ``target`` and ``preview`` keys. For docker target, preview
+        contains the generated ``docker-compose.yml`` string.
+    """
+    target = body.get("target", "docker")
+    if target == "docker":
+        from dev_kit.agent.deployer.compose import generate_compose
+
+        preview = generate_compose(
+            project_slug=slug,
+            dpg_dir=str(DPG_DIR),
+            domain_dir=str(CONFIGS_DIR / slug),
+            resources=body.get("resources", {}),
+            secrets=body.get("secrets", {}),
+            infra_configs=body.get("infra_configs", {}),
+        )
+        return {"target": target, "preview": {"docker-compose.yml": preview}}
+    return {"target": target, "preview": {}}
+
+
+@app.post("/api/projects/{slug}/deploy/execute")
+async def execute_deploy(slug: str, body: dict) -> dict:
+    """Trigger deployment of all 14 services.
+
+    Args:
+        slug: Project slug identifying the deployment target.
+        body: Dict with optional ``target`` key (``docker`` or ``kubernetes``).
+
+    Returns:
+        Dict with ``status: started`` and the resolved target name.
+
+    Note:
+        Full async deployment logic will be wired in a future iteration.
+        Currently returns a started acknowledgement immediately.
+    """
+    return {"status": "started", "target": body.get("target", "docker")}
+
+
+@app.get("/api/projects/{slug}/deploy/status")
+async def get_deploy_status(slug: str) -> dict:
+    """Poll deployment status of all services.
+
+    Args:
+        slug: Project slug identifying the deployment to query.
+
+    Returns:
+        Dict with ``services`` mapping and overall ``status`` string.
+
+    Note:
+        Full status tracking via project.json deployment state will be
+        wired in a future iteration. Currently returns idle state.
+    """
+    return {"services": {}, "status": "idle"}
 
 
 # ---------------------------------------------------------------------------
