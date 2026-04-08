@@ -66,46 +66,56 @@ class RayaSTTService:
         if not audio:
             return ""
 
+        from opentelemetry import trace as _otel_trace
+        tracer = _otel_trace.get_tracer("telephony_adapter")
         start = time.time()
         last_error: Exception | None = None
 
-        for attempt in range(self._max_retries):
-            try:
-                transcript = await self._call_raya_wss(audio)
-                logger.info(
-                    "raya_stt.transcribe",
-                    extra={
-                        "operation": "raya_stt_service.transcribe",
-                        "status": "success",
-                        "latency_ms": int((time.time() - start) * 1000),
-                        "language": self._language,
-                    },
-                )
-                return transcript
-            except Exception as e:
-                last_error = e
-                logger.warning(
-                    "raya_stt.retry",
-                    extra={
-                        "operation": "raya_stt_service.transcribe",
-                        "status": "failure",
-                        "attempt": attempt + 1,
-                        "error": f"{type(e).__name__}: {e}",
-                    },
-                )
-                if attempt < self._max_retries - 1:
-                    await asyncio.sleep(0.5 * (2 ** attempt))
+        with tracer.start_as_current_span("telephony.stt") as span:
+            span.set_attribute("language", self._language)
+            for attempt in range(self._max_retries):
+                try:
+                    transcript = await self._call_raya_wss(audio)
+                    latency = int((time.time() - start) * 1000)
+                    span.set_attribute("status", "success")
+                    span.set_attribute("latency_ms", latency)
+                    logger.info(
+                        "raya_stt.transcribe",
+                        extra={
+                            "operation": "raya_stt_service.transcribe",
+                            "status": "success",
+                            "latency_ms": latency,
+                            "language": self._language,
+                        },
+                    )
+                    return transcript
+                except Exception as e:
+                    last_error = e
+                    logger.warning(
+                        "raya_stt.retry",
+                        extra={
+                            "operation": "raya_stt_service.transcribe",
+                            "status": "failure",
+                            "attempt": attempt + 1,
+                            "error": f"{type(e).__name__}: {e}",
+                        },
+                    )
+                    if attempt < self._max_retries - 1:
+                        await asyncio.sleep(0.5 * (2 ** attempt))
 
-        logger.error(
-            "raya_stt.failed",
-            extra={
-                "operation": "raya_stt_service.transcribe",
-                "status": "failure",
-                "latency_ms": int((time.time() - start) * 1000),
-                "error": str(last_error),
-            },
-        )
-        raise Exception(f"STT transcription failed after {self._max_retries} attempts: {last_error}")
+            latency = int((time.time() - start) * 1000)
+            span.set_attribute("status", "failure")
+            span.set_attribute("latency_ms", latency)
+            logger.error(
+                "raya_stt.failed",
+                extra={
+                    "operation": "raya_stt_service.transcribe",
+                    "status": "failure",
+                    "latency_ms": latency,
+                    "error": str(last_error),
+                },
+            )
+            raise Exception(f"STT transcription failed after {self._max_retries} attempts: {last_error}")
 
     async def _call_raya_wss(self, audio: bytes) -> str:
         """Open a Raya WebSocket connection, send audio, and return transcript.

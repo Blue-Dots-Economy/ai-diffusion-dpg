@@ -63,6 +63,8 @@ class RayaTTSService:
         if not text or not text.strip():
             return b""
 
+        from opentelemetry import trace as _otel_trace
+        tracer = _otel_trace.get_tracer("telephony_adapter")
         start = time.time()
         url = f"{self._base_url}/text-to-speech/stream"
         payload = {
@@ -71,56 +73,61 @@ class RayaTTSService:
             "language": self._language,
             "speed": self._speed,
         }
-        headers = {
-            "X-API-Key": self._api_key,
-            "Content-Type": "application/json",
-        }
+        headers = {"X-API-Key": self._api_key, "Content-Type": "application/json"}
 
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(url, json=payload, headers=headers)
+        with tracer.start_as_current_span("telephony.tts") as span:
+            span.set_attribute("voice_id", self._voice_id)
+            span.set_attribute("language", self._language)
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.post(url, json=payload, headers=headers)
 
-            if response.status_code != 200:
-                raise Exception(
-                    f"TTS synthesis failed: HTTP {response.status_code} — {response.text[:200]}"
+                if response.status_code != 200:
+                    span.set_attribute("status", "failure")
+                    raise Exception(f"TTS synthesis failed: HTTP {response.status_code} — {response.text[:200]}")
+
+                audio_chunks: list[bytes] = []
+                for line in response.text.splitlines():
+                    if not line.startswith("data:"):
+                        continue
+                    raw = line[len("data:"):].strip()
+                    if not raw or raw == "{}":
+                        continue
+                    try:
+                        chunk_data = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    if chunk_data.get("type") == "chunk" and "data" in chunk_data:
+                        audio_chunks.append(base64.b64decode(chunk_data["data"]))
+
+                result = b"".join(audio_chunks)
+                latency = int((time.time() - start) * 1000)
+                span.set_attribute("status", "success")
+                span.set_attribute("latency_ms", latency)
+                span.set_attribute("audio_bytes", len(result))
+                logger.info(
+                    "raya_tts.synthesize",
+                    extra={
+                        "operation": "raya_tts_service.synthesize",
+                        "status": "success",
+                        "latency_ms": latency,
+                        "audio_bytes": len(result),
+                    },
                 )
+                return result
 
-            audio_chunks: list[bytes] = []
-            for line in response.text.splitlines():
-                if not line.startswith("data:"):
-                    continue
-                raw = line[len("data:"):].strip()
-                if not raw or raw == "{}":
-                    continue
-                try:
-                    chunk_data = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                if chunk_data.get("type") == "chunk" and "data" in chunk_data:
-                    audio_chunks.append(base64.b64decode(chunk_data["data"]))
-
-            result = b"".join(audio_chunks)
-            logger.info(
-                "raya_tts.synthesize",
-                extra={
-                    "operation": "raya_tts_service.synthesize",
-                    "status": "success",
-                    "latency_ms": int((time.time() - start) * 1000),
-                    "audio_bytes": len(result),
-                },
-            )
-            return result
-
-        except Exception as e:
-            if "TTS synthesis failed" in str(e):
-                raise
-            logger.error(
-                "raya_tts.error",
-                extra={
-                    "operation": "raya_tts_service.synthesize",
-                    "status": "failure",
-                    "error": f"{type(e).__name__}: {e}",
-                    "latency_ms": int((time.time() - start) * 1000),
-                },
-            )
-            raise Exception(f"TTS synthesis failed: {e}") from e
+            except Exception as e:
+                if "TTS synthesis failed" in str(e):
+                    raise
+                latency = int((time.time() - start) * 1000)
+                span.set_attribute("status", "failure")
+                logger.error(
+                    "raya_tts.error",
+                    extra={
+                        "operation": "raya_tts_service.synthesize",
+                        "status": "failure",
+                        "error": f"{type(e).__name__}: {e}",
+                        "latency_ms": latency,
+                    },
+                )
+                raise Exception(f"TTS synthesis failed: {e}") from e

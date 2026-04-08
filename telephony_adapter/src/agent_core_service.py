@@ -81,6 +81,8 @@ class AgentCoreLLMService:
         Returns:
             AgentCoreTurnResult with response text and escalation flag.
         """
+        from opentelemetry import trace as _otel_trace
+        tracer = _otel_trace.get_tracer("telephony_adapter")
         start = time.time()
         url = f"{self._base_url}/process_turn"
         payload = {
@@ -91,52 +93,60 @@ class AgentCoreLLMService:
             "timestamp_ms": int(start * 1000),
         }
 
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                response = await client.post(url, json=payload)
+        with tracer.start_as_current_span("telephony.agent_core_call") as span:
+            span.set_attribute("session_id", session_id)
+            try:
+                async with httpx.AsyncClient(timeout=self._timeout) as client:
+                    response = await client.post(url, json=payload)
 
-            if response.status_code != 200:
+                if response.status_code != 200:
+                    span.set_attribute("status", "failure")
+                    logger.error(
+                        "agent_core_service.http_error",
+                        extra={
+                            "operation": "agent_core_service.process_turn",
+                            "status": "failure",
+                            "error": f"HTTP {response.status_code}",
+                            "latency_ms": int((time.time() - start) * 1000),
+                        },
+                    )
+                    return self._fallback(session_id)
+
+                data = response.json()
+                latency = int((time.time() - start) * 1000)
+                span.set_attribute("status", "success")
+                span.set_attribute("latency_ms", latency)
+                span.set_attribute("was_escalated", data.get("was_escalated", False))
+                logger.info(
+                    "agent_core_service.success",
+                    extra={
+                        "operation": "agent_core_service.process_turn",
+                        "status": "success",
+                        "latency_ms": latency,
+                        "was_escalated": data.get("was_escalated", False),
+                    },
+                )
+                return AgentCoreTurnResult(
+                    session_id=data.get("session_id", session_id),
+                    response_text=data.get("response_text", self._fallback_phrase),
+                    was_escalated=data.get("was_escalated", False),
+                    was_tool_used=data.get("was_tool_used", False),
+                    model_used=data.get("model_used", ""),
+                    latency_ms=data.get("latency_ms", 0),
+                )
+
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                span.set_attribute("status", "failure")
                 logger.error(
-                    "agent_core_service.http_error",
+                    "agent_core_service.timeout",
                     extra={
                         "operation": "agent_core_service.process_turn",
                         "status": "failure",
-                        "error": f"HTTP {response.status_code}",
+                        "error": f"{type(e).__name__}: {e}",
                         "latency_ms": int((time.time() - start) * 1000),
                     },
                 )
                 return self._fallback(session_id)
-
-            data = response.json()
-            logger.info(
-                "agent_core_service.success",
-                extra={
-                    "operation": "agent_core_service.process_turn",
-                    "status": "success",
-                    "latency_ms": int((time.time() - start) * 1000),
-                    "was_escalated": data.get("was_escalated", False),
-                },
-            )
-            return AgentCoreTurnResult(
-                session_id=data.get("session_id", session_id),
-                response_text=data.get("response_text", self._fallback_phrase),
-                was_escalated=data.get("was_escalated", False),
-                was_tool_used=data.get("was_tool_used", False),
-                model_used=data.get("model_used", ""),
-                latency_ms=data.get("latency_ms", 0),
-            )
-
-        except (httpx.TimeoutException, httpx.ConnectError) as e:
-            logger.error(
-                "agent_core_service.timeout",
-                extra={
-                    "operation": "agent_core_service.process_turn",
-                    "status": "failure",
-                    "error": f"{type(e).__name__}: {e}",
-                    "latency_ms": int((time.time() - start) * 1000),
-                },
-            )
-            return self._fallback(session_id)
 
     def _fallback(self, session_id: str) -> AgentCoreTurnResult:
         """Return the configured fallback response when Agent Core is unavailable.

@@ -65,9 +65,22 @@ class VobizTelephonyAdapter(TelephonyAdapterBase):
         Raises:
             TelephonyError: If the WebSocket cannot be read.
         """
+        from opentelemetry import trace as _otel_trace, metrics as _otel_metrics
+        tracer = _otel_trace.get_tracer("telephony_adapter")
+        meter = _otel_metrics.get_meter("telephony_adapter")
+        active_calls_gauge = meter.create_up_down_counter(
+            "telephony.active_calls",
+            description="Number of concurrent active calls",
+        )
+        turn_latency_hist = meter.create_histogram(
+            "telephony.turn.latency_ms",
+            description="End-to-end per-turn latency in milliseconds",
+        )
+
         session_id = str(uuid.uuid4())
         self._active_calls[call_sid] = {"session_id": session_id}
         audio_buffer: list[bytes] = []
+        active_calls_gauge.add(1)
 
         logger.info(
             "telephony_adapter.call_start",
@@ -80,10 +93,10 @@ class VobizTelephonyAdapter(TelephonyAdapterBase):
         )
 
         try:
-            message_iter = websocket.__aiter__()
-            for message in message_iter:
+            async for message in websocket:
                 try:
-                    event = json.loads(message).get("event", "")
+                    import json as _json
+                    event = _json.loads(message).get("event", "")
                 except Exception:
                     continue
 
@@ -102,30 +115,42 @@ class VobizTelephonyAdapter(TelephonyAdapterBase):
                     audio = b"".join(audio_buffer)
                     audio_buffer = []
 
-                    transcript = await self._stt.transcribe(audio)
-                    if not transcript or not transcript.strip():
-                        logger.info(
-                            "telephony_adapter.empty_transcript",
-                            extra={
-                                "operation": "telephony_adapter.handle_call",
-                                "status": "skipped",
-                                "call_sid": call_sid,
-                            },
+                    with tracer.start_as_current_span("telephony.turn") as span:
+                        span.set_attribute("session_id", session_id)
+                        span.set_attribute("call_sid", call_sid)
+                        turn_start = time.time()
+
+                        transcript = await self._stt.transcribe(audio)
+                        if not transcript or not transcript.strip():
+                            logger.info(
+                                "telephony_adapter.empty_transcript",
+                                extra={
+                                    "operation": "telephony_adapter.handle_call",
+                                    "status": "skipped",
+                                    "call_sid": call_sid,
+                                },
+                            )
+                            span.set_attribute("status", "skipped")
+                            break
+
+                        ac_result = await self._ac.process_turn(
+                            session_id=session_id,
+                            user_message=transcript,
+                            call_sid=call_sid,
+                            caller_id=caller_id,
                         )
-                        break
 
-                    ac_result = await self._ac.process_turn(
-                        session_id=session_id,
-                        user_message=transcript,
-                        call_sid=call_sid,
-                        caller_id=caller_id,
-                    )
+                        audio_out = await self._tts.synthesize(ac_result.response_text)
+                        if audio_out:
+                            stream_sid = self._active_calls[call_sid].get("stream_sid", "")
+                            out_msg = self._serializer.build_media_message(stream_sid, audio_out)
+                            await websocket.send(out_msg)
 
-                    audio_out = await self._tts.synthesize(ac_result.response_text)
-                    if audio_out:
-                        stream_sid = self._active_calls[call_sid].get("stream_sid", "")
-                        out_msg = self._serializer.build_media_message(stream_sid, audio_out)
-                        await websocket.send(out_msg)
+                        turn_ms = int((time.time() - turn_start) * 1000)
+                        turn_latency_hist.record(turn_ms)
+                        span.set_attribute("latency_ms", turn_ms)
+                        span.set_attribute("was_escalated", ac_result.was_escalated)
+                        span.set_attribute("status", "success")
 
                     if ac_result.was_escalated:
                         logger.info(
@@ -157,6 +182,7 @@ class VobizTelephonyAdapter(TelephonyAdapterBase):
                 },
             )
         finally:
+            active_calls_gauge.add(-1)
             await self.teardown(call_sid)
 
     async def teardown(self, call_sid: str) -> None:

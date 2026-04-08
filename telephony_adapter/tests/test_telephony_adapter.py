@@ -25,8 +25,19 @@ def config():
 
 def _make_ws(messages: list[str]):
     """Create an async mock WebSocket that yields given messages then closes."""
-    ws = AsyncMock()
-    ws.__aiter__ = MagicMock(return_value=iter(messages))
+
+    async def _aiter():
+        for msg in messages:
+            yield msg
+
+    class _FakeWS:
+        def __aiter__(self):
+            return _aiter()
+
+        send = AsyncMock()
+        close = AsyncMock()
+
+    ws = _FakeWS()
     ws.send = AsyncMock()
     ws.close = AsyncMock()
     return ws
