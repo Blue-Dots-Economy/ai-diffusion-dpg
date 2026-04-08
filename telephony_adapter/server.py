@@ -15,10 +15,12 @@ Belongs to the Reach Layer / Telephony Adapter block in the DPG framework.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
+import time
 
-from fastapi import FastAPI, Request, WebSocket
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import Response
 from pydantic import BaseModel
 
@@ -126,22 +128,31 @@ def create_app(config: dict | None = None) -> FastAPI:
         Vobiz connects here after receiving the XML from /answer.
         The first message is the "start" event with call metadata.
         """
+        if _adapter is None:
+            raise RuntimeError("App not initialised via create_app()")
         await websocket.accept()
         caller_id = "unknown"
         first_msg = ""
 
         try:
             first_msg = await websocket.receive_text()
-            import json as _json
-            data = _json.loads(first_msg)
+            data = json.loads(first_msg)
             if data.get("event") == "start":
                 caller_id = (
                     data.get("start", {})
                     .get("customParameters", {})
                     .get("caller_id", "unknown")
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(
+                "server.ws_start_parse_error",
+                extra={
+                    "operation": "server.websocket_endpoint",
+                    "status": "failure",
+                    "call_sid": call_sid,
+                    "error": f"{type(e).__name__}: {e}",
+                },
+            )
 
         logger.info(
             "server.ws_connected",
@@ -177,7 +188,29 @@ def create_app(config: dict | None = None) -> FastAPI:
                 await self._ws.close()
 
         wrapped = _PrefixedWebSocket(websocket, first_msg)
-        await _adapter.handle_call(call_sid, caller_id, wrapped)
+        _call_start = time.time()
+        try:
+            await _adapter.handle_call(call_sid, caller_id, wrapped)
+            logger.info(
+                "server.ws_call_completed",
+                extra={
+                    "operation": "server.websocket_endpoint",
+                    "status": "success",
+                    "call_sid": call_sid,
+                    "latency_ms": int((time.time() - _call_start) * 1000),
+                },
+            )
+        except Exception as e:
+            logger.error(
+                "server.ws_call_error",
+                extra={
+                    "operation": "server.websocket_endpoint",
+                    "status": "failure",
+                    "call_sid": call_sid,
+                    "latency_ms": int((time.time() - _call_start) * 1000),
+                    "error": f"{type(e).__name__}: {e}",
+                },
+            )
 
     @app.post("/campaign")
     async def campaign(body: CampaignRequest) -> dict:
@@ -195,8 +228,8 @@ def create_app(config: dict | None = None) -> FastAPI:
         Raises:
             HTTPException 400: If to_number is empty.
         """
-        from fastapi import HTTPException
-
+        if _campaign_manager is None:
+            raise RuntimeError("App not initialised via create_app()")
         if not body.to_number or not body.to_number.strip():
             raise HTTPException(status_code=400, detail="to_number must not be empty")
         result = await _campaign_manager.initiate_call(to_number=body.to_number)
