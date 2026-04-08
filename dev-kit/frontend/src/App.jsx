@@ -3,6 +3,7 @@ import ProjectList from './components/ProjectList'
 import Chat from './components/Chat'
 import Dashboard from './components/Dashboard'
 import ConfigEditor from './components/ConfigEditor'
+import DeployWizard from './components/deploy/DeployWizard'
 
 export default function App() {
   const [view, setView] = useState('projects')
@@ -25,6 +26,11 @@ export default function App() {
     setView('config')
   }
 
+  function openDeploy(slug) {
+    setActiveSlug(slug)
+    setView('deploy')
+  }
+
   if (view === 'projects') {
     return <ProjectList onOpen={openProject} />
   }
@@ -44,6 +50,7 @@ export default function App() {
         onChat={() => setView('chat')}
         onEditConfig={(block) => openConfig(activeSlug, block)}
         onBack={() => setView('projects')}
+        onDeploy={() => openDeploy(activeSlug)}
       />
     )
   }
@@ -52,6 +59,14 @@ export default function App() {
       <ConfigEditor
         slug={activeSlug}
         block={activeBlock}
+        onBack={() => openDashboard(activeSlug)}
+      />
+    )
+  }
+  if (view === 'deploy') {
+    return (
+      <DeployWizard
+        slug={activeSlug}
         onBack={() => openDashboard(activeSlug)}
       />
     )
