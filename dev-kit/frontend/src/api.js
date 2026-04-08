@@ -43,4 +43,16 @@ export const api = {
 
   // Schema
   getSchemaDescriptions: (block) => request('GET', `/schemas/${block}`),
+
+  // Deploy
+  getDpgValues: (slug) => request('GET', `/projects/${slug}/deploy/dpg-values`),
+  updateDpgValue: (slug, block, content) => request('PUT', `/projects/${slug}/deploy/dpg-values/${block}`, { content }),
+  getDependencies: (slug) => request('GET', `/projects/${slug}/deploy/dependencies`),
+  updateDependency: (slug, service, content) => request('PUT', `/projects/${slug}/deploy/dependencies/${service}`, { content }),
+  getResourcePresets: (slug) => request('GET', `/projects/${slug}/deploy/resource-presets`),
+  applyResourcePreset: (slug, tier) => request('POST', `/projects/${slug}/deploy/resource-presets/${tier}`),
+  validateKubeconfig: (slug, content) => request('POST', `/projects/${slug}/deploy/validate-kubeconfig`, { content }),
+  getDeployPreview: (slug, options) => request('POST', `/projects/${slug}/deploy/preview`, options),
+  executeDeploy: (slug, options) => request('POST', `/projects/${slug}/deploy/execute`, options),
+  getDeployStatus: (slug) => request('GET', `/projects/${slug}/deploy/status`),
 }
