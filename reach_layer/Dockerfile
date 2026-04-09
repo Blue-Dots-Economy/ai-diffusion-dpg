@@ -4,8 +4,8 @@
 # Runs the FastAPI web server (server.py) that serves the chat UI on port 8005.
 # The CLI adapter (main.py) remains available for local development use.
 #
-# Usage (server):
-#   docker run -p 8005:8005 --network dpg_net reach_layer
+# Must be built from the repo root (so observability_layer/ is in context):
+#   docker build -f reach_layer/Dockerfile -t reach_layer .
 #
 # Prerequisites: all backend services must be running and reachable on the
 # Docker network before starting this container.
@@ -23,7 +23,11 @@ WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
 
-COPY pyproject.toml ./
+# Copy observability_layer as a local package (pyproject.toml references ../observability_layer)
+COPY observability_layer/ /observability_layer/
+
+# Copy only the project manifest first for dependency caching
+COPY reach_layer/pyproject.toml reach_layer/uv.lock* ./
 
 # Sync runtime dependencies only; creates /app/.venv
 RUN uv sync --no-dev --no-cache --no-install-project
@@ -39,13 +43,14 @@ RUN addgroup --system reachlayer && adduser --system --ingroup reachlayer reachl
 
 WORKDIR /app
 
-# Copy the venv from builder
+# Copy the venv from builder (includes observability-layer and all deps)
 COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /observability_layer /observability_layer
 
-COPY main.py server.py config_loader.py ./
-COPY src/ ./src/
-COPY web/ ./web/
-COPY config/ ./config/
+COPY reach_layer/main.py reach_layer/server.py reach_layer/config_loader.py ./
+COPY reach_layer/src/ ./src/
+COPY reach_layer/web/ ./web/
+COPY reach_layer/config/ ./config/
 
 RUN chown -R reachlayer:reachlayer /app
 

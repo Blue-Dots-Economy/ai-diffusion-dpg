@@ -3,6 +3,9 @@
 # =============================================================================
 # Runs the mock ONEST FastAPI server on port 9999.
 # In production this is replaced by a real connector to the ONEST network.
+#
+# Must be built from the repo root (so observability_layer/ is in context):
+#   docker build -f action_gateway/Dockerfile -t action_gateway .
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -17,7 +20,11 @@ WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
 
-COPY pyproject.toml ./
+# Copy observability_layer as a local package (pyproject.toml references ../observability_layer)
+COPY observability_layer/ /observability_layer/
+
+# Copy only the project manifest first for dependency caching
+COPY action_gateway/pyproject.toml action_gateway/uv.lock* ./
 
 # Sync runtime dependencies only; creates /app/.venv
 RUN uv sync --no-dev --no-cache --no-install-project
@@ -33,14 +40,15 @@ RUN addgroup --system actiongateway && adduser --system --ingroup actiongateway 
 
 WORKDIR /app
 
-# Copy the venv from builder
+# Copy the venv from builder (includes observability-layer and all deps)
 COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /observability_layer /observability_layer
 
 # Copy source package and entrypoint
 # src/ must be present so `from src.mock_server import app` resolves at startup
-COPY src/ ./src/
-COPY main.py ./
-COPY config/ ./config/
+COPY action_gateway/src/ ./src/
+COPY action_gateway/main.py ./
+COPY action_gateway/config/ ./config/
 
 RUN chown -R actiongateway:actiongateway /app
 

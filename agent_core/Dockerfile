@@ -3,6 +3,9 @@
 # =============================================================================
 # Stage 1 (builder): install dependencies into a venv via uv sync.
 # Stage 2 (runtime): copy only the venv and source — no build tools.
+#
+# Must be built from the repo root (so observability_layer/ is in context):
+#   docker build -f agent_core/Dockerfile -t agent_core .
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -17,8 +20,11 @@ WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
 
-# Copy dependency declarations first — layer is cached unless pyproject.toml changes
-COPY pyproject.toml ./
+# Copy observability_layer as a local package (pyproject.toml references ../observability_layer)
+COPY observability_layer/ /observability_layer/
+
+# Copy only the project manifest first for dependency caching
+COPY agent_core/pyproject.toml agent_core/uv.lock* ./
 
 # Sync runtime dependencies only (no dev extras); creates /app/.venv
 RUN uv sync --no-dev --no-cache --no-install-project
@@ -35,13 +41,14 @@ RUN addgroup --system agentcore && adduser --system --ingroup agentcore agentcor
 
 WORKDIR /app
 
-# Copy the venv from builder
+# Copy the venv from builder (includes observability-layer and all deps)
 COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /observability_layer /observability_layer
 
 # Copy application source, entrypoint, and config
-COPY src/ ./src/
-COPY main.py ./
-COPY config/ ./config/
+COPY agent_core/src/ ./src/
+COPY agent_core/main.py ./
+COPY agent_core/config/ ./config/
 
 # Ownership
 RUN chown -R agentcore:agentcore /app
