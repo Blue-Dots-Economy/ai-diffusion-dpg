@@ -13,6 +13,7 @@ Belongs to the Reach Layer / Telephony Adapter block in the DPG framework.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import AsyncGenerator
@@ -115,14 +116,69 @@ class RayaSTTService(SegmentedSTTService):
             yield TranscriptionFrame(text=transcript, user_id="", timestamp="")
 
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
-            latency_ms = int((time.time() - start) * 1000)
-            logger.error(
-                "raya_stt.connection_error",
+            logger.warning(
+                "raya_stt.connection_error_retrying",
                 extra={
                     "operation": "raya_stt.run_stt",
                     "status": "failure",
                     "error": f"{type(exc).__name__}: {exc}",
-                    "latency_ms": latency_ms,
+                    "latency_ms": int((time.time() - start) * 1000),
                 },
             )
-            yield ErrorFrame(error=f"Raya STT connection error: {exc}")
+            await asyncio.sleep(0.5)
+            try:
+                async with httpx.AsyncClient(timeout=self._timeout) as client:
+                    response = await client.post(
+                        _RAYA_STT_URL,
+                        headers={"X-API-Key": self._api_key},
+                        files={"file": ("utterance.wav", audio, "audio/wav")},
+                        data={"language": self._language},
+                    )
+                latency_ms = int((time.time() - start) * 1000)
+                if response.status_code != 200:
+                    logger.error(
+                        "raya_stt.http_error",
+                        extra={
+                            "operation": "raya_stt.run_stt",
+                            "status": "failure",
+                            "error": f"HTTP {response.status_code}",
+                            "latency_ms": latency_ms,
+                        },
+                    )
+                    yield ErrorFrame(error=f"Raya STT HTTP {response.status_code}")
+                    return
+                data = response.json()
+                transcript = data.get("transcript", "").strip()
+                if not transcript:
+                    logger.info(
+                        "raya_stt.empty_transcript",
+                        extra={
+                            "operation": "raya_stt.run_stt",
+                            "status": "skipped",
+                            "latency_ms": latency_ms,
+                        },
+                    )
+                    return
+                logger.info(
+                    "raya_stt.transcribed",
+                    extra={
+                        "operation": "raya_stt.run_stt",
+                        "status": "success",
+                        "latency_ms": latency_ms,
+                        "audio_bytes": len(audio),
+                        "transcript_len": len(transcript),
+                    },
+                )
+                yield TranscriptionFrame(text=transcript, user_id="", timestamp="")
+            except (httpx.ConnectError, httpx.TimeoutException) as retry_exc:
+                latency_ms = int((time.time() - start) * 1000)
+                logger.error(
+                    "raya_stt.connection_error",
+                    extra={
+                        "operation": "raya_stt.run_stt",
+                        "status": "failure",
+                        "error": f"{type(retry_exc).__name__}: {retry_exc}",
+                        "latency_ms": latency_ms,
+                    },
+                )
+                yield ErrorFrame(error=f"Raya STT connection error: {retry_exc}")

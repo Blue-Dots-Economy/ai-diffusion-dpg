@@ -118,12 +118,13 @@ async def test_run_stt_connect_error_yields_error_frame(config):
 
     wav_audio = _make_wav()
 
-    with respx.mock:
-        respx.post("https://hub.getraya.app/transcribe").mock(
-            side_effect=httpx.ConnectError("refused")
-        )
-        svc = RayaSTTService(config)
-        frames = [f async for f in svc.run_stt(wav_audio)]
+    with patch("src.pipecat_services.raya_stt.asyncio.sleep", new_callable=AsyncMock):
+        with respx.mock:
+            respx.post("https://hub.getraya.app/transcribe").mock(
+                side_effect=httpx.ConnectError("refused")
+            )
+            svc = RayaSTTService(config)
+            frames = [f async for f in svc.run_stt(wav_audio)]
 
     assert len(frames) == 1
     assert isinstance(frames[0], ErrorFrame)
