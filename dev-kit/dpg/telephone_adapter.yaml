@@ -11,7 +11,7 @@ telephony_adapter:
     stt_wss_url: wss://hub.getraya.app/transcribe
     tts_base_url: https://hub.getraya.app/v1
     language: hi
-    voice_id: voice_001
+    voice_id: d6a002d0-230c-49b1-a137-b8a7d564b1ae  # Priyanka, hi
     tts_speed: 1.0
   agent_core:
     base_url: http://agent_core:8000
