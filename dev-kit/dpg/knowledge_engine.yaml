@@ -26,3 +26,7 @@ knowledge:
       supported_types: [pdf, image]
       audio_enabled: false
       max_file_size_mb: 10
+
+observability:
+  otel:
+    collector_endpoint: "http://otelcol:4317"

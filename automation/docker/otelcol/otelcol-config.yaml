@@ -15,8 +15,8 @@ processors:
     send_batch_size: 1024
 
 exporters:
-  jaeger:
-    endpoint: jaeger:14250
+  otlp/jaeger:
+    endpoint: jaeger:4317
     tls:
       insecure: true
 
@@ -35,7 +35,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [jaeger, logging]
+      exporters: [otlp/jaeger, logging]
     metrics:
       receivers: [otlp]
       processors: [batch]

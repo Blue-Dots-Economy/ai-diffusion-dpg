@@ -17,6 +17,10 @@ memory_layer_client:
   endpoint: "http://memory_layer:8002"
   timeout_s: 10.0
 
+observability:
+  otel:
+    collector_endpoint: "http://otelcol:4317"
+
 ui:
   agent_avatar: "🤖"
   user_avatar: "👤"

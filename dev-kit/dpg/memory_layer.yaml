@@ -20,3 +20,7 @@ memgraph:
   user: "memgraph"
   password: null
   connection_timeout_s: 5
+
+observability:
+  otel:
+    collector_endpoint: "http://otelcol:4317"

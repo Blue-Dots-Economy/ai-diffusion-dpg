@@ -8,3 +8,7 @@ server:
 
 action_gateway:
   timeout_ms: 5000
+
+observability:
+  otel:
+    collector_endpoint: "http://otelcol:4317"
