@@ -100,12 +100,12 @@ class RayaTTSService(TTSService):
                     if response.status_code != 200:
                         body = await response.aread()
                         latency_ms = int((time.time() - start) * 1000)
+                        error_body = body.decode(errors="replace")[:400]
                         logger.error(
-                            "raya_tts.http_error",
+                            f"raya_tts.http_error HTTP {response.status_code}: {error_body}",
                             extra={
                                 "operation": "raya_tts.run_tts",
                                 "status": "failure",
-                                "error": f"HTTP {response.status_code}: {body.decode(errors='replace')[:200]}",
                                 "latency_ms": latency_ms,
                             },
                         )
