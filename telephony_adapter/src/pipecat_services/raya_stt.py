@@ -21,6 +21,7 @@ from typing import AsyncGenerator
 import httpx
 
 from pipecat.frames.frames import ErrorFrame, Frame, TranscriptionFrame
+from pipecat.services.settings import STTSettings
 from pipecat.services.stt_service import SegmentedSTTService
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,10 @@ class RayaSTTService(SegmentedSTTService):
         self._api_key = api_key
         self._language = raya_cfg.get("language", "hi")
         self._timeout = float(raya_cfg.get("stt_timeout_s", 30.0))
-        super().__init__(sample_rate=8000)
+        super().__init__(
+            sample_rate=8000,
+            settings=STTSettings(model=None, language=self._language),
+        )
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         """Transcribe one utterance via Raya HTTP multipart STT.

@@ -24,6 +24,7 @@ import httpx
 import numpy as np
 
 from pipecat.frames.frames import ErrorFrame, Frame, TTSAudioRawFrame
+from pipecat.services.settings import TTSSettings
 from pipecat.services.tts_service import TTSService
 
 logger = logging.getLogger(__name__)
@@ -62,7 +63,10 @@ class RayaTTSService(TTSService):
         self._language = raya_cfg.get("language", "hi")
         self._speed = float(raya_cfg.get("tts_speed", 1.0))
         self._tts_timeout = float(raya_cfg.get("tts_timeout_s", 30.0))
-        super().__init__(sample_rate=_SAMPLE_RATE)
+        super().__init__(
+            sample_rate=_SAMPLE_RATE,
+            settings=TTSSettings(model=None, voice=self._voice_id, language=self._language),
+        )
 
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
         """Synthesise text to PCM16 audio via the Raya SSE streaming TTS endpoint.
@@ -82,6 +86,7 @@ class RayaTTSService(TTSService):
         payload = {
             "text": text,
             "voice_id": self._voice_id,
+            "model": "standard",
             "language": self._language,
             "speed": self._speed,
             "sample_rate": _SAMPLE_RATE,
