@@ -87,8 +87,8 @@ services:
   # ---------------------------------------------------------------------------
   memory_layer:
     build:
-      context: ../../memory_layer
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: memory_layer/Dockerfile
     container_name: memory_layer
     environment:
       - CONFIG_FOLDER=/app/config
@@ -124,8 +124,8 @@ services:
   # ---------------------------------------------------------------------------
   trust_layer:
     build:
-      context: ../../trust_layer
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: trust_layer/Dockerfile
     container_name: trust_layer
     environment:
       - CONFIG_FOLDER=/app/config
@@ -180,8 +180,8 @@ services:
   # ---------------------------------------------------------------------------
   action_gateway:
     build:
-      context: ../../action_gateway
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: action_gateway/Dockerfile
     container_name: action_gateway
     environment:
       - CONFIG_FOLDER=/app/config
@@ -209,13 +209,13 @@ services:
   # ---------------------------------------------------------------------------
   knowledge_engine:
     build:
-      context: ../../knowledge_engine
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: knowledge_engine/Dockerfile
     container_name: knowledge_engine
     environment:
       - CONFIG_FOLDER=/app/config
     user: root                               # needed to write to root-owned chroma_data named volume
-    command: ["sh", "-c", "if [ ! -f /app/chroma_db/chroma.sqlite3 ]; then echo 'ChromaDB empty — running ingest...' && python -m scripts.ingest --config config/domain.yaml; else echo 'ChromaDB exists — skipping ingest.'; fi && python main.py"]
+    command: ["sh", "-c", "if [ ! -f /app/chroma_db/chroma.sqlite3 ]; then echo 'ChromaDB empty — running ingest...' && python -m scripts.ingest --config config/knowledge_engine.yaml; else echo 'ChromaDB exists — skipping ingest.'; fi && python main.py"]
     volumes:
       - ../../dev-kit/dpg/knowledge_engine.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/kkb/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
@@ -241,8 +241,8 @@ services:
   # ---------------------------------------------------------------------------
   agent_core:
     build:
-      context: ../../agent_core
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: agent_core/Dockerfile
     container_name: agent_core
     environment:
       - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
@@ -277,13 +277,13 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # Reach Layer — interactive CLI (no HTTP port exposed)
-  # Run separately: docker compose run --rm reach_layer
+  # Reach Layer — web chat UI (port 8005)
+  # Open http://localhost:8005 in a browser after all services are healthy.
   # ---------------------------------------------------------------------------
   reach_layer:
     build:
-      context: ../../reach_layer
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: reach_layer/Dockerfile
     container_name: reach_layer
     environment:
       - CONFIG_FOLDER=/app/config
@@ -300,10 +300,15 @@ services:
     depends_on:
       agent_core:
         condition: service_healthy
-    stdin_open: true
-    tty: true
-    profiles:
-      - cli                                # not started by default; run explicitly
+    ports:
+      - "8005:8005"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8005/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
 
 networks:
   dpg_net:
