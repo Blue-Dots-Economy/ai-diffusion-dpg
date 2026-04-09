@@ -1,12 +1,12 @@
 agent:
-  primary_model: claude-sonnet-4-5-20250514
+  primary_model: claude-haiku-4-5-20251001
   fallback_model: claude-haiku-4-5-20251001
   ask_for_consent: false
   consent_prompt: We'll securely store your crop details and location to provide better
     advice. Do you agree?
 preprocessing:
   language_normalisation:
-    model: claude-sonnet-4-5-20250514
+    model: claude-haiku-4-5-20251001
     provider: llm_native
     transliteration: true
     code_switching: true
@@ -17,7 +17,7 @@ preprocessing:
     - english
     - hinglish
   nlu_processor:
-    model: claude-sonnet-4-5-20250514
+    model: claude-haiku-4-5-20251001
     confidence_threshold: 0.7
     domain_instruction: You are an NLU classifier for a crop disease diagnosis system.
       Classify farmer queries into intents related to crop health, treatment, pesticides,
