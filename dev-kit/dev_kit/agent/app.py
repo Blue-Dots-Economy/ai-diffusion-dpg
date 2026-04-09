@@ -48,6 +48,11 @@ CONFIGS_DIR = Path(__file__).parent.parent.parent / "configs"
 DPG_DIR = Path(__file__).parent.parent.parent / "dpg"
 _STATIC_DIR = Path(__file__).parent / "static"
 _SCHEMAS_DIR = Path(__file__).parent.parent / "schemas"
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+_DOCKER_AUTOMATION = Path("/app/automation")
+_AUTOMATION = _DOCKER_AUTOMATION if _DOCKER_AUTOMATION.exists() else _REPO_ROOT / "automation"
+HELM_BASE = _AUTOMATION / "helm"
+COMPOSE_FILE = _AUTOMATION / "docker" / "docker-compose.dev.yml"
 
 _api_key = os.environ.get("ANTHROPIC_API_KEY", "")
 if not _api_key:
@@ -663,9 +668,67 @@ async def validate_kubeconfig_endpoint(slug: str, body: dict) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _apply_resources_to_compose(content: str, resources: dict) -> str:
+    """Apply resource presets to a docker-compose YAML string.
+
+    Args:
+        content: The raw docker-compose YAML string.
+        resources: Dict mapping block names to {limits: {cpu, memory}, requests: {cpu, memory}}.
+
+    Returns:
+        Updated YAML string with deploy.resources.limits applied per service.
+    """
+    import yaml as _yaml
+
+    try:
+        compose = _yaml.safe_load(content)
+    except _yaml.YAMLError:
+        return content
+
+    if not compose or "services" not in compose:
+        return content
+
+    for block_name, res in resources.items():
+        if block_name not in compose["services"]:
+            continue
+        svc = compose["services"][block_name]
+        limits = res.get("limits", {})
+        if limits:
+            # Convert K8s CPU (e.g. "500m") to Docker cpus (e.g. "0.5")
+            cpu_str = limits.get("cpu", "100m")
+            if cpu_str.endswith("m"):
+                cpus = str(round(int(cpu_str[:-1]) / 1000, 2))
+            else:
+                cpus = cpu_str
+            # Convert K8s memory (e.g. "512Mi") to Docker (e.g. "512M")
+            mem_str = limits.get("memory", "512Mi")
+            memory = mem_str.replace("Mi", "M").replace("Gi", "G")
+            svc.setdefault("deploy", {}).setdefault("resources", {})["limits"] = {
+                "cpus": cpus,
+                "memory": memory,
+            }
+
+    return _yaml.dump(compose, default_flow_style=False, sort_keys=False)
+
+
+@app.put("/api/projects/{slug}/deploy/compose-file")
+async def update_compose_file(slug: str, body: dict) -> dict:
+    """Write updated docker-compose content back to the compose file.
+
+    Args:
+        slug: Project slug (unused; endpoint is project-scoped for consistency).
+        body: Dict with ``content`` key containing the full YAML string.
+
+    Returns:
+        Dict with ``status: ok`` on success.
+    """
+    COMPOSE_FILE.write_text(body["content"])
+    return {"status": "ok"}
+
+
 @app.post("/api/projects/{slug}/deploy/preview")
 async def get_deploy_preview(slug: str, body: dict) -> dict:
-    """Run helm template or generate docker-compose preview.
+    """Read existing docker-compose file or render helm template preview.
 
     Args:
         slug: Project slug used to scope domain config paths.
@@ -678,35 +741,53 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
     """
     target = body.get("target", "docker")
     if target == "docker":
-        from dev_kit.agent.deployer.compose import generate_compose
-
-        preview = generate_compose(
-            project_slug=slug,
-            dpg_dir=str(DPG_DIR),
-            domain_dir=str(CONFIGS_DIR / slug),
-            resources=body.get("resources", {}),
-            secrets=body.get("secrets", {}),
-            infra_configs=body.get("infra_configs", {}),
-        )
-        return {"target": target, "preview": {"docker-compose.yml": preview}}
+        raw = COMPOSE_FILE.read_text() if COMPOSE_FILE.exists() else "# docker-compose.dev.yml not found"
+        content = raw.replace("${DOMAIN:-kkb}", slug).replace("${DOMAIN}", slug)
+        resources = body.get("resources", {})
+        if resources:
+            content = _apply_resources_to_compose(content, resources)
+        return {"target": target, "preview": {"docker-compose.yml": content}}
 
     # Kubernetes — render all 14 charts via helm template
     from dev_kit.agent.deployer.helm import build_template_command, run_helm_command
 
-    _helm_base = Path(__file__).resolve().parent.parent.parent.parent / "automation" / "helm"
+    _helm_base = HELM_BASE
     secrets = body.get("secrets", {})
     resources = body.get("resources", {})
     preview: dict[str, str] = {}
 
-    # Infra charts
+    from dev_kit.agent.deployer.dependencies import SERVICE_CHART_MAP, HELM_INFRA_DIR
+
+    # Infra charts — pass edited values.yaml and secrets
     for svc_name in ["redis", "memgraph", "otel_collector", "jaeger", "prometheus", "loki", "grafana"]:
         chart_dir = svc_name.replace("_", "-")
         chart_path = str(_helm_base / "infra" / chart_dir)
-        cmd = build_template_command(chart_path, svc_name.replace("_", "-"))
+        set_values: dict[str, str] = {}
+
+        # Use the edited values.yaml from the infra Helm chart
+        infra_chart_dir = SERVICE_CHART_MAP.get(svc_name, chart_dir)
+        infra_values = HELM_INFRA_DIR / infra_chart_dir / "values.yaml"
+        values_files: list[str] = []
+        if infra_values.exists():
+            values_files.append(str(infra_values))
+
+        # Inject secrets into infra services
+        if svc_name == "redis" and secrets.get("redis_password"):
+            set_values["password"] = secrets["redis_password"]
+        elif svc_name == "memgraph" and secrets.get("memgraph_password"):
+            set_values["password"] = secrets["memgraph_password"]
+        elif svc_name == "grafana" and secrets.get("grafana_admin_password"):
+            set_values["adminPassword"] = secrets["grafana_admin_password"]
+
+        cmd = build_template_command(
+            chart_path, svc_name.replace("_", "-"),
+            set_values=set_values or None,
+            values_files=values_files or None,
+        )
         result = await run_helm_command(cmd)
         preview[svc_name] = result["stdout"] if result["success"] else f"# Error: {result['stderr']}"
 
-    # DPG charts — inject dpgConfig, domainConfig, and secrets via --set-file / --set
+    # DPG charts — inject dpgConfig, domainConfig, secrets, and resources
     for block_name in BLOCKS:
         chart_dir = block_name.replace("_", "-")
         chart_path = str(_helm_base / "dpg" / chart_dir)
@@ -721,6 +802,13 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
             set_files["domainConfig"] = str(domain_file)
         if secrets.get("anthropic_api_key"):
             set_values["anthropicApiKey"] = secrets["anthropic_api_key"]
+
+        # Inject infra secrets into DPG blocks that connect to them
+        if block_name == "memory_layer":
+            if secrets.get("memgraph_password"):
+                set_values["memgraph.password"] = secrets["memgraph_password"]
+            if secrets.get("redis_password"):
+                set_values["redis.url"] = f"redis://:{secrets['redis_password']}@redis:6379/0"
 
         block_res = resources.get(block_name, {})
         limits = block_res.get("limits", {})
@@ -785,33 +873,44 @@ async def execute_deploy(slug: str, body: dict) -> dict:
 
 
 async def _run_docker_deploy(slug: str, state, secrets: dict, resources: dict) -> None:
-    """Background task: generate compose file and run docker compose up."""
-    from dev_kit.agent.deployer.compose import generate_compose, run_compose_up, DEPENDS_ON
+    """Background task: apply resources, resolve domain, and run docker compose up."""
+    import tempfile
+    from dev_kit.agent.deployer.compose import run_compose_up
     from dev_kit.agent.deployer.helm import DEPLOY_PHASES
 
     try:
-        compose_content = generate_compose(
-            project_slug=slug,
-            dpg_dir=str(DPG_DIR),
-            domain_dir=str(CONFIGS_DIR / slug),
-            resources=resources,
-            secrets=secrets,
-            infra_configs={},
-        )
+        # Read compose file, apply domain and resources
+        raw = COMPOSE_FILE.read_text()
+        content = raw.replace("${DOMAIN:-kkb}", slug).replace("${DOMAIN}", slug)
+        if resources:
+            content = _apply_resources_to_compose(content, resources)
 
-        import tempfile
-        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False, prefix=f"dpg-{slug}-")
-        tmp.write(compose_content)
+        # Strip hardcoded container_name so Docker Compose auto-prefixes
+        # with the project name, avoiding conflicts with other deployments.
+        import yaml as _yaml
+        compose_doc = _yaml.safe_load(content)
+        for svc in compose_doc.get("services", {}).values():
+            svc.pop("container_name", None)
+        content = _yaml.dump(compose_doc, default_flow_style=False, sort_keys=False)
+
+        # Write to a temp file next to the original so relative paths resolve
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yml", delete=False,
+            prefix=f"dpg-{slug}-",
+            dir=str(COMPOSE_FILE.parent),
+        )
+        tmp.write(content)
         tmp.flush()
         tmp.close()
-        state.compose_file_path = tmp.name
+        compose_path = tmp.name
+        state.compose_file_path = compose_path
 
         # Mark all as starting
         for phase in DEPLOY_PHASES:
             for svc in phase["services"]:
                 state.set_service(svc, "starting")
 
-        result = await run_compose_up(tmp.name, project_name=f"dpg-{slug}")
+        result = await run_compose_up(compose_path, project_name=f"dpg-{slug}", secrets=secrets)
         if result["success"]:
             for svc_name in state.services:
                 state.set_service(svc_name, "running")
@@ -839,7 +938,7 @@ async def _run_k8s_deploy(slug: str, state, secrets: dict, resources: dict, kube
     import tempfile
     from dev_kit.agent.deployer.helm import DEPLOY_PHASES, build_helm_command, run_helm_command
 
-    _helm_base = Path(__file__).resolve().parent.parent.parent.parent / "automation" / "helm"
+    _helm_base = HELM_BASE
     state.namespace = namespace
 
     # Write kubeconfig to a temp file
@@ -850,6 +949,7 @@ async def _run_k8s_deploy(slug: str, state, secrets: dict, resources: dict, kube
     state.kubeconfig_path = tmp.name
 
     infra_services = {"redis", "memgraph", "otel_collector", "jaeger", "prometheus", "loki", "grafana"}
+    from dev_kit.agent.deployer.dependencies import SERVICE_CHART_MAP, HELM_INFRA_DIR
 
     try:
         for phase in DEPLOY_PHASES:
@@ -865,9 +965,24 @@ async def _run_k8s_deploy(slug: str, state, secrets: dict, resources: dict, kube
                 release_name = chart_dir
                 set_values: dict[str, str] = {}
                 set_files: dict[str, str] = {}
+                values_files: list[str] = []
 
-                # DPG charts need config injection
-                if svc_name not in infra_services:
+                if svc_name in infra_services:
+                    # Use the edited values.yaml from the infra Helm chart
+                    infra_chart_dir = SERVICE_CHART_MAP.get(svc_name, chart_dir)
+                    infra_values = HELM_INFRA_DIR / infra_chart_dir / "values.yaml"
+                    if infra_values.exists():
+                        values_files.append(str(infra_values))
+
+                    # Inject secrets into infra services that need them
+                    if svc_name == "redis" and secrets.get("redis_password"):
+                        set_values["password"] = secrets["redis_password"]
+                    elif svc_name == "memgraph" and secrets.get("memgraph_password"):
+                        set_values["password"] = secrets["memgraph_password"]
+                    elif svc_name == "grafana" and secrets.get("grafana_admin_password"):
+                        set_values["adminPassword"] = secrets["grafana_admin_password"]
+                else:
+                    # DPG charts need config injection
                     dpg_file = DPG_DIR / f"{svc_name}.yaml"
                     domain_file = CONFIGS_DIR / slug / f"{svc_name}.yaml"
                     if dpg_file.exists():
@@ -876,6 +991,13 @@ async def _run_k8s_deploy(slug: str, state, secrets: dict, resources: dict, kube
                         set_files["domainConfig"] = str(domain_file)
                     if secrets.get("anthropic_api_key"):
                         set_values["anthropicApiKey"] = secrets["anthropic_api_key"]
+
+                    # Inject infra secrets into DPG blocks that connect to them
+                    if svc_name == "memory_layer":
+                        if secrets.get("memgraph_password"):
+                            set_values["memgraph.password"] = secrets["memgraph_password"]
+                        if secrets.get("redis_password"):
+                            set_values["redis.url"] = f"redis://:{secrets['redis_password']}@redis:6379/0"
 
                     block_res = resources.get(svc_name, {})
                     limits = block_res.get("limits", {})
@@ -896,6 +1018,7 @@ async def _run_k8s_deploy(slug: str, state, secrets: dict, resources: dict, kube
                     kubeconfig_path=tmp.name,
                     set_values=set_values or None,
                     set_files=set_files or None,
+                    values_files=values_files or None,
                     upgrade=True,
                 )
 

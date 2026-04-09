@@ -14,11 +14,15 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /app
 
-ENV UV_COMPILE_BYTECODE=1 \
+ENV UV_COMPILE_BYTECODE=0 \
     UV_LINK_MODE=copy
 
-# Copy dependency declarations first — layer is cached unless pyproject.toml changes
-COPY pyproject.toml ./
+# Copy observability_layer (path dependency: ../observability_layer from /app = /observability_layer)
+COPY observability_layer/pyproject.toml /observability_layer/pyproject.toml
+COPY observability_layer/src/ /observability_layer/src/
+
+# Copy dependency declarations — layer is cached unless pyproject.toml changes
+COPY memory_layer/pyproject.toml ./
 
 # Sync runtime dependencies only; creates /app/.venv
 RUN uv sync --no-dev --no-cache --no-install-project
@@ -39,9 +43,9 @@ WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 
 # Copy application source, entrypoint, and config
-COPY src/ ./src/
-COPY main.py ./
-COPY config/ ./config/
+COPY memory_layer/src/ ./src/
+COPY memory_layer/main.py ./
+COPY memory_layer/config/ ./config/
 
 # Ownership
 RUN chown -R memorylayer:memorylayer /app

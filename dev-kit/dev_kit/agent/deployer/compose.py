@@ -8,6 +8,7 @@ complete docker-compose.yml for local and dev deployments of all 14 services
 import asyncio
 import json
 import logging
+import os
 from typing import Dict, List, Optional
 
 import yaml
@@ -16,13 +17,13 @@ logger = logging.getLogger(__name__)
 
 # DPG application blocks: name → {image template, internal port}
 DPG_SERVICES: Dict[str, Dict] = {
-    "agent_core": {"image": "dpg/agent-core:latest", "port": 8000},
-    "knowledge_engine": {"image": "dpg/knowledge-engine:latest", "port": 8001},
-    "memory_layer": {"image": "dpg/memory-layer:latest", "port": 8002},
-    "trust_layer": {"image": "dpg/trust-layer:latest", "port": 8003},
-    "observability_layer": {"image": "dpg/observability-layer:latest", "port": 8004},
-    "action_gateway": {"image": "dpg/action-gateway:latest", "port": 9999},
-    "reach_layer": {"image": "dpg/reach-layer:latest", "port": 7000},
+    "agent_core": {"image": "srivatsak2002/dpg-agent-core:0.2.0", "port": 8000},
+    "knowledge_engine": {"image": "srivatsak2002/dpg-knowledge-engine:0.2.0", "port": 8001},
+    "memory_layer": {"image": "srivatsak2002/dpg-memory-layer:0.2.0", "port": 8002},
+    "trust_layer": {"image": "srivatsak2002/dpg-trust-layer:0.2.0", "port": 8003},
+    "observability_layer": {"image": "srivatsak2002/dpg-observability-layer:0.2.0", "port": 8004},
+    "action_gateway": {"image": "srivatsak2002/dpg-action-gateway:0.2.0", "port": 9999},
+    "reach_layer": {"image": "srivatsak2002/dpg-reach-layer:0.2.0", "port": 7000},
 }
 
 # Infrastructure service images
@@ -164,12 +165,16 @@ def generate_compose(
 async def run_compose_up(
     compose_file_path: str,
     project_name: Optional[str] = None,
+    domain: Optional[str] = None,
+    secrets: Optional[Dict] = None,
 ) -> Dict:
     """Start all services defined in a docker-compose file in detached mode.
 
     Args:
         compose_file_path: Absolute path to the docker-compose.yml file.
         project_name: Optional Docker Compose project name override.
+        domain: Domain/project slug used to resolve ``${DOMAIN}`` in the compose file.
+        secrets: Optional dict of secrets to pass as environment variables.
 
     Returns:
         Dict with keys:
@@ -182,11 +187,25 @@ async def run_compose_up(
         cmd += ["-p", project_name]
     cmd += ["up", "-d"]
 
+    env = {**os.environ}
+    if domain:
+        env["DOMAIN"] = domain
+    if secrets:
+        if secrets.get("anthropic_api_key"):
+            env["ANTHROPIC_API_KEY"] = secrets["anthropic_api_key"]
+        if secrets.get("memgraph_password"):
+            env["MEMGRAPH_PASSWORD"] = secrets["memgraph_password"]
+        if secrets.get("redis_password"):
+            env["REDIS_PASSWORD"] = secrets["redis_password"]
+        if secrets.get("grafana_admin_password"):
+            env["GF_SECURITY_ADMIN_PASSWORD"] = secrets["grafana_admin_password"]
+
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
         stdout, stderr = await proc.communicate()
         success = proc.returncode == 0

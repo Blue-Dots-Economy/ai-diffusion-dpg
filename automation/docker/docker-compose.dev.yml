@@ -3,7 +3,7 @@
 # Runs all 7 DPG services on a single machine using pre-built Docker Hub images.
 # Each service receives two volume-mounted config files:
 #   /app/config/dpg.yaml    — DPG framework defaults (from dev-kit/dpg/)
-#   /app/config/domain.yaml — domain-specific values (from dev-kit/configs/kkb/)
+#   /app/config/domain.yaml — domain-specific values (from dev-kit/configs/${DOMAIN}/)
 # Services deep-merge these at startup: domain values override DPG defaults.
 # Both config files are mandatory — service will not start if either is missing.
 #
@@ -81,17 +81,17 @@ services:
   # Memory Layer — session state store (port 8002)
   # ---------------------------------------------------------------------------
   memory_layer:
-    image: sanketikahub/dpg-memory-layer:0.1.0
+    image: srivatsak2002/dpg-memory-layer:0.2.0
     container_name: memory_layer
     environment:
       - CONFIG_FOLDER=/app/config
       - REDIS_URL=redis://redis:6379/0
       - MEMGRAPH_URI=bolt://memgraph:7687
       - MEMGRAPH_USER=memgraph
-      - MEMGRAPH_PASSWORD=
+      - MEMGRAPH_PASSWORD=${MEMGRAPH_PASSWORD:-}
     volumes:
       - ../../dev-kit/dpg/memory_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/kkb/memory_layer.yaml:/app/config/memory_layer.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/memory_layer.yaml:/app/config/memory_layer.yaml:ro
     networks:
       - dpg_net
     depends_on:
@@ -116,13 +116,13 @@ services:
   # Trust Layer — content safety gate (port 8003)
   # ---------------------------------------------------------------------------
   trust_layer:
-    image: sanketikahub/dpg-trust-layer:0.1.0
+    image: srivatsak2002/dpg-trust-layer:0.2.0
     container_name: trust_layer
     environment:
       - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev-kit/dpg/trust_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/kkb/trust_layer.yaml:/app/config/trust_layer.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/trust_layer.yaml:/app/config/trust_layer.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -142,18 +142,18 @@ services:
   # Observability Layer — async observability (port 8004)
   # ---------------------------------------------------------------------------
   observability_layer:
-    image: sanketikahub/dpg-observability-layer:0.1.0
+    image: srivatsak2002/dpg-observability-layer:0.2.0
     container_name: observability_layer
     environment:
       - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev-kit/dpg/observability_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/kkb/observability_layer.yaml:/app/config/observability_layer.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/observability_layer.yaml:/app/config/observability_layer.yaml:ro
     networks:
       - dpg_net
     depends_on:
       otelcol:
-        condition: service_healthy
+        condition: service_started
     deploy:
       resources:
         limits:
@@ -171,13 +171,13 @@ services:
   # Action Gateway — external API stub / ONEST mock (port 9999)
   # ---------------------------------------------------------------------------
   action_gateway:
-    image: sanketikahub/dpg-action-gateway:0.1.0
+    image: srivatsak2002/dpg-action-gateway:0.2.0
     container_name: action_gateway
     environment:
       - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/kkb/action_gateway.yaml:/app/config/action_gateway.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -198,7 +198,7 @@ services:
   # On startup: runs ingest first, then starts the server.
   # ---------------------------------------------------------------------------
   knowledge_engine:
-    image: sanketikahub/dpg-knowledge-engine:0.1.0
+    image: srivatsak2002/dpg-knowledge-engine:0.2.0
     container_name: knowledge_engine
     environment:
       - CONFIG_FOLDER=/app/config
@@ -206,7 +206,7 @@ services:
     command: ["sh", "-c", "if [ ! -f /app/chroma_db/chroma.sqlite3 ]; then echo 'ChromaDB empty — running ingest...' && python -m scripts.ingest --config config/knowledge_engine.yaml; else echo 'ChromaDB exists — skipping ingest.'; fi && python main.py"]
     volumes:
       - ../../dev-kit/dpg/knowledge_engine.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/kkb/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
       - ../../knowledge_engine/data:/app/data:ro   # source docs (read-only)
       - chroma_data:/app/chroma_db            # embeddings (writable, overrides :ro for this subdir)
     networks:
@@ -228,14 +228,14 @@ services:
   # Agent Core — orchestrator and LLM caller (port 8000)
   # ---------------------------------------------------------------------------
   agent_core:
-    image: sanketikahub/dpg-agent-core:0.1.0
+    image: srivatsak2002/dpg-agent-core:0.2.0
     container_name: agent_core
     environment:
       - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
       - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev-kit/dpg/agent_core.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/kkb/agent_core.yaml:/app/config/agent_core.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/agent_core.yaml:/app/config/agent_core.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -266,7 +266,7 @@ services:
   # Reach Layer — Web UI + FastAPI server (port 8005)
   # ---------------------------------------------------------------------------
   reach_layer:
-    image: sanketikahub/dpg-reach-layer:0.1.0
+    image: srivatsak2002/dpg-reach-layer:0.2.0
     container_name: reach_layer
     environment:
       - CONFIG_FOLDER=/app/config
@@ -274,7 +274,7 @@ services:
       - "8005:8005"
     volumes:
       - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/kkb/reach_layer.yaml:/app/config/reach_layer.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/reach_layer.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -313,12 +313,6 @@ services:
         limits:
           cpus: '0.1'
           memory: 256M
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133/"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 10s
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -386,7 +380,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD:-admin}
     networks:
       - dpg_net
     deploy:

@@ -14,10 +14,15 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /app
 
-ENV UV_COMPILE_BYTECODE=1 \
+ENV UV_COMPILE_BYTECODE=0 \
     UV_LINK_MODE=copy
 
-COPY pyproject.toml ./
+# Copy observability_layer (path dependency: ../observability_layer from /app = /observability_layer)
+COPY observability_layer/pyproject.toml /observability_layer/pyproject.toml
+COPY observability_layer/src/ /observability_layer/src/
+
+# Copy dependency declarations — layer is cached unless pyproject.toml changes
+COPY action_gateway/pyproject.toml ./
 
 # Sync runtime dependencies only; creates /app/.venv
 RUN uv sync --no-dev --no-cache --no-install-project
@@ -38,9 +43,9 @@ COPY --from=builder /app/.venv /app/.venv
 
 # Copy source package and entrypoint
 # src/ must be present so `from src.mock_server import app` resolves at startup
-COPY src/ ./src/
-COPY main.py ./
-COPY config/ ./config/
+COPY action_gateway/src/ ./src/
+COPY action_gateway/main.py ./
+COPY action_gateway/config/ ./config/
 
 RUN chown -R actiongateway:actiongateway /app
 

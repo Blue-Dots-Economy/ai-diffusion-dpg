@@ -18,5 +18,5 @@ redis:
 memgraph:
   uri: "bolt://localhost:7687"
   user: "neo4j"
-  password: null               
+  password: "neo4j1234"               
   connection_timeout_s: 5

@@ -14,11 +14,22 @@ function ServiceCard({ slug, name, config }) {
   const [expanded, setExpanded] = useState(false)
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [mounted, setMounted] = useState(false)
   const containerRef = useRef(null)
   const yamlContent = typeof config === 'string' ? config : (config?.config || '')
   const { startEdit, cancelEdit, getContent, setReadOnly } = useYamlEditor(
-    containerRef, expanded ? yamlContent : null, { readOnly: true }
+    containerRef, mounted ? yamlContent : null, { readOnly: true }
   )
+
+  useEffect(() => {
+    if (expanded) {
+      // Delay so the ref div is rendered before the editor initializes
+      const t = setTimeout(() => setMounted(true), 50)
+      return () => clearTimeout(t)
+    } else {
+      setMounted(false)
+    }
+  }, [expanded])
 
   function handleEdit() {
     setEditing(true)

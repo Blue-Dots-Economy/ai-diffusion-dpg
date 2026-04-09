@@ -1,12 +1,23 @@
 import pytest
 import yaml
+from unittest.mock import patch
+from pathlib import Path
+import tempfile
+import shutil
 from dev_kit.agent.deployer.dependencies import (
-    INFRA_SERVICES, get_defaults, get_service_config, update_service_config,
+    SERVICE_CHART_MAP, get_defaults, get_service_config, get_service_names,
+    update_service_config,
 )
 
 
-def test_infra_services_has_seven_entries():
-    assert len(INFRA_SERVICES) == 7
+def test_service_chart_map_has_seven_entries():
+    assert len(SERVICE_CHART_MAP) == 7
+
+
+def test_get_service_names_returns_all():
+    names = get_service_names()
+    for svc in ["redis", "memgraph", "otel_collector", "jaeger", "prometheus", "loki", "grafana"]:
+        assert svc in names
 
 
 def test_get_defaults_returns_all_services():
@@ -38,7 +49,22 @@ def test_get_service_config_unknown():
 
 
 def test_update_service_config():
-    new_yaml = yaml.dump({"image": {"repository": "redis", "tag": "6-alpine"}, "resources": {}})
-    update_service_config("redis", new_yaml)
-    result = yaml.safe_load(get_service_config("redis"))
-    assert result["image"]["tag"] == "6-alpine"
+    """Test update writes to disk using a temp directory to avoid corrupting real files."""
+    import dev_kit.agent.deployer.dependencies as deps_mod
+
+    tmp_dir = Path(tempfile.mkdtemp())
+    try:
+        # Create a fake redis chart dir with a values.yaml
+        redis_dir = tmp_dir / "redis"
+        redis_dir.mkdir()
+        original_yaml = yaml.dump({"image": {"repository": "redis", "tag": "7-alpine"}, "resources": {}})
+        (redis_dir / "values.yaml").write_text(original_yaml)
+
+        # Patch HELM_INFRA_DIR to point to tmp
+        with patch.object(deps_mod, "HELM_INFRA_DIR", tmp_dir):
+            new_yaml = yaml.dump({"image": {"repository": "redis", "tag": "6-alpine"}, "resources": {}})
+            update_service_config("redis", new_yaml)
+            result = yaml.safe_load(get_service_config("redis"))
+            assert result["image"]["tag"] == "6-alpine"
+    finally:
+        shutil.rmtree(tmp_dir)

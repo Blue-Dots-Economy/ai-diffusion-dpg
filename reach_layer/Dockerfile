@@ -20,10 +20,15 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /app
 
-ENV UV_COMPILE_BYTECODE=1 \
+ENV UV_COMPILE_BYTECODE=0 \
     UV_LINK_MODE=copy
 
-COPY pyproject.toml ./
+# Copy observability_layer (path dependency: ../observability_layer from /app = /observability_layer)
+COPY observability_layer/pyproject.toml /observability_layer/pyproject.toml
+COPY observability_layer/src/ /observability_layer/src/
+
+# Copy dependency declarations — layer is cached unless pyproject.toml changes
+COPY reach_layer/pyproject.toml ./
 
 # Sync runtime dependencies only; creates /app/.venv
 RUN uv sync --no-dev --no-cache --no-install-project
@@ -42,10 +47,10 @@ WORKDIR /app
 # Copy the venv from builder
 COPY --from=builder /app/.venv /app/.venv
 
-COPY main.py server.py config_loader.py ./
-COPY src/ ./src/
-COPY web/ ./web/
-COPY config/ ./config/
+COPY reach_layer/main.py reach_layer/server.py reach_layer/config_loader.py ./
+COPY reach_layer/src/ ./src/
+COPY reach_layer/web/ ./web/
+COPY reach_layer/config/ ./config/
 
 RUN chown -R reachlayer:reachlayer /app
 

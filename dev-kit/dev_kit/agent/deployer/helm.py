@@ -49,6 +49,7 @@ def build_helm_command(
     kubeconfig_path: str,
     set_values: Optional[Dict[str, str]] = None,
     set_files: Optional[Dict[str, str]] = None,
+    values_files: Optional[List[str]] = None,
     upgrade: bool = False,
 ) -> List[str]:
     """Build a helm install or upgrade command as a list of argument strings.
@@ -60,6 +61,7 @@ def build_helm_command(
         kubeconfig_path: Path to the kubeconfig file for cluster auth.
         set_values: Dict of --set key=value pairs.
         set_files: Dict of --set-file key=filepath pairs.
+        values_files: List of paths to values YAML files (-f flag).
         upgrade: If True, use 'helm upgrade --install' instead of 'helm install'.
 
     Returns:
@@ -77,6 +79,10 @@ def build_helm_command(
         "--wait",
     ]
 
+    if values_files:
+        for vf in values_files:
+            cmd += ["-f", vf]
+
     if set_values:
         for key, value in set_values.items():
             cmd += ["--set", f"{key}={value}"]
@@ -93,6 +99,7 @@ def build_template_command(
     release_name: str,
     set_values: Optional[Dict[str, str]] = None,
     set_files: Optional[Dict[str, str]] = None,
+    values_files: Optional[List[str]] = None,
 ) -> List[str]:
     """Build a helm template command for dry-run rendering without a cluster.
 
@@ -101,11 +108,16 @@ def build_template_command(
         release_name: Name of the Helm release used for templating.
         set_values: Dict of --set key=value pairs.
         set_files: Dict of --set-file key=filepath pairs.
+        values_files: List of paths to values YAML files (-f flag).
 
     Returns:
         List of strings forming the complete helm template command.
     """
     cmd = ["helm", "template", release_name, chart_path]
+
+    if values_files:
+        for vf in values_files:
+            cmd += ["-f", vf]
 
     if set_values:
         for key, value in set_values.items():

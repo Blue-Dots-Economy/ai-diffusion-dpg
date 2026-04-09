@@ -14,11 +14,15 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /app
 
-ENV UV_COMPILE_BYTECODE=1 \
+ENV UV_COMPILE_BYTECODE=0 \
     UV_LINK_MODE=copy
 
-# Copy dependency declarations first — layer is cached unless pyproject.toml changes
-COPY pyproject.toml ./
+# Copy observability_layer (path dependency: ../observability_layer from /app = /observability_layer)
+COPY observability_layer/pyproject.toml /observability_layer/pyproject.toml
+COPY observability_layer/src/ /observability_layer/src/
+
+# Copy dependency declarations — layer is cached unless pyproject.toml changes
+COPY knowledge_engine/pyproject.toml ./
 
 # CPU-only torch index is declared first so uv never resolves the CUDA/GPU
 # variant (~2.5 GB saved). All other deps are synced in the same pass.
@@ -41,10 +45,10 @@ WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 
 # Copy application source, entrypoint, config, and scripts
-COPY src/ ./src/
-COPY scripts/ ./scripts/
-COPY main.py ./
-COPY config/ ./config/
+COPY knowledge_engine/src/ ./src/
+COPY knowledge_engine/scripts/ ./scripts/
+COPY knowledge_engine/main.py ./
+COPY knowledge_engine/config/ ./config/
 
 # Ownership
 RUN chown -R knowledgeengine:knowledgeengine /app

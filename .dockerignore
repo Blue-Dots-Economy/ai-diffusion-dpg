@@ -1,0 +1,44 @@
+# Git
+.git
+.gitignore
+
+# Python artifacts
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.coverage
+htmlcov
+*.egg-info
+
+# Virtual environments
+.venv
+venv
+
+# IDE
+.vscode
+.idea
+
+# Node/Frontend
+dev-kit/frontend/node_modules
+dev-kit/frontend/.next
+
+# Test dirs
+*/tests/
+**/tests/
+
+# Documentation
+docs/
+*.md
+
+# CI/CD
+.github
+
+# Dev-kit (not needed in DPG images)
+dev-kit/
+
+# Automation scripts (not needed in images)
+automation/
+
+# Chroma DB data
+chroma_db/

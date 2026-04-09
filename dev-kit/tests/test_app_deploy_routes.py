@@ -26,7 +26,30 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key-placeholder")
 
 import dev_kit.agent.app as app_module
+import dev_kit.agent.deployer.dependencies as deps_module
 from dev_kit.agent.accumulator import BLOCKS, ConfigAccumulator
+
+# Stub YAML for infra services used in tests
+_INFRA_STUB_YAML = {
+    "redis": "image:\n  repository: redis\n  tag: '7-alpine'\nservice:\n  port: 6379\nresources:\n  requests:\n    cpu: 50m\n    memory: 64Mi\n  limits:\n    cpu: 100m\n    memory: 128Mi\npassword: ''\n",
+    "memgraph": "image:\n  repository: memgraph/memgraph\n  tag: latest\nservice:\n  boltPort: 7687\n  httpPort: 7444\nresources:\n  requests:\n    cpu: 100m\n    memory: 256Mi\n  limits:\n    cpu: 500m\n    memory: 1Gi\npassword: ''\n",
+    "otel-collector": "image:\n  repository: otel/opentelemetry-collector-contrib\n  tag: '0.96.0'\nresources:\n  requests:\n    cpu: 50m\n    memory: 64Mi\n  limits:\n    cpu: 100m\n    memory: 256Mi\n",
+    "jaeger": "image:\n  repository: jaegertracing/all-in-one\n  tag: '1.55'\nresources:\n  requests:\n    cpu: 50m\n    memory: 64Mi\n  limits:\n    cpu: 100m\n    memory: 256Mi\n",
+    "prometheus": "image:\n  repository: prom/prometheus\n  tag: v2.50.1\nresources:\n  requests:\n    cpu: 50m\n    memory: 64Mi\n  limits:\n    cpu: 100m\n    memory: 256Mi\n",
+    "loki": "image:\n  repository: grafana/loki\n  tag: '2.9.4'\nresources:\n  requests:\n    cpu: 50m\n    memory: 64Mi\n  limits:\n    cpu: 100m\n    memory: 256Mi\n",
+    "grafana": "image:\n  repository: grafana/grafana\n  tag: '10.3.3'\nresources:\n  requests:\n    cpu: 50m\n    memory: 128Mi\n  limits:\n    cpu: 200m\n    memory: 256Mi\nadminPassword: admin\n",
+}
+
+
+def _create_infra_tmp(tmp_path: Path) -> Path:
+    """Create a temp infra Helm dir with stub values.yaml for all 7 services."""
+    infra_tmp = tmp_path / "helm_infra"
+    infra_tmp.mkdir(exist_ok=True)
+    for chart_dir, content in _INFRA_STUB_YAML.items():
+        chart_path = infra_tmp / chart_dir
+        chart_path.mkdir(exist_ok=True)
+        (chart_path / "values.yaml").write_text(content)
+    return infra_tmp
 
 
 # ---------------------------------------------------------------------------
@@ -36,15 +59,18 @@ from dev_kit.agent.accumulator import BLOCKS, ConfigAccumulator
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    """Return a TestClient with CONFIGS_DIR and DPG_DIR redirected to tmp dirs."""
+    """Return a TestClient with CONFIGS_DIR, DPG_DIR, and HELM_INFRA_DIR redirected to tmp dirs."""
     dpg_tmp = tmp_path / "dpg"
     dpg_tmp.mkdir()
     # Write stub YAML files for each block so reads don't return empty strings
     for block in BLOCKS:
         (dpg_tmp / f"{block}.yaml").write_text(f"# {block} dpg stub\n")
 
+    infra_tmp = _create_infra_tmp(tmp_path)
+
     monkeypatch.setattr(app_module, "CONFIGS_DIR", tmp_path)
     monkeypatch.setattr(app_module, "DPG_DIR", dpg_tmp)
+    monkeypatch.setattr(deps_module, "HELM_INFRA_DIR", infra_tmp)
     app_module._engines.clear()
     return TestClient(app_module.app)
 
@@ -83,8 +109,11 @@ def client_with_project(tmp_path, monkeypatch, project_dir, project_slug):
     for block in BLOCKS:
         (dpg_tmp / f"{block}.yaml").write_text(f"# {block} dpg stub\n")
 
+    infra_tmp = _create_infra_tmp(tmp_path)
+
     monkeypatch.setattr(app_module, "CONFIGS_DIR", tmp_path)
     monkeypatch.setattr(app_module, "DPG_DIR", dpg_tmp)
+    monkeypatch.setattr(deps_module, "HELM_INFRA_DIR", infra_tmp)
     app_module._engines.clear()
     return TestClient(app_module.app), project_slug
 
@@ -206,7 +235,7 @@ class TestGetDependencies:
 
 class TestUpdateDependency:
     def test_update_valid_service_returns_ok(self, client_with_project):
-        """Valid service update returns status ok."""
+        """Valid service update returns status ok (writes to tmp dir, not real files)."""
         client, slug = client_with_project
         res = client.put(
             f"/api/projects/{slug}/deploy/dependencies/redis",
