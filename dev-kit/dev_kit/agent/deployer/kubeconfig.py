@@ -81,7 +81,7 @@ async def validate_kubeconfig(content: str) -> Dict:
         tmp.write(content)
         kubeconfig_path = tmp.name
 
-    result: Dict = {"valid": False, "version": "", "node_count": 0}
+    result: Dict = {**parsed, "valid": False, "version": "", "node_count": 0}
 
     try:
         version_proc = await asyncio.create_subprocess_exec(
