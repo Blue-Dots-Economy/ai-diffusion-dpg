@@ -51,7 +51,7 @@ class RayaSTTService(SegmentedSTTService):
         if not api_key:
             raise ValueError("telephony_adapter.raya.api_key is required")
         self._api_key = api_key
-        self._language = raya_cfg.get("language", "hi")
+        self._language = raya_cfg.get("stt_language") or raya_cfg.get("language", "hi")
         self._timeout = float(raya_cfg.get("stt_timeout_s", 30.0))
         super().__init__(
             sample_rate=8000,
@@ -81,12 +81,12 @@ class RayaSTTService(SegmentedSTTService):
             latency_ms = int((time.time() - start) * 1000)
 
             if response.status_code != 200:
+                error_body = response.text[:400]
                 logger.error(
-                    "raya_stt.http_error",
+                    f"raya_stt.http_error HTTP {response.status_code}: {error_body}",
                     extra={
                         "operation": "raya_stt.run_stt",
                         "status": "failure",
-                        "error": f"HTTP {response.status_code}",
                         "latency_ms": latency_ms,
                     },
                 )
@@ -140,12 +140,12 @@ class RayaSTTService(SegmentedSTTService):
                     )
                 latency_ms = int((time.time() - start) * 1000)
                 if response.status_code != 200:
+                    error_body = response.text[:400]
                     logger.error(
-                        "raya_stt.http_error",
+                        f"raya_stt.http_error HTTP {response.status_code}: {error_body}",
                         extra={
                             "operation": "raya_stt.run_stt",
                             "status": "failure",
-                            "error": f"HTTP {response.status_code}",
                             "latency_ms": latency_ms,
                         },
                     )

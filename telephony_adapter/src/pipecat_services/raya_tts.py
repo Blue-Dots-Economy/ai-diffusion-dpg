@@ -60,7 +60,7 @@ class RayaTTSService(TTSService):
         self._api_key = api_key
         self._base_url = tts_base_url.rstrip("/")
         self._voice_id = raya_cfg.get("voice_id", "voice_001")
-        self._language = raya_cfg.get("language", "hi")
+        self._language = raya_cfg.get("tts_language") or raya_cfg.get("language", "hi")
         self._speed = float(raya_cfg.get("tts_speed", 1.0))
         self._tts_timeout = float(raya_cfg.get("tts_timeout_s", 30.0))
         super().__init__(
