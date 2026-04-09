@@ -21,6 +21,7 @@ import os
 import time
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
 
@@ -99,6 +100,13 @@ def create_app(config: dict | None = None) -> FastAPI:
         title="Telephony Adapter",
         description="DPG Reach Layer telephony channel adapter — Vobiz + Raya + Agent Core.",
         version="0.1.0",
+    )
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     @app.get("/health")
