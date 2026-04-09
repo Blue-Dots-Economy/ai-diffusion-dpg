@@ -13,7 +13,7 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: '../web/dist',
+    outDir: '../web/dist',   // local dev: outputs to reach_layer/web/dist
     emptyOutDir: true,
   },
   test: {

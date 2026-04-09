@@ -12,7 +12,22 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# Stage 1: builder
+# Stage 1: Node — build the React/Vite frontend
+# -----------------------------------------------------------------------------
+FROM node:20-slim AS frontend
+
+WORKDIR /build
+
+COPY reach_layer/web-src/package.json ./
+RUN npm install
+
+COPY reach_layer/web-src/ ./
+# Vite outputs to ../web/dist relative to web-src — emit directly to /build/dist
+# then copy into the right place in the runtime stage
+RUN npm run build
+
+# -----------------------------------------------------------------------------
+# Stage 2: Python — install runtime dependencies
 # -----------------------------------------------------------------------------
 FROM python:3.14-slim AS builder
 
@@ -33,7 +48,7 @@ COPY reach_layer/pyproject.toml reach_layer/uv.lock* ./
 RUN uv sync --no-dev --no-cache --no-install-project
 
 # -----------------------------------------------------------------------------
-# Stage 2: runtime
+# Stage 3: runtime
 # -----------------------------------------------------------------------------
 FROM python:3.14-slim AS runtime
 
@@ -49,8 +64,11 @@ COPY --from=builder /observability_layer /observability_layer
 
 COPY reach_layer/main.py reach_layer/server.py reach_layer/config_loader.py ./
 COPY reach_layer/src/ ./src/
-COPY reach_layer/web/ ./web/
 COPY reach_layer/config/ ./config/
+
+# Copy the compiled frontend — Vite outDir is ../web/dist relative to web-src/,
+# which resolves to /web/dist inside the frontend stage (WORKDIR is /build)
+COPY --from=frontend /web/dist ./web/dist/
 
 RUN chown -R reachlayer:reachlayer /app
 
