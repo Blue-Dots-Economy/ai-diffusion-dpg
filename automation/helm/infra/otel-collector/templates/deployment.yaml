@@ -19,7 +19,7 @@ spec:
         - name: otel-collector
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command:
+          args:
             - "--config=/etc/otelcol/config.yaml"
           ports:
             - name: grpc

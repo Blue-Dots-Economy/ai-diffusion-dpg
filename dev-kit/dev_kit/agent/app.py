@@ -1134,6 +1134,14 @@ async def get_deploy_status(slug: str) -> dict:
 if _STATIC_DIR.exists():
     app.mount("/assets", StaticFiles(directory=_STATIC_DIR / "assets"), name="assets")
 
+    @app.get("/favicon.svg")
+    def serve_favicon():
+        """Serve the favicon SVG file."""
+        favicon = _STATIC_DIR / "favicon.svg"
+        if favicon.exists():
+            return FileResponse(favicon, media_type="image/svg+xml")
+        return FileResponse(_STATIC_DIR / "index.html")
+
     @app.get("/{full_path:path}")
     def serve_spa(full_path: str):
         """Serve the React SPA for all non-API routes."""

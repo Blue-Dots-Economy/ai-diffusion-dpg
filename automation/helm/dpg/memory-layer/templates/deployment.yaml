@@ -37,8 +37,8 @@ spec:
               mountPath: /app/config/dpg.yaml
               subPath: dpg.yaml
             - name: domain-config
-              mountPath: /app/config/domain.yaml
-              subPath: domain.yaml
+              mountPath: /app/config/memory_layer.yaml
+              subPath: memory_layer.yaml
           resources:
             requests:
               cpu: {{ .Values.resources.requests.cpu }}

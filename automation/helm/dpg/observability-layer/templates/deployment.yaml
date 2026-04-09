@@ -29,8 +29,8 @@ spec:
               mountPath: /app/config/dpg.yaml
               subPath: dpg.yaml
             - name: domain-config
-              mountPath: /app/config/domain.yaml
-              subPath: domain.yaml
+              mountPath: /app/config/observability_layer.yaml
+              subPath: observability_layer.yaml
           resources:
             requests:
               cpu: {{ .Values.resources.requests.cpu }}

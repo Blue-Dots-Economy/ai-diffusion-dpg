@@ -18,8 +18,8 @@ PRESETS: Dict[str, Dict[str, Dict]] = {
             "limits": {"cpu": "500m", "memory": "1Gi"},
         },
         "knowledge_engine": {
-            "requests": {"cpu": "250m", "memory": "512Mi"},
-            "limits": {"cpu": "500m", "memory": "1Gi"},
+            "requests": {"cpu": "250m", "memory": "1Gi"},
+            "limits": {"cpu": "1000m", "memory": "2Gi"},
         },
         "memory_layer": {
             "requests": {"cpu": "50m", "memory": "256Mi"},
@@ -48,8 +48,8 @@ PRESETS: Dict[str, Dict[str, Dict]] = {
             "limits": {"cpu": "1000m", "memory": "2Gi"},
         },
         "knowledge_engine": {
-            "requests": {"cpu": "500m", "memory": "1Gi"},
-            "limits": {"cpu": "1000m", "memory": "2Gi"},
+            "requests": {"cpu": "500m", "memory": "1.5Gi"},
+            "limits": {"cpu": "1500m", "memory": "3Gi"},
         },
         "memory_layer": {
             "requests": {"cpu": "100m", "memory": "512Mi"},
@@ -79,7 +79,7 @@ PRESETS: Dict[str, Dict[str, Dict]] = {
         },
         "knowledge_engine": {
             "requests": {"cpu": "1000m", "memory": "2Gi"},
-            "limits": {"cpu": "2000m", "memory": "4Gi"},
+            "limits": {"cpu": "2500m", "memory": "4Gi"},
         },
         "memory_layer": {
             "requests": {"cpu": "250m", "memory": "1Gi"},

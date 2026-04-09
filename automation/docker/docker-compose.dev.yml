@@ -93,7 +93,9 @@ services:
       - ../../dev-kit/dpg/memory_layer.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-kkb}/memory_layer.yaml:/app/config/memory_layer.yaml:ro
     networks:
-      - dpg_net
+      dpg_net:
+        aliases:
+          - memory-layer
     depends_on:
       redis:
         condition: service_healthy
@@ -124,7 +126,9 @@ services:
       - ../../dev-kit/dpg/trust_layer.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-kkb}/trust_layer.yaml:/app/config/trust_layer.yaml:ro
     networks:
-      - dpg_net
+      dpg_net:
+        aliases:
+          - trust-layer
     deploy:
       resources:
         limits:
@@ -150,7 +154,9 @@ services:
       - ../../dev-kit/dpg/observability_layer.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-kkb}/observability_layer.yaml:/app/config/observability_layer.yaml:ro
     networks:
-      - dpg_net
+      dpg_net:
+        aliases:
+          - observability-layer
     depends_on:
       otelcol:
         condition: service_started
@@ -179,7 +185,9 @@ services:
       - ../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-kkb}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
     networks:
-      - dpg_net
+      dpg_net:
+        aliases:
+          - action-gateway
     deploy:
       resources:
         limits:
@@ -210,7 +218,9 @@ services:
       - ../../knowledge_engine/data:/app/data:ro   # source docs (read-only)
       - chroma_data:/app/chroma_db            # embeddings (writable, overrides :ro for this subdir)
     networks:
-      - dpg_net
+      dpg_net:
+        aliases:
+          - knowledge-engine
     deploy:
       resources:
         limits:
@@ -237,7 +247,9 @@ services:
       - ../../dev-kit/dpg/agent_core.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-kkb}/agent_core.yaml:/app/config/agent_core.yaml:ro
     networks:
-      - dpg_net
+      dpg_net:
+        aliases:
+          - agent-core
     deploy:
       resources:
         limits:
@@ -276,7 +288,9 @@ services:
       - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/reach_layer.yaml:ro
     networks:
-      - dpg_net
+      dpg_net:
+        aliases:
+          - reach-layer
     deploy:
       resources:
         limits:
@@ -307,7 +321,9 @@ services:
       - "4318:4318"   # OTLP HTTP
       - "8889:8889"   # Prometheus metrics scrape endpoint
     networks:
-      - dpg_net
+      dpg_net:
+        aliases:
+          - otel-collector
     deploy:
       resources:
         limits:

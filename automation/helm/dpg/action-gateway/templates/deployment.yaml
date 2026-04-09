@@ -29,8 +29,8 @@ spec:
               mountPath: /app/config/dpg.yaml
               subPath: dpg.yaml
             - name: domain-config
-              mountPath: /app/config/domain.yaml
-              subPath: domain.yaml
+              mountPath: /app/config/action_gateway.yaml
+              subPath: action_gateway.yaml
           resources:
             requests:
               cpu: {{ .Values.resources.requests.cpu }}
