@@ -310,6 +310,210 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # Telephony Adapter — Vobiz/WebSocket telephony bridge (port 8006)
+  # PUBLIC_URL is injected by the ngrok service via NGROK_URL or set manually.
+  # ---------------------------------------------------------------------------
+  telephony_adapter:
+    build:
+      context: ../..
+      dockerfile: telephony_adapter/Dockerfile
+    container_name: telephony_adapter
+    environment:
+      - DPG_CONFIG_PATH=/app/config/dpg.yaml
+      - PUBLIC_URL=${PUBLIC_URL:-}                       # set from shell or use ngrok service below
+      - VOBIZ_AUTH_ID=${VOBIZ_AUTH_ID:-}
+      - VOBIZ_AUTH_TOKEN=${VOBIZ_AUTH_TOKEN:-}
+      - VOBIZ_FROM_NUMBER=${VOBIZ_FROM_NUMBER:-}
+      - RAYA_API_KEY=${RAYA_API_KEY:-}
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - ../../dev-kit/dpg/telephone_adapter.yaml:/app/config/dpg.yaml:ro
+    ports:
+      - "8006:8006"
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 512M
+    depends_on:
+      agent_core:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8006/health', timeout=3)"]
+      interval: 10s
+      timeout: 8s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  # # ---------------------------------------------------------------------------
+  # # Dev-Kit — Configuration Agent UI (port 8080)
+  # # ---------------------------------------------------------------------------
+  # dev_kit:
+  #   build: 
+  #     context: ../../dev-kit
+  #     dockerfile: Dockerfile
+  #   container_name: dev_kit
+  #   environment:
+  #     - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
+  #   ports:
+  #     - "8080:8080"
+  #   networks:
+  #     - dpg_net
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         cpus: '0.1'
+  #         memory: 512M
+  #   healthcheck:
+  #     test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/', timeout=3)"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 3
+  #     start_period: 30s
+  #   restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Grafana — dashboards UI (port 3000)
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:10.3.3
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 256M
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Jaeger — distributed trace UI (port 16686)
+  # ---------------------------------------------------------------------------
+  jaeger:
+    image: jaegertracing/all-in-one:1.55
+    container_name: jaeger
+    ports:
+      - "16686:16686"   # Jaeger UI
+      # 4317 is not exposed to the host — otelcol reaches jaeger:4317 internally
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 256M
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Loki — log aggregation (port 3100)
+  # ---------------------------------------------------------------------------
+  loki:
+    image: grafana/loki:2.9.4
+    container_name: loki
+    ports:
+      - "3100:3100"
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 256M
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # ngrok — exposes telephony_adapter (port 8006) to the public internet.
+  # Required so Vobiz can reach /answer and /ws/{call_sid} from outside.
+  #
+  # Prerequisites:
+  #   export NGROK_AUTHTOKEN=<your token>   # https://dashboard.ngrok.com/authtokens
+  #
+  # Once running, find your public URL:
+  #   docker logs ngrok                     # prints the forwarding URL on startup
+  #   curl http://localhost:4040/api/tunnels # ngrok local API (JSON)
+  #
+  # Then set PUBLIC_URL and restart telephony_adapter:
+  #   export PUBLIC_URL=https://abc123.ngrok-free.app
+  #   docker compose up -d telephony_adapter
+  # ---------------------------------------------------------------------------
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: ngrok
+    command: http telephony_adapter:8006 --log stdout
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
+    ports:
+      - "4040:4040"                          # ngrok local API / inspector UI
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 128M
+    depends_on:
+      telephony_adapter:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # OTel Collector — receives OTLP, fans out to Jaeger / Prometheus / Loki
+  # ---------------------------------------------------------------------------
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:0.96.0
+    container_name: otelcol
+    command: ["--config=/etc/otelcol/otelcol-config.yaml"]
+    volumes:
+      - ./otelcol/otelcol-config.yaml:/etc/otelcol/otelcol-config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # Prometheus metrics scrape endpoint
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133/"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Prometheus — metrics store (port 9090)
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.50.1
+    container_name: prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 256M
+    restart: unless-stopped
+
 networks:
   dpg_net:
     driver: bridge

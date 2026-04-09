@@ -17,6 +17,7 @@ telephony_adapter:
     base_url: http://agent_core:8000
     timeout_ms: 5000
     fallback_phrase: "I'm sorry, I couldn't process that. Please try again."
+    greeting: "Hello, how can I help you today?"
 observability:
   otel:
     collector_endpoint: http://otelcol:4317
