@@ -102,6 +102,57 @@ class ConversationEngine:
                     },
                 )
 
+        # Restore conversation history from checkpoints
+        self._history = self._load_history_from_checkpoints()
+
+    def _load_history_from_checkpoints(self) -> list[dict]:
+        """Load and concatenate conversation history from all checkpoint history.json files.
+
+        Only loads messages with string content (user text and assistant text).
+        Tool_use and tool_result messages are excluded because they can cause
+        invalid_request_error when the history window slices mid-exchange.
+        The LLM gets prior context via checkpoint summaries in the system prompt.
+
+        Returns:
+            Combined text-only message history from all checkpoints in phase order.
+        """
+        checkpoints_dir = self._project_path / "_meta" / "checkpoints"
+        if not checkpoints_dir.exists():
+            return []
+        history: list[dict] = []
+        for phase_dir in sorted(checkpoints_dir.iterdir()):
+            if not phase_dir.is_dir():
+                continue
+            history_file = phase_dir / "history.json"
+            if history_file.exists():
+                try:
+                    phase_history = json.loads(history_file.read_text())
+                    if isinstance(phase_history, list):
+                        for msg in phase_history:
+                            content = msg.get("content", "")
+                            if isinstance(content, str):
+                                history.append(msg)
+                except (json.JSONDecodeError, ValueError) as exc:
+                    logger.warning(
+                        "checkpoint_history_load_failed",
+                        extra={
+                            "operation": "conversation._load_history_from_checkpoints",
+                            "status": "failure",
+                            "error": str(exc),
+                            "path": str(history_file),
+                        },
+                    )
+        if history:
+            logger.info(
+                "history_restored_from_checkpoints",
+                extra={
+                    "operation": "conversation._load",
+                    "status": "success",
+                    "message_count": len(history),
+                },
+            )
+        return history
+
     def _save_accumulator(self) -> None:
         """Persist the current accumulator state to disk."""
         acc_path = self._project_path / "_meta" / "accumulator.json"

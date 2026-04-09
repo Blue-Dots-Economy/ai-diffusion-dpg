@@ -133,13 +133,42 @@ class ManagerAgent:
                 )
                 break
 
+            # Build a single assistant message with all content blocks
+            # (text + tool_use) from the LLM response, then a single user
+            # message with all tool_result blocks.
+            assistant_content: list[dict] = []
+            if current_response.content:
+                assistant_content.append({"type": "text", "text": current_response.content})
+            tool_results_content: list[dict] = []
+
             for tool_call in current_response.tool_calls:
                 if self._registry.get_route(tool_call.tool_name) == "knowledge_engine":
                     tool_result = self._execute_knowledge_retrieval(tool_call, ke_context)
                 else:
                     tool_result = self._execute_tool(tool_call, session_id)
                 all_tool_calls.append(tool_call)
-                messages = self._append_tool_result(messages, tool_call, tool_result)
+
+                assistant_content.append({
+                    "type": "tool_use",
+                    "id": tool_call.tool_use_id,
+                    "name": tool_call.tool_name,
+                    "input": tool_call.input_params,
+                })
+
+                result_text = ""
+                if not tool_result.success and tool_result.error:
+                    result_text = tool_result.error
+                else:
+                    result_text = tool_result.result_text or str(tool_result.result)
+
+                tool_results_content.append({
+                    "type": "tool_result",
+                    "tool_use_id": tool_call.tool_use_id,
+                    "content": result_text,
+                })
+
+            messages.append({"role": "assistant", "content": assistant_content})
+            messages.append({"role": "user", "content": tool_results_content})
 
             rounds += 1
 
