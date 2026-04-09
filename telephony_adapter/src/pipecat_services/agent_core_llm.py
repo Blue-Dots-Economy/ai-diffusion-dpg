@@ -121,14 +121,25 @@ class AgentCoreLLMProcessor(FrameProcessor):
                     },
                 )
 
-        except (httpx.TimeoutException, httpx.ConnectError) as exc:
+        except httpx.ConnectError as exc:
             latency_ms = int((time.time() - start) * 1000)
             logger.error(
-                "agent_core_llm.connection_error",
+                "agent_core_llm.connect_error",
                 extra={
                     "operation": "agent_core_llm.process_turn",
                     "status": "failure",
-                    "error": f"{type(exc).__name__}: {exc}",
+                    "error": f"Cannot reach agent_core at {self._base_url} — is the container running and on the same Docker network? ({exc})",
+                    "latency_ms": latency_ms,
+                },
+            )
+        except httpx.TimeoutException as exc:
+            latency_ms = int((time.time() - start) * 1000)
+            logger.error(
+                "agent_core_llm.timeout",
+                extra={
+                    "operation": "agent_core_llm.process_turn",
+                    "status": "failure",
+                    "error": f"agent_core timed out after {self._timeout:.1f}s — downstream services (memory/trust) may not be running ({type(exc).__name__})",
                     "latency_ms": latency_ms,
                 },
             )

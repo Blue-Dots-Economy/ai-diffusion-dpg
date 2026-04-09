@@ -91,21 +91,21 @@ class RayaTTSService(TTSService):
             "speed": self._speed,
             "sample_rate": _SAMPLE_RATE,
         }
-        headers = {"X-API-Key": self._api_key, "Content-Type": "application/json"}
+        headers = {"X-API-Key": self._api_key}
 
         total_bytes = 0
         try:
             async with httpx.AsyncClient(timeout=self._tts_timeout) as client:
                 async with client.stream("POST", url, json=payload, headers=headers) as response:
                     if response.status_code != 200:
-                        await response.aread()
+                        body = await response.aread()
                         latency_ms = int((time.time() - start) * 1000)
                         logger.error(
                             "raya_tts.http_error",
                             extra={
                                 "operation": "raya_tts.run_tts",
                                 "status": "failure",
-                                "error": f"HTTP {response.status_code}",
+                                "error": f"HTTP {response.status_code}: {body.decode(errors='replace')[:200]}",
                                 "latency_ms": latency_ms,
                             },
                         )
