@@ -115,7 +115,7 @@ class GraphUserStore:
                 session.run(
                     """
                     MERGE (u:User {user_id: $user_id})
-                    ON CREATE SET u.created_at = datetime()
+                    ON CREATE SET u.created_at = localdatetime()
                     WITH u
                     MERGE (u)-[:HAS_PROFILE]->(up:UserProfile {user_id: $user_id})
                     MERGE (u)-[:HAS_JOURNEY_HISTORY]->(jh:JourneyHistory {user_id: $user_id})
