@@ -246,15 +246,22 @@ services:
 
   # ---------------------------------------------------------------------------
   # Telephony Adapter — Vobiz/WebSocket telephony bridge (port 8006)
+  # PUBLIC_URL must be set before starting (export PUBLIC_URL=https://...).
+  # Use the ngrok service to get a public URL automatically.
   # ---------------------------------------------------------------------------
   telephony_adapter:
     image: sanketikahub/dpg-telephony-adapter:0.1.0
     container_name: telephony_adapter
     environment:
-      - DPG_CONFIG_PATH=/app/config/telephony.yaml
-      - DOMAIN_CONFIG_PATH=/app/config/telephony.yaml   # no domain override; DPG defaults used
+      - DPG_CONFIG_PATH=/app/config/dpg.yaml
+      - PUBLIC_URL=${PUBLIC_URL:-}                       # set from shell or use ngrok service
+      - VOBIZ_AUTH_ID=${VOBIZ_AUTH_ID:-}
+      - VOBIZ_AUTH_TOKEN=${VOBIZ_AUTH_TOKEN:-}
+      - VOBIZ_FROM_NUMBER=${VOBIZ_FROM_NUMBER:-}
+      - RAYA_API_KEY=${RAYA_API_KEY:-}
+      - LOG_LEVEL=INFO
     volumes:
-      - ../../telephony_adapter/config/telephony.yaml:/app/config/telephony.yaml:ro
+      - ../../dev-kit/dpg/telephone_adapter.yaml:/app/config/dpg.yaml:ro
     ports:
       - "8006:8006"
     networks:
@@ -262,8 +269,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.1'
-          memory: 512M
+          cpus: '0.5'
+          memory: 1G
     depends_on:
       agent_core:
         condition: service_healthy
@@ -272,7 +279,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 15s
+      start_period: 60s
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
