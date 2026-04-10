@@ -129,7 +129,7 @@ telephony_adapter:
     fallback_phrase: "I'm sorry, I couldn't process that. Please try again."
 observability:
   otel:
-    collector_endpoint: http://otelcol4317
+    collector_endpoint: http://otelcol:4317
     sample_rate: 1.0
     export_interval_ms: 5000
 ```

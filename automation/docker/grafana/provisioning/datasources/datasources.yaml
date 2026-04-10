@@ -6,7 +6,7 @@ datasources:
   - name: Prometheus
     type: prometheus
     access: proxy
-    url: http://otelcol8889
+    url: http://otelcol:8889
     isDefault: true
     editable: true
 
