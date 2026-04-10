@@ -16,3 +16,6 @@ ui:
     back! What crop issue can I help with today?
   storage_key: farmer_friendly_user_id
   theme_storage_key: farmer_friendly_theme
+
+observability:
+  domain: "farmer_friendly"

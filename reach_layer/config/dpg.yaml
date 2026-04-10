@@ -31,3 +31,10 @@ ui:
   new_session_msg: "New session started. How can I help you today?"
   returning_user_msg: "Welcome back! Continuing your previous conversation."
   storage_key: "dpg_user_id"
+
+# Observability — OTel collector endpoint for trace/metric export.
+observability:
+  otel:
+    collector_endpoint: "http://localhost:4317"
+    sample_rate: 1.0
+    export_interval_ms: 5000

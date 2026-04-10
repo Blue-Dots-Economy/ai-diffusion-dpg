@@ -101,3 +101,6 @@ trust:
     queue_backend: "log"
     holding_message: "Aapki baat ek advisor tak pahunch rahi hai. Thodi der mein aapse sampark hoga."
     notification_webhook: null
+
+observability:
+  domain: "kkb"

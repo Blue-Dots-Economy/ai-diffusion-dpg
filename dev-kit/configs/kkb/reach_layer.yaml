@@ -17,3 +17,6 @@ ui:
   returning_user_msg: "वापस आने पर स्वागत है! · Welcome back! Continuing your previous conversation."
   storage_key: "kkb_user_id"
   theme_storage_key: "kkb_theme"
+
+observability:
+  domain: "kkb"

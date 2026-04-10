@@ -24,3 +24,10 @@ knowledge:
       supported_types: [pdf, image]
       audio_enabled: false
       max_file_size_mb: 10
+
+# Observability — OTel collector endpoint for trace/metric export.
+observability:
+  otel:
+    collector_endpoint: "http://localhost:4317"
+    sample_rate: 1.0
+    export_interval_ms: 5000

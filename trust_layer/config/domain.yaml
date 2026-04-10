@@ -9,3 +9,6 @@ trust:
     escalation_topics: []     # Required. List of strings that trigger human escalation.
   output_rules:
     blocked_phrases: []       # Required. List of strings that must not appear in LLM output.
+
+observability:
+  domain: ""  # Required. Domain identifier (e.g. "kkb", "farmer_friendly").

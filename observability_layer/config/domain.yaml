@@ -2,3 +2,6 @@
 #
 # No domain-specific keys required. DPG defaults in config/dpg.yaml apply.
 # Add domain overrides here if needed.
+
+observability:
+  domain: ""  # Required. Domain identifier (e.g. "kkb", "farmer_friendly").

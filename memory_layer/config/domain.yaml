@@ -27,3 +27,6 @@ user_data_persistence:
 reengagement:
   triggers: []  # Required. List of re-engagement trigger definitions.
                 # Each: {event, delay_hours, channel, message_template} or {event, loop_threshold, action}.
+
+observability:
+  domain: ""  # Required. Domain identifier (e.g. "kkb", "farmer_friendly").

@@ -28,3 +28,10 @@ ui:
   returning_user_msg: "Welcome back! How can I help you today?"
   storage_key: "dpg_user_id"
   theme_storage_key: "dpg_theme"
+
+# Observability — OTel collector endpoint for trace/metric export.
+observability:
+  otel:
+    collector_endpoint: "http://otel-collector:4317"
+    sample_rate: 1.0
+    export_interval_ms: 5000

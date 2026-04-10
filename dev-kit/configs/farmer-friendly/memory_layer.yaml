@@ -50,3 +50,6 @@ state:
         default: 0
 user_data_persistence:
   default_mode: saved
+
+observability:
+  domain: "farmer_friendly"

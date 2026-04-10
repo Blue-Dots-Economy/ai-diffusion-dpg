@@ -19,3 +19,6 @@ knowledge:
 
     multimodal_input_handler:
       image_model: ""  # Required. Claude model ID for image description.
+
+observability:
+  domain: ""  # Required. Domain identifier (e.g. "kkb", "farmer_friendly").

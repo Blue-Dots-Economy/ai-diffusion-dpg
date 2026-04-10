@@ -126,3 +126,6 @@ reengagement:
       - event: DOP_RL              # evaluation loop
         loop_threshold: 3
         action: hitl_counsellor
+
+observability:
+  domain: "kkb"

@@ -984,3 +984,6 @@ agent_workflow:
         - intent: "*"
           next_subagent_id: clarification   # Orchestrator will re-evaluate after re-prompt
                                         # Loop detection: if stuck here > 2 turns → counsellor_request
+
+observability:
+  domain: "kkb"

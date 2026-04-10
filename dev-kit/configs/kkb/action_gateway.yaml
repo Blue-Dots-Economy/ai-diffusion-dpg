@@ -10,3 +10,6 @@ action_gateway:
     onest_market_lookup:
       endpoint: "http://action_gateway:9999/onest/market_lookup"
       timeout_ms: 5000
+
+observability:
+  domain: "kkb"

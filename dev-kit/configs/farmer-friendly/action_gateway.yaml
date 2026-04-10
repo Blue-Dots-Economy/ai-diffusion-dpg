@@ -1,2 +1,5 @@
 action_gateway:
   connectors: {}
+
+observability:
+  domain: "farmer_friendly"

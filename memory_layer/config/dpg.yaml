@@ -20,3 +20,10 @@ memgraph:
   user: "neo4j"
   password: null               
   connection_timeout_s: 5
+
+# Observability — OTel collector endpoint for trace/metric export.
+observability:
+  otel:
+    collector_endpoint: "http://localhost:4317"
+    sample_rate: 1.0
+    export_interval_ms: 5000

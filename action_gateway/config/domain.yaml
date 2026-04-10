@@ -10,3 +10,6 @@ action_gateway:
                   #   my_connector:
                   #     endpoint: "http://localhost:9999/my_connector"
                   #     timeout_ms: 5000
+
+observability:
+  domain: ""  # Required. Domain identifier (e.g. "kkb", "farmer_friendly").

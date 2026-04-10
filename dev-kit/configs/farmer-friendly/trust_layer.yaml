@@ -13,3 +13,6 @@ trust:
       Seva Kendra से जोड़ रहे हैं...
     notification_webhook: https://krishi-seva-kendra.example.com/escalation
     queue_backend: redis
+
+observability:
+  domain: "farmer_friendly"

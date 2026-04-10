@@ -8,3 +8,6 @@ ui:
   app_icon: "💼"
   user_id_placeholder: "e.g. rahul_electrician"
   storage_key: "kkb_user_id"
+
+observability:
+  domain: ""  # Required. Domain identifier (e.g. "kkb", "farmer_friendly").
