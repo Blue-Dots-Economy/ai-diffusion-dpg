@@ -19,6 +19,7 @@ import time
 from typing import Optional
 
 import anthropic
+from opentelemetry import trace as otel_trace
 
 from src.exceptions import LLMCallError, LLMFallbackError
 from src.llm_wrapper.base import LLMWrapperBase
@@ -160,6 +161,7 @@ class ClaudeLLMWrapper(LLMWrapperBase):
                 time.sleep(delay)
 
             start = time.time()
+            _tracer = otel_trace.get_tracer(__name__)
             try:
                 kwargs: dict = {
                     "model": model,
@@ -173,8 +175,13 @@ class ClaudeLLMWrapper(LLMWrapperBase):
                 if output_format:
                     kwargs["response_format"] = output_format
 
-                raw = self._client.messages.create(**kwargs)
-                response = self._parse_response(raw, model)
+                with _tracer.start_as_current_span("llm.call") as span:
+                    span.set_attribute("gen_ai.model", model)
+                    span.set_attribute("llm.attempt", attempt + 1)
+                    raw = self._client.messages.create(**kwargs)
+                    response = self._parse_response(raw, model)
+                    span.set_attribute("gen_ai.usage.input_tokens", response.input_tokens)
+                    span.set_attribute("gen_ai.usage.output_tokens", response.output_tokens)
 
                 logger.info(
                     "llm_wrapper.call",

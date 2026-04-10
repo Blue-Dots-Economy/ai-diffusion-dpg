@@ -103,6 +103,12 @@ def create_app(observability: OtelObservabilityLayer, obs_config: ObservabilityC
         version="0.1.0",
     )
 
+    try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        FastAPIInstrumentor.instrument_app(app)
+    except Exception:
+        pass  # Observability must not prevent startup
+
     @app.post("/emit/turn")
     def emit_turn(request: TurnEventRequest) -> StatusResponse:
         """Process a turn event — outcome tracking and OTel metrics."""

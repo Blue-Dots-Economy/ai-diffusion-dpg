@@ -7,7 +7,7 @@ Uses FastAPI TestClient — no real HTTP calls made.
 Covers:
 - Normal: /retrieve returns chunks for valid request
 - Edge: missing session_id returns 422
-- OTel: /retrieve emits ke.prompt_assemble span with session_id + intent attributes
+- OTel: /retrieve emits ke.rag_retrieve span with session_id + intent attributes
 """
 
 from __future__ import annotations
@@ -147,7 +147,7 @@ def test_retrieve_missing_session_id_returns_422(client):
 # ---------------------------------------------------------------------------
 
 def test_retrieve_emits_ke_span():
-    """POST /retrieve must produce a ke.prompt_assemble span."""
+    """POST /retrieve must produce a ke.rag_retrieve span."""
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -170,8 +170,8 @@ def test_retrieve_emits_ke_span():
 
     spans = exporter.get_finished_spans()
     span_names = [s.name for s in spans]
-    assert "ke.prompt_assemble" in span_names
+    assert "ke.rag_retrieve" in span_names
 
-    ke_span = next(s for s in spans if s.name == "ke.prompt_assemble")
+    ke_span = next(s for s in spans if s.name == "ke.rag_retrieve")
     assert ke_span.attributes.get("session_id") == VALID_REQUEST["session_id"]
     assert ke_span.attributes.get("intent") == VALID_REQUEST["intent"]

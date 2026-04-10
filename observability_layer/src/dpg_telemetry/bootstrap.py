@@ -1,5 +1,5 @@
 """
-OTel SDK bootstrap — configures TracerProvider and MeterProvider.
+OTel SDK bootstrap — configures TracerProvider, MeterProvider, and LoggerProvider.
 Belongs to the Observability Layer DPG block.
 """
 from __future__ import annotations
@@ -72,6 +72,35 @@ def init_otel(service_name: str, config: dict) -> None:
                 metric_readers=[metric_reader],
             )
             metrics.set_meter_provider(meter_provider)
+
+            # LoggerProvider — bridges Python logging → OTLP → Loki
+            try:
+                from opentelemetry._logs import set_logger_provider
+                from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
+                from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+                from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+
+                logger_provider = LoggerProvider(resource=resource)
+                logger_provider.add_log_record_processor(
+                    BatchLogRecordProcessor(
+                        OTLPLogExporter(endpoint=endpoint, insecure=True)
+                    )
+                )
+                set_logger_provider(logger_provider)
+
+                # Attach OTel handler to Python root logger so all structured
+                # logs are forwarded to the Collector's logs pipeline.
+                otel_handler = LoggingHandler(
+                    level=logging.INFO,
+                    logger_provider=logger_provider,
+                )
+                logging.getLogger().addHandler(otel_handler)
+            except Exception as log_err:
+                # Log export is best-effort; trace + metrics are more critical.
+                logging.getLogger(__name__).debug(
+                    "dpg_telemetry.log_provider_skipped",
+                    extra={"error": str(log_err)},
+                )
 
             configure_propagator()
             _initialised = True

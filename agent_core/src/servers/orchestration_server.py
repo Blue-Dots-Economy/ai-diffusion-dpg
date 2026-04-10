@@ -72,6 +72,12 @@ def create_orchestration_app(agent_core: AgentCore) -> FastAPI:
         version="0.1.0",
     )
 
+    try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        FastAPIInstrumentor.instrument_app(app)
+    except Exception:
+        pass  # Observability must not prevent startup
+
     # ------------------------------------------------------------------
     # Endpoints
     # ------------------------------------------------------------------

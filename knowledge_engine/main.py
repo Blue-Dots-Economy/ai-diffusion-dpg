@@ -205,7 +205,7 @@ def create_app(ke: KnowledgeEngine, config: dict) -> FastAPI:
         if not request.session_id:
             raise HTTPException(status_code=422, detail="session_id must not be empty")
 
-        with _tracer.start_as_current_span("ke.prompt_assemble") as span:
+        with _tracer.start_as_current_span("ke.rag_retrieve") as span:
             span.set_attribute("session_id", request.session_id)
             span.set_attribute("intent", request.intent or "")
             start = time.time()
