@@ -253,6 +253,7 @@ services:
     container_name: telephony_adapter
     environment:
       - DPG_CONFIG_PATH=/app/config/dpg.yaml
+      - NLTK_DATA=/tmp/nltk_data
       - PUBLIC_URL=${PUBLIC_URL:-}                       # set from shell or use ngrok service
       - VOBIZ_AUTH_ID=${VOBIZ_AUTH_ID:-}
       - VOBIZ_AUTH_TOKEN=${VOBIZ_AUTH_TOKEN:-}
