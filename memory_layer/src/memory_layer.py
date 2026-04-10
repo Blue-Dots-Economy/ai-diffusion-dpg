@@ -480,8 +480,9 @@ class MemoryLayer:
                         "last_accessed": last_accessed,
                     })
                 else:
-                    # Lazy cleanup: session expired, remove stale field
+                    # Lazy cleanup: session expired, remove stale Redis + SQLite audit
                     self._redis.remove_stale_session_field(user_id, session_id)
+                    self._audit.delete_session_audit(session_id)
 
             # Sort by last_accessed descending (most recent first)
             alive.sort(key=lambda s: s["last_accessed"], reverse=True)

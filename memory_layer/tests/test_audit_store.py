@@ -253,3 +253,53 @@ def test_update_consent_no_op_when_db_unavailable(tmp_path):
     store = SQLiteAuditStore(bad_path)
     assert store._db_available is False
     store.update_consent("s1", "true")  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# Session audit cleanup — lazy deletion
+# ---------------------------------------------------------------------------
+
+def test_delete_session_audit_removes_turns_and_session(audit_store):
+    """delete_session_audit must remove both turn_audit and session_audit rows."""
+    audit_store.record_turn_history("s1", "u1", "t1", "hi", "hello")
+    audit_store.record_turn_history("s1", "u1", "t2", "bye", "goodbye")
+    assert len(audit_store.get_history("s1")) == 2
+
+    audit_store.delete_session_audit("s1")
+
+    assert len(audit_store.get_history("s1")) == 0
+    with audit_store._get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM session_audit WHERE session_id = 's1'"
+        ).fetchone()
+    assert row is None
+
+
+def test_delete_session_audit_does_not_affect_other_sessions(audit_store):
+    """Deleting one session must not touch other sessions."""
+    audit_store.record_turn_history("s1", "u1", "t1", "hi", "hello")
+    audit_store.record_turn_history("s2", "u1", "t2", "hey", "howdy")
+
+    audit_store.delete_session_audit("s1")
+
+    assert len(audit_store.get_history("s1")) == 0
+    assert len(audit_store.get_history("s2")) == 1
+
+
+def test_delete_session_audit_empty_id_is_no_op(audit_store):
+    """Empty session_id must be a no-op, not raise."""
+    audit_store.delete_session_audit("")
+    audit_store.delete_session_audit(None)
+
+
+def test_delete_session_audit_nonexistent_is_no_op(audit_store):
+    """Deleting a non-existent session must not raise."""
+    audit_store.delete_session_audit("does_not_exist")
+
+
+def test_delete_session_audit_no_op_when_db_unavailable(tmp_path):
+    """delete_session_audit must not raise when db is unavailable."""
+    bad_path = str(tmp_path)
+    store = SQLiteAuditStore(bad_path)
+    assert store._db_available is False
+    store.delete_session_audit("s1")  # should not raise

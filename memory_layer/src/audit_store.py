@@ -337,6 +337,47 @@ class SQLiteAuditStore(AuditStoreBase):
                 },
             )
 
+    def delete_session_audit(self, session_id: str) -> None:
+        """Delete all audit records (turn_audit + session_audit) for a session.
+
+        Args:
+            session_id: Session identifier. Empty/None is a no-op.
+        """
+        if not session_id:
+            return
+        if not self._db_available:
+            return
+        try:
+            with self._lock:
+                with self._get_connection() as conn:
+                    conn.execute(
+                        "DELETE FROM turn_audit WHERE session_id = ?",
+                        (session_id,),
+                    )
+                    conn.execute(
+                        "DELETE FROM session_audit WHERE session_id = ?",
+                        (session_id,),
+                    )
+                    conn.commit()
+            logger.info(
+                "sqlite_audit_store.delete_session_audit",
+                extra={
+                    "operation": "audit_store.delete_session_audit",
+                    "status": "success",
+                    "session_id": session_id,
+                },
+            )
+        except Exception as e:
+            logger.error(
+                "sqlite_audit_store.delete_session_audit_error",
+                extra={
+                    "operation": "audit_store.delete_session_audit",
+                    "status": "failure",
+                    "session_id": session_id,
+                    "error": f"{type(e).__name__}: {e}",
+                },
+            )
+
     def get_history(self, session_id: str) -> list[dict]:
         """Retrieve full chat history for a session, sorted by timestamp."""
         try:

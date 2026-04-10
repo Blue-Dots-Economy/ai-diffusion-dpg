@@ -78,6 +78,16 @@ class AuditStoreBase(ABC):
         """
 
     @abstractmethod
+    def delete_session_audit(self, session_id: str) -> None:
+        """Delete all audit records (turn_audit + session_audit) for a session.
+
+        Called during lazy cleanup when an expired Redis session is detected.
+
+        Args:
+            session_id: Session identifier. Empty/None is a no-op.
+        """
+
+    @abstractmethod
     def get_history(self, session_id: str) -> list[dict]:
         """Retrieve full turn history for a session, sorted by timestamp.
 
