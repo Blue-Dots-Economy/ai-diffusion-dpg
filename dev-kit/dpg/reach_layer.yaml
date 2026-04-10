@@ -17,10 +17,6 @@ memory_layer_client:
   endpoint: "http://memory_layer:8002"
   timeout_s: 10.0
 
-observability:
-  otel:
-    collector_endpoint: "http://otelcol:4317"
-
 ui:
   agent_avatar: "🤖"
   user_avatar: "👤"
@@ -36,6 +32,6 @@ ui:
 # Observability — OTel collector endpoint for trace/metric export.
 observability:
   otel:
-    collector_endpoint: "http://otel-collector:4317"
+    collector_endpoint: "http://otelcol:4317"
     sample_rate: 1.0
     export_interval_ms: 5000

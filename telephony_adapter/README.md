@@ -188,7 +188,7 @@ Configure the OTel collector endpoint via:
 ```yaml
 observability:
   otel:
-    collector_endpoint: http://otel-collector:4317
+    collector_endpoint: http://otelcol4317
 ```
 
 ---

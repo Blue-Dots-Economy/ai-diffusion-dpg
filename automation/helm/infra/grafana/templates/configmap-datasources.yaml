@@ -12,7 +12,7 @@ data:
       - name: Prometheus
         type: prometheus
         access: proxy
-        url: http://otel-collector:8889
+        url: http://otelcol8889
         isDefault: true
         editable: true
       - name: Jaeger
