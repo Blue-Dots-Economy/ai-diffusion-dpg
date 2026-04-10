@@ -1,0 +1,23 @@
+# Auto-provisioned Grafana datasources for DPG observability stack.
+# Grafana reads this file on startup — no manual datasource setup needed.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://otel-collector:8889
+    isDefault: true
+    editable: true
+
+  - name: Jaeger
+    type: jaeger
+    access: proxy
+    url: http://jaeger:16686
+    editable: true
+
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: true

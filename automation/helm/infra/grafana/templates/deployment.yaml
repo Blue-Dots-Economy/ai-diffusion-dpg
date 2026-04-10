@@ -25,6 +25,10 @@ spec:
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}
+          volumeMounts:
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+              readOnly: true
           resources:
             requests:
               cpu: {{ .Values.resources.requests.cpu }}
@@ -32,3 +36,7 @@ spec:
             limits:
               cpu: {{ .Values.resources.limits.cpu }}
               memory: {{ .Values.resources.limits.memory }}
+      volumes:
+        - name: datasources
+          configMap:
+            name: {{ .Release.Name }}-datasources

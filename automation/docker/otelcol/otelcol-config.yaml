@@ -26,6 +26,11 @@ exporters:
 
   loki:
     endpoint: http://loki:3100/loki/api/v1/push
+    default_labels_enabled:
+      exporter: true
+      job: true
+      instance: true
+      level: true
 
   debug:
     verbosity: normal
