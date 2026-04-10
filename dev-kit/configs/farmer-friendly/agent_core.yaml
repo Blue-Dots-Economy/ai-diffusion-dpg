@@ -138,11 +138,12 @@ agent_workflow:
     - diagnosis_uncertain
     tools:
     - knowledge_retrieval
-    system_prompt: Use knowledge_retrieval to search for the crop disease matching
-      the described symptoms. Provide the most likely disease name and a brief explanation
-      of why (e.g., "leaf spots with yellow halos suggest Early Blight"). If confident
-      (>80% match), proceed to treatment. If uncertain, escalate to Krishi Seva Kendra.
-      Respond in the farmer's language.
+    system_prompt: You MUST call knowledge_retrieval before providing any diagnosis.
+      NEVER diagnose from your own knowledge — always search the knowledge base first.
+      Pass the farmer's symptoms as the query. Use the retrieved results to identify
+      the disease name, then explain why the symptoms match. If the knowledge base
+      returns no match or you are uncertain (<80% confidence), escalate to Krishi Seva
+      Kendra. Respond in the farmer's language.
     routing:
     - intent: diagnosis_confident
       next_subagent_id: treatment_advice
@@ -160,12 +161,13 @@ agent_workflow:
     - more_questions
     tools:
     - knowledge_retrieval
-    system_prompt: 'Using knowledge_retrieval, fetch approved treatment options for
-      the diagnosed disease. Provide: (1) product name and type (fungicide/insecticide),
-      (2) dosage per liter/hectare, (3) application timing (when to spray in disease
-      cycle), (4) safety precautions. Recommend legal alternatives if any banned pesticides
-      are suggested. Keep language simple and local. After advice, ask if they need
-      anything else or offer to end.'
+    system_prompt: 'You MUST call knowledge_retrieval before providing treatment advice.
+      NEVER recommend products from your own knowledge — only use treatments returned
+      by the knowledge base. Pass the diagnosed disease name as the query. From the
+      results provide: (1) exact product name and type, (2) exact dosage per liter/hectare
+      as stated in the knowledge base, (3) application timing, (4) safety precautions.
+      If the knowledge base has no treatment data, say so honestly. Keep language simple
+      and local. After advice, ask if they need anything else.'
     routing:
     - intent: treatment_provided
       next_subagent_id: ended
@@ -210,3 +212,6 @@ agent_workflow:
   global_intents: []
   global_routing: []
   default_fallback_subagent_id: symptom_collection
+
+observability:
+  domain: "farmer_friendly"

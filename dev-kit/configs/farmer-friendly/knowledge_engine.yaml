@@ -18,23 +18,11 @@ knowledge:
       collection_name: farmer-friendly-kb
       chroma_persist_dir: ./data/chroma_db
       sources:
-      - path: ./data/knowledge/crop_diseases.txt
+      - path: ./data/diseases.json
         type: static
         doc_type: disease_symptom
         refresh: manual
-      - path: ./data/knowledge/treatment_protocols.txt
-        type: static
-        doc_type: treatment
-        refresh: manual
-      - path: ./data/knowledge/approved_pesticides.txt
-        type: static
-        doc_type: pesticide_approved
-        refresh: manual
-      - path: ./data/knowledge/organic_farming.txt
-        type: static
-        doc_type: organic_methods
-        refresh: manual
-      - path: ./data/knowledge/government_schemes.txt
+      - path: ./data/farmer_friendly_schemes.json
         type: static
         doc_type: govt_schemes
         refresh: manual
@@ -58,3 +46,6 @@ knowledge:
         - pesticide_approved
         - organic_methods
         - govt_schemes
+
+observability:
+  domain: "farmer_friendly"
