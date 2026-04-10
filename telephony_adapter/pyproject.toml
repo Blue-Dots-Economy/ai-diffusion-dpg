@@ -11,13 +11,15 @@ dependencies = [
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.29.0",
     "httpx>=0.27.0",
-    "websockets>=12.0",
     "pyyaml>=6.0",
     "python-dotenv>=1.0.0",
     "observability-layer",
     "opentelemetry-instrumentation-fastapi>=0.61b0",
     "opentelemetry-instrumentation-httpx>=0.61b0",
     "python-multipart>=0.0.24",
+    "pipecat-ai[websocket,silero]>=0.0.108",
+    "pipecat-vobiz>=0.0.2",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
@@ -37,7 +39,7 @@ asyncio_mode = "auto"
 
 [tool.coverage.run]
 source = ["src", "server.py", "config_loader.py"]
-omit = ["*/tests/*", "*/__init__.py"]
+omit = ["*/tests/*", "*/__init__.py", "src/bot.py"]
 
 [tool.coverage.report]
 fail_under = 70

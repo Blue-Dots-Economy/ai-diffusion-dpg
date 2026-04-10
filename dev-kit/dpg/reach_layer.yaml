@@ -10,12 +10,16 @@ reach_layer:
     agent_prefix: "Agent: "
 
 agent_core_client:
-  endpoint: "http://agent-core:8000/process_turn"
+  endpoint: "http://agent_core:8000/process_turn"
   timeout_s: 30.0
 
 memory_layer_client:
-  endpoint: "http://memory-layer:8002"
+  endpoint: "http://memory_layer:8002"
   timeout_s: 10.0
+
+observability:
+  otel:
+    collector_endpoint: "http://otelcol:4317"
 
 ui:
   agent_avatar: "🤖"

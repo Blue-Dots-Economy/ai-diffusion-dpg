@@ -4,15 +4,30 @@
 # Runs the FastAPI web server (server.py) that serves the chat UI on port 8005.
 # The CLI adapter (main.py) remains available for local development use.
 #
-# Usage (server):
-#   docker run -p 8005:8005 --network dpg_net reach_layer
+# Must be built from the repo root (so observability_layer/ is in context):
+#   docker build -f reach_layer/Dockerfile -t reach_layer .
 #
 # Prerequisites: all backend services must be running and reachable on the
 # Docker network before starting this container.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# Stage 1: builder
+# Stage 1: Node — build the React/Vite frontend
+# -----------------------------------------------------------------------------
+FROM node:20-slim AS frontend
+
+WORKDIR /build
+
+COPY reach_layer/web-src/package.json ./
+RUN npm install
+
+COPY reach_layer/web-src/ ./
+# Vite outputs to ../web/dist relative to web-src — emit directly to /build/dist
+# then copy into the right place in the runtime stage
+RUN npm run build
+
+# -----------------------------------------------------------------------------
+# Stage 2: Python — install runtime dependencies
 # -----------------------------------------------------------------------------
 FROM python:3.14-slim AS builder
 
@@ -23,18 +38,17 @@ WORKDIR /app
 ENV UV_COMPILE_BYTECODE=0 \
     UV_LINK_MODE=copy
 
-# Copy observability_layer (path dependency: ../observability_layer from /app = /observability_layer)
-COPY observability_layer/pyproject.toml /observability_layer/pyproject.toml
-COPY observability_layer/src/ /observability_layer/src/
+# Copy observability_layer as a local package (pyproject.toml references ../observability_layer)
+COPY observability_layer/ /observability_layer/
 
-# Copy dependency declarations — layer is cached unless pyproject.toml changes
-COPY reach_layer/pyproject.toml ./
+# Copy only the project manifest first for dependency caching
+COPY reach_layer/pyproject.toml reach_layer/uv.lock* ./
 
 # Sync runtime dependencies only; creates /app/.venv
 RUN uv sync --no-dev --no-cache --no-install-project
 
 # -----------------------------------------------------------------------------
-# Stage 2: runtime
+# Stage 3: runtime
 # -----------------------------------------------------------------------------
 FROM python:3.14-slim AS runtime
 
@@ -44,13 +58,17 @@ RUN addgroup --system reachlayer && adduser --system --ingroup reachlayer reachl
 
 WORKDIR /app
 
-# Copy the venv from builder
+# Copy the venv from builder (includes observability-layer and all deps)
 COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /observability_layer /observability_layer
 
 COPY reach_layer/main.py reach_layer/server.py reach_layer/config_loader.py ./
 COPY reach_layer/src/ ./src/
-COPY reach_layer/web/ ./web/
 COPY reach_layer/config/ ./config/
+
+# Copy the compiled frontend — Vite outDir is ../web/dist relative to web-src/,
+# which resolves to /web/dist inside the frontend stage (WORKDIR is /build)
+COPY --from=frontend /web/dist ./web/dist/
 
 RUN chown -R reachlayer:reachlayer /app
 

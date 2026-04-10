@@ -3,6 +3,9 @@
 # =============================================================================
 # Stage 1 (builder): install dependencies into a venv via uv sync.
 # Stage 2 (runtime): copy only the venv and source — no build tools.
+#
+# Must be built from the repo root (so observability_layer/ is in context):
+#   docker build -f knowledge_engine/Dockerfile -t knowledge_engine .
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -17,12 +20,11 @@ WORKDIR /app
 ENV UV_COMPILE_BYTECODE=0 \
     UV_LINK_MODE=copy
 
-# Copy observability_layer (path dependency: ../observability_layer from /app = /observability_layer)
-COPY observability_layer/pyproject.toml /observability_layer/pyproject.toml
-COPY observability_layer/src/ /observability_layer/src/
+# Copy observability_layer as a local package (pyproject.toml references ../observability_layer)
+COPY observability_layer/ /observability_layer/
 
-# Copy dependency declarations — layer is cached unless pyproject.toml changes
-COPY knowledge_engine/pyproject.toml ./
+# Copy only the project manifest first for dependency caching
+COPY knowledge_engine/pyproject.toml knowledge_engine/uv.lock* ./
 
 # CPU-only torch index is declared first so uv never resolves the CUDA/GPU
 # variant (~2.5 GB saved). All other deps are synced in the same pass.
@@ -41,8 +43,9 @@ RUN addgroup --system knowledgeengine && adduser --system --ingroup knowledgeeng
 
 WORKDIR /app
 
-# Copy the venv from builder
+# Copy the venv from builder (includes observability-layer and all deps)
 COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /observability_layer /observability_layer
 
 # Copy application source, entrypoint, config, and scripts
 COPY knowledge_engine/src/ ./src/

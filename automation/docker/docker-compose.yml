@@ -7,7 +7,7 @@
 #
 # Each service receives two volume-mounted config files:
 #   /app/config/dpg.yaml    — DPG framework defaults (from dev-kit/dpg/)
-#   /app/config/domain.yaml — domain-specific values (from dev-kit/configs/kkb/)
+#   /app/config/domain.yaml — domain-specific values (from dev-kit/configs/${DOMAIN:-kkb}/)
 # Services deep-merge these at startup: domain values override DPG defaults.
 # Both config files are mandatory — service will not start if either is missing.
 #
@@ -30,15 +30,355 @@
 # Resource limits (local testing):
 #   All services: 0.1 CPU, 512 MB RAM
 #   Knowledge Engine (ingest + serve): 0.5 CPU, 2 GB RAM
+#
+# Image tagging:
+#   Each image is tagged with ${GIT_SHA:-latest}. In CI, set GIT_SHA to the short
+#   commit hash before running docker compose build, then push a second `latest` tag:
+#     export GIT_SHA=$(git rev-parse --short HEAD)
+#     docker compose build
+#     docker compose push
+#     # re-tag every image as :latest and push
+#     for svc in action_gateway agent_core dev_kit knowledge_engine memory_layer \
+#                observability_layer reach_layer telephony_adapter trust_layer; do
+#       repo=$(docker compose config --format json | jq -r ".services.${svc}.image" | cut -d: -f1)
+#       docker tag ${repo}:${GIT_SHA} ${repo}:latest
+#       docker push ${repo}:latest
+#     done
 
 services:
 
   # ---------------------------------------------------------------------------
-  # Redis — session state backend for Memory Layer
+  # Action Gateway — external API stub / ONEST mock (port 9999)
   # ---------------------------------------------------------------------------
-  redis:
-    image: redis:7-alpine
-    container_name: redis
+  action_gateway:
+    build:
+      context: ../..
+      dockerfile: action_gateway/Dockerfile
+      platforms:
+        - linux/amd64
+    image: sanketikahub/dpg-action-gateway:${GIT_SHA:-latest}
+    container_name: action_gateway
+    environment:
+      - CONFIG_FOLDER=/app/config
+    volumes:
+      - ../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:9999/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Agent Core — orchestrator and LLM caller (port 8000)
+  # ---------------------------------------------------------------------------
+  agent_core:
+    build:
+      context: ../..
+      dockerfile: agent_core/Dockerfile
+      platforms:
+        - linux/amd64
+    image: sanketikahub/dpg-agent-core:${GIT_SHA:-latest}
+    container_name: agent_core
+    environment:
+      - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
+      - CONFIG_FOLDER=/app/config
+    volumes:
+      - ../../dev-kit/dpg/agent_core.yaml:/app/config/dpg.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/agent_core.yaml:/app/config/agent_core.yaml:ro
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 512M
+    depends_on:
+      knowledge_engine:
+        condition: service_healthy
+      memory_layer:
+        condition: service_healthy
+      trust_layer:
+        condition: service_healthy
+      observability_layer:
+        condition: service_healthy
+      action_gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 10s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Dev-Kit — Configuration Agent UI (port 8080)
+  # ---------------------------------------------------------------------------
+  dev_kit:
+    build:
+      context: ../..
+      dockerfile: dev-kit/Dockerfile
+      platforms:
+        - linux/amd64
+    image: sanketikahub/dpg-dev-kit:${GIT_SHA:-latest}
+    container_name: dev_kit
+    environment:
+      - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
+    ports:
+      - "8080:8080"
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Knowledge Engine — RAG, NLU, prompt assembly (port 8001)
+  # On startup: runs ingest first, then starts the server.
+  # ---------------------------------------------------------------------------
+  knowledge_engine:
+    build:
+      context: ../..
+      dockerfile: knowledge_engine/Dockerfile
+      platforms:
+        - linux/amd64
+    image: sanketikahub/dpg-knowledge-engine:${GIT_SHA:-latest}
+    container_name: knowledge_engine
+    environment:
+      - CONFIG_FOLDER=/app/config
+    user: root                               # needed to write to root-owned chroma_data named volume
+    command: ["sh", "-c", "if [ ! -f /app/chroma_db/chroma.sqlite3 ]; then echo 'ChromaDB empty — running ingest...' && python -m scripts.ingest --config config/knowledge_engine.yaml; else echo 'ChromaDB exists — skipping ingest.'; fi && python main.py"]
+    volumes:
+      - ../../dev-kit/dpg/knowledge_engine.yaml:/app/config/dpg.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
+      - ../../knowledge_engine/data:/app/data:ro   # source docs (read-only)
+      - chroma_data:/app/chroma_db                 # embeddings (separate path, not inside the :ro bind mount)
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 2G
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/health')\""]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Memory Layer — session state store (port 8002)
+  # ---------------------------------------------------------------------------
+  memory_layer:
+    build:
+      context: ../..
+      dockerfile: memory_layer/Dockerfile
+      platforms:
+        - linux/amd64
+    image: sanketikahub/dpg-memory-layer:${GIT_SHA:-latest}
+    container_name: memory_layer
+    environment:
+      - CONFIG_FOLDER=/app/config
+      - REDIS_URL=redis://redis:6379/0
+      - MEMGRAPH_URI=bolt://memgraph:7687
+      - MEMGRAPH_USER=memgraph
+      - MEMGRAPH_PASSWORD=
+    volumes:
+      - ../../dev-kit/dpg/memory_layer.yaml:/app/config/dpg.yaml:ro #ro = read only
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/memory_layer.yaml:/app/config/memory_layer.yaml:ro
+    networks:
+      - dpg_net
+    depends_on:
+      redis:
+        condition: service_healthy
+      memgraph:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8002/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Observability Layer — async observability (port 8004)
+  # ---------------------------------------------------------------------------
+  observability_layer:
+    build:
+      context: ../..
+      dockerfile: observability_layer/Dockerfile
+      platforms:
+        - linux/amd64
+    image: sanketikahub/dpg-observability-layer:${GIT_SHA:-latest}
+    container_name: observability_layer
+    environment:
+      - CONFIG_FOLDER=/app/config
+    volumes:
+      - ../../dev-kit/dpg/observability_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/observability_layer.yaml:/app/config/observability_layer.yaml:ro
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8004/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Reach Layer — web chat UI (port 8005)
+  # Open http://localhost:8005 in a browser after all services are healthy.
+  # ---------------------------------------------------------------------------
+  reach_layer:
+    build:
+      context: ../..
+      dockerfile: reach_layer/Dockerfile
+      platforms:
+        - linux/amd64
+    image: sanketikahub/dpg-reach-layer:${GIT_SHA:-latest}
+    container_name: reach_layer
+    environment:
+      - CONFIG_FOLDER=/app/config
+    volumes:
+      - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/reach_layer.yaml:ro
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 512M
+    depends_on:
+      agent_core:
+        condition: service_healthy
+    ports:
+      - "8005:8005"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8005/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Telephony Adapter — Vobiz/WebSocket telephony bridge (port 8006)
+  # PUBLIC_URL is injected by the ngrok service via NGROK_URL or set manually.
+  # ---------------------------------------------------------------------------
+  telephony_adapter:
+    build:
+      context: ../..
+      dockerfile: telephony_adapter/Dockerfile
+      platforms:
+        - linux/amd64
+    image: sanketikahub/dpg-telephony-adapter:${GIT_SHA:-latest}
+    container_name: telephony_adapter
+    environment:
+      - DPG_CONFIG_PATH=/app/config/dpg.yaml
+      - NLTK_DATA=/tmp/nltk_data
+      - PUBLIC_URL=${PUBLIC_URL:-}                       # set from shell or use ngrok service below
+      - VOBIZ_AUTH_ID=${VOBIZ_AUTH_ID:-}
+      - VOBIZ_AUTH_TOKEN=${VOBIZ_AUTH_TOKEN:-}
+      - VOBIZ_FROM_NUMBER=${VOBIZ_FROM_NUMBER:-}
+      - RAYA_API_KEY=${RAYA_API_KEY:-}
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - ../../dev-kit/dpg/telephone_adapter.yaml:/app/config/dpg.yaml:ro
+    ports:
+      - "8006:8006"
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1g
+    depends_on:
+      agent_core:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8006/health', timeout=3)"]
+      interval: 10s
+      timeout: 8s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Trust Layer — content safety gate (port 8003)
+  # ---------------------------------------------------------------------------
+  trust_layer:
+    build:
+      context: ../..
+      dockerfile: trust_layer/Dockerfile
+      platforms:
+        - linux/amd64
+    image: sanketikahub/dpg-trust-layer:${GIT_SHA:-latest}
+    container_name: trust_layer
+    environment:
+      - CONFIG_FOLDER=/app/config
+    volumes:
+      - ../../dev-kit/dpg/trust_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/trust_layer.yaml:/app/config/trust_layer.yaml:ro
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8003/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Grafana — dashboards UI (port 3000)
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:10.3.3
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
     networks:
       - dpg_net
     deploy:
@@ -46,12 +386,41 @@ services:
         limits:
           cpus: '0.1'
           memory: 256M
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 5s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Jaeger — distributed trace UI (port 16686)
+  # ---------------------------------------------------------------------------
+  jaeger:
+    image: jaegertracing/all-in-one:1.55
+    container_name: jaeger
+    ports:
+      - "16686:16686"   # Jaeger UI
+      # 4317 is not exposed to the host — otelcol reaches jaeger:4317 internally
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 256M
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Loki — log aggregation (port 3100)
+  # ---------------------------------------------------------------------------
+  loki:
+    image: grafana/loki:2.9.4
+    container_name: loki
+    ports:
+      - "3100:3100"
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 256M
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -83,227 +452,109 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # Memory Layer — session state store (port 8002)
+  # ngrok — exposes telephony_adapter (port 8006) to the public internet.
+  # Required so Vobiz can reach /answer and /ws/{call_sid} from outside.
+  #
+  # Prerequisites:
+  #   export NGROK_AUTHTOKEN=<your token>   # https://dashboard.ngrok.com/authtokens
+  #
+  # Once running, find your public URL:
+  #   docker logs ngrok                     # prints the forwarding URL on startup
+  #   curl http://localhost:4040/api/tunnels # ngrok local API (JSON)
+  #
+  # Then set PUBLIC_URL and restart telephony_adapter:
+  #   export PUBLIC_URL=https://abc123.ngrok-free.app
+  #   docker compose up -d telephony_adapter
   # ---------------------------------------------------------------------------
-  memory_layer:
-    build:
-      context: ../../memory_layer
-      dockerfile: Dockerfile
-    container_name: memory_layer
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: ngrok
+    command: http telephony_adapter:8006 --log stdout
     environment:
-      - CONFIG_FOLDER=/app/config
-      - REDIS_URL=redis://redis:6379/0
-      - MEMGRAPH_URI=bolt://memgraph:7687
-      - MEMGRAPH_USER=memgraph
-      - MEMGRAPH_PASSWORD=
-    volumes:
-      - ../../dev-kit/dpg/memory_layer.yaml:/app/config/dpg.yaml:ro #ro = read only
-      - ../../dev-kit/configs/kkb/memory_layer.yaml:/app/config/memory_layer.yaml:ro
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
+    ports:
+      - "4040:4040"                          # ngrok local API / inspector UI
     networks:
       - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 128M
     depends_on:
-      redis:
+      telephony_adapter:
         condition: service_healthy
-      memgraph:
-        condition: service_healthy
-    deploy:
-      resources:
-        limits:
-          cpus: '0.1'
-          memory: 512M
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8002/health')\""]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # Trust Layer — content safety gate (port 8003)
+  # OTel Collector — receives OTLP, fans out to Jaeger / Prometheus / Loki
   # ---------------------------------------------------------------------------
-  trust_layer:
-    build:
-      context: ../../trust_layer
-      dockerfile: Dockerfile
-    container_name: trust_layer
-    environment:
-      - CONFIG_FOLDER=/app/config
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:0.96.0
+    container_name: otelcol
+    command: ["--config=/etc/otelcol/otelcol-config.yaml"]
     volumes:
-      - ../../dev-kit/dpg/trust_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/kkb/trust_layer.yaml:/app/config/trust_layer.yaml:ro
+      - ./otelcol/otelcol-config.yaml:/etc/otelcol/otelcol-config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # Prometheus metrics scrape endpoint
     networks:
       - dpg_net
     deploy:
       resources:
         limits:
           cpus: '0.1'
-          memory: 512M
+          memory: 256M
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8003/health')\""]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    restart: unless-stopped
-
-  # ---------------------------------------------------------------------------
-  # Observability Layer — async observability (port 8004)
-  # ---------------------------------------------------------------------------
-  observability_layer:
-    build:
-      context: ../../observability_layer
-      dockerfile: Dockerfile
-    container_name: observability_layer
-    environment:
-      - CONFIG_FOLDER=/app/config
-    volumes:
-      - ../../dev-kit/dpg/observability_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/kkb/observability_layer.yaml:/app/config/observability_layer.yaml:ro
-    networks:
-      - dpg_net
-    deploy:
-      resources:
-        limits:
-          cpus: '0.1'
-          memory: 512M
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8004/health')\""]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    restart: unless-stopped
-
-  # ---------------------------------------------------------------------------
-  # Action Gateway — external API stub / ONEST mock (port 9999)
-  # ---------------------------------------------------------------------------
-  action_gateway:
-    build:
-      context: ../../action_gateway
-      dockerfile: Dockerfile
-    container_name: action_gateway
-    environment:
-      - CONFIG_FOLDER=/app/config
-    volumes:
-      - ../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/kkb/action_gateway.yaml:/app/config/action_gateway.yaml:ro
-    networks:
-      - dpg_net
-    deploy:
-      resources:
-        limits:
-          cpus: '0.1'
-          memory: 512M
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:9999/health')\""]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    restart: unless-stopped
-
-  # ---------------------------------------------------------------------------
-  # Knowledge Engine — RAG, NLU, prompt assembly (port 8001)
-  # On startup: runs ingest first, then starts the server.
-  # ---------------------------------------------------------------------------
-  knowledge_engine:
-    build:
-      context: ../../knowledge_engine
-      dockerfile: Dockerfile
-    container_name: knowledge_engine
-    environment:
-      - CONFIG_FOLDER=/app/config
-    user: root                               # needed to write to root-owned chroma_data named volume
-    command: ["sh", "-c", "if [ ! -f /app/chroma_db/chroma.sqlite3 ]; then echo 'ChromaDB empty — running ingest...' && python -m scripts.ingest --config config/domain.yaml; else echo 'ChromaDB exists — skipping ingest.'; fi && python main.py"]
-    volumes:
-      - ../../dev-kit/dpg/knowledge_engine.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/kkb/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
-      - ../../knowledge_engine/data:/app/data:ro   # source docs (read-only)
-      - chroma_data:/app/chroma_db                 # embeddings (separate path, not inside the :ro bind mount)
-    networks:
-      - dpg_net
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 2G
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/health')\""]
-      interval: 15s
-      timeout: 10s
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133/"]
+      interval: 5s
+      timeout: 3s
       retries: 5
-      start_period: 180s
+      start_period: 10s
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # Agent Core — orchestrator and LLM caller (port 8000)
+  # Prometheus — metrics store (port 9090)
   # ---------------------------------------------------------------------------
-  agent_core:
-    build:
-      context: ../../agent_core
-      dockerfile: Dockerfile
-    container_name: agent_core
-    environment:
-      - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
-      - CONFIG_FOLDER=/app/config
+  prometheus:
+    image: prom/prometheus:v2.50.1
+    container_name: prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
     volumes:
-      - ../../dev-kit/dpg/agent_core.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/kkb/agent_core.yaml:/app/config/agent_core.yaml:ro
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
     networks:
       - dpg_net
     deploy:
       resources:
         limits:
           cpus: '0.1'
-          memory: 512M
-    depends_on:
-      knowledge_engine:
-        condition: service_healthy
-      memory_layer:
-        condition: service_healthy
-      trust_layer:
-        condition: service_healthy
-      observability_layer:
-        condition: service_healthy
-      action_gateway:
-        condition: service_healthy
+          memory: 256M
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Redis — session state backend for Memory Layer
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 256M
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
-      interval: 10s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
     restart: unless-stopped
-
-  # ---------------------------------------------------------------------------
-  # Reach Layer — interactive CLI (no HTTP port exposed)
-  # Run separately: docker compose run --rm reach_layer
-  # ---------------------------------------------------------------------------
-  reach_layer:
-    build:
-      context: ../../reach_layer
-      dockerfile: Dockerfile
-    container_name: reach_layer
-    environment:
-      - CONFIG_FOLDER=/app/config
-    volumes:
-      - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/kkb/reach_layer.yaml:/app/config/reach_layer.yaml:ro
-    networks:
-      - dpg_net
-    deploy:
-      resources:
-        limits:
-          cpus: '0.1'
-          memory: 512M
-    depends_on:
-      agent_core:
-        condition: service_healthy
-    stdin_open: true
-    tty: true
-    profiles:
-      - cli                                # not started by default; run explicitly
 
 networks:
   dpg_net:

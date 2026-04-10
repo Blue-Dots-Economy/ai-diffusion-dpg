@@ -10,12 +10,19 @@ telephony_adapter:
     api_key: ${RAYA_API_KEY}
     stt_wss_url: wss://hub.getraya.app/transcribe
     tts_base_url: https://hub.getraya.app/v1
-    language: hi
-    voice_id: voice_001
+    stt_language: hi        # STT supports: en, hi, mr, ta, te, kn, gu, bn, ml, ...
+    tts_language: hi        # TTS language must match voice locale
+    voice_id: d6a002d0-230c-49b1-a137-b8a7d564b1ae  # Priyanka, hi
+    # voice_id: mr
+    # tts_language: mr
+    # voice_id: c849b31b-b0ba-488f-b97d-3fd12f2656f4
+    # stt_language: en        # STT supports: en, hi, mr, ta, te, kn, gu, bn, ml, ...
+    # tts_language: en-us        # TTS language must match voice locale
+    # voice_id: 97a155d0-8192-410e-a97c-540481182fc7  # Liam, us
     tts_speed: 1.0
   agent_core:
     base_url: http://agent_core:8000
-    timeout_ms: 5000
+    timeout_ms: 15000
     fallback_phrase: "I'm sorry, I couldn't process that. Please try again."
     greeting: "Hello, how can I help you today?"
 observability:

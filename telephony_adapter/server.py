@@ -6,7 +6,7 @@ FastAPI application for the Telephony Adapter DPG service.
 Endpoints:
   POST /answer              — Vobiz webhook on call answered; returns XML with WebSocket URL.
   WebSocket /ws/{call_sid}  — Bidirectional audio stream per call.
-  POST /campaign            — Trigger outbound call (also callable by Action Gateway).
+  POST /campaign            — Trigger outbound call.
   POST /recording-finished  — Vobiz webhook: recording stopped.
   POST /recording-ready     — Vobiz webhook: recording MP3 ready.
   GET  /health              — Liveness probe.
@@ -15,23 +15,24 @@ Belongs to the Reach Layer / Telephony Adapter block in the DPG framework.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
-import time
+
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+import src.bot as bot
 from config_loader import load_config
 from src.campaign_manager import CampaignManager
-from src.telephony_adapter import VobizTelephonyAdapter
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# OTel — imported at module level so tests can patch server.init_otel
+# OTel
 # ---------------------------------------------------------------------------
 try:
     from dpg_telemetry import init_otel
@@ -43,8 +44,8 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Module-level singletons (set by create_app)
 # ---------------------------------------------------------------------------
-_adapter: VobizTelephonyAdapter | None = None
 _campaign_manager: CampaignManager | None = None
+_config: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -77,28 +78,35 @@ def create_app(config: dict | None = None) -> FastAPI:
     Returns:
         Configured FastAPI application.
     """
-    global _adapter, _campaign_manager
+    global _campaign_manager, _config
 
     if config is None:
         dpg_path = os.getenv("DPG_CONFIG_PATH", "config/telephony.yaml")
-        domain_path = os.getenv("DOMAIN_CONFIG_PATH", "../dev-kit/configs/kkb/telephony_adapter.yaml")
+        domain_path = os.getenv(
+            "DOMAIN_CONFIG_PATH", "../dev-kit/configs/kkb/telephony_adapter.yaml"
+        )
         config = load_config(dpg_path, domain_path)
 
+    _config = config
     init_otel("telephony_adapter", config)
-
-    _adapter = VobizTelephonyAdapter(config)
     _campaign_manager = CampaignManager(config)
 
     public_url: str = config.get("telephony_adapter", {}).get("public_url", "")
     if not public_url:
         raise ValueError("telephony_adapter.public_url is required in config")
-    # Convert http(s) scheme to ws(s) for the Stream URL
     ws_url = public_url.replace("https://", "wss://").replace("http://", "ws://")
 
     app = FastAPI(
         title="Telephony Adapter",
         description="DPG Reach Layer telephony channel adapter — Vobiz + Raya + Agent Core.",
         version="0.1.0",
+    )
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     @app.get("/health")
@@ -110,15 +118,19 @@ def create_app(config: dict | None = None) -> FastAPI:
     async def answer(request: Request) -> Response:
         """Handle Vobiz call-answered webhook; return XML with WebSocket stream URL.
 
-        Vobiz POSTs form fields: CallSid, From, To, etc.
-        Returns XML instructing Vobiz to open a WebSocket to /ws/{call_sid}.
+        Vobiz POSTs form fields: CallSid (or CallUUID), From, To, etc.
+        Returns XML instructing Vobiz to open a bidirectional WebSocket to
+        /ws/{call_sid}.
         """
         form = await request.form()
-        call_sid = form.get("CallSid", "unknown")
+        call_sid = form.get("CallUUID") or form.get("CallSid") or "unknown"
+        stream_url = f"{ws_url}/ws/{call_sid}"
         xml = (
             '<?xml version="1.0" encoding="UTF-8"?>\n'
             "<Response>\n"
-            f'  <Stream url="{ws_url}/ws/{call_sid}" bidirectional="true"/>\n'
+            f'  <Stream bidirectional="true" keepCallAlive="true"'
+            f' contentType="audio/x-mulaw;rate=8000">'
+            f"{stream_url}</Stream>\n"
             "</Response>"
         )
         return Response(content=xml, media_type="application/xml")
@@ -127,35 +139,10 @@ def create_app(config: dict | None = None) -> FastAPI:
     async def websocket_endpoint(websocket: WebSocket, call_sid: str) -> None:
         """Bidirectional audio stream for an active call.
 
-        Vobiz connects here after receiving the XML from /answer.
-        The first message is the "start" event with call metadata.
+        Accepts the WebSocket then hands it to bot.run_bot which owns the full
+        Pipecat pipeline lifecycle: parses the Vobiz handshake, runs the
+        VAD → STT → Agent Core → TTS pipeline, and closes on call end.
         """
-        if _adapter is None:
-            raise RuntimeError("App not initialised via create_app()")
-        await websocket.accept()
-        caller_id = "unknown"
-        first_msg = ""
-
-        try:
-            first_msg = await websocket.receive_text()
-            data = json.loads(first_msg)
-            if data.get("event") == "start":
-                caller_id = (
-                    data.get("start", {})
-                    .get("customParameters", {})
-                    .get("caller_id", "unknown")
-                )
-        except Exception as e:
-            logger.warning(
-                "server.ws_start_parse_error",
-                extra={
-                    "operation": "server.websocket_endpoint",
-                    "status": "failure",
-                    "call_sid": call_sid,
-                    "error": f"{type(e).__name__}: {e}",
-                },
-            )
-
         logger.info(
             "server.ws_connected",
             extra={
@@ -164,62 +151,23 @@ def create_app(config: dict | None = None) -> FastAPI:
                 "call_sid": call_sid,
             },
         )
-
-        class _PrefixedWebSocket:
-            """Wraps a WebSocket to prepend one already-consumed message."""
-
-            def __init__(self, ws: WebSocket, prefixed: str) -> None:
-                self._ws = ws
-                self._prefix = prefixed
-                self._sent = False
-
-            async def __aiter__(self):
-                """Yield the prefetched message then iterate remaining messages."""
-                if not self._sent:
-                    self._sent = True
-                    yield self._prefix
-                async for msg in self._ws.iter_text():
-                    yield msg
-
-            async def send(self, data: str) -> None:
-                """Send a text message over the WebSocket."""
-                await self._ws.send_text(data)
-
-            async def close(self) -> None:
-                """Close the underlying WebSocket."""
-                await self._ws.close()
-
-        wrapped = _PrefixedWebSocket(websocket, first_msg)
-        _call_start = time.time()
+        await websocket.accept()
         try:
-            await _adapter.handle_call(call_sid, caller_id, wrapped)
-            logger.info(
-                "server.ws_call_completed",
-                extra={
-                    "operation": "server.websocket_endpoint",
-                    "status": "success",
-                    "call_sid": call_sid,
-                    "latency_ms": int((time.time() - _call_start) * 1000),
-                },
-            )
-        except Exception as e:
+            await bot.run_bot(websocket, call_sid, _config)
+        except Exception as exc:
             logger.error(
-                "server.ws_call_error",
+                "server.ws_error",
                 extra={
                     "operation": "server.websocket_endpoint",
                     "status": "failure",
                     "call_sid": call_sid,
-                    "latency_ms": int((time.time() - _call_start) * 1000),
-                    "error": f"{type(e).__name__}: {e}",
+                    "error": f"{type(exc).__name__}: {exc}",
                 },
             )
 
     @app.post("/campaign")
     async def campaign(body: CampaignRequest) -> dict:
         """Trigger an outbound call to the given number.
-
-        Called directly by operators or by Action Gateway as a connector tool
-        (telephony_channel_switch) when Agent Core decides to switch channels.
 
         Args:
             body: Contains the destination phone number.

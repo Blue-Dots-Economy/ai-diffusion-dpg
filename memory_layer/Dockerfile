@@ -3,6 +3,9 @@
 # =============================================================================
 # Stage 1 (builder): install dependencies into a venv via uv sync.
 # Stage 2 (runtime): copy only the venv and source — no build tools.
+#
+# Must be built from the repo root (so observability_layer/ is in context):
+#   docker build -f memory_layer/Dockerfile -t memory_layer .
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -17,12 +20,11 @@ WORKDIR /app
 ENV UV_COMPILE_BYTECODE=0 \
     UV_LINK_MODE=copy
 
-# Copy observability_layer (path dependency: ../observability_layer from /app = /observability_layer)
-COPY observability_layer/pyproject.toml /observability_layer/pyproject.toml
-COPY observability_layer/src/ /observability_layer/src/
+# Copy observability_layer as a local package (pyproject.toml references ../observability_layer)
+COPY observability_layer/ /observability_layer/
 
-# Copy dependency declarations — layer is cached unless pyproject.toml changes
-COPY memory_layer/pyproject.toml ./
+# Copy only the project manifest first for dependency caching
+COPY memory_layer/pyproject.toml memory_layer/uv.lock* ./
 
 # Sync runtime dependencies only; creates /app/.venv
 RUN uv sync --no-dev --no-cache --no-install-project
@@ -39,8 +41,9 @@ RUN addgroup --system memorylayer && adduser --system --ingroup memorylayer memo
 
 WORKDIR /app
 
-# Copy the venv from builder
+# Copy the venv from builder (includes observability-layer and all deps)
 COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /observability_layer /observability_layer
 
 # Copy application source, entrypoint, and config
 COPY memory_layer/src/ ./src/

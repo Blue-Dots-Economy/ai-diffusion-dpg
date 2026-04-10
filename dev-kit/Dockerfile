@@ -1,17 +1,37 @@
+# ============================================================
 # Stage 1: Build React frontend
+# Produces compiled static assets in /app/dev_kit/agent/static.
+# Kept separate so node_modules never land in the final image.
+# ============================================================
 FROM node:20-slim AS frontend
 WORKDIR /app/frontend
-COPY frontend/package*.json ./
-RUN npm install
-COPY frontend/ ./
-RUN npm run build
-# After build, static files are at /app/dev_kit/agent/static (due to outDir: '../dev_kit/agent/static')
 
-# Stage 2: Python backend with built frontend
+# Install dependencies before copying source so Docker can cache
+# this layer and skip npm install on subsequent builds when only
+# source files change.
+COPY dev-kit/frontend/package*.json ./
+RUN npm install
+
+# Copy remaining source (node_modules excluded via .dockerignore).
+COPY dev-kit/frontend/ ./
+
+# vite.config.js sets outDir: '../dev_kit/agent/static', so the
+# compiled assets land at /app/dev_kit/agent/static inside this stage.
+RUN npm run build
+
+
+# ============================================================
+# Stage 2: Python backend + pre-built frontend assets
+# Only the compiled static files are copied from Stage 1;
+# Node, npm, and node_modules are discarded.
+# ============================================================
 FROM python:3.13-slim
 WORKDIR /app
 
-# Install Docker CLI (for docker compose deploy from within the container)
+# Install Docker CLI so the Configuration Agent can run
+# `docker compose` commands against the host socket at runtime.
+# Uses the official Docker apt repository to ensure CLI/plugin
+# versions stay in sync with the compose spec.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl && \
     install -m 0755 -d /etc/apt/keyrings && \
@@ -21,13 +41,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     apt-get update && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Copy dev-kit package
-COPY . .
+# Copy the dev-kit Python package (frontend/node_modules and
+# Python caches excluded via .dockerignore).
+COPY dev-kit/ .
 
-# Copy built frontend static files into the correct location
+# Overlay the compiled frontend assets from Stage 1.
+# This must come after `COPY . .` so it wins over any stale
+# static files that might exist in the source tree.
 COPY --from=frontend /app/dev_kit/agent/static ./dev_kit/agent/static
 
-# Install Python deps
+# Install the dev-kit package in editable mode so the
+# uvicorn process can import dev_kit.agent.app directly.
 RUN pip install -e . --no-cache-dir
 
 EXPOSE 8080

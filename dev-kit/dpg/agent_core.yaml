@@ -21,28 +21,27 @@ conversation:
 # Default service client endpoints (localhost for local dev).
 # Override in domain.yaml or deployment config for staging/production.
 ke_client:
-  endpoint: "http://knowledge-engine:8001/retrieve"
+  endpoint: "http://knowledge_engine:8001/retrieve"
   timeout_ms: 30000
 
 memory_client:
-  endpoint: "http://memory-layer:8002"
+  endpoint: "http://memory_layer:8002"
   timeout_ms: 3000
 
 trust_client:
-  endpoint: "http://trust-layer:8003"
+  endpoint: "http://trust_layer:8003"
   timeout_ms: 2000
 
 learning_client:
-  endpoint: "http://observability-layer:8004"
+  endpoint: "http://observability_layer:8004"
   timeout_ms: 2000
 
 action_gateway_client:
-  endpoint: "http://action-gateway:9999/execute"
+  endpoint: "http://action_gateway:9999/execute"
   timeout_ms: 5000
 
-# Observability — OTel collector endpoint for trace/metric export.
 observability:
   otel:
-    collector_endpoint: "http://otel-collector:4317"
+    collector_endpoint: "http://otelcol:4317"
     sample_rate: 1.0
     export_interval_ms: 5000
