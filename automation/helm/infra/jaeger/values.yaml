@@ -5,6 +5,7 @@ image:
 service:
   uiPort: 16686
   grpcPort: 14250
+  otlpGrpcPort: 4317
 resources:
   requests:
     cpu: 50m

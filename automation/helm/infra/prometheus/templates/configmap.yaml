@@ -7,4 +7,4 @@ metadata:
     app: {{ .Release.Name }}
 data:
   prometheus.yml: |
-    {{ .Values.config | nindent 4 }}
+{{- .Values.config | nindent 4 }}

@@ -18,3 +18,7 @@ spec:
       port: {{ .Values.service.grpcPort }}
       targetPort: {{ .Values.service.grpcPort }}
       protocol: TCP
+    - name: otlp-grpc
+      port: {{ .Values.service.otlpGrpcPort }}
+      targetPort: {{ .Values.service.otlpGrpcPort }}
+      protocol: TCP

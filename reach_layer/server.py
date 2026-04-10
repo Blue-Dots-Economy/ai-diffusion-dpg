@@ -18,6 +18,13 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from dotenv import load_dotenv
+
+_env_local = Path(__file__).parent.parent / ".env.local"
+if _env_local.exists():
+    load_dotenv(_env_local)
+load_dotenv()
+
 import httpx
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
@@ -97,8 +104,15 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
         app.mount("/assets", StaticFiles(directory=str(_assets)), name="assets")
 
     # Shared HTTP clients — created once at startup to enable connection pooling.
+    # Instrument each client so W3C traceparent headers propagate to downstream services.
     ac_client = httpx.Client(timeout=ac_timeout)
     ml_client = httpx.Client(timeout=ml_timeout)
+    try:
+        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+        HTTPXClientInstrumentor.instrument_client(ac_client)
+        HTTPXClientInstrumentor.instrument_client(ml_client)
+    except Exception:
+        pass  # Observability must not prevent startup
 
     @app.on_event("shutdown")
     def _close_clients() -> None:

@@ -22,11 +22,15 @@ spec:
           env:
             - name: COLLECTOR_ZIPKIN_HOST_PORT
               value: ":9411"
+            - name: COLLECTOR_OTLP_ENABLED
+              value: "true"
           ports:
             - name: ui
               containerPort: {{ .Values.service.uiPort }}
             - name: grpc
               containerPort: {{ .Values.service.grpcPort }}
+            - name: otlp-grpc
+              containerPort: {{ .Values.service.otlpGrpcPort }}
           resources:
             requests:
               cpu: {{ .Values.resources.requests.cpu }}
