@@ -32,7 +32,7 @@ services:
   # Action Gateway — external API stub / ONEST mock (port 9999)
   # ---------------------------------------------------------------------------
   action_gateway:
-    image: sanketikahub/dpg-action-gateway:0.1.0
+    image: sanketikahub/dpg-action-gatewaylatest
     container_name: action_gateway
     environment:
       - CONFIG_FOLDER=/app/config
@@ -58,7 +58,7 @@ services:
   # Agent Core — orchestrator and LLM caller (port 8000)
   # ---------------------------------------------------------------------------
   agent_core:
-    image: sanketikahub/dpg-agent-core:0.1.0
+    image: sanketikahub/dpg-agent-corelatest
     container_name: agent_core
     environment:
       - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
@@ -96,8 +96,7 @@ services:
   # dev_kit — Configuration Agent UI (port 8080)
   # ---------------------------------------------------------------------------
   dev_kit:
-    build:
-      image: sanketikahub/dpg-dev-kit:0.1.0
+    image: sanketikahub/dpg-dev-kitlatest
     container_name: dev_kit
     environment:
       - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
@@ -123,7 +122,7 @@ services:
   # On startup: runs ingest first, then starts the server.
   # ---------------------------------------------------------------------------
   knowledge_engine:
-    image: sanketikahub/dpg-knowledge-engine:0.1.0
+    image: sanketikahub/dpg-knowledge-enginelatest
     container_name: knowledge_engine
     environment:
       - CONFIG_FOLDER=/app/config
@@ -153,7 +152,7 @@ services:
   # Memory Layer — session state store (port 8002)
   # ---------------------------------------------------------------------------
   memory_layer:
-    image: sanketikahub/dpg-memory-layer:0.1.0
+    image: sanketikahub/dpg-memory-layerlatest
     container_name: memory_layer
     environment:
       - CONFIG_FOLDER=/app/config
@@ -188,7 +187,7 @@ services:
   # Observability Layer — async observability (port 8004)
   # ---------------------------------------------------------------------------
   observability_layer:
-    image: sanketikahub/dpg-observability-layer:0.1.0
+    image: sanketikahub/dpg-observability-layerlatest
     container_name: observability_layer
     environment:
       - CONFIG_FOLDER=/app/config
@@ -217,7 +216,7 @@ services:
   # Reach Layer — Web UI + FastAPI server (port 8005)
   # ---------------------------------------------------------------------------
   reach_layer:
-    image: sanketikahub/dpg-reach-layer:0.1.0
+    image: sanketikahub/dpg-reach-layerlatest
     container_name: reach_layer
     environment:
       - CONFIG_FOLDER=/app/config
@@ -250,7 +249,7 @@ services:
   # Use the ngrok service to get a public URL automatically.
   # ---------------------------------------------------------------------------
   telephony_adapter:
-    image: sanketikahub/dpg-telephony-adapter:0.1.0
+    image: sanketikahub/dpg-telephony-adapterlatest
     container_name: telephony_adapter
     environment:
       - DPG_CONFIG_PATH=/app/config/dpg.yaml
@@ -286,7 +285,7 @@ services:
   # Trust Layer — content safety gate (port 8003)
   # ---------------------------------------------------------------------------
   trust_layer:
-    image: sanketikahub/dpg-trust-layer:0.1.0
+    image: sanketikahub/dpg-trust-layerlatest
     container_name: trust_layer
     environment:
       - CONFIG_FOLDER=/app/config

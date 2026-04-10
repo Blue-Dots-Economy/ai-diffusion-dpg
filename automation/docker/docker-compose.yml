@@ -30,6 +30,20 @@
 # Resource limits (local testing):
 #   All services: 0.1 CPU, 512 MB RAM
 #   Knowledge Engine (ingest + serve): 0.5 CPU, 2 GB RAM
+#
+# Image tagging:
+#   Each image is tagged with ${GIT_SHA:-latest}. In CI, set GIT_SHA to the short
+#   commit hash before running docker compose build, then push a second `latest` tag:
+#     export GIT_SHA=$(git rev-parse --short HEAD)
+#     docker compose build
+#     docker compose push
+#     # re-tag every image as :latest and push
+#     for svc in action_gateway agent_core dev_kit knowledge_engine memory_layer \
+#                observability_layer reach_layer telephony_adapter trust_layer; do
+#       repo=$(docker compose config --format json | jq -r ".services.${svc}.image" | cut -d: -f1)
+#       docker tag ${repo}:${GIT_SHA} ${repo}:latest
+#       docker push ${repo}:latest
+#     done
 
 services:
 
@@ -40,6 +54,9 @@ services:
     build:
       context: ../..
       dockerfile: action_gateway/Dockerfile
+      platforms:
+        - linux/amd64
+    image: sanketikahub/dpg-action-gateway:${GIT_SHA:-latest}
     container_name: action_gateway
     environment:
       - CONFIG_FOLDER=/app/config
@@ -68,6 +85,9 @@ services:
     build:
       context: ../..
       dockerfile: agent_core/Dockerfile
+      platforms:
+        - linux/amd64
+    image: sanketikahub/dpg-agent-core:${GIT_SHA:-latest}
     container_name: agent_core
     environment:
       - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
@@ -105,9 +125,12 @@ services:
   # Dev-Kit — Configuration Agent UI (port 8080)
   # ---------------------------------------------------------------------------
   dev_kit:
-    build: 
+    build:
       context: ../..
       dockerfile: dev-kit/Dockerfile
+      platforms:
+        - linux/amd64
+    image: sanketikahub/dpg-dev-kit:${GIT_SHA:-latest}
     container_name: dev_kit
     environment:
       - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
@@ -136,6 +159,9 @@ services:
     build:
       context: ../..
       dockerfile: knowledge_engine/Dockerfile
+      platforms:
+        - linux/amd64
+    image: sanketikahub/dpg-knowledge-engine:${GIT_SHA:-latest}
     container_name: knowledge_engine
     environment:
       - CONFIG_FOLDER=/app/config
@@ -168,6 +194,9 @@ services:
     build:
       context: ../..
       dockerfile: memory_layer/Dockerfile
+      platforms:
+        - linux/amd64
+    image: sanketikahub/dpg-memory-layer:${GIT_SHA:-latest}
     container_name: memory_layer
     environment:
       - CONFIG_FOLDER=/app/config
@@ -205,6 +234,9 @@ services:
     build:
       context: ../..
       dockerfile: observability_layer/Dockerfile
+      platforms:
+        - linux/amd64
+    image: sanketikahub/dpg-observability-layer:${GIT_SHA:-latest}
     container_name: observability_layer
     environment:
       - CONFIG_FOLDER=/app/config
@@ -234,6 +266,9 @@ services:
     build:
       context: ../..
       dockerfile: reach_layer/Dockerfile
+      platforms:
+        - linux/amd64
+    image: sanketikahub/dpg-reach-layer:${GIT_SHA:-latest}
     container_name: reach_layer
     environment:
       - CONFIG_FOLDER=/app/config
@@ -268,6 +303,9 @@ services:
     build:
       context: ../..
       dockerfile: telephony_adapter/Dockerfile
+      platforms:
+        - linux/amd64
+    image: sanketikahub/dpg-telephony-adapter:${GIT_SHA:-latest}
     container_name: telephony_adapter
     environment:
       - DPG_CONFIG_PATH=/app/config/dpg.yaml
@@ -306,6 +344,9 @@ services:
     build:
       context: ../..
       dockerfile: trust_layer/Dockerfile
+      platforms:
+        - linux/amd64
+    image: sanketikahub/dpg-trust-layer:${GIT_SHA:-latest}
     container_name: trust_layer
     environment:
       - CONFIG_FOLDER=/app/config

@@ -1,0 +1,29 @@
+# This file overrides the root .dockerignore specifically for dev-kit/Dockerfile.
+# The root .dockerignore excludes dev-kit/ for all other service images,
+# but the dev-kit image obviously needs its own source tree.
+
+# Node modules are installed inside the container; never copy from host.
+dev-kit/frontend/node_modules
+
+# Python artifacts
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/*.egg-info
+.venv
+venv
+
+# Unrelated source modules (not needed in the dev-kit image)
+agent_core/
+knowledge_engine/
+memory_layer/
+trust_layer/
+action_gateway/
+reach_layer/
+observability_layer/
+
+# CI/CD and tooling
+.git
+.github
+automation/
+docs/
