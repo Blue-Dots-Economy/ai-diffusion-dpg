@@ -15,9 +15,15 @@ import yaml
 
 
 def _expand_env_vars(obj):
-    """Recursively expand ${VAR} placeholders in config values using os.environ."""
+    """Recursively expand ${VAR} and ${VAR:-default} placeholders using os.environ."""
     if isinstance(obj, str):
-        return re.sub(r'\$\{(\w+)\}', lambda m: os.environ.get(m.group(1), m.group(0)), obj)
+        def _replace(m: re.Match) -> str:
+            value = os.environ.get(m.group(1))
+            if value is not None:
+                return value
+            # Use the inline default if provided (${VAR:-default}), else leave unexpanded.
+            return m.group(2) if m.group(2) is not None else m.group(0)
+        return re.sub(r'\$\{(\w+)(?::-(.*?))?\}', _replace, obj)
     if isinstance(obj, dict):
         return {k: _expand_env_vars(v) for k, v in obj.items()}
     if isinstance(obj, list):
