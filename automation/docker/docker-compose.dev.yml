@@ -3,7 +3,7 @@
 # Runs all 7 DPG services on a single machine using pre-built Docker Hub images.
 # Each service receives two volume-mounted config files:
 #   /app/config/dpg.yaml    — DPG framework defaults (from dev_kit/dpg/)
-#   /app/config/domain.yaml — domain-specific values (from dev_kit/configs/kkb/)
+#   /app/config/domain.yaml — domain-specific values (from dev-kit/configs/${DOMAIN}/)
 # Services deep-merge these at startup: domain values override DPG defaults.
 # Both config files are mandatory — service will not start if either is missing.
 #
@@ -38,7 +38,7 @@ services:
       - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev_kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
-      - ../../dev_kit/configs/kkb/action_gateway.yaml:/app/config/action_gateway.yaml:ro
+      - ../../dev_kit/configs/${DOMAIN:-kkb}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -65,7 +65,7 @@ services:
       - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev_kit/dpg/agent_core.yaml:/app/config/dpg.yaml:ro
-      - ../../dev_kit/configs/kkb/agent_core.yaml:/app/config/agent_core.yaml:ro
+      - ../../dev_kit/configs/${DOMAIN:-kkb}/agent_core.yaml:/app/config/agent_core.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -131,7 +131,7 @@ services:
     command: ["sh", "-c", "if [ ! -f /app/chroma_db/chroma.sqlite3 ]; then echo 'ChromaDB empty — running ingest...' && python -m scripts.ingest --config config/knowledge_engine.yaml; else echo 'ChromaDB exists — skipping ingest.'; fi && python main.py"]
     volumes:
       - ../../dev_kit/dpg/knowledge_engine.yaml:/app/config/dpg.yaml:ro
-      - ../../dev_kit/configs/kkb/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
+      - ../../dev_kit/configs/${DOMAIN:-kkb}/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
       - ../../knowledge_engine/data:/app/data:ro   # source docs (read-only)
       - chroma_data:/app/chroma_db            # embeddings (writable, overrides :ro for this subdir)
     networks:
@@ -163,7 +163,7 @@ services:
       - MEMGRAPH_PASSWORD=
     volumes:
       - ../../dev_kit/dpg/memory_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev_kit/configs/kkb/memory_layer.yaml:/app/config/memory_layer.yaml:ro
+      - ../../dev_kit/configs/${DOMAIN:-kkb}/memory_layer.yaml:/app/config/memory_layer.yaml:ro
     networks:
       - dpg_net
     depends_on:
@@ -194,7 +194,7 @@ services:
       - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev_kit/dpg/observability_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev_kit/configs/kkb/observability_layer.yaml:/app/config/observability_layer.yaml:ro
+      - ../../dev_kit/configs/${DOMAIN:-kkb}/observability_layer.yaml:/app/config/observability_layer.yaml:ro
     networks:
       - dpg_net
     depends_on:
@@ -225,7 +225,7 @@ services:
       - "8005:8005"
     volumes:
       - ../../dev_kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev_kit/configs/kkb/reach_layer.yaml:/app/config/reach_layer.yaml:ro
+      - ../../dev_kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/reach_layer.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -292,7 +292,7 @@ services:
       - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev_kit/dpg/trust_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev_kit/configs/kkb/trust_layer.yaml:/app/config/trust_layer.yaml:ro
+      - ../../dev_kit/configs/${DOMAIN:-kkb}/trust_layer.yaml:/app/config/trust_layer.yaml:ro
     networks:
       - dpg_net
     deploy:
