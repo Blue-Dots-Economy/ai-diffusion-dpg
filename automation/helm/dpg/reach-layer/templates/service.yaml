@@ -1,0 +1,18 @@
+# Reach Layer is CLI-only in this PoC — no HTTP port is exposed.
+# This Service exists as a placeholder for the future HTTP/WhatsApp channel adapter.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Release.Name }}
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ .Release.Name }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.port }}
+      protocol: TCP

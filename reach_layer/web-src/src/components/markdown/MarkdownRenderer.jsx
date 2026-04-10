@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import rehypeHighlight from 'rehype-highlight'
 
 /**
  * Code block with a hover-reveal copy button.
@@ -29,15 +28,17 @@ function CodeBlock({ children, className }) {
       >
         {copied ? '✓ Copied' : 'Copy'}
       </button>
-      <code className={className}>{children}</code>
+      <pre className="bg-gray-900 rounded-lg p-3 overflow-x-auto text-xs font-mono text-green-300 whitespace-pre">
+        <code className={className}>{children}</code>
+      </pre>
     </div>
   )
 }
 
 /**
  * Render agent response text as rich Markdown.
- * Supports: tables, fenced code with syntax highlighting + copy,
- * blockquotes, lists, bold/italic, horizontal rules, inline code.
+ * Supports: tables, fenced code with copy button, blockquotes, lists,
+ * bold/italic, horizontal rules, inline code.
  *
  * @param {{ text: string }} props
  */
@@ -46,14 +47,15 @@ export function MarkdownRenderer({ text }) {
     <div className="prose-agent">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
         components={{
-          /* Inline code */
-          code({ node, inline, className, children, ...props }) {
-            if (inline) {
+          /* Code — distinguish inline vs fenced */
+          code({ node, className, children, ...props }) {
+            const isBlock = node?.position?.start?.line !== node?.position?.end?.line
+              || String(children).includes('\n')
+            if (!isBlock) {
               return (
                 <code
-                  className="bg-gray-100 dark:bg-gray-800 text-indigo-600 dark:text-indigo-300 px-1.5 py-0.5 rounded text-[0.82em] font-mono"
+                  className="bg-gray-800 text-indigo-300 px-1.5 py-0.5 rounded text-[0.82em] font-mono"
                   {...props}
                 >
                   {children}
@@ -61,6 +63,11 @@ export function MarkdownRenderer({ text }) {
               )
             }
             return <CodeBlock className={className}>{children}</CodeBlock>
+          },
+
+          /* Pre — passthrough so CodeBlock controls rendering */
+          pre({ children }) {
+            return <>{children}</>
           },
 
           /* Tables */
@@ -114,7 +121,7 @@ export function MarkdownRenderer({ text }) {
                 href={href}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-indigo-500 dark:text-indigo-400 underline underline-offset-2 hover:text-indigo-600 dark:hover:text-indigo-300 transition-colors"
+                className="text-indigo-400 underline underline-offset-2 hover:text-indigo-300 transition-colors"
               >
                 {children}
               </a>
@@ -160,6 +167,9 @@ export function MarkdownRenderer({ text }) {
           /* Strong / Em */
           strong({ children }) {
             return <strong className="font-semibold text-[var(--text)]">{children}</strong>
+          },
+          em({ children }) {
+            return <em className="italic text-[var(--text-muted)]">{children}</em>
           },
         }}
       >

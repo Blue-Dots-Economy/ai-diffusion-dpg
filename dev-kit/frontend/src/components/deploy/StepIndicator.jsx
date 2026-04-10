@@ -1,0 +1,42 @@
+// dev-kit/frontend/src/components/deploy/StepIndicator.jsx
+import React from 'react'
+
+const STEPS = [
+  { key: 1, label: 'DPG Values' },
+  { key: 2, label: 'Dependencies' },
+  { key: 3, label: 'Resources' },
+  { key: 4, label: 'Inputs' },
+  { key: 5, label: 'Target' },
+  { key: 6, label: 'Preview' },
+  { key: 7, label: 'Status' },
+]
+
+export default function StepIndicator({ currentStep, completedSteps }) {
+  return (
+    <div className="flex items-center gap-1 px-4 py-3 bg-gray-900 border-b border-gray-800 overflow-x-auto">
+      {STEPS.map((step, i) => {
+        const isActive = step.key === currentStep
+        const isDone = completedSteps.includes(step.key)
+        return (
+          <React.Fragment key={step.key}>
+            {i > 0 && <div className={`h-px flex-1 min-w-[12px] ${isDone ? 'bg-green-700' : 'bg-gray-700'}`} />}
+            <div className="flex items-center gap-1.5 shrink-0">
+              <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium border ${
+                isActive ? 'border-blue-500 bg-blue-600 text-white' :
+                isDone ? 'border-green-700 bg-green-900 text-green-300' :
+                'border-gray-700 bg-gray-800 text-gray-500'
+              }`}>
+                {isDone ? '✓' : step.key}
+              </div>
+              <span className={`text-xs whitespace-nowrap ${
+                isActive ? 'text-white font-medium' : 'text-gray-500'
+              }`}>
+                {step.label}
+              </span>
+            </div>
+          </React.Fragment>
+        )
+      })}
+    </div>
+  )
+}

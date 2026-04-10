@@ -1,0 +1,21 @@
+image:
+  repository: memgraph/memgraph
+  tag: "latest"
+  pullPolicy: IfNotPresent
+service:
+  boltPort: 7687
+  httpPort: 7444
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi
+persistence:
+  size: 1Gi
+  storageClass: ""
+password: ""
+flags:
+  walEnabled: true
+  snapshotIntervalSec: 300

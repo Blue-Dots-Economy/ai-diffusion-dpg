@@ -360,8 +360,11 @@ class AgentCore(AgentCoreBase):
             default_language
         )
         
-        # If this is the first time we've seen a language, save it
-        if "language_preference" not in session_data and "language_preference" not in profile_data:
+        # Save language preference if new, or update if user switched language
+        saved_preference = session_data.get("language_preference") or profile_data.get("language_preference")
+        if not saved_preference or (turn_language and turn_language != saved_preference):
+            if turn_language and turn_language != saved_preference:
+                language_preference = turn_language
             pref_scope: str = self._config.get("entity_persistence", {}).get("scope", "persistent")
             self._write_memory_sync(session_id, user_id, pref_scope, "language_preference", language_preference)
             bundle.session["language_preference"] = language_preference

@@ -9,7 +9,7 @@ agent:
   timeout_ms: 10000
   retry_attempts: 2
   retry_backoff_seconds: [0, 0.5, 1.0]
-  max_tool_rounds: 1
+  max_tool_rounds: 3
 
 conversation:
   max_turns: 20

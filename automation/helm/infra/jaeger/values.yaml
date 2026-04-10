@@ -1,0 +1,14 @@
+image:
+  repository: jaegertracing/all-in-one
+  tag: "1.55"
+  pullPolicy: IfNotPresent
+service:
+  uiPort: 16686
+  grpcPort: 14250
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 200m
+    memory: 512Mi

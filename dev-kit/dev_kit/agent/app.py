@@ -9,6 +9,8 @@ ConversationEngine instances keyed by project slug.
 """
 from __future__ import annotations
 
+import asyncio
+import io
 import json
 import logging
 import os
@@ -16,6 +18,7 @@ import re
 import shutil
 import time
 import yaml
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +26,7 @@ import anthropic
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -42,7 +45,14 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 
 CONFIGS_DIR = Path(__file__).parent.parent.parent / "configs"
+DPG_DIR = Path(__file__).parent.parent.parent / "dpg"
 _STATIC_DIR = Path(__file__).parent / "static"
+_SCHEMAS_DIR = Path(__file__).parent.parent / "schemas"
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+_DOCKER_AUTOMATION = Path("/app/automation")
+_AUTOMATION = _DOCKER_AUTOMATION if _DOCKER_AUTOMATION.exists() else _REPO_ROOT / "automation"
+HELM_BASE = _AUTOMATION / "helm"
+COMPOSE_FILE = _AUTOMATION / "docker" / "docker-compose.dev.yml"
 
 _api_key = os.environ.get("ANTHROPIC_API_KEY", "")
 if not _api_key:
@@ -296,11 +306,57 @@ def restore_checkpoint_route(slug: str, phase: str) -> dict:
     engine = _get_engine(slug)
     engine.accumulator = restored_acc
     engine._tool_handler._acc = restored_acc
-    engine._history = []
     engine._state["phase"] = phase.split("_", 1)[-1] if "_" in phase else phase
+    engine._history = engine._load_history_from_checkpoints()
     render_all(project_path, restored_acc)
     engine._save_accumulator()
     return {"restored": phase, "summary": summary}
+
+
+@app.get("/api/projects/{slug}/checkpoints/{phase}/preview")
+def preview_checkpoint(slug: str, phase: str) -> list[dict]:
+    """Return what configs would look like after restoring a checkpoint, without restoring.
+
+    Loads the checkpoint accumulator from disk and returns a list of
+    ``{block, status, content}`` dicts — the same shape as
+    ``GET /api/projects/{slug}/configs`` — so the frontend can diff the
+    current state against the checkpoint before committing to a restore.
+
+    Args:
+        slug: Project slug.
+        phase: Checkpoint phase directory name, e.g. ``01_overview``.
+
+    Returns:
+        List of dicts with ``block``, ``status``, and ``content`` keys.
+
+    Raises:
+        HTTPException: 404 if the checkpoint directory does not exist.
+    """
+    project_path = _get_project_path(slug)
+    cp_dir = project_path / "_meta" / "checkpoints" / phase
+    if not cp_dir.exists():
+        raise HTTPException(status_code=404, detail=f"Checkpoint '{phase}' not found")
+
+    acc_file = cp_dir / "accumulator.json"
+    try:
+        acc = ConfigAccumulator.from_dict(json.loads(acc_file.read_text()))
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        logger.error(
+            "checkpoint_preview_corrupt",
+            extra={"operation": "preview_checkpoint", "status": "failure", "error": str(exc), "latency_ms": 0},
+        )
+        raise HTTPException(status_code=404, detail=f"Checkpoint '{phase}' accumulator unreadable") from exc
+
+    result = []
+    for block in BLOCKS:
+        data = acc.get_block(block)
+        content = yaml.dump(data, allow_unicode=True, default_flow_style=False) if data else ""
+        result.append({
+            "block": block,
+            "status": acc.get_status(block).value,
+            "content": content,
+        })
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +379,42 @@ def get_configs(slug: str) -> list[dict]:
             "content": content,
         })
     return result
+
+
+@app.get("/api/projects/{slug}/configs/export")
+def export_configs(slug: str):
+    """Return all config YAML files for a project as a ZIP archive.
+
+    Args:
+        slug: Project identifier.
+
+    Returns:
+        StreamingResponse containing a ZIP file with one YAML file per block.
+
+    Raises:
+        HTTPException: 404 if the project does not exist.
+    """
+    _load_project_meta(slug)  # raises 404 if project not found
+    project_path = _get_project_path(slug)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for block in BLOCKS:
+            config_file = project_path / f"{block}.yaml"
+            content = config_file.read_text() if config_file.exists() else f"# {block}.yaml — not yet configured\n"
+            zf.writestr(f"{block}.yaml", content)
+    buf.seek(0)
+
+    def _iter_and_close():
+        try:
+            yield from buf
+        finally:
+            buf.close()
+
+    return StreamingResponse(
+        _iter_and_close(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={slug}-configs.zip"},
+    )
 
 
 @app.get("/api/projects/{slug}/configs/{block}")
@@ -395,11 +487,660 @@ def get_workflow_graph(slug: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Schema routes
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/schemas/{block}")
+def get_schema_descriptions(block: str) -> dict:
+    """Parse inline comments from a block's YAML template and return key→description map.
+
+    Template lines are expected to follow the pattern::
+
+        key: ""   # description text
+
+    If the template file does not exist (e.g. an unrecognised block name),
+    an empty descriptions dict is returned instead of a 404.
+
+    Args:
+        block: DPG block name, e.g. ``reach_layer``.
+
+    Returns:
+        Dict with ``block`` and ``descriptions`` keys. ``descriptions`` maps
+        field names to their inline comment strings.
+    """
+    template_file = _SCHEMAS_DIR / f"{block}.yaml"
+    descriptions: dict[str, str] = {}
+    if template_file.exists():
+        pattern = re.compile(r'\s+(\w+):\s+"[^"]*"\s*#\s*(.+)')
+        for line in template_file.read_text().splitlines():
+            match = pattern.match(line)
+            if match:
+                key, description = match.group(1), match.group(2).strip()
+                descriptions[key] = description
+    return {"block": block, "descriptions": descriptions}
+
+
+# ---------------------------------------------------------------------------
+# Deploy endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/projects/{slug}/deploy/dpg-values")
+async def get_dpg_values(slug: str) -> list:
+    """Return all 7 DPG framework YAML files.
+
+    Args:
+        slug: Project slug (unused; endpoint is project-scoped for consistency).
+
+    Returns:
+        List of dicts with ``block`` and ``content`` keys for each DPG block.
+    """
+    results = []
+    for block in BLOCKS:
+        path = DPG_DIR / f"{block}.yaml"
+        content = path.read_text() if path.exists() else ""
+        results.append({"block": block, "content": content})
+    return results
+
+
+@app.put("/api/projects/{slug}/deploy/dpg-values/{block}")
+async def update_dpg_value(slug: str, block: str, body: dict) -> dict:
+    """Update a DPG framework YAML file.
+
+    Args:
+        slug: Project slug (unused; endpoint is project-scoped for consistency).
+        block: DPG block name to update.
+        body: Dict with ``content`` key containing the YAML string.
+
+    Returns:
+        Dict with ``status: ok`` on success.
+
+    Raises:
+        HTTPException: 400 if block name is not recognised.
+    """
+    if block not in BLOCKS:
+        raise HTTPException(status_code=400, detail=f"Unknown block: {block}")
+    path = DPG_DIR / f"{block}.yaml"
+    path.write_text(body["content"])
+    return {"status": "ok"}
+
+
+@app.get("/api/projects/{slug}/deploy/dependencies")
+async def get_dependencies(slug: str) -> dict:
+    """Return all infrastructure service configs.
+
+    Args:
+        slug: Project slug (unused; endpoint is project-scoped for consistency).
+
+    Returns:
+        Dict mapping each service name to its current config YAML and defaults.
+    """
+    from dev_kit.agent.deployer.dependencies import get_defaults, get_service_config
+
+    defaults = get_defaults()
+    result = {}
+    for name in defaults:
+        result[name] = {"config": get_service_config(name), "defaults": defaults[name]}
+    return result
+
+
+@app.put("/api/projects/{slug}/deploy/dependencies/{service}")
+async def update_dependency(slug: str, service: str, body: dict) -> dict:
+    """Update an infrastructure service config.
+
+    Args:
+        slug: Project slug (unused; endpoint is project-scoped for consistency).
+        service: Infrastructure service name to update.
+        body: Dict with ``content`` key containing the YAML override string.
+
+    Returns:
+        Dict with ``status: ok`` on success.
+
+    Raises:
+        HTTPException: 400 if service name is unknown or YAML is invalid.
+    """
+    from dev_kit.agent.deployer.dependencies import update_service_config
+
+    try:
+        update_service_config(service, body["content"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "ok"}
+
+
+@app.get("/api/projects/{slug}/deploy/resource-presets")
+async def get_resource_presets(slug: str) -> dict:
+    """Return the 3 resource preset definitions.
+
+    Args:
+        slug: Project slug (unused; endpoint is project-scoped for consistency).
+
+    Returns:
+        Dict with low/medium/high tiers, each mapping block names to resource specs.
+    """
+    from dev_kit.agent.deployer.presets import PRESETS
+
+    return PRESETS
+
+
+@app.post("/api/projects/{slug}/deploy/resource-presets/{tier}")
+async def apply_resource_preset_endpoint(slug: str, tier: str) -> dict:
+    """Apply a resource preset to all 7 DPG layers.
+
+    Args:
+        slug: Project slug (unused; endpoint is project-scoped for consistency).
+        tier: Preset tier name — one of ``low``, ``medium``, or ``high``.
+
+    Returns:
+        Dict mapping each DPG block to its requests/limits resource spec.
+
+    Raises:
+        HTTPException: 400 if tier is not a known preset name.
+    """
+    from dev_kit.agent.deployer.presets import apply_preset
+
+    try:
+        return apply_preset(tier)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/projects/{slug}/deploy/validate-kubeconfig")
+async def validate_kubeconfig_endpoint(slug: str, body: dict) -> dict:
+    """Validate a kubeconfig and return cluster info.
+
+    Args:
+        slug: Project slug (unused; endpoint is project-scoped for consistency).
+        body: Dict with ``content`` key containing the kubeconfig YAML string.
+
+    Returns:
+        Dict with cluster validation details from the kubeconfig.
+
+    Raises:
+        HTTPException: 400 if the kubeconfig is invalid or cannot be parsed.
+    """
+    from dev_kit.agent.deployer.kubeconfig import validate_kubeconfig
+
+    try:
+        return await validate_kubeconfig(body["content"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _apply_resources_to_compose(content: str, resources: dict) -> str:
+    """Apply resource presets to a docker-compose YAML string.
+
+    Args:
+        content: The raw docker-compose YAML string.
+        resources: Dict mapping block names to {limits: {cpu, memory}, requests: {cpu, memory}}.
+
+    Returns:
+        Updated YAML string with deploy.resources.limits applied per service.
+    """
+    import yaml as _yaml
+
+    try:
+        compose = _yaml.safe_load(content)
+    except _yaml.YAMLError:
+        return content
+
+    if not compose or "services" not in compose:
+        return content
+
+    for block_name, res in resources.items():
+        if block_name not in compose["services"]:
+            continue
+        svc = compose["services"][block_name]
+        limits = res.get("limits", {})
+        if limits:
+            # Convert K8s CPU (e.g. "500m") to Docker cpus (e.g. "0.5")
+            cpu_str = limits.get("cpu", "100m")
+            if cpu_str.endswith("m"):
+                cpus = str(round(int(cpu_str[:-1]) / 1000, 2))
+            else:
+                cpus = cpu_str
+            # Convert K8s memory (e.g. "512Mi") to Docker (e.g. "512M")
+            mem_str = limits.get("memory", "512Mi")
+            memory = mem_str.replace("Mi", "M").replace("Gi", "G")
+            svc.setdefault("deploy", {}).setdefault("resources", {})["limits"] = {
+                "cpus": cpus,
+                "memory": memory,
+            }
+
+    return _yaml.dump(compose, default_flow_style=False, sort_keys=False)
+
+
+@app.put("/api/projects/{slug}/deploy/compose-file")
+async def update_compose_file(slug: str, body: dict) -> dict:
+    """Write updated docker-compose content back to the compose file.
+
+    Args:
+        slug: Project slug (unused; endpoint is project-scoped for consistency).
+        body: Dict with ``content`` key containing the full YAML string.
+
+    Returns:
+        Dict with ``status: ok`` on success.
+    """
+    COMPOSE_FILE.write_text(body["content"])
+    return {"status": "ok"}
+
+
+@app.post("/api/projects/{slug}/deploy/preview")
+async def get_deploy_preview(slug: str, body: dict) -> dict:
+    """Read existing docker-compose file or render helm template preview.
+
+    Args:
+        slug: Project slug used to scope domain config paths.
+        body: Dict with optional keys: ``target`` (``docker`` or ``kubernetes``),
+            ``resources``, ``secrets``, and ``infra_configs``.
+
+    Returns:
+        Dict with ``target`` and ``preview`` keys. Preview contains rendered
+        deployment manifests keyed by filename.
+    """
+    target = body.get("target", "docker")
+    if target == "docker":
+        raw = COMPOSE_FILE.read_text() if COMPOSE_FILE.exists() else "# docker-compose.dev.yml not found"
+        content = raw.replace("${DOMAIN:-kkb}", slug).replace("${DOMAIN}", slug)
+        resources = body.get("resources", {})
+        if resources:
+            content = _apply_resources_to_compose(content, resources)
+        return {"target": target, "preview": {"docker-compose.yml": content}}
+
+    # Kubernetes — render all 14 charts via helm template
+    from dev_kit.agent.deployer.helm import build_template_command, run_helm_command
+
+    _helm_base = HELM_BASE
+    secrets = body.get("secrets", {})
+    resources = body.get("resources", {})
+    preview: dict[str, str] = {}
+
+    from dev_kit.agent.deployer.dependencies import SERVICE_CHART_MAP, HELM_INFRA_DIR
+
+    # Infra charts — pass edited values.yaml and secrets
+    for svc_name in ["redis", "memgraph", "otel_collector", "jaeger", "prometheus", "loki", "grafana"]:
+        chart_dir = svc_name.replace("_", "-")
+        chart_path = str(_helm_base / "infra" / chart_dir)
+        set_values: dict[str, str] = {}
+
+        # Use the edited values.yaml from the infra Helm chart
+        infra_chart_dir = SERVICE_CHART_MAP.get(svc_name, chart_dir)
+        infra_values = HELM_INFRA_DIR / infra_chart_dir / "values.yaml"
+        values_files: list[str] = []
+        if infra_values.exists():
+            values_files.append(str(infra_values))
+
+        # Inject secrets into infra services
+        if svc_name == "redis" and secrets.get("redis_password"):
+            set_values["password"] = secrets["redis_password"]
+        elif svc_name == "memgraph" and secrets.get("memgraph_password"):
+            set_values["password"] = secrets["memgraph_password"]
+        elif svc_name == "grafana" and secrets.get("grafana_admin_password"):
+            set_values["adminPassword"] = secrets["grafana_admin_password"]
+
+        cmd = build_template_command(
+            chart_path, svc_name.replace("_", "-"),
+            set_values=set_values or None,
+            values_files=values_files or None,
+        )
+        result = await run_helm_command(cmd)
+        preview[svc_name] = result["stdout"] if result["success"] else f"# Error: {result['stderr']}"
+
+    # DPG charts — inject dpgConfig, domainConfig, secrets, and resources
+    for block_name in BLOCKS:
+        chart_dir = block_name.replace("_", "-")
+        chart_path = str(_helm_base / "dpg" / chart_dir)
+        set_values: dict[str, str] = {}
+        set_files: dict[str, str] = {}
+
+        dpg_file = DPG_DIR / f"{block_name}.yaml"
+        domain_file = CONFIGS_DIR / slug / f"{block_name}.yaml"
+        if dpg_file.exists():
+            set_files["dpgConfig"] = str(dpg_file)
+        if domain_file.exists():
+            set_files["domainConfig"] = str(domain_file)
+        if secrets.get("anthropic_api_key"):
+            set_values["anthropicApiKey"] = secrets["anthropic_api_key"]
+
+        # Inject infra secrets into DPG blocks that connect to them
+        if block_name == "memory_layer":
+            if secrets.get("memgraph_password"):
+                set_values["memgraph.password"] = secrets["memgraph_password"]
+            if secrets.get("redis_password"):
+                set_values["redis.url"] = f"redis://:{secrets['redis_password']}@redis:6379/0"
+
+        block_res = resources.get(block_name, {})
+        limits = block_res.get("limits", {})
+        requests = block_res.get("requests", {})
+        if limits.get("cpu"):
+            set_values["resources.limits.cpu"] = limits["cpu"]
+        if limits.get("memory"):
+            set_values["resources.limits.memory"] = limits["memory"]
+        if requests.get("cpu"):
+            set_values["resources.requests.cpu"] = requests["cpu"]
+        if requests.get("memory"):
+            set_values["resources.requests.memory"] = requests["memory"]
+
+        cmd = build_template_command(chart_path, chart_dir, set_values=set_values or None, set_files=set_files or None)
+        result = await run_helm_command(cmd)
+        preview[block_name] = result["stdout"] if result["success"] else f"# Error: {result['stderr']}"
+
+    return {"target": target, "preview": preview}
+
+
+@app.post("/api/projects/{slug}/deploy/execute")
+async def execute_deploy(slug: str, body: dict) -> dict:
+    """Trigger deployment of all 14 services.
+
+    Starts an async background task that deploys services phase-by-phase.
+    Returns immediately with ``status: started``. Poll ``/deploy/status``
+    to track progress.
+
+    Args:
+        slug: Project slug identifying the deployment target.
+        body: Dict with ``target``, ``secrets``, ``resources``, and
+            optionally ``kubeconfig`` (for kubernetes target).
+
+    Returns:
+        Dict with ``status: started`` and the resolved target name.
+    """
+    import tempfile
+    from dev_kit.agent.deployer.state import start_deploy
+
+    target = body.get("target", "docker")
+    state = start_deploy(slug, target)
+    secrets = body.get("secrets", {})
+    resources = body.get("resources", {})
+
+    # Mark all services as queued initially
+    all_services = [
+        "redis", "memgraph", "otel_collector", "jaeger", "prometheus", "loki", "grafana",
+        "agent_core", "knowledge_engine", "memory_layer", "trust_layer",
+        "action_gateway", "reach_layer", "observability_layer",
+    ]
+    for svc in all_services:
+        state.set_service(svc, "queued")
+
+    if target == "docker":
+        asyncio.create_task(_run_docker_deploy(slug, state, secrets, resources))
+    else:
+        kubeconfig_content = body.get("kubeconfig", "")
+        namespace = body.get("namespace", "dpg")
+        asyncio.create_task(_run_k8s_deploy(slug, state, secrets, resources, kubeconfig_content, namespace))
+
+    return {"status": "started", "target": target}
+
+
+async def _run_docker_deploy(slug: str, state, secrets: dict, resources: dict) -> None:
+    """Background task: apply resources, resolve domain, and run docker compose up."""
+    import tempfile
+    from dev_kit.agent.deployer.compose import run_compose_up
+    from dev_kit.agent.deployer.helm import DEPLOY_PHASES
+
+    try:
+        # Read compose file, apply domain and resources
+        raw = COMPOSE_FILE.read_text()
+        content = raw.replace("${DOMAIN:-kkb}", slug).replace("${DOMAIN}", slug)
+        if resources:
+            content = _apply_resources_to_compose(content, resources)
+
+        # Strip hardcoded container_name so Docker Compose auto-prefixes
+        # with the project name, avoiding conflicts with other deployments.
+        import yaml as _yaml
+        compose_doc = _yaml.safe_load(content)
+        for svc in compose_doc.get("services", {}).values():
+            svc.pop("container_name", None)
+        content = _yaml.dump(compose_doc, default_flow_style=False, sort_keys=False)
+
+        # Write to a temp file next to the original so relative paths resolve
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yml", delete=False,
+            prefix=f"dpg-{slug}-",
+            dir=str(COMPOSE_FILE.parent),
+        )
+        tmp.write(content)
+        tmp.flush()
+        tmp.close()
+        compose_path = tmp.name
+        state.compose_file_path = compose_path
+
+        # Mark all as starting
+        for phase in DEPLOY_PHASES:
+            for svc in phase["services"]:
+                state.set_service(svc, "starting")
+
+        result = await run_compose_up(compose_path, project_name=f"dpg-{slug}", secrets=secrets)
+        if result["success"]:
+            for svc_name in state.services:
+                state.set_service(svc_name, "running")
+            state.overall = "complete"
+        else:
+            for svc_name in state.services:
+                state.set_service(svc_name, "failed", result["stderr"][:200])
+            state.overall = "failed"
+            logger.error(
+                "docker_deploy_failed",
+                extra={"operation": "_run_docker_deploy", "status": "failure", "error": result["stderr"][:500]},
+            )
+    except Exception as exc:
+        for svc_name in state.services:
+            state.set_service(svc_name, "failed", str(exc)[:200])
+        state.overall = "failed"
+        logger.error(
+            "docker_deploy_exception",
+            extra={"operation": "_run_docker_deploy", "status": "failure", "error": str(exc)},
+        )
+
+
+async def _run_k8s_deploy(slug: str, state, secrets: dict, resources: dict, kubeconfig_content: str, namespace: str) -> None:
+    """Background task: deploy all 14 charts via helm upgrade --install in phase order."""
+    import tempfile
+    from dev_kit.agent.deployer.helm import DEPLOY_PHASES, build_helm_command, run_helm_command
+
+    _helm_base = HELM_BASE
+    state.namespace = namespace
+
+    # Write kubeconfig to a temp file
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False, prefix="kubeconfig-")
+    tmp.write(kubeconfig_content)
+    tmp.flush()
+    tmp.close()
+    state.kubeconfig_path = tmp.name
+
+    infra_services = {"redis", "memgraph", "otel_collector", "jaeger", "prometheus", "loki", "grafana"}
+    from dev_kit.agent.deployer.dependencies import SERVICE_CHART_MAP, HELM_INFRA_DIR
+
+    try:
+        for phase in DEPLOY_PHASES:
+            for svc_name in phase["services"]:
+                state.set_service(svc_name, "starting")
+
+                chart_dir = svc_name.replace("_", "-")
+                if svc_name in infra_services:
+                    chart_path = str(_helm_base / "infra" / chart_dir)
+                else:
+                    chart_path = str(_helm_base / "dpg" / chart_dir)
+
+                release_name = chart_dir
+                set_values: dict[str, str] = {}
+                set_files: dict[str, str] = {}
+                values_files: list[str] = []
+
+                if svc_name in infra_services:
+                    # Use the edited values.yaml from the infra Helm chart
+                    infra_chart_dir = SERVICE_CHART_MAP.get(svc_name, chart_dir)
+                    infra_values = HELM_INFRA_DIR / infra_chart_dir / "values.yaml"
+                    if infra_values.exists():
+                        values_files.append(str(infra_values))
+
+                    # Inject secrets into infra services that need them
+                    if svc_name == "redis" and secrets.get("redis_password"):
+                        set_values["password"] = secrets["redis_password"]
+                    elif svc_name == "memgraph" and secrets.get("memgraph_password"):
+                        set_values["password"] = secrets["memgraph_password"]
+                    elif svc_name == "grafana" and secrets.get("grafana_admin_password"):
+                        set_values["adminPassword"] = secrets["grafana_admin_password"]
+                else:
+                    # DPG charts need config injection
+                    dpg_file = DPG_DIR / f"{svc_name}.yaml"
+                    domain_file = CONFIGS_DIR / slug / f"{svc_name}.yaml"
+                    if dpg_file.exists():
+                        set_files["dpgConfig"] = str(dpg_file)
+                    if domain_file.exists():
+                        set_files["domainConfig"] = str(domain_file)
+                    if secrets.get("anthropic_api_key"):
+                        set_values["anthropicApiKey"] = secrets["anthropic_api_key"]
+
+                    # Inject infra secrets into DPG blocks that connect to them
+                    if svc_name == "memory_layer":
+                        if secrets.get("memgraph_password"):
+                            set_values["memgraph.password"] = secrets["memgraph_password"]
+                        if secrets.get("redis_password"):
+                            set_values["redis.url"] = f"redis://:{secrets['redis_password']}@redis:6379/0"
+
+                    block_res = resources.get(svc_name, {})
+                    limits = block_res.get("limits", {})
+                    requests = block_res.get("requests", {})
+                    if limits.get("cpu"):
+                        set_values["resources.limits.cpu"] = limits["cpu"]
+                    if limits.get("memory"):
+                        set_values["resources.limits.memory"] = limits["memory"]
+                    if requests.get("cpu"):
+                        set_values["resources.requests.cpu"] = requests["cpu"]
+                    if requests.get("memory"):
+                        set_values["resources.requests.memory"] = requests["memory"]
+
+                cmd = build_helm_command(
+                    chart_path=chart_path,
+                    release_name=release_name,
+                    namespace=namespace,
+                    kubeconfig_path=tmp.name,
+                    set_values=set_values or None,
+                    set_files=set_files or None,
+                    values_files=values_files or None,
+                    upgrade=True,
+                )
+
+                result = await run_helm_command(cmd)
+                if result["success"]:
+                    state.set_service(svc_name, "running")
+                else:
+                    state.set_service(svc_name, "failed", result["stderr"][:200])
+                    logger.error(
+                        "k8s_deploy_service_failed",
+                        extra={
+                            "operation": "_run_k8s_deploy",
+                            "status": "failure",
+                            "service": svc_name,
+                            "error": result["stderr"][:500],
+                        },
+                    )
+
+        # Determine overall status
+        statuses = {s["status"] for s in state.services.values()}
+        if "failed" in statuses:
+            state.overall = "failed"
+        else:
+            state.overall = "complete"
+
+    except Exception as exc:
+        for svc_name in state.services:
+            if state.services[svc_name]["status"] == "queued":
+                state.set_service(svc_name, "failed", str(exc)[:200])
+        state.overall = "failed"
+        logger.error(
+            "k8s_deploy_exception",
+            extra={"operation": "_run_k8s_deploy", "status": "failure", "error": str(exc)},
+        )
+
+
+@app.get("/api/projects/{slug}/deploy/status")
+async def get_deploy_status(slug: str) -> dict:
+    """Poll deployment status of all services.
+
+    For Docker deployments, polls ``docker compose ps`` for live container state.
+    For Kubernetes deployments, polls ``kubectl get pods`` for pod status.
+    Falls back to the in-memory deployment state if no active deployment.
+
+    Args:
+        slug: Project slug identifying the deployment to query.
+
+    Returns:
+        Dict with ``services`` (list of dicts with name/status/error) and
+        ``overall`` (deploying|complete|failed) keys.
+    """
+    from dev_kit.agent.deployer.state import get_state
+
+    state = get_state(slug)
+    if not state:
+        return {"services": [], "overall": "idle"}
+
+    # For completed/failed deployments, also try to get live status
+    if state.overall in ("complete", "failed"):
+        if state.target == "docker" and state.compose_file_path:
+            from dev_kit.agent.deployer.compose import get_compose_status
+
+            containers = await get_compose_status(state.compose_file_path, project_name=f"dpg-{slug}")
+            if containers:
+                for c in containers:
+                    svc_name = c.get("Service", c.get("Name", ""))
+                    c_state = c.get("State", "")
+                    c_status = c.get("Status", "")
+                    if c_state == "running":
+                        status = "healthy" if "healthy" in c_status.lower() else "running"
+                    elif c_state == "exited":
+                        status = "failed"
+                    else:
+                        status = c_state
+                    state.set_service(svc_name, status)
+                statuses = {s["status"] for s in state.services.values()}
+                state.overall = "failed" if "failed" in statuses else "complete"
+
+        elif state.target == "kubernetes" and state.kubeconfig_path:
+            from dev_kit.agent.deployer.helm import get_pod_status
+
+            pods = await get_pod_status(state.namespace, state.kubeconfig_path)
+            if pods:
+                for pod in pods:
+                    # Map pod name back to service (release name is prefix)
+                    pod_name = pod["name"]
+                    matched_svc = None
+                    for svc_name in state.services:
+                        release = svc_name.replace("_", "-")
+                        if pod_name.startswith(release):
+                            matched_svc = svc_name
+                            break
+                    if matched_svc:
+                        if pod["ready"]:
+                            state.set_service(matched_svc, "healthy")
+                        elif pod["status"] == "Running":
+                            state.set_service(matched_svc, "running")
+                        elif pod["status"] in ("Pending", "ContainerCreating"):
+                            state.set_service(matched_svc, "starting")
+                        else:
+                            state.set_service(matched_svc, "failed", pod["status"])
+
+                statuses = {s["status"] for s in state.services.values()}
+                state.overall = "failed" if "failed" in statuses else "complete"
+
+    return state.to_response()
+
+
+# ---------------------------------------------------------------------------
 # Static frontend
 # ---------------------------------------------------------------------------
 
 if _STATIC_DIR.exists():
     app.mount("/assets", StaticFiles(directory=_STATIC_DIR / "assets"), name="assets")
+
+    @app.get("/favicon.svg")
+    def serve_favicon():
+        """Serve the favicon SVG file."""
+        favicon = _STATIC_DIR / "favicon.svg"
+        if favicon.exists():
+            return FileResponse(favicon, media_type="image/svg+xml")
+        return FileResponse(_STATIC_DIR / "index.html")
 
     @app.get("/{full_path:path}")
     def serve_spa(full_path: str):

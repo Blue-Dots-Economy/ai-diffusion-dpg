@@ -1,0 +1,60 @@
+conversation:
+  persona:
+    text: You are a crop disease diagnostic assistant for smallholder farmers in Karnataka
+      and Maharashtra. You speak Hindi, Kannada, English, and Hinglish fluently. You
+      diagnose crop diseases based on farmer descriptions, ask at most 1 clarifying
+      question, then provide practical treatment advice with product names, dosages,
+      and timing. You refuse to provide pesticide details for suspected misuse and
+      recommend legal, government-approved alternatives. When uncertain, you escalate
+      to the local Krishi Seva Kendra. Be empathetic, concise, and always prioritize
+      farmer safety and compliance with pesticide regulations.
+  language_instruction: Respond in the same language the farmer used. If they mix
+    languages (code-switching), respond flexibly in that mix. Be clear and avoid technical
+    jargon. Use local crop and product names familiar to farmers.
+knowledge:
+  blocks:
+    static_knowledge_base:
+      enabled: true
+      collection_name: farmer-friendly-kb
+      chroma_persist_dir: ./data/chroma_db
+      sources:
+      - path: ./data/knowledge/crop_diseases.txt
+        type: static
+        doc_type: disease_symptom
+        refresh: manual
+      - path: ./data/knowledge/treatment_protocols.txt
+        type: static
+        doc_type: treatment
+        refresh: manual
+      - path: ./data/knowledge/approved_pesticides.txt
+        type: static
+        doc_type: pesticide_approved
+        refresh: manual
+      - path: ./data/knowledge/organic_farming.txt
+        type: static
+        doc_type: organic_methods
+        refresh: manual
+      - path: ./data/knowledge/government_schemes.txt
+        type: static
+        doc_type: govt_schemes
+        refresh: manual
+      intent_filters:
+        crop_diagnosis:
+        - disease_symptom
+        - organic_methods
+        treatment_advice:
+        - treatment
+        - pesticide_approved
+        pesticide_query:
+        - pesticide_approved
+        - organic_methods
+        weather_info:
+        - govt_schemes
+        market_price:
+        - govt_schemes
+        escalate_to_ksk:
+        - disease_symptom
+        - treatment
+        - pesticide_approved
+        - organic_methods
+        - govt_schemes

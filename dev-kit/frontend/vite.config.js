@@ -12,4 +12,9 @@ export default defineConfig({
     outDir: '../dev_kit/agent/static',
     emptyOutDir: true,
   },
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    setupFiles: ['./src/test/setup.js'],
+  },
 })

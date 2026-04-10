@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Release.Name }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: memory-layer
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.service.port }}
+          env:
+            - name: CONFIG_FOLDER
+              value: {{ .Values.configFolder | quote }}
+            - name: REDIS_URL
+              value: {{ .Values.redis.url | quote }}
+            - name: MEMGRAPH_URI
+              value: {{ .Values.memgraph.uri | quote }}
+            - name: MEMGRAPH_USER
+              value: {{ .Values.memgraph.user | quote }}
+            - name: MEMGRAPH_PASSWORD
+              value: {{ .Values.memgraph.password | quote }}
+          volumeMounts:
+            - name: dpg-config
+              mountPath: /app/config/dpg.yaml
+              subPath: dpg.yaml
+            - name: domain-config
+              mountPath: /app/config/memory_layer.yaml
+              subPath: memory_layer.yaml
+          resources:
+            requests:
+              cpu: {{ .Values.resources.requests.cpu }}
+              memory: {{ .Values.resources.requests.memory }}
+            limits:
+              cpu: {{ .Values.resources.limits.cpu }}
+              memory: {{ .Values.resources.limits.memory }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.service.port }}
+            initialDelaySeconds: {{ .Values.healthCheck.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.readiness.periodSeconds }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.service.port }}
+            initialDelaySeconds: {{ .Values.healthCheck.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.liveness.periodSeconds }}
+      volumes:
+        - name: dpg-config
+          configMap:
+            name: {{ .Release.Name }}-dpg-config
+        - name: domain-config
+          configMap:
+            name: {{ .Release.Name }}-domain-config

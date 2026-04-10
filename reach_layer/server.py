@@ -12,6 +12,7 @@ remains available via main.py for local development.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -318,7 +319,17 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
 # Application instance (used by uvicorn: server:app)
 # ---------------------------------------------------------------------------
 
-_config = load_config("config/dpg.yaml", "config/domain.yaml")
+def _resolve_domain_path() -> str:
+    """Resolve domain config path from CONFIG_FOLDER or fall back to config/domain.yaml."""
+    config_folder = os.getenv("CONFIG_FOLDER")
+    if config_folder:
+        resolved = Path(config_folder) / "reach_layer.yaml"
+        if resolved.exists():
+            return str(resolved)
+    return "config/domain.yaml"
+
+
+_config = load_config("config/dpg.yaml", _resolve_domain_path())
 
 # ---------------------------------------------------------------------------
 # OpenTelemetry initialisation

@@ -5,3 +5,31 @@
 body {
   @apply bg-gray-950 text-gray-100 font-sans;
 }
+
+/* ── Light mode overrides ─────────────────────────────── */
+.light body { background-color: #f8fafc; color: #0f172a; }
+.light .bg-gray-950 { background-color: #ffffff !important; }
+.light .bg-gray-900 { background-color: #f1f5f9 !important; }
+.light .bg-gray-800 { background-color: #e2e8f0 !important; }
+.light .bg-gray-700 { background-color: #cbd5e1 !important; }
+.light .text-gray-100 { color: #0f172a !important; }
+.light .text-gray-200 { color: #1e293b !important; }
+.light .text-gray-300 { color: #334155 !important; }
+.light .text-gray-400 { color: #475569 !important; }
+.light .text-gray-500 { color: #64748b !important; }
+.light .text-white { color: #0f172a !important; }
+.light .border-gray-800 { border-color: #cbd5e1 !important; }
+.light .border-gray-700 { border-color: #94a3b8 !important; }
+.light .placeholder-gray-500::placeholder { color: #94a3b8 !important; }
+.light .text-blue-400 { color: #2563eb !important; }
+.light .bg-green-900 { background-color: #dcfce7 !important; }
+.light .text-green-300 { color: #15803d !important; }
+.light .border-green-700 { border-color: #86efac !important; }
+.light .bg-yellow-900 { background-color: #fef9c3 !important; }
+.light .text-yellow-300 { color: #a16207 !important; }
+.light .border-yellow-700 { border-color: #fde047 !important; }
+.light .bg-red-900, .light .bg-red-950 { background-color: #fee2e2 !important; }
+.light .text-red-300 { color: #b91c1c !important; }
+.light .border-red-800, .light .border-red-700 { border-color: #fca5a5 !important; }
+.light .bg-indigo-700 { background-color: #4338ca !important; }
+.light .bg-indigo-700 * { color: #ffffff !important; }

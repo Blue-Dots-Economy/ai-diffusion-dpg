@@ -1,0 +1,6 @@
+apiVersion: v2
+name: memgraph
+description: Memgraph — graph database for user profiles and context
+type: application
+version: 0.1.0
+appVersion: "latest"

@@ -153,19 +153,21 @@ services:
   # Memory Layer — session state store (port 8002)
   # ---------------------------------------------------------------------------
   memory_layer:
-    image: sanketikahub/dpg-memory-layer:0.1.0
+    image: srivatsak2002/dpg-memory-layer:0.2.0
     container_name: memory_layer
     environment:
       - CONFIG_FOLDER=/app/config
       - REDIS_URL=redis://redis:6379/0
       - MEMGRAPH_URI=bolt://memgraph:7687
       - MEMGRAPH_USER=memgraph
-      - MEMGRAPH_PASSWORD=
+      - MEMGRAPH_PASSWORD=${MEMGRAPH_PASSWORD:-}
     volumes:
       - ../../dev_kit/dpg/memory_layer.yaml:/app/config/dpg.yaml:ro
       - ../../dev_kit/configs/${DOMAIN:-kkb}/memory_layer.yaml:/app/config/memory_layer.yaml:ro
     networks:
-      - dpg_net
+      dpg_net:
+        aliases:
+          - memory-layer
     depends_on:
       redis:
         condition: service_healthy
@@ -188,7 +190,7 @@ services:
   # Observability Layer — async observability (port 8004)
   # ---------------------------------------------------------------------------
   observability_layer:
-    image: sanketikahub/dpg-observability-layer:0.1.0
+    image: srivatsak2002/dpg-observability-layer:0.2.0
     container_name: observability_layer
     environment:
       - CONFIG_FOLDER=/app/config
@@ -196,10 +198,12 @@ services:
       - ../../dev_kit/dpg/observability_layer.yaml:/app/config/dpg.yaml:ro
       - ../../dev_kit/configs/${DOMAIN:-kkb}/observability_layer.yaml:/app/config/observability_layer.yaml:ro
     networks:
-      - dpg_net
+      dpg_net:
+        aliases:
+          - observability-layer
     depends_on:
       otelcol:
-        condition: service_healthy
+        condition: service_started
     deploy:
       resources:
         limits:
@@ -227,7 +231,9 @@ services:
       - ../../dev_kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
       - ../../dev_kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/reach_layer.yaml:ro
     networks:
-      - dpg_net
+      dpg_net:
+        aliases:
+          - reach-layer
     deploy:
       resources:
         limits:
@@ -265,7 +271,9 @@ services:
     ports:
       - "8006:8006"
     networks:
-      - dpg_net
+      dpg_net:
+        aliases:
+          - knowledge-engine
     deploy:
       resources:
         limits:
@@ -294,7 +302,9 @@ services:
       - ../../dev_kit/dpg/trust_layer.yaml:/app/config/dpg.yaml:ro
       - ../../dev_kit/configs/${DOMAIN:-kkb}/trust_layer.yaml:/app/config/trust_layer.yaml:ro
     networks:
-      - dpg_net
+      dpg_net:
+        aliases:
+          - agent-core
     deploy:
       resources:
         limits:
@@ -319,7 +329,9 @@ services:
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
     networks:
-      - dpg_net
+      dpg_net:
+        aliases:
+          - reach-layer
     deploy:
       resources:
         limits:
@@ -336,7 +348,9 @@ services:
     ports:
       - "3100:3100"
     networks:
-      - dpg_net
+      dpg_net:
+        aliases:
+          - otel-collector
     deploy:
       resources:
         limits:

@@ -19,26 +19,26 @@ Run from `automation/helm/`:
 
 ```bash
 # Memory Layer
-helm install memory-layer ./memory-layer -n memory-layer --create-namespace
+helm install memory-layer ./dpg/memory-layer -n memory-layer --create-namespace
 
 # Trust Layer
-helm install trust-layer ./trust-layer -n trust-layer --create-namespace
+helm install trust-layer ./dpg/trust-layer -n trust-layer --create-namespace
 
 # Observability Layer
-helm install observability-layer ./observability-layer -n observability-layer --create-namespace
+helm install observability-layer ./dpg/observability-layer -n observability-layer --create-namespace
 
 # Action Gateway
-helm install action-gateway ./action-gateway -n action-gateway --create-namespace
+helm install action-gateway ./dpg/action-gateway -n action-gateway --create-namespace
 
 # Knowledge Engine (runs ingest init container on every deploy — may take 2-3 min)
-helm install knowledge-engine ./knowledge-engine -n knowledge-engine --create-namespace
+helm install knowledge-engine ./dpg/knowledge-engine -n knowledge-engine --create-namespace
 
 # Agent Core (requires API key — never stored in files)
-helm install agent-core ./agent-core -n agent-core --create-namespace \
+helm install agent-core ./dpg/agent-core -n agent-core --create-namespace \
   --set anthropicApiKey=$ANTHROPIC_API_KEY
 
 # Reach Layer
-helm install reach-layer ./reach-layer -n reach-layer --create-namespace
+helm install reach-layer ./dpg/reach-layer -n reach-layer --create-namespace
 ```
 
 ---
@@ -93,10 +93,10 @@ curl -s -X POST http://localhost:8005/turn \
 
 ```bash
 # Any service (example: trust-layer)
-helm upgrade trust-layer ./trust-layer -n trust-layer
+helm upgrade trust-layer ./dpg/trust-layer -n trust-layer
 
 # Agent Core — always re-pass the API key
-helm upgrade agent-core ./agent-core -n agent-core \
+helm upgrade agent-core ./dpg/agent-core -n agent-core \
   --set anthropicApiKey=$ANTHROPIC_API_KEY
 ```
 

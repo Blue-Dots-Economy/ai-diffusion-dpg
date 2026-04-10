@@ -1,0 +1,57 @@
+image:
+  repository: otel/opentelemetry-collector-contrib
+  tag: "0.96.0"
+  pullPolicy: IfNotPresent
+service:
+  grpcPort: 4317
+  httpPort: 4318
+  metricsPort: 8889
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+config: |
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+  processors:
+    batch:
+      timeout: 1s
+      send_batch_size: 1024
+  exporters:
+    otlp/jaeger:
+      endpoint: jaeger:4317
+      tls:
+        insecure: true
+    prometheus:
+      endpoint: "0.0.0.0:8889"
+      namespace: dpg
+    loki:
+      endpoint: http://loki:3100/loki/api/v1/push
+    debug:
+      verbosity: normal
+  service:
+    extensions: [health_check]
+    pipelines:
+      traces:
+        receivers: [otlp]
+        processors: [batch]
+        exporters: [otlp/jaeger, debug]
+      metrics:
+        receivers: [otlp]
+        processors: [batch]
+        exporters: [prometheus, debug]
+      logs:
+        receivers: [otlp]
+        processors: [batch]
+        exporters: [loki, debug]
+  extensions:
+    health_check:
+      endpoint: 0.0.0.0:13133

@@ -1,0 +1,36 @@
+# Config-agnostic: dpgConfig and domainConfig injected at deploy time via --set-file
+configFolder: /app/config
+replicaCount: 1
+
+image:
+  repository: srivatsak2002/dpg-knowledge-engine
+  tag: "0.2.0"
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8001
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 1Gi
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+
+healthCheck:
+  readiness:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+  liveness:
+    initialDelaySeconds: 60
+    periodSeconds: 20
+
+storage:
+  chromadb:
+    size: 5Gi
+    storageClass: ""
+
+# Injected at deploy time — do not set here
+dpgConfig: ""
+domainConfig: ""

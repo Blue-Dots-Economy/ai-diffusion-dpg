@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Release.Name }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}
+    spec:
+      initContainers:
+        - name: ingest
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "scripts.ingest", "--config", "config/knowledge_engine.yaml"]
+          env:
+            - name: CONFIG_FOLDER
+              value: {{ .Values.configFolder | quote }}
+            - name: HOME
+              value: "/tmp"
+            - name: HF_HOME
+              value: "/tmp/huggingface"
+            - name: TRANSFORMERS_CACHE
+              value: "/tmp/huggingface/transformers"
+          volumeMounts:
+            - name: domain-config
+              mountPath: /app/config/knowledge_engine.yaml
+              subPath: knowledge_engine.yaml
+            - name: chroma-data
+              mountPath: /app/chroma_db
+          resources:
+            requests:
+              cpu: {{ .Values.resources.requests.cpu }}
+              memory: {{ .Values.resources.requests.memory }}
+            limits:
+              cpu: {{ .Values.resources.limits.cpu }}
+              memory: {{ .Values.resources.limits.memory }}
+      containers:
+        - name: knowledge-engine
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.service.port }}
+          env:
+            - name: CONFIG_FOLDER
+              value: {{ .Values.configFolder | quote }}
+            - name: HOME
+              value: "/tmp"
+            - name: HF_HOME
+              value: "/tmp/huggingface"
+            - name: TRANSFORMERS_CACHE
+              value: "/tmp/huggingface/transformers"
+          volumeMounts:
+            - name: dpg-config
+              mountPath: /app/config/dpg.yaml
+              subPath: dpg.yaml
+            - name: domain-config
+              mountPath: /app/config/knowledge_engine.yaml
+              subPath: knowledge_engine.yaml
+            - name: chroma-data
+              mountPath: /app/chroma_db
+          resources:
+            requests:
+              cpu: {{ .Values.resources.requests.cpu }}
+              memory: {{ .Values.resources.requests.memory }}
+            limits:
+              cpu: {{ .Values.resources.limits.cpu }}
+              memory: {{ .Values.resources.limits.memory }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.service.port }}
+            initialDelaySeconds: {{ .Values.healthCheck.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.readiness.periodSeconds }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.service.port }}
+            initialDelaySeconds: {{ .Values.healthCheck.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.liveness.periodSeconds }}
+      volumes:
+        - name: dpg-config
+          configMap:
+            name: {{ .Release.Name }}-dpg-config
+        - name: domain-config
+          configMap:
+            name: {{ .Release.Name }}-domain-config
+        - name: chroma-data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-chroma-data
