@@ -56,6 +56,7 @@ services:
       dockerfile: action_gateway/Dockerfile
       platforms:
         - linux/amd64
+        - linux/arm64
     image: sanketikahub/dpg-action-gateway:${GIT_SHA:-latest}
     container_name: action_gateway
     environment:
@@ -87,6 +88,7 @@ services:
       dockerfile: agent_core/Dockerfile
       platforms:
         - linux/amd64
+        - linux/arm64
     image: sanketikahub/dpg-agent-core:${GIT_SHA:-latest}
     container_name: agent_core
     environment:
@@ -130,6 +132,7 @@ services:
       dockerfile: dev-kit/Dockerfile
       platforms:
         - linux/amd64
+        - linux/arm64
     image: sanketikahub/dpg-dev-kit:${GIT_SHA:-latest}
     container_name: dev_kit
     environment:
@@ -161,6 +164,7 @@ services:
       dockerfile: knowledge_engine/Dockerfile
       platforms:
         - linux/amd64
+        - linux/arm64
     image: sanketikahub/dpg-knowledge-engine:${GIT_SHA:-latest}
     container_name: knowledge_engine
     environment:
@@ -196,6 +200,7 @@ services:
       dockerfile: memory_layer/Dockerfile
       platforms:
         - linux/amd64
+        - linux/arm64
     image: sanketikahub/dpg-memory-layer:${GIT_SHA:-latest}
     container_name: memory_layer
     environment:
@@ -236,6 +241,7 @@ services:
       dockerfile: observability_layer/Dockerfile
       platforms:
         - linux/amd64
+        - linux/arm64
     image: sanketikahub/dpg-observability-layer:${GIT_SHA:-latest}
     container_name: observability_layer
     environment:
@@ -268,6 +274,7 @@ services:
       dockerfile: reach_layer/Dockerfile
       platforms:
         - linux/amd64
+        - linux/arm64
     image: sanketikahub/dpg-reach-layer:${GIT_SHA:-latest}
     container_name: reach_layer
     environment:
@@ -305,6 +312,7 @@ services:
       dockerfile: telephony_adapter/Dockerfile
       platforms:
         - linux/amd64
+        - linux/arm64
     image: sanketikahub/dpg-telephony-adapter:${GIT_SHA:-latest}
     container_name: telephony_adapter
     environment:
@@ -347,6 +355,7 @@ services:
       dockerfile: trust_layer/Dockerfile
       platforms:
         - linux/amd64
+        - linux/arm64
     image: sanketikahub/dpg-trust-layer:${GIT_SHA:-latest}
     container_name: trust_layer
     environment:

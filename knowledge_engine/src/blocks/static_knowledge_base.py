@@ -289,28 +289,40 @@ class StaticKnowledgeBaseBlock(KnowledgeBlock):
         return self._collection
 
     def _get_embedding_function(self, block_cfg: dict):
-        """Return the embedding function based on YAML config."""
-        provider = block_cfg.get("embedding_provider", "sentence_transformers")
-        model = block_cfg.get("embedding_model", "paraphrase-multilingual-MiniLM-L12-v2")
+        """Return the embedding function based on YAML config.
 
-        if provider == "openai":
+        Supported providers:
+          - chroma_default: Built-in ONNX model; no API key, no torch (~50 MB).
+          - openai: OpenAI embeddings API; requires OPENAI_API_KEY env var.
+          - sentence_transformers: Local PyTorch model; no API key but ~2 GB image overhead.
+        """
+        provider = block_cfg.get("embedding_provider", "chroma_default")
+        model = block_cfg.get("embedding_model")
+
+        if provider == "chroma_default":
+            from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
+            return DefaultEmbeddingFunction()
+
+        elif provider == "openai":
             api_key = os.environ.get("OPENAI_API_KEY")
             if not api_key:
                 raise ValueError(
                     "OPENAI_API_KEY environment variable is not set. "
-                    "Set it in .env or switch to embedding_provider: sentence_transformers."
+                    "Set it in .env or switch to embedding_provider: chroma_default."
                 )
+            resolved_model = model or "text-embedding-3-small"
             from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
-            return OpenAIEmbeddingFunction(api_key=api_key, model_name=model)
+            return OpenAIEmbeddingFunction(api_key=api_key, model_name=resolved_model)
 
         elif provider == "sentence_transformers":
+            resolved_model = model or "paraphrase-multilingual-MiniLM-L12-v2"
             from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
-            return SentenceTransformerEmbeddingFunction(model_name=model)
+            return SentenceTransformerEmbeddingFunction(model_name=resolved_model)
 
         else:
             raise ValueError(
                 f"Unknown embedding_provider '{provider}'. "
-                "Valid options: openai | sentence_transformers"
+                "Valid options: chroma_default | openai | sentence_transformers"
             )
 
     # ------------------------------------------------------------------

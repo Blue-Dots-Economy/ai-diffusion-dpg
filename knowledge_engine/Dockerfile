@@ -28,8 +28,7 @@ COPY knowledge_engine/pyproject.toml knowledge_engine/uv.lock* ./
 
 # CPU-only torch index is declared first so uv never resolves the CUDA/GPU
 # variant (~2.5 GB saved). All other deps are synced in the same pass.
-RUN uv sync --no-dev --no-cache --no-install-project \
-    --extra-index-url https://download.pytorch.org/whl/cpu
+RUN uv sync --no-dev --no-cache --no-install-project
 
 # -----------------------------------------------------------------------------
 # Stage 2: runtime

@@ -2,7 +2,7 @@
 #
 # Runs all 7 DPG services on a single machine using pre-built Docker Hub images.
 # Each service receives two volume-mounted config files:
-#   /app/config/dpg.yaml    — DPG framework defaults (from dev_kit/dpg/)
+#   /app/config/dpg.yaml    — DPG framework defaults (from dev-kit/dpg/)
 #   /app/config/domain.yaml — domain-specific values (from dev-kit/configs/${DOMAIN}/)
 # Services deep-merge these at startup: domain values override DPG defaults.
 # Both config files are mandatory — service will not start if either is missing.
@@ -32,13 +32,13 @@ services:
   # Action Gateway — external API stub / ONEST mock (port 9999)
   # ---------------------------------------------------------------------------
   action_gateway:
-    image: sanketikahub/dpg-action-gatewaylatest
+    image: sanketikahub/dpg-action-gateway:latest
     container_name: action_gateway
     environment:
       - CONFIG_FOLDER=/app/config
     volumes:
-      - ../../dev_kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
-      - ../../dev_kit/configs/${DOMAIN:-kkb}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
+      - ../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -58,14 +58,14 @@ services:
   # Agent Core — orchestrator and LLM caller (port 8000)
   # ---------------------------------------------------------------------------
   agent_core:
-    image: sanketikahub/dpg-agent-corelatest
+    image: sanketikahub/dpg-agent-core:latest
     container_name: agent_core
     environment:
       - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
       - CONFIG_FOLDER=/app/config
     volumes:
-      - ../../dev_kit/dpg/agent_core.yaml:/app/config/dpg.yaml:ro
-      - ../../dev_kit/configs/${DOMAIN:-kkb}/agent_core.yaml:/app/config/agent_core.yaml:ro
+      - ../../dev-kit/dpg/agent_core.yaml:/app/config/dpg.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/agent_core.yaml:/app/config/agent_core.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -96,7 +96,7 @@ services:
   # dev_kit — Configuration Agent UI (port 8080)
   # ---------------------------------------------------------------------------
   dev_kit:
-    image: sanketikahub/dpg-dev-kitlatest
+    image: sanketikahub/dpg-dev-kit:latest
     container_name: dev_kit
     environment:
       - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
@@ -122,15 +122,15 @@ services:
   # On startup: runs ingest first, then starts the server.
   # ---------------------------------------------------------------------------
   knowledge_engine:
-    image: sanketikahub/dpg-knowledge-enginelatest
+    image: sanketikahub/dpg-knowledge-engine:latest
     container_name: knowledge_engine
     environment:
       - CONFIG_FOLDER=/app/config
     user: root                               # needed to write to root-owned chroma_data named volume
     command: ["sh", "-c", "if [ ! -f /app/chroma_db/chroma.sqlite3 ]; then echo 'ChromaDB empty — running ingest...' && python -m scripts.ingest --config config/knowledge_engine.yaml; else echo 'ChromaDB exists — skipping ingest.'; fi && python main.py"]
     volumes:
-      - ../../dev_kit/dpg/knowledge_engine.yaml:/app/config/dpg.yaml:ro
-      - ../../dev_kit/configs/${DOMAIN:-kkb}/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
+      - ../../dev-kit/dpg/knowledge_engine.yaml:/app/config/dpg.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
       - ../../knowledge_engine/data:/app/data:ro   # source docs (read-only)
       - chroma_data:/app/chroma_db            # embeddings (writable, overrides :ro for this subdir)
     networks:
@@ -152,7 +152,7 @@ services:
   # Memory Layer — session state store (port 8002)
   # ---------------------------------------------------------------------------
   memory_layer:
-    image: sanketikahub/dpg-memory-layerlatest
+    image: sanketikahub/dpg-memory-layer:latest
     container_name: memory_layer
     environment:
       - CONFIG_FOLDER=/app/config
@@ -161,8 +161,8 @@ services:
       - MEMGRAPH_USER=memgraph
       - MEMGRAPH_PASSWORD=
     volumes:
-      - ../../dev_kit/dpg/memory_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev_kit/configs/${DOMAIN:-kkb}/memory_layer.yaml:/app/config/memory_layer.yaml:ro
+      - ../../dev-kit/dpg/memory_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/memory_layer.yaml:/app/config/memory_layer.yaml:ro
     networks:
       - dpg_net
     depends_on:
@@ -187,18 +187,15 @@ services:
   # Observability Layer — async observability (port 8004)
   # ---------------------------------------------------------------------------
   observability_layer:
-    image: sanketikahub/dpg-observability-layerlatest
+    image: sanketikahub/dpg-observability-layer:latest
     container_name: observability_layer
     environment:
       - CONFIG_FOLDER=/app/config
     volumes:
-      - ../../dev_kit/dpg/observability_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev_kit/configs/${DOMAIN:-kkb}/observability_layer.yaml:/app/config/observability_layer.yaml:ro
+      - ../../dev-kit/dpg/observability_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/observability_layer.yaml:/app/config/observability_layer.yaml:ro
     networks:
       - dpg_net
-    depends_on:
-      otelcol:
-        condition: service_healthy
     deploy:
       resources:
         limits:
@@ -216,15 +213,15 @@ services:
   # Reach Layer — Web UI + FastAPI server (port 8005)
   # ---------------------------------------------------------------------------
   reach_layer:
-    image: sanketikahub/dpg-reach-layerlatest
+    image: sanketikahub/dpg-reach-layer:latest
     container_name: reach_layer
     environment:
       - CONFIG_FOLDER=/app/config
     ports:
       - "8005:8005"
     volumes:
-      - ../../dev_kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev_kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/reach_layer.yaml:ro
+      - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/reach_layer.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -249,7 +246,7 @@ services:
   # Use the ngrok service to get a public URL automatically.
   # ---------------------------------------------------------------------------
   telephony_adapter:
-    image: sanketikahub/dpg-telephony-adapterlatest
+    image: sanketikahub/dpg-telephony-adapter:latest
     container_name: telephony_adapter
     environment:
       - DPG_CONFIG_PATH=/app/config/dpg.yaml
@@ -286,13 +283,13 @@ services:
   # Trust Layer — content safety gate (port 8003)
   # ---------------------------------------------------------------------------
   trust_layer:
-    image: sanketikahub/dpg-trust-layerlatest
+    image: sanketikahub/dpg-trust-layer:latest
     container_name: trust_layer
     environment:
       - CONFIG_FOLDER=/app/config
     volumes:
-      - ../../dev_kit/dpg/trust_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev_kit/configs/${DOMAIN:-kkb}/trust_layer.yaml:/app/config/trust_layer.yaml:ro
+      - ../../dev-kit/dpg/trust_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/trust_layer.yaml:/app/config/trust_layer.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -330,13 +327,14 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # Loki — log aggregation (port 3100)
+  # Jaeger — distributed trace UI (port 16686)
   # ---------------------------------------------------------------------------
-  loki:
-    image: grafana/loki:2.9.4
-    container_name: loki
+  jaeger:
+    image: jaegertracing/all-in-one:1.55
+    container_name: jaeger
     ports:
-      - "3100:3100"
+      - "16686:16686"   # Jaeger UI
+      - "14250:14250"   # gRPC from Collector
     networks:
       - dpg_net
     deploy:
@@ -347,14 +345,13 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # Jaeger — distributed trace UI (port 16686)
+  # Loki — log aggregation (port 3100)
   # ---------------------------------------------------------------------------
-  jaeger:
-    image: jaegertracing/all-in-one:1.55
-    container_name: jaeger
+  loki:
+    image: grafana/loki:2.9.4
+    container_name: loki
     ports:
-      - "16686:16686"   # Jaeger UI
-      - "14250:14250"   # gRPC from Collector
+      - "3100:3100"
     networks:
       - dpg_net
     deploy:
@@ -390,6 +387,41 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # ngrok — exposes telephony_adapter (port 8006) to the public internet.
+  # Required so Vobiz can reach /answer and /ws/{call_sid} from outside.
+  #
+  # Prerequisites:
+  #   export NGROK_AUTHTOKEN=<your token>   # https://dashboard.ngrok.com/authtokens
+  #
+  # Once running, find your public URL:
+  #   docker logs ngrok                     # prints the forwarding URL on startup
+  #   curl http://localhost:4040/api/tunnels # ngrok local API (JSON)
+  #
+  # Then set PUBLIC_URL and restart telephony_adapter:
+  #   export PUBLIC_URL=https://abc123.ngrok-free.app
+  #   docker compose up -d telephony_adapter
+  # ---------------------------------------------------------------------------
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: ngrok
+    command: http telephony_adapter:8006 --log stdout
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
+    ports:
+      - "4040:4040"                          # ngrok local API / inspector UI
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 128M
+    depends_on:
+      telephony_adapter:
+        condition: service_healthy
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
