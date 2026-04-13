@@ -14,6 +14,7 @@ Belongs to the Reach Layer / Telephony Adapter block in the DPG framework.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 
 class TelephonyOperatorBase(ABC):
@@ -41,7 +42,7 @@ class TelephonyOperatorBase(ABC):
         """
 
     @abstractmethod
-    def create_transport(self, websocket, stream_id: str, call_id: str):
+    def create_transport(self, websocket, stream_id: str, call_id: str) -> "Any":
         """Build the Pipecat transport with the provider's frame serializer.
 
         The serializer is constructed here because it encodes the same wire

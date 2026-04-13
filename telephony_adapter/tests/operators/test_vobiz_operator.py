@@ -22,9 +22,14 @@ def test_vobiz_operator_is_operator_base():
     assert issubclass(VobizOperator, TelephonyOperatorBase)
 
 
-def test_vobiz_operator_raises_on_missing_config():
+def test_vobiz_operator_raises_on_missing_auth_id():
     with pytest.raises(ValueError, match="auth_id"):
         VobizOperator({})
+
+
+def test_vobiz_operator_raises_on_missing_auth_token():
+    with pytest.raises(ValueError, match="auth_token"):
+        VobizOperator({"telephony_adapter": {"vobiz": {"auth_id": "x"}}})
 
 
 @pytest.mark.asyncio

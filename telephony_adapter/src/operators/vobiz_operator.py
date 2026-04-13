@@ -11,6 +11,7 @@ Belongs to the Reach Layer / Telephony Adapter block in the DPG framework.
 from __future__ import annotations
 
 import logging
+import time
 
 from pipecat.runner.utils import parse_telephony_websocket
 from pipecat.serializers.vobiz import VobizFrameSerializer
@@ -61,7 +62,18 @@ class VobizOperator(TelephonyOperatorBase):
         Returns:
             Tuple of (stream_id, call_id). Either is empty string if absent.
         """
-        _transport_type, call_data = await parse_telephony_websocket(websocket)
+        try:
+            _transport_type, call_data = await parse_telephony_websocket(websocket)
+        except Exception as exc:
+            logger.error(
+                "vobiz_operator.handshake_failed",
+                extra={
+                    "operation": "vobiz_operator.parse_handshake",
+                    "status": "failure",
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
+            raise
         stream_id = call_data.get("stream_id") or ""
         call_id = call_data.get("call_id") or ""
         logger.info(
@@ -88,6 +100,7 @@ class VobizOperator(TelephonyOperatorBase):
         Returns:
             Configured FastAPIWebsocketTransport.
         """
+        start = time.time()
         serializer = VobizFrameSerializer(
             stream_id=stream_id,
             call_id=call_id,
@@ -98,7 +111,7 @@ class VobizOperator(TelephonyOperatorBase):
                 auto_hang_up=True,
             ),
         )
-        return FastAPIWebsocketTransport(
+        transport = FastAPIWebsocketTransport(
             websocket=websocket,
             params=FastAPIWebsocketParams(
                 audio_in_enabled=True,
@@ -107,6 +120,17 @@ class VobizOperator(TelephonyOperatorBase):
                 serializer=serializer,
             ),
         )
+        logger.info(
+            "vobiz_operator.transport_created",
+            extra={
+                "operation": "vobiz_operator.create_transport",
+                "status": "success",
+                "latency_ms": int((time.time() - start) * 1000),
+                "stream_id": stream_id,
+                "call_id": call_id,
+            },
+        )
+        return transport
 
     def webhook_response_xml(self, websocket_url: str) -> str:
         """Return Vobiz/Plivo-compatible XML for the /answer webhook.
@@ -121,7 +145,7 @@ class VobizOperator(TelephonyOperatorBase):
             '<?xml version="1.0" encoding="UTF-8"?>\n'
             "<Response>\n"
             f'  <Stream bidirectional="true" keepCallAlive="true"'
-            f' contentType="audio/x-mulaw;rate=8000">'
+            f' contentType="audio/x-mulaw;rate={self._sample_rate}">'
             f"{websocket_url}</Stream>\n"
             "</Response>"
         )
