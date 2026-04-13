@@ -55,6 +55,9 @@ class VobizAdapter(TelephonyAdapterBase):
         self._vad_wrapper = SileroVADWrapper()
         ac_cfg = config.get("telephony_adapter", {}).get("agent_core", {})
         self._greeting = ac_cfg.get("greeting", "Hello, how can I help you today?")
+        self._sample_rate = int(
+            config.get("telephony_adapter", {}).get("vobiz", {}).get("sample_rate", 8000)
+        )
 
     async def handle_call(self, call_sid: str, caller_id: str, websocket: WebSocket) -> None:
         """Handle the full lifecycle of one Vobiz inbound call.
@@ -104,8 +107,8 @@ class VobizAdapter(TelephonyAdapterBase):
         task = PipelineTask(
             pipeline,
             params=PipelineParams(
-                audio_in_sample_rate=8000,
-                audio_out_sample_rate=8000,
+                audio_in_sample_rate=self._sample_rate,
+                audio_out_sample_rate=self._sample_rate,
             ),
         )
 

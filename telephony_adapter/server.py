@@ -100,6 +100,13 @@ def create_app(config: dict | None = None) -> FastAPI:
     # Populated by /answer; consumed and cleared by /ws/{call_sid}.
     _caller_id_map: dict[str, str] = {}
 
+    # Operator singleton for XML generation — created once, stateless.
+    from src.operators.vobiz_operator import VobizOperator as _VobizOperator
+    try:
+        _operator = _VobizOperator(config)
+    except ValueError:
+        _operator = None
+
     app = FastAPI(
         title="Telephony Adapter",
         description="DPG Reach Layer telephony channel adapter — Vobiz + Raya + Agent Core.",
@@ -131,14 +138,17 @@ def create_app(config: dict | None = None) -> FastAPI:
         caller_id = str(form.get("From") or "")
         _caller_id_map[call_sid] = caller_id
         stream_url = f"{ws_url}/ws/{call_sid}"
-        xml = (
-            '<?xml version="1.0" encoding="UTF-8"?>\n'
-            "<Response>\n"
-            f'  <Stream bidirectional="true" keepCallAlive="true"'
-            f' contentType="audio/x-mulaw;rate=8000">'
-            f"{stream_url}</Stream>\n"
-            "</Response>"
-        )
+        if _operator is not None:
+            xml = _operator.webhook_response_xml(stream_url)
+        else:
+            xml = (
+                '<?xml version="1.0" encoding="UTF-8"?>\n'
+                "<Response>\n"
+                f'  <Stream bidirectional="true" keepCallAlive="true"'
+                f' contentType="audio/x-mulaw;rate=8000">'
+                f"{stream_url}</Stream>\n"
+                "</Response>"
+            )
         return Response(content=xml, media_type="application/xml")
 
     @app.websocket("/ws/{call_sid}")

@@ -14,8 +14,9 @@ telephony_adapter:
     smoothing_factor: 0.1
   raya:
     api_key: ${RAYA_API_KEY}
-    stt_wss_url: wss://hub.getraya.app/transcribe
+    stt_wss_url: https://hub.getraya.app/transcribe
     tts_base_url: https://hub.getraya.app/v1
+    tts_model: standard
     language: hi
     voice_id: voice_001
     tts_speed: 1.0

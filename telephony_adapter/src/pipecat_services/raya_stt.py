@@ -26,9 +26,6 @@ from src.pipecat_services.stt_base import STTServiceBase
 
 logger = logging.getLogger(__name__)
 
-_RAYA_STT_URL = "https://hub.getraya.app/transcribe"
-
-
 class RayaSTTService(STTServiceBase, SegmentedSTTService):
     """Transcribes one VAD-segmented utterance per call via the Raya HTTP STT API.
 
@@ -40,7 +37,7 @@ class RayaSTTService(STTServiceBase, SegmentedSTTService):
         config: Full merged config dict. Reads telephony_adapter.raya section.
 
     Raises:
-        ValueError: If api_key is missing from config.
+        ValueError: If api_key or stt_url is missing from config.
     """
 
     def __init__(self, config: dict) -> None:
@@ -50,7 +47,11 @@ class RayaSTTService(STTServiceBase, SegmentedSTTService):
         api_key = raya_cfg.get("api_key", "")
         if not api_key:
             raise ValueError("telephony_adapter.raya.api_key is required")
+        stt_url = raya_cfg.get("stt_wss_url") or raya_cfg.get("stt_url", "")
+        if not stt_url:
+            raise ValueError("telephony_adapter.raya.stt_wss_url is required")
         self._api_key = api_key
+        self._stt_url = stt_url
         self._language = raya_cfg.get("stt_language") or raya_cfg.get("language", "hi")
         self._timeout = float(raya_cfg.get("stt_timeout_s", 30.0))
         SegmentedSTTService.__init__(
@@ -76,7 +77,7 @@ class RayaSTTService(STTServiceBase, SegmentedSTTService):
             try:
                 async with httpx.AsyncClient(timeout=self._timeout) as client:
                     response = await client.post(
-                        _RAYA_STT_URL,
+                        self._stt_url,
                         headers={"X-API-Key": self._api_key},
                         files={"file": ("utterance.wav", audio, "audio/wav")},
                         data={"language": self._language},
@@ -84,10 +85,11 @@ class RayaSTTService(STTServiceBase, SegmentedSTTService):
                 latency_ms = int((time.time() - start) * 1000)
                 if response.status_code != 200:
                     logger.error(
-                        f"raya_stt.http_error HTTP {response.status_code}",
+                        "raya_stt.http_error",
                         extra={
                             "operation": "raya_stt.transcribe",
                             "status": "failure",
+                            "error": f"HTTP {response.status_code}",
                             "latency_ms": latency_ms,
                         },
                     )

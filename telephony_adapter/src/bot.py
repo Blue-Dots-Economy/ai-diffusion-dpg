@@ -28,5 +28,7 @@ async def run_bot(websocket: WebSocket, call_sid: str, caller_id: str, config: d
         config: Full merged config dict.
     """
     adapter = VobizAdapter(config)
-    await adapter.handle_call(call_sid, caller_id, websocket)
-    await adapter.teardown(call_sid)
+    try:
+        await adapter.handle_call(call_sid, caller_id, websocket)
+    finally:
+        await adapter.teardown(call_sid)

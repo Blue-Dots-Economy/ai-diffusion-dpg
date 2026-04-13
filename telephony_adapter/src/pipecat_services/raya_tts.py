@@ -60,6 +60,7 @@ class RayaTTSService(TTSServiceBase, TTSService):
         self._voice_id = raya_cfg.get("voice_id", "voice_001")
         self._language = raya_cfg.get("tts_language") or raya_cfg.get("language", "hi")
         self._speed = float(raya_cfg.get("tts_speed", 1.0))
+        self._tts_model = raya_cfg.get("tts_model", "standard")
         self._tts_timeout = float(raya_cfg.get("tts_timeout_s", 30.0))
         TTSService.__init__(
             self,
@@ -84,7 +85,7 @@ class RayaTTSService(TTSServiceBase, TTSService):
         payload = {
             "text": text,
             "voice_id": self._voice_id,
-            "model": "standard",
+            "model": self._tts_model,
             "language": self._language,
             "speed": self._speed,
             "sample_rate": _SAMPLE_RATE,

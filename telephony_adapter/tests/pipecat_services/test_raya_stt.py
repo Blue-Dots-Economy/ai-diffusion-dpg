@@ -29,7 +29,7 @@ def config():
         "telephony_adapter": {
             "raya": {
                 "api_key": "test-key",
-                "stt_wss_url": "wss://hub.getraya.app/transcribe",
+                "stt_wss_url": "https://hub.getraya.app/transcribe",
                 "language": "hi",
             }
         }
