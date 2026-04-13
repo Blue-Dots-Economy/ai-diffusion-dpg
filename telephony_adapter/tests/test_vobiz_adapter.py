@@ -80,3 +80,22 @@ async def test_handle_call_uses_caller_id_as_user_id(config):
         await adapter.handle_call("call-123", "+919876543210", mock_ws)
 
     assert captured_user_id["user_id"] == "+919876543210"
+
+
+@pytest.mark.asyncio
+async def test_handle_call_raises_telephony_error_on_handshake_failure(config):
+    """handle_call must wrap parse_handshake exceptions as TelephonyError."""
+    from src.base import TelephonyError
+
+    mock_ws = MagicMock()
+
+    with patch("src.vobiz_adapter.VobizOperator") as MockOp, \
+         patch("src.vobiz_adapter.SileroVADWrapper"):
+        MockOp.return_value.parse_handshake = AsyncMock(
+            side_effect=RuntimeError("bad frame")
+        )
+        adapter = VobizAdapter(config)
+        with pytest.raises(TelephonyError) as exc_info:
+            await adapter.handle_call("call-123", "+91999", mock_ws)
+
+    assert isinstance(exc_info.value.__cause__, RuntimeError)

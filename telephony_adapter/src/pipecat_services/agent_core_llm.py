@@ -110,19 +110,31 @@ class AgentCoreLLMProcessor(FrameProcessor):
                     },
                 )
             else:
-                data = response.json()
-                response_text = data.get("response_text", self._fallback_phrase)
-                was_escalated = data.get("was_escalated", False)
-                logger.info(
-                    "agent_core_llm.process_turn",
-                    extra={
-                        "operation": "agent_core_llm.process_turn",
-                        "status": "success",
-                        "latency_ms": latency_ms,
-                        "was_escalated": was_escalated,
-                        "was_tool_used": data.get("was_tool_used", False),
-                    },
-                )
+                try:
+                    data = response.json()
+                    response_text = data.get("response_text", self._fallback_phrase)
+                    was_escalated = data.get("was_escalated", False)
+                    logger.info(
+                        "agent_core_llm.process_turn",
+                        extra={
+                            "operation": "agent_core_llm.process_turn",
+                            "status": "success",
+                            "latency_ms": latency_ms,
+                            "was_escalated": was_escalated,
+                            "was_tool_used": data.get("was_tool_used", False),
+                        },
+                    )
+                except (ValueError, KeyError) as exc:
+                    logger.error(
+                        "agent_core_llm.parse_error",
+                        extra={
+                            "operation": "agent_core_llm.process_turn",
+                            "status": "failure",
+                            "error": f"{type(exc).__name__}: {exc}",
+                            "latency_ms": latency_ms,
+                        },
+                    )
+                    # response_text stays as fallback_phrase
 
         except httpx.ConnectError as exc:
             latency_ms = int((time.time() - start) * 1000)

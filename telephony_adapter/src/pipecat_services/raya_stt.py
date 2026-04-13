@@ -70,7 +70,9 @@ class RayaSTTService(STTServiceBase, SegmentedSTTService):
             audio: Complete WAV file bytes (PCM16, 8 kHz, mono).
 
         Returns:
-            Transcribed text, or None if transcript is empty or on error.
+            Transcribed text on success.
+            Empty string if Raya returned no speech (genuinely silent utterance).
+            None on service error (HTTP error, timeout, or malformed response).
         """
         start = time.time()
         for attempt in range(2):
@@ -84,17 +86,30 @@ class RayaSTTService(STTServiceBase, SegmentedSTTService):
                     )
                 latency_ms = int((time.time() - start) * 1000)
                 if response.status_code != 200:
+                    error_body = response.text[:400]
                     logger.error(
                         "raya_stt.http_error",
                         extra={
                             "operation": "raya_stt.transcribe",
                             "status": "failure",
-                            "error": f"HTTP {response.status_code}",
+                            "error": f"HTTP {response.status_code}: {error_body}",
                             "latency_ms": latency_ms,
                         },
                     )
                     return None
-                transcript = response.json().get("transcript", "").strip()
+                try:
+                    transcript = response.json().get("transcript", "").strip()
+                except ValueError as exc:
+                    logger.error(
+                        "raya_stt.json_parse_error",
+                        extra={
+                            "operation": "raya_stt.transcribe",
+                            "status": "failure",
+                            "error": f"JSONDecodeError: {exc}",
+                            "latency_ms": latency_ms,
+                        },
+                    )
+                    return None
                 if not transcript:
                     logger.info(
                         "raya_stt.empty_transcript",
@@ -104,7 +119,7 @@ class RayaSTTService(STTServiceBase, SegmentedSTTService):
                             "latency_ms": latency_ms,
                         },
                     )
-                    return None
+                    return ""  # silent utterance — distinct from service error (None)
                 logger.info(
                     "raya_stt.transcribed",
                     extra={
@@ -142,17 +157,22 @@ class RayaSTTService(STTServiceBase, SegmentedSTTService):
         return None
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
-        """Pipecat hook: transcribe audio and yield TranscriptionFrame.
+        """Pipecat hook: transcribe audio and yield TranscriptionFrame or ErrorFrame.
 
         Delegates to transcribe(). Yields TranscriptionFrame on success,
-        nothing if transcript is None.
+        ErrorFrame if transcription fails so the pipeline can react.
 
         Args:
             audio: Complete WAV file bytes assembled by SegmentedSTTService.
 
         Yields:
-            TranscriptionFrame on success. Nothing if transcript is empty or on error.
+            TranscriptionFrame on success.
+            ErrorFrame if transcription failed (service error, timeout, or bad response).
+            Nothing if the utterance was genuinely silent/empty.
         """
         transcript = await self.transcribe(audio)
         if transcript:
             yield TranscriptionFrame(text=transcript, user_id="", timestamp="")
+        elif transcript is None:
+            # None means a service error occurred (empty string means silent audio).
+            yield ErrorFrame(error="Raya STT returned no transcript")

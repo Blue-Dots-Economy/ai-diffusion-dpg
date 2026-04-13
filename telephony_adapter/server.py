@@ -98,13 +98,25 @@ def create_app(config: dict | None = None) -> FastAPI:
 
     # Maps call_sid → caller_id (E.164) so the WebSocket endpoint can retrieve it.
     # Populated by /answer; consumed and cleared by /ws/{call_sid}.
-    _caller_id_map: dict[str, str] = {}
+    # Capped at 1000 entries to prevent unbounded growth from orphaned calls
+    # (Vobiz called /answer but WebSocket never connected).
+    from collections import OrderedDict
+    _caller_id_map: OrderedDict[str, str] = OrderedDict()
+    _CALLER_ID_MAP_MAX = 1000
 
     # Operator singleton for XML generation — created once, stateless.
     from src.operators.vobiz_operator import VobizOperator as _VobizOperator
     try:
         _operator = _VobizOperator(config)
-    except ValueError:
+    except ValueError as exc:
+        logger.warning(
+            "server.operator_init_failed",
+            extra={
+                "operation": "server.create_operator",
+                "status": "failure",
+                "error": str(exc),
+            },
+        )
         _operator = None
 
     app = FastAPI(
@@ -137,6 +149,9 @@ def create_app(config: dict | None = None) -> FastAPI:
         call_sid = str(form.get("CallUUID") or form.get("CallSid") or "unknown")
         caller_id = str(form.get("From") or "")
         _caller_id_map[call_sid] = caller_id
+        # Evict oldest entries when the map exceeds its cap (orphaned calls)
+        while len(_caller_id_map) > _CALLER_ID_MAP_MAX:
+            _caller_id_map.popitem(last=False)
         stream_url = f"{ws_url}/ws/{call_sid}"
         if _operator is not None:
             xml = _operator.webhook_response_xml(stream_url)

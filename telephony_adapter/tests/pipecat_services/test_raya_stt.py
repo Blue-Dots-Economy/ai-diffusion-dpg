@@ -78,7 +78,7 @@ async def test_run_stt_sends_correct_fields(config):
 
 
 @pytest.mark.asyncio
-async def test_run_stt_http_error_yields_nothing(config):
+async def test_run_stt_http_error_yields_error_frame(config):
     from src.pipecat_services.raya_stt import RayaSTTService
 
     wav_audio = _make_wav()
@@ -92,7 +92,8 @@ async def test_run_stt_http_error_yields_nothing(config):
         async for frame in svc.run_stt(wav_audio):
             frames.append(frame)
 
-    assert frames == []
+    assert len(frames) == 1
+    assert isinstance(frames[0], ErrorFrame)
 
 
 @pytest.mark.asyncio
@@ -112,7 +113,7 @@ async def test_run_stt_empty_transcript_yields_nothing(config):
 
 
 @pytest.mark.asyncio
-async def test_run_stt_connect_error_yields_nothing(config):
+async def test_run_stt_connect_error_yields_error_frame(config):
     from src.pipecat_services.raya_stt import RayaSTTService
 
     wav_audio = _make_wav()
@@ -125,7 +126,34 @@ async def test_run_stt_connect_error_yields_nothing(config):
             svc = RayaSTTService(config)
             frames = [f async for f in svc.run_stt(wav_audio)]
 
-    assert frames == []
+    assert len(frames) == 1
+    assert isinstance(frames[0], ErrorFrame)
+
+
+@pytest.mark.asyncio
+async def test_run_stt_retries_once_on_connect_error(config):
+    """Retry path must fire exactly once before giving up on ConnectError."""
+    from src.pipecat_services.raya_stt import RayaSTTService
+
+    wav_audio = _make_wav()
+
+    with patch("src.pipecat_services.raya_stt.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        with respx.mock:
+            route = respx.post("https://hub.getraya.app/transcribe").mock(
+                side_effect=[
+                    httpx.ConnectError("refused"),
+                    httpx.Response(200, json={"transcript": "hello"}),
+                ]
+            )
+            svc = RayaSTTService(config)
+            frames = [f async for f in svc.run_stt(wav_audio)]
+
+    # Should have called the URL twice (1 failure + 1 success)
+    assert len(route.calls) == 2
+    mock_sleep.assert_called_once()
+    assert len(frames) == 1
+    assert isinstance(frames[0], TranscriptionFrame)
+    assert frames[0].text == "hello"
 
 
 def test_missing_api_key_raises():
@@ -161,13 +189,14 @@ async def test_transcribe_returns_text_on_success(config):
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_transcribe_returns_none_on_empty_transcript(config):
+async def test_transcribe_returns_empty_string_on_empty_transcript(config):
+    """Empty transcript (silent utterance) returns "" not None to distinguish from errors."""
     respx.post("https://hub.getraya.app/transcribe").mock(
         return_value=httpx.Response(200, json={"transcript": "  "})
     )
     stt = RayaSTTService(config)
     result = await stt.transcribe(b"RIFF" + b"\x00" * 40)
-    assert result is None
+    assert result == ""
 
 
 @pytest.mark.asyncio

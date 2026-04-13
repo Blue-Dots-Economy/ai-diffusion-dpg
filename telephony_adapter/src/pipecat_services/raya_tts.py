@@ -10,6 +10,7 @@ Belongs to the Reach Layer / Telephony Adapter block in the DPG framework.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -19,7 +20,7 @@ from typing import AsyncGenerator
 import httpx
 import numpy as np
 
-from pipecat.frames.frames import Frame, TTSAudioRawFrame
+from pipecat.frames.frames import ErrorFrame, Frame, TTSAudioRawFrame
 from pipecat.services.settings import TTSSettings
 from pipecat.services.tts_service import TTSService
 
@@ -93,79 +94,115 @@ class RayaTTSService(TTSServiceBase, TTSService):
         headers = {"X-API-Key": self._api_key}
         total_bytes = 0
 
-        try:
-            async with httpx.AsyncClient(timeout=self._tts_timeout) as client:
-                async with client.stream("POST", url, json=payload, headers=headers) as response:
-                    if response.status_code != 200:
-                        await response.aread()
-                        logger.error(
-                            "raya_tts.http_error",
-                            extra={
-                                "operation": "raya_tts.synthesize",
-                                "status": "failure",
-                                "error": f"HTTP {response.status_code}",
-                                "latency_ms": int((time.time() - start) * 1000),
-                            },
-                        )
-                        return
+        for attempt in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=self._tts_timeout) as client:
+                    async with client.stream("POST", url, json=payload, headers=headers) as response:
+                        if response.status_code != 200:
+                            body_bytes = await response.aread()
+                            error_body = body_bytes.decode(errors="replace")[:400]
+                            logger.error(
+                                "raya_tts.http_error",
+                                extra={
+                                    "operation": "raya_tts.synthesize",
+                                    "status": "failure",
+                                    "error": f"HTTP {response.status_code}: {error_body}",
+                                    "latency_ms": int((time.time() - start) * 1000),
+                                },
+                            )
+                            return
 
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data:"):
-                            continue
-                        raw = line[len("data:"):].strip()
-                        if not raw or raw == "{}":
-                            continue
-                        try:
-                            chunk_data = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-                        if chunk_data.get("type") == "chunk" and "data" in chunk_data:
-                            f32le_bytes = base64.b64decode(chunk_data["data"])
-                            pcm16_bytes = _f32le_to_pcm16(f32le_bytes)
-                            total_bytes += len(pcm16_bytes)
-                            yield pcm16_bytes
+                        async for line in response.aiter_lines():
+                            if not line.startswith("data:"):
+                                continue
+                            raw = line[len("data:"):].strip()
+                            if not raw or raw == "{}":
+                                continue
+                            try:
+                                chunk_data = json.loads(raw)
+                            except json.JSONDecodeError:
+                                continue
+                            if chunk_data.get("type") == "chunk" and "data" in chunk_data:
+                                try:
+                                    f32le_bytes = base64.b64decode(chunk_data["data"])
+                                    pcm16_bytes = _f32le_to_pcm16(f32le_bytes)
+                                except (ValueError, Exception) as exc:
+                                    logger.warning(
+                                        "raya_tts.chunk_decode_error",
+                                        extra={
+                                            "operation": "raya_tts.synthesize",
+                                            "status": "failure",
+                                            "error": f"{type(exc).__name__}: {exc}",
+                                        },
+                                    )
+                                    continue
+                                total_bytes += len(pcm16_bytes)
+                                yield pcm16_bytes
 
-        except (httpx.ConnectError, httpx.TimeoutException) as exc:
-            logger.error(
-                "raya_tts.connection_error",
+                # Streaming completed successfully — don't retry
+                break
+
+            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                latency_ms = int((time.time() - start) * 1000)
+                if attempt == 0:
+                    logger.warning(
+                        "raya_tts.retrying",
+                        extra={
+                            "operation": "raya_tts.synthesize",
+                            "status": "failure",
+                            "error": f"{type(exc).__name__}: {exc}",
+                            "latency_ms": latency_ms,
+                        },
+                    )
+                    await asyncio.sleep(0.5)
+                else:
+                    logger.error(
+                        "raya_tts.connection_error",
+                        extra={
+                            "operation": "raya_tts.synthesize",
+                            "status": "failure",
+                            "error": f"{type(exc).__name__}: {exc}",
+                            "latency_ms": latency_ms,
+                        },
+                    )
+                    return
+
+        if total_bytes > 0:
+            logger.info(
+                "raya_tts.synthesized",
                 extra={
                     "operation": "raya_tts.synthesize",
-                    "status": "failure",
-                    "error": f"{type(exc).__name__}: {exc}",
+                    "status": "success",
                     "latency_ms": int((time.time() - start) * 1000),
+                    "audio_bytes": total_bytes,
                 },
             )
-            return
-
-        logger.info(
-            "raya_tts.synthesized",
-            extra={
-                "operation": "raya_tts.synthesize",
-                "status": "success",
-                "latency_ms": int((time.time() - start) * 1000),
-                "audio_bytes": total_bytes,
-            },
-        )
 
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
         """Pipecat hook: synthesise text and yield TTSAudioRawFrame objects.
 
         Delegates to synthesize(). Each PCM16 chunk becomes one TTSAudioRawFrame.
+        Yields ErrorFrame if synthesis produced no audio, so the pipeline can react.
 
         Args:
             text: The text to synthesise.
             context_id: Pipecat context ID for this TTS turn.
 
         Yields:
-            TTSAudioRawFrame per PCM16 chunk.
+            TTSAudioRawFrame per PCM16 chunk on success.
+            ErrorFrame if synthesis failed (no audio produced).
         """
+        yielded_any = False
         async for pcm16_bytes in self.synthesize(text):
+            yielded_any = True
             yield TTSAudioRawFrame(
                 audio=pcm16_bytes,
                 sample_rate=_SAMPLE_RATE,
                 num_channels=_NUM_CHANNELS,
                 context_id=context_id,
             )
+        if not yielded_any:
+            yield ErrorFrame(error="Raya TTS produced no audio")
 
 
 def _f32le_to_pcm16(f32le_bytes: bytes) -> bytes:

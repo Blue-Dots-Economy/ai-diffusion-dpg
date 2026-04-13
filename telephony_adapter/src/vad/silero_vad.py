@@ -55,7 +55,19 @@ class SileroVADWrapper(VADAnalyzerBase):
         )
         # smoothing_factor is not a VADParams constructor argument in Pipecat;
         # it must be set directly on the analyzer instance after construction.
-        analyzer._smoothing_factor = smoothing_factor
+        # Wrapped in try/except so a Pipecat upgrade that removes the attribute
+        # degrades gracefully (logs a warning) rather than crashing at startup.
+        try:
+            analyzer._smoothing_factor = smoothing_factor
+        except AttributeError:
+            logger.warning(
+                "silero_vad.smoothing_factor_unsupported",
+                extra={
+                    "operation": "silero_vad.create_analyzer",
+                    "status": "skipped",
+                    "error": "Pipecat SileroVADAnalyzer no longer exposes _smoothing_factor",
+                },
+            )
 
         logger.info(
             "silero_vad.created",

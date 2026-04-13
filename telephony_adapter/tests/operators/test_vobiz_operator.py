@@ -88,3 +88,10 @@ def test_webhook_response_xml_is_valid_xml(config):
     xml = op.webhook_response_xml("wss://example.com/ws/abc")
     root = ET.fromstring(xml)  # raises if invalid
     assert root.tag == "Response"
+
+
+def test_webhook_response_xml_embeds_sample_rate(config):
+    """The contentType attribute must include the configured sample rate."""
+    op = VobizOperator(config)
+    xml = op.webhook_response_xml("wss://example.com/ws/abc")
+    assert "rate=8000" in xml

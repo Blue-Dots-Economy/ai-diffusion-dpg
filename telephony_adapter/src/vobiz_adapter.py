@@ -123,7 +123,18 @@ class VobizAdapter(TelephonyAdapterBase):
                     "session_id": session_id,
                 },
             )
-            await task.queue_frame(TTSSpeakFrame(text=self._greeting))
+            try:
+                await task.queue_frame(TTSSpeakFrame(text=self._greeting))
+            except Exception as exc:
+                logger.error(
+                    "vobiz_adapter.greeting_failed",
+                    extra={
+                        "operation": "vobiz_adapter._on_connected",
+                        "status": "failure",
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "call_sid": call_sid,
+                    },
+                )
 
         @transport.event_handler("on_client_disconnected")
         async def _on_disconnected(transport, client):
@@ -135,7 +146,18 @@ class VobizAdapter(TelephonyAdapterBase):
                     "call_sid": call_sid,
                 },
             )
-            await task.cancel()
+            try:
+                await task.cancel()
+            except Exception as exc:
+                logger.warning(
+                    "vobiz_adapter.cancel_failed",
+                    extra={
+                        "operation": "vobiz_adapter._on_disconnected",
+                        "status": "failure",
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "call_sid": call_sid,
+                    },
+                )
 
         runner = PipelineRunner(handle_sigint=False)
         await runner.run(task)
