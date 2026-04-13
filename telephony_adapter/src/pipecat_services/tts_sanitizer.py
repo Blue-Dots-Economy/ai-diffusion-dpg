@@ -28,9 +28,14 @@ _EMOJI_RE = re.compile(
     "\U0001F600-\U0001F64F"  # emoticons
     "\U0001F300-\U0001F5FF"  # misc symbols & pictographs
     "\U0001F680-\U0001F6FF"  # transport & map
-    "\U0001F1E0-\U0001F1FF"  # flags
-    "\U00002700-\U000027BF"  # dingbats
-    "\U000024C2-\U0001F251"  # enclosed chars
+    "\U0001F700-\U0001F77F"  # alchemical
+    "\U0001F780-\U0001F7FF"  # geometric shapes extended
+    "\U0001F800-\U0001F8FF"  # supplemental arrows
+    "\U0001F900-\U0001F9FF"  # supplemental symbols & pictographs
+    "\U0001FA00-\U0001FA6F"  # chess, etc.
+    "\U0001FA70-\U0001FAFF"  # symbols & pictographs extended-A
+    "\U0001F1E0-\U0001F1FF"  # regional indicator (flags)
+    "\U00002702-\U000027B0"  # dingbats
     "]+",
     flags=re.UNICODE,
 )
@@ -198,6 +203,6 @@ class TTSTextSanitizerProcessor(FrameProcessor):
 
         if isinstance(frame, TTSSpeakFrame):
             clean = _sanitize(frame.text)
-            await self.push_frame(TTSSpeakFrame(text=clean))
+            await self.push_frame(TTSSpeakFrame(text=clean), direction)
         else:
             await self.push_frame(frame, direction)

@@ -103,6 +103,18 @@ def test_devanagari_preserved():
     assert sanitize(text) == text
 
 
+def test_japanese_preserved():
+    assert sanitize("こんにちは") == "こんにちは"
+
+
+def test_arabic_preserved():
+    assert sanitize("مرحبا") == "مرحبا"
+
+
+def test_chinese_preserved():
+    assert sanitize("你好") == "你好"
+
+
 def test_combined_bold_inside_list():
     text = "- **Important**: Do this first\n- Regular item"
     assert sanitize(text) == "Important: Do this first. Regular item."
@@ -122,14 +134,14 @@ def test_leading_trailing_whitespace_stripped():
 
 @pytest.mark.asyncio
 async def test_process_frame_sanitizes_tts_speak_frame():
-    """TTSSpeakFrame text is sanitized and a new TTSSpeakFrame is pushed."""
+    """TTSSpeakFrame text is sanitized and a new TTSSpeakFrame is pushed with original direction."""
     from src.pipecat_services.tts_sanitizer import TTSTextSanitizerProcessor
 
     processor = TTSTextSanitizerProcessor()
     pushed = []
 
     async def capture(frame, direction=None):
-        pushed.append(frame)
+        pushed.append((frame, direction))
 
     processor.push_frame = capture
 
@@ -137,8 +149,9 @@ async def test_process_frame_sanitizes_tts_speak_frame():
     await processor.process_frame(frame, FrameDirection.DOWNSTREAM)
 
     assert len(pushed) == 1
-    assert isinstance(pushed[0], TTSSpeakFrame)
-    assert pushed[0].text == "Hello world. Item one. Item two."
+    assert isinstance(pushed[0][0], TTSSpeakFrame)
+    assert pushed[0][0].text == "Hello world. Item one. Item two."
+    assert pushed[0][1] == FrameDirection.DOWNSTREAM
 
 
 @pytest.mark.asyncio
