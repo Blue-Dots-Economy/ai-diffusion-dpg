@@ -6,6 +6,12 @@ telephony_adapter:
     auth_token: ${VOBIZ_AUTH_TOKEN}
     api_base: https://api.vobiz.ai/api/v1
     from_number: ${VOBIZ_FROM_NUMBER}
+  vad:
+    stop_secs: 0.35
+    min_volume: 0.3
+    confidence: 0.4
+    start_secs: 0.1
+    smoothing_factor: 0.1
   raya:
     api_key: ${RAYA_API_KEY}
     stt_wss_url: wss://hub.getraya.app/transcribe
