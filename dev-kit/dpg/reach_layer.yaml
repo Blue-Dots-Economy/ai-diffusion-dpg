@@ -8,6 +8,9 @@ reach_layer:
   cli:
     prompt: "You: "
     agent_prefix: "Agent: "
+  # Sidebar conversations list — max recent sessions returned to the UI.
+  sessions:
+    limit: 25
 
 agent_core_client:
   endpoint: "http://agent_core:8000/process_turn"
@@ -16,6 +19,21 @@ agent_core_client:
 memory_layer_client:
   endpoint: "http://memory_layer:8002"
   timeout_s: 10.0
+
+# Authentication — Google Sign-On.
+# When `enabled: false` (default) the legacy SetupScreen path is used and
+# no cookies are issued. When true, /chat and /user-history require a
+# valid session cookie and the SPA boots into the LoginScreen.
+# `google_client_id` is the OAuth 2.0 Web client_id from Google Cloud
+# Console. The HMAC secret for session JWTs is read from the
+# REACH_SESSION_SECRET env var (never commit this value).
+auth:
+  enabled: false
+  google_client_id: ""        # set per domain or via GOOGLE_CLIENT_ID env
+  session_cookie_name: "reach_session"
+  session_ttl_s: 86400        # 24h
+  cookie_secure: true         # set false only for plain-http local dev
+  cookie_samesite: "lax"
 
 ui:
   agent_avatar: "🤖"
@@ -28,6 +46,15 @@ ui:
   returning_user_msg: "Welcome back! How can I help you today?"
   storage_key: "dpg_user_id"
   theme_storage_key: "dpg_theme"
+  # Sidebar / conversations-list copy. English defaults; domains may
+  # override any of these in domain.yaml for localisation.
+  new_chat_label: "New chat"
+  conversations_heading: "Conversations"
+  no_conversations_msg: "No previous chats"
+  delete_conversation_confirm: "Delete this conversation? This cannot be undone."
+  delete_conversation_tooltip: "Delete conversation"
+  sign_out_confirm: "Sign out of your account?"
+  switch_user_confirm: "Switch user? Your current session will be closed."
 
 # Observability — OTel collector endpoint for trace/metric export.
 observability:

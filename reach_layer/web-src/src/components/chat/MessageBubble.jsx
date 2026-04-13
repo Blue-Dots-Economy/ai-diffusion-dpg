@@ -88,14 +88,14 @@ export function MessageBubble({ message, isNew, agentAvatar, userAvatar }) {
         {/* Time + latency row */}
         <div className={`flex items-center gap-2 mt-1 ${isAgent ? '' : 'flex-row-reverse'}`}>
           <span
-            className="text-[10px] text-gray-500 cursor-default select-none"
+            className="text-[10px] text-[var(--text-muted)] cursor-default select-none"
             onMouseEnter={() => setShowFullTime(true)}
             onMouseLeave={() => setShowFullTime(false)}
           >
             {showFullTime ? formatFullTime(timestamp) : formatTime(timestamp)}
           </span>
           {isAgent && latencyMs != null && (
-            <span className="text-[10px] text-gray-600 bg-gray-900 px-1.5 py-0.5 rounded-full border border-gray-800">
+            <span className="text-[10px] text-[var(--text-muted)] bg-[var(--surface-2)] px-1.5 py-0.5 rounded-full border border-[var(--border)]">
               {latencyMs}ms
             </span>
           )}

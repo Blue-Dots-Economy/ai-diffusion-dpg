@@ -279,6 +279,8 @@ services:
     container_name: reach_layer
     environment:
       - CONFIG_FOLDER=/app/config
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - REACH_SESSION_SECRET=${REACH_SESSION_SECRET:-}
     volumes:
       - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/reach_layer.yaml:ro

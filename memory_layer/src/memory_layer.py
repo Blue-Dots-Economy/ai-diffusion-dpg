@@ -137,7 +137,7 @@ class MemoryLayer:
     # Public interface — mirrors MemoryLayerBase (agent_core)
     # ------------------------------------------------------------------
 
-    def context_bundle(self, session_id: str, user_id: str) -> dict:
+    def context_bundle(self, session_id: str, user_id: str, adopt: bool = True) -> dict:
         """
         Called at the start of every turn. Returns a ContextBundle-shaped dict.
 
@@ -197,27 +197,30 @@ class MemoryLayer:
                 # If a recent session exists in Redis for this user_id,
                 # "adopt" its state instead of starting from scratch.
                 # This allows resumption across volatile session IDs.
-                active_sessions = self.get_active_sessions(user_id)
-                last_session_id = active_sessions[0]["session_id"] if active_sessions else None
-                if last_session_id and last_session_id != session_id:
-                    last_state = self._redis.get_session(last_session_id)
-                    if last_state:
-                        # Merge last session state into our defaults
-                        for k, v in last_state.items():
-                            initial_state[k] = v
-                        initial_state = self._coerce_session_types(initial_state)
-                        initial_state["was_adopted"] = True
-                        # Re-assert infrastructure fields that must be fresh for each
-                        # new session. Without this, adoption would carry over the
-                        # previous session's is_returning=False into a returning user's
-                        # session, causing the orchestrator to always log is_returning=False.
-                        initial_state["user_id"] = user_id
-                        initial_state["journey_id"] = session_id
-                        initial_state["is_returning"] = "true" if is_returning else "false"
-                        logger.info(
-                            "memory_layer.session_adoption",
-                            extra={"session_id": session_id, "adopted_from": last_session_id}
-                        )
+                # Disabled when adopt=False (caller explicitly wants a clean
+                # "New chat" — only persistent profile facts carry over).
+                if adopt:
+                    active_sessions = self.get_active_sessions(user_id)
+                    last_session_id = active_sessions[0]["session_id"] if active_sessions else None
+                    if last_session_id and last_session_id != session_id:
+                        last_state = self._redis.get_session(last_session_id)
+                        if last_state:
+                            # Merge last session state into our defaults
+                            for k, v in last_state.items():
+                                initial_state[k] = v
+                            initial_state = self._coerce_session_types(initial_state)
+                            initial_state["was_adopted"] = True
+                            # Re-assert infrastructure fields that must be fresh for each
+                            # new session. Without this, adoption would carry over the
+                            # previous session's is_returning=False into a returning user's
+                            # session, causing the orchestrator to always log is_returning=False.
+                            initial_state["user_id"] = user_id
+                            initial_state["journey_id"] = session_id
+                            initial_state["is_returning"] = "true" if is_returning else "false"
+                            logger.info(
+                                "memory_layer.session_adoption",
+                                extra={"session_id": session_id, "adopted_from": last_session_id}
+                            )
 
                 # If returning user — pre-populate profile fields into session
                 profile: dict = {}
@@ -540,6 +543,54 @@ class MemoryLayer:
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
+
+    def delete_session(self, session_id: str, user_id: str) -> None:
+        """Delete a single session from Redis and SQLite audit.
+
+        Intended for user-initiated "delete conversation" actions from the
+        Reach Layer web UI. Wipes Redis session hash, removes from the user's
+        session index, and deletes the SQLite audit rows (turn_audit +
+        session_audit). Persistent profile data in Memgraph is untouched so
+        the user's profile facts carry over to future conversations.
+
+        Args:
+            session_id: Session identifier to delete.
+            user_id: Owning user identifier — used to remove from user index.
+        """
+        start = time.time()
+        try:
+            if not session_id:
+                raise ValueError("session_id must not be empty")
+            if not user_id:
+                raise ValueError("user_id must not be empty")
+
+            self._redis.delete_session(session_id)
+            self._redis.remove_session_from_user_index(user_id, session_id)
+            self._audit.delete_session_audit(session_id)
+
+            logger.info(
+                "memory_layer.delete_session",
+                extra={
+                    "operation": "memory_layer.delete_session",
+                    "status": "success",
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+        except Exception as e:
+            logger.error(
+                "memory_layer.delete_session_error",
+                extra={
+                    "operation": "memory_layer.delete_session",
+                    "status": "failure",
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "error": f"{type(e).__name__}: {e}",
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            raise
 
     def record_audit_session(
         self,

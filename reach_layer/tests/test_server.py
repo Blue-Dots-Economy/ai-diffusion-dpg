@@ -283,10 +283,12 @@ def test_app_config_returns_ui_section_from_config():
 # GET /app-config — edge cases
 # ---------------------------------------------------------------------------
 
-def test_app_config_returns_empty_dict_when_no_ui_section(client):
-    # The default test fixture config has no ui: key → should return {}
+def test_app_config_returns_only_auth_block_when_no_ui_section(client):
+    # The default test fixture config has no ui: key. /app-config now
+    # always includes the public auth block, so the response should be
+    # exactly {"auth": {"enabled": False, "google_client_id": ""}}.
     response = client.get("/app-config")
-    assert response.json() == {}
+    assert response.json() == {"auth": {"enabled": False, "google_client_id": ""}}
 
 
 def test_app_config_response_is_json(client):
@@ -332,3 +334,185 @@ def test_handle_message_emits_reach_span(web_reach, config):
     reach_span = next(s for s in spans if s.name == "reach.inbound")
     assert reach_span.attributes.get("session_id") == "sess-otel"
     assert reach_span.attributes.get("dpg.channel") == "web"
+
+
+# ---------------------------------------------------------------------------
+# Auth endpoints (auth.enabled = true)
+# ---------------------------------------------------------------------------
+
+GOOGLE_CLIENT_ID = "test-client.apps.googleusercontent.com"
+SESSION_SECRET = "s" * 48
+
+
+@pytest.fixture
+def auth_config():
+    return {
+        "agent_core_client": {
+            "endpoint": "http://agent-core-test/process_turn",
+            "timeout_s": 5.0,
+        },
+        "memory_layer_client": {
+            "endpoint": "http://memory-layer-test",
+            "timeout_s": 5.0,
+        },
+        "reach_layer": {"web": {"title": "Test Chat"}},
+        "auth": {
+            "enabled": True,
+            "google_client_id": GOOGLE_CLIENT_ID,
+            "session_cookie_name": "reach_session",
+            "session_ttl_s": 3600,
+            "cookie_secure": False,  # TestClient http://
+            "cookie_samesite": "lax",
+        },
+    }
+
+
+@pytest.fixture
+def auth_client(auth_config, monkeypatch):
+    monkeypatch.setenv("REACH_SESSION_SECRET", SESSION_SECRET)
+    wr = WebReachLayer(auth_config)
+    app = create_app(wr, auth_config)
+    return TestClient(app)
+
+
+def _mock_google_identity():
+    """Patch Google ID token verification to return a fixed identity."""
+    from src.auth import GoogleIdentity
+    return patch(
+        "server.verify_google_id_token",
+        return_value=GoogleIdentity(
+            sub="100",
+            email="alice@example.com",
+            name="Alice",
+            picture="https://example.com/a.png",
+        ),
+    )
+
+
+def test_auth_disabled_endpoints_return_404(client):
+    """When auth.enabled is false, /auth/google and /auth/me return 404."""
+    r = client.post("/auth/google", json={"credential": "x"})
+    assert r.status_code == 404
+    r = client.get("/auth/me")
+    assert r.status_code == 404
+
+
+def test_create_app_raises_when_auth_enabled_without_secret(auth_config, monkeypatch):
+    """Startup must fail loud if REACH_SESSION_SECRET is missing."""
+    monkeypatch.delenv("REACH_SESSION_SECRET", raising=False)
+    wr = WebReachLayer(auth_config)
+    with pytest.raises(RuntimeError, match="REACH_SESSION_SECRET"):
+        create_app(wr, auth_config)
+
+
+def test_create_app_raises_when_auth_enabled_without_client_id(auth_config, monkeypatch):
+    """Startup must fail loud if google_client_id is missing."""
+    monkeypatch.setenv("REACH_SESSION_SECRET", SESSION_SECRET)
+    monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+    auth_config["auth"]["google_client_id"] = ""
+    wr = WebReachLayer(auth_config)
+    with pytest.raises(RuntimeError, match="google_client_id"):
+        create_app(wr, auth_config)
+
+
+def test_app_config_exposes_public_auth_block(auth_client):
+    r = auth_client.get("/app-config")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["auth"]["enabled"] is True
+    assert data["auth"]["google_client_id"] == GOOGLE_CLIENT_ID
+
+
+def test_auth_google_sets_cookie_and_returns_identity(auth_client):
+    with _mock_google_identity():
+        r = auth_client.post("/auth/google", json={"credential": "valid-token"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["user_id"] == "google:100"
+    assert body["display_name"] == "Alice"
+    assert body["email"] == "alice@example.com"
+    assert "reach_session" in r.cookies
+
+
+def test_auth_google_invalid_token_returns_401(auth_client):
+    with patch(
+        "server.verify_google_id_token",
+        side_effect=AuthErrorImport(),
+    ):
+        r = auth_client.post("/auth/google", json={"credential": "bad"})
+    assert r.status_code == 401
+
+
+def AuthErrorImport():
+    from src.auth import AuthError, Reason
+    return AuthError(Reason.INVALID, "bad")
+
+
+def test_auth_me_without_cookie_returns_401(auth_client):
+    r = auth_client.get("/auth/me")
+    assert r.status_code == 401
+
+
+def test_auth_me_with_cookie_returns_identity(auth_client):
+    with _mock_google_identity():
+        login = auth_client.post("/auth/google", json={"credential": "valid-token"})
+    assert login.status_code == 200
+    r = auth_client.get("/auth/me")
+    assert r.status_code == 200
+    assert r.json()["user_id"] == "google:100"
+
+
+def test_auth_logout_clears_cookie(auth_client):
+    with _mock_google_identity():
+        auth_client.post("/auth/google", json={"credential": "valid-token"})
+    r = auth_client.post("/auth/logout")
+    assert r.status_code == 200
+    # Subsequent /auth/me must now 401
+    auth_client.cookies.clear()
+    r2 = auth_client.get("/auth/me")
+    assert r2.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# /chat and /user-history are gated by cookie when auth.enabled
+# ---------------------------------------------------------------------------
+
+def test_chat_requires_session_when_auth_enabled(auth_client):
+    r = auth_client.post("/chat", json={"session_id": "s1", "message": "hi"})
+    assert r.status_code == 401
+
+
+def test_user_history_requires_session_when_auth_enabled(auth_client):
+    r = auth_client.get("/user-history/anyone")
+    assert r.status_code == 401
+
+
+@respx.mock
+def test_chat_with_session_overrides_user_id_with_cookie(auth_client):
+    """user_id from request body must be ignored; cookie is authoritative."""
+    route = respx.post("http://agent-core-test/process_turn").mock(
+        return_value=httpx.Response(200, json={"response_text": "ok"})
+    )
+    with _mock_google_identity():
+        auth_client.post("/auth/google", json={"credential": "valid-token"})
+    auth_client.post(
+        "/chat",
+        json={"session_id": "sess-1", "user_id": "attacker", "message": "hi"},
+    )
+    import json
+    body = json.loads(route.calls[0].request.content)
+    assert body["user_id"] == "google:100"
+
+
+@respx.mock
+def test_user_history_with_session_uses_cookie_user_id(auth_client):
+    route = respx.get("http://memory-layer-test/users/google:100/active-history").mock(
+        return_value=httpx.Response(200, json={"session_id": "sX", "turns": []})
+    )
+    with _mock_google_identity():
+        auth_client.post("/auth/google", json={"credential": "valid-token"})
+    # Path param "anyone" should be ignored — cookie's google:100 is used.
+    r = auth_client.get("/user-history/anyone")
+    assert r.status_code == 200
+    assert r.json()["session_id"] == "sX"
+    assert route.called

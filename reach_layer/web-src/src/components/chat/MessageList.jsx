@@ -59,7 +59,7 @@ export function MessageList({
         {/* System / welcome message */}
         {systemMsg && (
           <div className="flex justify-center mb-4">
-            <span className="text-xs text-gray-500 bg-gray-900/60 px-3 py-1.5 rounded-full border border-gray-800">
+            <span className="text-xs text-[var(--text-muted)] bg-[var(--surface-2)] px-3 py-1.5 rounded-full border border-[var(--border)]">
               {systemMsg}
             </span>
           </div>

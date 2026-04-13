@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { ChatHeader } from '../components/chat/ChatHeader'
 
@@ -7,85 +7,106 @@ const config = {
   app_icon: '🏦',
 }
 
-beforeEach(() => {
-  Object.assign(navigator, {
-    clipboard: { writeText: vi.fn().mockResolvedValue(undefined) },
-  })
-})
-
 describe('ChatHeader', () => {
-  it('renders app name', () => {
-    render(
-      <ChatHeader config={config} userId="alice" sessionId="sess-1"
-        theme="dark" onToggleTheme={vi.fn()} onSwitchUser={vi.fn()} />
-    )
+  it('renders app name and Connected status', () => {
+    render(<ChatHeader config={config} />)
     expect(screen.getByText('KKB Assistant')).toBeInTheDocument()
-  })
-
-  it('shows Connected status indicator', () => {
-    render(
-      <ChatHeader config={config} userId="alice" sessionId="sess-1"
-        theme="dark" onToggleTheme={vi.fn()} onSwitchUser={vi.fn()} />
-    )
     expect(screen.getByText('Connected')).toBeInTheDocument()
   })
 
-  it('shows userId in pill', () => {
+  it('renders user display name and email on the right when auth enabled', () => {
+    const identity = {
+      user_id: 'google:1',
+      display_name: 'Alice Wonderland',
+      email: 'alice@example.com',
+      picture: '',
+    }
     render(
-      <ChatHeader config={config} userId="alice" sessionId="sess-1"
-        theme="dark" onToggleTheme={vi.fn()} onSwitchUser={vi.fn()} />
+      <ChatHeader
+        config={config}
+        identity={identity}
+        userId={identity.user_id}
+        authEnabled={true}
+      />
+    )
+    expect(screen.getByText('Alice Wonderland')).toBeInTheDocument()
+    expect(screen.getByText('alice@example.com')).toBeInTheDocument()
+  })
+
+  it('renders Local user caption when auth disabled', () => {
+    render(
+      <ChatHeader
+        config={config}
+        identity={null}
+        userId="alice"
+        authEnabled={false}
+      />
     )
     expect(screen.getByText('alice')).toBeInTheDocument()
+    expect(screen.getByText('Local user')).toBeInTheDocument()
   })
 
-  it('does not show user ID pill when userId is null', () => {
+  it('renders profile picture when provided', () => {
+    const identity = {
+      user_id: 'google:1',
+      display_name: 'Alice',
+      email: 'alice@example.com',
+      picture: 'https://example.com/a.png',
+    }
     render(
-      <ChatHeader config={config} userId={null} sessionId="sess-1"
-        theme="dark" onToggleTheme={vi.fn()} onSwitchUser={vi.fn()} />
+      <ChatHeader
+        config={config}
+        identity={identity}
+        userId={identity.user_id}
+        authEnabled={true}
+      />
     )
-    // "alice" text should not appear; userId-related pill absent
-    expect(screen.queryByTitle(/click to copy user id/i)).not.toBeInTheDocument()
+    const img = document.querySelector('img')
+    expect(img).not.toBeNull()
+    expect(img.getAttribute('src')).toBe('https://example.com/a.png')
   })
 
-  it('calls onSwitchUser when Switch button clicked', () => {
-    const onSwitchUser = vi.fn()
+  it('falls back to initials when picture missing', () => {
+    const identity = {
+      user_id: 'google:1',
+      display_name: 'Alice Wonderland',
+      email: 'alice@example.com',
+      picture: '',
+    }
     render(
-      <ChatHeader config={config} userId="alice" sessionId="sess-1"
-        theme="dark" onToggleTheme={vi.fn()} onSwitchUser={onSwitchUser} />
+      <ChatHeader
+        config={config}
+        identity={identity}
+        userId={identity.user_id}
+        authEnabled={true}
+      />
     )
-    fireEvent.click(screen.getByTitle(/switch user/i))
-    expect(onSwitchUser).toHaveBeenCalled()
+    expect(screen.getByText('AW')).toBeInTheDocument()
   })
 
-  it('calls onToggleTheme when ThemeToggle clicked', () => {
+  it('does not render a hamburger/expand button (moved to sidebar logo)', () => {
+    render(<ChatHeader config={config} identity={null} userId={null} authEnabled={false} />)
+    expect(screen.queryByLabelText('Expand sidebar')).not.toBeInTheDocument()
+  })
+
+  it('renders theme toggle when onToggleTheme is provided', () => {
     const onToggleTheme = vi.fn()
     render(
-      <ChatHeader config={config} userId="alice" sessionId="sess-1"
-        theme="dark" onToggleTheme={onToggleTheme} onSwitchUser={vi.fn()} />
+      <ChatHeader
+        config={config}
+        identity={null}
+        userId={null}
+        authEnabled={false}
+        theme="dark"
+        onToggleTheme={onToggleTheme}
+      />
     )
     fireEvent.click(screen.getByLabelText('Toggle theme'))
     expect(onToggleTheme).toHaveBeenCalled()
   })
 
-  it('toggles debug panel open and closed', () => {
-    render(
-      <ChatHeader config={config} userId="alice" sessionId="sess-1"
-        theme="dark" onToggleTheme={vi.fn()} onSwitchUser={vi.fn()} />
-    )
-    const debugBtn = screen.getByTitle(/session debug/i)
-    fireEvent.click(debugBtn)
-    expect(screen.getByText(/User ID/)).toBeInTheDocument()
-    expect(screen.getByText(/Session/)).toBeInTheDocument()
-    fireEvent.click(debugBtn)
-    expect(screen.queryByText('User ID')).not.toBeInTheDocument()
-  })
-
-  it('shows session ID in debug panel', () => {
-    render(
-      <ChatHeader config={config} userId="alice" sessionId="sess-xyz"
-        theme="dark" onToggleTheme={vi.fn()} onSwitchUser={vi.fn()} />
-    )
-    fireEvent.click(screen.getByTitle(/session debug/i))
-    expect(screen.getByText('sess-xyz')).toBeInTheDocument()
+  it('does not render theme toggle when onToggleTheme is absent', () => {
+    render(<ChatHeader config={config} identity={null} userId={null} authEnabled={false} />)
+    expect(screen.queryByLabelText('Toggle theme')).not.toBeInTheDocument()
   })
 })

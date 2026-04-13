@@ -33,6 +33,7 @@ class ProcessTurnRequest(BaseModel):
     channel: str = "cli"
     timestamp_ms: int = Field(default_factory=lambda: int(time.time() * 1000))
     user_id: str | None = None
+    fresh: bool = False
 
 
 class ProcessTurnResponse(BaseModel):
@@ -111,6 +112,7 @@ def create_orchestration_app(agent_core: AgentCore) -> FastAPI:
             if request.timestamp_ms
             else int(time.time() * 1000),
             user_id=request.user_id,
+            fresh=request.fresh,
         )
 
         try:

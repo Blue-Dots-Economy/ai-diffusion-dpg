@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook, act, waitFor } from '@testing-library/react'
+import { renderHook, act } from '@testing-library/react'
 import { useChat } from '../hooks/useChat'
 import * as api from '../api'
 import * as utils from '../utils'
@@ -31,48 +31,71 @@ describe('useChat', () => {
     })
   })
 
-  describe('loadHistory', () => {
-    it('sets sessionId and messages from history', async () => {
-      vi.spyOn(api, 'fetchUserHistory').mockResolvedValue({
-        session_id: 'sess-abc',
-        turns: [{ user_message: 'Hello', system_message: 'Hi there', timestamp: '2024-01-01T00:00:00Z' }],
+  describe('startNewChat', () => {
+    it('clears messages and assigns a new sessionId', () => {
+      const { result } = renderHook(() => useChat({ onError }))
+      act(() => { result.current.startNewChat() })
+      expect(result.current.messages).toEqual([])
+      expect(result.current.sessionId).toBe('test-uuid')
+    })
+
+    it('arms the next send with fresh=true', async () => {
+      const sendSpy = vi.spyOn(api, 'sendChat').mockResolvedValue({
+        response_text: 'Ok', was_escalated: false, was_tool_used: false, latency_ms: 1,
       })
       const { result } = renderHook(() => useChat({ onError }))
-      let ret
-      await act(async () => { ret = await result.current.loadHistory('user1') })
+      act(() => { result.current.startNewChat() })
+      await act(async () => { await result.current.send({ text: 'Hi', userId: 'u1' }) })
+      expect(sendSpy).toHaveBeenCalledWith(expect.objectContaining({ fresh: true }))
+    })
+
+    it('subsequent sends in the same chat are not fresh', async () => {
+      const sendSpy = vi.spyOn(api, 'sendChat').mockResolvedValue({
+        response_text: 'Ok', was_escalated: false, was_tool_used: false, latency_ms: 1,
+      })
+      const { result } = renderHook(() => useChat({ onError }))
+      act(() => { result.current.startNewChat() })
+      await act(async () => { await result.current.send({ text: 'Hi', userId: 'u1' }) })
+      await act(async () => { await result.current.send({ text: 'Again', userId: 'u1' }) })
+      expect(sendSpy).toHaveBeenNthCalledWith(2, expect.objectContaining({ fresh: false }))
+    })
+  })
+
+  describe('loadSession', () => {
+    it('hydrates messages and sessionId from server', async () => {
+      vi.spyOn(api, 'fetchSessionHistory').mockResolvedValue({
+        session_id: 'sess-abc',
+        turns: [{ user_message: 'Hello', system_message: 'Hi there' }],
+      })
+      const { result } = renderHook(() => useChat({ onError }))
+      await act(async () => { await result.current.loadSession('sess-abc') })
       expect(result.current.sessionId).toBe('sess-abc')
       expect(result.current.messages).toHaveLength(2)
-      expect(ret).toEqual({ isReturning: true })
+      expect(result.current.messages[0].text).toBe('Hello')
+      expect(result.current.messages[1].text).toBe('Hi there')
     })
 
-    it('returns isReturning false when no history found', async () => {
-      vi.spyOn(api, 'fetchUserHistory').mockResolvedValue({ session_id: null, turns: [] })
+    it('reports an error toast on failure', async () => {
+      vi.spyOn(api, 'fetchSessionHistory').mockRejectedValue(new Error('boom'))
       const { result } = renderHook(() => useChat({ onError }))
-      let ret
-      await act(async () => { ret = await result.current.loadHistory('new-user') })
-      expect(ret).toEqual({ isReturning: false })
-      expect(result.current.sessionId).toBe('test-uuid')
+      await act(async () => { await result.current.loadSession('s') })
+      expect(onError).toHaveBeenCalledWith(expect.stringContaining('Could not load'))
     })
 
-    it('generates fresh sessionId on fetch error', async () => {
-      vi.spyOn(api, 'fetchUserHistory').mockRejectedValue(new Error('Network'))
-      const { result } = renderHook(() => useChat({ onError }))
-      await act(async () => { await result.current.loadHistory('user') })
-      expect(result.current.sessionId).toBe('test-uuid')
-    })
-
-    it('maps turns to user and agent messages', async () => {
-      vi.spyOn(api, 'fetchUserHistory').mockResolvedValue({
-        session_id: 'sess-1',
-        turns: [{ user_message: 'Question', system_message: 'Answer' }],
+    it('next send after loadSession is not fresh', async () => {
+      vi.spyOn(api, 'fetchSessionHistory').mockResolvedValue({
+        session_id: 'sess-abc', turns: [],
+      })
+      const sendSpy = vi.spyOn(api, 'sendChat').mockResolvedValue({
+        response_text: 'Ok', was_escalated: false, was_tool_used: false, latency_ms: 1,
       })
       const { result } = renderHook(() => useChat({ onError }))
-      await act(async () => { await result.current.loadHistory('u1') })
-      const [userMsg, agentMsg] = result.current.messages
-      expect(userMsg.role).toBe('user')
-      expect(userMsg.text).toBe('Question')
-      expect(agentMsg.role).toBe('agent')
-      expect(agentMsg.text).toBe('Answer')
+      await act(async () => { await result.current.loadSession('sess-abc') })
+      await act(async () => { await result.current.send({ text: 'continue', userId: 'u1' }) })
+      expect(sendSpy).toHaveBeenCalledWith(expect.objectContaining({
+        fresh: false,
+        sessionId: 'sess-abc',
+      }))
     })
   })
 

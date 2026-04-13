@@ -58,13 +58,6 @@ describe('InputArea', () => {
     expect(screen.getByRole('button', { name: /send/i })).toBeDisabled()
   })
 
-  it('calls onClear when clear button clicked', () => {
-    const onClear = vi.fn()
-    render(<InputArea onSend={vi.fn()} onClear={onClear} disabled={false} placeholder="Type…" />)
-    fireEvent.click(screen.getByTitle(/clear conversation/i))
-    expect(onClear).toHaveBeenCalled()
-  })
-
   it('shows character count', async () => {
     render(<InputArea onSend={vi.fn()} onClear={vi.fn()} disabled={false} placeholder="Type…" />)
     const textarea = screen.getByPlaceholderText('Type…')

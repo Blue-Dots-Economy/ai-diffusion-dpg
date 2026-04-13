@@ -209,7 +209,7 @@ class AgentCore(AgentCoreBase):
             memory_endpoint, session_id,
         )
         t1 = time.time()
-        bundle = self._memory.context_bundle(session_id, user_id)
+        bundle = self._memory.context_bundle(session_id, user_id, adopt=not turn_input.fresh)
         current_subagent_id: str = (
             bundle.session.get("current_subagent_id")
             or self._workflow.start_subagent_id

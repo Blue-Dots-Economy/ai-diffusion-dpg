@@ -43,6 +43,7 @@ class TurnInput:
     channel: str          # "cli" | "whatsapp" | "web" | "voip"
     timestamp_ms: int
     user_id: Optional[str] = None   # opaque identifier set by Reach Layer (phone, email, etc.)
+    fresh: bool = False             # True when caller wants a clean "New chat" — disables session adoption
 
 
 # ---------------------------------------------------------------------------

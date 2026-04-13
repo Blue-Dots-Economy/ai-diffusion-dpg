@@ -4,18 +4,18 @@ import { useRef, useState, useEffect } from 'react'
  * Chat input area.
  * - Send on Enter, newline on Shift+Enter
  * - Character count display
- * - Clear / reset conversation button
  * - Auto-growing textarea (up to 6 lines)
  * - Disabled while sending
  *
+ * "Clear conversation" lives in the Sidebar, not here.
+ *
  * @param {{
  *   onSend: (text: string) => void,
- *   onClear: () => void,
  *   disabled: boolean,
  *   placeholder: string,
  * }} props
  */
-export function InputArea({ onSend, onClear, disabled, placeholder }) {
+export function InputArea({ onSend, disabled, placeholder }) {
   const [text, setText] = useState('')
   const textareaRef = useRef(null)
 
@@ -57,17 +57,9 @@ export function InputArea({ onSend, onClear, disabled, placeholder }) {
 
   return (
     <div className="bg-[var(--surface)] border-t border-[var(--border)] px-4 py-3 sm:px-6">
-      {/* Char count + clear row */}
-      <div className="flex items-center justify-between mb-1.5 px-1">
-        <button
-          onClick={onClear}
-          disabled={disabled}
-          title="Clear conversation (local only)"
-          className="text-[11px] text-gray-500 hover:text-gray-300 disabled:opacity-40 transition-colors"
-        >
-          ↺ Clear chat
-        </button>
-        <span className={`text-[11px] ${nearLimit ? 'text-orange-400' : 'text-gray-600'}`}>
+      {/* Char count row */}
+      <div className="flex items-center justify-end mb-1.5 px-1">
+        <span className={`text-[11px] ${nearLimit ? 'text-orange-400' : 'text-[var(--text-muted)]'}`}>
           {charCount}/{charLimit}
         </span>
       </div>
@@ -110,7 +102,7 @@ export function InputArea({ onSend, onClear, disabled, placeholder }) {
         </button>
       </div>
 
-      <p className="text-[10px] text-gray-600 mt-1.5 px-1">
+      <p className="text-[10px] text-[var(--text-muted)] mt-1.5 px-1">
         Enter to send · Shift+Enter for new line
       </p>
     </div>

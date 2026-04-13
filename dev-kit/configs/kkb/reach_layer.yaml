@@ -17,6 +17,25 @@ ui:
   returning_user_msg: "वापस आने पर स्वागत है! · Welcome back! Continuing your previous conversation."
   storage_key: "kkb_user_id"
   theme_storage_key: "kkb_theme"
+  sign_out_confirm: "क्या आप साइन आउट करना चाहते हैं? · Sign out of your account?"
+  switch_user_confirm: "यूज़र बदलें? आपका मौजूदा सेशन बंद हो जाएगा। · Switch user? Your current session will be closed."
+  delete_conversation_confirm: "क्या यह बातचीत डिलीट करें? यह वापस नहीं आएगी। · Delete this conversation? This cannot be undone."
 
 observability:
   domain: "kkb"
+
+# Google Sign-On for KKB.
+# - `enabled: true` makes the SPA boot into the LoginScreen and forces
+#   /chat + /user-history to require a valid session cookie.
+# - `google_client_id` should be injected via the GOOGLE_CLIENT_ID env
+#   var at deploy time (see Helm chart). For local dev you can also set
+#   it here, but never commit a production client_id.
+# - REACH_SESSION_SECRET (HMAC secret for session JWTs) is always read
+#   from the env var.
+auth:
+  enabled: true
+  session_ttl_s: 86400
+  # Local dev uses plain http://localhost, so Secure cookies would be
+  # dropped by the browser. Override to false here; production deploys
+  # should keep the dpg default (true) via an env with TLS.
+  cookie_secure: false

@@ -24,6 +24,17 @@ spec:
           env:
             - name: CONFIG_FOLDER
               value: {{ .Values.configFolder | quote }}
+            {{- if .Values.auth.googleClientId }}
+            - name: GOOGLE_CLIENT_ID
+              value: {{ .Values.auth.googleClientId | quote }}
+            {{- end }}
+            {{- if .Values.auth.sessionSecretName }}
+            - name: REACH_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.sessionSecretName | quote }}
+                  key: {{ .Values.auth.sessionSecretKey | quote }}
+            {{- end }}
           volumeMounts:
             - name: dpg-config
               mountPath: /app/config/dpg.yaml

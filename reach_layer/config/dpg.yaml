@@ -10,6 +10,9 @@ reach_layer:
   cli:
     prompt: "You: "
     agent_prefix: "Agent: "
+  # Sidebar conversations list — max recent sessions returned to the UI.
+  sessions:
+    limit: 25
 
 agent_core_client:
   endpoint: "http://localhost:8000/process_turn"
@@ -31,6 +34,15 @@ ui:
   new_session_msg: "New session started. How can I help you today?"
   returning_user_msg: "Welcome back! Continuing your previous conversation."
   storage_key: "dpg_user_id"
+  # Sidebar / conversations-list copy. English defaults; domains may
+  # override any of these in domain.yaml for localisation.
+  new_chat_label: "New chat"
+  conversations_heading: "Conversations"
+  no_conversations_msg: "No previous chats"
+  delete_conversation_confirm: "Delete this conversation? This cannot be undone."
+  delete_conversation_tooltip: "Delete conversation"
+  sign_out_confirm: "Sign out of your account?"
+  switch_user_confirm: "Switch user? Your current session will be closed."
 
 # Observability — OTel collector endpoint for trace/metric export.
 observability:

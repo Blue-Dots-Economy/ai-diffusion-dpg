@@ -29,3 +29,15 @@ healthCheck:
 # Injected at deploy time — do not set here
 dpgConfig: ""
 domainConfig: ""
+
+# Google Sign-On — set at deploy time. When auth.enabled is true in
+# reach_layer.yaml, both of these MUST be provided.
+auth:
+  # Public OAuth 2.0 Web client_id from Google Cloud Console.
+  googleClientId: ""
+  # Kubernetes Secret holding the HMAC secret for session JWTs.
+  # Must contain a key named `session-secret`. Create with:
+  #   kubectl create secret generic reach-layer-auth \
+  #     --from-literal=session-secret=$(openssl rand -hex 32)
+  sessionSecretName: "reach-layer-auth"
+  sessionSecretKey: "session-secret"

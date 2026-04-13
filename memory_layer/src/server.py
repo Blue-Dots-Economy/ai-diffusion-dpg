@@ -48,6 +48,7 @@ def _get_tracer() -> "otel_trace.Tracer":
 class ContextBundleRequest(BaseModel):
     session_id: str
     user_id: str
+    adopt: bool = True
 
 
 class WriteRequest(BaseModel):
@@ -132,7 +133,7 @@ def create_app(memory: MemoryLayer) -> FastAPI:
             span.set_attribute("session_id", session_id)
             span.set_attribute("db.system", "redis")
             try:
-                bundle = memory.context_bundle(session_id, user_id)
+                bundle = memory.context_bundle(session_id, user_id, adopt=request.adopt)
                 logger.info(
                     "memory_server.context_bundle",
                     extra={
@@ -405,6 +406,47 @@ def create_app(memory: MemoryLayer) -> FastAPI:
                 },
             )
             return {"session_id": None, "turns": []}
+
+    @app.delete("/sessions/{session_id}")
+    def delete_session(session_id: str, user_id: str) -> StatusResponse:
+        """Delete a single session from Redis and SQLite audit.
+
+        Query param `user_id` identifies the owning user — required so we can
+        remove the session from the user's session index hash in Redis.
+        """
+        start = time.time()
+        session_id = session_id.strip()
+        user_id = user_id.strip()
+
+        if not session_id or not user_id:
+            return StatusResponse(status="ok")
+
+        try:
+            memory.delete_session(session_id, user_id)
+            logger.info(
+                "memory_server.delete_session",
+                extra={
+                    "operation": "server.delete_session",
+                    "status": "success",
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            return StatusResponse(status="ok")
+        except Exception as e:
+            logger.error(
+                "memory_server.delete_session_error",
+                extra={
+                    "operation": "server.delete_session",
+                    "status": "failure",
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "error": f"{type(e).__name__}: {e}",
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            return StatusResponse(status="error")
 
     @app.delete("/user/{user_id}")
     def delete_user(user_id: str) -> StatusResponse:

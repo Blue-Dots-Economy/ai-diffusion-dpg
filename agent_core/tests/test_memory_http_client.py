@@ -101,7 +101,7 @@ def test_context_bundle_posts_to_correct_endpoint(client):
 
     mock_post.assert_called_once_with(
         "http://memory-layer:8002/context_bundle",
-        json={"session_id": "sess-1", "user_id": "user-1"},
+        json={"session_id": "sess-1", "user_id": "user-1", "adopt": True},
         timeout=2.0,
     )
 

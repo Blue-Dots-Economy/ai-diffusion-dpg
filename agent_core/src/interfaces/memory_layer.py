@@ -15,7 +15,7 @@ from src.models import ContextBundle
 class MemoryLayerBase(ABC):
 
     @abstractmethod
-    def context_bundle(self, session_id: str, user_id: str) -> ContextBundle:
+    def context_bundle(self, session_id: str, user_id: str, adopt: bool = True) -> ContextBundle:
         """
         Called at the START of every turn.
 

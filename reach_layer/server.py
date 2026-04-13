@@ -26,7 +26,7 @@ if _env_local.exists():
 load_dotenv()
 
 import httpx
-from fastapi import FastAPI
+from fastapi import Cookie, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from opentelemetry import trace as otel_trace
@@ -34,6 +34,13 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from pydantic import BaseModel
 
 from config_loader import load_config
+from src.auth import (
+    AuthError,
+    Reason,
+    issue_session_token,
+    verify_google_id_token,
+    verify_session_token,
+)
 from src.web_reach import WebReachLayer
 from src.base import TurnResult
 
@@ -60,6 +67,12 @@ class ChatRequest(BaseModel):
     session_id: str
     user_id: Optional[str] = None
     message: str
+    fresh: bool = False  # True on first turn of a "New chat" — disables session adoption
+
+
+class GoogleAuthRequest(BaseModel):
+    """Payload posted by the SPA after Google Identity Services returns an ID token."""
+    credential: str
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +104,45 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
     ml_cfg = config.get("memory_layer_client", {})
     ml_endpoint = ml_cfg.get("endpoint", "http://localhost:8002")
     ml_timeout = float(ml_cfg.get("timeout_s", 10.0))
+
+    # Sidebar sessions — framework-level cap on how many recent sessions we
+    # return. The list is labelled by `last_accessed` in the browser, so no
+    # per-domain vocabulary is needed.
+    reach_cfg = config.get("reach_layer", {}) or {}
+    sessions_cfg = reach_cfg.get("sessions", {}) or {}
+    sessions_limit = int(sessions_cfg.get("limit", 25))
+
+    auth_cfg = config.get("auth", {}) or {}
+    auth_enabled = bool(auth_cfg.get("enabled", False))
+    google_client_id = auth_cfg.get("google_client_id") or os.getenv("GOOGLE_CLIENT_ID", "")
+    cookie_name = auth_cfg.get("session_cookie_name", "reach_session")
+    session_ttl_s = int(auth_cfg.get("session_ttl_s", 86400))
+    cookie_secure = bool(auth_cfg.get("cookie_secure", True))
+    cookie_samesite = auth_cfg.get("cookie_samesite", "lax")
+    session_secret = os.getenv("REACH_SESSION_SECRET", "")
+    if auth_enabled and not session_secret:
+        # Fail loud at startup — never silently boot a broken auth config.
+        raise RuntimeError(
+            "auth.enabled is true but REACH_SESSION_SECRET env var is not set"
+        )
+    if auth_enabled and not google_client_id:
+        raise RuntimeError(
+            "auth.enabled is true but auth.google_client_id / GOOGLE_CLIENT_ID is not set"
+        )
+
+    def _require_session(request: Request) -> dict:
+        """Read session cookie and return claims dict, or raise 401."""
+        token = request.cookies.get(cookie_name, "")
+        try:
+            claims = verify_session_token(token, session_secret)
+        except AuthError as exc:
+            raise HTTPException(status_code=401, detail={"reason": exc.reason.value})
+        return {
+            "user_id": claims.user_id,
+            "display_name": claims.display_name,
+            "email": claims.email,
+            "picture": claims.picture,
+        }
 
     app = FastAPI(title="Reach Layer — Web Channel Adapter")
     FastAPIInstrumentor.instrument_app(app)
@@ -135,16 +187,103 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
 
     @app.get("/app-config")
     def app_config() -> dict[str, Any]:
-        """Return UI branding and copy strings from the merged config.
+        """Return UI branding/copy plus public auth settings to the browser.
 
         The browser fetches this at boot so all domain-specific text
         (app name, avatars, placeholder copy) comes from config rather
-        than being hardcoded in the HTML.
+        than being hardcoded in the HTML. Adds an `auth` block exposing
+        only public values (enabled flag + Google OAuth client_id).
 
         Returns:
-            Dict of UI config keys from the merged dpg/domain YAML.
+            Dict of UI config keys merged with a public auth block.
         """
-        return config.get("ui", {})
+        ui = dict(config.get("ui", {}))
+        ui["auth"] = {
+            "enabled": auth_enabled,
+            "google_client_id": google_client_id if auth_enabled else "",
+        }
+        return ui
+
+    # ------------------------------------------------------------------
+    # Auth endpoints
+    # ------------------------------------------------------------------
+
+    @app.post("/auth/google")
+    def auth_google(req: GoogleAuthRequest, response: Response) -> dict[str, Any]:
+        """Exchange a Google ID token for an HttpOnly session cookie.
+
+        Verifies the Google ID token via google-auth, then issues an
+        HS256 session JWT and sets it as a Secure HttpOnly cookie.
+
+        Args:
+            req: Body containing the GIS credential string.
+            response: FastAPI response used to set the cookie.
+
+        Returns:
+            Identity payload {user_id, display_name, email, picture}.
+        """
+        if not auth_enabled:
+            raise HTTPException(status_code=404, detail="auth disabled")
+        start = time.time()
+        try:
+            identity = verify_google_id_token(req.credential, google_client_id)
+        except AuthError as exc:
+            logger.warning(
+                "reach_server.auth_google_failure",
+                extra={
+                    "operation": "reach_server.auth_google",
+                    "status": "failure",
+                    "reason": exc.reason.value,
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            status = 401 if exc.reason is not Reason.MISSING else 400
+            raise HTTPException(status_code=status, detail={"reason": exc.reason.value})
+
+        token = issue_session_token(
+            user_id=identity.user_id,
+            display_name=identity.name,
+            ttl_s=session_ttl_s,
+            secret=session_secret,
+            email=identity.email,
+            picture=identity.picture,
+        )
+        response.set_cookie(
+            key=cookie_name,
+            value=token,
+            max_age=session_ttl_s,
+            httponly=True,
+            secure=cookie_secure,
+            samesite=cookie_samesite,
+            path="/",
+        )
+        logger.info(
+            "reach_server.auth_google_success",
+            extra={
+                "operation": "reach_server.auth_google",
+                "status": "success",
+                "latency_ms": int((time.time() - start) * 1000),
+            },
+        )
+        return {
+            "user_id": identity.user_id,
+            "display_name": identity.name,
+            "email": identity.email,
+            "picture": identity.picture,
+        }
+
+    @app.get("/auth/me")
+    def auth_me(request: Request) -> dict[str, Any]:
+        """Return the current session identity, or 401 if no valid cookie."""
+        if not auth_enabled:
+            raise HTTPException(status_code=404, detail="auth disabled")
+        return _require_session(request)
+
+    @app.post("/auth/logout")
+    def auth_logout(response: Response) -> dict[str, Any]:
+        """Clear the session cookie. Always 200 regardless of prior state."""
+        response.delete_cookie(key=cookie_name, path="/")
+        return {"ok": True}
 
     # ------------------------------------------------------------------
     # GET / — serve the chat UI
@@ -160,7 +299,7 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
     # ------------------------------------------------------------------
 
     @app.post("/chat")
-    def chat(req: ChatRequest) -> dict[str, Any]:
+    def chat(req: ChatRequest, request: Request) -> dict[str, Any]:
         """Forward a chat turn to Agent Core and return the response.
 
         Validates the request, builds a TurnInput, calls Agent Core, and
@@ -174,11 +313,17 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
             Returns a safe error response on any failure.
         """
         start = time.time()
+        # When auth is enabled, override any client-supplied user_id with the
+        # one bound to the session cookie. Cookie is the source of truth.
+        effective_user_id = req.user_id
+        if auth_enabled:
+            session = _require_session(request)
+            effective_user_id = session["user_id"]
         with otel_trace.get_tracer(__name__).start_as_current_span("reach.inbound") as span:
             span.set_attribute("session_id", req.session_id or "")
             span.set_attribute("dpg.channel", "web")
             try:
-                turn = web_reach.build_turn_input(req.session_id, req.user_id, req.message)
+                turn = web_reach.build_turn_input(req.session_id, effective_user_id, req.message)
             except ValueError as e:
                 span.record_exception(e)
                 logger.warning(
@@ -197,6 +342,7 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
                 "session_id": turn.session_id,
                 "user_message": turn.user_message,
                 "channel": turn.channel,
+                "fresh": bool(req.fresh),
             }
             if turn.user_id:
                 payload["user_id"] = turn.user_id
@@ -281,7 +427,7 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
     # ------------------------------------------------------------------
 
     @app.get("/user-history/{user_id}")
-    def user_history(user_id: str) -> dict[str, Any]:
+    def user_history(user_id: str, request: Request) -> dict[str, Any]:
         """Fetch the active session and its chat history for a returning user.
 
         Proxies to Memory Layer GET /users/{user_id}/active-history.
@@ -296,6 +442,10 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
         """
         start = time.time()
         user_id = user_id.strip()
+        if auth_enabled:
+            session = _require_session(request)
+            # Cookie identity is authoritative; ignore the path param value.
+            user_id = session["user_id"]
         if not user_id:
             return {"session_id": None, "turns": []}
         try:
@@ -325,6 +475,191 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
                 },
             )
             return {"session_id": None, "turns": []}
+
+    # ------------------------------------------------------------------
+    # GET /sessions — list the current user's sessions for the sidebar
+    # ------------------------------------------------------------------
+
+    def _resolve_user_id(request: Request, fallback: Optional[str]) -> Optional[str]:
+        """Return cookie-bound user_id when auth enabled; otherwise the fallback."""
+        if auth_enabled:
+            session = _require_session(request)
+            return session["user_id"]
+        return (fallback or "").strip() or None
+
+    @app.get("/sessions")
+    def list_sessions(request: Request, user_id: Optional[str] = None) -> dict[str, Any]:
+        """List the current user's recent sessions (up to 25, most recent first).
+
+        When auth is enabled, the cookie identity is authoritative and the
+        ``user_id`` query parameter is ignored. When auth is disabled, the
+        ``user_id`` query parameter must be provided so the dev/demo channel
+        can still scope sessions.
+        """
+        start = time.time()
+        effective = _resolve_user_id(request, user_id)
+        if not effective:
+            return {"sessions": []}
+        try:
+            response = ml_client.get(
+                f"{ml_endpoint}/sessions/{effective}",
+                timeout=ml_timeout,
+            )
+            response.raise_for_status()
+            raw_sessions = response.json() if isinstance(response.json(), list) else []
+        except Exception as e:
+            logger.error(
+                "reach_server.list_sessions_error",
+                extra={
+                    "operation": "reach_server.list_sessions",
+                    "status": "failure",
+                    "error": str(e),
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            return {"sessions": []}
+
+        capped = raw_sessions[:sessions_limit]
+        sessions: list[dict[str, Any]] = []
+        for entry in capped:
+            sid = entry.get("session_id")
+            if not sid:
+                continue
+            sessions.append({
+                "session_id": sid,
+                "last_accessed": entry.get("last_accessed"),
+            })
+
+        logger.info(
+            "reach_server.list_sessions_success",
+            extra={
+                "operation": "reach_server.list_sessions",
+                "status": "success",
+                "session_count": len(sessions),
+                "latency_ms": int((time.time() - start) * 1000),
+            },
+        )
+        return {"sessions": sessions}
+
+    @app.get("/sessions/{session_id}/history")
+    def session_history(session_id: str, request: Request, user_id: Optional[str] = None) -> dict[str, Any]:
+        """Return the chat history for a single session owned by the caller.
+
+        Authorises by verifying the session belongs to the cookie-bound user
+        (or to the supplied ``user_id`` when auth is disabled).
+        """
+        start = time.time()
+        sid = session_id.strip()
+        effective = _resolve_user_id(request, user_id)
+        if not sid or not effective:
+            return {"session_id": sid, "turns": []}
+
+        # Authorisation check — verify session belongs to caller.
+        try:
+            sessions_resp = ml_client.get(
+                f"{ml_endpoint}/sessions/{effective}",
+                timeout=ml_timeout,
+            )
+            sessions_resp.raise_for_status()
+            owned = sessions_resp.json() if isinstance(sessions_resp.json(), list) else []
+            owned_ids = {s.get("session_id") for s in owned if isinstance(s, dict)}
+        except Exception as e:
+            logger.error(
+                "reach_server.session_history_owner_error",
+                extra={
+                    "operation": "reach_server.session_history",
+                    "status": "failure",
+                    "error": str(e),
+                },
+            )
+            owned_ids = set()
+        if sid not in owned_ids:
+            raise HTTPException(status_code=404, detail="session not found")
+
+        try:
+            hist_resp = ml_client.get(
+                f"{ml_endpoint}/audit/sessions/{sid}/history",
+                timeout=ml_timeout,
+            )
+            hist_resp.raise_for_status()
+            turns = hist_resp.json() or []
+        except Exception as e:
+            logger.error(
+                "reach_server.session_history_error",
+                extra={
+                    "operation": "reach_server.session_history",
+                    "status": "failure",
+                    "error": str(e),
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            return {"session_id": sid, "turns": []}
+
+        logger.info(
+            "reach_server.session_history_success",
+            extra={
+                "operation": "reach_server.session_history",
+                "status": "success",
+                "session_id": sid,
+                "turn_count": len(turns) if isinstance(turns, list) else 0,
+                "latency_ms": int((time.time() - start) * 1000),
+            },
+        )
+        return {"session_id": sid, "turns": turns if isinstance(turns, list) else []}
+
+    @app.delete("/sessions/{session_id}")
+    def delete_session(session_id: str, request: Request, user_id: Optional[str] = None) -> dict[str, Any]:
+        """Delete a single session (Redis state + SQLite audit) for the caller."""
+        start = time.time()
+        sid = session_id.strip()
+        effective = _resolve_user_id(request, user_id)
+        if not sid or not effective:
+            raise HTTPException(status_code=400, detail="missing session_id or user_id")
+
+        # Authorisation check.
+        try:
+            sessions_resp = ml_client.get(
+                f"{ml_endpoint}/sessions/{effective}",
+                timeout=ml_timeout,
+            )
+            sessions_resp.raise_for_status()
+            owned = sessions_resp.json() if isinstance(sessions_resp.json(), list) else []
+            owned_ids = {s.get("session_id") for s in owned if isinstance(s, dict)}
+        except Exception:
+            owned_ids = set()
+        if sid not in owned_ids:
+            raise HTTPException(status_code=404, detail="session not found")
+
+        try:
+            del_resp = ml_client.delete(
+                f"{ml_endpoint}/sessions/{sid}",
+                params={"user_id": effective},
+                timeout=ml_timeout,
+            )
+            del_resp.raise_for_status()
+        except Exception as e:
+            logger.error(
+                "reach_server.delete_session_error",
+                extra={
+                    "operation": "reach_server.delete_session",
+                    "status": "failure",
+                    "session_id": sid,
+                    "error": str(e),
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            raise HTTPException(status_code=502, detail="memory layer error")
+
+        logger.info(
+            "reach_server.delete_session_success",
+            extra={
+                "operation": "reach_server.delete_session",
+                "status": "success",
+                "session_id": sid,
+                "latency_ms": int((time.time() - start) * 1000),
+            },
+        )
+        return {"ok": True, "session_id": sid}
 
     return app
 

@@ -17,6 +17,9 @@ dependencies = [
     "opentelemetry-instrumentation-fastapi>=0.61b0",
     "opentelemetry-instrumentation-httpx>=0.61b0",
     "aiofiles>=23.0.0",
+    "google-auth>=2.29.0",      # Google ID token verification (JWKS, aud, iss, exp)
+    "requests>=2.31.0",         # HTTP transport used by google-auth (JWKS fetch)
+    "pyjwt[crypto]>=2.8.0",     # issue/verify our own session JWTs
 ]
 
 [project.optional-dependencies]

@@ -65,9 +65,18 @@ class MemoryLayerHttpClient(MemoryLayerBase):
     # Public interface — implements MemoryLayerBase
     # ------------------------------------------------------------------
 
-    def context_bundle(self, session_id: str, user_id: str) -> ContextBundle:
+    def context_bundle(self, session_id: str, user_id: str, adopt: bool = True) -> ContextBundle:
         """
         POST /context_bundle -> ContextBundle.
+
+        Args:
+            session_id: Session identifier.
+            user_id:    User identifier.
+            adopt:      If True (default), Memory Layer may adopt state from
+                        the user's most recent active session. Pass False for
+                        explicit "New chat" actions where the user wants a
+                        clean slate.
+
         Returns ContextBundle.empty() on any failure. Never raises.
         """
         if not session_id:
@@ -79,7 +88,7 @@ class MemoryLayerHttpClient(MemoryLayerBase):
         try:
             response = httpx.post(
                 f"{self._endpoint}/context_bundle",
-                json={"session_id": session_id, "user_id": user_id},
+                json={"session_id": session_id, "user_id": user_id, "adopt": adopt},
                 timeout=self._timeout_s,
             )
             response.raise_for_status()
