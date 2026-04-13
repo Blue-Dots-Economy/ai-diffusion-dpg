@@ -36,6 +36,8 @@ class SileroVADWrapper(VADAnalyzerBase):
         Returns:
             Configured SileroVADAnalyzer instance.
         """
+        if config is None:
+            raise ValueError("config must be a dict, got None")
         vad_cfg = config.get("telephony_adapter", {}).get("vad", {})
         stop_secs = float(vad_cfg.get("stop_secs", 0.35))
         min_volume = float(vad_cfg.get("min_volume", 0.3))
@@ -51,6 +53,8 @@ class SileroVADWrapper(VADAnalyzerBase):
                 start_secs=start_secs,
             )
         )
+        # smoothing_factor is not a VADParams constructor argument in Pipecat;
+        # it must be set directly on the analyzer instance after construction.
         analyzer._smoothing_factor = smoothing_factor
 
         logger.info(

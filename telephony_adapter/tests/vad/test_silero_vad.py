@@ -25,6 +25,12 @@ def empty_config():
     return {}
 
 
+def test_create_analyzer_raises_on_none_config():
+    wrapper = SileroVADWrapper()
+    with pytest.raises(ValueError, match="None"):
+        wrapper.create_analyzer(None)
+
+
 def test_silero_vad_wrapper_is_vad_base():
     assert issubclass(SileroVADWrapper, VADAnalyzerBase)
 
