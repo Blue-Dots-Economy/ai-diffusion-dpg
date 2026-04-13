@@ -1,7 +1,8 @@
 # =============================================================================
 # Telephony Adapter DPG — FastAPI service Dockerfile
 # =============================================================================
-# Handles inbound/outbound Vobiz voice calls on port 8006.
+# Handles inbound Vobiz voice calls on port 8006.
+# Pipeline: VobizOperator → SileroVAD → RayaSTT → AgentCore → RayaTTS
 #
 # Must be built from the repo root (so observability_layer/ is in context):
 #   docker build -f telephony_adapter/Dockerfile -t telephony_adapter .
@@ -44,6 +45,8 @@ COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /observability_layer /observability_layer
 
 # Copy application source
+# src/ includes: base.py, bot.py, vobiz_adapter.py, campaign_manager.py,
+#                operators/, vad/, pipecat_services/
 COPY telephony_adapter/server.py telephony_adapter/config_loader.py ./
 COPY telephony_adapter/src/ ./src/
 COPY telephony_adapter/config/ ./config/

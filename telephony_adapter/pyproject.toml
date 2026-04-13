@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "telephony_adapter"
 version = "0.1.0"
-description = "Telephony channel adapter — Vobiz + Raya STT/TTS + Pipecat pipeline"
+description = "Telephony channel adapter — Vobiz operator, Silero VAD, Raya STT/TTS, Pipecat pipeline"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.111.0",
@@ -39,7 +39,7 @@ asyncio_mode = "auto"
 
 [tool.coverage.run]
 source = ["src", "server.py", "config_loader.py"]
-omit = ["*/tests/*", "*/__init__.py", "src/bot.py"]
+omit = ["*/tests/*", "*/__init__.py"]
 
 [tool.coverage.report]
 fail_under = 70

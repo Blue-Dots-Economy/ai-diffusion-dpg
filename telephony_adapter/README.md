@@ -2,7 +2,9 @@
 
 DPG building block — **Reach Layer / Telephony channel adapter**.
 
-Bridges inbound and outbound PSTN calls (via Vobiz) to the Agent Core. Handles per-call audio streaming over WebSocket, speech-to-text via Raya STT, text-to-speech via Raya TTS, and outbound call campaigns.
+Bridges inbound PSTN calls (via Vobiz) to the Agent Core. Handles per-call audio streaming over WebSocket, voice activity detection via Silero VAD, speech-to-text via Raya STT, text-to-speech via Raya TTS, and outbound call campaigns.
+
+All component choices (operator, VAD, STT, TTS) are abstracted behind DPG base classes so alternative providers can be wired in without changing the adapter lifecycle.
 
 ---
 
@@ -10,12 +12,17 @@ Bridges inbound and outbound PSTN calls (via Vobiz) to the Agent Core. Handles p
 
 ```
 PSTN caller
-  → Vobiz WebSocket  (/ws/{call_sid})
-    → Raya STT        (µ-law audio → transcript)
-      → Agent Core    (POST /process_turn)
-        → Raya TTS    (response text → PCM audio)
-          → Vobiz WebSocket (audio back to caller)
+  → Vobiz /answer webhook   (server.py extracts caller_id, returns XML)
+    → Vobiz WebSocket       (/ws/{call_sid})
+      → VobizOperator       (handshake → stream_id/call_id)
+        → SileroVAD         (µ-law audio → VAD-segmented utterances)
+          → RayaSTTService  (utterance WAV → transcript text)
+            → Agent Core    (POST /process_turn  {user_id: caller_id})
+              → RayaTTSService  (response text → PCM16 audio, SSE streaming)
+                → Vobiz WebSocket (audio back to caller)
 ```
+
+`caller_id` (E.164 phone number from the `/answer` webhook `From` field) is passed to Agent Core as `user_id`, allowing the Memory Layer to recognise returning callers across sessions.
 
 The adapter is stateless across calls. All session state lives in the Memory Layer and is accessed through Agent Core.
 
@@ -25,8 +32,8 @@ The adapter is stateless across calls. All session state lives in the Memory Lay
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/answer` | Vobiz webhook on call answered. Returns XML that instructs Vobiz to open a WebSocket stream. |
-| `WS` | `/ws/{call_sid}` | Bidirectional audio stream for an active call. |
+| `POST` | `/answer` | Vobiz webhook on call answered. Extracts `caller_id` from `From` field, returns XML instructing Vobiz to open a WebSocket stream. |
+| `WS` | `/ws/{call_sid}` | Bidirectional audio stream for an active call. Runs the full VAD→STT→Agent→TTS pipeline. |
 | `POST` | `/campaign` | Trigger an outbound PSTN call. Also callable by Action Gateway as `telephony_channel_switch`. |
 | `POST` | `/recording-finished` | Vobiz webhook: recording has stopped. |
 | `POST` | `/recording-ready` | Vobiz webhook: recording MP3 is ready. |
@@ -34,18 +41,18 @@ The adapter is stateless across calls. All session state lives in the Memory Lay
 
 ---
 
-## Per-call turn loop
+## Per-call lifecycle
 
-1. Vobiz POSTs to `/answer` → adapter returns XML with `wss://<public_url>/ws/{call_sid}`.
-2. Vobiz opens a WebSocket and sends a `start` event (call SID, stream SID, caller ID).
-3. Vobiz streams `media` events (µ-law 8000 Hz audio chunks).
-4. On a `stop` event, accumulated audio is sent to **Raya STT** for transcription.
-5. Transcript is forwarded to **Agent Core** (`POST /process_turn`).
-6. Agent Core response text is sent to **Raya TTS** (SSE streaming → PCM F32LE).
-7. Audio is base64-encoded and sent back to Vobiz as a `media` event.
-8. If Agent Core marks the turn as escalated, the WebSocket is closed.
-
-Silence (empty transcript) is discarded without calling Agent Core.
+1. Vobiz POSTs to `/answer` → `server.py` extracts `caller_id` from `From` field, stores `call_sid → caller_id`, returns Vobiz XML with `wss://<public_url>/ws/{call_sid}`.
+2. Vobiz opens a WebSocket → `VobizOperator.parse_handshake()` reads `stream_id` and `call_id` from the Vobiz start messages.
+3. `VobizOperator.create_transport()` builds a `FastAPIWebsocketTransport` with `VobizFrameSerializer`.
+4. `SileroVADWrapper` creates a `SileroVADAnalyzer` with config-driven parameters.
+5. Pipeline runs: `transport.input → VADProcessor → RayaSTTService → AgentCoreLLMProcessor → RayaTTSService → transport.output`.
+6. On client connect, a greeting `TTSSpeakFrame` is queued.
+7. Each VAD-segmented utterance is transcribed by `RayaSTTService.transcribe()` (HTTP multipart POST to Raya).
+8. The transcript is forwarded to Agent Core (`POST /process_turn`) with `user_id = caller_id`.
+9. Agent Core response text is synthesised by `RayaTTSService.synthesize()` (SSE stream, F32LE → PCM16).
+10. If Agent Core returns `was_escalated=true`, an `EndFrame` is pushed to hang up.
 
 ---
 
@@ -53,28 +60,45 @@ Silence (empty transcript) is discarded without calling Agent Core.
 
 ```
 telephony_adapter/
-├── server.py              # FastAPI app factory, all HTTP/WS endpoints
+├── server.py              # FastAPI app factory — /answer, /ws/{call_sid}, /campaign endpoints
 ├── config_loader.py       # YAML config deep-merge
 ├── config/
 │   └── telephony.yaml     # DPG framework defaults (env-var placeholders)
 ├── src/
-│   ├── base.py            # TelephonyAdapterBase ABC, TelephonyTurnInput/Result dataclasses
-│   ├── telephony_adapter.py   # VobizTelephonyAdapter — per-call turn loop
-│   ├── agent_core_service.py  # HTTP client → Agent Core /process_turn
-│   ├── raya_stt_service.py    # WebSocket client → Raya STT
-│   ├── raya_tts_service.py    # HTTP/SSE client → Raya TTS
-│   ├── vobiz_serializer.py    # Encode/decode Vobiz WebSocket JSON frames
-│   └── campaign_manager.py    # Outbound call trigger via Vobiz REST API
+│   ├── base.py            # TelephonyAdapterBase ABC; STTError, TTSError, TelephonyError
+│   ├── bot.py             # run_bot() — thin entry point, delegates to VobizAdapter
+│   ├── vobiz_adapter.py   # VobizAdapter — concrete TelephonyAdapterBase; owns call lifecycle
+│   ├── campaign_manager.py
+│   ├── operators/
+│   │   ├── operator_base.py    # TelephonyOperatorBase ABC (parse_handshake, create_transport, webhook_xml)
+│   │   └── vobiz_operator.py   # VobizOperator — Vobiz/Plivo handshake + VobizFrameSerializer
+│   ├── vad/
+│   │   ├── vad_base.py         # VADAnalyzerBase ABC (create_analyzer)
+│   │   └── silero_vad.py       # SileroVADWrapper — config-driven SileroVADAnalyzer factory
+│   └── pipecat_services/
+│       ├── stt_base.py         # STTServiceBase ABC — no Pipecat imports (transcribe method)
+│       ├── tts_base.py         # TTSServiceBase ABC — no Pipecat imports (synthesize method)
+│       ├── raya_stt.py         # RayaSTTService — HTTP multipart → transcript
+│       ├── raya_tts.py         # RayaTTSService — SSE stream → PCM16 chunks
+│       └── agent_core_llm.py   # AgentCoreLLMProcessor — TranscriptionFrame → POST /process_turn → TTSSpeakFrame
 └── tests/
-    ├── test_telephony_adapter.py
-    ├── test_agent_core_service.py
-    ├── test_raya_stt_service.py
-    ├── test_raya_tts_service.py
-    ├── test_vobiz_serializer.py
-    ├── test_campaign_manager.py
-    ├── test_server.py
     ├── test_base.py
-    └── test_config_loader.py
+    ├── test_vobiz_adapter.py
+    ├── test_server.py
+    ├── test_campaign_manager.py
+    ├── test_config_loader.py
+    ├── operators/
+    │   ├── test_operator_base.py
+    │   └── test_vobiz_operator.py
+    ├── vad/
+    │   ├── test_vad_base.py
+    │   └── test_silero_vad.py
+    └── pipecat_services/
+        ├── test_stt_base.py
+        ├── test_tts_base.py
+        ├── test_raya_stt.py
+        ├── test_raya_tts.py
+        └── test_agent_core_llm.py
 ```
 
 ---
@@ -92,34 +116,52 @@ Environment variables used by `config/telephony.yaml`:
 
 | Variable | Required | Description |
 |---|---|---|
-| `PUBLIC_URL` | Yes | Publicly reachable base URL of this service (e.g. `https://telephony.example.com`). Used to build the WebSocket URL returned in `/answer` XML. |
+| `PUBLIC_URL` | Yes | Publicly reachable base URL of this service (e.g. `https://telephony.example.com`). Used to build the WebSocket URL in `/answer` XML. |
 | `VOBIZ_AUTH_ID` | Yes | Vobiz account auth ID. |
 | `VOBIZ_AUTH_TOKEN` | Yes | Vobiz account auth token. |
 | `VOBIZ_FROM_NUMBER` | Yes | E.164 caller ID for outbound calls. |
 | `RAYA_API_KEY` | Yes | Raya API key (used for both STT and TTS). |
 
-Additional config keys (with defaults):
+Full config shape with defaults:
 
 ```yaml
 telephony_adapter:
   port: 8006
+  public_url: ${PUBLIC_URL}
   vobiz:
+    auth_id: ${VOBIZ_AUTH_ID}
+    auth_token: ${VOBIZ_AUTH_TOKEN}
     api_base: https://api.vobiz.ai/api/v1
-    max_retries: 3
+    from_number: ${VOBIZ_FROM_NUMBER}
+    sample_rate: 8000
+  vad:
+    stop_secs: 0.35
+    min_volume: 0.3
+    confidence: 0.4
+    start_secs: 0.1
+    smoothing_factor: 0.1
   raya:
-    stt_wss_url: wss://hub.getraya.app/transcribe
+    api_key: ${RAYA_API_KEY}
+    stt_wss_url: https://hub.getraya.app/transcribe
     tts_base_url: https://hub.getraya.app/v1
+    tts_model: standard
     language: hi
     voice_id: voice_001
     tts_speed: 1.0
+    stt_timeout_s: 30.0
     tts_timeout_s: 30.0
   agent_core:
     base_url: http://agent_core:8000
     timeout_ms: 5000
+    greeting: "Hello, how can I help you today?"
     fallback_phrase: "I'm sorry, I couldn't process that. Please try again."
-```
 
-Override any key in your domain config file to change runtime behaviour.
+observability:
+  otel:
+    collector_endpoint: http://otelcol:4317
+    sample_rate: 1.0
+    export_interval_ms: 5000
+```
 
 ---
 
@@ -164,24 +206,17 @@ Service listens on port `8006`. Use a tunnelling tool (e.g. ngrok) to expose the
 ```bash
 cd telephony_adapter
 uv run pytest                                          # all tests
-uv run pytest tests/test_telephony_adapter.py          # single file
-uv run pytest --cov=src --cov-report=term-missing      # with coverage
+uv run pytest tests/test_vobiz_adapter.py             # single file
+uv run pytest --cov=src --cov-report=term-missing     # with coverage
 ```
 
-Coverage threshold: **70%** (enforced in `pyproject.toml`).
+Coverage threshold: **70%** (enforced in `pyproject.toml`). Current: ~93%.
 
 ---
 
 ## Observability
 
-Structured logs are emitted for every significant operation (`operation`, `status`, `latency_ms`, `error` fields). No PII or caller phone numbers are logged.
-
-OpenTelemetry traces span the full turn (`telephony.turn`), STT call (`telephony.stt`), TTS call (`telephony.tts`), and Agent Core call (`telephony.agent_core_call`). Metrics exported:
-
-| Metric | Type | Description |
-|---|---|---|
-| `telephony.active_calls` | UpDownCounter | Number of currently active concurrent calls. |
-| `telephony.turn.latency_ms` | Histogram | End-to-end per-turn latency in milliseconds. |
+Structured logs are emitted for every significant operation (`operation`, `status`, `latency_ms`, `error` fields). No PII or caller phone numbers are logged outside the designated audit log path.
 
 Configure the OTel collector endpoint via:
 
@@ -199,8 +234,10 @@ observability:
 |---|---|
 | `fastapi` | HTTP and WebSocket server |
 | `uvicorn` | ASGI server |
-| `httpx` | Async HTTP client (Agent Core, Raya TTS, Vobiz REST) |
-| `websockets` | WebSocket client (Raya STT) |
+| `httpx` | Async HTTP client (Agent Core, Raya STT/TTS, Vobiz REST) |
+| `pipecat-ai[websocket,silero]` | Audio pipeline framework, VAD, frame types |
+| `pipecat-vobiz` | VobizFrameSerializer — Vobiz/Plivo wire protocol |
+| `numpy` | F32LE → PCM16 audio conversion |
 | `pyyaml` | Config loading |
 | `observability-layer` | OTel initialisation (local path dep) |
 | `opentelemetry-instrumentation-fastapi` | Auto-instrumentation |
