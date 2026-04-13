@@ -6,10 +6,17 @@ telephony_adapter:
     auth_token: ${VOBIZ_AUTH_TOKEN}
     api_base: https://api.vobiz.ai/api/v1
     from_number: ${VOBIZ_FROM_NUMBER}
+  vad:
+    stop_secs: 0.35
+    min_volume: 0.3
+    confidence: 0.4
+    start_secs: 0.1
+    smoothing_factor: 0.1
   raya:
     api_key: ${RAYA_API_KEY}
-    stt_wss_url: wss://hub.getraya.app/transcribe
+    stt_wss_url: https://hub.getraya.app/transcribe
     tts_base_url: https://hub.getraya.app/v1
+    tts_model: standard
     stt_language: hi        # STT supports: en, hi, mr, ta, te, kn, gu, bn, ml, ...
     tts_language: hi        # TTS language must match voice locale
     voice_id: d6a002d0-230c-49b1-a137-b8a7d564b1ae  # Priyanka, hi
