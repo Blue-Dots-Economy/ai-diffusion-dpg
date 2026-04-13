@@ -78,7 +78,7 @@ async def test_run_stt_sends_correct_fields(config):
 
 
 @pytest.mark.asyncio
-async def test_run_stt_http_error_yields_error_frame(config):
+async def test_run_stt_http_error_yields_nothing(config):
     from src.pipecat_services.raya_stt import RayaSTTService
 
     wav_audio = _make_wav()
@@ -92,8 +92,7 @@ async def test_run_stt_http_error_yields_error_frame(config):
         async for frame in svc.run_stt(wav_audio):
             frames.append(frame)
 
-    assert len(frames) == 1
-    assert isinstance(frames[0], ErrorFrame)
+    assert frames == []
 
 
 @pytest.mark.asyncio
@@ -113,7 +112,7 @@ async def test_run_stt_empty_transcript_yields_nothing(config):
 
 
 @pytest.mark.asyncio
-async def test_run_stt_connect_error_yields_error_frame(config):
+async def test_run_stt_connect_error_yields_nothing(config):
     from src.pipecat_services.raya_stt import RayaSTTService
 
     wav_audio = _make_wav()
@@ -126,11 +125,71 @@ async def test_run_stt_connect_error_yields_error_frame(config):
             svc = RayaSTTService(config)
             frames = [f async for f in svc.run_stt(wav_audio)]
 
-    assert len(frames) == 1
-    assert isinstance(frames[0], ErrorFrame)
+    assert frames == []
 
 
 def test_missing_api_key_raises():
     from src.pipecat_services.raya_stt import RayaSTTService
     with pytest.raises(ValueError, match="api_key"):
         RayaSTTService({})
+
+
+# ── New tests for STTServiceBase inheritance and transcribe() ──────────────────
+
+import pytest
+import respx
+import httpx
+from src.pipecat_services.raya_stt import RayaSTTService
+from src.pipecat_services.stt_base import STTServiceBase
+
+
+def test_raya_stt_is_stt_service_base(config):
+    stt = RayaSTTService(config)
+    assert isinstance(stt, STTServiceBase)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_transcribe_returns_text_on_success(config):
+    respx.post("https://hub.getraya.app/transcribe").mock(
+        return_value=httpx.Response(200, json={"transcript": "नमस्ते"})
+    )
+    stt = RayaSTTService(config)
+    result = await stt.transcribe(b"RIFF" + b"\x00" * 40)
+    assert result == "नमस्ते"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_transcribe_returns_none_on_empty_transcript(config):
+    respx.post("https://hub.getraya.app/transcribe").mock(
+        return_value=httpx.Response(200, json={"transcript": "  "})
+    )
+    stt = RayaSTTService(config)
+    result = await stt.transcribe(b"RIFF" + b"\x00" * 40)
+    assert result is None
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_transcribe_returns_none_on_http_error(config):
+    respx.post("https://hub.getraya.app/transcribe").mock(
+        return_value=httpx.Response(500, text="Internal Server Error")
+    )
+    stt = RayaSTTService(config)
+    result = await stt.transcribe(b"RIFF" + b"\x00" * 40)
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_transcribe_returns_none_on_timeout(config):
+    import httpx
+    from unittest.mock import patch, AsyncMock
+
+    async def raise_timeout(*args, **kwargs):
+        raise httpx.TimeoutException("timed out")
+
+    with patch("httpx.AsyncClient.post", new=AsyncMock(side_effect=raise_timeout)):
+        stt = RayaSTTService(config)
+        result = await stt.transcribe(b"RIFF" + b"\x00" * 40)
+    assert result is None
