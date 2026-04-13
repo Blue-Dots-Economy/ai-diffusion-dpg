@@ -19,7 +19,7 @@ from typing import AsyncGenerator
 import httpx
 import numpy as np
 
-from pipecat.frames.frames import ErrorFrame, Frame, TTSAudioRawFrame
+from pipecat.frames.frames import Frame, TTSAudioRawFrame
 from pipecat.services.settings import TTSSettings
 from pipecat.services.tts_service import TTSService
 
@@ -148,89 +148,22 @@ class RayaTTSService(TTSServiceBase, TTSService):
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
         """Pipecat hook: synthesise text and yield TTSAudioRawFrame objects.
 
-        Delegates audio synthesis to synthesize(). On HTTP or connection errors,
-        yields an ErrorFrame so the Pipecat pipeline can handle failures.
+        Delegates to synthesize(). Each PCM16 chunk becomes one TTSAudioRawFrame.
 
         Args:
             text: The text to synthesise.
             context_id: Pipecat context ID for this TTS turn.
 
         Yields:
-            TTSAudioRawFrame per PCM16 chunk, or ErrorFrame on failure.
+            TTSAudioRawFrame per PCM16 chunk.
         """
-        start = time.time()
-        url = f"{self._base_url}/text-to-speech/stream"
-        payload = {
-            "text": text,
-            "voice_id": self._voice_id,
-            "model": "standard",
-            "language": self._language,
-            "speed": self._speed,
-            "sample_rate": _SAMPLE_RATE,
-        }
-        headers = {"X-API-Key": self._api_key}
-        total_bytes = 0
-
-        try:
-            async with httpx.AsyncClient(timeout=self._tts_timeout) as client:
-                async with client.stream("POST", url, json=payload, headers=headers) as response:
-                    if response.status_code != 200:
-                        body = await response.aread()
-                        error_body = body.decode(errors="replace")[:400]
-                        logger.error(
-                            f"raya_tts.http_error HTTP {response.status_code}: {error_body}",
-                            extra={
-                                "operation": "raya_tts.run_tts",
-                                "status": "failure",
-                                "latency_ms": int((time.time() - start) * 1000),
-                            },
-                        )
-                        yield ErrorFrame(error=f"Raya TTS HTTP {response.status_code}")
-                        return
-
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data:"):
-                            continue
-                        raw = line[len("data:"):].strip()
-                        if not raw or raw == "{}":
-                            continue
-                        try:
-                            chunk_data = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-                        if chunk_data.get("type") == "chunk" and "data" in chunk_data:
-                            f32le_bytes = base64.b64decode(chunk_data["data"])
-                            pcm16_bytes = _f32le_to_pcm16(f32le_bytes)
-                            total_bytes += len(pcm16_bytes)
-                            yield TTSAudioRawFrame(
-                                audio=pcm16_bytes,
-                                sample_rate=_SAMPLE_RATE,
-                                num_channels=_NUM_CHANNELS,
-                                context_id=context_id,
-                            )
-
-        except (httpx.ConnectError, httpx.TimeoutException) as exc:
-            logger.error(
-                "raya_tts.connection_error",
-                extra={
-                    "operation": "raya_tts.run_tts",
-                    "status": "failure",
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "latency_ms": int((time.time() - start) * 1000),
-                },
+        async for pcm16_bytes in self.synthesize(text):
+            yield TTSAudioRawFrame(
+                audio=pcm16_bytes,
+                sample_rate=_SAMPLE_RATE,
+                num_channels=_NUM_CHANNELS,
+                context_id=context_id,
             )
-            yield ErrorFrame(error=f"Raya TTS connection error: {exc}")
-            return
-
-        logger.info(
-            "raya_tts.synthesized",
-            extra={
-                "operation": "raya_tts.run_tts",
-                "status": "success",
-                "latency_ms": int((time.time() - start) * 1000),
-                "audio_bytes": total_bytes,
-            },
-        )
 
 
 def _f32le_to_pcm16(f32le_bytes: bytes) -> bytes:

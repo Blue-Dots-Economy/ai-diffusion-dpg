@@ -130,18 +130,18 @@ async def test_run_tts_sends_correct_payload(config):
 
 
 @pytest.mark.asyncio
-async def test_run_tts_http_error_yields_error_frame(config):
+@respx.mock
+async def test_run_tts_yields_nothing_on_http_error(config):
     from src.pipecat_services.raya_tts import RayaTTSService
 
-    with respx.mock:
-        respx.post("https://hub.getraya.app/v1/text-to-speech/stream").mock(
-            return_value=httpx.Response(500, json={"error": "server error"})
-        )
-        svc = RayaTTSService(config)
-        frames = [f async for f in svc.run_tts("hello", context_id="ctx1")]
-
-    assert len(frames) == 1
-    assert isinstance(frames[0], ErrorFrame)
+    respx.post("https://hub.getraya.app/v1/text-to-speech/stream").mock(
+        return_value=httpx.Response(500, text="error")
+    )
+    tts = RayaTTSService(config)
+    frames = []
+    async for frame in tts.run_tts("hello", "ctx-1"):
+        frames.append(frame)
+    assert frames == []
 
 
 def test_missing_api_key_raises():
