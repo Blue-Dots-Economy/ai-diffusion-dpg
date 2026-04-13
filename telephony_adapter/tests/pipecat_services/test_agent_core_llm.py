@@ -65,7 +65,7 @@ async def test_sends_correct_payload_to_agent_core(config):
     from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
     import json
 
-    proc = AgentCoreLLMProcessor(config, call_sid="CA1", session_id="ses1")
+    proc = AgentCoreLLMProcessor(config, call_sid="CA1", session_id="ses1", user_id="+911234567890")
     proc.push_frame = AsyncMock()
 
     with respx.mock:
@@ -81,7 +81,7 @@ async def test_sends_correct_payload_to_agent_core(config):
     assert body["session_id"] == "ses1"
     assert body["user_message"] == "मुझे मदद चाहिए"
     assert body["channel"] == "telephony"
-    assert body["user_id"] == "CA1"
+    assert body["user_id"] == "+911234567890"
 
 
 @pytest.mark.asyncio
@@ -165,6 +165,49 @@ async def test_non_transcription_frame_is_passed_through(config):
     await proc.process_frame(other_frame, FrameDirection.DOWNSTREAM)
 
     assert other_frame in pushed
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_process_turn_payload_includes_user_id():
+    """user_id (caller E.164) must appear in the Agent Core request payload."""
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+
+    captured = {}
+
+    def capture(request):
+        import json as _json
+        captured["payload"] = _json.loads(request.content)
+        return httpx.Response(200, json={
+            "response_text": "hello",
+            "was_escalated": False,
+            "was_tool_used": False,
+            "model_used": "claude-sonnet-4-6",
+        })
+
+    respx.post("http://agent_core:8000/process_turn").mock(side_effect=capture)
+
+    config = {
+        "telephony_adapter": {
+            "agent_core": {
+                "base_url": "http://agent_core:8000",
+                "timeout_ms": 5000,
+                "fallback_phrase": "sorry",
+                "greeting": "hello",
+            }
+        }
+    }
+    processor = AgentCoreLLMProcessor(
+        config,
+        call_sid="call-123",
+        session_id="sess-abc",
+        user_id="+919876543210",
+    )
+    processor.push_frame = AsyncMock()
+    frame = TranscriptionFrame(text="मुझे जॉब चाहिए", user_id="", timestamp="")
+    await processor._handle_transcription(frame)
+
+    assert captured["payload"]["user_id"] == "+919876543210"
 
 
 def test_missing_base_url_raises(config):
