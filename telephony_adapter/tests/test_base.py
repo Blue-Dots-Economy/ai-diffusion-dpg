@@ -5,6 +5,8 @@ from src.base import (
     TelephonyTurnInput,
     TelephonyTurnResult,
     TelephonyError,
+    STTError,
+    TTSError,
 )
 
 
@@ -44,3 +46,20 @@ def test_telephony_error_is_exception():
     err = TelephonyError("something failed")
     assert isinstance(err, Exception)
     assert "something failed" in str(err)
+
+
+def test_stt_error_is_exception():
+    err = STTError("transcription failed")
+    assert isinstance(err, Exception)
+    assert "transcription failed" in str(err)
+
+
+def test_tts_error_is_exception():
+    err = TTSError("synthesis failed")
+    assert isinstance(err, Exception)
+    assert "synthesis failed" in str(err)
+
+
+def test_stt_error_not_tts_error():
+    assert not issubclass(STTError, TTSError)
+    assert not issubclass(TTSError, STTError)

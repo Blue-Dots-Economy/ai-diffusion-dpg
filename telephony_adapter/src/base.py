@@ -16,6 +16,14 @@ class TelephonyError(Exception):
     """Raised when a telephony adapter operation fails unrecoverably."""
 
 
+class STTError(Exception):
+    """Raised when speech-to-text transcription fails after retries."""
+
+
+class TTSError(Exception):
+    """Raised when text-to-speech synthesis fails."""
+
+
 @dataclass
 class TelephonyTurnInput:
     """Normalised inbound turn from a telephone call.
