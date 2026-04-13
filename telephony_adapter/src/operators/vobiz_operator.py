@@ -1,0 +1,127 @@
+"""
+telephony_adapter/src/operators/vobiz_operator.py
+
+VobizOperator — concrete TelephonyOperatorBase for the Vobiz telephony platform.
+
+Vobiz is Plivo-compatible. Uses Pipecat's VobizFrameSerializer (which extends
+PlivoFrameSerializer with Vobiz-specific 16 kHz L16 support) and
+parse_telephony_websocket for handshake parsing.
+Belongs to the Reach Layer / Telephony Adapter block in the DPG framework.
+"""
+from __future__ import annotations
+
+import logging
+
+from pipecat.runner.utils import parse_telephony_websocket
+from pipecat.serializers.vobiz import VobizFrameSerializer
+from pipecat.transports.websocket.fastapi import (
+    FastAPIWebsocketParams,
+    FastAPIWebsocketTransport,
+)
+
+from src.operators.operator_base import TelephonyOperatorBase
+
+logger = logging.getLogger(__name__)
+
+
+class VobizOperator(TelephonyOperatorBase):
+    """Telephony operator adapter for the Vobiz platform.
+
+    Handles the Vobiz WebSocket handshake, creates a FastAPIWebsocketTransport
+    with VobizFrameSerializer, and generates the Vobiz/Plivo-compatible XML
+    response for the /answer webhook.
+
+    Args:
+        config: Full merged config dict. Reads telephony_adapter.vobiz section.
+
+    Raises:
+        ValueError: If auth_id or auth_token is missing from config.
+    """
+
+    def __init__(self, config: dict) -> None:
+        if config is None:
+            raise ValueError("config must not be None")
+        vobiz_cfg = config.get("telephony_adapter", {}).get("vobiz", {})
+        auth_id = vobiz_cfg.get("auth_id", "")
+        if not auth_id:
+            raise ValueError("telephony_adapter.vobiz.auth_id is required")
+        auth_token = vobiz_cfg.get("auth_token", "")
+        if not auth_token:
+            raise ValueError("telephony_adapter.vobiz.auth_token is required")
+        self._auth_id = auth_id
+        self._auth_token = auth_token
+        self._sample_rate = int(vobiz_cfg.get("sample_rate", 8000))
+
+    async def parse_handshake(self, websocket) -> tuple[str, str]:
+        """Parse the Vobiz WebSocket handshake to extract stream_id and call_id.
+
+        Args:
+            websocket: Active WebSocket connection from Vobiz.
+
+        Returns:
+            Tuple of (stream_id, call_id). Either is empty string if absent.
+        """
+        _transport_type, call_data = await parse_telephony_websocket(websocket)
+        stream_id = call_data.get("stream_id") or ""
+        call_id = call_data.get("call_id") or ""
+        logger.info(
+            "vobiz_operator.handshake_parsed",
+            extra={
+                "operation": "vobiz_operator.parse_handshake",
+                "status": "success",
+                "stream_id": stream_id,
+                "call_id": call_id,
+            },
+        )
+        return stream_id, call_id
+
+    def create_transport(
+        self, websocket, stream_id: str, call_id: str
+    ) -> FastAPIWebsocketTransport:
+        """Build FastAPIWebsocketTransport with VobizFrameSerializer.
+
+        Args:
+            websocket: Active WebSocket connection.
+            stream_id: Stream identifier from parse_handshake.
+            call_id: Call identifier from parse_handshake.
+
+        Returns:
+            Configured FastAPIWebsocketTransport.
+        """
+        serializer = VobizFrameSerializer(
+            stream_id=stream_id,
+            call_id=call_id,
+            auth_id=self._auth_id,
+            auth_token=self._auth_token,
+            params=VobizFrameSerializer.InputParams(
+                vobiz_sample_rate=self._sample_rate,
+                auto_hang_up=True,
+            ),
+        )
+        return FastAPIWebsocketTransport(
+            websocket=websocket,
+            params=FastAPIWebsocketParams(
+                audio_in_enabled=True,
+                audio_out_enabled=True,
+                add_wav_header=False,
+                serializer=serializer,
+            ),
+        )
+
+    def webhook_response_xml(self, websocket_url: str) -> str:
+        """Return Vobiz/Plivo-compatible XML for the /answer webhook.
+
+        Args:
+            websocket_url: Full WebSocket URL for Vobiz to connect to.
+
+        Returns:
+            XML string instructing Vobiz to open a bidirectional audio stream.
+        """
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<Response>\n"
+            f'  <Stream bidirectional="true" keepCallAlive="true"'
+            f' contentType="audio/x-mulaw;rate=8000">'
+            f"{websocket_url}</Stream>\n"
+            "</Response>"
+        )
