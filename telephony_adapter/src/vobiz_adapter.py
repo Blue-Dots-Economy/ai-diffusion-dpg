@@ -28,6 +28,7 @@ from src.operators.vobiz_operator import VobizOperator
 from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
 from src.pipecat_services.raya_stt import RayaSTTService
 from src.pipecat_services.raya_tts import RayaTTSService
+from src.pipecat_services.tts_sanitizer import TTSTextSanitizerProcessor
 from src.vad.silero_vad import SileroVADWrapper
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,7 @@ class VobizAdapter(TelephonyAdapterBase):
             user_id=caller_id,
         )
         tts = RayaTTSService(self._config)
+        sanitizer = TTSTextSanitizerProcessor()
 
         pipeline = Pipeline(
             [
@@ -99,6 +101,7 @@ class VobizAdapter(TelephonyAdapterBase):
                 VADProcessor(vad_analyzer=vad_analyzer),
                 stt,
                 agent,
+                sanitizer,
                 tts,
                 transport.output(),
             ]
