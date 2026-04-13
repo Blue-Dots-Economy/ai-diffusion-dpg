@@ -96,12 +96,13 @@ class RayaTTSService(TTSServiceBase, TTSService):
             async with httpx.AsyncClient(timeout=self._tts_timeout) as client:
                 async with client.stream("POST", url, json=payload, headers=headers) as response:
                     if response.status_code != 200:
-                        body = await response.aread()
+                        await response.aread()
                         logger.error(
-                            f"raya_tts.http_error HTTP {response.status_code}",
+                            "raya_tts.http_error",
                             extra={
                                 "operation": "raya_tts.synthesize",
                                 "status": "failure",
+                                "error": f"HTTP {response.status_code}",
                                 "latency_ms": int((time.time() - start) * 1000),
                             },
                         )

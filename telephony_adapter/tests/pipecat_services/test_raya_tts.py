@@ -153,11 +153,6 @@ def test_missing_api_key_raises():
 # ---------------------------------------------------------------------------
 # Task 4: TTSServiceBase inheritance + synthesize() tests
 # ---------------------------------------------------------------------------
-import json
-import base64
-import numpy as np
-import respx
-import httpx
 from src.pipecat_services.tts_base import TTSServiceBase
 
 

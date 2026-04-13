@@ -30,8 +30,6 @@ class TTSServiceBase(ABC):
 
         Yields:
             Raw PCM16 bytes chunks. Each chunk is a variable-length segment
-            of 16-bit signed integer samples at 8000 Hz mono.
-
-        Raises:
-            TTSError: If synthesis fails.
+            of 16-bit signed integer samples at 8000 Hz mono. Yields nothing
+            if synthesis fails (logs the error and returns cleanly).
         """
