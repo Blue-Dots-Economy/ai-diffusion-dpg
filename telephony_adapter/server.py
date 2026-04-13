@@ -96,6 +96,10 @@ def create_app(config: dict | None = None) -> FastAPI:
         raise ValueError("telephony_adapter.public_url is required in config")
     ws_url = public_url.replace("https://", "wss://").replace("http://", "ws://")
 
+    # Maps call_sid → caller_id (E.164) so the WebSocket endpoint can retrieve it.
+    # Populated by /answer; consumed and cleared by /ws/{call_sid}.
+    _caller_id_map: dict[str, str] = {}
+
     app = FastAPI(
         title="Telephony Adapter",
         description="DPG Reach Layer telephony channel adapter — Vobiz + Raya + Agent Core.",
@@ -123,7 +127,9 @@ def create_app(config: dict | None = None) -> FastAPI:
         /ws/{call_sid}.
         """
         form = await request.form()
-        call_sid = form.get("CallUUID") or form.get("CallSid") or "unknown"
+        call_sid = str(form.get("CallUUID") or form.get("CallSid") or "unknown")
+        caller_id = str(form.get("From") or "")
+        _caller_id_map[call_sid] = caller_id
         stream_url = f"{ws_url}/ws/{call_sid}"
         xml = (
             '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -152,8 +158,9 @@ def create_app(config: dict | None = None) -> FastAPI:
             },
         )
         await websocket.accept()
+        caller_id = _caller_id_map.pop(call_sid, "")
         try:
-            await bot.run_bot(websocket, call_sid, _config)
+            await bot.run_bot(websocket, call_sid, caller_id, _config)
         except Exception as exc:
             logger.error(
                 "server.ws_error",

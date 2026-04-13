@@ -78,3 +78,44 @@ def test_recording_ready_returns_200(client):
         "/recording-ready", json={"callSid": "CA1", "recordingUrl": "https://..."}
     )
     assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_websocket_passes_caller_id_from_stored_form():
+    """WebSocket endpoint must pass the caller_id stored during /answer to run_bot."""
+    import src.bot as bot_module
+    from starlette.testclient import TestClient
+
+    config = {
+        "telephony_adapter": {
+            "public_url": "https://example.com",
+            "vobiz": {"auth_id": "aid", "auth_token": "tok", "sample_rate": 8000},
+            "vad": {},
+            "raya": {"api_key": "k", "tts_base_url": "https://hub.getraya.app/v1", "language": "hi", "voice_id": "v"},
+            "agent_core": {"base_url": "http://ac:8000", "timeout_ms": 5000, "greeting": "hi", "fallback_phrase": "sorry"},
+        },
+        "observability": {"otel": {"collector_endpoint": "http://otelcol:4317", "sample_rate": 1.0, "export_interval_ms": 5000}},
+    }
+
+    captured = {}
+
+    async def mock_run_bot(websocket, call_sid, caller_id, config):
+        captured["caller_id"] = caller_id
+        captured["call_sid"] = call_sid
+
+    with patch.object(bot_module, "run_bot", mock_run_bot), \
+         patch("server.CampaignManager"), \
+         patch("server.init_otel"):
+        from server import create_app
+        app = create_app(config)
+        client = TestClient(app)
+
+        # First register the caller_id via /answer
+        client.post("/answer", data={"CallUUID": "call-xyz", "From": "+911111111111"})
+
+        # Then open the WebSocket
+        with client.websocket_connect("/ws/call-xyz"):
+            pass
+
+    assert captured.get("caller_id") == "+911111111111"
+    assert captured.get("call_sid") == "call-xyz"
