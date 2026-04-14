@@ -1,0 +1,6 @@
+apiVersion: v2
+name: dev-kit
+description: DPG Configuration Agent — web UI for domain config and deployment
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

@@ -1,0 +1,32 @@
+# Dev-Kit Configuration Agent
+configFolder: /app/config
+replicaCount: 1
+
+image:
+  repository: sanketikahub/dpg-dev-kit
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8080
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+healthCheck:
+  readiness:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+  liveness:
+    initialDelaySeconds: 20
+    periodSeconds: 20
+
+# Anthropic API key for the Configuration Agent's LLM calls.
+# Injected via --set or from a Kubernetes Secret.
+anthropicApiKey: ""

@@ -8,7 +8,7 @@ Deploy all 7 DPG services on any Kubernetes cluster.
 
 - `kubectl` configured and pointing at your cluster (`kubectl cluster-info`)
 - `helm` v3+ installed
-- Docker Hub images available (`srivatsak2002/dpg-*:latest`)
+- Docker Hub images available (`sanketikahub/dpg-*:latest`)
 - Anthropic API key exported: `export ANTHROPIC_API_KEY=sk-ant-...`
 
 ---

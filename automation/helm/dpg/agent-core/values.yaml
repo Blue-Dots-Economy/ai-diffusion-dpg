@@ -3,8 +3,8 @@ configFolder: /app/config
 replicaCount: 1
 
 image:
-  repository: srivatsak2002/dpg-agent-core
-  tag: "0.2.0"
+  repository: sanketikahub/dpg-agent-core
+  tag: "latest"
   pullPolicy: IfNotPresent
 
 service:

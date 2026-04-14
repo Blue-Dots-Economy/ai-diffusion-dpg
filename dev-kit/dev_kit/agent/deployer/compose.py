@@ -17,13 +17,13 @@ logger = logging.getLogger(__name__)
 
 # DPG application blocks: name → {image template, internal port}
 DPG_SERVICES: Dict[str, Dict] = {
-    "agent_core": {"image": "srivatsak2002/dpg-agent-core:0.2.0", "port": 8000},
-    "knowledge_engine": {"image": "srivatsak2002/dpg-knowledge-engine:0.2.0", "port": 8001},
-    "memory_layer": {"image": "srivatsak2002/dpg-memory-layer:0.2.0", "port": 8002},
-    "trust_layer": {"image": "srivatsak2002/dpg-trust-layer:0.2.0", "port": 8003},
-    "observability_layer": {"image": "srivatsak2002/dpg-observability-layer:0.2.0", "port": 8004},
-    "action_gateway": {"image": "srivatsak2002/dpg-action-gateway:0.2.0", "port": 9999},
-    "reach_layer": {"image": "srivatsak2002/dpg-reach-layer:0.2.0", "port": 7000},
+    "agent_core": {"image": "sanketikahub/dpg-agent-core:latest", "port": 8000},
+    "knowledge_engine": {"image": "sanketikahub/dpg-knowledge-engine:latest", "port": 8001},
+    "memory_layer": {"image": "sanketikahub/dpg-memory-layer:latest", "port": 8002},
+    "trust_layer": {"image": "sanketikahub/dpg-trust-layer:latest", "port": 8003},
+    "observability_layer": {"image": "sanketikahub/dpg-observability-layer:latest", "port": 8004},
+    "action_gateway": {"image": "sanketikahub/dpg-action-gateway:latest", "port": 9999},
+    "reach_layer": {"image": "sanketikahub/dpg-reach-layer:latest", "port": 8005},
 }
 
 # Infrastructure service images
@@ -57,7 +57,9 @@ DEPENDS_ON: Dict[str, List[str]] = {
 
 # Config file mount paths inside each DPG container
 _DPG_CONFIG_MOUNT = "/app/config/dpg.yaml"
-_DOMAIN_CONFIG_MOUNT = "/app/config/domain.yaml"
+# Domain config is mounted as /app/config/{block_name}.yaml so each block's
+# config_loader.py resolves it via CONFIG_FOLDER/{block_name}.yaml.
+_DOMAIN_CONFIG_TEMPLATE = "/app/config/{block_name}.yaml"
 
 
 def generate_compose(
@@ -117,9 +119,10 @@ def generate_compose(
                 continue
             env.append(f"{key.upper()}={value}")
 
+        domain_mount = _DOMAIN_CONFIG_TEMPLATE.format(block_name=block_name)
         volumes = [
             f"{dpg_dir}/{block_name}/dpg.yaml:{_DPG_CONFIG_MOUNT}:ro",
-            f"{domain_dir}/{block_name}/domain.yaml:{_DOMAIN_CONFIG_MOUNT}:ro",
+            f"{domain_dir}/{block_name}/domain.yaml:{domain_mount}:ro",
         ]
 
         svc: Dict = {
@@ -199,6 +202,10 @@ async def run_compose_up(
             env["REDIS_PASSWORD"] = secrets["redis_password"]
         if secrets.get("grafana_admin_password"):
             env["GF_SECURITY_ADMIN_PASSWORD"] = secrets["grafana_admin_password"]
+        if secrets.get("google_client_id"):
+            env["GOOGLE_CLIENT_ID"] = secrets["google_client_id"]
+        if secrets.get("reach_session_secret"):
+            env["REACH_SESSION_SECRET"] = secrets["reach_session_secret"]
 
     try:
         proc = await asyncio.create_subprocess_exec(
