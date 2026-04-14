@@ -47,6 +47,22 @@ class TurnInput:
     fresh: bool = False             # True when caller wants a clean "New chat" — disables session adoption
 
 
+@dataclass
+class SegmentInput:
+    """A single text segment submitted to TurnAssembler via POST /sessions/{id}/input.
+
+    Spec gap: The TurnAssembler spec defines add_segment(session_id, text) but
+    does not carry metadata needed to construct TurnInput when invoking stream_turn().
+    SegmentInput bridges this by carrying channel, user_id, and timestamp alongside
+    the text so TurnAssembler can build TurnInput without a second round-trip.
+    """
+
+    text: str
+    user_id: Optional[str] = None
+    channel: str = "cli"
+    timestamp_ms: int = 0
+
+
 # ---------------------------------------------------------------------------
 # State
 # ---------------------------------------------------------------------------
@@ -218,6 +234,7 @@ class TurnEvent:
     latency_ms: int
     timestamp_ms: int
     trace_id: Optional[str] = None
+    turn_status: str = "completed"  # "completed" | "interrupted" | "abandoned" — added for #72 TurnAssembler observability
 
 
 # ---------------------------------------------------------------------------

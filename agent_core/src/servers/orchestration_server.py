@@ -4,22 +4,29 @@ agent_core/src/orchestration_server.py
 FastAPI server exposing the Agent Core orchestration endpoints.
 
 Exposes:
-  POST /process_turn  — receives a user turn, returns the agent response (sync, JSON).
-  POST /stream_turn   — receives a user turn, returns SSE stream of events (async).
-  GET  /health        — liveness probe.
+  POST /process_turn              — receives a user turn, returns the agent response (sync, JSON).
+  POST /stream_turn               — receives a user turn, returns SSE stream of events (async).
+  POST /sessions/{id}/input       — submit a text segment to TurnAssembler (202).
+  GET  /sessions/{id}/events      — long-lived SSE subscription for session events.
+  DELETE /sessions/{id}/active_turn — interrupt the active turn (barge-in).
+  GET  /health                    — liveness probe.
+
+Session-based endpoints (#72) are only registered when a TurnAssembler is provided.
+Existing endpoints remain unchanged for backward compatibility.
 """
 
 from __future__ import annotations
 
 import logging
 import time
+from typing import Optional
 
-from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from src.orchestrator import AgentCore
-from src.models import DoneEvent, TurnInput, TurnResult
+from src.models import DoneEvent, SegmentInput, TurnInput, TurnResult
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +54,14 @@ class ProcessTurnResponse(BaseModel):
     latency_ms: int
 
 
+class SegmentInputRequest(BaseModel):
+    """Request body for POST /sessions/{session_id}/input."""
+    text: str
+    user_id: str | None = None
+    channel: str = "cli"
+    timestamp_ms: int = Field(default_factory=lambda: int(time.time() * 1000))
+
+
 class StatusResponse(BaseModel):
     status: str
 
@@ -56,12 +71,17 @@ class StatusResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def create_orchestration_app(agent_core: AgentCore) -> FastAPI:
-    """
-    Factory that wires the AgentCore instance into the FastAPI app.
+def create_orchestration_app(
+    agent_core: AgentCore,
+    turn_assembler: Optional[object] = None,
+) -> FastAPI:
+    """Factory that wires the AgentCore instance into the FastAPI app.
 
     Args:
         agent_core: Pre-constructed, fully-wired AgentCore instance.
+        turn_assembler: Optional TurnAssembler instance. When provided, session-based
+                        endpoints are registered. When None, only process_turn and
+                        stream_turn are available (backward compatible with #71).
 
     Returns:
         Configured FastAPI application.
@@ -82,7 +102,7 @@ def create_orchestration_app(agent_core: AgentCore) -> FastAPI:
         pass  # Observability must not prevent startup
 
     # ------------------------------------------------------------------
-    # Endpoints
+    # Existing endpoints (unchanged from #71)
     # ------------------------------------------------------------------
 
     @app.post("/process_turn")
@@ -232,6 +252,130 @@ def create_orchestration_app(agent_core: AgentCore) -> FastAPI:
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    # ------------------------------------------------------------------
+    # Session-based endpoints (#72 TurnAssembler)
+    # Registered only when turn_assembler is provided — backward compatible.
+    # ------------------------------------------------------------------
+
+    if turn_assembler is not None:
+        # Import here to avoid circular imports when turn_assembler is None
+        from src.turn_assembler import TurnAssemblerBase
+
+        _assembler: TurnAssemblerBase = turn_assembler  # type: ignore[assignment]
+
+        @app.post("/sessions/{session_id}/input", status_code=202)
+        async def session_input(session_id: str, request: SegmentInputRequest):
+            """Submit a text segment to the TurnAssembler. Returns 202 immediately.
+
+            The segment is buffered and policies are evaluated asynchronously.
+            When a policy triggers, TurnAssembler calls stream_turn() directly
+            and pushes events to the session's event queue.
+            """
+            if not request.text or not request.text.strip():
+                return JSONResponse(
+                    status_code=422,
+                    content={"detail": "text must not be empty"},
+                )
+
+            segment = SegmentInput(
+                text=request.text,
+                user_id=request.user_id,
+                channel=request.channel,
+                timestamp_ms=request.timestamp_ms or int(time.time() * 1000),
+            )
+
+            await _assembler.add_segment(session_id, segment)
+
+            logger.info(
+                "orchestration_server.session_input",
+                extra={
+                    "operation": "orchestration_server.session_input",
+                    "status": "success",
+                    "session_id": session_id,
+                },
+            )
+            return {"status": "accepted"}
+
+        @app.get("/sessions/{session_id}/events")
+        async def session_events(session_id: str, request: Request):
+            """Long-lived SSE subscription for session events.
+
+            Reach layer opens this connection once at session start. Events are
+            yielded as they arrive from TurnAssembler's invocation pipeline.
+            Closes after DoneEvent. On client disconnect, cancels the active turn.
+            """
+            start = time.time()
+
+            logger.info(
+                "orchestration_server.session_events_open",
+                extra={
+                    "operation": "orchestration_server.session_events",
+                    "status": "success",
+                    "session_id": session_id,
+                },
+            )
+
+            async def sse_generator():
+                event_count = 0
+                try:
+                    async for event in _assembler.subscribe(session_id):
+                        event_count += 1
+                        yield event.to_sse()
+                except Exception as e:
+                    logger.error(
+                        "orchestration_server.session_events_error",
+                        extra={
+                            "operation": "orchestration_server.session_events",
+                            "status": "failure",
+                            "session_id": session_id,
+                            "error": f"{type(e).__name__}: {e}",
+                            "latency_ms": int((time.time() - start) * 1000),
+                        },
+                    )
+                    yield DoneEvent(turn_status="abandoned").to_sse()
+                finally:
+                    logger.info(
+                        "orchestration_server.session_events_close",
+                        extra={
+                            "operation": "orchestration_server.session_events",
+                            "status": "success",
+                            "session_id": session_id,
+                            "event_count": event_count,
+                            "latency_ms": int((time.time() - start) * 1000),
+                        },
+                    )
+
+            return StreamingResponse(
+                sse_generator(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+
+        @app.delete("/sessions/{session_id}/active_turn")
+        async def session_cancel(session_id: str):
+            """Interrupt the active turn for a session (barge-in).
+
+            Returns 200 if session existed, 404 if not.
+            """
+            # Check if session exists in the assembler
+            if session_id not in _assembler._sessions:
+                return JSONResponse(
+                    status_code=404,
+                    content={"detail": "session not found"},
+                )
+
+            await _assembler.cancel(session_id)
+
+            logger.info(
+                "orchestration_server.session_cancel",
+                extra={
+                    "operation": "orchestration_server.session_cancel",
+                    "status": "success",
+                    "session_id": session_id,
+                },
+            )
+            return {"status": "cancelled"}
 
     @app.get("/health")
     def health() -> StatusResponse:

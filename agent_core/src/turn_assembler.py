@@ -1,0 +1,884 @@
+"""
+agent_core/turn_assembler.py
+
+Multi-segment input assembler with configurable policy stack.
+Sits between the HTTP server and AgentCore.stream_turn() for session-based channels.
+
+Spec: docs/superpowers/specs/2026-04-14-agent-core-turn-assembler-spec.md
+Issue: #72  Sub-tasks: #79, #80, #81, #82, #83
+
+Design decisions NOT in the original spec (documented here for traceability):
+
+1. SegmentInput dataclass: The spec defines add_segment(session_id, text) but
+   stream_turn() needs channel, user_id, timestamp to build TurnInput. SegmentInput
+   carries this metadata so TurnAssembler can construct TurnInput without a second
+   HTTP call. First segment's metadata is cached on the buffer for subsequent segments.
+
+2. context_bundle() on first segment: The semantic completeness gate needs NLU context
+   (current_question, current_subagent_id) which comes from Memory Layer session state.
+   We call async_memory.context_bundle() once on the first segment and cache it on
+   SessionBuffer. This is a lightweight read that would happen anyway at stream_turn()
+   start — we just pull it earlier to enable smarter assembly decisions.
+
+3. Constructor dependencies: TurnAssembler takes nlu_processor, llm_wrapper, workflow,
+   async_memory, and config alongside agent_core. These are needed for the semantic
+   completeness gate which runs NLU classification before the full pipeline starts.
+
+4. subscribe() resets buffer: After DoneEvent, subscribe() resets the buffer to WAITING
+   instead of calling session_end(). This supports multi-turn sessions where the same
+   SSE connection handles multiple turns. session_end() is only called on explicit
+   disconnect or session cleanup.
+
+5. Config placement: All turn_assembler config lives under agent_core.yaml (not under
+   reach_layer as the spec's config example suggests) because TurnAssembler is an
+   Agent Core component. Per-channel overrides are supported via channel_overrides map.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from abc import ABC, abstractmethod
+from collections.abc import AsyncGenerator
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Optional
+
+from src.models import (
+    ContextBundle,
+    DoneEvent,
+    SegmentInput,
+    StreamEvent,
+    TurnInput,
+)
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# TurnStatus state machine
+# ---------------------------------------------------------------------------
+
+
+class TurnStatus(str, Enum):
+    """State machine for a single turn's lifecycle within a session buffer.
+
+    Transitions:
+        WAITING → INVOKED      (policy triggered, lock acquired)
+        WAITING → ABANDONED    (cancel() while waiting, or max_wait with no segments)
+        INVOKED → COMPLETED    (DoneEvent emitted successfully)
+        INVOKED → INTERRUPTED  (cancel() while LLM call in flight)
+    """
+
+    WAITING = "waiting"
+    INVOKED = "invoked"
+    COMPLETED = "completed"
+    INTERRUPTED = "interrupted"
+    ABANDONED = "abandoned"
+
+
+# ---------------------------------------------------------------------------
+# SessionBuffer
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SessionBuffer:
+    """Per-session state held in memory by TurnAssembler.
+
+    Each active session has exactly one SessionBuffer. The buffer accumulates
+    text segments, manages timer tasks, and holds the asyncio.Queue that bridges
+    the invocation path to the SSE subscription.
+    """
+
+    session_id: str
+    segments: list[str] = field(default_factory=list)
+    status: TurnStatus = TurnStatus.WAITING
+    event_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
+    silence_task: Optional[asyncio.Task] = None
+    ceiling_task: Optional[asyncio.Task] = None
+    invocation_task: Optional[asyncio.Task] = None
+    created_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    # Metadata from first segment — cached so subsequent segments don't need it
+    channel: str = "cli"
+    user_id: Optional[str] = None
+    first_timestamp_ms: int = 0
+
+    # Cached context_bundle from Memory Layer — fetched once on first add_segment()
+    # so the semantic gate has NLU context (current_question, current_subagent_id).
+    # Design decision #2: not in spec, but necessary for semantic gate to work.
+    context_bundle: Optional[ContextBundle] = None
+    _context_fetched: bool = False
+
+
+# ---------------------------------------------------------------------------
+# TurnAssemblerBase ABC
+# ---------------------------------------------------------------------------
+
+
+class TurnAssemblerBase(ABC):
+    """Abstract interface for turn assembly.
+
+    All session-based channels route through this interface. Channel-specific
+    behaviour is controlled by YAML config (silence thresholds, max wait ceilings).
+    """
+
+    @abstractmethod
+    async def add_segment(self, session_id: str, segment: SegmentInput) -> None:
+        """Accept a text segment for this session and evaluate policies.
+
+        Args:
+            session_id: Unique session identifier.
+            segment: Text segment with metadata.
+        """
+
+    @abstractmethod
+    async def subscribe(self, session_id: str) -> AsyncGenerator[StreamEvent, None]:
+        """Yield StreamEvents for this session until DoneEvent is received.
+
+        Args:
+            session_id: Unique session identifier.
+
+        Yields:
+            StreamEvent instances from the invocation pipeline.
+        """
+        yield  # pragma: no cover
+
+    @abstractmethod
+    async def cancel(self, session_id: str) -> None:
+        """Interrupt the active or waiting turn for this session.
+
+        Args:
+            session_id: Unique session identifier.
+        """
+
+    @abstractmethod
+    async def session_end(self, session_id: str) -> None:
+        """Clean up all resources for a completed session.
+
+        Args:
+            session_id: Unique session identifier.
+        """
+
+
+# ---------------------------------------------------------------------------
+# TurnAssembler concrete implementation
+# ---------------------------------------------------------------------------
+
+
+class TurnAssembler(TurnAssemblerBase):
+    """In-memory turn assembler with configurable policy stack.
+
+    Holds SessionBuffer instances keyed by session_id. Constructed with
+    references to AgentCore and supporting components — injected at server startup.
+
+    The policy stack is evaluated on each add_segment() call:
+        1. Semantic completeness gate (NLU confidence check)
+        2. Silence trigger (configurable timer, resets on each segment)
+        3. Max wait ceiling (absolute timer, never resets)
+
+    Config section: turn_assembler (in agent_core.yaml)
+    """
+
+    def __init__(
+        self,
+        agent_core: Any,
+        config: dict,
+        nlu_processor: Any = None,
+        llm_wrapper: Any = None,
+        workflow: Any = None,
+        async_memory: Any = None,
+    ) -> None:
+        """Initialise TurnAssembler with injected dependencies.
+
+        Args:
+            agent_core: AgentCore instance for calling stream_turn() directly.
+            config: Full agent_core config dict. Turn assembler reads its config
+                    from config["turn_assembler"].
+            nlu_processor: NLUProcessor instance for semantic completeness gate.
+            llm_wrapper: LLMWrapperBase instance for NLU LLM calls.
+            workflow: AgentWorkflow instance for intent scoping.
+            async_memory: AsyncMemoryLayerBase for fetching context_bundle on first segment.
+
+        Raises:
+            ValueError: If agent_core or config is None.
+        """
+        if agent_core is None:
+            raise ValueError("agent_core must not be None")
+        if config is None:
+            raise ValueError("config must not be None")
+
+        self._agent_core = agent_core
+        self._config = config
+        self._nlu_processor = nlu_processor
+        self._llm = llm_wrapper
+        self._workflow = workflow
+        self._async_memory = async_memory
+
+        # Parse turn_assembler config with safe defaults
+        ta_config = (config or {}).get("turn_assembler", {})
+        self._default_config = {
+            "semantic_gate": ta_config.get("semantic_gate", {
+                "enabled": False,
+                "confidence_threshold": 0.75,
+            }),
+            "silence_trigger": ta_config.get("silence_trigger", {
+                "silence_ms": 400,
+            }),
+            "max_wait_ceiling": ta_config.get("max_wait_ceiling", {
+                "max_wait_ms": 8000,
+            }),
+        }
+
+        # Per-channel overrides: turn_assembler.channel_overrides.<channel>
+        self._channel_overrides: dict = ta_config.get("channel_overrides", {})
+
+        self._sessions: dict[str, SessionBuffer] = {}
+
+    # ------------------------------------------------------------------
+    # Config resolution
+    # ------------------------------------------------------------------
+
+    def _resolve_config(self, channel: str) -> dict:
+        """Resolve turn assembler config with per-channel overrides.
+
+        Channel-specific values in turn_assembler.channel_overrides.<channel>
+        override the defaults. This keeps the implementation domain-agnostic —
+        all tuning is in YAML.
+
+        Args:
+            channel: Channel identifier (e.g. "voice", "web", "cli").
+
+        Returns:
+            Merged config dict for this channel.
+        """
+        base = {
+            "semantic_gate": dict(self._default_config["semantic_gate"]),
+            "silence_trigger": dict(self._default_config["silence_trigger"]),
+            "max_wait_ceiling": dict(self._default_config["max_wait_ceiling"]),
+        }
+        overrides = self._channel_overrides.get(channel, {})
+        for section in ("semantic_gate", "silence_trigger", "max_wait_ceiling"):
+            if section in overrides:
+                base[section].update(overrides[section])
+        return base
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
+    async def add_segment(self, session_id: str, segment: SegmentInput) -> None:
+        """Accept a text segment and evaluate the policy stack.
+
+        Creates a new SessionBuffer if this is the first segment for the session.
+        On first segment, also fetches context_bundle from Memory Layer for the
+        semantic completeness gate.
+
+        Args:
+            session_id: Unique session identifier.
+            segment: Text segment with metadata.
+        """
+        if not session_id:
+            logger.warning(
+                "turn_assembler.add_segment_empty_session",
+                extra={"operation": "turn_assembler.add_segment", "status": "failure"},
+            )
+            return
+        if not segment or not segment.text or not segment.text.strip():
+            logger.warning(
+                "turn_assembler.add_segment_empty_text",
+                extra={
+                    "operation": "turn_assembler.add_segment",
+                    "status": "failure",
+                    "session_id": session_id,
+                },
+            )
+            return
+
+        buffer = self._get_or_create_buffer(session_id, segment)
+
+        # Only accept segments while WAITING — if already INVOKED/COMPLETED, ignore
+        if buffer.status != TurnStatus.WAITING:
+            logger.info(
+                "turn_assembler.segment_ignored",
+                extra={
+                    "operation": "turn_assembler.add_segment",
+                    "status": "skipped",
+                    "session_id": session_id,
+                    "turn_status": buffer.status.value,
+                    "reason": "buffer not in WAITING state",
+                },
+            )
+            return
+
+        buffer.segments.append(segment.text.strip())
+
+        logger.info(
+            "turn_assembler.segment_added",
+            extra={
+                "operation": "turn_assembler.add_segment",
+                "status": "success",
+                "session_id": session_id,
+                "segment_count": len(buffer.segments),
+            },
+        )
+
+        # Fetch context_bundle on first segment for semantic gate context
+        if not buffer._context_fetched and self._async_memory:
+            await self._fetch_context(buffer, segment)
+
+        # Evaluate policy stack
+        channel_config = self._resolve_config(buffer.channel)
+        await self._evaluate_policies(session_id, buffer, channel_config)
+
+    async def subscribe(self, session_id: str) -> AsyncGenerator[StreamEvent, None]:
+        """Yield StreamEvents from the session's event queue until DoneEvent.
+
+        Creates a buffer if one doesn't exist yet (subscribe can be called before
+        the first segment arrives — the SSE connection opens at session start).
+
+        After DoneEvent is yielded, the buffer is reset to WAITING for the next
+        turn in the same session. This supports multi-turn sessions over a single
+        SSE connection (design decision #4).
+
+        Args:
+            session_id: Unique session identifier.
+
+        Yields:
+            StreamEvent instances until DoneEvent is received.
+        """
+        if not session_id:
+            return
+
+        if session_id not in self._sessions:
+            self._sessions[session_id] = SessionBuffer(session_id=session_id)
+
+        buffer = self._sessions[session_id]
+
+        try:
+            while True:
+                event = await buffer.event_queue.get()
+                yield event
+                if isinstance(event, DoneEvent):
+                    break
+        finally:
+            # Reset buffer for next turn instead of destroying it.
+            # Design decision #4: subscribe() resets to WAITING so the same SSE
+            # connection can handle the next turn. session_end() handles full cleanup.
+            if session_id in self._sessions:
+                self._reset_buffer(buffer)
+
+    async def cancel(self, session_id: str) -> None:
+        """Interrupt the active or waiting turn for this session.
+
+        If INVOKED: cancels the invocation task, transitions to INTERRUPTED,
+        pushes DoneEvent with turn_status="interrupted".
+        If WAITING: transitions to ABANDONED, pushes DoneEvent with turn_status="abandoned".
+        Other states: no-op.
+
+        Memory consistency (#83): If stream_turn() is in flight, the async memory
+        write task (_schedule_flush) is cancelled when stream_turn() is interrupted.
+        No partial writes occur. The next turn re-reads the same state.
+
+        Args:
+            session_id: Unique session identifier.
+        """
+        if session_id not in self._sessions:
+            return
+
+        buffer = self._sessions[session_id]
+
+        async with buffer._lock:
+            if buffer.status == TurnStatus.INVOKED:
+                buffer.status = TurnStatus.INTERRUPTED
+                self._cancel_all_tasks(buffer)
+                await buffer.event_queue.put(
+                    DoneEvent(turn_status="interrupted")
+                )
+                logger.info(
+                    "turn_assembler.cancel_interrupted",
+                    extra={
+                        "operation": "turn_assembler.cancel",
+                        "status": "success",
+                        "session_id": session_id,
+                        "turn_status": "interrupted",
+                    },
+                )
+
+            elif buffer.status == TurnStatus.WAITING:
+                buffer.status = TurnStatus.ABANDONED
+                self._cancel_all_tasks(buffer)
+                await buffer.event_queue.put(
+                    DoneEvent(turn_status="abandoned")
+                )
+                logger.info(
+                    "turn_assembler.cancel_abandoned",
+                    extra={
+                        "operation": "turn_assembler.cancel",
+                        "status": "success",
+                        "session_id": session_id,
+                        "turn_status": "abandoned",
+                    },
+                )
+
+    async def session_end(self, session_id: str) -> None:
+        """Clean up all resources for a completed session.
+
+        Cancels all pending tasks and removes the buffer from memory.
+
+        Args:
+            session_id: Unique session identifier.
+        """
+        if session_id not in self._sessions:
+            return
+
+        buffer = self._sessions.pop(session_id)
+        self._cancel_all_tasks(buffer)
+        logger.info(
+            "turn_assembler.session_end",
+            extra={
+                "operation": "turn_assembler.session_end",
+                "status": "success",
+                "session_id": session_id,
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # Policy stack evaluation
+    # ------------------------------------------------------------------
+
+    async def _evaluate_policies(
+        self, session_id: str, buffer: SessionBuffer, config: dict
+    ) -> None:
+        """Evaluate the policy stack in order after each add_segment().
+
+        Policy order (spec-defined):
+            1. Semantic completeness gate — if NLU confidence >= threshold, invoke immediately
+            2. Silence trigger — timer that resets on each segment
+            3. Max wait ceiling — absolute timer, never resets
+
+        If semantic gate triggers, silence timer is not started.
+        If both timers fire simultaneously, only the first to acquire the lock transitions.
+
+        Args:
+            session_id: Session identifier.
+            buffer: The session's buffer.
+            config: Resolved per-channel config.
+        """
+        # Policy 1: Semantic completeness gate
+        gate_config = config.get("semantic_gate", {})
+        if gate_config.get("enabled", False):
+            triggered = await self._semantic_gate(session_id, buffer, gate_config)
+            if triggered:
+                return  # Invoked — skip timers
+
+        # Policy 2: Silence trigger — reset on every segment
+        silence_config = config.get("silence_trigger", {})
+        silence_ms = silence_config.get("silence_ms", 400)
+
+        # Cancel existing silence timer and restart
+        if buffer.silence_task and not buffer.silence_task.done():
+            buffer.silence_task.cancel()
+
+        buffer.silence_task = asyncio.create_task(
+            self._silence_timer(session_id, silence_ms)
+        )
+
+        # Policy 3: Max wait ceiling — started once, never reset
+        ceiling_config = config.get("max_wait_ceiling", {})
+        max_wait_ms = ceiling_config.get("max_wait_ms", 8000)
+
+        if buffer.ceiling_task is None:
+            buffer.ceiling_task = asyncio.create_task(
+                self._ceiling_timer(session_id, max_wait_ms)
+            )
+
+    async def _semantic_gate(
+        self, session_id: str, buffer: SessionBuffer, gate_config: dict
+    ) -> bool:
+        """Evaluate semantic completeness using NLU classification.
+
+        Runs the NLU processor on the assembled text. If confidence >= threshold
+        and intent is not "unknown", acquires the lock and triggers invocation.
+
+        If NLU call fails: logs error and falls through (never blocks on infra failure).
+
+        Args:
+            session_id: Session identifier.
+            buffer: The session's buffer.
+            gate_config: Semantic gate config with confidence_threshold.
+
+        Returns:
+            True if invocation was triggered, False to fall through to timers.
+        """
+        if not self._nlu_processor or not self._llm:
+            return False
+
+        threshold = gate_config.get("confidence_threshold", 0.75)
+        assembled_text = " ".join(buffer.segments)
+
+        try:
+            # Get NLU context from cached context_bundle
+            current_question = ""
+            current_subagent_id = ""
+            allowed_intents = None
+
+            if buffer.context_bundle:
+                session_data = buffer.context_bundle.session or {}
+                current_question = session_data.get("current_question", "")
+                current_subagent_id = session_data.get(
+                    "current_subagent_id",
+                    self._workflow.start_subagent_id if self._workflow else "",
+                )
+
+                # Scope intents to current subagent (same as orchestrator)
+                if self._workflow and current_subagent_id in self._workflow.subagents:
+                    subagent = self._workflow.subagents[current_subagent_id]
+                    allowed_intents = list(subagent.valid_intents or [])
+                    if self._workflow.global_intents:
+                        allowed_intents.extend(self._workflow.global_intents)
+
+            start = time.time()
+            nlu_result = self._nlu_processor.process(
+                normalised_input=assembled_text,
+                current_question=current_question,
+                current_subagent_id=current_subagent_id,
+                llm=self._llm,
+                allowed_intents=allowed_intents,
+            )
+
+            logger.info(
+                "turn_assembler.semantic_gate",
+                extra={
+                    "operation": "turn_assembler.semantic_gate",
+                    "status": "success",
+                    "session_id": session_id,
+                    "intent": nlu_result.intent,
+                    "confidence": nlu_result.confidence,
+                    "threshold": threshold,
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+
+            if nlu_result.confidence >= threshold and nlu_result.intent != "unknown":
+                async with buffer._lock:
+                    if buffer.status != TurnStatus.WAITING:
+                        return False
+                    buffer.status = TurnStatus.INVOKED
+                    self._cancel_timer_tasks(buffer)
+                    buffer.invocation_task = asyncio.create_task(
+                        self._invoke(session_id)
+                    )
+                return True
+
+        except Exception as e:
+            # Spec: NLU infra failure → log, fall through — never block on NLU failure
+            logger.warning(
+                "turn_assembler.semantic_gate_error",
+                extra={
+                    "operation": "turn_assembler.semantic_gate",
+                    "status": "failure",
+                    "session_id": session_id,
+                    "error": f"{type(e).__name__}: {e}",
+                },
+            )
+
+        return False
+
+    async def _silence_timer(self, session_id: str, silence_ms: int) -> None:
+        """Sleep for silence_ms then trigger invocation if still WAITING.
+
+        Started on first segment, reset (cancel + restart) on every subsequent
+        add_segment(). If the task fires and status is WAITING, acquires the lock
+        and transitions to INVOKED.
+
+        Args:
+            session_id: Session identifier.
+            silence_ms: Silence duration in milliseconds.
+        """
+        try:
+            await asyncio.sleep(silence_ms / 1000.0)
+        except asyncio.CancelledError:
+            return
+
+        if session_id not in self._sessions:
+            return
+
+        buffer = self._sessions[session_id]
+        async with buffer._lock:
+            if buffer.status != TurnStatus.WAITING:
+                return
+            if not buffer.segments:
+                return  # No segments accumulated — nothing to invoke
+
+            buffer.status = TurnStatus.INVOKED
+            self._cancel_timer_tasks(buffer)
+            buffer.invocation_task = asyncio.create_task(
+                self._invoke(session_id)
+            )
+
+            logger.info(
+                "turn_assembler.silence_trigger_fired",
+                extra={
+                    "operation": "turn_assembler.silence_trigger",
+                    "status": "success",
+                    "session_id": session_id,
+                    "segment_count": len(buffer.segments),
+                    "silence_ms": silence_ms,
+                },
+            )
+
+    async def _ceiling_timer(self, session_id: str, max_wait_ms: int) -> None:
+        """Absolute timer that fires once after max_wait_ms. Never reset.
+
+        If status is still WAITING when this fires, acquires lock and triggers.
+        If already INVOKED, this is a no-op.
+
+        Args:
+            session_id: Session identifier.
+            max_wait_ms: Maximum wait in milliseconds.
+        """
+        try:
+            await asyncio.sleep(max_wait_ms / 1000.0)
+        except asyncio.CancelledError:
+            return
+
+        if session_id not in self._sessions:
+            return
+
+        buffer = self._sessions[session_id]
+        async with buffer._lock:
+            if buffer.status != TurnStatus.WAITING:
+                return  # Already invoked or cancelled — no-op
+
+            if not buffer.segments:
+                # Max wait ceiling fired with no segments → ABANDONED (spec)
+                buffer.status = TurnStatus.ABANDONED
+                await buffer.event_queue.put(
+                    DoneEvent(turn_status="abandoned")
+                )
+                logger.info(
+                    "turn_assembler.ceiling_abandoned",
+                    extra={
+                        "operation": "turn_assembler.ceiling_timer",
+                        "status": "success",
+                        "session_id": session_id,
+                        "turn_status": "abandoned",
+                        "max_wait_ms": max_wait_ms,
+                    },
+                )
+                return
+
+            buffer.status = TurnStatus.INVOKED
+            self._cancel_timer_tasks(buffer)
+            buffer.invocation_task = asyncio.create_task(
+                self._invoke(session_id)
+            )
+
+            logger.info(
+                "turn_assembler.ceiling_trigger_fired",
+                extra={
+                    "operation": "turn_assembler.ceiling_timer",
+                    "status": "success",
+                    "session_id": session_id,
+                    "segment_count": len(buffer.segments),
+                    "max_wait_ms": max_wait_ms,
+                },
+            )
+
+    # ------------------------------------------------------------------
+    # Invocation path (no HTTP hop — spec requirement)
+    # ------------------------------------------------------------------
+
+    async def _invoke(self, session_id: str) -> None:
+        """Assemble segments and call agent_core.stream_turn() directly.
+
+        Per spec: TurnAssembler calls stream_turn() as a Python method — in-process,
+        no HTTP, no serialisation. StreamEvents are pushed into the SessionBuffer's
+        event_queue. The open GET /sessions/{id}/events connection drains the queue.
+
+        Args:
+            session_id: Session identifier.
+        """
+        if session_id not in self._sessions:
+            return
+
+        buffer = self._sessions[session_id]
+        assembled_text = " ".join(buffer.segments)
+
+        turn_input = TurnInput(
+            session_id=session_id,
+            user_message=assembled_text,
+            channel=buffer.channel,
+            timestamp_ms=buffer.first_timestamp_ms or int(time.time() * 1000),
+            user_id=buffer.user_id,
+        )
+
+        logger.info(
+            "turn_assembler.invoke_start",
+            extra={
+                "operation": "turn_assembler.invoke",
+                "status": "success",
+                "session_id": session_id,
+                "segment_count": len(buffer.segments),
+                "assembled_length": len(assembled_text),
+            },
+        )
+
+        start = time.time()
+        try:
+            async for event in self._agent_core.stream_turn(turn_input):
+                await buffer.event_queue.put(event)
+                if isinstance(event, DoneEvent):
+                    buffer.status = TurnStatus.COMPLETED
+                    break
+        except asyncio.CancelledError:
+            # Invocation was cancelled (barge-in / cancel()) — status already set
+            # by cancel(). Memory consistency (#83): async memory write task in
+            # stream_turn() is cancelled automatically when the task is cancelled.
+            logger.info(
+                "turn_assembler.invoke_cancelled",
+                extra={
+                    "operation": "turn_assembler.invoke",
+                    "status": "failure",
+                    "session_id": session_id,
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+        except Exception as e:
+            logger.error(
+                "turn_assembler.invoke_error",
+                extra={
+                    "operation": "turn_assembler.invoke",
+                    "status": "failure",
+                    "session_id": session_id,
+                    "error": f"{type(e).__name__}: {e}",
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            # Push a DoneEvent so the subscriber doesn't hang
+            buffer.status = TurnStatus.COMPLETED
+            await buffer.event_queue.put(
+                DoneEvent(
+                    turn_status="abandoned",
+                    latency_ms=int((time.time() - start) * 1000),
+                )
+            )
+
+    # ------------------------------------------------------------------
+    # Context fetching
+    # ------------------------------------------------------------------
+
+    async def _fetch_context(self, buffer: SessionBuffer, segment: SegmentInput) -> None:
+        """Fetch context_bundle from Memory Layer on first segment.
+
+        Design decision #2: The semantic gate needs current_question and
+        current_subagent_id from session state. We fetch this once and cache it.
+        If the fetch fails, the semantic gate falls through to timers gracefully.
+
+        Args:
+            buffer: The session's buffer.
+            segment: The current segment (for user_id).
+        """
+        buffer._context_fetched = True
+        try:
+            user_id = segment.user_id or buffer.session_id
+            start = time.time()
+            bundle = await self._async_memory.context_bundle(
+                buffer.session_id, user_id
+            )
+            buffer.context_bundle = bundle
+            logger.info(
+                "turn_assembler.context_fetched",
+                extra={
+                    "operation": "turn_assembler.fetch_context",
+                    "status": "success",
+                    "session_id": buffer.session_id,
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+        except Exception as e:
+            # Context fetch failure is non-fatal — semantic gate will work
+            # without context, just with less accuracy. Timers still function.
+            logger.warning(
+                "turn_assembler.context_fetch_error",
+                extra={
+                    "operation": "turn_assembler.fetch_context",
+                    "status": "failure",
+                    "session_id": buffer.session_id,
+                    "error": f"{type(e).__name__}: {e}",
+                },
+            )
+
+    # ------------------------------------------------------------------
+    # Buffer management helpers
+    # ------------------------------------------------------------------
+
+    def _get_or_create_buffer(
+        self, session_id: str, segment: SegmentInput
+    ) -> SessionBuffer:
+        """Get existing buffer or create a new one for this session.
+
+        On creation, caches metadata from the first segment (channel, user_id,
+        timestamp) so subsequent segments don't need to carry it.
+
+        Args:
+            session_id: Session identifier.
+            segment: Current segment with metadata.
+
+        Returns:
+            The session's buffer.
+        """
+        if session_id not in self._sessions:
+            buffer = SessionBuffer(
+                session_id=session_id,
+                channel=segment.channel,
+                user_id=segment.user_id,
+                first_timestamp_ms=segment.timestamp_ms or int(time.time() * 1000),
+            )
+            self._sessions[session_id] = buffer
+            return buffer
+
+        return self._sessions[session_id]
+
+    def _reset_buffer(self, buffer: SessionBuffer) -> None:
+        """Reset a buffer to WAITING state for the next turn.
+
+        Preserves session_id, channel, user_id, and context_bundle.
+        Clears segments, resets status, creates a new event queue.
+
+        Args:
+            buffer: The buffer to reset.
+        """
+        self._cancel_all_tasks(buffer)
+        buffer.segments = []
+        buffer.status = TurnStatus.WAITING
+        buffer.event_queue = asyncio.Queue()
+        buffer.created_at_ms = int(time.time() * 1000)
+
+    def _cancel_all_tasks(self, buffer: SessionBuffer) -> None:
+        """Cancel all asyncio tasks on a buffer.
+
+        Args:
+            buffer: The buffer whose tasks to cancel.
+        """
+        self._cancel_timer_tasks(buffer)
+        if buffer.invocation_task and not buffer.invocation_task.done():
+            buffer.invocation_task.cancel()
+            buffer.invocation_task = None
+
+    def _cancel_timer_tasks(self, buffer: SessionBuffer) -> None:
+        """Cancel only timer tasks (silence + ceiling), not the invocation task.
+
+        Args:
+            buffer: The buffer whose timers to cancel.
+        """
+        if buffer.silence_task and not buffer.silence_task.done():
+            buffer.silence_task.cancel()
+            buffer.silence_task = None
+        if buffer.ceiling_task and not buffer.ceiling_task.done():
+            buffer.ceiling_task.cancel()
+            buffer.ceiling_task = None

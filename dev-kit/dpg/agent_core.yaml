@@ -40,6 +40,19 @@ action_gateway_client:
   endpoint: "http://action_gateway:9999/execute"
   timeout_ms: 5000
 
+# Turn assembler — multi-segment input with policy stack (#72).
+# Session-based channels route segments through TurnAssembler which buffers
+# input and uses the policy stack to decide when to invoke stream_turn().
+# Per-channel tuning goes in channel_overrides in the domain config.
+turn_assembler:
+  semantic_gate:
+    enabled: false             # Enable NLU-based early trigger (requires nlu_processor)
+    confidence_threshold: 0.75 # Invoke immediately if NLU confidence >= this value
+  silence_trigger:
+    silence_ms: 400            # ms of silence before invoking (resets on each segment)
+  max_wait_ceiling:
+    max_wait_ms: 8000          # Absolute max wait ms — never resets
+
 observability:
   otel:
     collector_endpoint: "http://otelcol:4317"

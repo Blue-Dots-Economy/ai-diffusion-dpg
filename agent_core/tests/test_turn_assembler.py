@@ -1,0 +1,923 @@
+"""
+Tests for TurnAssembler (#72): core classes, policy stack, buffer management.
+
+Covers:
+  - TurnStatus state machine
+  - SessionBuffer creation and reset
+  - TurnAssemblerBase ABC enforcement
+  - TurnAssembler: add_segment, subscribe, cancel, session_end
+  - Policy stack: silence trigger, max wait ceiling, semantic gate
+  - Invocation path: stream_turn() called directly
+  - Memory consistency on cancellation (#83)
+  - Edge cases: empty text, missing session, concurrent timers
+"""
+
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from src.models import (
+    ContextBundle,
+    DoneEvent,
+    NLUResult,
+    SegmentInput,
+    SentenceEvent,
+    SignalEvent,
+)
+from src.turn_assembler import (
+    SessionBuffer,
+    TurnAssembler,
+    TurnAssemblerBase,
+    TurnStatus,
+)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+def _make_config(
+    semantic_enabled=False,
+    confidence_threshold=0.75,
+    silence_ms=50,       # Short for fast tests
+    max_wait_ms=200,     # Short for fast tests
+    channel_overrides=None,
+):
+    """Build a turn_assembler config dict for tests."""
+    cfg = {
+        "turn_assembler": {
+            "semantic_gate": {
+                "enabled": semantic_enabled,
+                "confidence_threshold": confidence_threshold,
+            },
+            "silence_trigger": {"silence_ms": silence_ms},
+            "max_wait_ceiling": {"max_wait_ms": max_wait_ms},
+        },
+    }
+    if channel_overrides:
+        cfg["turn_assembler"]["channel_overrides"] = channel_overrides
+    return cfg
+
+
+def _make_segment(text="hello", channel="cli", user_id="u1", timestamp_ms=1000):
+    return SegmentInput(text=text, channel=channel, user_id=user_id, timestamp_ms=timestamp_ms)
+
+
+def _make_mock_agent_core():
+    """Create a mock AgentCore whose stream_turn yields a simple event sequence."""
+    agent = MagicMock()
+
+    async def _stream(turn_input):
+        yield SignalEvent(stage="memory_read", status="start")
+        yield SentenceEvent(text="Hello!", sentence_index=0)
+        yield DoneEvent(turn_id="t-1", turn_status="completed")
+
+    agent.stream_turn = _stream
+    return agent
+
+
+def _make_assembler(
+    agent_core=None,
+    config=None,
+    nlu_processor=None,
+    llm_wrapper=None,
+    workflow=None,
+    async_memory=None,
+):
+    return TurnAssembler(
+        agent_core=agent_core or _make_mock_agent_core(),
+        config=config or _make_config(),
+        nlu_processor=nlu_processor,
+        llm_wrapper=llm_wrapper,
+        workflow=workflow,
+        async_memory=async_memory,
+    )
+
+
+# ---------------------------------------------------------------------------
+# TurnStatus
+# ---------------------------------------------------------------------------
+
+
+class TestTurnStatus:
+
+    def test_status_values(self):
+        assert TurnStatus.WAITING == "waiting"
+        assert TurnStatus.INVOKED == "invoked"
+        assert TurnStatus.COMPLETED == "completed"
+        assert TurnStatus.INTERRUPTED == "interrupted"
+        assert TurnStatus.ABANDONED == "abandoned"
+
+    def test_status_is_string(self):
+        assert isinstance(TurnStatus.WAITING, str)
+
+
+# ---------------------------------------------------------------------------
+# SessionBuffer
+# ---------------------------------------------------------------------------
+
+
+class TestSessionBuffer:
+
+    def test_default_creation(self):
+        buf = SessionBuffer(session_id="s1")
+        assert buf.session_id == "s1"
+        assert buf.segments == []
+        assert buf.status == TurnStatus.WAITING
+        assert buf.silence_task is None
+        assert buf.ceiling_task is None
+        assert buf.invocation_task is None
+        assert buf.context_bundle is None
+        assert buf._context_fetched is False
+
+    def test_created_at_ms_is_set(self):
+        buf = SessionBuffer(session_id="s1")
+        assert buf.created_at_ms > 0
+
+
+# ---------------------------------------------------------------------------
+# TurnAssemblerBase ABC
+# ---------------------------------------------------------------------------
+
+
+class TestTurnAssemblerBaseABC:
+
+    def test_cannot_instantiate_abc(self):
+        with pytest.raises(TypeError):
+            TurnAssemblerBase()
+
+
+# ---------------------------------------------------------------------------
+# TurnAssembler construction
+# ---------------------------------------------------------------------------
+
+
+class TestTurnAssemblerConstruction:
+
+    def test_requires_agent_core(self):
+        with pytest.raises(ValueError, match="agent_core"):
+            TurnAssembler(agent_core=None, config={})
+
+    def test_requires_config(self):
+        with pytest.raises(ValueError, match="config"):
+            TurnAssembler(agent_core=MagicMock(), config=None)
+
+    def test_default_config_values(self):
+        ta = _make_assembler(config={"turn_assembler": {}})
+        # Should use defaults without crashing
+        assert ta._default_config["semantic_gate"]["enabled"] is False
+        assert ta._default_config["silence_trigger"]["silence_ms"] == 400
+        assert ta._default_config["max_wait_ceiling"]["max_wait_ms"] == 8000
+
+    def test_config_override(self):
+        ta = _make_assembler(config=_make_config(silence_ms=999))
+        assert ta._default_config["silence_trigger"]["silence_ms"] == 999
+
+
+# ---------------------------------------------------------------------------
+# Config resolution with channel overrides
+# ---------------------------------------------------------------------------
+
+
+class TestConfigResolution:
+
+    def test_default_config_used_when_no_override(self):
+        ta = _make_assembler(config=_make_config(silence_ms=400))
+        resolved = ta._resolve_config("unknown_channel")
+        assert resolved["silence_trigger"]["silence_ms"] == 400
+
+    def test_channel_override_applied(self):
+        ta = _make_assembler(config=_make_config(
+            silence_ms=400,
+            channel_overrides={
+                "voice": {"silence_trigger": {"silence_ms": 200}},
+            },
+        ))
+        resolved = ta._resolve_config("voice")
+        assert resolved["silence_trigger"]["silence_ms"] == 200
+
+    def test_channel_override_partial(self):
+        """Override only one section — others keep defaults."""
+        ta = _make_assembler(config=_make_config(
+            silence_ms=400,
+            max_wait_ms=8000,
+            channel_overrides={
+                "web": {"max_wait_ceiling": {"max_wait_ms": 15000}},
+            },
+        ))
+        resolved = ta._resolve_config("web")
+        assert resolved["silence_trigger"]["silence_ms"] == 400  # Default
+        assert resolved["max_wait_ceiling"]["max_wait_ms"] == 15000  # Override
+
+
+# ---------------------------------------------------------------------------
+# add_segment
+# ---------------------------------------------------------------------------
+
+
+class TestAddSegment:
+
+    @pytest.mark.asyncio
+    async def test_empty_session_id_ignored(self):
+        ta = _make_assembler()
+        await ta.add_segment("", _make_segment())
+        assert len(ta._sessions) == 0
+
+    @pytest.mark.asyncio
+    async def test_empty_text_ignored(self):
+        ta = _make_assembler()
+        await ta.add_segment("s1", SegmentInput(text=""))
+        assert len(ta._sessions) == 0
+
+    @pytest.mark.asyncio
+    async def test_whitespace_text_ignored(self):
+        ta = _make_assembler()
+        await ta.add_segment("s1", SegmentInput(text="   "))
+        assert len(ta._sessions) == 0
+
+    @pytest.mark.asyncio
+    async def test_none_segment_ignored(self):
+        ta = _make_assembler()
+        await ta.add_segment("s1", None)
+        assert len(ta._sessions) == 0
+
+    @pytest.mark.asyncio
+    async def test_creates_buffer_on_first_segment(self):
+        ta = _make_assembler()
+        await ta.add_segment("s1", _make_segment("hello"))
+        assert "s1" in ta._sessions
+        assert ta._sessions["s1"].segments == ["hello"]
+
+    @pytest.mark.asyncio
+    async def test_appends_to_existing_buffer(self):
+        ta = _make_assembler()
+        await ta.add_segment("s1", _make_segment("hello"))
+        await ta.add_segment("s1", _make_segment("world"))
+        assert ta._sessions["s1"].segments == ["hello", "world"]
+
+    @pytest.mark.asyncio
+    async def test_caches_metadata_from_first_segment(self):
+        ta = _make_assembler()
+        seg = _make_segment("hi", channel="voice", user_id="u42", timestamp_ms=5000)
+        await ta.add_segment("s1", seg)
+        buf = ta._sessions["s1"]
+        assert buf.channel == "voice"
+        assert buf.user_id == "u42"
+        assert buf.first_timestamp_ms == 5000
+
+    @pytest.mark.asyncio
+    async def test_segment_ignored_when_not_waiting(self):
+        ta = _make_assembler()
+        await ta.add_segment("s1", _make_segment("hello"))
+        ta._sessions["s1"].status = TurnStatus.INVOKED
+        await ta.add_segment("s1", _make_segment("ignored"))
+        assert len(ta._sessions["s1"].segments) == 1
+
+    @pytest.mark.asyncio
+    async def test_strips_whitespace_from_text(self):
+        ta = _make_assembler()
+        await ta.add_segment("s1", _make_segment("  hello  "))
+        assert ta._sessions["s1"].segments == ["hello"]
+
+
+# ---------------------------------------------------------------------------
+# Silence trigger
+# ---------------------------------------------------------------------------
+
+
+class TestSilenceTrigger:
+
+    @pytest.mark.asyncio
+    async def test_silence_timer_triggers_invocation(self):
+        """After silence_ms elapses with no new segment, stream_turn is called."""
+        agent = _make_mock_agent_core()
+        ta = _make_assembler(agent_core=agent, config=_make_config(silence_ms=30))
+
+        await ta.add_segment("s1", _make_segment("hello"))
+        # Wait for silence timer to fire
+        await asyncio.sleep(0.1)
+
+        buf = ta._sessions.get("s1")
+        # Buffer should have been invoked (status may be COMPLETED by now)
+        assert buf is not None
+        assert buf.status in (TurnStatus.INVOKED, TurnStatus.COMPLETED)
+
+    @pytest.mark.asyncio
+    async def test_silence_timer_resets_on_new_segment(self):
+        """Adding a new segment resets the silence timer."""
+        ta = _make_assembler(config=_make_config(silence_ms=80, max_wait_ms=5000))
+
+        await ta.add_segment("s1", _make_segment("hello"))
+        await asyncio.sleep(0.04)  # 40ms — timer not yet fired
+        await ta.add_segment("s1", _make_segment("world"))
+        await asyncio.sleep(0.04)  # another 40ms — timer reset, still hasn't fired
+
+        buf = ta._sessions["s1"]
+        assert buf.status == TurnStatus.WAITING
+        assert len(buf.segments) == 2
+
+
+# ---------------------------------------------------------------------------
+# Max wait ceiling
+# ---------------------------------------------------------------------------
+
+
+class TestMaxWaitCeiling:
+
+    @pytest.mark.asyncio
+    async def test_ceiling_triggers_after_max_wait(self):
+        """Ceiling timer fires after max_wait_ms regardless of silence timer."""
+        agent = _make_mock_agent_core()
+        ta = _make_assembler(
+            agent_core=agent,
+            config=_make_config(silence_ms=5000, max_wait_ms=50),
+        )
+
+        await ta.add_segment("s1", _make_segment("hello"))
+        await asyncio.sleep(0.15)
+
+        buf = ta._sessions.get("s1")
+        assert buf is not None
+        assert buf.status in (TurnStatus.INVOKED, TurnStatus.COMPLETED)
+
+    @pytest.mark.asyncio
+    async def test_ceiling_with_no_segments_abandons(self):
+        """Ceiling timer firing with no segments transitions to ABANDONED."""
+        ta = _make_assembler(config=_make_config(max_wait_ms=30))
+
+        # Create buffer directly but don't add segments
+        buf = SessionBuffer(session_id="s1")
+        ta._sessions["s1"] = buf
+        buf.ceiling_task = asyncio.create_task(ta._ceiling_timer("s1", 30))
+
+        await asyncio.sleep(0.1)
+
+        assert buf.status == TurnStatus.ABANDONED
+
+    @pytest.mark.asyncio
+    async def test_ceiling_never_resets(self):
+        """Ceiling timer is started once and never reset by new segments."""
+        ta = _make_assembler(config=_make_config(silence_ms=5000, max_wait_ms=100))
+
+        await ta.add_segment("s1", _make_segment("hello"))
+        ceiling_task = ta._sessions["s1"].ceiling_task
+
+        await ta.add_segment("s1", _make_segment("world"))
+        # Ceiling task should be the same object — not recreated
+        assert ta._sessions["s1"].ceiling_task is ceiling_task
+
+
+# ---------------------------------------------------------------------------
+# Semantic gate
+# ---------------------------------------------------------------------------
+
+
+class TestSemanticGate:
+
+    @pytest.mark.asyncio
+    async def test_gate_triggers_on_high_confidence(self):
+        """When NLU confidence >= threshold, invocation triggers immediately."""
+        nlu = MagicMock()
+        nlu.process.return_value = NLUResult(
+            intent="greeting", confidence=0.9, entities={}, sentiment="positive"
+        )
+
+        agent = _make_mock_agent_core()
+        ta = _make_assembler(
+            agent_core=agent,
+            config=_make_config(semantic_enabled=True, confidence_threshold=0.75, silence_ms=5000),
+            nlu_processor=nlu,
+            llm_wrapper=MagicMock(),
+        )
+
+        await ta.add_segment("s1", _make_segment("hello"))
+        await asyncio.sleep(0.1)
+
+        buf = ta._sessions.get("s1")
+        assert buf is not None
+        assert buf.status in (TurnStatus.INVOKED, TurnStatus.COMPLETED)
+
+    @pytest.mark.asyncio
+    async def test_gate_falls_through_on_low_confidence(self):
+        """When NLU confidence < threshold, falls through to silence timer."""
+        nlu = MagicMock()
+        nlu.process.return_value = NLUResult(
+            intent="unknown", confidence=0.3, entities={}, sentiment="neutral"
+        )
+
+        ta = _make_assembler(
+            config=_make_config(semantic_enabled=True, confidence_threshold=0.75, silence_ms=5000, max_wait_ms=5000),
+            nlu_processor=nlu,
+            llm_wrapper=MagicMock(),
+        )
+
+        await ta.add_segment("s1", _make_segment("hello"))
+        # Should NOT trigger immediately — falls through to timers
+        buf = ta._sessions["s1"]
+        assert buf.status == TurnStatus.WAITING
+
+    @pytest.mark.asyncio
+    async def test_gate_falls_through_on_unknown_intent(self):
+        """High confidence but 'unknown' intent does not trigger."""
+        nlu = MagicMock()
+        nlu.process.return_value = NLUResult(
+            intent="unknown", confidence=0.95, entities={}, sentiment="neutral"
+        )
+
+        ta = _make_assembler(
+            config=_make_config(semantic_enabled=True, silence_ms=5000, max_wait_ms=5000),
+            nlu_processor=nlu,
+            llm_wrapper=MagicMock(),
+        )
+
+        await ta.add_segment("s1", _make_segment("hello"))
+        buf = ta._sessions["s1"]
+        assert buf.status == TurnStatus.WAITING
+
+    @pytest.mark.asyncio
+    async def test_gate_graceful_on_nlu_error(self):
+        """NLU exception → log and fall through, never block."""
+        nlu = MagicMock()
+        nlu.process.side_effect = RuntimeError("NLU down")
+
+        ta = _make_assembler(
+            config=_make_config(semantic_enabled=True, silence_ms=5000, max_wait_ms=5000),
+            nlu_processor=nlu,
+            llm_wrapper=MagicMock(),
+        )
+
+        await ta.add_segment("s1", _make_segment("hello"))
+        buf = ta._sessions["s1"]
+        assert buf.status == TurnStatus.WAITING  # Fell through
+
+    @pytest.mark.asyncio
+    async def test_gate_disabled_skips_nlu(self):
+        """When semantic gate is disabled, NLU is never called."""
+        nlu = MagicMock()
+
+        ta = _make_assembler(
+            config=_make_config(semantic_enabled=False, silence_ms=5000, max_wait_ms=5000),
+            nlu_processor=nlu,
+            llm_wrapper=MagicMock(),
+        )
+
+        await ta.add_segment("s1", _make_segment("hello"))
+        nlu.process.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_gate_uses_context_bundle(self):
+        """Semantic gate uses cached context_bundle for NLU context."""
+        nlu = MagicMock()
+        nlu.process.return_value = NLUResult(
+            intent="greeting", confidence=0.9, entities={}, sentiment="positive"
+        )
+
+        async_memory = AsyncMock()
+        async_memory.context_bundle.return_value = ContextBundle(
+            session={"current_question": "What trade?", "current_subagent_id": "profile_building"},
+            profile={},
+        )
+
+        workflow = MagicMock()
+        workflow.start_subagent_id = "profile_building"
+        workflow.subagents = {"profile_building": MagicMock(valid_intents=["greeting"], special_handler=None)}
+        workflow.global_intents = ["termination_intent"]
+
+        agent = _make_mock_agent_core()
+        ta = _make_assembler(
+            agent_core=agent,
+            config=_make_config(semantic_enabled=True, silence_ms=5000),
+            nlu_processor=nlu,
+            llm_wrapper=MagicMock(),
+            workflow=workflow,
+            async_memory=async_memory,
+        )
+
+        await ta.add_segment("s1", _make_segment("hello"))
+        await asyncio.sleep(0.1)
+
+        # NLU should have been called with context
+        call_args = nlu.process.call_args
+        assert call_args.kwargs.get("current_question") == "What trade?"
+        assert call_args.kwargs.get("current_subagent_id") == "profile_building"
+
+
+# ---------------------------------------------------------------------------
+# subscribe
+# ---------------------------------------------------------------------------
+
+
+class TestSubscribe:
+
+    @pytest.mark.asyncio
+    async def test_subscribe_yields_events(self):
+        """subscribe() yields events from the invocation pipeline."""
+        agent = _make_mock_agent_core()
+        ta = _make_assembler(agent_core=agent, config=_make_config(silence_ms=30))
+
+        await ta.add_segment("s1", _make_segment("hello"))
+
+        events = []
+        async for event in ta.subscribe("s1"):
+            events.append(event)
+
+        assert len(events) >= 1
+        assert isinstance(events[-1], DoneEvent)
+
+    @pytest.mark.asyncio
+    async def test_subscribe_creates_buffer_if_needed(self):
+        """subscribe() creates a buffer if one doesn't exist."""
+        ta = _make_assembler()
+
+        # Put events manually to simulate invocation
+        ta._sessions["s1"] = SessionBuffer(session_id="s1")
+        await ta._sessions["s1"].event_queue.put(DoneEvent(turn_status="completed"))
+
+        events = []
+        async for event in ta.subscribe("s1"):
+            events.append(event)
+
+        assert len(events) == 1
+        assert isinstance(events[0], DoneEvent)
+
+    @pytest.mark.asyncio
+    async def test_subscribe_resets_buffer_after_done(self):
+        """After DoneEvent, buffer is reset to WAITING for next turn."""
+        ta = _make_assembler()
+
+        ta._sessions["s1"] = SessionBuffer(session_id="s1")
+        ta._sessions["s1"].status = TurnStatus.COMPLETED
+        await ta._sessions["s1"].event_queue.put(DoneEvent(turn_status="completed"))
+
+        async for _ in ta.subscribe("s1"):
+            pass
+
+        # Buffer should still exist but be reset
+        assert "s1" in ta._sessions
+        assert ta._sessions["s1"].status == TurnStatus.WAITING
+        assert ta._sessions["s1"].segments == []
+
+    @pytest.mark.asyncio
+    async def test_subscribe_empty_session_returns(self):
+        """subscribe() with empty session_id returns immediately."""
+        ta = _make_assembler()
+        events = []
+        async for event in ta.subscribe(""):
+            events.append(event)
+        assert events == []
+
+
+# ---------------------------------------------------------------------------
+# cancel
+# ---------------------------------------------------------------------------
+
+
+class TestCancel:
+
+    @pytest.mark.asyncio
+    async def test_cancel_waiting_transitions_to_abandoned(self):
+        ta = _make_assembler()
+        await ta.add_segment("s1", _make_segment("hello"))
+        # Cancel while silence timer is still waiting
+        ta._sessions["s1"].silence_task.cancel()  # Stop timer to prevent race
+        ta._sessions["s1"].status = TurnStatus.WAITING
+
+        await ta.cancel("s1")
+
+        assert ta._sessions["s1"].status == TurnStatus.ABANDONED
+
+    @pytest.mark.asyncio
+    async def test_cancel_waiting_pushes_done_event(self):
+        ta = _make_assembler(config=_make_config(silence_ms=5000, max_wait_ms=5000))
+        await ta.add_segment("s1", _make_segment("hello"))
+
+        await ta.cancel("s1")
+
+        event = await ta._sessions["s1"].event_queue.get()
+        assert isinstance(event, DoneEvent)
+        assert event.turn_status == "abandoned"
+
+    @pytest.mark.asyncio
+    async def test_cancel_invoked_transitions_to_interrupted(self):
+        ta = _make_assembler(config=_make_config(silence_ms=5000, max_wait_ms=5000))
+        await ta.add_segment("s1", _make_segment("hello"))
+        buf = ta._sessions["s1"]
+        buf.status = TurnStatus.INVOKED
+        buf.invocation_task = asyncio.create_task(asyncio.sleep(10))
+
+        await ta.cancel("s1")
+
+        assert buf.status == TurnStatus.INTERRUPTED
+        event = await buf.event_queue.get()
+        assert isinstance(event, DoneEvent)
+        assert event.turn_status == "interrupted"
+
+    @pytest.mark.asyncio
+    async def test_cancel_nonexistent_session_noop(self):
+        ta = _make_assembler()
+        await ta.cancel("nonexistent")  # Should not raise
+
+    @pytest.mark.asyncio
+    async def test_cancel_completed_noop(self):
+        ta = _make_assembler()
+        ta._sessions["s1"] = SessionBuffer(session_id="s1")
+        ta._sessions["s1"].status = TurnStatus.COMPLETED
+
+        await ta.cancel("s1")
+        assert ta._sessions["s1"].status == TurnStatus.COMPLETED  # Unchanged
+
+
+# ---------------------------------------------------------------------------
+# session_end
+# ---------------------------------------------------------------------------
+
+
+class TestSessionEnd:
+
+    @pytest.mark.asyncio
+    async def test_session_end_removes_buffer(self):
+        ta = _make_assembler()
+        ta._sessions["s1"] = SessionBuffer(session_id="s1")
+
+        await ta.session_end("s1")
+        assert "s1" not in ta._sessions
+
+    @pytest.mark.asyncio
+    async def test_session_end_nonexistent_noop(self):
+        ta = _make_assembler()
+        await ta.session_end("nonexistent")  # Should not raise
+
+    @pytest.mark.asyncio
+    async def test_session_end_cancels_tasks(self):
+        ta = _make_assembler()
+        buf = SessionBuffer(session_id="s1")
+        silence = asyncio.create_task(asyncio.sleep(10))
+        ceiling = asyncio.create_task(asyncio.sleep(10))
+        invocation = asyncio.create_task(asyncio.sleep(10))
+        buf.silence_task = silence
+        buf.ceiling_task = ceiling
+        buf.invocation_task = invocation
+        ta._sessions["s1"] = buf
+
+        await ta.session_end("s1")
+
+        # Allow event loop to process cancellations
+        await asyncio.sleep(0)
+
+        assert silence.cancelled()
+        assert ceiling.cancelled()
+        assert invocation.cancelled()
+
+
+# ---------------------------------------------------------------------------
+# Invocation path
+# ---------------------------------------------------------------------------
+
+
+class TestInvocation:
+
+    @pytest.mark.asyncio
+    async def test_invoke_calls_stream_turn(self):
+        """_invoke() calls agent_core.stream_turn() directly."""
+        agent = _make_mock_agent_core()
+        ta = _make_assembler(agent_core=agent, config=_make_config(silence_ms=30))
+
+        await ta.add_segment("s1", _make_segment("hello world"))
+        await asyncio.sleep(0.15)
+
+        buf = ta._sessions.get("s1")
+        assert buf is not None
+        assert buf.status == TurnStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_invoke_assembles_text(self):
+        """Multiple segments are joined with spaces."""
+        captured_inputs = []
+
+        async def capture_stream(turn_input):
+            captured_inputs.append(turn_input)
+            yield DoneEvent(turn_status="completed")
+
+        agent = MagicMock()
+        agent.stream_turn = capture_stream
+
+        ta = _make_assembler(agent_core=agent, config=_make_config(silence_ms=50, max_wait_ms=5000))
+
+        await ta.add_segment("s1", _make_segment("मुझे"))
+        await ta.add_segment("s1", _make_segment("जॉब चाहिए"))
+
+        await asyncio.sleep(0.2)
+
+        assert len(captured_inputs) == 1
+        assert captured_inputs[0].user_message == "मुझे जॉब चाहिए"
+
+    @pytest.mark.asyncio
+    async def test_invoke_pushes_done_event_on_error(self):
+        """On stream_turn() error, a DoneEvent(abandoned) is pushed to queue."""
+        async def failing_stream(turn_input):
+            raise RuntimeError("boom")
+            yield  # Make it a generator
+
+        agent = MagicMock()
+        agent.stream_turn = failing_stream
+
+        ta = _make_assembler(agent_core=agent, config=_make_config(silence_ms=30))
+
+        await ta.add_segment("s1", _make_segment("hello"))
+        await asyncio.sleep(0.15)
+
+        buf = ta._sessions.get("s1")
+        assert buf is not None
+        event = await buf.event_queue.get()
+        assert isinstance(event, DoneEvent)
+        assert event.turn_status == "abandoned"
+
+    @pytest.mark.asyncio
+    async def test_invoke_uses_first_segment_metadata(self):
+        """TurnInput is constructed with first segment's channel, user_id, timestamp."""
+        captured = []
+
+        async def capture_stream(turn_input):
+            captured.append(turn_input)
+            yield DoneEvent(turn_status="completed")
+
+        agent = MagicMock()
+        agent.stream_turn = capture_stream
+
+        ta = _make_assembler(agent_core=agent, config=_make_config(silence_ms=30))
+
+        seg = _make_segment("hello", channel="voice", user_id="u99", timestamp_ms=42000)
+        await ta.add_segment("s1", seg)
+        await asyncio.sleep(0.15)
+
+        assert len(captured) == 1
+        ti = captured[0]
+        assert ti.channel == "voice"
+        assert ti.user_id == "u99"
+        assert ti.timestamp_ms == 42000
+
+
+# ---------------------------------------------------------------------------
+# Context fetch
+# ---------------------------------------------------------------------------
+
+
+class TestContextFetch:
+
+    @pytest.mark.asyncio
+    async def test_context_fetched_on_first_segment(self):
+        async_memory = AsyncMock()
+        async_memory.context_bundle.return_value = ContextBundle(
+            session={"current_question": "What trade?"}, profile={},
+        )
+
+        ta = _make_assembler(
+            config=_make_config(silence_ms=5000, max_wait_ms=5000),
+            async_memory=async_memory,
+        )
+
+        await ta.add_segment("s1", _make_segment("hello"))
+
+        async_memory.context_bundle.assert_called_once()
+        assert ta._sessions["s1"].context_bundle is not None
+
+    @pytest.mark.asyncio
+    async def test_context_not_refetched_on_second_segment(self):
+        async_memory = AsyncMock()
+        async_memory.context_bundle.return_value = ContextBundle.empty()
+
+        ta = _make_assembler(
+            config=_make_config(silence_ms=5000, max_wait_ms=5000),
+            async_memory=async_memory,
+        )
+
+        await ta.add_segment("s1", _make_segment("hello"))
+        await ta.add_segment("s1", _make_segment("world"))
+
+        assert async_memory.context_bundle.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_context_fetch_error_non_fatal(self):
+        async_memory = AsyncMock()
+        async_memory.context_bundle.side_effect = RuntimeError("Memory down")
+
+        ta = _make_assembler(
+            config=_make_config(silence_ms=5000, max_wait_ms=5000),
+            async_memory=async_memory,
+        )
+
+        await ta.add_segment("s1", _make_segment("hello"))
+
+        buf = ta._sessions["s1"]
+        assert buf._context_fetched is True
+        assert buf.context_bundle is None  # Failed gracefully
+        assert buf.status == TurnStatus.WAITING  # Still operational
+
+    @pytest.mark.asyncio
+    async def test_no_async_memory_skips_fetch(self):
+        ta = _make_assembler(
+            config=_make_config(silence_ms=5000, max_wait_ms=5000),
+            async_memory=None,
+        )
+
+        await ta.add_segment("s1", _make_segment("hello"))
+        assert ta._sessions["s1"]._context_fetched is False
+
+
+# ---------------------------------------------------------------------------
+# Buffer management
+# ---------------------------------------------------------------------------
+
+
+class TestBufferManagement:
+
+    @pytest.mark.asyncio
+    async def test_reset_buffer_preserves_identity(self):
+        ta = _make_assembler()
+        buf = SessionBuffer(
+            session_id="s1", channel="voice", user_id="u1",
+        )
+        buf.segments = ["hello", "world"]
+        buf.status = TurnStatus.COMPLETED
+        buf.context_bundle = ContextBundle.empty()
+
+        ta._reset_buffer(buf)
+
+        assert buf.session_id == "s1"
+        assert buf.channel == "voice"
+        assert buf.user_id == "u1"
+        assert buf.context_bundle is not None  # Preserved
+        assert buf.segments == []
+        assert buf.status == TurnStatus.WAITING
+
+    @pytest.mark.asyncio
+    async def test_multiple_sessions_independent(self):
+        ta = _make_assembler(config=_make_config(silence_ms=5000, max_wait_ms=5000))
+
+        await ta.add_segment("s1", _make_segment("hello"))
+        await ta.add_segment("s2", _make_segment("world"))
+
+        assert "s1" in ta._sessions
+        assert "s2" in ta._sessions
+        assert ta._sessions["s1"].segments == ["hello"]
+        assert ta._sessions["s2"].segments == ["world"]
+
+
+# ---------------------------------------------------------------------------
+# Concurrent timer race
+# ---------------------------------------------------------------------------
+
+
+class TestConcurrentTimerRace:
+
+    @pytest.mark.asyncio
+    async def test_only_first_timer_acquires_lock(self):
+        """If silence and ceiling fire together, only one transitions state."""
+        agent = _make_mock_agent_core()
+        ta = _make_assembler(
+            agent_core=agent,
+            config=_make_config(silence_ms=30, max_wait_ms=30),
+        )
+
+        await ta.add_segment("s1", _make_segment("hello"))
+        await asyncio.sleep(0.2)
+
+        buf = ta._sessions.get("s1")
+        assert buf is not None
+        # Should be INVOKED or COMPLETED, not stuck
+        assert buf.status in (TurnStatus.INVOKED, TurnStatus.COMPLETED)
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: segment → subscribe → events
+# ---------------------------------------------------------------------------
+
+
+class TestEndToEnd:
+
+    @pytest.mark.asyncio
+    async def test_segment_to_events_flow(self):
+        """Full flow: add segment → silence triggers → subscribe yields events."""
+        agent = _make_mock_agent_core()
+        ta = _make_assembler(agent_core=agent, config=_make_config(silence_ms=30))
+
+        # Start subscription in background
+        events = []
+        async def collect():
+            async for event in ta.subscribe("s1"):
+                events.append(event)
+
+        collect_task = asyncio.create_task(collect())
+
+        # Add segment — silence timer will trigger invocation
+        await ta.add_segment("s1", _make_segment("hello"))
+
+        # Wait for events
+        await asyncio.sleep(0.3)
+        await asyncio.wait_for(collect_task, timeout=2.0)
+
+        assert len(events) >= 1
+        assert isinstance(events[-1], DoneEvent)
+        assert events[-1].turn_status == "completed"

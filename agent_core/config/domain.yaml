@@ -64,5 +64,19 @@ agent_workflow:
   default_fallback_subagent_id: ""  # Required. Subagent to route to when no routing rule matches.
   subagents: []              # Required. List of subagent definitions. See dev-kit/configs/kkb/agent_core.yaml for full example.
 
+# Turn assembler — per-channel overrides for this domain.
+# Defaults come from dpg.yaml. Only override values that differ per channel.
+turn_assembler:
+  semantic_gate:
+    enabled: false              # Optional. Set true to enable NLU-based early trigger.
+    confidence_threshold: 0.75  # Optional. Invoke if NLU confidence >= this value.
+  channel_overrides: {}         # Optional. Per-channel overrides. Keys: voice, web, cli, etc.
+    # Example:
+    # voice:
+    #   silence_trigger:
+    #     silence_ms: 400
+    #   max_wait_ceiling:
+    #     max_wait_ms: 8000
+
 observability:
   domain: ""  # Required. Domain identifier (e.g. "kkb", "farmer_friendly").
