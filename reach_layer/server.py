@@ -282,7 +282,12 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
     @app.post("/auth/logout")
     def auth_logout(response: Response) -> dict[str, Any]:
         """Clear the session cookie. Always 200 regardless of prior state."""
-        response.delete_cookie(key=cookie_name, path="/")
+        response.delete_cookie(
+            key=cookie_name,
+            path="/",
+            secure=cookie_secure,
+            samesite=cookie_samesite,
+        )
         return {"ok": True}
 
     # ------------------------------------------------------------------
@@ -637,6 +642,9 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
                 timeout=ml_timeout,
             )
             del_resp.raise_for_status()
+            body = del_resp.json() if del_resp.text else {}
+            if isinstance(body, dict) and body.get("status") == "error":
+                raise ValueError("Memory Layer returned status=error")
         except Exception as e:
             logger.error(
                 "reach_server.delete_session_error",
