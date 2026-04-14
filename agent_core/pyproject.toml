@@ -43,6 +43,7 @@ testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
+asyncio_mode = "auto"
 
 # ---------------------------------------------------------------------------
 # Coverage
@@ -64,5 +65,6 @@ observability-layer = { path = "../observability_layer" }
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",
+    "pytest-asyncio>=0.23.0",
     "pytest-cov>=7.1.0",
 ]

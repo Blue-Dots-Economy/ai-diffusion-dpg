@@ -7,6 +7,7 @@ Agent Core and ManagerAgent depend only on this interface — never on a concret
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncGenerator
 from typing import Optional
 
 from src.models import LLMResponse
@@ -38,6 +39,37 @@ class LLMWrapperBase(ABC):
             LLMResponse — always. Never raises.
             On failure, returns LLMResponse with stop_reason="error" and content=None.
         """
+
+    @abstractmethod
+    async def stream_call(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        system: str | None = None,
+        model_override: str | None = None,
+    ) -> AsyncGenerator[str, None]:
+        """Stream raw text tokens from the LLM.
+
+        Uses the same retry and fallback model logic as call().
+        Yields text tokens as they arrive from the provider.
+
+        If the LLM returns a tool_use stop reason, raises
+        ToolUseRequested with the accumulated tool call blocks
+        so the caller can execute tools and resume.
+
+        Args:
+            messages:       Conversation messages in Anthropic format.
+            tools:          Tool definitions to inject. None or empty for no tools.
+            system:         System prompt string.
+            model_override: If provided, use this model instead of the active model.
+
+        Yields:
+            str: Individual text tokens from the LLM stream.
+
+        Raises:
+            ToolUseRequested: If the LLM requests tool use mid-stream.
+        """
+        yield  # pragma: no cover
 
     @abstractmethod
     def get_active_model(self) -> str:

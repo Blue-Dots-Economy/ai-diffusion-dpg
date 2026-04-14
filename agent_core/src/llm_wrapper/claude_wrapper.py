@@ -14,14 +14,16 @@ Responsibilities:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
+from collections.abc import AsyncGenerator
 from typing import Optional
 
 import anthropic
 from opentelemetry import trace as otel_trace
 
-from src.exceptions import LLMCallError, LLMFallbackError
+from src.exceptions import LLMCallError, LLMFallbackError, ToolUseRequested
 from src.llm_wrapper.base import LLMWrapperBase
 from src.models import LLMResponse, ToolCall
 
@@ -74,6 +76,7 @@ class ClaudeLLMWrapper(LLMWrapperBase):
 
         self._active_model: str = self._primary_model
         self._client = anthropic.Anthropic()
+        self._async_client = anthropic.AsyncAnthropic()
 
     # ------------------------------------------------------------------
     # Public interface
@@ -126,9 +129,203 @@ class ClaudeLLMWrapper(LLMWrapperBase):
     def get_active_model(self) -> str:
         return self._active_model
 
+    async def stream_call(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        system: str | None = None,
+        model_override: str | None = None,
+    ) -> AsyncGenerator[str, None]:
+        """Stream text tokens from the Anthropic API.
+
+        Same retry + fallback logic as call(). Yields raw text tokens.
+        Raises ToolUseRequested if the LLM returns a tool_use stop reason.
+
+        Args:
+            messages: Conversation messages in Anthropic format.
+            tools: Tool definitions. None or empty for no tools.
+            system: System prompt string.
+            model_override: Optional model ID override.
+
+        Yields:
+            str: Individual text tokens.
+
+        Raises:
+            ToolUseRequested: If the LLM requests tool use.
+        """
+        if not messages:
+            raise ValueError("messages must not be empty")
+
+        model = model_override or self._active_model
+
+        try:
+            async for token in self._stream_with_retry(model, messages, tools, system):
+                yield token
+        except _RetryableExhausted:
+            if model != self._primary_model:
+                return
+            logger.warning(
+                "llm_wrapper.stream_fallback_triggered",
+                extra={"operation": "llm_wrapper.stream_call", "primary_model": model},
+            )
+            self._switch_to_fallback()
+            try:
+                async for token in self._stream_with_retry(self._fallback_model, messages, tools, system):
+                    yield token
+            except _RetryableExhausted:
+                return
+
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    async def _stream_with_retry(
+        self,
+        model: str,
+        messages: list[dict],
+        tools: list[dict] | None,
+        system: str | None,
+    ) -> AsyncGenerator[str, None]:
+        """Internal retry loop for streaming with exponential backoff.
+
+        Args:
+            model: Model ID to use.
+            messages: Conversation messages.
+            tools: Tool definitions.
+            system: System prompt.
+
+        Yields:
+            str: Text tokens from the stream.
+
+        Raises:
+            _RetryableExhausted: If all retry attempts are exhausted.
+            ToolUseRequested: If the LLM requests tool use.
+        """
+        last_error: Exception | None = None
+
+        for attempt in range(self._max_attempts):
+            delay = self._backoff_seconds[min(attempt, len(self._backoff_seconds) - 1)]
+            if delay > 0:
+                await asyncio.sleep(delay)
+
+            start = time.time()
+            try:
+                kwargs: dict = {
+                    "model": model,
+                    "max_tokens": 4096,
+                    "messages": messages,
+                }
+                if system:
+                    kwargs["system"] = system
+                if tools:
+                    kwargs["tools"] = tools
+
+                tool_calls: list[ToolCall] = []
+                stop_reason: str | None = None
+                input_tokens = 0
+                output_tokens = 0
+
+                async with self._async_client.messages.stream(
+                    **kwargs, timeout=self._timeout_s
+                ) as stream:
+                    async for event in stream:
+                        if hasattr(event, "type"):
+                            if event.type == "content_block_delta":
+                                if hasattr(event.delta, "text"):
+                                    yield event.delta.text
+
+                    # After the stream closes, get the final message for metadata
+                    final_message = await stream.get_final_message()
+                    stop_reason = final_message.stop_reason
+                    input_tokens = final_message.usage.input_tokens
+                    output_tokens = final_message.usage.output_tokens
+
+                    # Collect tool_use blocks from the final message
+                    for block in final_message.content:
+                        if block.type == "tool_use":
+                            tool_calls.append(
+                                ToolCall(
+                                    tool_name=block.name,
+                                    tool_use_id=block.id,
+                                    input_params=block.input,
+                                )
+                            )
+
+                logger.info(
+                    "llm_wrapper.stream_call",
+                    extra={
+                        "operation": "llm_wrapper.stream_call",
+                        "status": "success",
+                        "model": model,
+                        "attempt": attempt + 1,
+                        "latency_ms": int((time.time() - start) * 1000),
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "stop_reason": stop_reason,
+                    },
+                )
+
+                if stop_reason == "tool_use" and tool_calls:
+                    raise ToolUseRequested(tool_calls)
+
+                return  # Stream complete
+
+            except ToolUseRequested:
+                raise  # Propagate immediately — not retryable
+
+            except (anthropic.APITimeoutError, anthropic.RateLimitError) as e:
+                last_error = e
+                logger.warning(
+                    "llm_wrapper.stream_retryable_error",
+                    extra={
+                        "operation": "llm_wrapper.stream_call",
+                        "status": "failure",
+                        "model": model,
+                        "attempt": attempt + 1,
+                        "error": str(e),
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+
+            except anthropic.APIError as e:
+                logger.error(
+                    "llm_wrapper.stream_api_error",
+                    extra={
+                        "operation": "llm_wrapper.stream_call",
+                        "status": "failure",
+                        "model": model,
+                        "attempt": attempt + 1,
+                        "error": str(e),
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+                return  # Non-retryable API error
+
+            except Exception as e:
+                logger.error(
+                    "llm_wrapper.stream_unexpected_error",
+                    extra={
+                        "operation": "llm_wrapper.stream_call",
+                        "status": "failure",
+                        "model": model,
+                        "attempt": attempt + 1,
+                        "error": f"{type(e).__name__}: {e}",
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+                return  # Non-retryable
+
+        logger.error(
+            "llm_wrapper.stream_exhausted",
+            extra={
+                "operation": "llm_wrapper.stream_call",
+                "status": "failure",
+                "model": model,
+                "attempts": self._max_attempts,
+                "error": str(last_error),
+            },
+        )
+        raise _RetryableExhausted(f"All {self._max_attempts} stream retry attempts exhausted for model {model}")
 
     def _call_with_retry(
         self,

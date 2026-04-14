@@ -2,13 +2,14 @@
 agent_core/base.py
 
 Public contract for the Agent Core.
-process_turn() is the single entry point exposed to the Reach Layer.
-No other method on Agent Core is callable from outside the module.
+process_turn() is the sync entry point exposed to the Reach Layer.
+stream_turn() is the async streaming entry point for SSE delivery.
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncGenerator
 
-from src.models import TurnInput, TurnResult
+from src.models import StreamEvent, TurnInput, TurnResult
 
 
 class AgentCoreBase(ABC):
@@ -36,3 +37,21 @@ class AgentCoreBase(ABC):
         - Trust Layer is called exactly twice per turn (input + output).
         - Steps 8 and 9 never block or delay the return.
         """
+
+    @abstractmethod
+    async def stream_turn(self, turn_input: TurnInput) -> AsyncGenerator[StreamEvent, None]:
+        """Execute one conversation turn with streaming SSE output.
+
+        Runs the same 13-step pipeline as process_turn() but uses async
+        HTTP clients and yields StreamEvents as the pipeline progresses.
+
+        Yields:
+            SignalEvent for pipeline stage notifications.
+            SentenceEvent for each trust-checked LLM output sentence.
+            DoneEvent as the terminal event (always last).
+
+        The caller must consume the generator to completion. Post-turn
+        memory writes and observability emits fire via asyncio.create_task()
+        after the DoneEvent is yielded.
+        """
+        yield  # pragma: no cover

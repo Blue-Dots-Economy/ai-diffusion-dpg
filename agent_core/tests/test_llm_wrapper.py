@@ -12,13 +12,25 @@ Coverage:
 - Failure: retry on APITimeoutError, fallback to secondary model
 - Failure: non-retryable APIError returns error response immediately
 - Failure: all retries and fallback exhausted returns error response
+
+stream_call() coverage:
+- Normal: streams text tokens
+- Normal: tool use mid-stream raises ToolUseRequested
+- Edge: empty messages raises ValueError
+- Failure: retry on APITimeoutError, success on second attempt
+- Failure: fallback model switch after primary exhaustion
+- Failure: all retries exhausted yields nothing
+- Failure: non-retryable APIError yields nothing
 """
 
 from __future__ import annotations
 
-import pytest
-from unittest.mock import MagicMock, patch, call
+import asyncio
 
+import pytest
+from unittest.mock import AsyncMock, MagicMock, patch, call
+
+from src.exceptions import ToolUseRequested
 from src.llm_wrapper.claude_wrapper import ClaudeLLMWrapper
 from src.models import LLMResponse
 
@@ -255,3 +267,298 @@ def test_missing_api_key_returns_error_not_raises(mock_anthropic_cls):
 
     assert response.stop_reason == "error"
     assert response.content is None
+
+
+# ---------------------------------------------------------------------------
+# stream_call() helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_stream_context(tokens: list[str], stop_reason: str = "end_turn",
+                         tool_blocks: list | None = None,
+                         input_tokens: int = 10, output_tokens: int = 5):
+    """Build a mock async context manager for messages.stream().
+
+    Args:
+        tokens: Text tokens to yield as content_block_delta events.
+        stop_reason: The stop_reason on the final message.
+        tool_blocks: Optional list of tool_use content blocks on the final message.
+        input_tokens: Input token count on the final message usage.
+        output_tokens: Output token count on the final message usage.
+    """
+    events = []
+    for tok in tokens:
+        event = MagicMock()
+        event.type = "content_block_delta"
+        event.delta = MagicMock()
+        event.delta.text = tok
+        events.append(event)
+
+    final_message = MagicMock()
+    final_message.stop_reason = stop_reason
+    final_message.usage.input_tokens = input_tokens
+    final_message.usage.output_tokens = output_tokens
+    final_message.content = tool_blocks or []
+
+    class _AsyncEventIter:
+        """Async iterator over mock stream events."""
+        def __init__(self, items):
+            self._items = iter(items)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._items)
+            except StopIteration:
+                raise StopAsyncIteration
+
+    class _MockStream:
+        """Mock stream object supporting async iteration and get_final_message."""
+        def __init__(self, evts, final_msg):
+            self._events = evts
+            self._final_message = final_msg
+
+        def __aiter__(self):
+            return _AsyncEventIter(self._events)
+
+        async def get_final_message(self):
+            return self._final_message
+
+    class _MockCtx:
+        """Mock async context manager for messages.stream()."""
+        def __init__(self, evts, final_msg):
+            self._stream = _MockStream(evts, final_msg)
+
+        async def __aenter__(self):
+            return self._stream
+
+        async def __aexit__(self, *args):
+            return False
+
+    return _MockCtx(events, final_message)
+
+
+async def _collect_stream(gen):
+    """Collect all tokens from an async generator into a list."""
+    tokens = []
+    async for token in gen:
+        tokens.append(token)
+    return tokens
+
+
+# ---------------------------------------------------------------------------
+# stream_call() — Normal execution
+# ---------------------------------------------------------------------------
+
+
+@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
+@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+async def test_stream_call_yields_text_tokens(mock_anthropic_cls, mock_async_cls):
+    """stream_call() yields text tokens from the LLM stream."""
+    mock_client = MagicMock()
+    mock_anthropic_cls.return_value = mock_client
+
+    mock_async_client = MagicMock()
+    mock_async_cls.return_value = mock_async_client
+    mock_async_client.messages.stream = MagicMock(
+        return_value=_make_stream_context(["Hello", " world", "!"])
+    )
+
+    wrapper = ClaudeLLMWrapper(VALID_CONFIG)
+    tokens = await _collect_stream(wrapper.stream_call(messages=MESSAGES, system=SYSTEM))
+
+    assert tokens == ["Hello", " world", "!"]
+
+
+@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
+@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+async def test_stream_call_raises_tool_use_requested(mock_anthropic_cls, mock_async_cls):
+    """stream_call() raises ToolUseRequested when LLM returns tool_use stop reason."""
+    mock_client = MagicMock()
+    mock_anthropic_cls.return_value = mock_client
+
+    tool_block = MagicMock()
+    tool_block.type = "tool_use"
+    tool_block.name = "search"
+    tool_block.id = "tu_999"
+    tool_block.input = {"q": "test"}
+
+    mock_async_client = MagicMock()
+    mock_async_cls.return_value = mock_async_client
+    mock_async_client.messages.stream = MagicMock(
+        return_value=_make_stream_context(
+            ["I'll search"], stop_reason="tool_use", tool_blocks=[tool_block]
+        )
+    )
+
+    wrapper = ClaudeLLMWrapper(VALID_CONFIG)
+
+    with pytest.raises(ToolUseRequested) as exc_info:
+        await _collect_stream(wrapper.stream_call(messages=MESSAGES, system=SYSTEM))
+
+    assert len(exc_info.value.tool_calls) == 1
+    assert exc_info.value.tool_calls[0].tool_name == "search"
+    assert exc_info.value.tool_calls[0].tool_use_id == "tu_999"
+
+
+# ---------------------------------------------------------------------------
+# stream_call() — Edge cases
+# ---------------------------------------------------------------------------
+
+
+@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
+@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+async def test_stream_call_raises_on_empty_messages(mock_anthropic_cls, mock_async_cls):
+    """stream_call() raises ValueError for empty messages."""
+    wrapper = ClaudeLLMWrapper(VALID_CONFIG)
+    with pytest.raises(ValueError, match="messages must not be empty"):
+        await _collect_stream(wrapper.stream_call(messages=[], system=SYSTEM))
+
+
+@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
+@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+async def test_stream_call_without_tools(mock_anthropic_cls, mock_async_cls):
+    """stream_call() works without tools parameter."""
+    mock_client = MagicMock()
+    mock_anthropic_cls.return_value = mock_client
+
+    mock_async_client = MagicMock()
+    mock_async_cls.return_value = mock_async_client
+    mock_async_client.messages.stream = MagicMock(
+        return_value=_make_stream_context(["Hi"])
+    )
+
+    wrapper = ClaudeLLMWrapper(VALID_CONFIG)
+    tokens = await _collect_stream(wrapper.stream_call(messages=MESSAGES))
+
+    assert tokens == ["Hi"]
+    # Verify tools was not passed to the stream call
+    call_kwargs = mock_async_client.messages.stream.call_args.kwargs
+    assert "tools" not in call_kwargs
+
+
+# ---------------------------------------------------------------------------
+# stream_call() — Retry and fallback
+# ---------------------------------------------------------------------------
+
+
+@patch("src.llm_wrapper.claude_wrapper.asyncio.sleep", new_callable=AsyncMock)
+@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
+@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+async def test_stream_retries_on_timeout_then_succeeds(mock_anthropic_cls, mock_async_cls, mock_sleep):
+    """stream_call() retries on APITimeoutError and succeeds on second attempt."""
+    import anthropic as anthropic_module
+
+    mock_client = MagicMock()
+    mock_anthropic_cls.return_value = mock_client
+
+    mock_async_client = MagicMock()
+    mock_async_cls.return_value = mock_async_client
+    mock_async_client.messages.stream = MagicMock(
+        side_effect=[
+            MagicMock(__aenter__=AsyncMock(side_effect=anthropic_module.APITimeoutError(request=MagicMock())),
+                      __aexit__=AsyncMock(return_value=False)),
+            _make_stream_context(["Retry", " worked"]),
+        ]
+    )
+
+    wrapper = ClaudeLLMWrapper(VALID_CONFIG)
+    tokens = await _collect_stream(wrapper.stream_call(messages=MESSAGES, system=SYSTEM))
+
+    assert tokens == ["Retry", " worked"]
+    assert mock_async_client.messages.stream.call_count == 2
+
+
+@patch("src.llm_wrapper.claude_wrapper.asyncio.sleep", new_callable=AsyncMock)
+@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
+@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+async def test_stream_switches_to_fallback_after_exhaustion(mock_anthropic_cls, mock_async_cls, mock_sleep):
+    """stream_call() switches to fallback model after primary retries are exhausted."""
+    import anthropic as anthropic_module
+
+    mock_client = MagicMock()
+    mock_anthropic_cls.return_value = mock_client
+
+    timeout_ctx = MagicMock(
+        __aenter__=AsyncMock(side_effect=anthropic_module.APITimeoutError(request=MagicMock())),
+        __aexit__=AsyncMock(return_value=False),
+    )
+
+    mock_async_client = MagicMock()
+    mock_async_cls.return_value = mock_async_client
+    # Primary fails twice (max_attempts=2), then fallback succeeds
+    mock_async_client.messages.stream = MagicMock(
+        side_effect=[
+            timeout_ctx,
+            MagicMock(__aenter__=AsyncMock(side_effect=anthropic_module.APITimeoutError(request=MagicMock())),
+                      __aexit__=AsyncMock(return_value=False)),
+            _make_stream_context(["Fallback", " ok"]),
+        ]
+    )
+
+    wrapper = ClaudeLLMWrapper(VALID_CONFIG)
+    tokens = await _collect_stream(wrapper.stream_call(messages=MESSAGES, system=SYSTEM))
+
+    assert tokens == ["Fallback", " ok"]
+    assert wrapper.get_active_model() == "claude-fallback"
+
+
+@patch("src.llm_wrapper.claude_wrapper.asyncio.sleep", new_callable=AsyncMock)
+@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
+@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+async def test_stream_yields_nothing_when_all_attempts_fail(mock_anthropic_cls, mock_async_cls, mock_sleep):
+    """stream_call() yields nothing when all retry attempts on both models are exhausted."""
+    import anthropic as anthropic_module
+
+    mock_client = MagicMock()
+    mock_anthropic_cls.return_value = mock_client
+
+    def _timeout_ctx():
+        return MagicMock(
+            __aenter__=AsyncMock(side_effect=anthropic_module.APITimeoutError(request=MagicMock())),
+            __aexit__=AsyncMock(return_value=False),
+        )
+
+    mock_async_client = MagicMock()
+    mock_async_cls.return_value = mock_async_client
+    # All 4 attempts fail (2 primary + 2 fallback)
+    mock_async_client.messages.stream = MagicMock(
+        side_effect=[_timeout_ctx(), _timeout_ctx(), _timeout_ctx(), _timeout_ctx()]
+    )
+
+    wrapper = ClaudeLLMWrapper(VALID_CONFIG)
+    tokens = await _collect_stream(wrapper.stream_call(messages=MESSAGES, system=SYSTEM))
+
+    assert tokens == []
+
+
+@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
+@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+async def test_stream_non_retryable_api_error_yields_nothing(mock_anthropic_cls, mock_async_cls):
+    """stream_call() yields nothing on non-retryable APIError (no retry)."""
+    import anthropic as anthropic_module
+
+    mock_client = MagicMock()
+    mock_anthropic_cls.return_value = mock_client
+
+    mock_async_client = MagicMock()
+    mock_async_cls.return_value = mock_async_client
+    mock_async_client.messages.stream = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(
+                side_effect=anthropic_module.APIError(
+                    message="bad request", request=MagicMock(), body={}
+                )
+            ),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+
+    wrapper = ClaudeLLMWrapper(VALID_CONFIG)
+    tokens = await _collect_stream(wrapper.stream_call(messages=MESSAGES, system=SYSTEM))
+
+    assert tokens == []
+    # Only 1 attempt — non-retryable
+    assert mock_async_client.messages.stream.call_count == 1

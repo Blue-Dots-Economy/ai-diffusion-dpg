@@ -18,14 +18,23 @@ Design rules enforced here:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import re
 import threading
 import time
 import uuid
+from collections.abc import AsyncGenerator
 from typing import Any, Optional
 
 from src.base import AgentCoreBase
+from src.exceptions import ToolUseRequested
 from src.interfaces.action_gateway import ActionGatewayBase
+from src.interfaces.async_.action_gateway import AsyncActionGatewayBase
+from src.interfaces.async_.knowledge_engine import AsyncKnowledgeEngineBase
+from src.interfaces.async_.memory_layer import AsyncMemoryLayerBase
+from src.interfaces.async_.observability_layer import AsyncObservabilityLayerBase
+from src.interfaces.async_.trust_layer import AsyncTrustLayerBase
 from src.interfaces.knowledge_engine import KnowledgeEngineBase
 from src.interfaces.observability_layer import ObservabilityLayerBase
 from src.interfaces.memory_layer import MemoryLayerBase
@@ -36,8 +45,12 @@ from src.preprocessing.language_normalisation import LanguageNormaliser
 from src.llm_wrapper.base import LLMWrapperBase
 from src.manager_agent import ManagerAgent
 from src.models import (
+    DoneEvent,
     LLMResponse,
     NLUResult,
+    SentenceEvent,
+    SignalEvent,
+    StreamEvent,
     ToolCall,
     TrustCheckResult,
     TurnEvent,
@@ -87,6 +100,11 @@ class AgentCore(AgentCoreBase):
         manager_agent: ManagerAgent,
         learning: ObservabilityLayerBase,
         workflow: AgentWorkflow,
+        async_memory: AsyncMemoryLayerBase | None = None,
+        async_trust: AsyncTrustLayerBase | None = None,
+        async_knowledge_engine: AsyncKnowledgeEngineBase | None = None,
+        async_gateway: AsyncActionGatewayBase | None = None,
+        async_learning: AsyncObservabilityLayerBase | None = None,
     ) -> None:
         if config is None:
             raise ValueError("config must not be None")
@@ -102,6 +120,13 @@ class AgentCore(AgentCoreBase):
         self._manager_agent = manager_agent
         self._learning = learning
         self._workflow = workflow
+
+        # Async clients for stream_turn() — optional, only needed for streaming
+        self._async_memory = async_memory
+        self._async_trust = async_trust
+        self._async_knowledge_engine = async_knowledge_engine
+        self._async_gateway = async_gateway
+        self._async_learning = async_learning
 
         # Language Normalisation and NLU run directly in Agent Core.
         # Stateless — instantiated once, reused across all sessions.
@@ -1469,3 +1494,559 @@ class AgentCore(AgentCoreBase):
                     "error": str(e),
                 },
             )
+
+    # ------------------------------------------------------------------
+    # Streaming: stream_turn() — async SSE pipeline
+    # ------------------------------------------------------------------
+
+    async def stream_turn(self, turn_input: TurnInput) -> AsyncGenerator[StreamEvent, None]:
+        """Execute one conversation turn with streaming SSE output.
+
+        Runs the same 13-step pipeline as process_turn() but uses async
+        HTTP clients and yields StreamEvents as the pipeline progresses.
+
+        Args:
+            turn_input: Normalised inbound message from the Reach Layer.
+
+        Yields:
+            SignalEvent, SentenceEvent, or DoneEvent.
+        """
+        if turn_input is None:
+            raise ValueError("turn_input must not be None")
+        if not turn_input.session_id:
+            raise ValueError("turn_input.session_id must not be empty")
+        if turn_input.user_message is None:
+            raise ValueError("turn_input.user_message must not be None")
+        if self._async_memory is None or self._async_trust is None:
+            raise ValueError("Async clients must be injected to use stream_turn()")
+
+        start = time.time()
+        session_id = turn_input.session_id
+        user_id: str = turn_input.user_id or session_id
+        turn_id = str(uuid.uuid4())
+
+        was_escalated = False
+        was_tool_used = False
+        model_used = ""
+        trust_input = TrustCheckResult(passed=True, action="allow")
+        trust_output = TrustCheckResult(passed=True, action="allow")
+        nlu_result = NLUResult(intent="unknown", entities={}, sentiment="neutral", confidence=0.0)
+        all_tool_calls: list[ToolCall] = []
+        full_response_text = ""
+
+        logger.info(
+            "orchestrator.stream_turn_start",
+            extra={
+                "operation": "orchestrator.stream_turn",
+                "status": "success",
+                "session_id": session_id,
+                "channel": turn_input.channel,
+            },
+        )
+
+        try:
+            # ── Step 1: Read session state ──────────────────────────────
+            yield SignalEvent(stage="memory_read", status="start")
+            bundle = await self._async_memory.context_bundle(session_id, user_id, adopt=not turn_input.fresh)
+            current_subagent_id: str = (
+                bundle.session.get("current_subagent_id")
+                or self._workflow.start_subagent_id
+            )
+            current_question: str = bundle.session.get("current_question", "")
+            yield SignalEvent(stage="memory_read", status="complete")
+
+            # ── Consent gate (Step 1b) ──────────────────────────────────
+            ask_for_consent: bool = self._config.get("agent", {}).get("ask_for_consent", False)
+            if ask_for_consent:
+                user_storage_mode: str | None = bundle.session.get("user_storage_mode")
+                turn_count: int = int(bundle.session.get("turn_count", 0) or 0)
+
+                if user_storage_mode is None and turn_count == 0:
+                    consent_prompt_text: str = self._config.get("agent", {}).get("consent_prompt", "")
+                    await self._async_memory.write(session_id, user_id, "session", "turn_count", 1)
+                    yield SentenceEvent(text=consent_prompt_text, sentence_index=0)
+                    yield DoneEvent(
+                        turn_id=turn_id,
+                        latency_ms=int((time.time() - start) * 1000),
+                    )
+                    return
+
+                if user_storage_mode is None and turn_count > 0:
+                    granted: bool = await self._async_trust.verify_consent(session_id, turn_input.user_message)
+                    new_storage_mode = "saved" if granted else "anonymous"
+                    await self._async_memory.write(session_id, user_id, "session", "user_storage_mode", new_storage_mode)
+                    bundle.session["user_storage_mode"] = new_storage_mode
+
+            # ── Step 2: Resolve current subagent ────────────────────────
+            current_subagent: SubAgent = self._workflow.subagents[current_subagent_id]
+
+            if current_subagent.special_handler:
+                yield SignalEvent(stage="trust_input", status="start")
+                trust_input = await self._async_trust.check_input(session_id, turn_input.user_message)
+                yield SignalEvent(stage="trust_input", status="complete")
+
+                if trust_input.action == "block":
+                    blocked_text = self._config.get("conversation", {}).get(
+                        "blocked_message", "I'm unable to help with that request."
+                    )
+                    yield SentenceEvent(text=blocked_text, sentence_index=0)
+                    yield DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000))
+                    return
+                if trust_input.action == "escalate":
+                    escalation_text = self._config.get("conversation", {}).get(
+                        "escalation_message", "I'm connecting you to a human agent who can better assist you."
+                    )
+                    yield SentenceEvent(text=escalation_text, sentence_index=0)
+                    yield DoneEvent(turn_id=turn_id, was_escalated=True, latency_ms=int((time.time() - start) * 1000))
+                    return
+
+                # Execute special handler inline for streaming
+                if current_subagent.special_handler == "hitl":
+                    hitl_msg = self._config.get("hitl", {}).get(
+                        "response_message", "I'm connecting you with a counsellor who can better assist you."
+                    )
+                    yield SentenceEvent(text=hitl_msg, sentence_index=0)
+                    yield DoneEvent(turn_id=turn_id, was_escalated=True, latency_ms=int((time.time() - start) * 1000))
+                    return
+                elif current_subagent.special_handler == "whatsapp_handoff":
+                    handoff_msg = self._config.get("messages", {}).get(
+                        "whatsapp_handoff", "We're sending you a WhatsApp message with all the details."
+                    )
+                    yield SentenceEvent(text=handoff_msg, sentence_index=0)
+                    yield DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000))
+                    return
+                else:
+                    fallback_msg = self._config.get("conversation", {}).get(
+                        "unknown_intent_message", "I didn't quite understand that. Could you tell me more?"
+                    )
+                    yield SentenceEvent(text=fallback_msg, sentence_index=0)
+                    yield DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000))
+                    return
+
+            # ── Step 3: Trust check on input ────────────────────────────
+            yield SignalEvent(stage="trust_input", status="start")
+            trust_input = await self._async_trust.check_input(session_id, turn_input.user_message)
+            yield SignalEvent(stage="trust_input", status="complete")
+
+            if trust_input.action == "block":
+                blocked_text = self._config.get("conversation", {}).get(
+                    "blocked_message", "I'm unable to help with that request."
+                )
+                yield SentenceEvent(text=blocked_text, sentence_index=0)
+                yield DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000))
+                return
+
+            if trust_input.action == "escalate":
+                escalation_text = self._config.get("conversation", {}).get(
+                    "escalation_message", "I'm connecting you to a human agent who can better assist you."
+                )
+                yield SentenceEvent(text=escalation_text, sentence_index=0)
+                yield DoneEvent(turn_id=turn_id, was_escalated=True, latency_ms=int((time.time() - start) * 1000))
+                return
+
+            # ── Step 4: Language Normalisation ──────────────────────────
+            yield SignalEvent(stage="nlu", status="start")
+            normalised_input, turn_language = self._language_normaliser.normalise(
+                raw_input=turn_input.user_message,
+                config=self._config,
+                llm=self._llm,
+            )
+
+            profile_data = bundle.profile if bundle.profile is not None else {}
+            session_data = bundle.session if bundle.session is not None else {}
+            default_language = (
+                self._config.get("preprocessing", {})
+                .get("language_normalisation", {})
+                .get("default_language", "hindi")
+            )
+            language_preference = (
+                profile_data.get("language_preference")
+                or session_data.get("language_preference")
+                or turn_language
+                or default_language
+            )
+
+            saved_preference = session_data.get("language_preference") or profile_data.get("language_preference")
+            if not saved_preference or (turn_language and turn_language != saved_preference):
+                if turn_language and turn_language != saved_preference:
+                    language_preference = turn_language
+                pref_scope: str = self._config.get("entity_persistence", {}).get("scope", "persistent")
+                await self._async_memory.write(session_id, user_id, pref_scope, "language_preference", language_preference)
+                bundle.session["language_preference"] = language_preference
+
+            detected_language = language_preference
+
+            # ── Step 5: NLU Processor ──────────────────────────────────
+            allowed_intents = self._workflow.nlu_intent_set.get(current_subagent_id, [])
+            profile_data = bundle.profile or {}
+            existing_profile_keys: list[str] = [k for k in profile_data if k != "attributes"]
+            for attr in profile_data.get("attributes", []):
+                attr_key = attr.get("key", "") if isinstance(attr, dict) else ""
+                if attr_key:
+                    existing_profile_keys.append(attr_key)
+
+            nlu_result = self._nlu_processor.process(
+                normalised_input=normalised_input,
+                current_question=current_question,
+                current_subagent_id=current_subagent_id,
+                llm=self._llm,
+                allowed_intents=allowed_intents,
+                existing_profile_keys=existing_profile_keys,
+            )
+            yield SignalEvent(stage="nlu", status="complete")
+
+            # Write entities
+            entity_scope: str = self._config.get("entity_persistence", {}).get("scope", "persistent")
+            entity_map: dict = self._config.get("entity_to_profile_field", {})
+            for entity_key, entity_val in (nlu_result.entities or {}).items():
+                profile_field = entity_map.get(entity_key, entity_key)
+                await self._async_memory.write(session_id, user_id, entity_scope, profile_field, entity_val)
+                bundle.session[profile_field] = entity_val
+
+            # ── Step 6: Routing ────────────────────────────────────────
+            yield SignalEvent(stage="routing", status="start")
+            routing_state = dict(bundle.session)
+            if bundle.profile:
+                routing_state.update(bundle.profile)
+
+            next_subagent_id, matched_rule = self._resolve_next_subagent(
+                current_subagent=current_subagent,
+                nlu_result=nlu_result,
+                session=routing_state,
+            )
+
+            if matched_rule and matched_rule.session_writes:
+                for field_name, field_val in matched_rule.session_writes.items():
+                    await self._async_memory.write(session_id, user_id, "session", field_name, field_val)
+                    bundle.session[field_name] = field_val
+
+            raw_counts = bundle.session.get("subagent_entry_count")
+            subagent_entry_count = dict(raw_counts) if isinstance(raw_counts, dict) else {}
+            subagent_entry_count[next_subagent_id] = int(subagent_entry_count.get(next_subagent_id, 0)) + 1
+            await self._async_memory.write(session_id, user_id, "session", "subagent_entry_count", subagent_entry_count)
+            bundle.session["subagent_entry_count"] = subagent_entry_count
+            bundle.session["current_subagent_id"] = next_subagent_id
+            await self._async_memory.write(session_id, user_id, "session", "current_subagent_id", next_subagent_id)
+            yield SignalEvent(stage="routing", status="complete")
+
+            # ── Step 7: Prompt assembly ────────────────────────────────
+            next_subagent: SubAgent = self._workflow.subagents[next_subagent_id]
+            profile_context = dict(bundle.profile)
+            profile_field_names = set(entity_map.values())
+            for k, v in bundle.session.items():
+                if k in profile_field_names and v not in (None, "", "[]"):
+                    profile_context[k] = v
+
+            final_language = profile_context.get("language_preference", detected_language)
+            is_resumption = bundle.session.get("was_adopted", False)
+
+            # Step 6b: Assemble guardrail constraints
+            guardrail_constraints: dict | None = None
+            if nlu_result.active_risks:
+                try:
+                    guardrail_constraints = await self._async_trust.assemble_constraints(
+                        session_id=session_id,
+                        workflow_step=next_subagent_id,
+                        active_risks=nlu_result.active_risks,
+                        user_segment=bundle.profile.get("user_segment"),
+                    )
+                except Exception:
+                    blocked_text = self._config.get("conversation", {}).get(
+                        "blocked_message", "I'm unable to help with that request."
+                    )
+                    yield SentenceEvent(text=blocked_text, sentence_index=0)
+                    yield DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000))
+                    return
+
+            system = self._manager_agent.build_system_prompt(
+                agent_system_prompt=self._workflow.agent_system_prompt,
+                subagent_system_prompt=next_subagent.system_prompt,
+                detected_language=final_language,
+                channel=turn_input.channel,
+                profile=profile_context,
+                is_resumption=is_resumption,
+                guardrail_constraints=guardrail_constraints,
+            )
+
+            if is_resumption:
+                bundle.session["was_adopted"] = False
+                await self._async_memory.write(session_id, user_id, "session", "was_adopted", False)
+
+            messages = self._manager_agent.build_messages(
+                user_message=turn_input.user_message,
+                current_question=current_question,
+            )
+
+            if not messages:
+                yield DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000))
+                return
+
+            # ── Step 8: LLM streaming ──────────────────────────────────
+            active_tools = self._workflow.tool_defs.get(next_subagent_id, [])
+            sentence_index = 0
+            token_buffer = ""
+
+            try:
+                async for token in self._llm.stream_call(
+                    messages=messages,
+                    tools=active_tools if active_tools else None,
+                    system=system,
+                ):
+                    token_buffer += token
+                    sentences, token_buffer = _split_sentences(token_buffer)
+                    for sentence in sentences:
+                        # Per-sentence trust check
+                        yield SignalEvent(stage="trust_output", status="start")
+                        try:
+                            trust_output = await self._async_trust.check_output(session_id, sentence)
+                            if not trust_output.passed:
+                                sentence = self._safe_fallback_message()
+                                was_escalated = True
+                        except Exception:
+                            # Trust infra failure — treat as "allow" (spec requirement)
+                            logger.error(
+                                "orchestrator.stream_trust_output_infra_failure",
+                                extra={
+                                    "operation": "orchestrator.stream_turn",
+                                    "status": "failure",
+                                    "session_id": session_id,
+                                },
+                            )
+                        yield SignalEvent(stage="trust_output", status="complete")
+
+                        full_response_text += sentence + " "
+                        yield SentenceEvent(text=sentence, sentence_index=sentence_index)
+                        sentence_index += 1
+
+                model_used = self._llm.get_active_model()
+
+            except ToolUseRequested as e:
+                # ── Step 9: Tool use ───────────────────────────────────
+                was_tool_used = True
+                all_tool_calls = e.tool_calls
+
+                yield SignalEvent(stage="tool_start", status="start")
+                tool_results_for_llm = []
+                for tc in e.tool_calls:
+                    if self._async_gateway:
+                        tool_result = await self._async_gateway.execute(tc, session_id)
+                    else:
+                        # Fallback: no async gateway — cannot execute tools in streaming mode
+                        logger.error(
+                            "orchestrator.stream_turn_no_async_gateway",
+                            extra={"session_id": session_id, "tool_name": tc.tool_name},
+                        )
+                        break
+                    tool_results_for_llm.append({
+                        "type": "tool_result",
+                        "tool_use_id": tc.tool_use_id,
+                        "content": tool_result.result_text or str(tool_result.result),
+                    })
+                yield SignalEvent(stage="tool_end", status="complete")
+
+                # Resume streaming with tool results
+                messages.append({"role": "assistant", "content": [
+                    {"type": "tool_use", "id": tc.tool_use_id, "name": tc.tool_name, "input": tc.input_params}
+                    for tc in e.tool_calls
+                ]})
+                messages.append({"role": "user", "content": tool_results_for_llm})
+
+                try:
+                    async for token in self._llm.stream_call(
+                        messages=messages,
+                        tools=active_tools if active_tools else None,
+                        system=system,
+                    ):
+                        token_buffer += token
+                        sentences, token_buffer = _split_sentences(token_buffer)
+                        for sentence in sentences:
+                            yield SignalEvent(stage="trust_output", status="start")
+                            try:
+                                trust_output = await self._async_trust.check_output(session_id, sentence)
+                                if not trust_output.passed:
+                                    sentence = self._safe_fallback_message()
+                                    was_escalated = True
+                            except Exception:
+                                logger.error(
+                                    "orchestrator.stream_trust_output_infra_failure",
+                                    extra={"operation": "orchestrator.stream_turn", "status": "failure", "session_id": session_id},
+                                )
+                            yield SignalEvent(stage="trust_output", status="complete")
+
+                            full_response_text += sentence + " "
+                            yield SentenceEvent(text=sentence, sentence_index=sentence_index)
+                            sentence_index += 1
+
+                except ToolUseRequested:
+                    # Nested tool use — not supported in PoC streaming, emit what we have
+                    logger.warning(
+                        "orchestrator.stream_turn_nested_tool_use",
+                        extra={"session_id": session_id},
+                    )
+
+                model_used = self._llm.get_active_model()
+
+            # Flush remaining buffer as final sentence
+            remaining = token_buffer.strip()
+            if remaining:
+                yield SignalEvent(stage="trust_output", status="start")
+                try:
+                    trust_output = await self._async_trust.check_output(session_id, remaining)
+                    if not trust_output.passed:
+                        remaining = self._safe_fallback_message()
+                        was_escalated = True
+                except Exception:
+                    logger.error(
+                        "orchestrator.stream_trust_output_infra_failure",
+                        extra={"operation": "orchestrator.stream_turn", "status": "failure", "session_id": session_id},
+                    )
+                yield SignalEvent(stage="trust_output", status="complete")
+                full_response_text += remaining
+                yield SentenceEvent(text=remaining, sentence_index=sentence_index)
+
+            # ── Step 11: Write current_question ────────────────────────
+            yield SignalEvent(stage="memory_write", status="start")
+            await self._async_memory.write(session_id, user_id, "session", "current_question", full_response_text.strip())
+            yield SignalEvent(stage="memory_write", status="complete")
+
+            latency_ms = int((time.time() - start) * 1000)
+
+            # ── Yield DoneEvent (terminal) ─────────────────────────────
+            yield DoneEvent(
+                was_escalated=was_escalated,
+                was_tool_used=was_tool_used,
+                model_used=model_used,
+                latency_ms=latency_ms,
+                turn_id=turn_id,
+            )
+
+            # ── Steps 12-13: Async post-turn ───────────────────────────
+            asyncio.create_task(
+                self._async_post_turn(
+                    session_id=session_id,
+                    user_id=user_id,
+                    turn_id=turn_id,
+                    response_text=full_response_text.strip(),
+                    user_message=turn_input.user_message,
+                    trust_input=trust_input,
+                    trust_output=trust_output,
+                    model_used=model_used,
+                    intent=nlu_result.intent,
+                    tool_calls=all_tool_calls,
+                    latency_ms=latency_ms,
+                    timestamp_ms=turn_input.timestamp_ms,
+                )
+            )
+
+        except Exception as e:
+            logger.error(
+                "orchestrator.stream_turn_error",
+                extra={
+                    "operation": "orchestrator.stream_turn",
+                    "status": "failure",
+                    "session_id": session_id,
+                    "error": f"{type(e).__name__}: {e}",
+                },
+            )
+            yield DoneEvent(
+                turn_id=turn_id,
+                turn_status="abandoned",
+                latency_ms=int((time.time() - start) * 1000),
+            )
+
+    async def _async_post_turn(
+        self,
+        session_id: str,
+        user_id: str,
+        turn_id: str,
+        response_text: str,
+        user_message: str,
+        trust_input: TrustCheckResult,
+        trust_output: TrustCheckResult,
+        model_used: str,
+        intent: str,
+        tool_calls: list[ToolCall],
+        latency_ms: int,
+        timestamp_ms: int,
+    ) -> None:
+        """Run Steps 12-13 asynchronously after DoneEvent is yielded.
+
+        Writes last_response to Memory Layer and emits turn event to
+        Observability Layer. Never raises.
+        """
+        try:
+            # Step 11b: Record audit turn
+            if self._async_memory:
+                await self._async_memory.record_audit_turn(
+                    session_id=session_id,
+                    user_id=user_id,
+                    turn_id=turn_id,
+                    user_message=user_message,
+                    system_message=response_text,
+                    metadata={"model": model_used, "intent": intent, "latency_ms": latency_ms},
+                )
+
+            # Step 12: Write last_response
+            if self._async_memory:
+                await self._async_memory.write(session_id, user_id, "session", "last_response", response_text)
+
+            # Step 13: Emit to Observability Layer
+            if self._async_learning:
+                turn_event = TurnEvent(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_text=response_text,
+                    tool_calls=tool_calls,
+                    trust_input_result=trust_input,
+                    trust_output_result=trust_output,
+                    model_used=model_used,
+                    intent=intent,
+                    input_tokens=0,
+                    output_tokens=0,
+                    latency_ms=latency_ms,
+                    timestamp_ms=timestamp_ms,
+                    trace_id=self._current_trace_id(),
+                )
+                await self._async_learning.emit_turn(turn_event)
+
+        except Exception as e:
+            logger.error(
+                "orchestrator.async_post_turn_error",
+                extra={
+                    "operation": "orchestrator._async_post_turn",
+                    "status": "failure",
+                    "session_id": session_id,
+                    "error": f"{type(e).__name__}: {e}",
+                },
+            )
+
+
+# ---------------------------------------------------------------------------
+# Module-level utilities
+# ---------------------------------------------------------------------------
+
+# Regex for sentence splitting — splits on . ? ! । (Devanagari danda U+0964)
+# ？ (fullwidth question mark U+FF1F) followed by whitespace or end-of-string.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.?!।？])\s+")
+
+
+def _split_sentences(buffer: str) -> tuple[list[str], str]:
+    """Split accumulated text into complete sentences and a remainder.
+
+    Args:
+        buffer: Accumulated text from LLM token stream.
+
+    Returns:
+        Tuple of (complete_sentences, remaining_buffer).
+        Complete sentences are stripped. Remaining buffer holds text
+        after the last sentence boundary (may be empty).
+    """
+    parts = _SENTENCE_SPLIT_RE.split(buffer)
+    if len(parts) <= 1:
+        # No sentence boundary found — entire buffer is remainder
+        return [], buffer
+
+    # All parts except the last are complete sentences
+    sentences = [p.strip() for p in parts[:-1] if p.strip()]
+    remainder = parts[-1]
+    return sentences, remainder

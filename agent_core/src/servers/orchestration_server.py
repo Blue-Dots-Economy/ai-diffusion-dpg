@@ -1,11 +1,12 @@
 """
 agent_core/src/orchestration_server.py
 
-FastAPI server exposing the Agent Core orchestration endpoint.
+FastAPI server exposing the Agent Core orchestration endpoints.
 
 Exposes:
-  POST /process_turn — receives a user turn, returns the agent response.
-  GET  /health       — liveness probe.
+  POST /process_turn  — receives a user turn, returns the agent response (sync, JSON).
+  POST /stream_turn   — receives a user turn, returns SSE stream of events (async).
+  GET  /health        — liveness probe.
 """
 
 from __future__ import annotations
@@ -14,10 +15,11 @@ import logging
 import time
 
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from src.orchestrator import AgentCore
-from src.models import TurnInput, TurnResult
+from src.models import DoneEvent, TurnInput, TurnResult
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +162,76 @@ def create_orchestration_app(agent_core: AgentCore) -> FastAPI:
                 model_used="",
                 latency_ms=latency_ms,
             )
+
+    @app.post("/stream_turn")
+    async def stream_turn(request: ProcessTurnRequest) -> StreamingResponse:
+        """Execute one conversation turn with SSE streaming output.
+
+        Returns text/event-stream with SignalEvent, SentenceEvent, and DoneEvent.
+        Connection closes after DoneEvent is sent.
+        """
+        session_id = request.session_id
+        start = time.time()
+
+        logger.info(
+            "orchestration_server.stream_turn_start",
+            extra={
+                "operation": "orchestration_server.stream_turn",
+                "status": "success",
+                "session_id": session_id,
+                "channel": request.channel,
+            },
+        )
+
+        turn_input = TurnInput(
+            session_id=session_id,
+            user_message=request.user_message,
+            channel=request.channel,
+            timestamp_ms=request.timestamp_ms
+            if request.timestamp_ms
+            else int(time.time() * 1000),
+            user_id=request.user_id,
+            fresh=request.fresh,
+        )
+
+        async def event_generator():
+            event_count = 0
+            try:
+                async for event in agent_core.stream_turn(turn_input):
+                    event_count += 1
+                    yield event.to_sse()
+            except Exception as e:
+                logger.error(
+                    "orchestration_server.stream_turn_error",
+                    extra={
+                        "operation": "orchestration_server.stream_turn",
+                        "status": "failure",
+                        "session_id": session_id,
+                        "error": f"{type(e).__name__}: {e}",
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+                yield DoneEvent(
+                    turn_status="abandoned",
+                    latency_ms=int((time.time() - start) * 1000),
+                ).to_sse()
+            finally:
+                logger.info(
+                    "orchestration_server.stream_turn_complete",
+                    extra={
+                        "operation": "orchestration_server.stream_turn",
+                        "status": "success",
+                        "session_id": session_id,
+                        "event_count": event_count,
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/health")
     def health() -> StatusResponse:

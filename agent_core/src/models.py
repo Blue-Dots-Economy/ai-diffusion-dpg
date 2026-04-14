@@ -8,8 +8,9 @@ No business logic. No imports from within agent_core/.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Optional
+import json
+from dataclasses import asdict, dataclass, field
+from typing import Any, Optional, Union
 
 
 # ---------------------------------------------------------------------------
@@ -217,3 +218,66 @@ class TurnEvent:
     latency_ms: int
     timestamp_ms: int
     trace_id: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Streaming events (SSE)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SignalEvent:
+    """Pipeline stage notification yielded by stream_turn().
+
+    Emitted before and after each pipeline stage to give callers
+    mid-turn visibility. No trust check applied to signal events.
+    """
+
+    type: str = "signal"
+    stage: str = ""     # memory_read | trust_input | nlu | routing | ke_retrieval | tool_start | tool_end | trust_output | memory_write
+    status: str = ""    # "start" | "complete" | "skipped"
+    detail: str = ""    # optional human-readable info
+
+    def to_sse(self) -> str:
+        """Serialise to SSE data line."""
+        return f"data: {json.dumps(asdict(self))}\n\n"
+
+
+@dataclass
+class SentenceEvent:
+    """One trust-checked sentence from the LLM response.
+
+    Yielded by stream_turn() after each sentence passes the
+    per-sentence trust check.
+    """
+
+    type: str = "sentence"
+    text: str = ""
+    sentence_index: int = 0
+
+    def to_sse(self) -> str:
+        """Serialise to SSE data line."""
+        return f"data: {json.dumps(asdict(self))}\n\n"
+
+
+@dataclass
+class DoneEvent:
+    """Terminal event — always the last event in a stream_turn() sequence.
+
+    Carries aggregated metadata for the completed turn.
+    """
+
+    type: str = "done"
+    was_escalated: bool = False
+    was_tool_used: bool = False
+    model_used: str = ""
+    latency_ms: int = 0
+    turn_id: str = ""
+    turn_status: str = "completed"  # "completed" | "interrupted" | "abandoned"
+
+    def to_sse(self) -> str:
+        """Serialise to SSE data line."""
+        return f"data: {json.dumps(asdict(self))}\n\n"
+
+
+StreamEvent = Union[SignalEvent, SentenceEvent, DoneEvent]
