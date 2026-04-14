@@ -48,11 +48,23 @@ Rules:
 - Use "unknown" intent if no intent matches or confidence is below 0.5.
 - Only include entity types that are clearly present in the message.
 - **Ad-hoc extraction**: If the user provides interesting personal details or preferences NOT in the primary list (e.g. hobbies, specific equipment owned, preferred brand), extract them with **dynamic keys** in the "entities" object. Choose descriptive key names on the fly.
+- **Key deduplication**: {existing_profile_keys_rule}
 - Return an empty dict {{}} for entities if none are found.
 - Use the current subagent and the last question asked (if provided) to resolve
   follow-up or ambiguous messages (e.g. a one-word answer like "welder" after "what trade
   do you work in?" should be classified as a profile answer, not an unknown intent).
 - Never include keys outside the four specified (intent, entities, sentiment, confidence)."""
+
+# Injected when the orchestrator passes existing profile keys.
+_PROFILE_KEYS_RULE = (
+    "The user's profile already contains these fields: [{keys}]. "
+    "If your extracted entity is semantically equivalent to an existing field, "
+    "you MUST reuse that exact field name instead of inventing a new key. "
+    "Only create a new dynamic key if no existing field covers the same concept."
+)
+_PROFILE_KEYS_RULE_NONE = (
+    "No existing profile fields are available. Use descriptive key names for ad-hoc entities."
+)
 
 
 class NLUProcessor:
@@ -97,6 +109,7 @@ class NLUProcessor:
         current_subagent_id: str,
         llm: LLMWrapperBase,
         allowed_intents: list[str] | None = None,
+        existing_profile_keys: list[str] | None = None,
     ) -> NLUResult:
         """
         Run NLU classification with workflow context.
@@ -113,6 +126,10 @@ class NLUProcessor:
                               prompt and validation. If provided (not None and not empty),
                               overrides the intents from config. If None or empty, falls
                               back to reading intents from config for backward compatibility.
+            existing_profile_keys: Optional list of field names already stored in the user's
+                              profile (declared fields + ad-hoc attribute keys). When provided,
+                              the NLU prompt instructs the LLM to reuse an existing key
+                              instead of inventing a semantically equivalent new one.
 
         Returns:
             NLUResult. On any failure: NLUResult(intent="unknown", confidence=0.0).
@@ -131,11 +148,17 @@ class NLUProcessor:
         )
 
         try:
+            if existing_profile_keys:
+                keys_rule = _PROFILE_KEYS_RULE.format(keys=", ".join(existing_profile_keys))
+            else:
+                keys_rule = _PROFILE_KEYS_RULE_NONE
+
             system_prompt = _NLU_SYSTEM_PROMPT_TEMPLATE.format(
                 domain_instruction=self._domain_instruction,
                 intents=", ".join(intents),
                 entities=", ".join(self._global_entities),
                 sentiment_classes=", ".join(self._sentiment_classes),
+                existing_profile_keys_rule=keys_rule,
             )
 
             # Build NLU context message with workflow and last-question grounding

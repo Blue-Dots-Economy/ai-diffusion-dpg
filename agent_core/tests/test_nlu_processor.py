@@ -283,3 +283,59 @@ def test_nlu_result_active_risks_set():
         confidence=0.9, active_risks=["false_certainty"]
     )
     assert result.active_risks == ["false_certainty"]
+
+
+# ---------------------------------------------------------------------------
+# Profile-key-aware entity dedup
+# ---------------------------------------------------------------------------
+
+
+def test_existing_profile_keys_injected_into_system_prompt(processor):
+    """When existing_profile_keys is provided, the NLU system prompt includes them."""
+    llm = make_llm_returning(intent="profile_answer", entities={"location": "Mumbai"})
+    processor.process(
+        "Mumbai mein kaam chahiye", "", "", llm,
+        existing_profile_keys=["name", "location", "trade_or_stream"],
+    )
+    call_kwargs = llm.call.call_args[1]
+    system_prompt = call_kwargs.get("system", "")
+    assert "name, location, trade_or_stream" in system_prompt
+    assert "reuse that exact field name" in system_prompt
+
+
+def test_no_profile_keys_uses_fallback_rule(processor):
+    """When existing_profile_keys is None, the prompt uses the fallback rule."""
+    llm = make_llm_returning(intent="profile_answer")
+    processor.process("kaam chahiye", "", "", llm, existing_profile_keys=None)
+    call_kwargs = llm.call.call_args[1]
+    system_prompt = call_kwargs.get("system", "")
+    assert "No existing profile fields" in system_prompt
+
+
+def test_empty_profile_keys_list_uses_fallback_rule(processor):
+    """An empty list is treated the same as None — fallback rule."""
+    llm = make_llm_returning(intent="profile_answer")
+    processor.process("kaam chahiye", "", "", llm, existing_profile_keys=[])
+    call_kwargs = llm.call.call_args[1]
+    system_prompt = call_kwargs.get("system", "")
+    assert "No existing profile fields" in system_prompt
+
+
+def test_adhoc_keys_included_in_profile_keys_prompt(processor):
+    """Ad-hoc attribute keys from previous sessions appear in the prompt."""
+    llm = make_llm_returning(intent="profile_answer", entities={"employer_name": "Reliance"})
+    processor.process(
+        "I work at Reliance", "", "", llm,
+        existing_profile_keys=["name", "location", "employer_name"],
+    )
+    call_kwargs = llm.call.call_args[1]
+    system_prompt = call_kwargs.get("system", "")
+    assert "employer_name" in system_prompt
+
+
+def test_process_without_profile_keys_backward_compatible(processor):
+    """Calling process() without existing_profile_keys still works (backward compat)."""
+    llm = make_llm_returning(intent="market_truth_query", entities={"location": "Hubli"})
+    result = processor.process("kaam chahiye Hubli mein", "", "", llm)
+    assert result.intent == "market_truth_query"
+    assert result.entities.get("location") == "Hubli"
