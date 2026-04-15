@@ -253,16 +253,22 @@ class VobizAdapter(TelephonyAdapterBase):
         )
 
     async def handle_barge_in(self, session_id: str) -> None:
-        """Placeholder barge-in hook. Pipecat's VADProcessor already interrupts
-        the active TTS frame today; this hook will route cancel_turn() to
-        Agent Core once streaming is wired through ReachLayerBase.
+        """Interrupt the active Agent Core turn on barge-in.
+
+        Cancels the in-flight stream_turn() via DELETE /sessions/{id}/active_turn.
+        Pipecat's VADProcessor handles audio-level interruption (stops queued TTS
+        audio frames); this method handles the Agent Core cancellation so no
+        further SentenceEvents are generated for the interrupted turn.
+
+        Args:
+            session_id: The session whose active turn should be cancelled.
         """
+        cancelled = await self.cancel_turn(session_id)
         logger.info(
             "vobiz_adapter.barge_in",
             extra={
                 "operation": "vobiz_adapter.handle_barge_in",
-                "status": "skipped",
-                "reason": "barge-in handled by pipecat VADProcessor; streaming integration pending",
+                "status": "success" if cancelled else "skipped",
                 "session_id": session_id,
             },
         )

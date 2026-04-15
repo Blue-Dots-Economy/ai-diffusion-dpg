@@ -32,7 +32,7 @@ from typing import Optional
 
 import httpx
 
-from pipecat.frames.frames import EndFrame, Frame, TTSSpeakFrame, TranscriptionFrame
+from pipecat.frames.frames import EndFrame, Frame, TTSSpeakFrame, TranscriptionFrame, UserStartedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from reach_layer_base import DoneEvent, ReachLayerBase, SentenceEvent, SignalEvent
@@ -117,7 +117,10 @@ class AgentCoreLLMProcessor(FrameProcessor):
         )
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
-        """Route TranscriptionFrames to Agent Core; pass all other frames through.
+        """Route frames to Agent Core; pass all other frames through.
+
+        TranscriptionFrame → forward utterance to Agent Core (direct or session).
+        UserStartedSpeakingFrame → barge-in: cancel active turn in session mode.
 
         Args:
             frame: Incoming pipeline frame.
@@ -127,8 +130,44 @@ class AgentCoreLLMProcessor(FrameProcessor):
 
         if isinstance(frame, TranscriptionFrame):
             await self._handle_transcription(frame)
+        elif isinstance(frame, UserStartedSpeakingFrame):
+            if self._assembly_mode == "session":
+                await self._handle_barge_in()
+            await self.push_frame(frame, direction)
         else:
             await self.push_frame(frame, direction)
+
+    async def _handle_barge_in(self) -> None:
+        """Cancel the active Agent Core turn on barge-in.
+
+        Called when UserStartedSpeakingFrame is received while in session mode.
+        Sends DELETE /sessions/{id}/active_turn via the channel's cancel_turn()
+        helper. Logs and returns cleanly on any error — never blocks the pipeline.
+        """
+        if self._channel is None:
+            return
+        try:
+            cancelled = await self._channel.cancel_turn(self._session_id)
+            logger.info(
+                "agent_core_llm.barge_in",
+                extra={
+                    "operation": "agent_core_llm.barge_in",
+                    "status": "success" if cancelled else "skipped",
+                    "session_id": self._session_id,
+                    "call_sid": self._call_sid,
+                },
+            )
+        except Exception as exc:
+            logger.error(
+                "agent_core_llm.barge_in_error",
+                extra={
+                    "operation": "agent_core_llm.barge_in",
+                    "status": "failure",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "session_id": self._session_id,
+                    "call_sid": self._call_sid,
+                },
+            )
 
     async def _handle_transcription(self, frame: TranscriptionFrame) -> None:
         """Call Agent Core and push TTSSpeakFrame (and EndFrame on escalation).
@@ -252,6 +291,7 @@ class AgentCoreLLMProcessor(FrameProcessor):
         start = time.time()
         sentences_pushed = 0
         was_escalated = False
+        was_interrupted = False
 
         try:
             await self._channel.submit_input(
@@ -291,6 +331,7 @@ class AgentCoreLLMProcessor(FrameProcessor):
                     )
                 elif isinstance(event, DoneEvent):
                     was_escalated = event.was_escalated
+                    was_interrupted = event.turn_status in ("interrupted", "abandoned")
                     logger.info(
                         "agent_core_llm.done",
                         extra={
@@ -323,8 +364,9 @@ class AgentCoreLLMProcessor(FrameProcessor):
             return
 
         # Nothing came through (no sentences, no done) → speak fallback so the
-        # caller doesn't sit in silence.
-        if sentences_pushed == 0:
+        # caller doesn't sit in silence. Skip on barge-in (interrupted/abandoned)
+        # because the caller already started speaking — don't talk over them.
+        if sentences_pushed == 0 and not was_interrupted:
             await self.push_frame(TTSSpeakFrame(text=self._fallback_phrase))
 
         if was_escalated:

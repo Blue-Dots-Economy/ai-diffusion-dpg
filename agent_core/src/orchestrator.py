@@ -1547,11 +1547,28 @@ class AgentCore(AgentCoreBase):
                 "channel": turn_input.channel,
             },
         )
-        # TEMP DEBUG
-        logger.warning("[DEBUG] stream_turn INPUT: %r", turn_input.user_message)
+        logger.info(
+            "\n═══════════════════════════════════════════════════════════════\n"
+            "  STREAM TURN START  session=%s  channel=%s\n"
+            "  input: %r\n"
+            "═══════════════════════════════════════════════════════════════",
+            session_id, turn_input.channel, turn_input.user_message[:120],
+        )
+
+        memory_endpoint = (
+            self._config.get("memory_client", {}).get("endpoint", "http://memory_layer:8002")
+        )
+        trust_endpoint = (
+            self._config.get("trust_client", {}).get("endpoint", "http://trust_layer:8003")
+        )
 
         try:
             # ── Step 1: Read session state ──────────────────────────────
+            logger.info(
+                "  [STEP 1] Memory context_bundle  →  POST %s/context_bundle  (session=%s)",
+                memory_endpoint, session_id,
+            )
+            t1 = time.time()
             yield SignalEvent(stage="memory_read", status="start")
             bundle = await self._async_memory.context_bundle(session_id, user_id, adopt=not turn_input.fresh)
             current_subagent_id: str = (
@@ -1560,6 +1577,13 @@ class AgentCore(AgentCoreBase):
             )
             current_question: str = bundle.session.get("current_question", "")
             yield SignalEvent(stage="memory_read", status="complete")
+            logger.info(
+                "  [STEP 1] Memory context_bundle  ✓  current_subagent_id=%s"
+                "  is_returning=%s  latency=%dms",
+                current_subagent_id,
+                bundle.session.get("is_returning", False),
+                int((time.time() - t1) * 1000),
+            )
 
             # ── Consent gate (Step 1b) ──────────────────────────────────
             ask_for_consent: bool = self._config.get("agent", {}).get("ask_for_consent", False)
@@ -1585,11 +1609,26 @@ class AgentCore(AgentCoreBase):
 
             # ── Step 2: Resolve current subagent ────────────────────────
             current_subagent: SubAgent = self._workflow.subagents[current_subagent_id]
+            logger.info(
+                "  [STEP 2] Resolved subagent=%s (%s)  special_handler=%s",
+                current_subagent.id, current_subagent.name,
+                current_subagent.special_handler or "none",
+            )
 
             if current_subagent.special_handler:
+                logger.info(
+                    "  [STEP 3] Trust Input Check  →  POST %s/check/input  (session=%s)",
+                    trust_endpoint, session_id,
+                )
+                t3 = time.time()
                 yield SignalEvent(stage="trust_input", status="start")
                 trust_input = await self._async_trust.check_input(session_id, turn_input.user_message)
                 yield SignalEvent(stage="trust_input", status="complete")
+                logger.info(
+                    "  [STEP 3] Trust Input Check  ✓  action=%s  passed=%s  reason=%s  latency=%dms",
+                    trust_input.action, trust_input.passed,
+                    trust_input.reason or "—", int((time.time() - t3) * 1000),
+                )
 
                 if trust_input.action == "block":
                     blocked_text = self._config.get("conversation", {}).get(
@@ -1630,9 +1669,19 @@ class AgentCore(AgentCoreBase):
                     return
 
             # ── Step 3: Trust check on input ────────────────────────────
+            logger.info(
+                "  [STEP 3] Trust Input Check  →  POST %s/check/input  (session=%s)",
+                trust_endpoint, session_id,
+            )
+            t3 = time.time()
             yield SignalEvent(stage="trust_input", status="start")
             trust_input = await self._async_trust.check_input(session_id, turn_input.user_message)
             yield SignalEvent(stage="trust_input", status="complete")
+            logger.info(
+                "  [STEP 3] Trust Input Check  ✓  action=%s  passed=%s  reason=%s  latency=%dms",
+                trust_input.action, trust_input.passed,
+                trust_input.reason or "—", int((time.time() - t3) * 1000),
+            )
 
             if trust_input.action == "block":
                 blocked_text = self._config.get("conversation", {}).get(
@@ -1651,11 +1700,17 @@ class AgentCore(AgentCoreBase):
                 return
 
             # ── Step 4: Language Normalisation ──────────────────────────
+            logger.info("  [STEP 4] Language Normalisation  →  (session=%s)", session_id)
+            t4 = time.time()
             yield SignalEvent(stage="nlu", status="start")
             normalised_input, turn_language = self._language_normaliser.normalise(
                 raw_input=turn_input.user_message,
                 config=self._config,
                 llm=self._llm,
+            )
+            logger.info(
+                "  [STEP 4] Language Normalisation  ✓  detected=%s  latency=%dms",
+                turn_language or "—", int((time.time() - t4) * 1000),
             )
 
             profile_data = bundle.profile if bundle.profile is not None else {}
@@ -1691,6 +1746,11 @@ class AgentCore(AgentCoreBase):
                 if attr_key:
                     existing_profile_keys.append(attr_key)
 
+            logger.info(
+                "  [STEP 5] NLU Processor  →  (normalised=%r  subagent=%s)",
+                normalised_input[:80], current_subagent_id,
+            )
+            t5 = time.time()
             nlu_result = self._nlu_processor.process(
                 normalised_input=normalised_input,
                 current_question=current_question,
@@ -1700,6 +1760,12 @@ class AgentCore(AgentCoreBase):
                 existing_profile_keys=existing_profile_keys,
             )
             yield SignalEvent(stage="nlu", status="complete")
+            logger.info(
+                "  [STEP 5] NLU Processor  ✓  intent=%s  confidence=%.2f"
+                "  entities=%s  latency=%dms",
+                nlu_result.intent, nlu_result.confidence,
+                list((nlu_result.entities or {}).keys()), int((time.time() - t5) * 1000),
+            )
 
             # Write entities
             entity_scope: str = self._config.get("entity_persistence", {}).get("scope", "persistent")
@@ -1710,6 +1776,11 @@ class AgentCore(AgentCoreBase):
                 bundle.session[profile_field] = entity_val
 
             # ── Step 6: Routing ────────────────────────────────────────
+            logger.info(
+                "  [STEP 6] Routing  →  intent=%s  current_subagent=%s",
+                nlu_result.intent, current_subagent_id,
+            )
+            t6 = time.time()
             yield SignalEvent(stage="routing", status="start")
             routing_state = dict(bundle.session)
             if bundle.profile:
@@ -1734,8 +1805,18 @@ class AgentCore(AgentCoreBase):
             bundle.session["current_subagent_id"] = next_subagent_id
             await self._async_memory.write(session_id, user_id, "session", "current_subagent_id", next_subagent_id)
             yield SignalEvent(stage="routing", status="complete")
+            logger.info(
+                "  [STEP 6] Routing  ✓  next_subagent=%s  matched_rule_intent=%s  latency=%dms",
+                next_subagent_id,
+                matched_rule.intent if matched_rule else "—",
+                int((time.time() - t6) * 1000),
+            )
 
             # ── Step 7: Prompt assembly ────────────────────────────────
+            logger.info(
+                "  [STEP 7] Prompt Assembly  →  subagent=%s  language=%s",
+                next_subagent_id, detected_language,
+            )
             next_subagent: SubAgent = self._workflow.subagents[next_subagent_id]
             profile_context = dict(bundle.profile)
             profile_field_names = set(entity_map.values())
@@ -1791,6 +1872,13 @@ class AgentCore(AgentCoreBase):
             active_tools = self._workflow.tool_defs.get(next_subagent_id, [])
             sentence_index = 0
             token_buffer = ""
+            primary_model = self._config.get("agent", {}).get("primary_model", "unknown")
+            logger.info(
+                "  [STEP 8] LLM Stream Call #1  →  Anthropic API (model=%s)"
+                "  tools_available=%d  message_count=%d",
+                primary_model, len(active_tools), len(messages),
+            )
+            t8 = time.time()
 
             try:
                 async for token in self._llm.stream_call(
@@ -1825,11 +1913,23 @@ class AgentCore(AgentCoreBase):
                         sentence_index += 1
 
                 model_used = self._llm.get_active_model()
+                logger.info(
+                    "  [STEP 8] LLM Stream Call #1  ✓  model_used=%s"
+                    "  sentences=%d  latency=%dms",
+                    model_used, sentence_index, int((time.time() - t8) * 1000),
+                )
 
             except ToolUseRequested as e:
                 # ── Step 9: Tool use ───────────────────────────────────
                 was_tool_used = True
                 all_tool_calls = e.tool_calls
+                tool_names = [tc.tool_name for tc in e.tool_calls]
+                logger.info(
+                    "  [STEP 8] LLM Stream Call #1  ✓  stop_reason=tool_use  tools=%s  latency=%dms",
+                    tool_names, int((time.time() - t8) * 1000),
+                )
+                logger.info("  [STEP 9] Tool-Use Loop  →  executing tools=%s", tool_names)
+                t9 = time.time()
 
                 yield SignalEvent(stage="tool_start", status="start")
                 tool_results_for_llm = []
@@ -1849,6 +1949,16 @@ class AgentCore(AgentCoreBase):
                         "content": tool_result.result_text or str(tool_result.result),
                     })
                 yield SignalEvent(stage="tool_end", status="complete")
+                logger.info(
+                    "  [STEP 9] Tool-Use Loop  ✓  tools_called=%s  latency=%dms",
+                    tool_names, int((time.time() - t9) * 1000),
+                )
+                logger.info(
+                    "  [STEP 8] LLM Stream Call #2  →  Anthropic API (model=%s)"
+                    "  message_count=%d",
+                    primary_model, len(messages) + 2,
+                )
+                t8b = time.time()
 
                 # Resume streaming with tool results
                 messages.append({"role": "assistant", "content": [
@@ -1891,6 +2001,10 @@ class AgentCore(AgentCoreBase):
                     )
 
                 model_used = self._llm.get_active_model()
+                logger.info(
+                    "  [STEP 8] LLM Stream Call #2  ✓  model_used=%s  latency=%dms",
+                    model_used, int((time.time() - t8b) * 1000),
+                )
 
             # Flush remaining buffer as final sentence
             remaining = token_buffer.strip()
@@ -1910,14 +2024,43 @@ class AgentCore(AgentCoreBase):
                 full_response_text += remaining
                 yield SentenceEvent(text=remaining, sentence_index=sentence_index)
 
-            # TEMP DEBUG
-            logger.warning("[DEBUG] stream_turn REPLY: %r", full_response_text.strip())
             # ── Step 11: Write current_question ────────────────────────
+            logger.info(
+                "  [STEP 11] Delivering response  (async: memory write + learning emit follow)",
+            )
             yield SignalEvent(stage="memory_write", status="start")
+            t11 = time.time()
             await self._async_memory.write(session_id, user_id, "session", "current_question", full_response_text.strip())
             yield SignalEvent(stage="memory_write", status="complete")
+            logger.info(
+                "  [STEP 11] Memory write  ✓  latency=%dms",
+                int((time.time() - t11) * 1000),
+            )
 
             latency_ms = int((time.time() - start) * 1000)
+            logger.info(
+                "orchestrator.stream_turn_complete",
+                extra={
+                    "operation": "orchestrator.stream_turn",
+                    "status": "success",
+                    "session_id": session_id,
+                    "latency_ms": latency_ms,
+                    "model": model_used,
+                    "tool_used": was_tool_used,
+                    "intent": nlu_result.intent,
+                    "next_subagent_id": next_subagent_id,
+                },
+            )
+            logger.info(
+                "\n═══════════════════════════════════════════════════════════════\n"
+                "  STREAM TURN COMPLETE  session=%s  intent=%s  tool_used=%s\n"
+                "  model=%s  total_latency=%dms  next_subagent=%s\n"
+                "  response: %r\n"
+                "═══════════════════════════════════════════════════════════════",
+                session_id, nlu_result.intent, was_tool_used,
+                model_used, latency_ms, next_subagent_id,
+                full_response_text.strip()[:200],
+            )
 
             # ── Yield DoneEvent (terminal) ─────────────────────────────
             yield DoneEvent(

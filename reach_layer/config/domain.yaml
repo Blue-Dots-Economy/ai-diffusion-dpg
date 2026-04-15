@@ -67,9 +67,17 @@ reach_layer:
     # ─── Voice ───────────────────────────────────────────────────────────────
     voice:
       raya:
-        stt_language: "hi"
-        tts_language: "hi"
-        voice_id: "d6a002d0-230c-49b1-a137-b8a7d564b1ae"  # Priyanka, hi
+        # stt_language: "hi"           # STT supports: en, hi, mr, ta, te, kn, gu, bn, ml, ...
+        # tts_language: "hi"           # TTS language must match voice locale
+        # voice_id: "d6a002d0-230c-49b1-a137-b8a7d564b1ae"  # Priyanka, hi
+        # --- English ---
+        stt_language: "en"
+        tts_language: "en-us"
+        voice_id: "97a155d0-8192-410e-a97c-540481182fc7"  # Liam, us
+        # --- Marathi ---
+        # stt_language: "mr"
+        # tts_language: "mr"
+        # voice_id: "c849b31b-b0ba-488f-b97d-3fd12f2656f4"
       agent_core:
-        greeting: "नमस्ते! मैं Kaam Ki Baat हूँ। आज मैं आपकी कैसे मदद कर सकता हूँ?"
-        fallback_phrase: "माफ़ कीजिए, मैं इसे समझ नहीं पाया। कृपया दोबारा कहें।"
+        greeting: "Hello! I am Kaam Ki Baat. How can I help you today?"
+        fallback_phrase: "I'm sorry, I couldn't understand that. Please try again."
