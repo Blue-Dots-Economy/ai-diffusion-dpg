@@ -1,15 +1,25 @@
 """
-telephony_adapter/src/base.py
+reach_layer/voice/src/base.py
 
-TelephonyAdapterBase — abstract interface for the telephony channel adapter.
-All concrete adapter implementations inherit from this class.
-Belongs to the Reach Layer channel family in the DPG framework.
+TelephonyAdapterBase — voice channel base class for telephony providers.
+Extends ``reach_layer_base.VoiceChannelBase`` so voice adapters inherit the
+shared Agent Core HTTP methods (submit_input, subscribe_events, cancel_turn)
+plus voice-specific lifecycle hooks (handle_barge_in, on_vad_event).
+
+Historical note: this used to be a standalone class in ``telephony_adapter/``
+with its own parallel hierarchy (handle_call / teardown). It now plugs into
+the unified Reach Layer base class tree. handle_call / teardown are kept as
+additional abstract methods because the pipecat-based pipeline needs them,
+but every concrete subclass must also implement the VoiceChannelBase hooks.
 """
+
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from abc import abstractmethod
+from dataclasses import dataclass
 from typing import Optional
+
+from reach_layer_base import VoiceChannelBase
 
 
 class TelephonyError(Exception):
@@ -53,11 +63,12 @@ class TelephonyTurnResult:
     latency_ms: int = 0
 
 
-class TelephonyAdapterBase(ABC):
-    """Abstract base class for telephony channel adapters.
+class TelephonyAdapterBase(VoiceChannelBase):
+    """Voice channel adapter base for telephony providers.
 
-    Defines the lifecycle interface every concrete adapter must implement:
-    pipeline setup, turn processing, and teardown.
+    Defines telephony-pipeline-specific lifecycle in addition to the hooks
+    inherited from VoiceChannelBase. Concrete adapters (e.g. VobizAdapter)
+    must implement both sets.
     """
 
     @abstractmethod

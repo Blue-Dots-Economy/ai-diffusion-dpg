@@ -1,5 +1,5 @@
 """
-telephony_adapter/src/vobiz_adapter.py
+reach_layer/voice/src/vobiz_adapter.py
 
 VobizAdapter — concrete TelephonyAdapterBase for the Vobiz telephony platform.
 
@@ -9,7 +9,7 @@ RayaSTTService, AgentCoreLLMProcessor, and RayaTTSService.
 
 caller_id (E.164 phone number) is used as user_id so the Memory Layer can
 recognise returning callers across sessions.
-Belongs to the Reach Layer / Telephony Adapter block in the DPG framework.
+Belongs to the Reach Layer / Voice channel in the DPG framework.
 """
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.audio.vad_processor import VADProcessor
+from reach_layer_base import VADEvent
 
 from src.base import TelephonyAdapterBase, TelephonyError
 from src.operators.vobiz_operator import VobizOperator
@@ -49,9 +50,12 @@ class VobizAdapter(TelephonyAdapterBase):
     """
 
     def __init__(self, config: dict) -> None:
-        if config is None:
-            raise ValueError("config must not be None")
-        self._config = config
+        # Initialise ReachLayerBase → inherits submit_input / subscribe_events /
+        # cancel_turn HTTP helpers and channel_name/assembly_mode accessors.
+        # Voice channels currently drive Agent Core through the embedded
+        # AgentCoreLLMProcessor (pipecat FrameProcessor); the inherited HTTP
+        # helpers are available for future streaming integration.
+        super().__init__(config, channel_name="voice")
         self._operator = VobizOperator(config)
         self._vad_wrapper = SileroVADWrapper()
         ac_cfg = config.get("telephony_adapter", {}).get("agent_core", {})
@@ -177,5 +181,74 @@ class VobizAdapter(TelephonyAdapterBase):
                 "operation": "vobiz_adapter.teardown",
                 "status": "success",
                 "call_sid": call_sid,
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # ReachLayerBase / VoiceChannelBase lifecycle hooks
+    #
+    # Design decision (not in spec): These hooks are implemented as
+    # structured-log no-ops for now. The current VobizAdapter delegates the
+    # full per-call lifecycle to handle_call() / teardown() + the Pipecat
+    # pipeline, so there is no separate session_start / session_end or
+    # barge-in / VAD dispatch path yet. The hooks are defined so the class
+    # satisfies the unified Reach Layer base contract (issue #73) and so
+    # future streaming refactors (issue #71 follow-ups) have observable
+    # extension points without another signature change.
+    # ------------------------------------------------------------------
+
+    async def on_session_start(self, session_id: str, user_id: str) -> None:
+        """No-op. Voice sessions are established inside handle_call()."""
+        logger.info(
+            "vobiz_adapter.session_start",
+            extra={
+                "operation": "vobiz_adapter.on_session_start",
+                "status": "skipped",
+                "reason": "session lifecycle owned by handle_call/teardown",
+                "session_id": session_id,
+                "user_id": user_id or "anonymous",
+            },
+        )
+
+    async def on_session_end(self, session_id: str) -> None:
+        """No-op. Voice sessions tear down inside teardown()."""
+        logger.info(
+            "vobiz_adapter.session_end",
+            extra={
+                "operation": "vobiz_adapter.on_session_end",
+                "status": "skipped",
+                "reason": "session lifecycle owned by handle_call/teardown",
+                "session_id": session_id,
+            },
+        )
+
+    async def handle_barge_in(self, session_id: str) -> None:
+        """Placeholder barge-in hook. Pipecat's VADProcessor already interrupts
+        the active TTS frame today; this hook will route cancel_turn() to
+        Agent Core once streaming is wired through ReachLayerBase.
+        """
+        logger.info(
+            "vobiz_adapter.barge_in",
+            extra={
+                "operation": "vobiz_adapter.handle_barge_in",
+                "status": "skipped",
+                "reason": "barge-in handled by pipecat VADProcessor; streaming integration pending",
+                "session_id": session_id,
+            },
+        )
+
+    async def on_vad_event(self, session_id: str, event: VADEvent) -> None:
+        """Placeholder VAD event hook. Observability-only today; the Pipecat
+        VADProcessor drives the audio pipeline directly.
+        """
+        logger.info(
+            "vobiz_adapter.vad_event",
+            extra={
+                "operation": "vobiz_adapter.on_vad_event",
+                "status": "success",
+                "session_id": session_id,
+                "event_type": event.event_type,
+                "timestamp_ms": event.timestamp_ms,
+                "duration_ms": event.duration_ms,
             },
         )

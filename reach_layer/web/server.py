@@ -1,12 +1,12 @@
 """
-reach_layer/server.py
+reach_layer/web/server.py
 
-FastAPI web server for the DPG Reach Layer block.
+FastAPI web server for the DPG Reach Layer — web channel.
 Serves the single-page chat UI at GET / and proxies turn requests to Agent Core.
 Also proxies GET /user-history/{user_id} to the Memory Layer for session restore.
 
-This module is the entry point for the web channel adapter. The CLI adapter
-remains available via main.py for local development.
+Direct-mode channel — each POST /chat triggers a synchronous POST /process_turn
+against Agent Core and returns the JSON response to the browser. No SSE path.
 """
 
 from __future__ import annotations
@@ -20,7 +20,8 @@ from typing import Any, Optional
 
 from dotenv import load_dotenv
 
-_env_local = Path(__file__).parent.parent / ".env.local"
+# Look for .env.local at the repo root (two parents up from this file).
+_env_local = Path(__file__).resolve().parents[2] / ".env.local"
 if _env_local.exists():
     load_dotenv(_env_local)
 load_dotenv()
@@ -42,7 +43,6 @@ from src.auth import (
     verify_session_token,
 )
 from src.web_reach import WebReachLayer
-from src.base import TurnResult
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -147,8 +147,9 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
     app = FastAPI(title="Reach Layer — Web Channel Adapter")
     FastAPIInstrumentor.instrument_app(app)
 
-    # Paths to the React production build
-    _dist = Path(__file__).parent / "web" / "dist"
+    # Paths to the React production build (this file lives in reach_layer/web/,
+    # so the Vite output dir is simply ./dist relative to this module).
+    _dist = Path(__file__).parent / "dist"
     _assets = _dist / "assets"
 
     # Mount /assets — serves JS/CSS bundles built by Vite
@@ -343,14 +344,15 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
                 return {"response_text": f"[Invalid request: {e}]", "was_escalated": False,
                         "session_id": req.session_id or "", "latency_ms": 0}
 
+            session_id = turn["session_id"]
             payload: dict = {
-                "session_id": turn.session_id,
-                "user_message": turn.user_message,
-                "channel": turn.channel,
+                "session_id": session_id,
+                "user_message": turn["user_message"],
+                "channel": turn["channel"],
                 "fresh": bool(req.fresh),
             }
-            if turn.user_id:
-                payload["user_id"] = turn.user_id
+            if turn["user_id"]:
+                payload["user_id"] = turn["user_id"]
 
             # Retry once on timeout (exponential backoff: 1 s delay before retry).
             _last_timeout: httpx.TimeoutException | None = None
@@ -378,7 +380,7 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
                         },
                     )
                     return {"response_text": "[Could not reach Agent Core. Is the backend running?]",
-                            "was_escalated": False, "session_id": turn.session_id, "latency_ms": 0}
+                            "was_escalated": False, "session_id": session_id, "latency_ms": 0}
                 except Exception as e:
                     span.record_exception(e)
                     logger.error(
@@ -391,7 +393,7 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
                         },
                     )
                     return {"response_text": f"[Unexpected error: {type(e).__name__}]",
-                            "was_escalated": False, "session_id": turn.session_id, "latency_ms": 0}
+                            "was_escalated": False, "session_id": session_id, "latency_ms": 0}
 
             if _last_timeout is not None:
                 span.record_exception(_last_timeout)
@@ -405,23 +407,16 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
                     },
                 )
                 return {"response_text": "[Agent Core did not respond in time. Please try again.]",
-                        "was_escalated": False, "session_id": turn.session_id, "latency_ms": 0}
+                        "was_escalated": False, "session_id": session_id, "latency_ms": 0}
 
-            result = TurnResult(
-                session_id=turn.session_id,
-                response_text=data.get("response_text", ""),
-                was_escalated=data.get("was_escalated", False),
-                was_tool_used=data.get("was_tool_used", False),
-                model_used=data.get("model_used", ""),
-                latency_ms=int((time.time() - start) * 1000),
-            )
-            formatted = web_reach.format_result(result)
+            latency_ms = int((time.time() - start) * 1000)
+            formatted = web_reach.format_result(session_id, data, latency_ms)
             logger.info(
                 "reach_server.chat_success",
                 extra={
                     "operation": "reach_server.chat",
                     "status": "success",
-                    "session_id": turn.session_id,
+                    "session_id": session_id,
                     "latency_ms": formatted["latency_ms"],
                 },
             )

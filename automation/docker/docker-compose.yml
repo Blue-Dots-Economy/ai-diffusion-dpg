@@ -39,7 +39,8 @@
 #     docker compose push
 #     # re-tag every image as :latest and push
 #     for svc in action_gateway agent_core dev_kit knowledge_engine memory_layer \
-#                observability_layer reach_layer telephony_adapter trust_layer; do
+#                observability_layer reach_layer_cli reach_layer_web reach_layer_voice \
+#                trust_layer; do
 #       repo=$(docker compose config --format json | jq -r ".services.${svc}.image" | cut -d: -f1)
 #       docker tag ${repo}:${GIT_SHA} ${repo}:latest
 #       docker push ${repo}:latest
@@ -265,18 +266,22 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # Reach Layer — web chat UI (port 8005)
+  # Reach Layer — web channel (port 8005)
   # Open http://localhost:8005 in a browser after all services are healthy.
+  #
+  # Issue #73: the reach_layer service was split into three independently
+  # deployable channel services (cli/web/voice) that share reach_layer_base.
+  # Build and deploy only the channel(s) your domain needs.
   # ---------------------------------------------------------------------------
-  reach_layer:
+  reach_layer_web:
     build:
       context: ../..
-      dockerfile: reach_layer/Dockerfile
+      dockerfile: reach_layer/web/Dockerfile
       platforms:
         - linux/amd64
         - linux/arm64
-    image: sanketikahub/dpg-reach-layer:${GIT_SHA:-latest}
-    container_name: reach_layer
+    image: sanketikahub/dpg-reach-layer-web:${GIT_SHA:-latest}
+    container_name: reach_layer_web
     environment:
       - CONFIG_FOLDER=/app/config
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
@@ -305,18 +310,47 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # Telephony Adapter — Vobiz/WebSocket telephony bridge (port 8006)
-  # PUBLIC_URL is injected by the ngrok service via NGROK_URL or set manually.
+  # Reach Layer — CLI channel (on-demand REPL, opt-in via `cli` profile)
+  #   docker compose run --rm reach_layer_cli
   # ---------------------------------------------------------------------------
-  telephony_adapter:
+  reach_layer_cli:
     build:
       context: ../..
-      dockerfile: telephony_adapter/Dockerfile
+      dockerfile: reach_layer/cli/Dockerfile
       platforms:
         - linux/amd64
         - linux/arm64
-    image: sanketikahub/dpg-telephony-adapter:${GIT_SHA:-latest}
-    container_name: telephony_adapter
+    image: sanketikahub/dpg-reach-layer-cli:${GIT_SHA:-latest}
+    container_name: reach_layer_cli
+    environment:
+      - CONFIG_FOLDER=/app/config
+    volumes:
+      - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/reach_layer.yaml:ro
+    networks:
+      - dpg_net
+    stdin_open: true
+    tty: true
+    depends_on:
+      agent_core:
+        condition: service_healthy
+    profiles:
+      - cli
+
+  # ---------------------------------------------------------------------------
+  # Reach Layer — Voice channel (port 8006)
+  # Vobiz/WebSocket telephony bridge. PUBLIC_URL is injected by the ngrok
+  # service via NGROK_URL or set manually.
+  # ---------------------------------------------------------------------------
+  reach_layer_voice:
+    build:
+      context: ../..
+      dockerfile: reach_layer/voice/Dockerfile
+      platforms:
+        - linux/amd64
+        - linux/arm64
+    image: sanketikahub/dpg-reach-layer-voice:${GIT_SHA:-latest}
+    container_name: reach_layer_voice
     environment:
       - DPG_CONFIG_PATH=/app/config/dpg.yaml
       - NLTK_DATA=/tmp/nltk_data
@@ -465,7 +499,7 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # ngrok — exposes telephony_adapter (port 8006) to the public internet.
+  # ngrok — exposes reach_layer_voice (port 8006) to the public internet.
   # Required so Vobiz can reach /answer and /ws/{call_sid} from outside.
   #
   # Prerequisites:
@@ -475,14 +509,14 @@ services:
   #   docker logs ngrok                     # prints the forwarding URL on startup
   #   curl http://localhost:4040/api/tunnels # ngrok local API (JSON)
   #
-  # Then set PUBLIC_URL and restart telephony_adapter:
+  # Then set PUBLIC_URL and restart the voice service:
   #   export PUBLIC_URL=https://abc123.ngrok-free.app
-  #   docker compose up -d telephony_adapter
+  #   docker compose up -d reach_layer_voice
   # ---------------------------------------------------------------------------
   ngrok:
     image: ngrok/ngrok:latest
     container_name: ngrok
-    command: http telephony_adapter:8006 --log stdout
+    command: http reach_layer_voice:8006 --log stdout
     environment:
       - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
     ports:
@@ -495,7 +529,7 @@ services:
           cpus: '0.1'
           memory: 128M
     depends_on:
-      telephony_adapter:
+      reach_layer_voice:
         condition: service_healthy
     restart: unless-stopped
 

@@ -11,6 +11,17 @@ reach_layer:
   # Sidebar conversations list — max recent sessions returned to the UI.
   sessions:
     limit: 25
+  # Channel routing — assembly_mode tells the Reach Layer how to route input
+  # to Agent Core. "session" routes segments to POST /sessions/{id}/input
+  # (TurnAssembler). "direct" routes complete messages to POST /process_turn.
+  # Turn assembler tuning (silence_ms, semantic gate) lives in agent_core.yaml.
+  channels:
+    cli:
+      assembly_mode: session
+    web:
+      assembly_mode: direct
+    voice:
+      assembly_mode: session
 
 agent_core_client:
   endpoint: "http://agent_core:8000/process_turn"

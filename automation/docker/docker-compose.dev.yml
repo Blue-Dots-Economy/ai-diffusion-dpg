@@ -16,8 +16,8 @@
 #
 # Prerequisites:
 #   1. export ANTHROPIC_API_KEY=sk-ant-...
-#   2. docker compose up -d               (runs ingest first, then starts all services)
-#   3. docker compose run --rm reach_layer (interactive CLI session)
+#   2. docker compose up -d                    (runs ingest first, then starts all services)
+#   3. docker compose run --rm reach_layer_cli (interactive CLI session, opt-in via `cli` profile)
 #
 # Paths in this file are relative to the docker-compose.yml location.
 # ../../ resolves to the repository root.
@@ -210,11 +210,18 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # Reach Layer — Web UI + FastAPI server (port 8005)
+  # Reach Layer — Web channel (port 8005)
+  # React SPA + FastAPI server. Direct mode: POST /chat -> POST /process_turn.
+  #
+  # Note: Issue #73 split the monolithic reach_layer service into three
+  # independently-deployable channel services (cli/web/voice) that share the
+  # reach_layer_base HTTP helpers. Deploy only the channel(s) you need.
   # ---------------------------------------------------------------------------
-  reach_layer:
-    image: sanketikahub/dpg-reach-layer:latest
-    container_name: reach_layer
+  reach_layer_web:
+    build:
+      context: ../..
+      dockerfile: reach_layer/web/Dockerfile
+    container_name: reach_layer_web
     environment:
       - CONFIG_FOLDER=/app/config
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
@@ -243,13 +250,42 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # Telephony Adapter — Vobiz/WebSocket telephony bridge (port 8006)
+  # Reach Layer — CLI channel (on-demand REPL)
+  # Session mode: POST /sessions/{id}/input + SSE event stream.
+  # Launch with:
+  #   docker compose -f docker-compose.dev.yml run --rm reach_layer_cli
+  # ---------------------------------------------------------------------------
+  reach_layer_cli:
+    build:
+      context: ../..
+      dockerfile: reach_layer/cli/Dockerfile
+    container_name: reach_layer_cli
+    environment:
+      - CONFIG_FOLDER=/app/config
+    volumes:
+      - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/reach_layer.yaml:ro
+    networks:
+      - dpg_net
+    stdin_open: true
+    tty: true
+    depends_on:
+      agent_core:
+        condition: service_healthy
+    profiles:
+      - cli  # do not auto-start with `docker compose up`; use `run --rm`
+
+  # ---------------------------------------------------------------------------
+  # Reach Layer — Voice channel (port 8006)
+  # Vobiz/WebSocket telephony bridge. Session mode (pipecat pipeline).
   # PUBLIC_URL must be set before starting (export PUBLIC_URL=https://...).
   # Use the ngrok service to get a public URL automatically.
   # ---------------------------------------------------------------------------
-  telephony_adapter:
-    image: sanketikahub/dpg-telephony-adapter:latest
-    container_name: telephony_adapter
+  reach_layer_voice:
+    build:
+      context: ../..
+      dockerfile: reach_layer/voice/Dockerfile
+    container_name: reach_layer_voice
     environment:
       - DPG_CONFIG_PATH=/app/config/dpg.yaml
       - NLTK_DATA=/tmp/nltk_data
@@ -392,7 +428,7 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # ngrok — exposes telephony_adapter (port 8006) to the public internet.
+  # ngrok — exposes reach_layer_voice (port 8006) to the public internet.
   # Required so Vobiz can reach /answer and /ws/{call_sid} from outside.
   #
   # Prerequisites:
@@ -402,14 +438,14 @@ services:
   #   docker logs ngrok                     # prints the forwarding URL on startup
   #   curl http://localhost:4040/api/tunnels # ngrok local API (JSON)
   #
-  # Then set PUBLIC_URL and restart telephony_adapter:
+  # Then set PUBLIC_URL and restart the voice service:
   #   export PUBLIC_URL=https://abc123.ngrok-free.app
-  #   docker compose up -d telephony_adapter
+  #   docker compose up -d reach_layer_voice
   # ---------------------------------------------------------------------------
   ngrok:
     image: ngrok/ngrok:latest
     container_name: ngrok
-    command: http telephony_adapter:8006 --log stdout
+    command: http reach_layer_voice:8006 --log stdout
     environment:
       - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
     ports:
@@ -422,7 +458,7 @@ services:
           cpus: '0.1'
           memory: 128M
     depends_on:
-      telephony_adapter:
+      reach_layer_voice:
         condition: service_healthy
     restart: unless-stopped
 

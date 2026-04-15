@@ -45,19 +45,29 @@ def _make_config(
     max_wait_ms=200,     # Short for fast tests
     channel_overrides=None,
 ):
-    """Build a turn_assembler config dict for tests."""
+    """Build a reach_layer config dict for tests.
+
+    channel_overrides uses the old flat format for convenience:
+      {"voice": {"silence_trigger": {"silence_ms": 200}}}
+    and is converted to the new nested structure:
+      {"voice": {"turn_assembler": {"silence_trigger": {"silence_ms": 200}}}}
+    """
     cfg = {
-        "turn_assembler": {
-            "semantic_gate": {
-                "enabled": semantic_enabled,
-                "confidence_threshold": confidence_threshold,
+        "reach_layer": {
+            "turn_assembler": {
+                "semantic_gate": {
+                    "enabled": semantic_enabled,
+                    "confidence_threshold": confidence_threshold,
+                },
+                "silence_trigger": {"silence_ms": silence_ms},
+                "max_wait_ceiling": {"max_wait_ms": max_wait_ms},
             },
-            "silence_trigger": {"silence_ms": silence_ms},
-            "max_wait_ceiling": {"max_wait_ms": max_wait_ms},
+            "channels": {},
         },
     }
     if channel_overrides:
-        cfg["turn_assembler"]["channel_overrides"] = channel_overrides
+        for ch, overrides in channel_overrides.items():
+            cfg["reach_layer"]["channels"][ch] = {"turn_assembler": overrides}
     return cfg
 
 
@@ -165,7 +175,7 @@ class TestTurnAssemblerConstruction:
             TurnAssembler(agent_core=MagicMock(), config=None)
 
     def test_default_config_values(self):
-        ta = _make_assembler(config={"turn_assembler": {}})
+        ta = _make_assembler(config={"reach_layer": {"turn_assembler": {}}})
         # Should use defaults without crashing
         assert ta._default_config["semantic_gate"]["enabled"] is False
         assert ta._default_config["silence_trigger"]["silence_ms"] == 400

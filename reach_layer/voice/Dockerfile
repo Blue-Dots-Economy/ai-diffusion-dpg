@@ -1,16 +1,16 @@
 # =============================================================================
-# Telephony Adapter DPG — FastAPI service Dockerfile
+# Reach Layer voice channel — Dockerfile
 # =============================================================================
-# Handles inbound Vobiz voice calls on port 8006.
+# FastAPI service on port 8006 handling inbound Vobiz voice calls.
 # Pipeline: VobizOperator → SileroVAD → RayaSTT → AgentCore → RayaTTS
 #
-# Must be built from the repo root (so observability_layer/ is in context):
-#   docker build -f telephony_adapter/Dockerfile -t telephony_adapter .
+# Must be built from the repo root so reach_layer/base/ and observability_layer/
+# are in the build context. Use automation/docker/docker-compose.dev.yml which
+# sets the correct context automatically:
+#
+#   docker compose -f docker-compose.dev.yml up reach_layer_voice
 # =============================================================================
 
-# -----------------------------------------------------------------------------
-# Stage 1: builder
-# -----------------------------------------------------------------------------
 FROM python:3.11-slim AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
@@ -20,13 +20,17 @@ WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
 
-# Copy observability_layer as a local package (pyproject.toml references ../observability_layer)
+# Copy the shared reach_layer_base package and observability_layer so uv can
+# resolve the local-path dependencies declared in pyproject.toml.
+COPY reach_layer/base/ /reach_layer_base/
 COPY observability_layer/ /observability_layer/
 
-# Copy only the project manifest first for dependency caching
-COPY telephony_adapter/pyproject.toml telephony_adapter/uv.lock* ./
+COPY reach_layer/voice/pyproject.toml reach_layer/voice/uv.lock* ./
 
-# Install runtime dependencies (including observability-layer local path dep)
+# Rewrite the relative uv.sources paths to the copies above so dependency
+# resolution succeeds inside the build context.
+RUN sed -i 's|path = "../base"|path = "/reach_layer_base"|g; s|path = "../../observability_layer"|path = "/observability_layer"|g' pyproject.toml
+
 RUN uv sync --no-dev --no-cache --no-install-project
 
 # -----------------------------------------------------------------------------
@@ -36,24 +40,23 @@ FROM python:3.11-slim AS runtime
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-RUN addgroup --system telephony && adduser --system --ingroup telephony telephony
+RUN addgroup --system reachlayer && adduser --system --ingroup reachlayer reachlayer
 
 WORKDIR /app
 
-# Copy the venv from builder (includes observability-layer and all deps)
 COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /reach_layer_base /reach_layer_base
 COPY --from=builder /observability_layer /observability_layer
 
-# Copy application source
 # src/ includes: base.py, bot.py, vobiz_adapter.py, campaign_manager.py,
 #                operators/, vad/, pipecat_services/
-COPY telephony_adapter/server.py telephony_adapter/config_loader.py ./
-COPY telephony_adapter/src/ ./src/
-COPY telephony_adapter/config/ ./config/
+COPY reach_layer/voice/server.py reach_layer/voice/config_loader.py ./
+COPY reach_layer/voice/src/ ./src/
+COPY reach_layer/voice/config/ ./config/
 
-RUN chown -R telephony:telephony /app
+RUN chown -R reachlayer:reachlayer /app
 
-USER telephony
+USER reachlayer
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

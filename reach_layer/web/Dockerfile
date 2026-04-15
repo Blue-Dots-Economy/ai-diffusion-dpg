@@ -1,14 +1,14 @@
 # =============================================================================
-# Reach Layer DPG — Web UI + FastAPI server Dockerfile
+# Reach Layer Web channel — Dockerfile
 # =============================================================================
-# Runs the FastAPI web server (server.py) that serves the chat UI on port 8005.
-# The CLI adapter (main.py) remains available for local development use.
+# Build the React/Vite SPA, install the FastAPI server, and serve both on
+# port 8005. Direct-mode channel — each POST /chat calls Agent Core's
+# synchronous /process_turn.
 #
-# Must be built from the repo root (so observability_layer/ is in context):
-#   docker build -f reach_layer/Dockerfile -t reach_layer .
+# Must be built from the repo root so reach_layer/base/ and
+# observability_layer/ are in context:
 #
-# Prerequisites: all backend services must be running and reachable on the
-# Docker network before starting this container.
+#   docker build -f reach_layer/web/Dockerfile -t reach_layer_web .
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -38,13 +38,17 @@ WORKDIR /app
 ENV UV_COMPILE_BYTECODE=0 \
     UV_LINK_MODE=copy
 
-# Copy observability_layer as a local package (pyproject.toml references ../observability_layer)
+# Copy the shared reach_layer_base package and observability_layer so uv
+# resolves the local-path dependencies declared in pyproject.toml.
+COPY reach_layer/base/ /reach_layer_base/
 COPY observability_layer/ /observability_layer/
 
-# Copy only the project manifest first for dependency caching
-COPY reach_layer/pyproject.toml reach_layer/uv.lock* ./
+COPY reach_layer/web/pyproject.toml reach_layer/web/uv.lock* ./
 
-# Sync runtime dependencies only; creates /app/.venv
+# Rewrite the relative uv.sources paths to the copies above so dependency
+# resolution succeeds inside the build context.
+RUN sed -i 's|path = "../base"|path = "/reach_layer_base"|g; s|path = "../../observability_layer"|path = "/observability_layer"|g' pyproject.toml
+
 RUN uv sync --no-dev --no-cache --no-install-project
 
 # -----------------------------------------------------------------------------
@@ -58,17 +62,17 @@ RUN addgroup --system reachlayer && adduser --system --ingroup reachlayer reachl
 
 WORKDIR /app
 
-# Copy the venv from builder (includes observability-layer and all deps)
 COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /reach_layer_base /reach_layer_base
 COPY --from=builder /observability_layer /observability_layer
 
-COPY reach_layer/main.py reach_layer/server.py reach_layer/config_loader.py ./
-COPY reach_layer/src/ ./src/
-COPY reach_layer/config/ ./config/
+COPY reach_layer/web/server.py reach_layer/web/config_loader.py ./
+COPY reach_layer/web/src/ ./src/
+COPY reach_layer/web/config/ ./config/
 
 # Copy the compiled frontend — Vite outDir is ../web/dist relative to web-src/,
 # which resolves to /web/dist inside the frontend stage (WORKDIR is /build)
-COPY --from=frontend /web/dist ./web/dist/
+COPY --from=frontend /web/dist ./dist/
 
 RUN chown -R reachlayer:reachlayer /app
 

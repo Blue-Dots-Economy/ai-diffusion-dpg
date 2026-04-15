@@ -40,18 +40,21 @@ action_gateway_client:
   endpoint: "http://action_gateway:9999/execute"
   timeout_ms: 5000
 
-# Turn assembler — multi-segment input with policy stack (#72).
-# Session-based channels route segments through TurnAssembler which buffers
-# input and uses the policy stack to decide when to invoke stream_turn().
-# Per-channel tuning goes in channel_overrides in the domain config.
-turn_assembler:
-  semantic_gate:
-    enabled: false             # Enable NLU-based early trigger (requires nlu_processor)
-    confidence_threshold: 0.75 # Invoke immediately if NLU confidence >= this value
-  silence_trigger:
-    silence_ms: 400            # ms of silence before invoking (resets on each segment)
-  max_wait_ceiling:
-    max_wait_ms: 8000          # Absolute max wait ms — never resets
+# Reach Layer channel config — grouped here because TurnAssembler is an
+# Agent Core component, but tuning is per-channel.
+# assembly_mode lives in reach_layer.yaml (Reach Layer concern, not Agent Core).
+reach_layer:
+  # Default turn_assembler policy stack — applies to any channel that
+  # does not declare its own turn_assembler section under channels.<name>.
+  turn_assembler:
+    semantic_gate:
+      enabled: false             # Enable NLU-based early trigger (requires nlu_processor)
+      confidence_threshold: 0.75 # Invoke immediately if NLU confidence >= this value
+    silence_trigger:
+      silence_ms: 400            # ms of silence before invoking (resets on each segment)
+    max_wait_ceiling:
+      max_wait_ms: 8000          # Absolute max wait ms — never resets
+  channels: {}                   # Per-channel overrides set in domain config
 
 observability:
   otel:

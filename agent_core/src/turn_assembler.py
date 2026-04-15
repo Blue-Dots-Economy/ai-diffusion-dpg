@@ -29,9 +29,12 @@ Design decisions NOT in the original spec (documented here for traceability):
    SSE connection handles multiple turns. session_end() is only called on explicit
    disconnect or session cleanup.
 
-5. Config placement: All turn_assembler config lives under agent_core.yaml (not under
-   reach_layer as the spec's config example suggests) because TurnAssembler is an
-   Agent Core component. Per-channel overrides are supported via channel_overrides map.
+5. Config placement: Turn assembler config lives in agent_core.yaml under
+   reach_layer.turn_assembler (defaults) and reach_layer.channels.<name>.turn_assembler
+   (per-channel overrides). Grouped under "reach_layer" as the top-level dict per lead
+   direction, but still in agent_core.yaml because TurnAssembler is an Agent Core
+   component. assembly_mode (session vs direct) stays in reach_layer.yaml — it's a
+   Reach Layer routing concern, not an Agent Core concern.
 """
 
 from __future__ import annotations
@@ -180,7 +183,8 @@ class TurnAssembler(TurnAssemblerBase):
         2. Silence trigger (configurable timer, resets on each segment)
         3. Max wait ceiling (absolute timer, never resets)
 
-    Config section: turn_assembler (in agent_core.yaml)
+    Config section: reach_layer.turn_assembler (defaults) and
+    reach_layer.channels.<name>.turn_assembler (per-channel) in agent_core.yaml
     """
 
     def __init__(
@@ -196,8 +200,9 @@ class TurnAssembler(TurnAssemblerBase):
 
         Args:
             agent_core: AgentCore instance for calling stream_turn() directly.
-            config: Full agent_core config dict. Turn assembler reads its config
-                    from config["turn_assembler"].
+            config: Full agent_core config dict. Turn assembler reads defaults from
+                    config["reach_layer"]["turn_assembler"] and per-channel overrides
+                    from config["reach_layer"]["channels"][<name>]["turn_assembler"].
             nlu_processor: NLUProcessor instance for semantic completeness gate.
             llm_wrapper: LLMWrapperBase instance for NLU LLM calls.
             workflow: AgentWorkflow instance for intent scoping.
@@ -218,23 +223,26 @@ class TurnAssembler(TurnAssemblerBase):
         self._workflow = workflow
         self._async_memory = async_memory
 
-        # Parse turn_assembler config with safe defaults
-        ta_config = (config or {}).get("turn_assembler", {})
+        # Parse config from reach_layer section with safe defaults.
+        # Defaults: reach_layer.turn_assembler
+        # Per-channel: reach_layer.channels.<name>.turn_assembler
+        rl_config = (config or {}).get("reach_layer", {})
+        ta_defaults = rl_config.get("turn_assembler", {})
         self._default_config = {
-            "semantic_gate": ta_config.get("semantic_gate", {
+            "semantic_gate": ta_defaults.get("semantic_gate", {
                 "enabled": False,
                 "confidence_threshold": 0.75,
             }),
-            "silence_trigger": ta_config.get("silence_trigger", {
+            "silence_trigger": ta_defaults.get("silence_trigger", {
                 "silence_ms": 400,
             }),
-            "max_wait_ceiling": ta_config.get("max_wait_ceiling", {
+            "max_wait_ceiling": ta_defaults.get("max_wait_ceiling", {
                 "max_wait_ms": 8000,
             }),
         }
 
-        # Per-channel overrides: turn_assembler.channel_overrides.<channel>
-        self._channel_overrides: dict = ta_config.get("channel_overrides", {})
+        # Per-channel config: reach_layer.channels
+        self._channels_config: dict = rl_config.get("channels", {})
 
         self._sessions: dict[str, SessionBuffer] = {}
 
@@ -245,9 +253,9 @@ class TurnAssembler(TurnAssemblerBase):
     def _resolve_config(self, channel: str) -> dict:
         """Resolve turn assembler config with per-channel overrides.
 
-        Channel-specific values in turn_assembler.channel_overrides.<channel>
-        override the defaults. This keeps the implementation domain-agnostic —
-        all tuning is in YAML.
+        Defaults come from reach_layer.turn_assembler. Per-channel overrides
+        come from reach_layer.channels.<channel>.turn_assembler. This keeps the
+        implementation domain-agnostic — all tuning is in YAML.
 
         Args:
             channel: Channel identifier (e.g. "voice", "web", "cli").
@@ -260,10 +268,11 @@ class TurnAssembler(TurnAssemblerBase):
             "silence_trigger": dict(self._default_config["silence_trigger"]),
             "max_wait_ceiling": dict(self._default_config["max_wait_ceiling"]),
         }
-        overrides = self._channel_overrides.get(channel, {})
+        # Per-channel overrides: reach_layer.channels.<channel>.turn_assembler
+        channel_ta = self._channels_config.get(channel, {}).get("turn_assembler", {})
         for section in ("semantic_gate", "silence_trigger", "max_wait_ceiling"):
-            if section in overrides:
-                base[section].update(overrides[section])
+            if section in channel_ta:
+                base[section].update(channel_ta[section])
         return base
 
     # ------------------------------------------------------------------

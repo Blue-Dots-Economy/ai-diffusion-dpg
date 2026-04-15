@@ -1,0 +1,50 @@
+"""
+reach_layer/base/events.py
+
+Lightweight event dataclasses for SSE events received from Agent Core.
+
+These mirror Agent Core's StreamEvent types but are independently defined
+to keep reach_layer decoupled from agent_core's internal models. The base
+class parses SSE JSON into these objects so channel implementations can
+render them without coupling to Agent Core internals.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Union
+
+
+@dataclass
+class SignalEvent:
+    """Pipeline stage signal from Agent Core."""
+
+    stage: str
+    status: str
+    type: str = "signal"
+
+
+@dataclass
+class SentenceEvent:
+    """Streamed sentence from Agent Core's LLM response."""
+
+    text: str
+    sentence_index: int = 0
+    type: str = "sentence"
+
+
+@dataclass
+class DoneEvent:
+    """Turn completion signal from Agent Core."""
+
+    turn_status: str = "completed"
+    was_escalated: bool = False
+    was_tool_used: bool = False
+    model_used: str = ""
+    latency_ms: int = 0
+    turn_id: str = ""
+    type: str = "done"
+
+
+# Union type matching Agent Core's StreamEvent
+StreamEvent = Union[SignalEvent, SentenceEvent, DoneEvent]

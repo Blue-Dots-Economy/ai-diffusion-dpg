@@ -1,0 +1,22 @@
+# reach_layer/cli/config/dpg.yaml — CLI channel framework defaults.
+# Domain overrides go in config/domain.yaml (or dev-kit/configs/<domain>/reach_layer.yaml).
+
+reach_layer:
+  channels:
+    cli:
+      # Routing: session → POST /sessions/{id}/input + SSE events.
+      # Suitable for interactive REPLs where sentence-by-sentence delivery matters.
+      assembly_mode: session
+      prompt: "You: "
+      agent_prefix: "Agent: "
+
+agent_core_client:
+  endpoint: "http://localhost:8000/process_turn"
+  timeout_s: 30.0
+
+# Observability — OTel collector endpoint for trace/metric export.
+observability:
+  otel:
+    collector_endpoint: "http://localhost:4317"
+    sample_rate: 1.0
+    export_interval_ms: 5000
