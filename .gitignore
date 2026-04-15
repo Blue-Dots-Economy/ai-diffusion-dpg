@@ -128,7 +128,7 @@ sentence_transformers_cache/
 # -----------------------------------------------------------------------------
 node_modules/
 package-lock.json
-reach_layer/web-src/node_modules/
+reach_layer/web/web-src/node_modules/
 reach_layer/web/dist/
 
 # -----------------------------------------------------------------------------

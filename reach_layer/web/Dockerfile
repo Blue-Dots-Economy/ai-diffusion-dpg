@@ -18,11 +18,11 @@ FROM node:20-slim AS frontend
 
 WORKDIR /build
 
-COPY reach_layer/web-src/package.json ./
+COPY reach_layer/web/web-src/package.json ./
 RUN npm install
 
-COPY reach_layer/web-src/ ./
-# Vite outputs to ../web/dist relative to web-src — emit directly to /build/dist
+COPY reach_layer/web/web-src/ ./
+# Vite outputs to ../dist relative to web-src — emit directly to /dist
 # then copy into the right place in the runtime stage
 RUN npm run build
 
@@ -70,9 +70,9 @@ COPY reach_layer/web/server.py reach_layer/web/config_loader.py ./
 COPY reach_layer/web/src/ ./src/
 COPY reach_layer/web/config/ ./config/
 
-# Copy the compiled frontend — Vite outDir is ../web/dist relative to web-src/,
-# which resolves to /web/dist inside the frontend stage (WORKDIR is /build)
-COPY --from=frontend /web/dist ./dist/
+# Copy the compiled frontend — Vite outDir is ../dist relative to web-src/,
+# which resolves to /dist inside the frontend stage (WORKDIR is /build)
+COPY --from=frontend /dist ./dist/
 
 RUN chown -R reachlayer:reachlayer /app
 
