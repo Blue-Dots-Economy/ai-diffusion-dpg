@@ -11,6 +11,7 @@ against Agent Core and returns the JSON response to the browser. No SSE path.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
@@ -34,7 +35,7 @@ from opentelemetry import trace as otel_trace
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from pydantic import BaseModel
 
-from config_loader import load_config
+from reach_layer_base import DoneEvent, SentenceEvent, load_reach_config
 from src.auth import (
     AuthError,
     Reason,
@@ -78,6 +79,188 @@ class GoogleAuthRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
+
+async def _chat_direct_mode(
+    ac_client: httpx.Client,
+    ac_endpoint: str,
+    ac_timeout: float,
+    session_id: str,
+    turn: dict,
+    fresh: bool,
+    web_reach: WebReachLayer,
+    span: Any,
+    start: float,
+) -> dict[str, Any]:
+    """Direct assembly-mode path: POST /process_turn once, return TurnResult.
+
+    Uses a sync httpx client for compatibility with the existing retry and
+    error-handling shape; the outer endpoint is async, so the blocking call
+    runs in a worker thread.
+    """
+    payload: dict = {
+        "session_id": session_id,
+        "user_message": turn["user_message"],
+        "channel": turn["channel"],
+        "fresh": bool(fresh),
+    }
+    if turn["user_id"]:
+        payload["user_id"] = turn["user_id"]
+
+    def _blocking_call() -> tuple[Optional[dict], Optional[Exception]]:
+        """Run the two-attempt POST inside a worker thread."""
+        _last_timeout: httpx.TimeoutException | None = None
+        for _attempt in range(2):
+            try:
+                response = ac_client.post(ac_endpoint, json=payload, timeout=ac_timeout)
+                response.raise_for_status()
+                return response.json(), None
+            except httpx.TimeoutException as _te:
+                _last_timeout = _te
+                if _attempt == 0:
+                    time.sleep(1.0)
+            except httpx.ConnectError as e:
+                return None, e
+            except Exception as e:
+                return None, e
+        return None, _last_timeout
+
+    data, err = await asyncio.to_thread(_blocking_call)
+
+    if err is not None:
+        span.record_exception(err)
+        if isinstance(err, httpx.TimeoutException):
+            logger.error(
+                "reach_server.chat_timeout",
+                extra={
+                    "operation": "reach_server.chat",
+                    "status": "failure",
+                    "error": "Agent Core timeout after retry",
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            return {"response_text": "[Agent Core did not respond in time. Please try again.]",
+                    "was_escalated": False, "session_id": session_id, "latency_ms": 0}
+        if isinstance(err, httpx.ConnectError):
+            logger.error(
+                "reach_server.chat_connect_error",
+                extra={
+                    "operation": "reach_server.chat",
+                    "status": "failure",
+                    "error": "Agent Core connection refused",
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            return {"response_text": "[Could not reach Agent Core. Is the backend running?]",
+                    "was_escalated": False, "session_id": session_id, "latency_ms": 0}
+        logger.error(
+            "reach_server.chat_error",
+            extra={
+                "operation": "reach_server.chat",
+                "status": "failure",
+                "error": str(err),
+                "latency_ms": int((time.time() - start) * 1000),
+            },
+        )
+        return {"response_text": f"[Unexpected error: {type(err).__name__}]",
+                "was_escalated": False, "session_id": session_id, "latency_ms": 0}
+
+    latency_ms = int((time.time() - start) * 1000)
+    formatted = web_reach.format_result(session_id, data, latency_ms)
+    logger.info(
+        "reach_server.chat_success",
+        extra={
+            "operation": "reach_server.chat",
+            "status": "success",
+            "assembly_mode": "direct",
+            "session_id": session_id,
+            "latency_ms": formatted["latency_ms"],
+        },
+    )
+    return formatted
+
+
+async def _chat_session_mode(
+    web_reach: WebReachLayer,
+    session_id: str,
+    user_id: Optional[str],
+    message: str,
+    span: Any,
+    start: float,
+) -> dict[str, Any]:
+    """Session assembly-mode path: submit input, consume SSE, aggregate sentences.
+
+    The browser API is unchanged: sentences arriving on the SSE stream are
+    concatenated into ``response_text`` and the aggregated dict is returned
+    when the stream's DoneEvent arrives. This keeps ``/chat`` a single-shot
+    JSON endpoint while still exercising the TurnAssembler / stream_turn path
+    under the hood.
+    """
+    try:
+        await web_reach.submit_input(session_id, message, user_id)
+    except Exception as e:
+        span.record_exception(e)
+        logger.error(
+            "reach_server.chat_session_submit_error",
+            extra={
+                "operation": "reach_server.chat",
+                "status": "failure",
+                "assembly_mode": "session",
+                "error": f"{type(e).__name__}: {e}",
+                "session_id": session_id,
+                "latency_ms": int((time.time() - start) * 1000),
+            },
+        )
+        return {"response_text": f"[Unexpected error: {type(e).__name__}]",
+                "was_escalated": False, "session_id": session_id, "latency_ms": 0}
+
+    parts: list[str] = []
+    was_escalated = False
+    was_tool_used = False
+    try:
+        async for event in web_reach.subscribe_events(session_id):
+            if isinstance(event, SentenceEvent):
+                parts.append(event.text)
+            elif isinstance(event, DoneEvent):
+                was_escalated = event.was_escalated
+                was_tool_used = event.was_tool_used
+                break
+    except Exception as e:
+        span.record_exception(e)
+        logger.error(
+            "reach_server.chat_session_stream_error",
+            extra={
+                "operation": "reach_server.chat",
+                "status": "failure",
+                "assembly_mode": "session",
+                "error": f"{type(e).__name__}: {e}",
+                "session_id": session_id,
+                "latency_ms": int((time.time() - start) * 1000),
+            },
+        )
+        return {"response_text": "[Agent Core stream failed. Please try again.]",
+                "was_escalated": False, "session_id": session_id, "latency_ms": 0}
+
+    latency_ms = int((time.time() - start) * 1000)
+    formatted = {
+        "response_text": "".join(parts).strip(),
+        "was_escalated": was_escalated,
+        "was_tool_used": was_tool_used,
+        "session_id": session_id,
+        "latency_ms": latency_ms,
+    }
+    logger.info(
+        "reach_server.chat_success",
+        extra={
+            "operation": "reach_server.chat",
+            "status": "success",
+            "assembly_mode": "session",
+            "session_id": session_id,
+            "latency_ms": latency_ms,
+            "sentence_count": len(parts),
+        },
+    )
+    return formatted
+
 
 def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
     """Create and return the FastAPI application.
@@ -305,11 +488,13 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
     # ------------------------------------------------------------------
 
     @app.post("/chat")
-    def chat(req: ChatRequest, request: Request) -> dict[str, Any]:
+    async def chat(req: ChatRequest, request: Request) -> dict[str, Any]:
         """Forward a chat turn to Agent Core and return the response.
 
-        Validates the request, builds a TurnInput, calls Agent Core, and
-        returns the formatted result.
+        Routing is driven by ``web_reach.assembly_mode``:
+          - ``direct``  → POST /process_turn (synchronous). Default.
+          - ``session`` → POST /sessions/{id}/input + consume SSE events,
+                          aggregating sentences into a single response body.
 
         Args:
             req: Chat request with session_id, optional user_id, and message.
@@ -328,6 +513,7 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
         with otel_trace.get_tracer(__name__).start_as_current_span("reach.inbound") as span:
             span.set_attribute("session_id", req.session_id or "")
             span.set_attribute("dpg.channel", "web")
+            span.set_attribute("dpg.assembly_mode", web_reach.assembly_mode)
             try:
                 turn = web_reach.build_turn_input(req.session_id, effective_user_id, req.message)
             except ValueError as e:
@@ -345,82 +531,15 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
                         "session_id": req.session_id or "", "latency_ms": 0}
 
             session_id = turn["session_id"]
-            payload: dict = {
-                "session_id": session_id,
-                "user_message": turn["user_message"],
-                "channel": turn["channel"],
-                "fresh": bool(req.fresh),
-            }
-            if turn["user_id"]:
-                payload["user_id"] = turn["user_id"]
 
-            # Retry once on timeout (exponential backoff: 1 s delay before retry).
-            _last_timeout: httpx.TimeoutException | None = None
-            data: dict = {}
-            for _attempt in range(2):
-                try:
-                    response = ac_client.post(ac_endpoint, json=payload, timeout=ac_timeout)
-                    response.raise_for_status()
-                    data = response.json()
-                    _last_timeout = None
-                    break
-                except httpx.TimeoutException as _te:
-                    _last_timeout = _te
-                    if _attempt == 0:
-                        time.sleep(1.0)
-                except httpx.ConnectError as e:
-                    span.record_exception(e)
-                    logger.error(
-                        "reach_server.chat_connect_error",
-                        extra={
-                            "operation": "reach_server.chat",
-                            "status": "failure",
-                            "error": "Agent Core connection refused",
-                            "latency_ms": int((time.time() - start) * 1000),
-                        },
-                    )
-                    return {"response_text": "[Could not reach Agent Core. Is the backend running?]",
-                            "was_escalated": False, "session_id": session_id, "latency_ms": 0}
-                except Exception as e:
-                    span.record_exception(e)
-                    logger.error(
-                        "reach_server.chat_error",
-                        extra={
-                            "operation": "reach_server.chat",
-                            "status": "failure",
-                            "error": str(e),
-                            "latency_ms": int((time.time() - start) * 1000),
-                        },
-                    )
-                    return {"response_text": f"[Unexpected error: {type(e).__name__}]",
-                            "was_escalated": False, "session_id": session_id, "latency_ms": 0}
-
-            if _last_timeout is not None:
-                span.record_exception(_last_timeout)
-                logger.error(
-                    "reach_server.chat_timeout",
-                    extra={
-                        "operation": "reach_server.chat",
-                        "status": "failure",
-                        "error": "Agent Core timeout after retry",
-                        "latency_ms": int((time.time() - start) * 1000),
-                    },
+            if web_reach.assembly_mode == "session":
+                return await _chat_session_mode(
+                    web_reach, session_id, turn["user_id"], turn["user_message"], span, start,
                 )
-                return {"response_text": "[Agent Core did not respond in time. Please try again.]",
-                        "was_escalated": False, "session_id": session_id, "latency_ms": 0}
-
-            latency_ms = int((time.time() - start) * 1000)
-            formatted = web_reach.format_result(session_id, data, latency_ms)
-            logger.info(
-                "reach_server.chat_success",
-                extra={
-                    "operation": "reach_server.chat",
-                    "status": "success",
-                    "session_id": session_id,
-                    "latency_ms": formatted["latency_ms"],
-                },
+            return await _chat_direct_mode(
+                ac_client, ac_endpoint, ac_timeout,
+                session_id, turn, bool(req.fresh), web_reach, span, start,
             )
-            return formatted
 
     # ------------------------------------------------------------------
     # GET /user-history/{user_id} — proxy to Memory Layer
@@ -671,6 +790,22 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
 # Application instance (used by uvicorn: server:app)
 # ---------------------------------------------------------------------------
 
+# Resolve DPG defaults / domain overrides, preferring the checked-in
+# unified config at ../config/{dpg,domain}.yaml (local dev) and falling
+# back to ./config/* relative to cwd (container runtime where the
+# Dockerfile COPYs reach_layer/config/ to /app/config/).
+_WEB_DIR = Path(__file__).resolve().parent
+_LOCAL_REACH_CONFIG_DIR = _WEB_DIR.parent / "config"
+
+
+def _resolve_dpg_path() -> str:
+    """Pick the first existing dpg.yaml: local checkout → container cwd."""
+    local = _LOCAL_REACH_CONFIG_DIR / "dpg.yaml"
+    if local.exists():
+        return str(local)
+    return "config/dpg.yaml"
+
+
 def _resolve_domain_path() -> str:
     """Resolve domain config path from CONFIG_FOLDER or fall back to config/domain.yaml."""
     config_folder = os.getenv("CONFIG_FOLDER")
@@ -678,10 +813,17 @@ def _resolve_domain_path() -> str:
         resolved = Path(config_folder) / "reach_layer.yaml"
         if resolved.exists():
             return str(resolved)
+    local = _LOCAL_REACH_CONFIG_DIR / "domain.yaml"
+    if local.exists():
+        return str(local)
     return "config/domain.yaml"
 
 
-_config = load_config("config/dpg.yaml", _resolve_domain_path())
+_config = load_reach_config(
+    channel_name="web",
+    dpg_path=_resolve_dpg_path(),
+    domain_path=_resolve_domain_path(),
+)
 
 # ---------------------------------------------------------------------------
 # OpenTelemetry initialisation

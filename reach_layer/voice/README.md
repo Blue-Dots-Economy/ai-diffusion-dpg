@@ -59,11 +59,8 @@ The adapter is stateless across calls. All session state lives in the Memory Lay
 ## Source layout
 
 ```
-telephony_adapter/
+reach_layer/voice/
 ├── server.py              # FastAPI app factory — /answer, /ws/{call_sid}, /campaign endpoints
-├── config_loader.py       # YAML config deep-merge
-├── config/
-│   └── telephony.yaml     # DPG framework defaults (env-var placeholders)
 ├── src/
 │   ├── base.py            # TelephonyAdapterBase ABC; STTError, TTSError, TelephonyError
 │   ├── bot.py             # run_bot() — thin entry point, delegates to VobizAdapter
@@ -86,7 +83,6 @@ telephony_adapter/
     ├── test_vobiz_adapter.py
     ├── test_server.py
     ├── test_campaign_manager.py
-    ├── test_config_loader.py
     ├── operators/
     │   ├── test_operator_base.py
     │   └── test_vobiz_operator.py
@@ -105,14 +101,16 @@ telephony_adapter/
 
 ## Configuration
 
-Config is deep-merged from two YAML files at startup:
+Config is loaded by the shared Reach Layer loader (`reach_layer_base.load_reach_config("voice", ...)`) from two files, deep-merged at startup:
 
 | File | Purpose |
 |---|---|
-| `config/telephony.yaml` | DPG framework defaults (env-var placeholders) |
-| `$DOMAIN_CONFIG_PATH` | Domain-specific overrides |
+| `reach_layer/config/dpg.yaml` (or `$DPG_CONFIG_PATH`) | Unified Reach Layer defaults (framework) |
+| `reach_layer/config/domain.yaml` (or `$DOMAIN_CONFIG_PATH`) | Domain-specific overrides |
 
-Environment variables used by `config/telephony.yaml`:
+The voice channel reads its slice from `reach_layer.channels.voice.*`. For backward compatibility the loader also aliases that block at the legacy top-level key `telephony_adapter.*` — existing code in `src/` still reads from `config["telephony_adapter"][...]`.
+
+Environment variables consumed by the voice section:
 
 | Variable | Required | Description |
 |---|---|---|
@@ -122,45 +120,46 @@ Environment variables used by `config/telephony.yaml`:
 | `VOBIZ_FROM_NUMBER` | Yes | E.164 caller ID for outbound calls. |
 | `RAYA_API_KEY` | Yes | Raya API key (used for both STT and TTS). |
 
-Full config shape with defaults:
+Voice section (under `reach_layer.channels.voice`) with defaults:
 
 ```yaml
-telephony_adapter:
-  port: 8006
-  public_url: ${PUBLIC_URL}
-  vobiz:
-    auth_id: ${VOBIZ_AUTH_ID}
-    auth_token: ${VOBIZ_AUTH_TOKEN}
-    api_base: https://api.vobiz.ai/api/v1
-    from_number: ${VOBIZ_FROM_NUMBER}
-    sample_rate: 8000
-  vad:
-    stop_secs: 0.35
-    min_volume: 0.3
-    confidence: 0.4
-    start_secs: 0.1
-    smoothing_factor: 0.1
-  raya:
-    api_key: ${RAYA_API_KEY}
-    stt_wss_url: https://hub.getraya.app/transcribe
-    tts_base_url: https://hub.getraya.app/v1
-    tts_model: standard
-    language: hi
-    voice_id: voice_001
-    tts_speed: 1.0
-    stt_timeout_s: 30.0
-    tts_timeout_s: 30.0
-  agent_core:
-    base_url: http://agent_core:8000
-    timeout_ms: 5000
-    greeting: "Hello, how can I help you today?"
-    fallback_phrase: "I'm sorry, I couldn't process that. Please try again."
-
-observability:
-  otel:
-    collector_endpoint: http://otelcol:4317
-    sample_rate: 1.0
-    export_interval_ms: 5000
+reach_layer:
+  common:
+    observability:
+      otel:
+        collector_endpoint: http://otelcol:4317
+        sample_rate: 1.0
+        export_interval_ms: 5000
+  channels:
+    voice:
+      enabled: true
+      assembly_mode: session
+      port: 8006
+      public_url: ${PUBLIC_URL}
+      vobiz:
+        auth_id: ${VOBIZ_AUTH_ID}
+        auth_token: ${VOBIZ_AUTH_TOKEN}
+        api_base: https://api.vobiz.ai/api/v1
+        from_number: ${VOBIZ_FROM_NUMBER}
+      vad:
+        stop_secs: 0.35
+        min_volume: 0.3
+        confidence: 0.4
+        start_secs: 0.1
+        smoothing_factor: 0.1
+      raya:
+        api_key: ${RAYA_API_KEY}
+        stt_wss_url: https://hub.getraya.app/transcribe
+        tts_base_url: https://hub.getraya.app/v1
+        tts_model: standard
+        language: hi
+        voice_id: voice_001
+        tts_speed: 1.0
+      agent_core:
+        base_url: http://agent_core:8000
+        timeout_ms: 5000
+        greeting: "Hello, how can I help you today?"
+        fallback_phrase: "I'm sorry, I couldn't process that. Please try again."
 ```
 
 ---
@@ -170,8 +169,8 @@ observability:
 **With Docker (recommended):**
 
 ```bash
-# Build from repo root so observability_layer/ is in the build context
-docker build -f telephony_adapter/Dockerfile -t telephony_adapter .
+# Build from repo root so observability_layer/ and reach_layer/base/ are in the build context
+docker build -f reach_layer/voice/Dockerfile -t reach_layer_voice .
 
 docker run --rm \
   -e PUBLIC_URL=https://your-tunnel.example.com \
@@ -180,13 +179,13 @@ docker run --rm \
   -e VOBIZ_FROM_NUMBER=+91xxxxxxxxxx \
   -e RAYA_API_KEY=your_raya_key \
   -p 8006:8006 \
-  telephony_adapter
+  reach_layer_voice
 ```
 
 **Without Docker:**
 
 ```bash
-cd telephony_adapter
+cd reach_layer/voice
 export PUBLIC_URL=https://your-tunnel.example.com
 export VOBIZ_AUTH_ID=...
 export VOBIZ_AUTH_TOKEN=...
@@ -204,7 +203,7 @@ Service listens on port `8006`. Use a tunnelling tool (e.g. ngrok) to expose the
 ## Running tests
 
 ```bash
-cd telephony_adapter
+cd reach_layer/voice
 uv run pytest                                          # all tests
 uv run pytest tests/test_vobiz_adapter.py             # single file
 uv run pytest --cov=src --cov-report=term-missing     # with coverage
@@ -221,9 +220,11 @@ Structured logs are emitted for every significant operation (`operation`, `statu
 Configure the OTel collector endpoint via:
 
 ```yaml
-observability:
-  otel:
-    collector_endpoint: http://otelcol:4317
+reach_layer:
+  common:
+    observability:
+      otel:
+        collector_endpoint: http://otelcol:4317
 ```
 
 ---
@@ -239,6 +240,7 @@ observability:
 | `pipecat-vobiz` | VobizFrameSerializer — Vobiz/Plivo wire protocol |
 | `numpy` | F32LE → PCM16 audio conversion |
 | `pyyaml` | Config loading |
+| `reach-layer-base` | Shared Reach Layer base classes + config loader (local path dep) |
 | `observability-layer` | OTel initialisation (local path dep) |
 | `opentelemetry-instrumentation-fastapi` | Auto-instrumentation |
 | `opentelemetry-instrumentation-httpx` | Auto-instrumentation |

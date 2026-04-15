@@ -23,13 +23,17 @@ reach_layer/
 │   ├── text_channel.py       # TextChannelBase   (CLI, Web inherit)
 │   ├── voice_channel.py      # VoiceChannelBase  (Voice inherits)
 │   ├── events.py             # SignalEvent, SentenceEvent, DoneEvent dataclasses
+│   ├── config_loader.py      # load_reach_config() + deep-merge + env-var expansion
 │   ├── pyproject.toml        # Installed as "reach-layer-base"
 │   └── __init__.py
+│
+├── config/               # Unified Reach Layer config (shared by all 3 channels)
+│   ├── dpg.yaml          # framework defaults (reach_layer.common + channels.{cli,web,voice})
+│   └── domain.yaml       # local-dev domain overrides (deploy mounts dev-kit configs over this)
 │
 ├── cli/                  # Deployable 1 — interactive CLI (session mode)
 │   ├── main.py
 │   ├── src/cli_reach.py
-│   ├── config/{dpg,domain}.yaml
 │   ├── tests/
 │   ├── Dockerfile
 │   └── pyproject.toml    # depends on reach-layer-base via ../base
@@ -37,7 +41,6 @@ reach_layer/
 ├── web/                  # Deployable 2 — FastAPI + React SPA (direct mode)
 │   ├── server.py
 │   ├── src/web_reach.py, src/auth.py
-│   ├── config/, config_loader.py
 │   ├── web-src/          # React 19 + Vite source
 │   ├── dist/             # built UI (gitignored)
 │   ├── tests/
@@ -48,7 +51,6 @@ reach_layer/
     ├── server.py
     ├── src/vobiz_adapter.py, src/bot.py, src/campaign_manager.py
     ├── src/pipecat_services/, src/vad/, src/operators/
-    ├── config/telephony.yaml, config_loader.py
     ├── tests/
     ├── Dockerfile
     └── pyproject.toml
@@ -238,21 +240,43 @@ npm run test:coverage    # with HTML coverage report
 
 ## Configuration
 
-Config is split across two files because channels are Reach Layer concerns but turn-assembly tuning runs inside Agent Core.
+Config is split across two layers:
 
-### `reach_layer.yaml` — per-channel routing
+1. **`reach_layer.yaml`** (in `reach_layer/config/`) — one unified file shared by all three channels. Each service reads only its own slice via `load_reach_config(channel_name)`.
+2. **`agent_core.yaml`** — TurnAssembler tuning lives inside Agent Core because it runs there.
+
+### `reach_layer/config/{dpg,domain}.yaml` — per-channel routing
+
+Single source of truth for all three channel services. Schema:
+
+```yaml
+reach_layer:
+  common:
+    agent_core_client: { endpoint, timeout_s }
+    memory_layer_client: { endpoint, timeout_s }
+    observability: { otel: {...}, domain: "" }
+  channels:
+    cli:   { enabled, assembly_mode, prompt, agent_prefix }
+    web:   { enabled, assembly_mode, server, sessions, auth, ui }
+    voice: { enabled, assembly_mode, port, public_url, vobiz, vad, raya, agent_core }
+```
 
 | Key | Description |
 |-----|-------------|
+| `reach_layer.channels.<name>.enabled` | `false` causes the service to refuse to start (selective deployment) |
 | `reach_layer.channels.<name>.assembly_mode` | `session` or `direct` — selects the wire protocol |
-| `reach_layer.cli.prompt` / `agent_prefix` | CLI-specific prompts |
-| `reach_layer.sessions.limit` | Sidebar conversations list size (web) |
-| `agent_core_client.endpoint` | Agent Core URL (path is stripped to derive base URL) |
-| `agent_core_client.timeout_s` | HTTP timeout for Agent Core calls |
-| `memory_layer_client.endpoint` | Memory Layer base URL (web session-restore only) |
-| `auth.enabled` / `auth.google_client_id` / `auth.session_ttl_s` | Google SSO config for web channel |
-| `ui.*` | Web UI copy (app name, tagline, storage keys, localisation) |
-| `observability.otel.collector_endpoint` | OTel collector |
+| `reach_layer.channels.cli.prompt` / `agent_prefix` | CLI prompts |
+| `reach_layer.channels.web.sessions.limit` | Sidebar conversations list size (web) |
+| `reach_layer.channels.web.auth.*` | Google SSO config for web channel |
+| `reach_layer.channels.web.ui.*` | Web UI copy (app name, tagline, storage keys, localisation) |
+| `reach_layer.channels.voice.{vobiz,vad,raya,agent_core}` | VOIP, VAD, STT/TTS, and Agent Core call config for voice |
+| `reach_layer.common.agent_core_client.{endpoint,timeout_s}` | Agent Core URL + timeout shared across channels |
+| `reach_layer.common.memory_layer_client.endpoint` | Memory Layer base URL (web session-restore only) |
+| `reach_layer.common.observability.otel.collector_endpoint` | OTel collector |
+
+For backward compatibility the loader injects legacy top-level aliases (`agent_core_client`, `ui`, `auth`, `telephony_adapter`, …) so existing service code does not need to be rewritten.
+
+Domain overrides live in `reach_layer/config/domain.yaml` (local dev) or `dev-kit/configs/<domain>/reach_layer.yaml` (deploy). Both files share the exact schema of `dpg.yaml` and are deep-merged on top of it. Env-var placeholders (`${VAR}` / `${VAR:-default}`) are expanded at load time.
 
 ### `agent_core.yaml` — turn-assembler tuning (per channel)
 
@@ -264,8 +288,6 @@ TurnAssembler lives inside Agent Core but is tuned per channel, so the tuning ke
 | `reach_layer.turn_assembler.silence_trigger.silence_ms` | Silence timer default |
 | `reach_layer.turn_assembler.max_wait_ceiling.max_wait_ms` | Max wait default |
 | `reach_layer.channels.<name>.turn_assembler.*` | Per-channel override of any of the above |
-
-Each channel config (`reach_layer/{cli,web,voice}/config/`) is deep-merged at startup: `dpg.yaml` framework defaults → `domain.yaml` domain values.
 
 ---
 

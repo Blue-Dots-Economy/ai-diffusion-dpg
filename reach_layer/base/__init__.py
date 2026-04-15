@@ -7,8 +7,17 @@ Exports:
     VoiceChannelBase — voice/telephony channels
     VADEvent         — Voice Activity Detection event
     SignalEvent, SentenceEvent, DoneEvent, StreamEvent — SSE event types
+    load_reach_config, load_config, load_yaml, deep_merge, ChannelDisabledError
+        — unified config loader shared by cli/web/voice services
 """
 
+from .config_loader import (
+    ChannelDisabledError,
+    deep_merge,
+    load_config,
+    load_reach_config,
+    load_yaml,
+)
 from .events import DoneEvent, SentenceEvent, SignalEvent, StreamEvent
 from .reach_layer_base import ReachLayerBase
 from .text_channel import TextChannelBase
@@ -23,4 +32,9 @@ __all__ = [
     "SentenceEvent",
     "DoneEvent",
     "StreamEvent",
+    "load_reach_config",
+    "load_config",
+    "load_yaml",
+    "deep_merge",
+    "ChannelDisabledError",
 ]

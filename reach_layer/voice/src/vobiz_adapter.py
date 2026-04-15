@@ -52,9 +52,10 @@ class VobizAdapter(TelephonyAdapterBase):
     def __init__(self, config: dict) -> None:
         # Initialise ReachLayerBase → inherits submit_input / subscribe_events /
         # cancel_turn HTTP helpers and channel_name/assembly_mode accessors.
-        # Voice channels currently drive Agent Core through the embedded
-        # AgentCoreLLMProcessor (pipecat FrameProcessor); the inherited HTTP
-        # helpers are available for future streaming integration.
+        # When assembly_mode is "session" the embedded AgentCoreLLMProcessor
+        # uses these helpers to stream SentenceEvents back to TTS as they
+        # arrive; in "direct" mode the processor falls back to its own
+        # synchronous POST to /process_turn.
         super().__init__(config, channel_name="voice")
         self._operator = VobizOperator(config)
         self._vad_wrapper = SileroVADWrapper()
@@ -95,6 +96,7 @@ class VobizAdapter(TelephonyAdapterBase):
             call_sid=call_sid,
             session_id=session_id,
             user_id=caller_id,
+            channel=self,
         )
         tts = RayaTTSService(self._config)
         sanitizer = TTSTextSanitizerProcessor()

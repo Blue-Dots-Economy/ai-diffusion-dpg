@@ -1,5 +1,0 @@
-# reach_layer/cli/config/domain.yaml — CLI channel domain overrides template.
-# Add only values that differ from dpg.yaml defaults.
-
-observability:
-  domain: ""  # Required. Domain identifier (e.g. "kkb", "farmer_friendly").

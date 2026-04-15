@@ -215,3 +215,163 @@ def test_missing_base_url_raises(config):
     bad_config = {"telephony_adapter": {"agent_core": {"base_url": ""}}}
     with pytest.raises(ValueError, match="base_url"):
         AgentCoreLLMProcessor(bad_config, call_sid="CA1", session_id="s1")
+
+
+# ---------------------------------------------------------------------------
+# session-mode (assembly_mode=session) — submit_input + SSE streaming
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def session_config():
+    return {
+        "telephony_adapter": {
+            "agent_core": {
+                "base_url": "http://agent_core:8000",
+                "timeout_ms": 5000,
+                "fallback_phrase": "Sorry, I could not process that.",
+            }
+        },
+        "reach_layer": {"channels": {"voice": {"assembly_mode": "session"}}},
+    }
+
+
+def _make_channel(events):
+    """Build a fake ReachLayerBase exposing submit_input + subscribe_events."""
+    ch = MagicMock()
+    ch.submit_input = AsyncMock(return_value=None)
+
+    async def _stream(_session_id):
+        for ev in events:
+            yield ev
+
+    ch.subscribe_events = _stream
+    return ch
+
+
+def test_session_mode_without_channel_raises(session_config):
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+
+    with pytest.raises(ValueError, match="session"):
+        AgentCoreLLMProcessor(
+            session_config, call_sid="CA1", session_id="s1"
+        )
+
+
+@pytest.mark.asyncio
+async def test_session_mode_pushes_one_speak_frame_per_sentence(session_config):
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+    from reach_layer_base import DoneEvent, SentenceEvent, SignalEvent
+
+    events = [
+        SignalEvent(stage="llm_call", status="start"),
+        SentenceEvent(text="नमस्ते।", sentence_index=0),
+        SentenceEvent(text="मैं आपकी मदद कैसे कर सकता हूँ?", sentence_index=1),
+        DoneEvent(turn_status="completed", was_escalated=False),
+    ]
+    channel = _make_channel(events)
+
+    pushed = []
+    proc = AgentCoreLLMProcessor(
+        session_config, call_sid="CA1", session_id="s1", channel=channel
+    )
+    proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
+
+    await proc.process_frame(
+        TranscriptionFrame(text="मदद चाहिए", user_id="", timestamp=""),
+        FrameDirection.DOWNSTREAM,
+    )
+
+    speak = [f for f in pushed if isinstance(f, TTSSpeakFrame)]
+    assert len(speak) == 2
+    assert speak[0].text == "नमस्ते।"
+    assert speak[1].text == "मैं आपकी मदद कैसे कर सकता हूँ?"
+    assert not any(isinstance(f, EndFrame) for f in pushed)
+    channel.submit_input.assert_awaited_once_with("s1", "मदद चाहिए", None)
+
+
+@pytest.mark.asyncio
+async def test_session_mode_escalation_pushes_end_frame(session_config):
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+    from reach_layer_base import DoneEvent, SentenceEvent
+
+    events = [
+        SentenceEvent(text="Transferring you to an agent.", sentence_index=0),
+        DoneEvent(turn_status="completed", was_escalated=True),
+    ]
+    channel = _make_channel(events)
+
+    pushed = []
+    proc = AgentCoreLLMProcessor(
+        session_config, call_sid="CA1", session_id="s1", channel=channel
+    )
+    proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
+
+    await proc.process_frame(
+        TranscriptionFrame(text="help", user_id="", timestamp=""),
+        FrameDirection.DOWNSTREAM,
+    )
+
+    types = [type(f) for f in pushed]
+    assert TTSSpeakFrame in types
+    assert EndFrame in types
+    assert types.index(EndFrame) > types.index(TTSSpeakFrame)
+
+
+@pytest.mark.asyncio
+async def test_session_mode_submit_input_failure_pushes_fallback(session_config):
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+
+    channel = MagicMock()
+    channel.submit_input = AsyncMock(side_effect=httpx.ConnectError("boom"))
+    channel.subscribe_events = AsyncMock()  # should never be called
+
+    pushed = []
+    proc = AgentCoreLLMProcessor(
+        session_config, call_sid="CA1", session_id="s1", channel=channel
+    )
+    proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
+
+    await proc.process_frame(
+        TranscriptionFrame(text="hi", user_id="", timestamp=""),
+        FrameDirection.DOWNSTREAM,
+    )
+
+    speak = [f for f in pushed if isinstance(f, TTSSpeakFrame)]
+    assert len(speak) == 1
+    assert speak[0].text == "Sorry, I could not process that."
+    channel.subscribe_events.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_session_mode_no_sentences_pushes_fallback(session_config):
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+    from reach_layer_base import DoneEvent
+
+    # SSE stream closes with only a DoneEvent — no SentenceEvents at all.
+    channel = _make_channel([DoneEvent(turn_status="completed")])
+
+    pushed = []
+    proc = AgentCoreLLMProcessor(
+        session_config, call_sid="CA1", session_id="s1", channel=channel
+    )
+    proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
+
+    await proc.process_frame(
+        TranscriptionFrame(text="hi", user_id="", timestamp=""),
+        FrameDirection.DOWNSTREAM,
+    )
+
+    speak = [f for f in pushed if isinstance(f, TTSSpeakFrame)]
+    assert len(speak) == 1
+    assert speak[0].text == "Sorry, I could not process that."
+
+
+@pytest.mark.asyncio
+async def test_direct_mode_default_does_not_require_channel(config):
+    """Backwards-compatible default: no assembly_mode in config → direct, no channel needed."""
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+
+    # Should construct without channel and without raising.
+    proc = AgentCoreLLMProcessor(config, call_sid="CA1", session_id="s1")
+    assert proc._assembly_mode == "direct"

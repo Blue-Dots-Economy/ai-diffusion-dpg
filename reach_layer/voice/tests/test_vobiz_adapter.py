@@ -48,8 +48,9 @@ async def test_handle_call_uses_caller_id_as_user_id(config):
     captured_user_id = {}
 
     class MockAgentCoreLLM:
-        def __init__(self, cfg, *, call_sid, session_id, user_id):
+        def __init__(self, cfg, *, call_sid, session_id, user_id, channel=None):
             captured_user_id["user_id"] = user_id
+            captured_user_id["channel"] = channel
 
         async def process_frame(self, frame, direction):
             pass

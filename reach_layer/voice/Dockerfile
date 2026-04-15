@@ -50,9 +50,10 @@ COPY --from=builder /observability_layer /observability_layer
 
 # src/ includes: base.py, bot.py, vobiz_adapter.py, campaign_manager.py,
 #                operators/, vad/, pipecat_services/
-COPY reach_layer/voice/server.py reach_layer/voice/config_loader.py ./
+COPY reach_layer/voice/server.py ./
 COPY reach_layer/voice/src/ ./src/
-COPY reach_layer/voice/config/ ./config/
+# Unified Reach Layer config lives one level up, shared across cli/web/voice.
+COPY reach_layer/config/ ./config/
 
 RUN chown -R reachlayer:reachlayer /app
 

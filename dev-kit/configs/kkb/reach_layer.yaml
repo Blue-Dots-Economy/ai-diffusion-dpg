@@ -1,41 +1,59 @@
-# dev-kit/configs/kkb/reach_layer.yaml
-# KKB domain values for Reach Layer.
-# Merged with dev-kit/dpg/reach_layer.yaml by loader.py before deployment.
+# =============================================================================
+# dev-kit/configs/kkb/reach_layer.yaml — KKB domain-specific Reach Layer config.
+# =============================================================================
+# Contains KKB-specific values only: UI branding, spoken/displayed text,
+# language/voice choice, SSO policy, and the domain identifier. Deep-merged
+# on top of `dev-kit/dpg/reach_layer.yaml` (which holds infrastructure keys:
+# endpoints, ports, timeouts, protocol flags) at startup.
+#
+# Keys here must NOT duplicate anything in dpg/reach_layer.yaml — the two
+# files partition the schema by purpose, not by override.
+# =============================================================================
 
-ui:
-  app_name: "Kaam Ki Baat"
-  app_tagline: "DPG Skill-Jobs AI"
-  app_icon: "💼"
-  agent_avatar: "💼"
-  user_avatar: "👤"
-  setup_heading: "Kaam Ki Baat में आपका स्वागत है · Welcome to Kaam Ki Baat"
-  setup_subtitle: "अपना यूज़र ID दर्ज करें · Enter your user ID to begin or resume a conversation."
-  user_id_placeholder: "e.g. rahul_electrician"
-  user_id_hint: "Use your name and trade, e.g. rahul_electrician"
-  start_btn_label: "बातचीत शुरू करें · Start chatting →"
-  new_session_msg: "नमस्ते! मैं Kaam Ki Baat हूँ। आज मैं आपकी कैसे मदद कर सकता हूँ? · Hello! I'm Kaam Ki Baat. How can I help you today?"
-  returning_user_msg: "वापस आने पर स्वागत है! · Welcome back! Continuing your previous conversation."
-  storage_key: "kkb_user_id"
-  theme_storage_key: "kkb_theme"
-  sign_out_confirm: "क्या आप साइन आउट करना चाहते हैं? · Sign out of your account?"
-  switch_user_confirm: "यूज़र बदलें? आपका मौजूदा सेशन बंद हो जाएगा। · Switch user? Your current session will be closed."
-  delete_conversation_confirm: "क्या यह बातचीत डिलीट करें? यह वापस नहीं आएगी। · Delete this conversation? This cannot be undone."
+reach_layer:
 
-observability:
-  domain: "kkb"
+  common:
+    observability:
+      domain: "kkb"
 
-# Google Sign-On for KKB.
-# - `enabled: true` makes the SPA boot into the LoginScreen and forces
-#   /chat + /user-history to require a valid session cookie.
-# - `google_client_id` should be injected via the GOOGLE_CLIENT_ID env
-#   var at deploy time (see Helm chart). For local dev you can also set
-#   it here, but never commit a production client_id.
-# - REACH_SESSION_SECRET (HMAC secret for session JWTs) is always read
-#   from the env var.
-auth:
-  enabled: true
-  session_ttl_s: 86400
-  # Local dev uses plain http://localhost, so Secure cookies would be
-  # dropped by the browser. Override to false here; production deploys
-  # should keep the dpg default (true) via an env with TLS.
-  cookie_secure: false
+  channels:
+
+    cli:
+      prompt: "You: "
+      agent_prefix: "Agent: "
+
+    web:
+      auth:
+        enabled: true
+        google_client_id: ""
+        # Local dev uses plain http://localhost, so Secure cookies would be
+        # dropped by the browser. Override to false; production deploys flip
+        # this to true once served over TLS.
+        cookie_secure: false
+
+      ui:
+        app_name: "Kaam Ki Baat"
+        app_tagline: "DPG Skill-Jobs AI"
+        app_icon: "💼"
+        agent_avatar: "💼"
+        user_avatar: "👤"
+        setup_heading: "Kaam Ki Baat में आपका स्वागत है · Welcome to Kaam Ki Baat"
+        setup_subtitle: "अपना यूज़र ID दर्ज करें · Enter your user ID to begin or resume a conversation."
+        user_id_placeholder: "e.g. rahul_electrician"
+        user_id_hint: "Use your name and trade, e.g. rahul_electrician"
+        start_btn_label: "बातचीत शुरू करें · Start chatting →"
+        new_session_msg: "नमस्ते! मैं Kaam Ki Baat हूँ। आज मैं आपकी कैसे मदद कर सकता हूँ? · Hello! I'm Kaam Ki Baat. How can I help you today?"
+        returning_user_msg: "वापस आने पर स्वागत है! · Welcome back! Continuing your previous conversation."
+        storage_key: "kkb_user_id"
+        theme_storage_key: "kkb_theme"
+        sign_out_confirm: "क्या आप साइन आउट करना चाहते हैं? · Sign out of your account?"
+        switch_user_confirm: "यूज़र बदलें? आपका मौजूदा सेशन बंद हो जाएगा। · Switch user? Your current session will be closed."
+        delete_conversation_confirm: "क्या यह बातचीत डिलीट करें? यह वापस नहीं आएगी। · Delete this conversation? This cannot be undone."
+
+    voice:
+      raya:
+        language: "hi"
+        voice_id: "voice_001"
+      agent_core:
+        greeting: "नमस्ते! मैं Kaam Ki Baat हूँ। आज मैं आपकी कैसे मदद कर सकता हूँ?"
+        fallback_phrase: "माफ़ कीजिए, मैं इसे समझ नहीं पाया। कृपया दोबारा कहें।"

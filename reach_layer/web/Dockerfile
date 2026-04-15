@@ -66,9 +66,10 @@ COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /reach_layer_base /reach_layer_base
 COPY --from=builder /observability_layer /observability_layer
 
-COPY reach_layer/web/server.py reach_layer/web/config_loader.py ./
+COPY reach_layer/web/server.py ./
 COPY reach_layer/web/src/ ./src/
-COPY reach_layer/web/config/ ./config/
+# Unified Reach Layer config lives one level up, shared across cli/web/voice.
+COPY reach_layer/config/ ./config/
 
 # Copy the compiled frontend — Vite outDir is ../dist relative to web-src/,
 # which resolves to /dist inside the frontend stage (WORKDIR is /build)

@@ -9,6 +9,7 @@ description = "Reach Layer base class hierarchy — shared by cli/web/voice chan
 requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.27.0",
+    "pyyaml>=6.0",
 ]
 
 [tool.setuptools]

@@ -50,7 +50,8 @@ COPY --from=builder /observability_layer /observability_layer
 
 COPY reach_layer/cli/main.py ./
 COPY reach_layer/cli/src/ ./src/
-COPY reach_layer/cli/config/ ./config/
+# Unified Reach Layer config lives one level up, shared across cli/web/voice.
+COPY reach_layer/config/ ./config/
 
 RUN chown -R reachlayer:reachlayer /app
 

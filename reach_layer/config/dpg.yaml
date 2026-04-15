@@ -1,43 +1,39 @@
 # =============================================================================
-# dev-kit/dpg/reach_layer.yaml — Deploy-time Reach Layer framework defaults.
+# reach_layer/config/dpg.yaml — Reach Layer framework (infrastructure) defaults.
 # =============================================================================
 # Non-domain-specific config only: endpoints, ports, timeouts, protocol flags,
-# and technical tuning. Mounted by docker-compose (and by Helm/Kustomize in
-# real deploys) as the Reach Layer's `config/dpg.yaml` inside every channel
-# container.
+# and technical tuning. Anything that changes by DOMAIN (branding, UI text,
+# language, voice, greeting) lives in `domain.yaml` and is merged on top of
+# this file at startup.
 #
-# Shares the exact schema of `reach_layer/config/dpg.yaml`; the only
-# difference is that service endpoints point at in-cluster DNS names rather
-# than localhost.
-#
-# Domain-specific values (branding, UI text, language, greeting, etc.) live
-# in `dev-kit/configs/<domain>/reach_layer.yaml` and are deep-merged on top
-# of this file at startup.
+# Each service reads only its own slice under `reach_layer.channels.<name>`
+# plus the shared `reach_layer.common` block. Unused channel sections are
+# ignored at runtime — this file is safe to ship into every channel image.
 # =============================================================================
 
 reach_layer:
 
   # ---------------------------------------------------------------------------
-  # Shared — inherited by all three channel services.
+  # Shared — every channel service inherits these.
   # ---------------------------------------------------------------------------
   common:
     agent_core_client:
-      endpoint: "http://agent_core:8000/process_turn"
+      endpoint: "http://localhost:8000/process_turn"   # base URL is derived; path is stripped
       timeout_s: 30.0
     memory_layer_client:
-      endpoint: "http://memory_layer:8002"
+      endpoint: "http://localhost:8002"
       timeout_s: 10.0
     observability:
       otel:
-        collector_endpoint: "http://otelcol:4317"
+        collector_endpoint: "http://localhost:4317"
         sample_rate: 1.0
         export_interval_ms: 5000
-      # domain identifier is set in dev-kit/configs/<domain>/reach_layer.yaml
+      # domain identifier is set in domain.yaml
 
   # ---------------------------------------------------------------------------
-  # Per-channel sections. Each channel service reads only its own slice plus
-  # `common`. `enabled: false` makes the service refuse to start.
-  # `assembly_mode` is the single switch:
+  # Per-channel sections — each service reads ONLY its own slice.
+  # `enabled: false` makes the service refuse to start (selective deployment).
+  # `assembly_mode` is the single switch for routing:
   #   - session → POST /sessions/{id}/input + SSE events (via TurnAssembler)
   #   - direct  → POST /process_turn (synchronous)
   # ---------------------------------------------------------------------------
@@ -47,7 +43,7 @@ reach_layer:
     cli:
       enabled: true
       assembly_mode: session
-      # prompt / agent_prefix are locale-specific → dev-kit/configs/<domain>/
+      # prompt / agent_prefix are locale-specific → domain.yaml
 
     # ─── Web ─────────────────────────────────────────────────────────────────
     web:
@@ -57,18 +53,18 @@ reach_layer:
         host: 0.0.0.0
         port: 8005
       sessions:
-        limit: 25
+        limit: 25                                      # sidebar recent-sessions cap
       auth:
-        # enabled, google_client_id, cookie_secure are per-domain → dev-kit/configs/<domain>/
+        # enabled, google_client_id, cookie_secure are per-domain → domain.yaml
         session_cookie_name: "reach_session"
         session_ttl_s: 86400
         cookie_samesite: "lax"
-      # ui.* (avatars, copy, storage keys) is domain-specific → dev-kit/configs/<domain>/
+      # ui.* (avatars, copy, storage keys) is domain-specific → domain.yaml
 
     # ─── Voice ───────────────────────────────────────────────────────────────
-    # Voice-channel keys mirror the legacy `telephony_adapter.*` shape so the
-    # config loader can alias this block under `telephony_adapter` without
-    # touching the ~28 files that read those keys today.
+    # Voice-channel keys mirror the legacy `telephony_adapter.*` shape exactly;
+    # the config loader aliases this section under `telephony_adapter` for
+    # backward compatibility with the existing pipecat code.
     voice:
       enabled: true
       assembly_mode: session
@@ -91,8 +87,8 @@ reach_layer:
         tts_base_url: "https://hub.getraya.app/v1"
         tts_model: "standard"
         tts_speed: 1.0
-        # language, voice_id are per-domain → dev-kit/configs/<domain>/
+        # language, voice_id are per-domain → domain.yaml
       agent_core:
         base_url: "http://agent_core:8000"
         timeout_ms: 5000
-        # greeting, fallback_phrase are per-domain (spoken text) → dev-kit/configs/<domain>/
+        # greeting, fallback_phrase are per-domain (spoken text) → domain.yaml

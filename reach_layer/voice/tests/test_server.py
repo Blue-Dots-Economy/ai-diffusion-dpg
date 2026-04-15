@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 def client():
     with patch("src.bot.run_bot", new_callable=AsyncMock) as mock_bot, \
          patch("server.CampaignManager"), \
-         patch("server.load_config", return_value={
+         patch("server.load_reach_config", return_value={
              "telephony_adapter": {
                  "port": 8006,
                  "public_url": "https://example.app",

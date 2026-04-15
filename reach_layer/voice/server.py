@@ -26,7 +26,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 import src.bot as bot
-from config_loader import load_config
+from reach_layer_base import load_reach_config
 from src.campaign_manager import CampaignManager
 
 logger = logging.getLogger(__name__)
@@ -81,11 +81,33 @@ def create_app(config: dict | None = None) -> FastAPI:
     global _campaign_manager, _config
 
     if config is None:
-        dpg_path = os.getenv("DPG_CONFIG_PATH", "config/telephony.yaml")
-        domain_path = os.getenv(
-            "DOMAIN_CONFIG_PATH", "../dev-kit/configs/kkb/telephony_adapter.yaml"
+        # Resolve dpg.yaml / domain.yaml: prefer env overrides → local
+        # checkout under ../config/ → container cwd ./config/.
+        from pathlib import Path as _P
+        _voice_dir = _P(__file__).resolve().parent
+        _local_reach_config = _voice_dir.parent / "config"
+
+        dpg_env = os.getenv("DPG_CONFIG_PATH")
+        if dpg_env:
+            dpg_path = dpg_env
+        elif (_local_reach_config / "dpg.yaml").exists():
+            dpg_path = str(_local_reach_config / "dpg.yaml")
+        else:
+            dpg_path = "config/dpg.yaml"
+
+        domain_env = os.getenv("DOMAIN_CONFIG_PATH")
+        if domain_env:
+            domain_path = domain_env
+        elif (_local_reach_config / "domain.yaml").exists():
+            domain_path = str(_local_reach_config / "domain.yaml")
+        else:
+            domain_path = "config/domain.yaml"
+
+        config = load_reach_config(
+            channel_name="voice",
+            dpg_path=dpg_path,
+            domain_path=domain_path,
         )
-        config = load_config(dpg_path, domain_path)
 
     _config = config
     init_otel("telephony_adapter", config)

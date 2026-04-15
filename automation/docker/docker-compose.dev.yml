@@ -223,14 +223,15 @@ services:
       dockerfile: reach_layer/web/Dockerfile
     container_name: reach_layer_web
     environment:
-      - CONFIG_FOLDER=/app/config
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - REACH_SESSION_SECRET=${REACH_SESSION_SECRET:-}
     ports:
       - "8005:8005"
     volumes:
+      # Unified Reach Layer config: DPG defaults + per-domain overrides.
+      # Loader scopes to the web channel via load_reach_config("web").
       - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/reach_layer.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -260,11 +261,11 @@ services:
       context: ../..
       dockerfile: reach_layer/cli/Dockerfile
     container_name: reach_layer_cli
-    environment:
-      - CONFIG_FOLDER=/app/config
     volumes:
+      # Unified Reach Layer config: DPG defaults + per-domain overrides.
+      # Loader scopes to the cli channel via load_reach_config("cli").
       - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/reach_layer.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
     networks:
       - dpg_net
     stdin_open: true
@@ -288,6 +289,7 @@ services:
     container_name: reach_layer_voice
     environment:
       - DPG_CONFIG_PATH=/app/config/dpg.yaml
+      - DOMAIN_CONFIG_PATH=/app/config/domain.yaml
       - NLTK_DATA=/tmp/nltk_data
       - PUBLIC_URL=${PUBLIC_URL:-}                       # set from shell or use ngrok service
       - VOBIZ_AUTH_ID=${VOBIZ_AUTH_ID:-}
@@ -296,7 +298,10 @@ services:
       - RAYA_API_KEY=${RAYA_API_KEY:-}
       - LOG_LEVEL=INFO
     volumes:
-      - ../../dev-kit/dpg/telephone_adapter.yaml:/app/config/dpg.yaml:ro
+      # Unified Reach Layer config: DPG defaults + per-domain overrides.
+      # Loader scopes to the voice channel via load_reach_config("voice").
+      - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
     ports:
       - "8006:8006"
     networks:

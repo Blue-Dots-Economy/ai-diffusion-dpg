@@ -20,7 +20,6 @@ import sys
 import uuid
 from pathlib import Path
 
-import yaml
 from dotenv import load_dotenv
 
 # Add repository root to sys.path so ``reach_layer_base`` imports work when
@@ -29,6 +28,8 @@ _HERE = Path(__file__).resolve().parent
 _BASE_DIR = _HERE.parent / "base"
 if str(_BASE_DIR.parent) not in sys.path:
     sys.path.insert(0, str(_BASE_DIR.parent))
+
+from reach_layer_base import load_reach_config  # noqa: E402
 
 # Fall back to using the flat ``base`` package if ``reach_layer_base`` is
 # not installed (e.g. dev environment running from the repo without uv sync).
@@ -53,32 +54,39 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Config loading (mirrors the pattern used by other DPG blocks)
+# Config loading — delegates to the shared reach_layer loader.
 # ---------------------------------------------------------------------------
 
+# Resolve the DPG defaults path. Two layouts are supported:
+#   - Docker runtime: `/app/config/dpg.yaml` (cwd=/app, Dockerfile COPYs
+#     reach_layer/config/ → ./config/).
+#   - Local checkout: `reach_layer/config/dpg.yaml` (one level above this file).
+# The former is picked automatically because the loader accepts a relative
+# path and cwd=/app inside the container. The latter is used when running
+# from the repo without installing.
+_LOCAL_REACH_CONFIG_DIR = _HERE.parent / "config"
 
-def _load_yaml(path: Path) -> dict:
-    if not path.exists():
-        raise FileNotFoundError(f"Config file not found: {path.resolve()}")
-    with path.open("r") as f:
-        return yaml.safe_load(f) or {}
 
+def _dpg_config_path() -> Path:
+    """Resolve the DPG framework defaults path.
 
-def _deep_merge(base: dict, override: dict) -> dict:
-    result = base.copy()
-    for key, value in override.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = _deep_merge(result[key], value)
-        else:
-            result[key] = value
-    return result
+    Prefers the checked-in ``reach_layer/config/dpg.yaml`` when it exists
+    (local dev); otherwise falls back to ``config/dpg.yaml`` relative to
+    cwd (container runtime).
+    """
+    local = _LOCAL_REACH_CONFIG_DIR / "dpg.yaml"
+    if local.exists():
+        return local
+    return Path("config/dpg.yaml")
 
 
 def _domain_config_path() -> Path:
-    """Resolve the domain config path for the reach_layer block.
+    """Resolve the domain-overrides path.
 
-    Uses CONFIG_FOLDER env var if set (points to dev-kit/configs/<domain>),
-    otherwise falls back to the block-local config/domain.yaml.
+    Uses ``CONFIG_FOLDER`` env var if set (points at
+    ``dev-kit/configs/<domain>``), otherwise falls back to the checked-in
+    ``reach_layer/config/domain.yaml`` for local dev, or
+    ``config/domain.yaml`` relative to cwd inside containers.
     """
     config_folder = os.getenv("CONFIG_FOLDER")
     if config_folder:
@@ -89,16 +97,19 @@ def _domain_config_path() -> Path:
                 f"'{resolved}' does not exist."
             )
         return resolved
-    return _HERE / "config" / "domain.yaml"
+    local = _LOCAL_REACH_CONFIG_DIR / "domain.yaml"
+    if local.exists():
+        return local
+    return Path("config/domain.yaml")
 
 
 def _load_config() -> dict:
-    """Merge framework defaults (dpg.yaml) with domain overrides (domain.yaml)."""
-    dpg_path = _HERE / "config" / "dpg.yaml"
-    dpg_config = _load_yaml(dpg_path) if dpg_path.exists() else {}
-    domain_path = _domain_config_path()
-    domain_config = _load_yaml(domain_path) if domain_path.exists() else {}
-    return _deep_merge(dpg_config, domain_config)
+    """Load and scope the unified Reach Layer config to the CLI channel."""
+    return load_reach_config(
+        channel_name="cli",
+        dpg_path=str(_dpg_config_path()),
+        domain_path=str(_domain_config_path()),
+    )
 
 
 # ---------------------------------------------------------------------------
