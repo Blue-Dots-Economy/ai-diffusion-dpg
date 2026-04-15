@@ -111,9 +111,20 @@ class ReachLayerBase(ABC):
     # ------------------------------------------------------------------
 
     async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create the shared httpx.AsyncClient."""
+        """Get or create the shared httpx.AsyncClient.
+
+        Uses read=None so SSE connections never time out waiting for events
+        between turns. Connect/write/pool timeouts are still enforced.
+        """
         if self._http_client is None or self._http_client.is_closed:
-            self._http_client = httpx.AsyncClient(timeout=self._timeout_s)
+            self._http_client = httpx.AsyncClient(
+                timeout=httpx.Timeout(
+                    connect=self._timeout_s,
+                    read=None,
+                    write=self._timeout_s,
+                    pool=self._timeout_s,
+                )
+            )
         return self._http_client
 
     async def close(self) -> None:
@@ -269,8 +280,10 @@ class ReachLayerBase(ABC):
                         event = self._parse_sse_event(event_text)
                         if event:
                             yield event
-                            if isinstance(event, DoneEvent):
-                                return
+                            # Do not close on DoneEvent — the server keeps the SSE
+                            # connection open across turns (design decision #4 in
+                            # TurnAssembler). Stay connected so subsequent turns
+                            # are delivered on the same stream.
         except Exception as e:
             logger.error(
                 "reach_layer.subscribe_events_error",

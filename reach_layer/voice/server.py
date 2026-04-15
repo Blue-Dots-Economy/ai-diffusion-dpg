@@ -113,7 +113,7 @@ def create_app(config: dict | None = None) -> FastAPI:
     init_otel("telephony_adapter", config)
     _campaign_manager = CampaignManager(config)
 
-    public_url: str = config.get("telephony_adapter", {}).get("public_url", "")
+    public_url: str = config.get("telephony_adapter", {}).get("public_url", "").rstrip("/")
     if not public_url:
         raise ValueError("telephony_adapter.public_url is required in config")
     ws_url = public_url.replace("https://", "wss://").replace("http://", "ws://")
@@ -175,6 +175,17 @@ def create_app(config: dict | None = None) -> FastAPI:
         while len(_caller_id_map) > _CALLER_ID_MAP_MAX:
             _caller_id_map.popitem(last=False)
         stream_url = f"{ws_url}/ws/{call_sid}"
+        logger.info(
+            "server.answer",
+            extra={
+                "operation": "server.answer",
+                "status": "success",
+                "call_sid": call_sid,
+                "caller_id": caller_id,
+                "stream_url": stream_url,
+                "form_keys": list(form.keys()),
+            },
+        )
         if _operator is not None:
             xml = _operator.webhook_response_xml(stream_url)
         else:
@@ -186,6 +197,7 @@ def create_app(config: dict | None = None) -> FastAPI:
                 f"{stream_url}</Stream>\n"
                 "</Response>"
             )
+        logger.info("server.answer_xml: %s", xml)
         return Response(content=xml, media_type="application/xml")
 
     @app.websocket("/ws/{call_sid}")

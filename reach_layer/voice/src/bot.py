@@ -27,8 +27,36 @@ async def run_bot(websocket: WebSocket, call_sid: str, caller_id: str, config: d
         caller_id: Caller E.164 phone number from the /answer webhook From field.
         config: Full merged config dict.
     """
+    logger.info(
+        "bot.run_bot_start",
+        extra={
+            "operation": "bot.run_bot",
+            "status": "success",
+            "call_sid": call_sid,
+            "caller_id": caller_id,
+        },
+    )
     adapter = VobizAdapter(config)
     try:
         await adapter.handle_call(call_sid, caller_id, websocket)
+    except Exception as exc:
+        logger.error(
+            "bot.run_bot_error",
+            extra={
+                "operation": "bot.run_bot",
+                "status": "failure",
+                "call_sid": call_sid,
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+        )
+        raise
     finally:
+        logger.info(
+            "bot.run_bot_end",
+            extra={
+                "operation": "bot.run_bot",
+                "status": "success",
+                "call_sid": call_sid,
+            },
+        )
         await adapter.teardown(call_sid)

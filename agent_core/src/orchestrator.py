@@ -224,6 +224,8 @@ class AgentCore(AgentCoreBase):
             "═══════════════════════════════════════════════════════════════",
             session_id, turn_input.channel, turn_input.user_message[:120],
         )
+        # TEMP DEBUG
+        logger.warning("[DEBUG] process_turn INPUT: %r", turn_input.user_message)
 
         # ── Step 1: Read session state ────────────────────────────────
         memory_endpoint = (
@@ -705,6 +707,8 @@ class AgentCore(AgentCoreBase):
             "  [STEP 11] Delivering response to caller  (async: memory write + learning emit follow)",
         )
 
+        # TEMP DEBUG
+        logger.warning("[DEBUG] process_turn REPLY: %r", final_text)
         result = self._build_result(
             session_id=session_id,
             user_id=user_id,
@@ -1543,6 +1547,8 @@ class AgentCore(AgentCoreBase):
                 "channel": turn_input.channel,
             },
         )
+        # TEMP DEBUG
+        logger.warning("[DEBUG] stream_turn INPUT: %r", turn_input.user_message)
 
         try:
             # ── Step 1: Read session state ──────────────────────────────
@@ -1904,6 +1910,8 @@ class AgentCore(AgentCoreBase):
                 full_response_text += remaining
                 yield SentenceEvent(text=remaining, sentence_index=sentence_index)
 
+            # TEMP DEBUG
+            logger.warning("[DEBUG] stream_turn REPLY: %r", full_response_text.strip())
             # ── Step 11: Write current_question ────────────────────────
             yield SignalEvent(stage="memory_write", status="start")
             await self._async_memory.write(session_id, user_id, "session", "current_question", full_response_text.strip())

@@ -39,5 +39,5 @@ fail_under = 70
 show_missing = true
 
 [tool.uv.sources]
-reach-layer-base = { path = "../base" }
 observability-layer = { path = "../../observability_layer" }
+reach-layer-base = { path = "../base", editable = true }

@@ -57,6 +57,10 @@ from src.manager_agent import ManagerAgent
 from src.orchestrator import AgentCore
 from src.workflow_loader import AgentWorkflowLoader
 from src.servers.orchestration_server import create_orchestration_app
+from src.turn_assembler import TurnAssembler
+from src.http_clients.async_.memory_layer import AsyncMemoryLayerHttpClient
+from src.http_clients.async_.trust_layer import AsyncTrustLayerHttpClient
+from src.http_clients.async_.action_gateway import AsyncActionGatewayHttpClient
 
 # ---------------------------------------------------------------------------
 # Logging -- structured output, INFO level default
@@ -179,6 +183,11 @@ def _build_app():
         max_tool_rounds=agent_cfg.get("max_tool_rounds", 1),
     )
 
+    # Async clients — required for stream_turn() / session mode
+    async_memory = AsyncMemoryLayerHttpClient(config)
+    async_trust = AsyncTrustLayerHttpClient(config)
+    async_gateway = AsyncActionGatewayHttpClient(config)
+
     # Agent Core -- central orchestrator
     agent_core = AgentCore(
         config=config,
@@ -190,12 +199,18 @@ def _build_app():
         manager_agent=manager,
         learning=learning,
         workflow=workflow,
+        async_memory=async_memory,
+        async_trust=async_trust,
+        async_gateway=async_gateway,
     )
 
     model_name = llm.get_active_model()
 
+    # TurnAssembler — enables /sessions/{id}/input and /sessions/{id}/events
+    turn_assembler = TurnAssembler(agent_core=agent_core, config=config)
+
     # FastAPI app
-    app = create_orchestration_app(agent_core)
+    app = create_orchestration_app(agent_core, turn_assembler=turn_assembler)
 
     server_cfg = config.get("server", {})
     host = server_cfg.get("host", "0.0.0.0")

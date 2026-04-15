@@ -52,8 +52,10 @@ reach_layer:
 
     voice:
       raya:
-        language: "hi"
-        voice_id: "voice_001"
+        stt_language: "hi"
+        tts_language: "hi"
+        voice_id: "d6a002d0-230c-49b1-a137-b8a7d564b1ae"  # Priyanka, hi
       agent_core:
+        timeout_ms: 15000
         greeting: "नमस्ते! मैं Kaam Ki Baat हूँ। आज मैं आपकी कैसे मदद कर सकता हूँ?"
         fallback_phrase: "माफ़ कीजिए, मैं इसे समझ नहीं पाया। कृपया दोबारा कहें।"

@@ -49,7 +49,7 @@ class CampaignManager:
         self._auth_token = auth_token
         self._api_base = api_base
         self._from_number = from_number
-        self._public_url = config.get("telephony_adapter", {}).get("public_url", "")
+        self._public_url = config.get("telephony_adapter", {}).get("public_url", "").rstrip("/")
         self._max_retries = int(vobiz_cfg.get("max_retries", 3))
 
     async def initiate_call(self, to_number: str) -> dict:
@@ -92,7 +92,7 @@ class CampaignManager:
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     response = await client.post(url, json=payload, headers=headers)
 
-                if response.status_code == 200:
+                if response.status_code in (200, 201):
                     logger.info(
                         "campaign_manager.call_initiated",
                         extra={

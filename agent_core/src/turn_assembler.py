@@ -367,18 +367,15 @@ class TurnAssembler(TurnAssemblerBase):
 
         buffer = self._sessions[session_id]
 
-        try:
-            while True:
-                event = await buffer.event_queue.get()
-                yield event
-                if isinstance(event, DoneEvent):
-                    break
-        finally:
-            # Reset buffer for next turn instead of destroying it.
-            # Design decision #4: subscribe() resets to WAITING so the same SSE
-            # connection can handle the next turn. session_end() handles full cleanup.
-            if session_id in self._sessions:
-                self._reset_buffer(buffer)
+        while True:
+            event = await buffer.event_queue.get()
+            yield event
+            if isinstance(event, DoneEvent):
+                # Reset buffer in-place for the next turn so the same SSE
+                # connection stays open. Design decision #4: single persistent
+                # connection per session; session_end() handles full cleanup.
+                if session_id in self._sessions:
+                    self._reset_buffer(buffer)
 
     async def cancel(self, session_id: str) -> None:
         """Interrupt the active or waiting turn for this session.

@@ -79,11 +79,39 @@ class VobizAdapter(TelephonyAdapterBase):
         Raises:
             TelephonyError: If the handshake fails.
         """
+        logger.info(
+            "vobiz_adapter.handle_call_start",
+            extra={
+                "operation": "vobiz_adapter.handle_call",
+                "status": "success",
+                "call_sid": call_sid,
+                "caller_id": caller_id,
+            },
+        )
         try:
             stream_id, call_id = await self._operator.parse_handshake(websocket)
         except Exception as exc:
+            logger.error(
+                "vobiz_adapter.handshake_failed",
+                extra={
+                    "operation": "vobiz_adapter.handle_call",
+                    "status": "failure",
+                    "call_sid": call_sid,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
             raise TelephonyError(f"Handshake failed for {call_sid}: {exc}") from exc
 
+        logger.info(
+            "vobiz_adapter.handshake_ok",
+            extra={
+                "operation": "vobiz_adapter.handle_call",
+                "status": "success",
+                "call_sid": call_sid,
+                "stream_id": stream_id,
+                "call_id": call_id,
+            },
+        )
         transport = self._operator.create_transport(
             websocket, stream_id, call_id or call_sid
         )
