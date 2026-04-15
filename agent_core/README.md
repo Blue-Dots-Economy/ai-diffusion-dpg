@@ -1,12 +1,21 @@
 # Agent Core
 
-The sole orchestrator and sole LLM caller in the AI Diffusion DPG framework. Stateless between turns.
+The sole orchestrator and sole LLM caller in the AI Diffusion DPG framework. Stateless between turns. Supports both **synchronous** (`process_turn`) and **async streaming** (`stream_turn`) execution, with an optional **TurnAssembler** for multi-segment (voice / VAD / rapid-correction) input.
 
 ---
 
 ## What this service does
 
-Agent Core is the central coordinator for every user turn. It is the only component that calls the Anthropic LLM and the only block that initiates calls to other DPG services. It runs a fixed 13-step sequence on every turn, enforces safety on both input and output, and returns the final response to the caller. All session state lives in the Memory Layer — any instance can handle any session.
+Agent Core is the central coordinator for every user turn. It is the only component that calls the Anthropic LLM and the only block that initiates calls to other DPG services. It runs a fixed 13-step sequence on every turn, enforces safety on both input and output, and returns the final response to the caller.
+
+Two execution paths are available:
+
+- **`POST /process_turn`** — synchronous; returns a single `TurnResult` JSON after the entire pipeline completes.
+- **`POST /stream_turn`** — Server-Sent Events; yields `SignalEvent`s between pipeline stages, `SentenceEvent`s as the LLM streams, and a final `DoneEvent`.
+
+For channels that deliver input as multiple segments (voice VAD, rapid typing corrections), a **TurnAssembler** can be injected to buffer segments and decide when to invoke the pipeline via a configurable policy stack (silence trigger, semantic completeness gate, max-wait ceiling). When TurnAssembler is enabled, three additional session endpoints are exposed.
+
+All session state lives in the Memory Layer — any instance can handle any session.
 
 ---
 
@@ -20,43 +29,63 @@ agent_core/
 │   ├── dpg.yaml          # Framework defaults (server, timeouts, endpoints)
 │   └── domain.yaml       # Domain config template (models, intents, connectors, workflow)
 ├── src/
-│   ├── base.py                          # AgentCoreBase ABC
+│   ├── base.py                          # AgentCoreBase ABC — process_turn() + stream_turn()
 │   ├── models.py                        # TurnInput, TurnResult, ContextBundle, NLUResult,
 │   │                                    #   TrustCheckResult, ToolCall, ToolResult,
-│   │                                    #   LLMResponse, TurnEvent, RetrievalChunk
+│   │                                    #   LLMResponse, TurnEvent, RetrievalChunk,
+│   │                                    #   SignalEvent, SentenceEvent, DoneEvent,
+│   │                                    #   StreamEvent, SegmentInput
 │   ├── exceptions.py                    # AgentCoreError, LLMCallError, TrustViolationError,
 │   │                                    #   ToolExecutionError, ConsentRequiredError,
-│   │                                    #   ConfigurationError
-│   ├── orchestrator.py                  # AgentCore — 13-step turn processor
+│   │                                    #   ConfigurationError, ToolUseRequested
+│   ├── orchestrator.py                  # AgentCore — process_turn() + stream_turn()
+│   ├── turn_assembler.py                # TurnStatus, SessionBuffer, TurnAssemblerBase,
+│   │                                    #   TurnAssembler (policy stack: silence trigger,
+│   │                                    #   semantic gate, max-wait ceiling)
 │   ├── manager_agent.py                 # ManagerAgent — LLM → tool → LLM loop
 │   ├── tool_registry.py                 # ToolRegistry — loads and routes tools at startup
-│   ├── workflow_loader.py               # AgentWorkflowLoader — parses subagent graph from
-│   │                                    #   config; runs 7 structural validation checks
-│   ├── interfaces/                      # ABCs for all 6 downstream DPG block contracts
+│   ├── workflow_loader.py               # AgentWorkflowLoader — parses subagent graph
+│   ├── interfaces/                      # Sync ABCs for all 6 downstream DPG block contracts
 │   │   ├── memory_layer.py
 │   │   ├── trust_layer.py
 │   │   ├── knowledge_engine.py
 │   │   ├── action_gateway.py
 │   │   ├── reach_layer.py
-│   │   └── observability_layer.py
+│   │   ├── observability_layer.py
+│   │   └── async_/                      # Async ABCs used by stream_turn()
+│   │       ├── memory_layer.py          # AsyncMemoryLayerBase (8 methods)
+│   │       ├── trust_layer.py           # AsyncTrustLayerBase  (6 methods)
+│   │       ├── knowledge_engine.py      # AsyncKnowledgeEngineBase
+│   │       ├── action_gateway.py        # AsyncActionGatewayBase
+│   │       └── observability_layer.py   # AsyncObservabilityLayerBase
 │   ├── llm_wrapper/
-│   │   ├── base.py                      # LLMWrapperBase ABC
+│   │   ├── base.py                      # LLMWrapperBase — call() + stream_call()
 │   │   └── claude_wrapper.py            # Only file that imports the anthropic SDK
 │   ├── preprocessing/
-│   │   ├── language_normalisation.py    # Dialect detection, code-switching, transliteration
-│   │   └── nlu_processor.py             # Intent classification, entity extraction, sentiment,
-│   │                                    #   confidence scoring
-│   ├── http_clients/                    # HTTP adapters for all downstream blocks
-│   │   ├── memory_layer.py              # MemoryLayerHttpClient
-│   │   ├── trust_layer.py               # TrustLayerHttpClient — fail-closed on any error
-│   │   ├── knowledge_engine.py          # HttpKnowledgeEngineClient
-│   │   ├── action_gateway.py            # ActionGatewayHttpClient
-│   │   └── learning_client.py           # ObservabilityLayerHttpClient
+│   │   ├── language_normalisation.py
+│   │   └── nlu_processor.py
+│   ├── http_clients/                    # Sync HTTP adapters
+│   │   ├── memory_layer.py
+│   │   ├── trust_layer.py               # fail-closed on any error
+│   │   ├── knowledge_engine.py
+│   │   ├── action_gateway.py
+│   │   ├── learning_client.py
+│   │   └── async_/                      # Async HTTP adapters (httpx.AsyncClient)
+│   │       ├── memory_layer.py
+│   │       ├── trust_layer.py
+│   │       ├── knowledge_engine.py
+│   │       ├── action_gateway.py
+│   │       └── observability_layer.py
 │   └── servers/
-│       ├── orchestration_server.py      # FastAPI: POST /process_turn, GET /health
-│       └── llm_proxy_server.py          # POST /internal/llm/call (implemented, not yet
-│                                        #   wired to other blocks)
-└── tests/                               # 14 test files, 414 test functions
+│       ├── orchestration_server.py      # FastAPI:
+│       │                                #   POST /process_turn            (sync)
+│       │                                #   POST /stream_turn             (SSE)
+│       │                                #   POST /sessions/{id}/input     (TurnAssembler)
+│       │                                #   GET  /sessions/{id}/events    (TurnAssembler SSE)
+│       │                                #   DELETE /sessions/{id}/active_turn (barge-in)
+│       │                                #   GET  /health
+│       └── llm_proxy_server.py          # POST /internal/llm/call
+└── tests/                               # 454+ tests across ~17 files, ≥70% coverage
     ├── test_orchestrator.py
     ├── test_manager_agent.py
     ├── test_llm_wrapper.py
@@ -69,44 +98,98 @@ agent_core/
     ├── test_orchestration_server.py
     ├── test_llm_proxy_server.py
     ├── test_models.py
-    └── test_main.py
+    ├── test_main.py
+    ├── test_stream_events.py            # SSE serialisation
+    ├── test_stream_turn.py              # stream_turn() + _split_sentences()
+    ├── test_stream_endpoint.py          # POST /stream_turn
+    ├── test_turn_assembler.py           # policy stack, session buffer, end-to-end
+    └── test_session_endpoints.py        # POST /sessions/{id}/input etc.
 ```
 
 ---
 
 ## Turn execution sequence
 
-Every call to `process_turn()` runs this fixed 13-step sequence:
+Both `process_turn()` and `stream_turn()` run the same 13-step sequence:
 
 ```
 1.  Read session state          Memory Layer — loads ContextBundle for the session
 2.  Trust check input           Trust Layer — block, escalate, or allow
 3.  Language Normalisation      Internal LLM call (haiku model) — dialect, code-switching,
                                 transliteration
-4.  NLU Processor               Internal LLM call (haiku model) — intent, entities, sentiment,
-                                confidence score
+4.  NLU Processor               Internal LLM call (haiku model) — intent, entities,
+                                sentiment, confidence score
 5.  Routing                     Deterministic — NLU result + session conditions select subagent
-6.  Assemble constraints        Trust Layer.assemble_constraints if active_risks are present
+6.  Assemble constraints        Trust Layer.assemble_constraints if active_risks present
 7.  Build system prompt         Subagent prompt + guardrail constraints + required disclosures
-8.  LLM call #1                 ClaudeLLMWrapper — primary model with retry and fallback
+8.  LLM call #1                 ClaudeLLMWrapper — call() (sync) or stream_call() (streaming),
+                                with retry and fallback
 9.  Tool-use loop               ManagerAgent — if LLM returns tool_use: route via ToolRegistry;
-                                knowledge_retrieval → KE (_execute_knowledge_retrieval);
-                                all other tools → Action Gateway; append result, LLM call #2;
-                                bounded by max_tool_rounds; KE only called when subagent tool
-                                list includes knowledge_retrieval
-10. Trust check output          Trust Layer — mandatory; replaces response with fallback if blocked
-11. Return TurnResult           Response delivered to caller; steps 12–13 run asynchronously
+                                knowledge_retrieval → KE; all other tools → Action Gateway;
+                                append result, LLM call #2; bounded by max_tool_rounds
+10. Trust check output          Trust Layer — mandatory; blocked sentences → fallback text
+11. Return                      process_turn: TurnResult returned; stream_turn: DoneEvent yielded
 
-── async (after response is returned) ──────────────────────────────────────────
+── async (after response returned / DoneEvent yielded) ─────────────────────────────
 12. Write memory                Memory Layer — persists updated ContextBundle
 13. Emit turn event             Observability Layer — audit log, quality signals
 ```
 
-**Hard rules:**
+**`stream_turn()` differences:**
+
+- Uses async HTTP clients (`interfaces/async_/`, `http_clients/async_/`) for all external calls.
+- Yields `SignalEvent(stage=..., status="start"|"complete")` before and after each pipeline step.
+- Step 8 uses `llm.stream_call()` → incoming tokens are split into sentences on `.`, `?`, `!`, `।` (Devanagari danda), and `？` (fullwidth). Each complete sentence is run through Trust output check, then emitted as a `SentenceEvent`.
+- Trust _block_ on a sentence → fallback text replaces that sentence (stream continues). Trust _infra failure_ → treat as "allow" and log (never block the stream on infra failure).
+- `ToolUseRequested` mid-stream → `tool_start` / `tool_end` signal events, execute via Action Gateway, resume streaming.
+- Final `DoneEvent` carries `was_escalated`, `was_tool_used`, `model_used`, `latency_ms`, `turn_id`, `turn_status` (`completed` / `interrupted` / `abandoned`).
+- Steps 12–13 fire via `asyncio.create_task` _after_ `DoneEvent` is yielded.
+
+**Hard rules (both paths):**
+
 - Trust Layer runs on every input (step 2) and every output (step 10). Neither check is skippable.
-- Steps 12–13 run after the response is returned and never add latency to the caller.
+- Steps 12–13 run after the response/DoneEvent and never add latency to the caller.
 - Special subagents (`hitl`, `whatsapp_handoff`) bypass LLM inference.
 - Routing is deterministic and config-driven — not LLM-driven.
+
+---
+
+## TurnAssembler (multi-segment input)
+
+For channels that deliver input as multiple partial segments (voice VAD, rapid corrections, barge-in), `TurnAssembler` sits between the HTTP server and `AgentCore.stream_turn()`.
+
+```
+POST /sessions/{id}/input  ─►  TurnAssembler.add_segment()
+                                    │
+                                    ▼
+                            SessionBuffer (segments, timers, state)
+                                    │
+                     ┌──────────────┼──────────────┐
+                     │              │              │
+              semantic_gate    silence_trigger   max_wait_ceiling
+              (NLU confidence)  (resets on every  (absolute ceiling,
+                                 new segment)     never resets)
+                                    │
+                                    ▼
+                           agent_core.stream_turn()  ──►  SessionBuffer.event_queue
+                                                                  │
+                                                                  ▼
+                                                    GET /sessions/{id}/events (SSE)
+```
+
+**State machine** (`TurnStatus`):  `WAITING → INVOKED → {COMPLETED, INTERRUPTED, ABANDONED}`
+
+**Policy stack** — first to fire wins:
+
+1. **Semantic completeness gate** — runs NLU on assembled text; if `confidence ≥ threshold` and intent is not `unknown`, invoke immediately.
+2. **Silence trigger** — `asyncio.Task` started on first segment, reset (cancel + restart) on every subsequent `add_segment()`. Fires after `silence_ms`.
+3. **Max-wait ceiling** — `asyncio.Task` started once on buffer creation, never reset. Fires after `max_wait_ms`.
+
+If both the silence timer and the ceiling fire simultaneously, only the first to acquire the session-buffer lock wins the state transition.
+
+**Barge-in / cancellation** — `DELETE /sessions/{id}/active_turn` cancels the in-flight `stream_turn()` task. The async memory-write task is also cancelled, so no partial writes land in the Memory Layer. `DoneEvent.turn_status` carries `"interrupted"` or `"abandoned"` for observability.
+
+**Invocation path is in-process** — `TurnAssembler._invoke()` calls `agent_core.stream_turn()` directly as a Python method (no HTTP hop, no serialisation). `StreamEvent`s flow into `SessionBuffer.event_queue`; the open `GET /sessions/{id}/events` connection drains the queue.
 
 ---
 
@@ -114,11 +197,11 @@ Every call to `process_turn()` runs this fixed 13-step sequence:
 
 The service runs on port **8000**.
 
-### `POST /process_turn`
+### Core endpoints
 
-Main entry point for all user messages.
+#### `POST /process_turn` (sync)
 
-**Request body:**
+Request:
 ```json
 {
   "session_id": "sess-abc123",
@@ -129,9 +212,7 @@ Main entry point for all user messages.
 }
 ```
 
-`channel` defaults to `"cli"`. `user_id` is optional and used for Memory Layer lookups.
-
-**Response:**
+Response:
 ```json
 {
   "session_id": "sess-abc123",
@@ -143,72 +224,95 @@ Main entry point for all user messages.
 }
 ```
 
+#### `POST /stream_turn` (SSE)
+
+Same request body as `/process_turn`. Response is `text/event-stream`; one `data: <json>\n\n` event per pipeline signal / sentence, ending with a `DoneEvent`.
+
+```
+data: {"type":"signal","stage":"memory_read","status":"start"}
+data: {"type":"signal","stage":"memory_read","status":"complete"}
+...
+data: {"type":"sentence","text":"Hubli mein electrician ke liye salary...","sentence_index":0}
+data: {"type":"sentence","text":"Aap ko aur details chahiye?","sentence_index":1}
+data: {"type":"done","turn_status":"completed","was_escalated":false,"was_tool_used":true,
+       "model_used":"claude-haiku-4-5","latency_ms":1102,"turn_id":"turn-..."}
+```
+
+On unhandled exception → a terminal `DoneEvent(turn_status="abandoned")` is emitted before the stream closes.
+
+### Session endpoints (registered only when TurnAssembler is provided)
+
+#### `POST /sessions/{session_id}/input`
+
+Submit one segment. Returns **202 Accepted** immediately. Returns 422 if text is empty.
+
+```json
+{
+  "text": "electrician ka kaam",
+  "channel": "voice",
+  "user_id": "u-optional"
+}
+```
+
+#### `GET /sessions/{session_id}/events` (SSE)
+
+Long-lived subscription; yields each `StreamEvent` from the session buffer. The connection is multi-turn — after a `DoneEvent` the buffer resets to `WAITING` and the same connection continues serving subsequent turns.
+
+#### `DELETE /sessions/{session_id}/active_turn`
+
+Barge-in — interrupts the active turn. Returns 200 if the session existed, 404 otherwise.
+
 ### `GET /health`
 
-Returns `{"status": "ok"}` when the service is running.
+```json
+{ "status": "ok" }
+```
 
 ### `POST /internal/llm/call`
 
-LLM proxy endpoint — implemented but not yet wired to other blocks.
-
-**Request body:**
-```json
-{
-  "messages": [...],
-  "tools": [...],
-  "system": "...",
-  "model_override": "claude-haiku-4-5"
-}
-```
-
-**Response:**
-```json
-{
-  "content": "...",
-  "tool_calls": [],
-  "stop_reason": "end_turn",
-  "model_used": "claude-haiku-4-5",
-  "input_tokens": 312,
-  "output_tokens": 88
-}
-```
+LLM proxy endpoint (implemented, not yet wired).
 
 ---
 
 ## Key components
 
 **`orchestrator.py` — AgentCore**
-Implements `process_turn(TurnInput) -> TurnResult`. Runs the 13-step sequence. Holds no session state. All dependencies are injected at construction.
+Implements both `process_turn()` (sync) and `stream_turn()` (async generator). Runs the 13-step sequence. Holds no session state. All dependencies are injected at construction, including the async HTTP clients used by `stream_turn()`. `_split_sentences()` is a small utility that splits LLM tokens into sentence boundaries (supports Devanagari and fullwidth punctuation).
+
+**`turn_assembler.py` — TurnAssembler**
+Buffers multi-segment input and decides when to invoke `stream_turn()`. Holds `_sessions: dict[str, SessionBuffer]` in memory. Constructor takes optional `nlu_processor`, `llm_wrapper`, `workflow`, `async_memory` — if absent, the semantic gate is effectively disabled.
 
 **`manager_agent.py` — ManagerAgent**
-Drives the LLM → tool → LLM loop. When the LLM returns a `tool_use` block, checks consent, calls the Action Gateway, appends the result as `tool_result`, and issues a second LLM call. Bounded by `max_tool_rounds`.
+LLM → tool → LLM loop. Both sync and async variants. Used by `process_turn()` for synchronous tool rounds; `stream_turn()` handles tool use via the `ToolUseRequested` exception raised from `stream_call()`.
 
 **`llm_wrapper/claude_wrapper.py` — ClaudeLLMWrapper**
-The only file in the codebase that imports the `anthropic` SDK. Retries `RateLimitError` and `APITimeoutError` with exponential backoff. Switches to the fallback model after the primary exhausts all retries. Non-retryable errors fail immediately.
+Only file in the codebase that imports the `anthropic` SDK. Exposes `call()` (sync) and `stream_call()` (async generator). Both share the same retry + fallback model logic. `stream_call()` accumulates tool_use blocks during the stream; if the final `stop_reason == "tool_use"` it raises `ToolUseRequested(tool_calls)` — the caller executes the tool and resumes streaming.
 
 **`preprocessing/language_normalisation.py` — LanguageNormaliser**
-Runs before NLU on every turn. Detects dialect, normalises code-switching (Hindi/Kannada/English mixed input), and transliterates Romanised Indic text. Uses the configured haiku model via an internal LLM call. The `bhashini` provider raises `NotImplementedError` — not yet implemented.
+Runs before NLU. Detects dialect, normalises code-switching (Hindi/Kannada/English), and transliterates Romanised Indic text. The `bhashini` provider raises `NotImplementedError`.
 
 **`preprocessing/nlu_processor.py` — NLUProcessor**
-Runs after Language Normalisation. Classifies intent from the configured intent list, extracts entities, and produces a confidence score. Low-confidence results trigger a clarification response without a second LLM call.
+Classifies intent, extracts entities, produces confidence score. Low-confidence → clarification response without a second LLM call. Also used by TurnAssembler's semantic gate.
 
 **`tool_registry.py` — ToolRegistry**
-Loads tool definitions from config at startup and routes tool calls by name. Tracks which tools require consent (`write` and `identity` connector types). Each subagent receives only its scoped tool list.
+Loads tool definitions from config at startup and routes tool calls by name. Tracks which tools require consent (`write` and `identity` connector types).
 
 **`workflow_loader.py` — AgentWorkflowLoader**
-Parses the subagent graph from `agent_workflow` config. Runs 7 structural validation checks at startup. Pre-computes intent sets and tool definitions per subagent.
+Parses the subagent graph from `agent_workflow` config. Runs 7 structural validation checks at startup.
 
 **`http_clients/trust_layer.py` — TrustLayerHttpClient**
-Fail-closed: returns `"block"` / `False` on any exception. Trust is never assumed on error.
+Fail-closed: returns `"block"` / `False` on any exception. Both sync and async variants.
 
-**`interfaces/`**
-ABCs defining the contracts Agent Core expects from each of the 6 other DPG blocks. All stub and production implementations must inherit from these and match exact method signatures.
+**`interfaces/` and `interfaces/async_/`**
+ABCs defining the contracts Agent Core expects from each of the 6 other DPG blocks. Stub and production implementations must inherit from these and match exact signatures. Sync interfaces are used by `process_turn()`; async interfaces (`interfaces/async_/`) are used by `stream_turn()`.
 
 ---
 
 ## Configuration
 
 Config is loaded at startup from two YAML files: `config/dpg.yaml` (framework defaults) deep-merged with `config/domain.yaml` (domain values). Nothing is hardcoded in source.
+
+### Agent, conversation, and connectors
 
 | Key | Description |
 |---|---|
@@ -222,21 +326,37 @@ Config is loaded at startup from two YAML files: `config/dpg.yaml` (framework de
 | `conversation.escalation_message` | Returned when input triggers escalation |
 | `conversation.output_blocked_message` | Returned when LLM output is blocked |
 | `conversation.unknown_intent_message` | Returned on low-confidence NLU result |
-| `connectors.read[]` | Read-only tool definitions injected into the LLM |
-| `connectors.write[]` | Write tool definitions (require consent) |
-| `connectors.identity[]` | Identity tool definitions (require consent) |
-| `connectors.internal[]` | Internal tool definitions |
-| `preprocessing.language_normalisation.model` | Model for dialect/transliteration calls |
-| `preprocessing.language_normalisation.provider` | `llm_native` or `bhashini` |
-| `preprocessing.language_normalisation.supported_languages` | Languages the normaliser handles |
-| `preprocessing.nlu_processor.model` | Model for NLU classification calls |
-| `preprocessing.nlu_processor.confidence_threshold` | Minimum confidence before early exit |
-| `preprocessing.nlu_processor.intents` | Recognised intent list |
-| `preprocessing.nlu_processor.entities` | Entity types to extract |
+| `connectors.read[]` / `write[]` / `identity[]` / `internal[]` | Tool definitions |
+
+### Preprocessing
+
+| Key | Description |
+|---|---|
+| `preprocessing.language_normalisation.model` / `provider` / `supported_languages` | Dialect/transliteration config |
+| `preprocessing.nlu_processor.model` / `confidence_threshold` / `intents` / `entities` | NLU config |
+
+### Agent workflow (subagents)
+
+| Key | Description |
+|---|---|
 | `agent_workflow.workflow_id` | Workflow identifier |
-| `agent_workflow.agent_system_prompt` | Base system prompt for the agent |
+| `agent_workflow.agent_system_prompt` | Base system prompt |
 | `agent_workflow.global_intents` | Intents handled at the global level |
 | `agent_workflow.subagents[]` | Subagent definitions with intent scopes and tool lists |
+
+### Reach Layer / TurnAssembler (new)
+
+TurnAssembler is an Agent Core component but is tuned per channel. Config lives under the `reach_layer` key in `agent_core.yaml`.
+
+| Key | Description |
+|---|---|
+| `reach_layer.turn_assembler.semantic_gate.enabled` | Enable NLU-based early trigger |
+| `reach_layer.turn_assembler.semantic_gate.confidence_threshold` | Invoke immediately if NLU ≥ this value |
+| `reach_layer.turn_assembler.silence_trigger.silence_ms` | Silence timer (resets on every segment) |
+| `reach_layer.turn_assembler.max_wait_ceiling.max_wait_ms` | Absolute wait ceiling (never resets) |
+| `reach_layer.channels.<name>.turn_assembler.*` | Per-channel override of any of the above |
+
+`assembly_mode` (which endpoint a channel hits) is a Reach Layer concern and lives in `reach_layer.yaml`, not here.
 
 ---
 
@@ -249,6 +369,8 @@ uv run uvicorn src.servers.orchestration_server:app --port 8000
 
 Requires `ANTHROPIC_API_KEY` to be set in the environment.
 
+To enable the TurnAssembler session endpoints, construct the FastAPI app via `create_orchestration_app(agent_core, turn_assembler=<instance>)`. When `turn_assembler=None` (default), only `/process_turn`, `/stream_turn`, and `/health` are registered — zero breaking changes for deployments that don't use session-based input.
+
 ---
 
 ## Running tests
@@ -258,7 +380,7 @@ cd agent_core
 uv run pytest tests/ -v --cov=src --cov-report=term-missing
 ```
 
-414 tests across 14 files. Coverage threshold: 70% (enforced via `fail_under`).
+454+ tests across ~17 files. Coverage threshold: 70% (currently ~75%). `turn_assembler.py` is covered at 96%.
 
 ---
 
@@ -267,27 +389,27 @@ uv run pytest tests/ -v --cov=src --cov-report=term-missing
 | Package | Version | Purpose |
 |---|---|---|
 | `anthropic` | >=0.40.0 | Anthropic SDK — used only in `llm_wrapper/claude_wrapper.py` |
-| `httpx` | >=0.27.0 | HTTP clients for all downstream DPG services |
+| `httpx` | >=0.27.0 | HTTP clients (sync + async) for all downstream DPG services |
 | `pydantic` | >=2.0 | Request/response models |
 | `pyyaml` | >=6.0 | Config loading |
-| `fastapi` | >=0.111.0 | HTTP server |
+| `fastapi` | >=0.111.0 | HTTP server (sync + SSE endpoints) |
 | `uvicorn[standard]` | >=0.29.0 | ASGI server |
 | `python-dotenv` | >=1.0.0 | Environment variable loading |
 | `observability-layer` | local path | OTel initialisation shared library |
 | `opentelemetry-instrumentation-httpx` | — | HTTP client tracing |
 | `opentelemetry-instrumentation-fastapi` | — | FastAPI request tracing |
 
-Requires Python 3.11+.
+Dev extras: `pytest`, `pytest-cov`, `pytest-mock`, `pytest-asyncio>=0.23.0` (with `asyncio_mode = "auto"`).
 
-Dev extras: `pytest`, `pytest-cov`, `pytest-mock`.
+Requires Python 3.11+.
 
 ---
 
 ## Integration contract
 
-Agent Core expects implementations of the 6 interfaces in `src/interfaces/`. For the PoC these are backed by HTTP stubs. Any concrete implementation must:
+Agent Core expects implementations of the 6 sync interfaces in `src/interfaces/` and — for `stream_turn()` callers — the 5 async interfaces in `src/interfaces/async_/`. Any concrete implementation must:
 
-- Inherit from the corresponding ABC in `src/interfaces/`
+- Inherit from the corresponding ABC
 - Implement every declared method with the exact signature
 - Return the correct type and structure documented on the base class
 
