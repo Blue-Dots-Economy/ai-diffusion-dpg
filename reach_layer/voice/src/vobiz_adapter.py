@@ -253,22 +253,21 @@ class VobizAdapter(TelephonyAdapterBase):
         )
 
     async def handle_barge_in(self, session_id: str) -> None:
-        """Interrupt the active Agent Core turn on barge-in.
+        """No-op. Barge-in is handled automatically by TurnAssembler.
 
-        Cancels the in-flight stream_turn() via DELETE /sessions/{id}/active_turn.
-        Pipecat's VADProcessor handles audio-level interruption (stops queued TTS
-        audio frames); this method handles the Agent Core cancellation so no
-        further SentenceEvents are generated for the interrupted turn.
+        When new input arrives via submit_input() while a turn is in flight,
+        TurnAssembler.add_segment() detects the INVOKED state and calls cancel()
+        internally — no explicit cancel from the Reach Layer is needed.
 
         Args:
             session_id: The session whose active turn should be cancelled.
         """
-        cancelled = await self.cancel_turn(session_id)
         logger.info(
             "vobiz_adapter.barge_in",
             extra={
                 "operation": "vobiz_adapter.handle_barge_in",
-                "status": "success" if cancelled else "skipped",
+                "status": "skipped",
+                "reason": "barge-in handled by TurnAssembler on next add_segment()",
                 "session_id": session_id,
             },
         )

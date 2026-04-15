@@ -116,6 +116,11 @@ class SessionBuffer:
     context_bundle: Optional[ContextBundle] = None
     _context_fetched: bool = False
 
+    # Segments that arrived while this turn was INVOKED (barge-in).
+    # After the current turn is cancelled and subscribe() resets the buffer,
+    # these are replayed via add_segment() so the new turn starts automatically.
+    pending_segments: list = field(default_factory=list)
+
 
 # ---------------------------------------------------------------------------
 # TurnAssemblerBase ABC
@@ -309,7 +314,23 @@ class TurnAssembler(TurnAssemblerBase):
 
         buffer = self._get_or_create_buffer(session_id, segment)
 
-        # Only accept segments while WAITING — if already INVOKED/COMPLETED, ignore
+        # Barge-in: new segment arrived while a turn is in flight.
+        # Cancel the current turn and queue this segment to be processed after reset.
+        if buffer.status == TurnStatus.INVOKED:
+            buffer.pending_segments.append(segment)
+            logger.info(
+                "turn_assembler.barge_in",
+                extra={
+                    "operation": "turn_assembler.add_segment",
+                    "status": "success",
+                    "session_id": session_id,
+                    "reason": "new segment arrived while INVOKED — cancelling current turn",
+                },
+            )
+            await self.cancel(session_id)
+            return
+
+        # Ignore segments when not in WAITING state (COMPLETED, INTERRUPTED, ABANDONED).
         if buffer.status != TurnStatus.WAITING:
             logger.info(
                 "turn_assembler.segment_ignored",
@@ -375,7 +396,12 @@ class TurnAssembler(TurnAssemblerBase):
                 # connection stays open. Design decision #4: single persistent
                 # connection per session; session_end() handles full cleanup.
                 if session_id in self._sessions:
+                    pending = list(buffer.pending_segments)
                     self._reset_buffer(buffer)
+                    # Replay any segments that arrived during barge-in so the
+                    # new turn starts immediately without another round-trip.
+                    for seg in pending:
+                        await self.add_segment(session_id, seg)
 
     async def cancel(self, session_id: str) -> None:
         """Interrupt the active or waiting turn for this session.
@@ -861,6 +887,7 @@ class TurnAssembler(TurnAssemblerBase):
         """
         self._cancel_all_tasks(buffer)
         buffer.segments = []
+        buffer.pending_segments = []
         buffer.status = TurnStatus.WAITING
         buffer.event_queue = asyncio.Queue()
         buffer.created_at_ms = int(time.time() * 1000)

@@ -278,12 +278,31 @@ class TestAddSegment:
         assert buf.first_timestamp_ms == 5000
 
     @pytest.mark.asyncio
-    async def test_segment_ignored_when_not_waiting(self):
+    async def test_segment_triggers_barge_in_when_invoked(self):
+        """New segment while INVOKED queues to pending and cancels current turn."""
+        ta = _make_assembler(config=_make_config(silence_ms=5000, max_wait_ms=5000))
+        await ta.add_segment("s1", _make_segment("hello"))
+        buf = ta._sessions["s1"]
+        # Simulate turn in flight
+        buf.status = TurnStatus.INVOKED
+        buf.invocation_task = asyncio.create_task(asyncio.sleep(10))
+
+        await ta.add_segment("s1", _make_segment("new message"))
+
+        # Segment queued as pending, turn cancelled
+        assert len(buf.pending_segments) == 1
+        assert buf.pending_segments[0].text == "new message"
+        assert buf.status == TurnStatus.INTERRUPTED
+
+    @pytest.mark.asyncio
+    async def test_segment_ignored_when_completed(self):
+        """Segment arriving when COMPLETED is still ignored (not barge-in)."""
         ta = _make_assembler()
         await ta.add_segment("s1", _make_segment("hello"))
-        ta._sessions["s1"].status = TurnStatus.INVOKED
+        ta._sessions["s1"].status = TurnStatus.COMPLETED
         await ta.add_segment("s1", _make_segment("ignored"))
         assert len(ta._sessions["s1"].segments) == 1
+        assert len(ta._sessions["s1"].pending_segments) == 0
 
     @pytest.mark.asyncio
     async def test_strips_whitespace_from_text(self):
@@ -523,15 +542,28 @@ class TestSubscribe:
 
     @pytest.mark.asyncio
     async def test_subscribe_yields_events(self):
-        """subscribe() yields events from the invocation pipeline."""
+        """subscribe() yields events from the invocation pipeline.
+
+        subscribe() has a while True loop for multi-turn SSE — we run it in a
+        background task and cancel after collecting the DoneEvent.
+        """
         agent = _make_mock_agent_core()
         ta = _make_assembler(agent_core=agent, config=_make_config(silence_ms=30))
 
         await ta.add_segment("s1", _make_segment("hello"))
 
         events = []
-        async for event in ta.subscribe("s1"):
-            events.append(event)
+        async def collect():
+            async for event in ta.subscribe("s1"):
+                events.append(event)
+
+        collect_task = asyncio.create_task(collect())
+        await asyncio.sleep(0.3)
+        collect_task.cancel()
+        try:
+            await collect_task
+        except asyncio.CancelledError:
+            pass
 
         assert len(events) >= 1
         assert isinstance(events[-1], DoneEvent)
@@ -546,25 +578,47 @@ class TestSubscribe:
         await ta._sessions["s1"].event_queue.put(DoneEvent(turn_status="completed"))
 
         events = []
-        async for event in ta.subscribe("s1"):
-            events.append(event)
+        async def collect():
+            async for event in ta.subscribe("s1"):
+                events.append(event)
+
+        collect_task = asyncio.create_task(collect())
+        await asyncio.sleep(0.2)
+        collect_task.cancel()
+        try:
+            await collect_task
+        except asyncio.CancelledError:
+            pass
 
         assert len(events) == 1
         assert isinstance(events[0], DoneEvent)
 
     @pytest.mark.asyncio
     async def test_subscribe_resets_buffer_after_done(self):
-        """After DoneEvent, buffer is reset to WAITING for next turn."""
+        """After DoneEvent, buffer is reset to WAITING for next turn.
+
+        subscribe() loops (while True) so it resets and then blocks on the new
+        empty queue. We cancel the task after the reset has had time to execute.
+        """
         ta = _make_assembler()
 
         ta._sessions["s1"] = SessionBuffer(session_id="s1")
         ta._sessions["s1"].status = TurnStatus.COMPLETED
         await ta._sessions["s1"].event_queue.put(DoneEvent(turn_status="completed"))
 
-        async for _ in ta.subscribe("s1"):
+        async def drain():
+            async for _ in ta.subscribe("s1"):
+                pass
+
+        drain_task = asyncio.create_task(drain())
+        await asyncio.sleep(0.2)  # Allow DoneEvent to be processed and buffer reset
+        drain_task.cancel()
+        try:
+            await drain_task
+        except asyncio.CancelledError:
             pass
 
-        # Buffer should still exist but be reset
+        # Buffer should still exist but be reset to WAITING
         assert "s1" in ta._sessions
         assert ta._sessions["s1"].status == TurnStatus.WAITING
         assert ta._sessions["s1"].segments == []
@@ -909,11 +963,14 @@ class TestEndToEnd:
 
     @pytest.mark.asyncio
     async def test_segment_to_events_flow(self):
-        """Full flow: add segment → silence triggers → subscribe yields events."""
+        """Full flow: add segment → silence triggers → subscribe yields events.
+
+        subscribe() has while True for multi-turn SSE — cancel the task once
+        the DoneEvent has been received.
+        """
         agent = _make_mock_agent_core()
         ta = _make_assembler(agent_core=agent, config=_make_config(silence_ms=30))
 
-        # Start subscription in background
         events = []
         async def collect():
             async for event in ta.subscribe("s1"):
@@ -924,9 +981,13 @@ class TestEndToEnd:
         # Add segment — silence timer will trigger invocation
         await ta.add_segment("s1", _make_segment("hello"))
 
-        # Wait for events
+        # Wait for events then cancel
         await asyncio.sleep(0.3)
-        await asyncio.wait_for(collect_task, timeout=2.0)
+        collect_task.cancel()
+        try:
+            await collect_task
+        except asyncio.CancelledError:
+            pass
 
         assert len(events) >= 1
         assert isinstance(events[-1], DoneEvent)
