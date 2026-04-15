@@ -397,10 +397,30 @@ class TurnAssembler(TurnAssemblerBase):
                 # connection per session; session_end() handles full cleanup.
                 if session_id in self._sessions:
                     pending = list(buffer.pending_segments)
+                    # Only carry forward interrupted segments on barge-in.
+                    # For COMPLETED or ABANDONED turns, segments were already
+                    # processed (or intentionally dropped) — don't replay them.
+                    # For INTERRUPTED: the LLM never saw those segments; carry
+                    # them forward so assembled_text = original + correction.
+                    # e.g. "मुझे जॉब चाहिए" + "wait wait that is not correct"
+                    interrupted_segments = []
+                    if event.turn_status == "interrupted":
+                        # buffer.segments stores plain strings; wrap back as
+                        # SegmentInput using the buffer's cached metadata.
+                        interrupted_segments = [
+                            SegmentInput(
+                                text=seg,
+                                channel=buffer.channel,
+                                user_id=buffer.user_id,
+                                timestamp_ms=buffer.first_timestamp_ms,
+                            )
+                            for seg in buffer.segments
+                        ]
                     self._reset_buffer(buffer)
-                    # Replay any segments that arrived during barge-in so the
-                    # new turn starts immediately without another round-trip.
-                    for seg in pending:
+                    # Replay: original (interrupted) segments first, then
+                    # barge-in segments, so the new assembled_text preserves
+                    # the full conversational context.
+                    for seg in interrupted_segments + pending:
                         await self.add_segment(session_id, seg)
 
     async def cancel(self, session_id: str) -> None:

@@ -992,3 +992,65 @@ class TestEndToEnd:
         assert len(events) >= 1
         assert isinstance(events[-1], DoneEvent)
         assert events[-1].turn_status == "completed"
+
+    @pytest.mark.asyncio
+    async def test_barge_in_new_turn_assembles_original_plus_correction(self):
+        """After barge-in, new turn's assembled_text = interrupted segments + barge-in segment.
+
+        Scenario: user says "मुझे जॉब चाहिए" (turn starts), then before it completes
+        says "wait wait that is not correct". The new turn must assemble:
+        "मुझे जॉब चाहिए wait wait that is not correct"
+        so the LLM has full context of what the user originally said + the correction.
+        """
+        captured_inputs = []
+
+        call_count = 0
+
+        async def slow_then_capture(turn_input):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First invocation: slow enough to be interrupted
+                await asyncio.sleep(2)
+                yield DoneEvent(turn_status="completed")
+            else:
+                # Second invocation: capture assembled_text and complete
+                captured_inputs.append(turn_input.user_message)
+                yield DoneEvent(turn_status="completed")
+
+        agent = MagicMock()
+        agent.stream_turn = slow_then_capture
+
+        ta = _make_assembler(
+            agent_core=agent,
+            config=_make_config(silence_ms=30, max_wait_ms=5000),
+        )
+
+        events = []
+        async def collect():
+            async for event in ta.subscribe("s1"):
+                events.append(event)
+
+        collect_task = asyncio.create_task(collect())
+
+        # First segment — silence fires → INVOKED
+        await ta.add_segment("s1", _make_segment("मुझे जॉब चाहिए"))
+        await asyncio.sleep(0.1)  # Wait for silence timer to fire
+
+        assert ta._sessions["s1"].status == TurnStatus.INVOKED
+
+        # Barge-in: user corrects before first turn completes
+        await ta.add_segment("s1", _make_segment("wait wait that is not correct"))
+
+        # Wait for: INTERRUPTED DoneEvent → reset → replay → silence → new invocation
+        await asyncio.sleep(0.3)
+
+        collect_task.cancel()
+        try:
+            await collect_task
+        except asyncio.CancelledError:
+            pass
+
+        # New turn should have assembled both original + correction
+        assert len(captured_inputs) == 1
+        assert captured_inputs[0] == "मुझे जॉब चाहिए wait wait that is not correct"
