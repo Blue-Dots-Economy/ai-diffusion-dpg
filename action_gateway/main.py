@@ -1,7 +1,7 @@
 """
 action_gateway/main.py
 
-Entry point for the Action Gateway mock ONEST server.
+Entry point for the Action Gateway service.
 
 Starts the FastAPI server on the host/port read from config/dpg.yaml + config/domain.yaml
 (default: 0.0.0.0:9999). DPG config missing → hard failure. Domain config missing → service
@@ -20,6 +20,8 @@ import logging
 import os
 from pathlib import Path
 
+import asyncio
+
 import uvicorn
 import yaml
 from dotenv import load_dotenv
@@ -30,7 +32,8 @@ _env_local = Path(__file__).parent.parent / ".env.local"
 _env_local_warn = _env_local.exists() and not load_dotenv(_env_local)
 load_dotenv()  # .env in block dir or injected environment (Docker/prod)
 
-from src.mock_server import app  # noqa: F401 — uvicorn imports the app object
+from src.registry.adapter_factory import AdapterFactory
+from src.server import create_app
 
 logging.basicConfig(
     level=logging.INFO,
@@ -122,13 +125,22 @@ if __name__ == "__main__":
 
     init_otel(service_name="action_gateway", config=config)
 
+    registry = asyncio.run(AdapterFactory.build_registry(config))
+    app = create_app(registry)
+
     logger.info(
         "action_gateway.startup",
-        extra={"operation": "main", "status": "success", "host": host, "port": port},
+        extra={
+            "operation": "main",
+            "status": "success",
+            "host": host,
+            "port": port,
+            "tools_registered": len(registry),
+        },
     )
 
     uvicorn.run(
-        "src.mock_server:app",
+        app,
         host=host,
         port=port,
         reload=False,
