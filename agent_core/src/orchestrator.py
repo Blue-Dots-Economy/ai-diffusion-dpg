@@ -256,7 +256,7 @@ class AgentCore(AgentCoreBase):
             user_storage_mode: str | None = bundle.session.get("user_storage_mode")
             turn_count: int = int(bundle.session.get("turn_count", 0) or 0)
 
-            if user_storage_mode is None and turn_count == 0:
+            if not user_storage_mode and turn_count == 0:
                 # Turn 1: deliver consent prompt, no LLM call, no Trust Layer call
                 consent_prompt_text: str = self._config.get("agent", {}).get("consent_prompt", "")
                 logger.info(
@@ -275,7 +275,7 @@ class AgentCore(AgentCoreBase):
                     latency_ms=int((time.time() - start) * 1000),
                 )
 
-            if user_storage_mode is None and turn_count > 0:
+            if not user_storage_mode and turn_count > 0:
                 # Turn 2: evaluate response, write storage mode, continue to workflow
                 granted: bool = self._trust.verify_consent(session_id, turn_input.user_message)
                 new_storage_mode = "saved" if granted else "anonymous"
@@ -464,6 +464,39 @@ class AgentCore(AgentCoreBase):
             self._write_memory_sync(session_id, user_id, entity_scope, profile_field, entity_val)
             bundle.session[profile_field] = entity_val
 
+        # Write context graph signal if this intent is configured as a signal-producing intent.
+        # Captures objections, emotions, and constraints for longitudinal analysis.
+        signal_intents: dict = (
+            self._config.get("preprocessing", {})
+            .get("nlu_processor", {})
+            .get("signal_intents", {})
+        )
+        if nlu_result.intent and nlu_result.intent in signal_intents:
+            signal_type = signal_intents[nlu_result.intent]
+            turn_count_for_signal = int(bundle.session.get("turn_count", 0) or 0)
+            try:
+                self._write_memory_sync(
+                    session_id, user_id, "signal",
+                    "signal",
+                    {
+                        "type": signal_type,
+                        "turn": str(turn_count_for_signal),
+                        "raw": turn_input.user_message,
+                        "journey_id": session_id,
+                    },
+                )
+            except Exception as _sig_err:
+                logger.warning(
+                    "orchestrator.signal_write_failed",
+                    extra={
+                        "operation": "orchestrator.signal_write",
+                        "status": "failure",
+                        "session_id": session_id,
+                        "intent": nlu_result.intent,
+                        "error": str(_sig_err),
+                    },
+                )
+
         # ── Step 6: Routing — determine next_subagent_id ─────────────
         logger.info(
             "  [STEP 6] Routing  →  intent=%s  current_subagent=%s",
@@ -502,6 +535,17 @@ class AgentCore(AgentCoreBase):
         bundle.session["subagent_entry_count"] = subagent_entry_count
         bundle.session["current_subagent_id"] = next_subagent_id
         self._write_memory_sync(session_id, user_id, "session", "current_subagent_id", next_subagent_id)
+
+        # Update mental_state from config mapping so session always reflects the
+        # current conversation stage without requiring domain logic in Python code.
+        mental_state_map: dict = (
+            self._config.get("agent_workflow", {})
+            .get("subagent_mental_state_map", {})
+        )
+        if next_subagent_id in mental_state_map:
+            new_mental_state = mental_state_map[next_subagent_id]
+            self._write_memory_sync(session_id, user_id, "session", "mental_state", new_mental_state)
+            bundle.session["mental_state"] = new_mental_state
 
         logger.info(
             "  [STEP 6] Routing  ✓  next_subagent_id=%s  entry_count=%d",
@@ -656,7 +700,7 @@ class AgentCore(AgentCoreBase):
             "detected_language": detected_language,
         }
         t9 = time.time()
-        final_text, tool_calls = self._manager_agent.run_turn(
+        final_text, tool_calls, tool_results = self._manager_agent.run_turn(
             messages=messages,
             session_id=session_id,
             initial_llm_response=llm_response,
@@ -675,6 +719,65 @@ class AgentCore(AgentCoreBase):
                 "  [STEP 9] Tool-Use Loop  ✓  no tool used — direct LLM response  latency=%dms",
                 int((time.time() - t9) * 1000),
             )
+
+        # Write journey_event nodes for tool results configured in tool_result_mappings.
+        # Allows domain config to persist structured tool outputs (e.g. ONEST roles)
+        # to the Neo4j journey graph without any domain logic in Python code.
+        tool_result_mappings: dict = (
+            self._config.get("agent_workflow", {})
+            .get("tool_result_mappings", {})
+        )
+        if tool_result_mappings and tool_results:
+            for tr in tool_results:
+                mapping = tool_result_mappings.get(tr.tool_name)
+                if not mapping or not tr.success:
+                    continue
+                label = mapping.get("journey_event_label", tr.tool_name)
+                field_map: dict = mapping.get("field_map", {})
+                result_list_key: str = mapping.get("result_list_key", "")
+                raw_result = tr.result if isinstance(tr.result, dict) else {}
+
+                def _get_nested(d: dict, path: str):
+                    """Resolve a dot-notation path against a nested dict."""
+                    current = d
+                    for key in path.split("."):
+                        if not isinstance(current, dict):
+                            return None
+                        current = current.get(key)
+                    return current
+
+                items: list[dict] = []
+                if result_list_key:
+                    extracted = _get_nested(raw_result, result_list_key)
+                    if isinstance(extracted, list):
+                        items = extracted
+                else:
+                    items = [raw_result]
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    props: dict = {
+                        dest: _get_nested(item, src)
+                        for dest, src in field_map.items()
+                        if _get_nested(item, src) is not None
+                            and isinstance(_get_nested(item, src), (str, int, float, bool))
+                    }
+                    if not props:
+                        props = {k: v for k, v in item.items() if isinstance(v, (str, int, float, bool))}
+                    props["label"] = label
+                    try:
+                        self._write_memory_sync(session_id, user_id, "journey_event", label, props)
+                    except Exception as _je_err:
+                        logger.warning(
+                            "orchestrator.journey_event_write_failed",
+                            extra={
+                                "operation": "orchestrator.tool_result_to_journey_event",
+                                "status": "failure",
+                                "session_id": session_id,
+                                "tool_name": tr.tool_name,
+                                "error": str(_je_err),
+                            },
+                        )
 
         # ── Step 10: Trust check on output ────────────────────────────
         logger.info(
@@ -707,6 +810,12 @@ class AgentCore(AgentCoreBase):
             "  [STEP 11] Delivering response to caller  (async: memory write + learning emit follow)",
         )
 
+        # Flush session when routing to a terminal subagent so Journey nodes get
+        # ended_at, end_reason, and merge_on_session_end fields (mental_state_at_end,
+        # branch_taken, Role child nodes) written to Neo4j before the session expires.
+        _do_flush = next_subagent.is_terminal
+        _flush_reason = next_subagent_id if _do_flush else ""
+
         # TEMP DEBUG
         logger.warning("[DEBUG] process_turn REPLY: %r", final_text)
         result = self._build_result(
@@ -723,6 +832,8 @@ class AgentCore(AgentCoreBase):
             tool_calls=tool_calls,
             trust_input=trust_input,
             trust_output=trust_output,
+            do_flush=_do_flush,
+            flush_reason=_flush_reason,
             trace_id=_trace_id,
         )
 
@@ -1960,45 +2071,77 @@ class AgentCore(AgentCoreBase):
                 )
                 t8b = time.time()
 
-                # Resume streaming with tool results
-                messages.append({"role": "assistant", "content": [
-                    {"type": "tool_use", "id": tc.tool_use_id, "name": tc.tool_name, "input": tc.input_params}
-                    for tc in e.tool_calls
-                ]})
-                messages.append({"role": "user", "content": tool_results_for_llm})
+                # Resume streaming with tool results — loop handles multi-step tool chains
+                _MAX_TOOL_ROUNDS: int = self._config.get("agent", {}).get("max_tool_rounds", 3)
+                _current_tool_calls = e.tool_calls
+                _current_tool_results = tool_results_for_llm
+                _tool_round = 1
 
-                try:
-                    async for token in self._llm.stream_call(
-                        messages=messages,
-                        tools=active_tools if active_tools else None,
-                        system=system,
-                    ):
-                        token_buffer += token
-                        sentences, token_buffer = _split_sentences(token_buffer)
-                        for sentence in sentences:
-                            yield SignalEvent(stage="trust_output", status="start")
-                            try:
-                                trust_output = await self._async_trust.check_output(session_id, sentence)
-                                if not trust_output.passed:
-                                    sentence = self._safe_fallback_message()
-                                    was_escalated = True
-                            except Exception:
-                                logger.error(
-                                    "orchestrator.stream_trust_output_infra_failure",
-                                    extra={"operation": "orchestrator.stream_turn", "status": "failure", "session_id": session_id},
-                                )
-                            yield SignalEvent(stage="trust_output", status="complete")
+                while True:
+                    messages.append({"role": "assistant", "content": [
+                        {"type": "tool_use", "id": tc.tool_use_id, "name": tc.tool_name, "input": tc.input_params}
+                        for tc in _current_tool_calls
+                    ]})
+                    messages.append({"role": "user", "content": _current_tool_results})
 
-                            full_response_text += sentence + " "
-                            yield SentenceEvent(text=sentence, sentence_index=sentence_index)
-                            sentence_index += 1
+                    try:
+                        async for token in self._llm.stream_call(
+                            messages=messages,
+                            tools=active_tools if active_tools else None,
+                            system=system,
+                        ):
+                            token_buffer += token
+                            sentences, token_buffer = _split_sentences(token_buffer)
+                            for sentence in sentences:
+                                yield SignalEvent(stage="trust_output", status="start")
+                                try:
+                                    trust_output = await self._async_trust.check_output(session_id, sentence)
+                                    if not trust_output.passed:
+                                        sentence = self._safe_fallback_message()
+                                        was_escalated = True
+                                except Exception:
+                                    logger.error(
+                                        "orchestrator.stream_trust_output_infra_failure",
+                                        extra={"operation": "orchestrator.stream_turn", "status": "failure", "session_id": session_id},
+                                    )
+                                yield SignalEvent(stage="trust_output", status="complete")
 
-                except ToolUseRequested:
-                    # Nested tool use — not supported in PoC streaming, emit what we have
-                    logger.warning(
-                        "orchestrator.stream_turn_nested_tool_use",
-                        extra={"session_id": session_id},
-                    )
+                                full_response_text += sentence + " "
+                                yield SentenceEvent(text=sentence, sentence_index=sentence_index)
+                                sentence_index += 1
+                        break  # LLM responded with text — tool loop complete
+
+                    except ToolUseRequested as nested_e:
+                        _tool_round += 1
+                        if _tool_round > _MAX_TOOL_ROUNDS:
+                            logger.warning(
+                                "orchestrator.stream_turn_max_tool_rounds",
+                                extra={"session_id": session_id, "rounds": _tool_round},
+                            )
+                            break
+
+                        _nested_tool_names = [tc.tool_name for tc in nested_e.tool_calls]
+                        logger.info(
+                            "  [STEP 9] Tool-Use Loop (round %d)  →  executing tools=%s",
+                            _tool_round, _nested_tool_names,
+                        )
+                        yield SignalEvent(stage="tool_start", status="start")
+                        _nested_results = []
+                        for tc in nested_e.tool_calls:
+                            if self._async_gateway:
+                                tool_result = await self._async_gateway.execute(tc, session_id)
+                                _nested_results.append({
+                                    "type": "tool_result",
+                                    "tool_use_id": tc.tool_use_id,
+                                    "content": tool_result.result_text or str(tool_result.result),
+                                })
+                        yield SignalEvent(stage="tool_end", status="complete")
+                        logger.info(
+                            "  [STEP 9] Tool-Use Loop (round %d)  ✓  tools=%s",
+                            _tool_round, _nested_tool_names,
+                        )
+                        _current_tool_calls = nested_e.tool_calls
+                        _current_tool_results = _nested_results
 
                 model_used = self._llm.get_active_model()
                 logger.info(

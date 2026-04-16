@@ -135,7 +135,7 @@ if __name__ == "__main__":
             "status": "success",
             "host": host,
             "port": port,
-            "tools_registered": len(registry),
+            "tools_registered": len(registry.get_tool_names()),
         },
     )
 

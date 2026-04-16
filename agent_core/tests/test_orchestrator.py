@@ -195,6 +195,7 @@ def _make_agent(
     manager.run_turn.return_value = (
         manager_text,
         manager_tool_calls or [],
+        [],
     )
 
     learning = MagicMock()
@@ -692,7 +693,7 @@ def _make_agent_with_consent(
     manager = MagicMock()
     manager.build_system_prompt.return_value = ""
     manager.build_messages.return_value = [{"role": "user", "content": "Hello"}]
-    manager.run_turn.return_value = ("Final response.", [])
+    manager.run_turn.return_value = ("Final response.", [], [])
     learning = MagicMock()
 
     agent = AgentCore(

@@ -55,9 +55,8 @@ class AsyncActionGatewayHttpClient(AsyncActionGatewayBase):
             raise ValueError("config must not be None")
 
         client_cfg = config.get("action_gateway_client", {})
-        self._endpoint: str = client_cfg.get(
-            "endpoint", "http://localhost:9999/execute"
-        )
+        base_url: str = client_cfg.get("endpoint", "http://localhost:9999")
+        self._endpoint: str = f"{base_url.rstrip('/')}/execute"
         self._timeout_s: float = client_cfg.get("timeout_ms", 5000) / 1000
         self._client = httpx.AsyncClient(timeout=self._timeout_s)
         self._tool_definitions: list[dict] = _build_tool_definitions(config)

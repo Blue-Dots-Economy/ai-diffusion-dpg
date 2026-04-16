@@ -22,10 +22,10 @@ state:
       current_question:  { type: string,  default: "" }
       options_presented: { type: list,    default: [] }
       loop_count:        { type: int,     default: 0 }
-      # user_storage_mode is written by the agent_core routing rule session_writes
-      # when the user expresses a preference. Values: "saved" or "anonymous".
-      # If absent, Memory Layer falls back to user_data_persistence.default_mode.
-      user_storage_mode: { type: string,  default: "" }
+      # user_storage_mode is set by Agent Core after consent evaluation.
+      # Values: "saved" (profile kept) or "anonymous" (profile deleted at session end).
+      # Not pre-initialized — absence triggers the consent gate on first turn.
+      # Memory Layer flush_session() falls back to user_data_persistence.default_mode when absent.
 
   persistent:
     backend: memgraph

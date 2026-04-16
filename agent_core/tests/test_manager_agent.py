@@ -124,7 +124,7 @@ def test_no_tool_call_returns_initial_response_text():
     initial = _text_llm_response("Direct answer.")
     agent, llm, *_ = _make_manager([initial])
 
-    text, tool_calls = agent.run_turn(MESSAGES, SESSION_ID, initial)
+    text, tool_calls, _ = agent.run_turn(MESSAGES, SESSION_ID, initial)
 
     assert text == "Direct answer."
     assert tool_calls == []
@@ -147,7 +147,7 @@ def test_tool_call_executes_and_returns_final_text():
         tool_result=tool_result,
     )
 
-    text, tool_calls = agent.run_turn(list(MESSAGES), SESSION_ID, initial)
+    text, tool_calls, _ = agent.run_turn(list(MESSAGES), SESSION_ID, initial)
 
     assert text == "Your balance is $100."
     assert len(tool_calls) == 1
@@ -167,7 +167,7 @@ def test_tool_calls_list_populated_correctly():
         tool_result=tool_result,
     )
 
-    _, tool_calls = agent.run_turn(list(MESSAGES), SESSION_ID, initial)
+    _, tool_calls, _results = agent.run_turn(list(MESSAGES), SESSION_ID, initial)
     assert tool_calls[0].tool_use_id == "tu_abc"
     assert tool_calls[0].input_params == {"account": "12345"}
 
@@ -185,7 +185,7 @@ def test_tool_use_stop_reason_with_empty_tool_calls_exits_safely():
     )
     agent, llm, *_ = _make_manager([initial])
 
-    text, tool_calls = agent.run_turn(MESSAGES, SESSION_ID, initial)
+    text, tool_calls, _ = agent.run_turn(MESSAGES, SESSION_ID, initial)
 
     assert tool_calls == []
     llm.call.assert_not_called()
@@ -195,7 +195,7 @@ def test_llm_error_response_returns_empty_string():
     initial = LLMResponse(content=None, tool_calls=[], stop_reason="error")
     agent, *_ = _make_manager([initial])
 
-    text, tool_calls = agent.run_turn(MESSAGES, SESSION_ID, initial)
+    text, tool_calls, _ = agent.run_turn(MESSAGES, SESSION_ID, initial)
 
     assert text == ""
     assert tool_calls == []
@@ -216,7 +216,7 @@ def test_consent_denied_returns_consent_required_tool_result():
         consent_granted=False,
     )
 
-    _, tool_calls = agent.run_turn(list(MESSAGES), SESSION_ID, initial)
+    _, tool_calls, _results = agent.run_turn(list(MESSAGES), SESSION_ID, initial)
 
     # Gateway should NOT be called — consent was denied
     gateway.execute.assert_not_called()

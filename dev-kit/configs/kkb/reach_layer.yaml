@@ -24,7 +24,7 @@ reach_layer:
 
     web:
       auth:
-        enabled: true
+        enabled: false
         google_client_id: ""
         # Local dev uses plain http://localhost, so Secure cookies would be
         # dropped by the browser. Override to false; production deploys flip

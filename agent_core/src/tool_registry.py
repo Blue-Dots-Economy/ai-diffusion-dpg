@@ -31,9 +31,17 @@ class ToolRegistry:
         # 2. Extract tools from Gateway (fetched from /tools at startup)
         self._tool_definitions = gateway.list_available_tools()
 
-        # 1. Build consent set from gateway tool category field
+        # 1. Build consent set from gateway tool category field (before stripping it)
         self._consent_tools: set[str] = self._build_consent_set(self._tool_definitions)
-        
+
+        # Strip non-Anthropic fields (e.g. "category") from gateway tool definitions.
+        # The Anthropic API only accepts name, description, and input_schema.
+        _ANTHROPIC_TOOL_KEYS = {"name", "description", "input_schema"}
+        self._tool_definitions = [
+            {k: v for k, v in t.items() if k in _ANTHROPIC_TOOL_KEYS}
+            for t in self._tool_definitions
+        ]
+
         # 3. Add internal tools from config (not handled by AG client)
         internal_tools, tool_routes = self._load_internal_tools(config)
         self._tool_definitions.extend(internal_tools)

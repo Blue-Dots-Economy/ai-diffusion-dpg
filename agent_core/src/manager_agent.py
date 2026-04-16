@@ -80,7 +80,7 @@ class ManagerAgent:
         system: str = "",
         active_tools: list[dict] | None = None,
         ke_context: dict | None = None,
-    ) -> tuple[str, list[ToolCall]]:
+    ) -> tuple[str, list[ToolCall], list[ToolResult]]:
         """
         Drive the tool-use loop starting from the initial LLM response.
 
@@ -107,7 +107,7 @@ class ManagerAgent:
                                   return an empty tool_result.
 
         Returns:
-            (final_response_text, list_of_all_tool_calls_executed)
+            (final_response_text, list_of_all_tool_calls_executed, list_of_all_tool_results)
             final_response_text is an empty string if the LLM returned no content
             and no tool calls were made (edge case — orchestrator handles this).
         """
@@ -118,6 +118,7 @@ class ManagerAgent:
 
         current_response = initial_llm_response
         all_tool_calls: list[ToolCall] = []
+        all_tool_results: list[ToolResult] = []
         rounds = 0
 
         while current_response.stop_reason == "tool_use" and rounds < self._max_tool_rounds:
@@ -147,6 +148,7 @@ class ManagerAgent:
                 else:
                     tool_result = self._execute_tool(tool_call, session_id)
                 all_tool_calls.append(tool_call)
+                all_tool_results.append(tool_result)
 
                 assistant_content.append({
                     "type": "tool_use",
@@ -192,7 +194,7 @@ class ManagerAgent:
             )
 
         final_text = current_response.content or ""
-        return final_text, all_tool_calls
+        return final_text, all_tool_calls, all_tool_results
 
     # ------------------------------------------------------------------
     # Prompt assembly helpers
@@ -270,7 +272,10 @@ class ManagerAgent:
                     profile_lines.append(f"  {attr_key}: {attr_val}")
             
             if profile_lines:
-                parts.append("Known user profile:\n" + "\n".join(profile_lines))
+                parts.append(
+                    "Known user profile (already collected — do NOT ask for any of these fields again):\n"
+                    + "\n".join(profile_lines)
+                )
 
         if subagent_system_prompt:
             parts.append(subagent_system_prompt.strip())

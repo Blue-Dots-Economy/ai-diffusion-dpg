@@ -85,12 +85,8 @@ class GraphJourneyStore:
                 session.run(
                     """
                     MATCH (u:User {user_id: $user_id})-[:HAS_JOURNEY_HISTORY]->(jh:JourneyHistory)
-                    CREATE (jh)-[:JOURNEY]->(j:Journey {
-                        journey_id: $journey_id,
-                        started_at: $started_at,
-                        ended_at: null,
-                        end_reason: null
-                    })
+                    MERGE (jh)-[:JOURNEY]->(j:Journey {journey_id: $journey_id})
+                    ON CREATE SET j.started_at = $started_at, j.ended_at = null, j.end_reason = null
                     """,
                     user_id=user_id,
                     journey_id=journey_id,

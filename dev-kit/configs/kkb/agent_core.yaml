@@ -148,6 +148,19 @@ preprocessing:
       - distance_km
     sentiment_classes: [neutral, positive, distressed, frustrated]
 
+    # Intents that generate a context graph Signal node for longitudinal analysis.
+    # Key = intent name, value = signal_type written to the Signal node.
+    signal_intents:
+      pay_disappointment: objection
+      distance_issue: constraint
+      overwhelmed_silent: emotion
+      hang_up: dropoff_signal
+      not_ready_yet: dropoff_signal
+      expectation_firm: objection
+      constraint_hard: constraint
+      outcome_employer_ghost: outcome_signal
+      outcome_job_mismatch: outcome_signal
+
 entity_to_profile_field:
   name: name
   age_bracket: age_bracket
@@ -180,10 +193,48 @@ agent_workflow:
   workflow_id: kkb_iti_graduate
   version: "1.0.0"
 
+  # Maps next_subagent_id → mental_state value written to session after routing resolves.
+  # Keeps the Five Mental States aligned with conversation progression automatically.
+  subagent_mental_state_map:
+    profile_building: fog
+    profile_incomplete: fog
+    market_truth: orientation
+    pay_branch: orientation
+    distance_branch: orientation
+    normalise_branch: orientation
+    skill_check: orientation
+    evaluation: evaluation
+    commitment: commitment
+    counsellor_request: commitment
+    follow_through: follow_through
+    capture_dropoff: fog          # Drop-off resets to fog for next re-engagement
+    ended: fog
+    clarification: fog
+
+  # Maps tool name → journey_event config for persisting tool outputs to Neo4j child nodes.
+  # result_list_key: if the result dict contains a list under this key, one node is created per item.
+  # field_map: dest_field: src_field (maps from tool result keys to journey node property names).
+  tool_result_mappings:
+    onest_market_lookup:
+      journey_event_label: Role
+      # Real ONEST API response: {"data": {"items": [...], "total": N}, ...}
+      # Each item: {"job": {"job_id": "...", "beckn_structure": {"tags": {"jobDetails": {...}, "basicInfo": {...}}, "locations": {...}}}}
+      result_list_key: data.items
+      field_map:
+        role_id: job.job_id
+        title: job.beckn_structure.tags.jobDetails.title
+        employer: job.beckn_structure.tags.basicInfo.jobProviderName
+        pay_min: job.beckn_structure.tags.jobDetails.minMonthlyInHand
+        pay_max: job.beckn_structure.tags.jobDetails.maxMonthlyInHand
+        city: job.beckn_structure.locations.city
+        openings: job.beckn_structure.tags.jobDetails.positions
+
   agent_system_prompt: |
     You are Kaam Ki Baat (KKB), a trusted employment advisor in India.
     Your goal is to help users understand their market reality and make informed choices.
     Stay warm, professional, and honest. Avoid long monologues or over-explaining your rules.
+    Always respond in the language the user is writing in. If they write in English, respond in English.
+    If they write in Hindi or Hinglish, respond in Hindi or Hinglish. Never switch languages mid-conversation.
 
   global_intents:
     - counsellor_request       # User asks for human help at any point
@@ -241,10 +292,10 @@ agent_workflow:
 
         Rules:
         - Never ask for a field you already know from context.
-        - If the user provides info without being asked (ad-hoc), capture it and skip that question. 
+        - If the user provides info without being asked (ad-hoc), capture it and skip that question.
         - Choose key names on the fly for any extra "ad-hoc" info provided.
         - If a user skips a non-mandatory field, do not press. Move to the next round.
-        - Once you have the HARD MINIMUM, you can signal 'profile_complete' to start the market lookup. 
+        - Once you have the HARD MINIMUM, you can signal 'profile_complete' to start the market lookup.
         - Do not ask for user_id, full address, or government ID.
 
       routing:
@@ -310,7 +361,7 @@ agent_workflow:
         1. What work or trade you are trained for (e.g. Electrician, Fitter, etc.)
         2. Which district or area you want to work in.
         If you are unsure, I can also connect you with a counsellor who can guide you.
-      
+
       routing:
         - intent: profile_answer
           next_subagent_id: profile_building   # Try one more time
@@ -407,6 +458,8 @@ agent_workflow:
         - skill_partial_match
         - skill_significant_gap
         - profile_answer        # User may reveal more about their skills here
+        - ready_to_apply        # User skips assessment and signals readiness to act
+        - apply_now             # Strong apply signal mid-assessment
 
       tools:
         - onest_market_lookup
@@ -442,6 +495,13 @@ agent_workflow:
         Present these paths as honest trade-offs. Never push. Let the user decide.
         Once the assessment is delivered, hand over to Evaluation for the user's decision.
 
+        STRICT SCOPE RULES — you are ONLY doing a skill assessment:
+        - Do NOT offer interview tips, application templates, or resume advice.
+        - Do NOT provide training course links or scheme details here.
+        - Do NOT give "How to Apply" guidance — that happens in the Commitment stage.
+        - After completing the assessment, stop and wait for the user's reaction.
+          The system will automatically move to Evaluation.
+
       routing:
         - intent: skill_direct_match
           next_subagent_id: evaluation
@@ -462,6 +522,12 @@ agent_workflow:
             operator: not_eq
             value: immediate
           next_subagent_id: evaluation   # With training_first context set
+
+        - intent: ready_to_apply
+          next_subagent_id: commitment
+
+        - intent: apply_now
+          next_subagent_id: commitment
 
         - intent: profile_answer
           next_subagent_id: skill_check  # Continue assessment
@@ -484,6 +550,7 @@ agent_workflow:
 
       valid_intents:
         - ready_to_apply
+        - apply_now             # User says "apply", "haan kar do", "yes apply" etc.
         - wants_to_think
         - wants_counsellor
         - not_ready_yet
@@ -513,6 +580,9 @@ agent_workflow:
 
       routing:
         - intent: ready_to_apply
+          next_subagent_id: commitment
+
+        - intent: apply_now
           next_subagent_id: commitment
 
         - intent: wants_to_think
@@ -555,16 +625,17 @@ agent_workflow:
       system_prompt: |
         The user is disappointed with the pay range you delivered. Do not defend the market.
         Do not inflate numbers to make them feel better.
+        Always respond in the user's detected language.
         Steps:
-          1. Acknowledge: "Haan, yeh figure thoda kam lag sakta hai."
-          2. Explore: "Aapko minimum kitna chahiye tha? Koi specific zaroorat hai?"
+          1. Acknowledge their concern warmly (e.g. "I understand, that figure does feel low.").
+          2. Explore: ask what minimum they need and if there's a specific reason.
           3. If their expectation is close to market range:
-             - Show the upper end of verified roles with the right skills/certs
+             - Show the upper end of verified roles with the right skills/certs.
              - Show growth trajectory: where does this role go in 1–2 years?
           4. If their expectation is significantly above market:
-             - Be honest: "Is area mein is trade mein abhi yeh range market rate hai."
-             - Offer lateral trade options with better pay signal if available
-             - Do not push them toward a role they cannot afford to take
+             - Be honest: explain what the current market rate is in their area and trade.
+             - Offer lateral trade options with better pay signal if available.
+             - Do not push them toward a role they cannot afford to take.
           5. If they remain firm: save state and offer re-engagement when signal improves.
         Route back to evaluation if they re-engage, or to market_truth for a re-run
         with adjusted parameters (wider radius, adjacent trade).
@@ -604,17 +675,18 @@ agent_workflow:
         - knowledge_retrieval     # LLM calls when it needs trade/scheme context from KE
 
       system_prompt: |
-        The user has raised a distance concern. Test gently whether this is a hard constraint.
-        Ask: "Agar ghar ke 5km ke andar koi option ho, toh theek rahega?
-        Ya aur door toh bilkul nahi chalega?"
+        The user has raised a distance concern. Always respond in the user's detected language.
+        Test gently whether this is a hard constraint — ask something like:
+        "If there was an option within 5km from home, would that work?
+        Or is any distance beyond walking range not possible for you?"
         If constraint is hard (e.g. no vehicle, family restriction):
-          - Re-run ONEST lookup with tighter radius
-          - If nothing found: be honest, offer alert signup when local roles appear
-          - Update max_commute_km in their profile
+          - Re-run ONEST lookup with tighter radius.
+          - If nothing found: be honest, offer to alert them when local roles appear.
+          - Update max_commute_km in their profile.
         If constraint is flexible:
-          - Show options at slightly wider radius with transport context
-          - Mention if employer provides transport or daily allowance
-        Never argue with their constraint. Never say "thoda door toh chalega na."
+          - Show options at slightly wider radius with transport context.
+          - Mention if employer provides transport or daily allowance.
+        Never argue with their constraint.
         If no local options exist: capture as demand gap signal (DOP_MS).
 
       routing:
@@ -659,16 +731,18 @@ agent_workflow:
 
       system_prompt: |
         The user seems overwhelmed or wants time to think. Do not push.
-        Say gently: "Koi baat nahi. Yeh sab ek baar mein process karna mushkil hota hai.
-        Kya main aapko WhatsApp pe ek summary bhej doon — options, pay range, distance —
-        taaki aap apne waqt se dekh sakein?"
+        Always respond in the user's detected language.
+        Acknowledge gently that it is okay to take time — no pressure.
+        Offer a WhatsApp summary so they can review the options at their own pace:
+          "Would you like me to send you a summary on WhatsApp — options, pay range, distance —
+          so you can look at it when you're ready?"
         If they accept WhatsApp:
           - Send a summary with: 2–3 options (title, pay range, distance, one-line trade-off)
           - Action buttons per option
           - "Call me back" button
           - Do NOT include anything requiring an immediate decision
         If they decline:
-          - "Bilkul theek hai. Jab bhi ready ho, hum yahan hain."
+          - Acknowledge respectfully and offer to re-engage whenever they are ready.
           - Save session state. Offer to re-engage at a time they suggest.
         Never send more than one WhatsApp summary in a session without their prompt.
 
@@ -712,6 +786,7 @@ agent_workflow:
       system_prompt: |
         The user has decided to act. This is the final commitment stage.
         CRITICAL: Your only goal is to bridge the user to the actual tool-based action.
+        Always respond in the user's detected language.
 
         ANTI-HALLUCINATION RULES:
         - NEVER provide manual instructions like "visit the portal", "prepare a portfolio", or "contact HR".
@@ -721,19 +796,23 @@ agent_workflow:
 
         TWO-STEP FLOW — follow this strictly:
 
-        STEP 1 — First time in this stage: Ask for explicit confirmation:
-          "Kya main [specific employer] ke liye aapki taraf se apply kar doon?
-          Iska matlab hai unhe aapka naam aur number milega."
+        STEP 1 — ONLY if you have NOT yet asked "Shall I apply?" in this conversation:
+          Ask for explicit confirmation ONCE:
+          "Shall I apply to [specific employer] on your behalf? They will receive your name and number."
 
-        STEP 2 — User has confirmed (they said "yes", "haan", "apply kar do", etc.):
-          IMMEDIATELY call the relevant tool — DO NOT ask again, DO NOT explain the process:
-          - onest_apply (for jobs) — call it NOW with trade, employer, location from profile.
+        STEP 2 — You have already asked in STEP 1. Now the user is responding.
+          ANY affirmative response ("yes", "haan", "theek hai", "apply kar do", "go ahead", "bilkul", etc.)
+          means CONFIRMED. DO NOT ask again. IMMEDIATELY call the tool:
+          - onest_apply (for jobs) — call it NOW. Use job_id from the search result and session_id as profile_id.
           - counsellor_schedule (for counsellor requests) — call it NOW with session_id.
-          After the tool returns, show the reference number to the user.
-          Example: "Apply ho gaya! Reference number: [Reference]. Employer 24–48 ghante mein
-          contact karenge. Aapke paas yeh reference number save kar lein."
+          After the tool returns, tell the user their application was submitted in their language.
 
-        If the user asks a question, answer in ONE SENTENCE and REFOCUS: "Apply karein?"
+        RULE: If you have already asked "Shall I apply?" once and the user has responded,
+        you are in STEP 2. Never loop back to STEP 1.
+          Example: "Done! Your reference number is [Reference]. The employer will contact you
+          within 24–48 hours. Please save this reference number."
+
+        If the user asks a question, answer in ONE SENTENCE and REFOCUS: ask if they want to apply.
 
       routing:
         # User backs out — return to evaluation immediately
@@ -802,8 +881,9 @@ agent_workflow:
 
       system_prompt: |
         This is a follow-up call, 72 hours after the application or 1 week after course start.
-        Begin warmly: "Arjun bhai, hum KKB se bol rahe hain. Woh [role] ke baare mein
-        puchh raha tha — kya employer ka call aaya?"
+        Always respond in the user's detected language.
+        Begin warmly, addressing the user by name if known, and ask about the [role] they applied for.
+        Example: "Hi [name], this is Kaam Ki Baat. We wanted to check in about the [role] application — did the employer get in touch?"
         Outcomes:
           - POSITIVE: Record success. Capture what worked. Offer next step if they need it.
             ("Bahut accha! Koi aur cheez mein madad chahiye?")
@@ -863,8 +943,9 @@ agent_workflow:
 
       system_prompt: |
         The user is ending the conversation without completing their journey.
-        Close warmly and without pressure: "Theek hai. Jab bhi aapko zaroorat ho,
-        hum yahan hain. Aapka profile save ho gaya hai — dobara sab batana nahi padega."
+        Always respond in the user's detected language.
+        Close warmly and without pressure — tell them their profile is saved and they
+        don't need to repeat everything when they come back.
         Capture the drop-off signal:
           - After market truth: DOP_MT (re-engage in 3 days)
           - After option presentation: DOP_OP (re-engage in 5 days, WhatsApp summary resend)
@@ -893,7 +974,8 @@ agent_workflow:
 
       system_prompt: |
         The user has chosen to end the call.
-        Close warmly: "Dhanyavaad! Jab bhi zaroorat ho, hum yahan hain."
+        Always respond in the user's detected language.
+        Close warmly — thank them and let them know they are welcome back whenever they need help.
         Flush session state. Emit termination event to Observability Layer.
         If user_storage_mode = anonymous: Memory Layer will delete all profile data
         collected this session from Neo4j at flush time (DPDP-compliant erasure).
