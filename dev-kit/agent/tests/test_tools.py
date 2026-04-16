@@ -5,13 +5,15 @@ from dev_kit.agent.tools import ToolHandler, TOOL_DEFINITIONS
 
 
 class TestToolDefinitions:
-    def test_all_10_tools_defined(self):
+    def test_all_tools_defined(self):
         names = {t["name"] for t in TOOL_DEFINITIONS}
         assert names == {
             "set_project_meta", "update_config", "set_phase",
             "create_subagent", "update_subagent", "add_routing_rule",
             "update_routing_rule", "remove_subagent",
             "finalize_config", "rollback_to_checkpoint",
+            "parse_openapi_spec", "add_rest_api_tool", "discover_mcp_tools",
+            "add_mcp_tool", "set_reach_channels",
         }
 
     def test_each_tool_has_required_keys(self):

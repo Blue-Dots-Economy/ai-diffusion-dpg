@@ -14,13 +14,13 @@ class TestRenderBlock:
         assert "no config" in content.lower() or content.strip().startswith("#")
         assert acc.get_status("trust_layer") == ConfigStatus.PENDING
 
-    def test_draft_block_with_data_writes_draft_header(self, tmp_path):
+    def test_block_with_valid_data_writes_complete(self, tmp_path):
         acc = ConfigAccumulator()
         acc.update("trust_layer", "trust", {"input_rules": {"blocked_phrases": ["spam"]}})
         render_block(tmp_path, "trust_layer", acc)
         content = (tmp_path / "trust_layer.yaml").read_text()
-        assert "STATUS: draft" in content
-        assert acc.get_status("trust_layer") == ConfigStatus.DRAFT
+        assert "STATUS: draft" not in content
+        assert acc.get_status("trust_layer") == ConfigStatus.COMPLETE
 
     def test_non_draft_block_with_data_no_draft_header(self, tmp_path):
         acc = ConfigAccumulator()

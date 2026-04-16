@@ -6,10 +6,12 @@ from dev_kit.agent.prompts.phases import get_phase_addition
 class TestGetPhaseAddition:
     """Test suite for get_phase_addition function."""
 
-    def test_overview_phase_returns_empty_string(self):
-        """Overview phase should return empty string."""
+    def test_overview_phase_returns_guidance(self):
+        """Overview phase should return non-empty guidance text."""
         result = get_phase_addition("overview")
-        assert result == ""
+        assert isinstance(result, str)
+        assert len(result) > 0
+        assert "overview" in result.lower() or "Overview" in result
 
     def test_language_phase_returns_non_empty_string(self):
         """Language phase should return non-empty schema context."""
