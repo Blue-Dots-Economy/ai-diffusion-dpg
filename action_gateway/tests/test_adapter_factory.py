@@ -119,3 +119,59 @@ class TestAdapterTypes:
     def test_adapter_types_contains_mcp(self):
         from src.adapters.mcp import McpAdapter
         assert ADAPTER_TYPES["mcp"] is McpAdapter
+
+
+class TestAdapterFactoryOtel:
+    """Tests for action.startup.adapter_init span in AdapterFactory."""
+
+    @pytest.mark.asyncio
+    async def test_successful_adapter_emits_startup_span(self, otel_setup, rest_no_auth_config):
+        """A successfully built adapter must produce an action.startup.adapter_init span."""
+        exporter, _ = otel_setup
+        config = {"tools": [rest_no_auth_config]}
+        await AdapterFactory.build_registry(config)
+
+        spans = exporter.get_finished_spans()
+        span_names = [s.name for s in spans]
+        assert "action.startup.adapter_init" in span_names
+
+        init_span = next(s for s in spans if s.name == "action.startup.adapter_init")
+        assert init_span.attributes.get("adapter_type") == "rest_api"
+        assert init_span.attributes.get("tool_id") == "test_public"
+        assert init_span.attributes.get("success") is True
+
+    @pytest.mark.asyncio
+    async def test_failed_adapter_emits_startup_span_with_success_false(self, otel_setup, rest_tool_config):
+        """A failing adapter (missing env var) must produce a span with success=False."""
+        exporter, _ = otel_setup
+        # TEST_WEATHER_KEY not set — init will raise ValueError
+        config = {"tools": [rest_tool_config]}
+        await AdapterFactory.build_registry(config)
+
+        spans = exporter.get_finished_spans()
+        init_spans = [s for s in spans if s.name == "action.startup.adapter_init"]
+        assert len(init_spans) == 1
+        assert init_spans[0].attributes.get("success") is False
+
+    @pytest.mark.asyncio
+    async def test_unknown_type_emits_startup_span_with_success_false(self, otel_setup):
+        """An unknown adapter type must produce a span with success=False."""
+        exporter, _ = otel_setup
+        config = {"tools": [{"id": "bad", "type": "ftp_adapter", "category": "read"}]}
+        await AdapterFactory.build_registry(config)
+
+        spans = exporter.get_finished_spans()
+        init_spans = [s for s in spans if s.name == "action.startup.adapter_init"]
+        assert len(init_spans) == 1
+        assert init_spans[0].attributes.get("success") is False
+
+    @pytest.mark.asyncio
+    async def test_one_span_per_adapter(self, otel_setup, rest_no_auth_config, rest_write_tool_config, monkeypatch):
+        """build_registry emits exactly one action.startup.adapter_init span per tool config."""
+        exporter, _ = otel_setup
+        monkeypatch.setenv("TEST_JOBS_TOKEN", "tok")
+        config = {"tools": [rest_no_auth_config, rest_write_tool_config]}
+        await AdapterFactory.build_registry(config)
+
+        spans = [s for s in exporter.get_finished_spans() if s.name == "action.startup.adapter_init"]
+        assert len(spans) == 2

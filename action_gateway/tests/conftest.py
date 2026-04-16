@@ -2,6 +2,40 @@
 from __future__ import annotations
 
 import pytest
+from opentelemetry import metrics, trace
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+from dpg_telemetry import _reset_for_testing
+
+
+@pytest.fixture
+def otel_setup():
+    """Install in-memory OTel providers for span and metric assertions.
+
+    Yields a tuple of (InMemorySpanExporter, InMemoryMetricReader). Resets
+    global OTel state before and after so tests do not leak into each other.
+
+    Yields:
+        Tuple of (exporter, reader) for span and metric assertions.
+    """
+    _reset_for_testing()
+
+    exporter = InMemorySpanExporter()
+    tracer_provider = TracerProvider()
+    tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
+    trace.set_tracer_provider(tracer_provider)
+
+    reader = InMemoryMetricReader()
+    meter_provider = MeterProvider(metric_readers=[reader])
+    metrics.set_meter_provider(meter_provider)
+
+    yield exporter, reader
+
+    _reset_for_testing()
 
 
 @pytest.fixture

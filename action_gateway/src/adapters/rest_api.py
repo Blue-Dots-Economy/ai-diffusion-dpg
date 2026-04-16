@@ -14,11 +14,35 @@ import time
 from typing import Optional
 
 import httpx
+from opentelemetry import metrics as otel_metrics
+from opentelemetry import trace as otel_trace
 
 from src.adapters.base import ToolAdapter
 from src.models import ToolDefinition, ToolResult
 
 logger = logging.getLogger(__name__)
+
+
+def _get_tracer() -> otel_trace.Tracer:
+    """Return the OTel tracer for RestApiAdapter.
+
+    Resolved lazily so tests can install a TracerProvider before the first call.
+
+    Returns:
+        opentelemetry.trace.Tracer for this instrumentation scope.
+    """
+    return otel_trace.get_tracer(__name__)
+
+
+def _get_meter() -> otel_metrics.Meter:
+    """Return the OTel meter for RestApiAdapter.
+
+    Resolved lazily so tests can install a MeterProvider before the first call.
+
+    Returns:
+        opentelemetry.metrics.Meter for this instrumentation scope.
+    """
+    return otel_metrics.get_meter(__name__)
 
 _DEFAULT_TIMEOUT_MS = 5000
 _DEFAULT_MAX_SIZE_CHARS = 4000
@@ -71,6 +95,14 @@ class RestApiAdapter(ToolAdapter):
 
         # Lazily-created HTTP client; replaced by patch.object in tests.
         self._http_client: httpx.AsyncClient = httpx.AsyncClient()
+
+        _m = _get_meter()
+        self._response_size_hist = _m.create_histogram(
+            "action.response.size_bytes", unit="By", description="Response payload size in bytes before truncation."
+        )
+        self._truncated_counter = _m.create_counter(
+            "action.response.truncated_total", description="Count of responses truncated to max_size_chars."
+        )
 
         logger.debug(
             "rest_api_adapter_init",
@@ -164,24 +196,30 @@ class RestApiAdapter(ToolAdapter):
 
         timeout_s = self._timeout_ms / 1000.0
 
+        http_start = time.time()
         try:
-            if method == "GET":
-                response = await self._http_client.request(
-                    method=method,
-                    url=url,
-                    params=all_params,
-                    headers=headers,
-                    timeout=timeout_s,
-                )
-            else:
-                response = await self._http_client.request(
-                    method=method,
-                    url=url,
-                    json=all_params,
-                    headers=headers,
-                    timeout=timeout_s,
-                )
-        except httpx.TimeoutException:
+            with _get_tracer().start_as_current_span("action.rest_api.http_call") as http_span:
+                http_span.set_attribute("http.method", method)
+                http_span.set_attribute("http.url", url)
+                if method == "GET":
+                    response = await self._http_client.request(
+                        method=method,
+                        url=url,
+                        params=all_params,
+                        headers=headers,
+                        timeout=timeout_s,
+                    )
+                else:
+                    response = await self._http_client.request(
+                        method=method,
+                        url=url,
+                        json=all_params,
+                        headers=headers,
+                        timeout=timeout_s,
+                    )
+                http_span.set_attribute("http.status_code", response.status_code)
+                http_span.set_attribute("latency_ms", int((time.time() - http_start) * 1000))
+        except httpx.TimeoutException as exc:
             latency_ms = int((time.time() - start) * 1000)
             logger.warning(
                 "rest_api_timeout",
@@ -251,7 +289,12 @@ class RestApiAdapter(ToolAdapter):
         except Exception:
             result_dict = {}
 
-        result_text = json.dumps(result_dict)[: self._max_size_chars]
+        full_text = json.dumps(result_dict)
+        result_text = full_text[: self._max_size_chars]
+
+        self._response_size_hist.record(len(full_text.encode()), {"tool_name": tool_name})
+        if len(full_text) > self._max_size_chars:
+            self._truncated_counter.add(1, {"tool_name": tool_name})
 
         logger.info(
             "rest_api_execute",

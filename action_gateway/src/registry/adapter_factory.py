@@ -11,11 +11,25 @@ from __future__ import annotations
 import logging
 import time
 
+from opentelemetry import trace as otel_trace
+
 from src.adapters.mcp import McpAdapter
 from src.adapters.rest_api import RestApiAdapter
 from src.registry.adapter_registry import AdapterRegistry
 
 logger = logging.getLogger(__name__)
+
+
+def _get_tracer() -> otel_trace.Tracer:
+    """Return the OTel tracer for AdapterFactory.
+
+    Resolved lazily so tests can install a TracerProvider before the first call.
+
+    Returns:
+        opentelemetry.trace.Tracer for this instrumentation scope.
+    """
+    return otel_trace.get_tracer(__name__)
+
 
 # Maps the YAML "type" field to the concrete adapter class.
 ADAPTER_TYPES: dict[str, type] = {
@@ -69,54 +83,63 @@ class AdapterFactory:
             adapter_type = tool_config.get("type")
             start = time.time()
 
-            adapter_class = ADAPTER_TYPES.get(adapter_type)  # type: ignore[arg-type]
-            if adapter_class is None:
-                logger.error(
-                    "adapter_factory_unknown_type",
-                    extra={
-                        "operation": "AdapterFactory.build_registry",
-                        "status": "failure",
-                        "error": f"unknown adapter type '{adapter_type}'",
-                        "adapter_id": adapter_id,
-                    },
-                )
-                continue
+            with _get_tracer().start_as_current_span("action.startup.adapter_init") as span:
+                span.set_attribute("adapter_type", adapter_type or "unknown")
+                span.set_attribute("tool_id", adapter_id)
 
-            try:
-                adapter = adapter_class(tool_config)
+                adapter_class = ADAPTER_TYPES.get(adapter_type)  # type: ignore[arg-type]
+                if adapter_class is None:
+                    span.set_attribute("success", False)
+                    span.record_exception(ValueError(f"unknown adapter type '{adapter_type}'"))
+                    logger.error(
+                        "adapter_factory_unknown_type",
+                        extra={
+                            "operation": "AdapterFactory.build_registry",
+                            "status": "failure",
+                            "error": f"unknown adapter type '{adapter_type}'",
+                            "adapter_id": adapter_id,
+                        },
+                    )
+                    continue
 
-                if hasattr(adapter, "initialize") and callable(adapter.initialize):
-                    await adapter.initialize()
+                try:
+                    adapter = adapter_class(tool_config)
 
-                definitions = adapter.get_tool_definitions()
-                for definition in definitions:
-                    registry.register(definition.name, adapter)
+                    if hasattr(adapter, "initialize") and callable(adapter.initialize):
+                        await adapter.initialize()
 
-                latency_ms = int((time.time() - start) * 1000)
-                logger.info(
-                    "adapter_factory_registered",
-                    extra={
-                        "operation": "AdapterFactory.build_registry",
-                        "status": "success",
-                        "adapter_id": adapter_id,
-                        "adapter_type": adapter_type,
-                        "tools_registered": len(definitions),
-                        "latency_ms": latency_ms,
-                    },
-                )
+                    definitions = adapter.get_tool_definitions()
+                    for definition in definitions:
+                        registry.register(definition.name, adapter)
 
-            except Exception as exc:  # noqa: BLE001
-                latency_ms = int((time.time() - start) * 1000)
-                logger.error(
-                    "adapter_factory_build_error",
-                    extra={
-                        "operation": "AdapterFactory.build_registry",
-                        "status": "failure",
-                        "error": f"{type(exc).__name__}: {exc}",
-                        "adapter_id": adapter_id,
-                        "latency_ms": latency_ms,
-                    },
-                )
-                continue
+                    span.set_attribute("success", True)
+                    latency_ms = int((time.time() - start) * 1000)
+                    logger.info(
+                        "adapter_factory_registered",
+                        extra={
+                            "operation": "AdapterFactory.build_registry",
+                            "status": "success",
+                            "adapter_id": adapter_id,
+                            "adapter_type": adapter_type,
+                            "tools_registered": len(definitions),
+                            "latency_ms": latency_ms,
+                        },
+                    )
+
+                except Exception as exc:  # noqa: BLE001
+                    span.set_attribute("success", False)
+                    span.record_exception(exc)
+                    latency_ms = int((time.time() - start) * 1000)
+                    logger.error(
+                        "adapter_factory_build_error",
+                        extra={
+                            "operation": "AdapterFactory.build_registry",
+                            "status": "failure",
+                            "error": f"{type(exc).__name__}: {exc}",
+                            "adapter_id": adapter_id,
+                            "latency_ms": latency_ms,
+                        },
+                    )
+                    continue
 
         return registry

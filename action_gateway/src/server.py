@@ -15,11 +15,36 @@ import logging
 import time
 
 from fastapi import FastAPI
+from opentelemetry import metrics as otel_metrics
+from opentelemetry import trace as otel_trace
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
 from src.models import ExecuteRequest, ExecuteResponse, HealthResponse, ToolsResponse
 from src.registry.adapter_registry import AdapterRegistry
 
 logger = logging.getLogger(__name__)
+
+
+def _get_tracer() -> otel_trace.Tracer:
+    """Return the OTel tracer for the Action Gateway server.
+
+    Resolved lazily so tests can install a TracerProvider before the first call.
+
+    Returns:
+        opentelemetry.trace.Tracer for this instrumentation scope.
+    """
+    return otel_trace.get_tracer(__name__)
+
+
+def _get_meter() -> otel_metrics.Meter:
+    """Return the OTel meter for the Action Gateway server.
+
+    Resolved lazily so tests can install a MeterProvider before the first call.
+
+    Returns:
+        opentelemetry.metrics.Meter for this instrumentation scope.
+    """
+    return otel_metrics.get_meter(__name__)
 
 
 def create_app(registry: AdapterRegistry) -> FastAPI:
@@ -36,6 +61,12 @@ def create_app(registry: AdapterRegistry) -> FastAPI:
         A configured FastAPI application instance.
     """
     app = FastAPI(title="Action Gateway", description="DPG Action Gateway service")
+    FastAPIInstrumentor.instrument_app(app)
+
+    _m = _get_meter()
+    _duration_hist = _m.create_histogram("action.execute.duration_ms", unit="ms", description="Duration of adapter execute calls in milliseconds.")
+    _success_counter = _m.create_counter("action.execute.success_total", description="Count of successful adapter execute calls.")
+    _failure_counter = _m.create_counter("action.execute.failure_total", description="Count of failed adapter execute calls.")
 
     @app.get("/tools", response_model=ToolsResponse)
     async def get_tools() -> ToolsResponse:
@@ -96,13 +127,31 @@ def create_app(registry: AdapterRegistry) -> FastAPI:
                 error=f"unknown_tool: {request.tool_name}",
             )
 
-        result = await adapter.execute(
-            request.tool_name,
-            request.input_params,
-            request.session_id,
-        )
+        adapter_type: str = adapter.config.get("type", "unknown")
+        category: str = adapter.config.get("category", "read")
+
+        with _get_tracer().start_as_current_span("action.execute") as span:
+            span.set_attribute("tool_name", request.tool_name)
+            span.set_attribute("adapter_type", adapter_type)
+            span.set_attribute("category", category)
+            span.set_attribute("session_id", request.session_id or "")
+
+            result = await adapter.execute(
+                request.tool_name,
+                request.input_params,
+                request.session_id,
+            )
+
+            if not result.success:
+                span.record_exception(Exception(result.error or "adapter_failure"))
 
         latency_ms = int((time.time() - start) * 1000)
+        _duration_hist.record(latency_ms, {"tool_name": request.tool_name, "adapter_type": adapter_type})
+        if result.success:
+            _success_counter.add(1, {"tool_name": request.tool_name})
+        else:
+            _failure_counter.add(1, {"tool_name": request.tool_name})
+
         logger.info(
             "execute_tool",
             extra={

@@ -216,3 +216,120 @@ class TestHealthEndpoint:
         response = client.get("/health")
         assert response.status_code == 200
         mcp_adapter.health_check.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# OTel instrumentation tests
+# ---------------------------------------------------------------------------
+
+
+class TestOtelInstrumentation:
+    """Tests for action.execute span and associated metrics."""
+
+    def test_execute_emits_action_execute_span(self, otel_setup):
+        """POST /execute must produce an action.execute span with correct attributes."""
+        exporter, _ = otel_setup
+        adapter = _make_adapter(["tool_a"])
+        adapter.config = {"type": "rest_api", "category": "read"}
+        registry = _build_registry((["tool_a"], adapter))
+        client = TestClient(create_app(registry))
+
+        response = client.post(
+            "/execute",
+            json={"tool_name": "tool_a", "tool_use_id": "tu_otel_1", "input_params": {}, "session_id": "sess_otel"},
+        )
+
+        assert response.status_code == 200
+        spans = exporter.get_finished_spans()
+        span_names = [s.name for s in spans]
+        assert "action.execute" in span_names
+
+        action_span = next(s for s in spans if s.name == "action.execute")
+        assert action_span.attributes.get("tool_name") == "tool_a"
+        assert action_span.attributes.get("adapter_type") == "rest_api"
+        assert action_span.attributes.get("category") == "read"
+        assert action_span.attributes.get("session_id") == "sess_otel"
+
+    def test_execute_records_duration_metric(self, otel_setup):
+        """POST /execute must record action.execute.duration_ms histogram."""
+        _, reader = otel_setup
+        adapter = _make_adapter(["tool_b"])
+        adapter.config = {"type": "rest_api", "category": "read"}
+        registry = _build_registry((["tool_b"], adapter))
+        client = TestClient(create_app(registry))
+
+        client.post(
+            "/execute",
+            json={"tool_name": "tool_b", "tool_use_id": "tu_otel_2", "input_params": {}},
+        )
+
+        metrics_data = reader.get_metrics_data()
+        metric_names = {
+            m.name
+            for rm in metrics_data.resource_metrics
+            for sm in rm.scope_metrics
+            for m in sm.metrics
+        }
+        assert "action.execute.duration_ms" in metric_names
+
+    def test_execute_success_increments_success_counter(self, otel_setup):
+        """Successful execute must increment action.execute.success_total."""
+        _, reader = otel_setup
+        adapter = _make_adapter(["tool_c"])
+        adapter.config = {"type": "rest_api", "category": "read"}
+        registry = _build_registry((["tool_c"], adapter))
+        client = TestClient(create_app(registry))
+
+        client.post(
+            "/execute",
+            json={"tool_name": "tool_c", "tool_use_id": "tu_otel_3", "input_params": {}},
+        )
+
+        metrics_data = reader.get_metrics_data()
+        metric_names = {
+            m.name
+            for rm in metrics_data.resource_metrics
+            for sm in rm.scope_metrics
+            for m in sm.metrics
+        }
+        assert "action.execute.success_total" in metric_names
+
+    def test_execute_failure_increments_failure_counter(self, otel_setup):
+        """Failed execute must increment action.execute.failure_total."""
+        _, reader = otel_setup
+        failed_result = ToolResult(
+            tool_use_id="", tool_name="tool_d", result={}, success=False, error="adapter_error: boom"
+        )
+        adapter = _make_adapter(["tool_d"], execute_result=failed_result)
+        adapter.config = {"type": "rest_api", "category": "read"}
+        registry = _build_registry((["tool_d"], adapter))
+        client = TestClient(create_app(registry))
+
+        client.post(
+            "/execute",
+            json={"tool_name": "tool_d", "tool_use_id": "tu_otel_4", "input_params": {}},
+        )
+
+        metrics_data = reader.get_metrics_data()
+        metric_names = {
+            m.name
+            for rm in metrics_data.resource_metrics
+            for sm in rm.scope_metrics
+            for m in sm.metrics
+        }
+        assert "action.execute.failure_total" in metric_names
+
+    def test_execute_unknown_tool_does_not_emit_span(self, otel_setup):
+        """Unknown tool lookup failure must not produce an action.execute span."""
+        exporter, _ = otel_setup
+        registry = AdapterRegistry()
+        client = TestClient(create_app(registry))
+
+        client.post(
+            "/execute",
+            json={"tool_name": "ghost_tool", "tool_use_id": "tu_otel_5", "input_params": {}},
+        )
+
+        spans = exporter.get_finished_spans()
+        action_spans = [s for s in spans if s.name == "action.execute"]
+        assert len(action_spans) == 0

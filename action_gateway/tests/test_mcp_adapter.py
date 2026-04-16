@@ -294,3 +294,84 @@ class TestMcpAdapterHealthCheck:
         """health_check() returns False before initialize() is called."""
         adapter = McpAdapter(mcp_tool_config)
         assert adapter.health_check() is False
+
+
+# ---------------------------------------------------------------------------
+# TestMcpAdapterOtel
+# ---------------------------------------------------------------------------
+
+
+class TestMcpAdapterOtel:
+    """Tests for OTel span instrumentation in McpAdapter."""
+
+    @pytest.fixture
+    def mock_tools(self):
+        return [
+            _mock_mcp_tool(
+                "search",
+                "Search",
+                {"type": "object", "properties": {"query": {"type": "string"}}},
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_execute_emits_mcp_tool_call_span(self, otel_setup, mcp_tool_config, mock_tools):
+        """execute() must produce an action.mcp.tool_call child span."""
+        exporter, _ = otel_setup
+        adapter = McpAdapter(mcp_tool_config)
+        with patch.object(adapter, "_connect_and_discover", new_callable=AsyncMock, return_value=mock_tools):
+            await adapter.initialize()
+
+        mock_result = MagicMock()
+        mock_result.content = [MagicMock(text='{"answer": 1}')]
+
+        with patch.object(adapter, "_call_tool", new_callable=AsyncMock, return_value=mock_result):
+            await adapter.execute("test_mcp.search", {"query": "hello"}, "sess-otel-mcp-1")
+
+        spans = exporter.get_finished_spans()
+        span_names = [s.name for s in spans]
+        assert "action.mcp.tool_call" in span_names
+
+        mcp_span = next(s for s in spans if s.name == "action.mcp.tool_call")
+        assert mcp_span.attributes.get("mcp.server_url") == "https://mcp.test.example/sse"
+        assert mcp_span.attributes.get("mcp.tool_name") == "search"
+
+    @pytest.mark.asyncio
+    async def test_mcp_error_records_exception_on_span(self, otel_setup, mcp_tool_config, mock_tools):
+        """execute() failure must record the exception on the action.mcp.tool_call span."""
+        exporter, _ = otel_setup
+        adapter = McpAdapter(mcp_tool_config)
+        with patch.object(adapter, "_connect_and_discover", new_callable=AsyncMock, return_value=mock_tools):
+            await adapter.initialize()
+
+        with patch.object(adapter, "_call_tool", new_callable=AsyncMock, side_effect=RuntimeError("lost")):
+            result = await adapter.execute("test_mcp.search", {}, "sess-otel-mcp-2")
+
+        assert result.success is False
+        spans = exporter.get_finished_spans()
+        mcp_span = next((s for s in spans if s.name == "action.mcp.tool_call"), None)
+        assert mcp_span is not None
+        assert len(mcp_span.events) > 0
+
+    @pytest.mark.asyncio
+    async def test_response_size_metric_recorded(self, otel_setup, mcp_tool_config, mock_tools):
+        """execute() must record action.response.size_bytes on success."""
+        _, reader = otel_setup
+        adapter = McpAdapter(mcp_tool_config)
+        with patch.object(adapter, "_connect_and_discover", new_callable=AsyncMock, return_value=mock_tools):
+            await adapter.initialize()
+
+        mock_result = MagicMock()
+        mock_result.content = [MagicMock(text='{"data": "value"}')]
+
+        with patch.object(adapter, "_call_tool", new_callable=AsyncMock, return_value=mock_result):
+            await adapter.execute("test_mcp.search", {}, "sess-otel-mcp-3")
+
+        metrics_data = reader.get_metrics_data()
+        metric_names = {
+            m.name
+            for rm in metrics_data.resource_metrics
+            for sm in rm.scope_metrics
+            for m in sm.metrics
+        }
+        assert "action.response.size_bytes" in metric_names

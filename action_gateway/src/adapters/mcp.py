@@ -12,10 +12,35 @@ import logging
 import time
 from typing import Any
 
+from opentelemetry import metrics as otel_metrics
+from opentelemetry import trace as otel_trace
+
 from src.adapters.base import ToolAdapter
 from src.models import ToolDefinition, ToolResult
 
 logger = logging.getLogger(__name__)
+
+
+def _get_tracer() -> otel_trace.Tracer:
+    """Return the OTel tracer for McpAdapter.
+
+    Resolved lazily so tests can install a TracerProvider before the first call.
+
+    Returns:
+        opentelemetry.trace.Tracer for this instrumentation scope.
+    """
+    return otel_trace.get_tracer(__name__)
+
+
+def _get_meter() -> otel_metrics.Meter:
+    """Return the OTel meter for McpAdapter.
+
+    Resolved lazily so tests can install a MeterProvider before the first call.
+
+    Returns:
+        opentelemetry.metrics.Meter for this instrumentation scope.
+    """
+    return otel_metrics.get_meter(__name__)
 
 _DEFAULT_TRANSPORT = "sse"
 _DEFAULT_MAX_SIZE_CHARS = 4000
@@ -59,6 +84,14 @@ class McpAdapter(ToolAdapter):
         )
         self._tool_definitions: list[ToolDefinition] = []
         self._connected: bool = False
+
+        _m = _get_meter()
+        self._response_size_hist = _m.create_histogram(
+            "action.response.size_bytes", unit="By", description="Response payload size in bytes before truncation."
+        )
+        self._truncated_counter = _m.create_counter(
+            "action.response.truncated_total", description="Count of responses truncated to max_size_chars."
+        )
 
         logger.debug(
             "mcp_adapter_init",
@@ -168,14 +201,19 @@ class McpAdapter(ToolAdapter):
 
         start = time.time()
         try:
-            call_result = await self._call_tool(mcp_tool_name, params)
-            latency_ms = int((time.time() - start) * 1000)
+            with _get_tracer().start_as_current_span("action.mcp.tool_call") as mcp_span:
+                mcp_span.set_attribute("mcp.server_url", self._server_url)
+                mcp_span.set_attribute("mcp.tool_name", mcp_tool_name)
+                call_result = await self._call_tool(mcp_tool_name, params)
+                latency_ms = int((time.time() - start) * 1000)
+                mcp_span.set_attribute("latency_ms", latency_ms)
 
             # Extract text from first content item
             raw_text: str = ""
             if call_result.content:
                 raw_text = call_result.content[0].text
 
+            full_text = raw_text
             # Truncate to max_size_chars
             raw_text = raw_text[: self._max_size_chars]
 
@@ -186,6 +224,10 @@ class McpAdapter(ToolAdapter):
                     result_dict = {"value": result_dict}
             except (json.JSONDecodeError, ValueError):
                 result_dict = {"text": raw_text}
+
+            self._response_size_hist.record(len(full_text.encode()), {"tool_name": tool_name})
+            if len(full_text) > self._max_size_chars:
+                self._truncated_counter.add(1, {"tool_name": tool_name})
 
             logger.info(
                 "mcp_adapter_execute",

@@ -276,3 +276,94 @@ class TestRestApiAdapterHealthCheck:
 
         with patch("httpx.head", side_effect=Exception("connection refused")):
             assert adapter.health_check() is False
+
+
+# ---------------------------------------------------------------------------
+# TestRestApiAdapterOtel
+# ---------------------------------------------------------------------------
+
+
+class TestRestApiAdapterOtel:
+    """Tests for OTel span instrumentation in RestApiAdapter."""
+
+    @pytest.fixture(autouse=True)
+    def _inject_env(self, monkeypatch):
+        monkeypatch.setenv("TEST_WEATHER_KEY", "secret-key")
+
+    @pytest.mark.asyncio
+    async def test_execute_emits_http_call_span(self, otel_setup, rest_tool_config):
+        """execute() must produce an action.rest_api.http_call child span."""
+        exporter, _ = otel_setup
+        adapter = RestApiAdapter(rest_tool_config)
+        mock_resp = make_mock_response(200, {"temp": 25})
+
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=mock_resp)
+            await adapter.execute("test_weather", {"location": "Delhi"}, "sess-otel-1")
+
+        spans = exporter.get_finished_spans()
+        span_names = [s.name for s in spans]
+        assert "action.rest_api.http_call" in span_names
+
+        http_span = next(s for s in spans if s.name == "action.rest_api.http_call")
+        assert http_span.attributes.get("http.method") == "GET"
+        assert "https://api.weather.test/v1/forecast" in http_span.attributes.get("http.url", "")
+        assert http_span.attributes.get("http.status_code") == 200
+
+    @pytest.mark.asyncio
+    async def test_timeout_sets_span_error(self, otel_setup, rest_tool_config):
+        """Timeout must end action.rest_api.http_call span with ERROR status."""
+        exporter, _ = otel_setup
+        adapter = RestApiAdapter(rest_tool_config)
+
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(side_effect=httpx.TimeoutException("timeout"))
+            result = await adapter.execute("test_weather", {"location": "X"}, "sess-otel-2")
+
+        assert result.success is False
+        spans = exporter.get_finished_spans()
+        http_span = next((s for s in spans if s.name == "action.rest_api.http_call"), None)
+        assert http_span is not None
+        # OTel records exception events when record_exception=True (default)
+        assert len(http_span.events) > 0
+
+    @pytest.mark.asyncio
+    async def test_response_size_metric_recorded(self, otel_setup, rest_tool_config):
+        """execute() must record action.response.size_bytes histogram on success."""
+        _, reader = otel_setup
+        adapter = RestApiAdapter(rest_tool_config)
+        mock_resp = make_mock_response(200, {"data": "hello"})
+
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=mock_resp)
+            await adapter.execute("test_weather", {"location": "Mumbai"}, "sess-otel-3")
+
+        metrics_data = reader.get_metrics_data()
+        metric_names = {
+            m.name
+            for rm in metrics_data.resource_metrics
+            for sm in rm.scope_metrics
+            for m in sm.metrics
+        }
+        assert "action.response.size_bytes" in metric_names
+
+    @pytest.mark.asyncio
+    async def test_truncation_counter_recorded(self, otel_setup, rest_tool_config):
+        """execute() must increment action.response.truncated_total when response is truncated."""
+        _, reader = otel_setup
+        adapter = RestApiAdapter(rest_tool_config)
+        big_payload = {"data": "x" * 10_000}
+        mock_resp = make_mock_response(200, big_payload)
+
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=mock_resp)
+            await adapter.execute("test_weather", {"location": "Z"}, "sess-otel-4")
+
+        metrics_data = reader.get_metrics_data()
+        metric_names = {
+            m.name
+            for rm in metrics_data.resource_metrics
+            for sm in rm.scope_metrics
+            for m in sm.metrics
+        }
+        assert "action.response.truncated_total" in metric_names

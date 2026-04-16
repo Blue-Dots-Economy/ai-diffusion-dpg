@@ -48,4 +48,5 @@ observability-layer = { path = "../observability_layer" }
 [dependency-groups]
 dev = [
     "pytest-asyncio>=0.23",
+    "pytest-cov>=7.1.0",
 ]
