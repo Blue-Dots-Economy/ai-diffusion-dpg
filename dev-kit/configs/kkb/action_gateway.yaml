@@ -6,97 +6,90 @@ tools:
   - id: onest_market_lookup
     type: rest_api
     category: read
-    description: "Search ONEST live job market data by trade and location. Returns salary range, market signal, and top employers currently hiring for the given trade in the specified area."
-    base_url: "http://onest-api:8080/v1"
+    description: "Search ONEST job listings by trade, location, or keyword query. Returns paginated job postings from the ONEST network including job titles, employers, locations, and salary details."
+    base_url: "https://onest-lite-bap.dhiway.net/api/v3"
     auth:
       type: api_key
-      header: X-API-Key
+      header: X-API-KEY
       secret_env: ONEST_API_KEY
     timeout_ms: 5000
     endpoints:
-      - name: search_jobs
-        method: GET
-        path: /jobs/search
+      - name: search
+        method: POST
+        path: /search
         params:
-          - name: trade
+          - name: query
             source: agent
             type: string
             required: true
-            description: "Trade or skill to search for"
-          - name: location
-            source: agent
-            type: string
-            description: "City or district name"
-          - name: distance_km
-            source: agent
+            description: "Search query — trade name, location, or keyword (e.g. 'electrician', 'hubli', 'welder bangalore')"
+          - name: limit
+            source: static
             type: integer
-            description: "Search radius in km from the specified location. Default 50."
-            default: 50
+            value: 10
+          - name: page
+            source: static
+            type: integer
+            value: 1
     response:
       max_size_chars: 4000
 
-  - id: onest_apply
-    type: rest_api
-    category: write
-    description: "Submit a job application via ONEST on behalf of the user. Call only after user explicitly confirms they want to apply. Returns reference number and confirmation."
-    base_url: "http://onest-api:8080/v1"
-    auth:
-      type: api_key
-      header: X-API-Key
-      secret_env: ONEST_API_KEY
-    timeout_ms: 5000
-    endpoints:
-      - name: submit_application
-        method: POST
-        path: /applications
-        params:
-          - name: trade
-            source: agent
-            type: string
-            required: true
-            description: "The trade or role the user is applying for"
-          - name: employer
-            source: agent
-            type: string
-            required: true
-            description: "Name of the employer"
-          - name: location
-            source: agent
-            type: string
-            description: "City or district of the job"
-          - name: applicant_name
-            source: agent
-            type: string
-            description: "Name of the applicant from user profile"
+  # - id: onest_apply
+  #   type: rest_api
+  #   category: write
+  #   description: "Submit a job application via ONEST on behalf of the user. Call only after user explicitly confirms they want to apply. Requires job_id from a previous search result and the user's profile_id. Returns order confirmation with provider details, job info, and fulfillment status."
+  #   base_url: "https://onest-lite-bap.dhiway.net/api/v2"
+  #   auth:
+  #     type: api_key
+  #     header: x-api-key
+  #     secret_env: ONEST_API_KEY
+  #   timeout_ms: 10000
+  #   endpoints:
+  #     - name: apply
+  #       method: POST
+  #       path: /apply
+  #       params:
+  #         - name: job_id
+  #           source: agent
+  #           type: string
+  #           required: true
+  #           description: "Job listing ID from a previous onest_market_lookup search result"
+  #         - name: profile_id
+  #           source: agent
+  #           type: string
+  #           required: true
+  #           description: "User's ONEST profile ID"
+  #   response:
+  #     max_size_chars: 4000
 
-  - id: counsellor_schedule
-    type: rest_api
-    category: write
-    description: "Schedule a counsellor callback for the user. Returns a reference number and expected callback time."
-    base_url: "http://counsellor-api:8080/v1"
-    auth:
-      type: bearer
-      secret_env: COUNSELLOR_API_TOKEN
-    timeout_ms: 3000
-    endpoints:
-      - name: schedule_callback
-        method: POST
-        path: /callbacks
-        params:
-          - name: session_id
-            source: agent
-            type: string
-            required: true
-            description: "Session identifier"
-          - name: user_name
-            source: agent
-            type: string
-            description: "User's name if known"
-          - name: callback_within_hours
-            source: agent
-            type: integer
-            description: "Requested callback window in hours. Default 24."
-            default: 24
+  # - id: counsellor_schedule
+  #   type: rest_api
+  #   category: write
+  #   description: "Schedule a counsellor callback for the user. Returns a reference number and expected callback time."
+  #   base_url: "http://counsellor-api:8080/v1"
+  #   auth:
+  #     type: bearer
+  #     secret_env: COUNSELLOR_API_TOKEN
+  #   timeout_ms: 3000
+  #   endpoints:
+  #     - name: schedule_callback
+  #       method: POST
+  #       path: /callbacks
+  #       params:
+  #         - name: session_id
+  #           source: agent
+  #           type: string
+  #           required: true
+  #           description: "Session identifier"
+  #         - name: user_name
+  #           source: agent
+  #           type: string
+  #           description: "User's name if known"
+  #         - name: callback_within_hours
+  #           source: agent
+  #           type: integer
+  #           description: "Requested callback window in hours. Default 24."
+  #           default: 24
 
 observability:
   domain: "kkb"
