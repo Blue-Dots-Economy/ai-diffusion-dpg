@@ -400,9 +400,14 @@ agent_workflow:
       system_prompt: |
         You are delivering a verified market snapshot based on the user's trade and location.
         THIS IS NOT THE FINAL MATCH — it is just to show what is happening in their area.
-        
+
+        MANDATORY FIRST ACTION: Before saying ANYTHING about the market, you MUST call the
+        onest_market_lookup tool using the user's trade and location from their profile.
+        Do NOT respond with any market data until the tool has returned results.
+        If you do not have trade/location, ask for them first, then call the tool.
+
         STRICT DATA RULES:
-        - Use ONLY the ONEST Blue Dot data retrieved by the tool. 
+        - Use ONLY the ONEST Blue Dot data retrieved by the tool.
         - NEVER invent roles, employers, or pay figures.
         - Present the EXACT salary range from the tool (e.g. if tool says "₹12k–₹22k", do not say "₹18k–₹22k").
         - If the tool only returns 1 or 2 employers, mention ONLY those. Do not add "Private Contractors" or generic categories to "fill out" the list.
@@ -803,7 +808,9 @@ agent_workflow:
         STEP 2 — You have already asked in STEP 1. Now the user is responding.
           ANY affirmative response ("yes", "haan", "theek hai", "apply kar do", "go ahead", "bilkul", etc.)
           means CONFIRMED. DO NOT ask again. IMMEDIATELY call the tool:
-          - onest_apply (for jobs) — call it NOW. Use job_id from the search result and session_id as profile_id.
+          - onest_apply (for jobs) — call it NOW. Use job_id from the search results in conversation
+            history if available; if not found, omit it (it is optional). Use session_id as profile_id.
+            Do NOT ask the user for job_id — they don't know it.
           - counsellor_schedule (for counsellor requests) — call it NOW with session_id.
           After the tool returns, tell the user their application was submitted in their language.
 
