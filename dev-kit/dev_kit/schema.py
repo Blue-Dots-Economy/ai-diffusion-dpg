@@ -20,9 +20,9 @@ One top-level model per service:
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from dev_kit.schemas.loader import load_template
 
@@ -720,7 +720,7 @@ class ToolParamDef(BaseModel):
     source: Literal["agent", "static"] = Field(
         ..., description="'agent' = LLM fills this at call time; 'static' = fixed value"
     )
-    type: str = Field(default="string", description="JSON type: string | integer | boolean | array")
+    type: Literal["string", "integer", "boolean", "array"] = Field(default="string", description="JSON type")
     required: bool = Field(default=False, description="Whether the agent must provide this param")
     description: str = Field(default="", description="Description shown to the agent")
     value: Any = Field(default=None, description="Fixed value when source is 'static'")
@@ -731,7 +731,7 @@ class ToolEndpointDef(BaseModel):
     """One HTTP endpoint within a REST API tool definition."""
 
     name: str = Field(..., description="Endpoint name, e.g. 'search', 'apply'")
-    method: str = Field(..., description="HTTP method: GET | POST | PUT | DELETE | PATCH")
+    method: Literal["GET", "POST", "PUT", "DELETE", "PATCH"] = Field(..., description="HTTP method")
     path: str = Field(..., description="Path appended to base_url, e.g. '/search'")
     params: list[ToolParamDef] = Field(default=[], description="Parameters for this endpoint")
 
@@ -751,6 +751,17 @@ class AuthConfig(BaseModel):
     header: str | None = Field(default=None, description="Header name for api_key auth, e.g. X-API-KEY")
     secret_env: str | None = Field(default=None, description="Environment variable holding the API key or token")
     token_url: str | None = Field(default=None, description="Token endpoint URL for oauth2")
+
+    @model_validator(mode="after")
+    def _validate_auth_fields(self) -> "AuthConfig":
+        """Validate that required fields are present for each auth type."""
+        if self.type == "api_key" and not self.secret_env:
+            raise ValueError("api_key auth requires secret_env")
+        if self.type == "bearer" and not self.secret_env:
+            raise ValueError("bearer auth requires secret_env")
+        if self.type == "oauth2" and not self.token_url:
+            raise ValueError("oauth2 auth requires token_url")
+        return self
 
 
 class RestApiToolDef(BaseModel):
@@ -785,10 +796,13 @@ class McpToolDef(BaseModel):
     timeout_ms: int = Field(default=5000, description="Request timeout in milliseconds")
 
 
+ToolDef = Annotated[RestApiToolDef | McpToolDef, Field(discriminator="type")]
+
+
 class ActionGatewayConfig(BaseModel):
     """Top-level config for the Action Gateway domain config file."""
 
-    tools: list[RestApiToolDef | McpToolDef] = Field(
+    tools: list[ToolDef] = Field(
         default=[],
         description="List of tool definitions. Each entry is either a rest_api or mcp tool."
     )
@@ -796,6 +810,15 @@ class ActionGatewayConfig(BaseModel):
         default_factory=dict,
         description="Observability settings. At minimum: {domain: 'your_domain_slug'}"
     )
+
+    @model_validator(mode="after")
+    def _validate_unique_tool_ids(self) -> "ActionGatewayConfig":
+        """Validate that all tool IDs are unique within the config."""
+        ids = [t.id for t in self.tools]
+        dupes = {x for x in ids if ids.count(x) > 1}
+        if dupes:
+            raise ValueError(f"Duplicate tool ids: {dupes}")
+        return self
 
 
 # ---------------------------------------------------------------------------

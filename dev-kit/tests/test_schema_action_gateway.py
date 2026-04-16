@@ -1,7 +1,7 @@
 """Tests for updated ActionGateway schema."""
 import pytest
 from pydantic import ValidationError
-from dev_kit.schema import ActionGatewayConfig, validate_partial
+from dev_kit.schema import ActionGatewayConfig, McpToolDef, validate_partial
 
 
 def test_rest_api_tool_validates():
@@ -110,3 +110,69 @@ def test_invalid_category_rejected():
     }
     with pytest.raises(ValidationError):
         ActionGatewayConfig.model_validate(data)
+
+
+def test_auth_api_key_requires_secret_env():
+    """api_key auth without secret_env should fail validation."""
+    data = {
+        "tools": [{
+            "id": "t",
+            "type": "rest_api",
+            "category": "read",
+            "description": "x",
+            "base_url": "https://api.example.com",
+            "auth": {"type": "api_key", "header": "X-API-KEY"},  # missing secret_env
+            "endpoints": [],
+        }]
+    }
+    with pytest.raises(ValidationError, match="api_key auth requires secret_env"):
+        ActionGatewayConfig.model_validate(data)
+
+
+def test_duplicate_tool_ids_rejected():
+    """Two tools with the same id should fail validation."""
+    tool = {
+        "id": "dup_tool",
+        "type": "rest_api",
+        "category": "read",
+        "description": "x",
+        "base_url": "https://api.example.com",
+        "auth": {"type": "none"},
+        "endpoints": [],
+    }
+    data = {"tools": [tool, {**tool}]}
+    with pytest.raises(ValidationError, match="Duplicate tool ids"):
+        ActionGatewayConfig.model_validate(data)
+
+
+def test_invalid_http_method_rejected():
+    """Invalid HTTP method in endpoint should fail validation."""
+    data = {
+        "tools": [{
+            "id": "t",
+            "type": "rest_api",
+            "category": "read",
+            "description": "x",
+            "base_url": "https://api.example.com",
+            "auth": {"type": "none"},
+            "endpoints": [{"name": "x", "method": "INVALID", "path": "/"}],
+        }]
+    }
+    with pytest.raises(ValidationError):
+        ActionGatewayConfig.model_validate(data)
+
+
+def test_discriminated_union_uses_type_field():
+    """When type='mcp', should parse as McpToolDef not RestApiToolDef."""
+    data = {
+        "tools": [{
+            "id": "t",
+            "type": "mcp",
+            "category": "read",
+            "description": "x",
+            "mcp_server_url": "https://mcp.example.com",
+            "tool_name": "query",
+        }]
+    }
+    config = ActionGatewayConfig.model_validate(data)
+    assert isinstance(config.tools[0], McpToolDef)
