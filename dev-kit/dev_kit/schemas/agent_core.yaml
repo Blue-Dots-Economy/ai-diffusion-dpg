@@ -31,6 +31,7 @@ connectors:
             type: string        # string | integer | boolean | array
             description: ""
         required: []            # list required parameter names here
+        additionalProperties: false  # optional — set to false to reject unknown params
   write:                        # connectors that modify external state; Trust Layer consent required
     - name: ""
       description: ""
@@ -41,6 +42,7 @@ connectors:
             type: string
             description: ""
         required: []
+        additionalProperties: false  # optional — set to false to reject unknown params
   identity: []                  # identity verification connectors — same structure as read
   internal:                     # routes tool calls to internal DPG blocks
     - name: knowledge_retrieval  # always include this for RAG-enabled domains
@@ -57,6 +59,7 @@ connectors:
             description: ""
         required:
           - query
+        additionalProperties: false  # optional — set to false to reject unknown params
 
 preprocessing:
   language_normalisation:
