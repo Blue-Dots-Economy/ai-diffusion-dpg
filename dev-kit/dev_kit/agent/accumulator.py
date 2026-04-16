@@ -338,8 +338,13 @@ class ConfigAccumulator:
             data = self._data[block]
             status = self._statuses[block].value
             if data:
-                keys = list(data.keys())[:4]
-                lines.append(f"  {block} ({status}): {', '.join(keys)}")
+                if block == "action_gateway":
+                    tool_ids = [t.get("id", "?") for t in data.get("tools", [])]
+                    detail = f"tools: [{', '.join(tool_ids)}]" if tool_ids else "tools: []"
+                else:
+                    keys = list(data.keys())[:4]
+                    detail = ", ".join(keys)
+                lines.append(f"  {block} ({status}): {detail}")
             else:
                 lines.append(f"  {block} ({status}): empty")
         return "\n".join(lines)
