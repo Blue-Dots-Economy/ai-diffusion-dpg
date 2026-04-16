@@ -1,0 +1,36 @@
+tools:
+- id: search_documentation
+  type: mcp
+  category: read
+  description: Search across the Obsrv documentation to find relevant information,
+    code examples, API references, and guides. Returns contextual content with titles
+    and direct links to documentation pages.
+  mcp_server_url: https://docs.obsrv.ai/~gitbook/mcp
+  tool_name: searchDocumentation
+  input_schema:
+    type: object
+    properties:
+      query:
+        type: string
+    required:
+    - query
+    additionalProperties: false
+  timeout_ms: 5000
+- id: get_documentation_page
+  type: mcp
+  category: read
+  description: Fetch the full markdown content of a specific Obsrv documentation page.
+    Use this when you have a page URL and need complete details. Returns full content
+    with navigation links to related pages.
+  mcp_server_url: https://docs.obsrv.ai/~gitbook/mcp
+  tool_name: getPage
+  input_schema:
+    type: object
+    properties:
+      url:
+        type: string
+        description: The URL of the page to fetch
+    required:
+    - url
+    additionalProperties: false
+  timeout_ms: 5000

@@ -57,6 +57,13 @@ def render_block(project_path: Path, block: str, accumulator: ConfigAccumulator)
         accumulator.set_status(block, ConfigStatus.PENDING)
         return
 
+    # Strip internal accumulator keys (prefixed with _) before writing.
+    data = {k: v for k, v in data.items() if not k.startswith("_")}
+    if not data:
+        out_path.write_text(f"# {block} — no config generated yet\n")
+        accumulator.set_status(block, ConfigStatus.PENDING)
+        return
+
     yaml_content = yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
     errors = validate_partial(block, data)

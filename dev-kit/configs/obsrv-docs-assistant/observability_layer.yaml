@@ -1,0 +1,44 @@
+observability:
+  domain: obsrv_docs_assistant
+  sli:
+    turn_latency_p99_ms: 3000
+    trust_block_rate_max: 0.05
+  audit:
+    retention_days: 90
+  outcomes:
+    lifecycle:
+    - state: enquiry
+      trigger_tool: null
+      trigger_condition: null
+    - state: question_answered
+      trigger_tool: search_documentation
+      trigger_condition: null
+    - state: resolved
+      trigger_tool: null
+      trigger_condition: null
+    metrics:
+    - name: documentation.queries.total
+      instrument: counter
+      description: Total number of documentation queries processed
+      unit: '1'
+      attributes:
+      - intent
+      - state
+    - name: documentation.search.success_rate
+      instrument: gauge
+      description: Percentage of searches that found relevant documentation
+      unit: '%'
+      attributes:
+      - state
+    - name: documentation.pages.retrieved
+      instrument: counter
+      description: Number of documentation pages retrieved in responses
+      unit: '1'
+      attributes:
+      - state
+    - name: conversation.turn.latency
+      instrument: histogram
+      description: Latency per conversation turn in milliseconds
+      unit: ms
+      attributes:
+      - state

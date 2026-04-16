@@ -8,13 +8,13 @@ tools:
     type: rest_api                 # rest_api | mcp
     category: read                 # read | write | identity
     description: ""                # shown to the LLM for routing decisions
+    # --- rest_api fields (omit for mcp tools) ---
     base_url: ""                   # base URL of the API
     auth:
       type: none                   # none | api_key | bearer | oauth2
       header: ""                   # header name for api_key auth (e.g. X-API-KEY)
       secret_env: ""               # env var holding the key/token
       token_url: ""                # token endpoint for oauth2
-    timeout_ms: 5000
     endpoints:
       - name: ""                   # endpoint name, e.g. 'search'
         method: POST               # GET | POST | PUT | DELETE | PATCH
@@ -29,6 +29,15 @@ tools:
             default: null
     response:
       max_size_chars: 4000
+    # --- mcp fields (omit for rest_api tools) ---
+    mcp_server_url: ""             # base URL of the MCP server
+    tool_name: ""                  # tool name as returned by MCP tools/list
+    input_schema:                  # JSON Schema from MCP tools/list — passed as-is to the LLM
+      type: object
+      properties: {}
+      required: []
+      additionalProperties: false
+    timeout_ms: 5000
 
 observability:
   domain: ""                       # domain slug, e.g. kkb

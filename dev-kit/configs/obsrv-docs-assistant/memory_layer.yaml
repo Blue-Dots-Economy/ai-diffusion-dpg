@@ -1,0 +1,20 @@
+state:
+  session:
+    ttl_minutes: 1440
+    schema:
+      conversation_context:
+        type: string
+        default: ''
+      user_language:
+        type: enum
+        values:
+        - english
+        - hindi
+        - hinglish
+        - kannada
+        default: english
+      documentation_topic:
+        type: string
+        default: ''
+user_data_persistence:
+  default_mode: anonymous
