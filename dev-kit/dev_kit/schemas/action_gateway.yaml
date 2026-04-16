@@ -30,13 +30,11 @@ tools:
     response:
       max_size_chars: 4000
     # --- mcp fields (omit for rest_api tools) ---
-    mcp_server_url: ""             # base URL of the MCP server
-    tool_name: ""                  # tool name as returned by MCP tools/list
-    input_schema:                  # JSON Schema from MCP tools/list — passed as-is to the LLM
-      type: object
-      properties: {}
-      required: []
-      additionalProperties: false
+    # McpAdapter connects to the server at startup and auto-discovers all tools.
+    # tool_name and input_schema are NOT needed here — they are discovered at runtime.
+    server_url: ""                 # base URL of the MCP server (e.g. https://mcp.example.com)
+    transport: sse                 # sse | stdio — transport protocol (default: sse)
+    namespace: ""                  # optional — prefix for tool names; defaults to tool id
     timeout_ms: 5000
 
 observability:

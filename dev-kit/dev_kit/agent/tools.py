@@ -618,7 +618,7 @@ class ToolHandler:
         payload = {"jsonrpc": "2.0", "method": "tools/list", "id": 1}
         try:
             response = httpx.post(
-                f"{url}/",
+                url,
                 json=payload,
                 headers={
                     "Content-Type": "application/json",
@@ -660,6 +660,12 @@ class ToolHandler:
     def _handle_add_mcp_tool(self, inputs: dict) -> str:
         """Add an MCP tool to action_gateway and auto-sync agent_core connector.
 
+        McpAdapter reads server_url, transport, namespace, category, and
+        timeout_ms at startup and auto-discovers all tools on the server.
+        tool_name and input_schema are NOT written to action_gateway — they are
+        used only to build the agent_core connector so the LLM knows the tool's
+        schema.
+
         Args:
             inputs: Dict containing id, category, description, mcp_server_url,
                     tool_name. Optional: input_schema, timeout_ms.
@@ -667,14 +673,13 @@ class ToolHandler:
         Returns:
             Confirmation string, or an ERROR string if the tool id is duplicate.
         """
+        # action_gateway entry — only keys McpAdapter reads at runtime.
         tool = {
             "id": inputs["id"],
             "type": "mcp",
             "category": inputs["category"],
             "description": inputs["description"],
-            "mcp_server_url": inputs["mcp_server_url"],
-            "tool_name": inputs["tool_name"],
-            "input_schema": inputs.get("input_schema", {}),
+            "server_url": inputs["mcp_server_url"],  # McpAdapter reads server_url
             "timeout_ms": inputs.get("timeout_ms", 5000),
         }
         try:
@@ -682,7 +687,14 @@ class ToolHandler:
         except ValueError as exc:
             return f"ERROR: {exc}"
 
-        self._sync_connector_from_tool(tool)
+        # agent_core connector — includes input_schema so the LLM knows parameters.
+        input_schema = inputs.get("input_schema") or {"type": "object", "properties": {}}
+        connector = {
+            "name": inputs["id"],
+            "description": inputs["description"],
+            "input_schema": input_schema,
+        }
+        self._acc.set_agent_core_connector(inputs["category"], connector)
         return f"MCP tool '{inputs['id']}' added to Action Gateway config."
 
     def _handle_set_reach_channels(self, inputs: dict) -> str:
