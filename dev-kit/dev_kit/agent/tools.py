@@ -2,7 +2,7 @@
 dev-kit/dev_kit/agent/tools.py
 
 Tool definitions (JSON schemas for Claude) and handler dispatch for the
-DPG conversation agent. All 10 tools are defined here.
+DPG conversation agent.
 """
 from __future__ import annotations
 
@@ -652,7 +652,7 @@ class ToolHandler:
             return f"ERROR: unknown channel(s): {invalid}. Valid channels: {sorted(valid)}"
         if not channels:
             return "ERROR: at least one channel must be selected."
-        self._acc._data["reach_layer"]["_selected_channels"] = list(channels)
+        self._acc.set_reach_channel_selection(channels)
         return f"Channels selected: {', '.join(channels)}. Now configure each selected channel."
 
     def _sync_connector_from_tool(self, tool: dict) -> None:
@@ -698,11 +698,4 @@ class ToolHandler:
             "input_schema": input_schema,
         }
 
-        connectors_block = self._acc._data["agent_core"].setdefault("connectors", {})
-        connector_list: list = connectors_block.setdefault(category, [])
-
-        for i, c in enumerate(connector_list):
-            if c.get("name") == tool_id:
-                connector_list[i] = connector
-                return
-        connector_list.append(connector)
+        self._acc.set_agent_core_connector(category, connector)

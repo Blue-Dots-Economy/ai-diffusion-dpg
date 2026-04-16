@@ -234,6 +234,29 @@ class ConfigAccumulator:
         """
         return deepcopy(self._data["action_gateway"].get("tools", []))
 
+    def set_reach_channel_selection(self, channels: list[str]) -> None:
+        """Store the selected deployment channels in reach_layer config.
+
+        Args:
+            channels: List of selected channel names (e.g. ['web', 'cli']).
+        """
+        self._data["reach_layer"]["_selected_channels"] = list(channels)
+
+    def set_agent_core_connector(self, category: str, connector: dict) -> None:
+        """Add or replace a connector in agent_core.connectors[category].
+
+        Args:
+            category: Connector category ('read', 'write', or 'identity').
+            connector: Connector dict with at minimum a 'name' key.
+        """
+        connectors_block = self._data["agent_core"].setdefault("connectors", {})
+        connector_list: list = connectors_block.setdefault(category, [])
+        for i, c in enumerate(connector_list):
+            if c.get("name") == connector.get("name"):
+                connector_list[i] = connector
+                return
+        connector_list.append(connector)
+
     def add_routing_rule(
         self,
         from_subagent_id: str,
