@@ -89,19 +89,22 @@ def test_add_rest_api_tool_syncs_agent_core_connector(handler, acc):
 
 
 def test_add_mcp_tool_adds_to_accumulator(handler, acc):
-    """add_mcp_tool should append an MCP tool to action_gateway.tools."""
+    """add_mcp_tool should register an MCP server entry in action_gateway.tools."""
     result = handler.dispatch("add_mcp_tool", {
         "id": "obsrv_query",
         "category": "read",
         "description": "Query Obsrv data",
         "mcp_server_url": "https://mcp.example.com",
-        "tool_name": "query_dataset",
-        "input_schema": {"type": "object", "properties": {"dataset": {"type": "string"}}},
+        "transport": "streamable_http",
     })
     assert "obsrv_query" in result
     ag = acc.get_block("action_gateway")
     mcp_tools = [t for t in ag["tools"] if t["type"] == "mcp"]
     assert len(mcp_tools) == 1
+    assert mcp_tools[0]["transport"] == "streamable_http"
+    # MCP adapters must NOT create agent_core connector entries
+    connectors = acc.get_block("agent_core").get("connectors", {}).get("read", [])
+    assert len(connectors) == 0
 
 
 def test_parse_openapi_spec_returns_candidates(handler):

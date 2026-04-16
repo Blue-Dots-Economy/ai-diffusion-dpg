@@ -782,11 +782,9 @@ agent_workflow:
         - connect_counsellor
         - action_declined   # User backs out at last moment
 
-      tools:
-        - onest_apply
-        - counsellor_schedule
-        # knowledge_retrieval intentionally excluded — LLM must call onest_apply/counsellor_schedule directly.
-        # System prompt handles any questions in one sentence without retrieval.
+      tools: []
+        # onest_apply and counsellor_schedule are commented out in action_gateway.yaml (not yet live).
+        # Add them back here once the connectors are uncommented and the env secrets are set.
 
       system_prompt: |
         The user has decided to act. This is the final commitment stage.
@@ -918,8 +916,8 @@ agent_workflow:
       special_handler: hitl
 
       valid_intents: []   # LLM not called — no intent classification needed
-      tools:
-        - counsellor_schedule
+      tools: []
+        # counsellor_schedule is commented out in action_gateway.yaml (not yet live).
 
       system_prompt: |
         This subagent uses the special_handler: hitl.

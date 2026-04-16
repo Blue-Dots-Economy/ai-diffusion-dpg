@@ -24,16 +24,14 @@ spec:
           env:
             - name: CONFIG_FOLDER
               value: {{ .Values.configFolder | quote }}
-            {{- if .Values.auth.googleClientId }}
+            {{- if .Values.auth.enabled }}
             - name: GOOGLE_CLIENT_ID
-              value: {{ .Values.auth.googleClientId | quote }}
-            {{- end }}
-            {{- if .Values.auth.sessionSecretName }}
+              value: {{ .Values.auth.googleClientId | required "auth.googleClientId is required when auth.enabled is true" | quote }}
             - name: REACH_SESSION_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.auth.sessionSecretName | quote }}
-                  key: {{ .Values.auth.sessionSecretKey | quote }}
+                  name: {{ .Values.auth.sessionSecretName | required "auth.sessionSecretName is required when auth.enabled is true" | quote }}
+                  key: {{ .Values.auth.sessionSecretKey | required "auth.sessionSecretKey is required when auth.enabled is true" | quote }}
             {{- end }}
           volumeMounts:
             - name: dpg-config

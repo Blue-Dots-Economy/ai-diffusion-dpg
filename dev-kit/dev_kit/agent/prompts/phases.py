@@ -185,10 +185,14 @@ def get_phase_addition(phase: str, available_tools: list[str] | None = None) -> 
             "  3. Call `add_rest_api_tool` once per confirmed tool.\n"
             "  4. After adding, go to **After each path** below.\n\n"
             "**Path B — User has an MCP server:**\n"
-            "  1. Ask for the MCP server URL, then call `discover_mcp_tools` to fetch available tools.\n"
-            "  2. Present the list and confirm which ones to add.\n"
-            "  3. Call `add_mcp_tool` once per confirmed tool.\n"
-            "  4. After adding, go to **After each path** below.\n\n"
+            "  1. Ask for the MCP server URL and transport type (sse or streamable_http).\n"
+            "     Use streamable_http for hosted servers like GitBook, Notion, etc.\n"
+            "  2. Call `discover_mcp_tools` to fetch available tools and present the list.\n"
+            "  3. Call `add_mcp_tool` ONCE for the server — NOT once per tool.\n"
+            "     Choose a short snake_case namespace id (e.g. 'obsrv_docs') that will prefix\n"
+            "     all discovered tool names (e.g. 'obsrv_docs.searchDocumentation').\n"
+            "  4. Note the namespaced tool names — they are used in subagent tools lists.\n"
+            "  5. After adding, go to **After each path** below.\n\n"
             "**Path C — Manual REST API (no spec, no MCP):**\n"
             "  Collect: tool ID, description, base URL, auth type, and at least one endpoint.\n"
             "  Then call `add_rest_api_tool`. After adding, go to **After each path** below.\n\n"
@@ -198,8 +202,11 @@ def get_phase_addition(phase: str, available_tools: list[str] | None = None) -> 
             "  - If no: proceed to the completion step.\n\n"
             "**If no external tools are needed at all:**\n"
             "  Confirm with the user and proceed directly.\n\n"
-            "Each `add_rest_api_tool` or `add_mcp_tool` call automatically creates the matching\n"
-            "connector entry in agent_core.connectors so the LLM can route to it.\n\n"
+            "REST API tools (`add_rest_api_tool`) automatically create a matching connector\n"
+            "in agent_core.connectors — subagents reference these by their bare id.\n"
+            "MCP tools (`add_mcp_tool`) do NOT create connectors — tool schemas come from\n"
+            "the server at runtime. Subagents reference MCP tools by their namespaced names\n"
+            "(e.g. 'obsrv_docs.searchDocumentation'), not the bare adapter id.\n\n"
             "Use EXACTLY the key names shown in the template below:\n\n"
             "```yaml\n"
             + load_template_text("action_gateway")
@@ -210,7 +217,15 @@ def get_phase_addition(phase: str, available_tools: list[str] | None = None) -> 
     if phase == "workflow":
         connector_note = ""
         if available_tools:
-            connector_note = f"\n\nAvailable tools (configured in Tools phase): {', '.join(available_tools)}"
+            connector_note = (
+                "\n\nAvailable tools (configured in Tools phase): "
+                + ", ".join(available_tools)
+                + "\n\nIMPORTANT — tool name format per type:\n"
+                "- REST API tools: use the bare id (e.g. 'onest_market_lookup') — a connector entry exists in agent_core.\n"
+                "- MCP tools: use '{adapter_id}.{mcp_tool_name}' (e.g. 'obsrv_docs.searchDocumentation') — "
+                "no connector entry exists; the MCP adapter discovers tool names at startup. "
+                "Use the exact tool names returned by `discover_mcp_tools` prefixed with the adapter id."
+            )
         return (
             "## Workflow Design phase\n\n"
             "**CRITICAL — forbidden keys that will cause validation failure:**\n"

@@ -43,6 +43,7 @@ def _get_meter() -> otel_metrics.Meter:
     return otel_metrics.get_meter(__name__)
 
 _DEFAULT_TRANSPORT = "sse"
+_SUPPORTED_TRANSPORTS = {"sse", "streamable_http"}
 _DEFAULT_MAX_SIZE_CHARS = 4000
 
 
@@ -76,7 +77,13 @@ class McpAdapter(ToolAdapter):
         """
         super().__init__(config)
         self._server_url: str = config.get("server_url", "")
-        self._transport: str = config.get("transport", _DEFAULT_TRANSPORT)
+        raw_transport = config.get("transport", _DEFAULT_TRANSPORT)
+        if raw_transport not in _SUPPORTED_TRANSPORTS:
+            raise ValueError(
+                f"Unsupported MCP transport '{raw_transport}' for adapter "
+                f"'{config.get('id')}'. Supported: {sorted(_SUPPORTED_TRANSPORTS)}"
+            )
+        self._transport: str = raw_transport
         self._namespace: str = config.get("namespace", config.get("id", ""))
         self._category: str = config.get("category", "read")
         self._max_size_chars: int = (
@@ -285,12 +292,55 @@ class McpAdapter(ToolAdapter):
     # Internal helpers (not part of public interface)
     # ------------------------------------------------------------------
 
+    async def _open_session(self):
+        """Context manager that opens the correct transport and yields a ready ClientSession.
+
+        Selects between SSE (old transport) and Streamable HTTP (new transport,
+        MCP spec 2025-03-26) based on self._transport. Both branches yield a
+        fully-initialised ClientSession with the MCP handshake completed.
+
+        SSE transport:         GET /sse establishes stream; POST /messages sends.
+        Streamable HTTP:       POST only; server responds inline or via SSE chunks.
+                               GitBook, Notion, and other hosted MCP servers use this.
+
+        Yields:
+            An initialised mcp.ClientSession.
+
+        Raises:
+            Exception: Propagates any connection or protocol error to the caller.
+        """
+        from contextlib import asynccontextmanager
+
+        from mcp import ClientSession
+
+        if self._transport == "streamable_http":
+            from mcp.client.streamable_http import streamablehttp_client
+
+            @asynccontextmanager
+            async def _ctx():
+                async with streamablehttp_client(self._server_url) as (r, w, _):
+                    async with ClientSession(r, w) as session:
+                        await session.initialize()
+                        yield session
+
+        else:  # sse (default)
+            from mcp.client.sse import sse_client
+
+            @asynccontextmanager
+            async def _ctx():
+                async with sse_client(self._server_url) as (r, w):
+                    async with ClientSession(r, w) as session:
+                        await session.initialize()
+                        yield session
+
+        return _ctx()
+
     async def _connect_and_discover(self) -> list[Any]:
         """Connect to the MCP server and return the list of discovered tools.
 
-        Opens an SSE connection, initialises a ClientSession, and calls
-        tools/list. This method is a seam for testing — it is patched in
-        unit tests so no real network connection is made.
+        Opens a session via the configured transport, calls tools/list, and
+        returns the raw MCP Tool list. This method is a seam for testing —
+        it is patched in unit tests so no real network connection is made.
 
         Returns:
             List of MCP Tool objects with .name, .description, .inputSchema.
@@ -299,21 +349,16 @@ class McpAdapter(ToolAdapter):
             Exception: Propagates any connection or protocol error so that
                 initialize() can handle it.
         """
-        from mcp import ClientSession
-        from mcp.client.sse import sse_client
-
-        async with sse_client(self._server_url) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                result = await session.list_tools()
-                return result.tools or []
+        async with await self._open_session() as session:
+            result = await session.list_tools()
+            return result.tools or []
 
     async def _call_tool(self, mcp_tool_name: str, params: dict) -> Any:
         """Call a single tool on the MCP server and return the raw result.
 
-        Opens an SSE connection, initialises a ClientSession, and calls
-        tools/call. This method is a seam for testing — it is patched in
-        unit tests so no real network connection is made.
+        Opens a session via the configured transport, calls tools/call, and
+        returns the raw CallToolResult. This method is a seam for testing —
+        it is patched in unit tests so no real network connection is made.
 
         Args:
             mcp_tool_name: Raw (non-namespaced) tool name as known to the server.
@@ -325,13 +370,8 @@ class McpAdapter(ToolAdapter):
         Raises:
             Exception: Propagates any connection or tool execution error.
         """
-        from mcp import ClientSession
-        from mcp.client.sse import sse_client
-
-        async with sse_client(self._server_url) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                return await session.call_tool(mcp_tool_name, params)
+        async with await self._open_session() as session:
+            return await session.call_tool(mcp_tool_name, params)
 
     def _to_tool_definition(self, mcp_tool: Any) -> ToolDefinition:
         """Convert a raw MCP Tool object into a namespaced ToolDefinition.

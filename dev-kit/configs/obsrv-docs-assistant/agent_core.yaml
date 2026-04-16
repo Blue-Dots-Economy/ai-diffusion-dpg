@@ -1,11 +1,11 @@
 agent:
-  primary_model: claude-3-haiku-20250307
-  fallback_model: claude-3-haiku-20250307
+  primary_model: claude-haiku-4-5-20251001
+  fallback_model: claude-haiku-4-5-20251001
   ask_for_consent: false
   consent_prompt: ''
 preprocessing:
   language_normalisation:
-    model: claude-3-haiku-20250307
+    model: claude-haiku-4-5-20251001
     provider: llm_native
     default_language: english
     supported_languages:
@@ -16,7 +16,7 @@ preprocessing:
     transliteration: true
     code_switching: true
   nlu_processor:
-    model: claude-3-haiku-20250307
+    model: claude-haiku-4-5-20251001
     confidence_threshold: 0.5
     domain_instruction: You are an NLU classifier for a documentation search assistant.
       Classify user messages into intents related to documentation queries, greetings,
@@ -32,33 +32,7 @@ preprocessing:
     - positive
     - distressed
     - frustrated
-connectors:
-  read:
-  - name: search_documentation
-    description: Search across the Obsrv documentation to find relevant information,
-      code examples, API references, and guides. Returns contextual content with titles
-      and direct links to documentation pages.
-    input_schema:
-      type: object
-      properties:
-        query:
-          type: string
-      required:
-      - query
-      additionalProperties: false
-  - name: get_documentation_page
-    description: Fetch the full markdown content of a specific Obsrv documentation
-      page. Use this when you have a page URL and need complete details. Returns full
-      content with navigation links to related pages.
-    input_schema:
-      type: object
-      properties:
-        url:
-          type: string
-          description: The URL of the page to fetch
-      required:
-      - url
-      additionalProperties: false
+connectors: {}
 agent_workflow:
   subagents:
   - id: greeting
@@ -89,8 +63,8 @@ agent_workflow:
     - follow_up_question
     - end_session
     tools:
-    - search_documentation
-    - get_documentation_page
+    - obsrv_docs.searchDocumentation
+    - obsrv_docs.getPage
     system_prompt: You are a helpful Obsrv documentation assistant. When users ask
       questions, search the documentation using the available tools. Provide clear,
       contextual answers with links when relevant. Support follow-up questions by

@@ -120,12 +120,67 @@ def _build_config() -> tuple[dict, str, int]:
     return config, host, port
 
 
+def _assert_all_tools_registered(config: dict, registry: "AdapterRegistry") -> None:  # noqa: F821
+    """Fail fast if any tool declared in config failed to register.
+
+    A tool that failed to register (e.g. because a required env var was not
+    set) would silently degrade the gateway. This check converts that silent
+    failure into a hard startup error so misconfigured deployments are caught
+    immediately instead of at first tool call.
+
+    Two registration patterns exist:
+    - REST API adapters: register under the bare config ``id``
+      (e.g. ``onest_market_lookup``).
+    - MCP adapters: register each discovered sub-tool as ``{id}.{tool_name}``
+      (e.g. ``obsrv_docs.searchDocumentation``). The bare ``id`` is never a
+      registered name, so the check uses a prefix match instead.
+
+    Args:
+        config: Merged runtime config containing the ``tools`` list.
+        registry: Populated AdapterRegistry to validate against.
+
+    Raises:
+        SystemExit: If any configured tool id has no registered tools.
+    """
+    import sys
+
+    registered_names: set[str] = registry.get_tool_names()
+    missing: list[str] = []
+
+    for tool_cfg in config.get("tools", []):
+        tool_id = tool_cfg.get("id")
+        if not tool_id:
+            continue
+        # Exact match (REST API) or any sub-tool under this id (MCP namespace prefix).
+        registered = tool_id in registered_names or any(
+            name.startswith(f"{tool_id}.") for name in registered_names
+        )
+        if not registered:
+            missing.append(tool_id)
+
+    if missing:
+        logger.error(
+            "action_gateway.startup_missing_tools",
+            extra={
+                "operation": "main._assert_all_tools_registered",
+                "status": "failure",
+                "missing_tools": sorted(missing),
+                "error": (
+                    "One or more configured tools failed to register — "
+                    "check that all required env vars and MCP server URLs are reachable."
+                ),
+            },
+        )
+        sys.exit(1)
+
+
 if __name__ == "__main__":
     config, host, port = _build_config()
 
     init_otel(service_name="action_gateway", config=config)
 
     registry = asyncio.run(AdapterFactory.build_registry(config))
+    _assert_all_tools_registered(config, registry)
     app = create_app(registry)
 
     logger.info(

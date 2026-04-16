@@ -268,22 +268,43 @@ TOOL_DEFINITIONS: list[dict] = [
     {
         "name": "add_mcp_tool",
         "description": (
-            "Add an MCP tool to the Action Gateway config. "
-            "Call this once per tool after the user selects which MCP tools to include. "
-            "This also auto-creates the matching connector in agent_core.connectors."
+            "Register an MCP server with the Action Gateway. "
+            "Call this once per MCP server — the adapter auto-discovers all available tools at startup. "
+            "Each discovered tool is registered as '{id}.{tool_name}' "
+            "(e.g. 'obsrv_docs.searchDocumentation'). "
+            "Use these namespaced names when assigning tools to subagents. "
+            "Do NOT call this once per tool — one call per server is correct."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "id": {"type": "string", "description": "Unique snake_case tool ID"},
+                "id": {
+                    "type": "string",
+                    "description": (
+                        "Unique snake_case namespace for this MCP server's tools "
+                        "(e.g. 'obsrv_docs'). All tools discovered from the server "
+                        "are prefixed with this id."
+                    ),
+                },
                 "category": {"type": "string", "enum": ["read", "write", "identity"]},
-                "description": {"type": "string", "description": "What this tool does — shown to the LLM"},
+                "description": {
+                    "type": "string",
+                    "description": "What this MCP server provides — used in Action Gateway config.",
+                },
                 "mcp_server_url": {"type": "string", "description": "Base URL of the MCP server"},
-                "tool_name": {"type": "string", "description": "Tool name as returned by MCP tools/list"},
-                "input_schema": {"type": "object", "description": "JSON Schema from MCP tools/list response"},
+                "transport": {
+                    "type": "string",
+                    "enum": ["sse", "streamable_http"],
+                    "default": "sse",
+                    "description": (
+                        "MCP transport protocol. Use 'streamable_http' for GitBook, Notion, "
+                        "and other hosted servers (POST-only, MCP spec 2025-03-26). "
+                        "Use 'sse' for self-hosted servers that support the older SSE transport."
+                    ),
+                },
                 "timeout_ms": {"type": "integer", "default": 5000},
             },
-            "required": ["id", "category", "description", "mcp_server_url", "tool_name"],
+            "required": ["id", "category", "description", "mcp_server_url"],
         },
     },
     {
@@ -658,44 +679,40 @@ class ToolHandler:
         return json.dumps(summary, ensure_ascii=False, indent=2)
 
     def _handle_add_mcp_tool(self, inputs: dict) -> str:
-        """Add an MCP tool to action_gateway and auto-sync agent_core connector.
+        """Register an MCP server with the Action Gateway.
 
-        McpAdapter reads server_url, transport, namespace, category, and
-        timeout_ms at startup and auto-discovers all tools on the server.
-        tool_name and input_schema are NOT written to action_gateway — they are
-        used only to build the agent_core connector so the LLM knows the tool's
-        schema.
+        One entry per MCP server. McpAdapter connects at startup, discovers all
+        tools via tools/list, and registers them as '{id}.{tool_name}'. No
+        agent_core connector is written — MCP tool schemas come from the server
+        at runtime. Subagents reference tools by their namespaced names directly
+        (e.g. 'obsrv_docs.searchDocumentation').
 
         Args:
-            inputs: Dict containing id, category, description, mcp_server_url,
-                    tool_name. Optional: input_schema, timeout_ms.
+            inputs: Dict containing id, category, description, mcp_server_url.
+                    Optional: transport (default 'sse'), timeout_ms (default 5000).
 
         Returns:
-            Confirmation string, or an ERROR string if the tool id is duplicate.
+            Confirmation string with namespace hint, or an ERROR string if the
+            tool id is duplicate.
         """
-        # action_gateway entry — only keys McpAdapter reads at runtime.
         tool = {
             "id": inputs["id"],
             "type": "mcp",
             "category": inputs["category"],
             "description": inputs["description"],
-            "server_url": inputs["mcp_server_url"],  # McpAdapter reads server_url
+            "server_url": inputs["mcp_server_url"],
+            "transport": inputs.get("transport", "sse"),
             "timeout_ms": inputs.get("timeout_ms", 5000),
         }
         try:
             self._acc.add_action_gateway_tool(tool)
         except ValueError as exc:
             return f"ERROR: {exc}"
-
-        # agent_core connector — includes input_schema so the LLM knows parameters.
-        input_schema = inputs.get("input_schema") or {"type": "object", "properties": {}}
-        connector = {
-            "name": inputs["id"],
-            "description": inputs["description"],
-            "input_schema": input_schema,
-        }
-        self._acc.set_agent_core_connector(inputs["category"], connector)
-        return f"MCP tool '{inputs['id']}' added to Action Gateway config."
+        return (
+            f"MCP server '{inputs['id']}' registered with Action Gateway (transport: {tool['transport']}). "
+            f"Tools discovered at startup will be available as '{inputs['id']}.<tool_name>'. "
+            f"Assign tools to subagents using these namespaced names."
+        )
 
     def _handle_set_reach_channels(self, inputs: dict) -> str:
         """Store the user's selected deployment channels in reach_layer config.
@@ -733,7 +750,10 @@ class ToolHandler:
         tool_id = tool["id"]
 
         if tool.get("type") == "mcp":
-            input_schema = tool.get("input_schema") or {"type": "object", "properties": {}}
+            # MCP tools are external — schemas come from the server at runtime.
+            # Subagents reference them by namespaced names ('{id}.{tool_name}').
+            # No agent_core connector entry is created.
+            return
         else:
             properties: dict = {}
             required_list: list = []

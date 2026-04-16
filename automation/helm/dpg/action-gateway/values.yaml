@@ -29,3 +29,7 @@ healthCheck:
 # Injected at deploy time — do not set here
 dpgConfig: ""
 domainConfig: ""
+
+# Required — pass at install/upgrade time via --set onestApiKey=<key>
+# Never store the key in this file or in version control.
+onestApiKey: ""

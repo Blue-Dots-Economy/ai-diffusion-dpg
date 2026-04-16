@@ -1,17 +1,9 @@
 tools:
-- id: search_documentation
+- id: obsrv_docs
   type: mcp
   category: read
-  description: Search across the Obsrv documentation to find relevant information,
-    code examples, API references, and guides. Returns contextual content with titles
-    and direct links to documentation pages.
+  description: Access the Obsrv documentation via MCP. Supports searching across all
+    documentation pages and fetching full page content with navigation links.
   server_url: https://docs.obsrv.ai/~gitbook/mcp
-  timeout_ms: 5000
-- id: get_documentation_page
-  type: mcp
-  category: read
-  description: Fetch the full markdown content of a specific Obsrv documentation page.
-    Use this when you have a page URL and need complete details. Returns full content
-    with navigation links to related pages.
-  server_url: https://docs.obsrv.ai/~gitbook/mcp
+  transport: streamable_http   # GitBook MCP uses POST-only Streamable HTTP (MCP spec 2025-03-26)
   timeout_ms: 5000

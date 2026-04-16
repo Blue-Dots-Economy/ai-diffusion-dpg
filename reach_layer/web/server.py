@@ -19,14 +19,6 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from dotenv import load_dotenv
-
-# Look for .env.local at the repo root (two parents up from this file).
-_env_local = Path(__file__).resolve().parents[2] / ".env.local"
-if _env_local.exists():
-    load_dotenv(_env_local)
-load_dotenv()
-
 import httpx
 from fastapi import Cookie, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse

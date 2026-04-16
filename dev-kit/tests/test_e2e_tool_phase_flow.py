@@ -31,15 +31,13 @@ class TestToolsPhaseToWorkflowPipeline:
         assert "job_search" in addition
 
     def test_add_mcp_tool_then_appears_in_workflow_prompt(self):
-        """MCP tool added in tools phase should appear in workflow phase prompt."""
+        """MCP adapter registered in tools phase should appear in workflow phase prompt."""
         acc, state, handler = self._make_handler()
         handler.dispatch("add_mcp_tool", {
             "id": "knowledge_retrieval",
             "category": "read",
             "description": "Retrieve domain knowledge",
             "mcp_server_url": "https://mcp.example.com",
-            "tool_name": "retrieve",
-            "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}},
         })
         tool_ids = [t["id"] for t in acc.get_action_gateway_tools()]
         addition = get_phase_addition("workflow", available_tools=tool_ids)
@@ -74,25 +72,25 @@ class TestToolsPhaseToWorkflowPipeline:
         assert "city" in props
         assert "units" not in props
 
-    def test_auto_sync_mcp_tool_to_agent_core_connectors(self):
-        """add_mcp_tool auto-creates connector in agent_core.connectors."""
+    def test_mcp_tool_does_not_create_agent_core_connector(self):
+        """add_mcp_tool must NOT create a connector in agent_core.connectors.
+
+        MCP tool schemas come from the server at runtime. Subagents reference
+        MCP tools by namespaced names ('{adapter_id}.{tool_name}'), not via
+        agent_core connector entries.
+        """
         acc, state, handler = self._make_handler()
         handler.dispatch("add_mcp_tool", {
             "id": "doc_search",
             "category": "read",
             "description": "Search documents",
             "mcp_server_url": "https://mcp.example.com",
-            "tool_name": "search_docs",
-            "input_schema": {
-                "type": "object",
-                "properties": {"query": {"type": "string"}},
-                "required": ["query"],
-            },
         })
         connectors = acc.get_block("agent_core").get("connectors", {}).get("read", [])
-        assert len(connectors) == 1
-        assert connectors[0]["name"] == "doc_search"
-        assert connectors[0]["input_schema"]["properties"]["query"]["type"] == "string"
+        assert len(connectors) == 0, (
+            "MCP tools must not create agent_core connectors — "
+            "schemas are discovered from the server at runtime."
+        )
 
     def test_multiple_tools_all_appear_in_summary(self):
         """After adding multiple tools, summary() shows all tool IDs."""
@@ -104,7 +102,7 @@ class TestToolsPhaseToWorkflowPipeline:
         })
         handler.dispatch("add_mcp_tool", {
             "id": "tool_b", "category": "write", "description": "Tool B",
-            "mcp_server_url": "https://mcp.example.com", "tool_name": "b",
+            "mcp_server_url": "https://mcp.example.com",
         })
         summary = acc.summary()
         assert "tool_a" in summary

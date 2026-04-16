@@ -36,6 +36,7 @@ services:
     container_name: action_gateway
     environment:
       - CONFIG_FOLDER=/app/config
+      - ONEST_API_KEY=${ONEST_API_KEY:?ONEST_API_KEY must be exported before running docker compose}
     volumes:
       - ../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-kkb}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
@@ -218,11 +219,12 @@ services:
   # reach_layer_base HTTP helpers. Deploy only the channel(s) you need.
   # ---------------------------------------------------------------------------
   reach_layer_web:
-    build:
-      context: ../..
-      dockerfile: reach_layer/web/Dockerfile
+    image: sanketikahub/dpg-reach-layer-web:latest
     container_name: reach_layer_web
     environment:
+      - CONFIG_FOLDER=/app/config
+      # Optional when auth.enabled: false (default). Required and validated by server.py
+      # at startup when auth.enabled: true — export both before running docker compose.
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - REACH_SESSION_SECRET=${REACH_SESSION_SECRET:-}
     ports:
@@ -257,9 +259,7 @@ services:
   #   docker compose -f docker-compose.dev.yml run --rm reach_layer_cli
   # ---------------------------------------------------------------------------
   reach_layer_cli:
-    build:
-      context: ../..
-      dockerfile: reach_layer/cli/Dockerfile
+    image: sanketikahub/dpg-reach-layer-cli:latest
     container_name: reach_layer_cli
     volumes:
       # Unified Reach Layer config: DPG defaults + per-domain overrides.
@@ -283,9 +283,7 @@ services:
   # Use the ngrok service to get a public URL automatically.
   # ---------------------------------------------------------------------------
   reach_layer_voice:
-    build:
-      context: ../..
-      dockerfile: reach_layer/voice/Dockerfile
+    image: sanketikahub/dpg-reach-layer-voice:latest
     container_name: reach_layer_voice
     environment:
       - DPG_CONFIG_PATH=/app/config/dpg.yaml
@@ -407,6 +405,30 @@ services:
   # ---------------------------------------------------------------------------
   # Memgraph — persistent user profile store for Memory Layer (open-source, Bolt-compatible)
   # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Memgraph Lab — graph browser UI (port 3002)
+  # Open http://localhost:3002 to explore the Memory Layer's context graph.
+  # ---------------------------------------------------------------------------
+  memgraph_lab:
+    image: memgraph/lab:latest
+    container_name: memgraph_lab
+    environment:
+      - QUICK_CONNECT_MG_HOST=memgraph
+      - QUICK_CONNECT_MG_PORT=7687
+    ports:
+      - "3002:3000"
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 256M
+    depends_on:
+      memgraph:
+        condition: service_healthy
+    restart: unless-stopped
+
   memgraph:
     image: memgraph/memgraph
     container_name: memgraph
