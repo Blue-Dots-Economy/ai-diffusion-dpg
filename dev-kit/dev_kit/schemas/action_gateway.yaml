@@ -1,9 +1,34 @@
 # action_gateway domain config — TEMPLATE
 # Fill in values only. Do NOT rename, add, or remove any keys.
-# Add one entry per connector declared in agent_core connectors (read/write/identity).
+# Add one entry per tool connector declared in agent_core connectors (read/write/identity).
+# Supported types: rest_api | mcp
 
-action_gateway:
-  connectors:                   # map of connector_name → endpoint config
-    connector_name:             # replace with actual connector name (must match agent_core connector key)
-      endpoint: ""              # required — full HTTP URL of the connector endpoint
-      timeout_ms: 5000          # request timeout in milliseconds
+tools:
+  - id: ""                         # required — unique tool identifier, must match agent_core connector key
+    type: rest_api                 # rest_api | mcp
+    category: read                 # read | write | identity
+    description: ""                # shown to the LLM for routing decisions
+    base_url: ""                   # base URL of the API
+    auth:
+      type: none                   # none | api_key | bearer | oauth2
+      header: ""                   # header name for api_key auth (e.g. X-API-KEY)
+      secret_env: ""               # env var holding the key/token
+      token_url: ""                # token endpoint for oauth2
+    timeout_ms: 5000
+    endpoints:
+      - name: ""                   # endpoint name, e.g. 'search'
+        method: POST               # GET | POST | PUT | DELETE | PATCH
+        path: ""                   # path appended to base_url, e.g. /search
+        params:
+          - name: ""
+            source: agent          # agent | static
+            type: string           # string | integer | boolean | array
+            required: false
+            description: ""
+            value: null
+            default: null
+    response:
+      max_size_chars: 4000
+
+observability:
+  domain: ""                       # domain slug, e.g. kkb

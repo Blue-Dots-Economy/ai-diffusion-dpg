@@ -712,22 +712,90 @@ class ObservabilityLayerConfig(BaseModel):
 # Action Gateway
 # ---------------------------------------------------------------------------
 
-class ConnectorEndpointConfig(BaseModel):
-    endpoint: str
-    timeout_ms: int = 5000
 
+class ToolParamDef(BaseModel):
+    """Definition of a single parameter for a REST API tool endpoint."""
 
-class ActionGatewaySettings(BaseModel):
-    timeout_ms: int = 5000
-    connectors: dict[str, ConnectorEndpointConfig] = Field(
-        default={},
-        description="Map of connector_name → {endpoint, timeout_ms}. Keys must match names declared in agent_core connectors",
+    name: str = Field(..., description="Parameter name")
+    source: Literal["agent", "static"] = Field(
+        ..., description="'agent' = LLM fills this at call time; 'static' = fixed value"
     )
+    type: str = Field(default="string", description="JSON type: string | integer | boolean | array")
+    required: bool = Field(default=False, description="Whether the agent must provide this param")
+    description: str = Field(default="", description="Description shown to the agent")
+    value: Any = Field(default=None, description="Fixed value when source is 'static'")
+    default: Any = Field(default=None, description="Default value when source is 'agent' and param is optional")
+
+
+class ToolEndpointDef(BaseModel):
+    """One HTTP endpoint within a REST API tool definition."""
+
+    name: str = Field(..., description="Endpoint name, e.g. 'search', 'apply'")
+    method: str = Field(..., description="HTTP method: GET | POST | PUT | DELETE | PATCH")
+    path: str = Field(..., description="Path appended to base_url, e.g. '/search'")
+    params: list[ToolParamDef] = Field(default=[], description="Parameters for this endpoint")
+
+
+class ToolResponseConfig(BaseModel):
+    """Response handling config for a REST API tool."""
+
+    max_size_chars: int = Field(default=4000, description="Truncate response body to this many characters before returning to agent")
+
+
+class AuthConfig(BaseModel):
+    """Authentication configuration for a REST API tool."""
+
+    type: Literal["none", "api_key", "bearer", "oauth2"] = Field(
+        ..., description="Auth scheme: none | api_key | bearer | oauth2"
+    )
+    header: str | None = Field(default=None, description="Header name for api_key auth, e.g. X-API-KEY")
+    secret_env: str | None = Field(default=None, description="Environment variable holding the API key or token")
+    token_url: str | None = Field(default=None, description="Token endpoint URL for oauth2")
+
+
+class RestApiToolDef(BaseModel):
+    """Full definition of a REST API tool executed by the Action Gateway."""
+
+    id: str = Field(..., description="Unique tool identifier — must match name in agent_core connectors")
+    type: Literal["rest_api"] = Field(default="rest_api")
+    category: Literal["read", "write", "identity"] = Field(
+        ..., description="Tool category: read (no consent), write/identity (Trust Layer consent required)"
+    )
+    description: str = Field(..., description="What this tool does — shown to LLM for routing decisions")
+    base_url: str = Field(..., description="Base URL of the API, e.g. https://api.example.com/v1")
+    auth: AuthConfig = Field(..., description="Authentication scheme for this API")
+    timeout_ms: int = Field(default=5000, description="Request timeout in milliseconds")
+    endpoints: list[ToolEndpointDef] = Field(default=[], description="One or more endpoint definitions")
+    response: ToolResponseConfig = Field(default_factory=ToolResponseConfig, description="Response handling config")
+
+
+class McpToolDef(BaseModel):
+    """Full definition of an MCP server tool executed by the Action Gateway."""
+
+    id: str = Field(..., description="Unique tool identifier — must match name in agent_core connectors")
+    type: Literal["mcp"] = Field(default="mcp")
+    category: Literal["read", "write", "identity"] = Field(..., description="Tool category")
+    description: str = Field(..., description="What this tool does — shown to LLM")
+    mcp_server_url: str = Field(..., description="Base URL of the MCP server")
+    tool_name: str = Field(..., description="Tool name as returned by tools/list on the MCP server")
+    input_schema: dict[str, Any] = Field(
+        default_factory=dict,
+        description="JSON Schema for the tool input, as returned by MCP tools/list"
+    )
+    timeout_ms: int = Field(default=5000, description="Request timeout in milliseconds")
 
 
 class ActionGatewayConfig(BaseModel):
-    server: ServerConfig = Field(default_factory=lambda: ServerConfig(port=9999))
-    action_gateway: ActionGatewaySettings
+    """Top-level config for the Action Gateway domain config file."""
+
+    tools: list[RestApiToolDef | McpToolDef] = Field(
+        default=[],
+        description="List of tool definitions. Each entry is either a rest_api or mcp tool."
+    )
+    observability: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Observability settings. At minimum: {domain: 'your_domain_slug'}"
+    )
 
 
 # ---------------------------------------------------------------------------
