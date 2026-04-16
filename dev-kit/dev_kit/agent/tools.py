@@ -178,6 +178,134 @@ TOOL_DEFINITIONS: list[dict] = [
             "required": ["phase"],
         },
     },
+    {
+        "name": "parse_openapi_spec",
+        "description": (
+            "Parse a raw OpenAPI 3.0/3.1 spec (JSON or YAML string) and return a list of candidate tool definitions. "
+            "Use this when the user uploads or pastes an OpenAPI spec. "
+            "The returned candidates help you decide which endpoints to add with add_rest_api_tool."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "spec_json": {
+                    "type": "string",
+                    "description": "The full OpenAPI spec as a JSON or YAML string",
+                },
+            },
+            "required": ["spec_json"],
+        },
+    },
+    {
+        "name": "add_rest_api_tool",
+        "description": (
+            "Add a REST API tool to the Action Gateway config. "
+            "Call this once per tool after confirming details with the user — whether from an OpenAPI spec or collected conversationally. "
+            "This also auto-creates the matching connector in agent_core.connectors."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Unique snake_case tool ID, e.g. onest_market_lookup"},
+                "category": {"type": "string", "enum": ["read", "write", "identity"], "description": "read = no consent; write/identity = Trust Layer consent required"},
+                "description": {"type": "string", "description": "What this tool does — shown to the LLM for routing decisions"},
+                "base_url": {"type": "string", "description": "API base URL, e.g. https://api.example.com/v2"},
+                "auth_type": {"type": "string", "enum": ["none", "api_key", "bearer", "oauth2"]},
+                "auth_header": {"type": "string", "description": "Header name for api_key auth, e.g. X-API-KEY"},
+                "auth_secret_env": {"type": "string", "description": "Env var name holding the API key"},
+                "timeout_ms": {"type": "integer", "default": 5000},
+                "endpoints": {
+                    "type": "array",
+                    "description": "One or more endpoint definitions",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "method": {"type": "string", "enum": ["GET", "POST", "PUT", "DELETE", "PATCH"]},
+                            "path": {"type": "string"},
+                            "params": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "source": {"type": "string", "enum": ["agent", "static"]},
+                                        "type": {"type": "string"},
+                                        "required": {"type": "boolean"},
+                                        "description": {"type": "string"},
+                                        "value": {"description": "Fixed value when source is static"},
+                                        "default": {"description": "Default value for optional agent params"},
+                                    },
+                                    "required": ["name", "source", "type"],
+                                },
+                            },
+                        },
+                        "required": ["name", "method", "path"],
+                    },
+                },
+            },
+            "required": ["id", "category", "description", "base_url", "auth_type", "endpoints"],
+        },
+    },
+    {
+        "name": "discover_mcp_tools",
+        "description": (
+            "Fetch the list of available tools from an MCP server by calling its tools/list endpoint. "
+            "Use this when the user provides an MCP server URL. "
+            "Returns the raw tools list so you can present options to the user."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "mcp_server_url": {
+                    "type": "string",
+                    "description": "Base URL of the MCP server, e.g. https://mcp.example.com",
+                },
+            },
+            "required": ["mcp_server_url"],
+        },
+    },
+    {
+        "name": "add_mcp_tool",
+        "description": (
+            "Add an MCP tool to the Action Gateway config. "
+            "Call this once per tool after the user selects which MCP tools to include. "
+            "This also auto-creates the matching connector in agent_core.connectors."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Unique snake_case tool ID"},
+                "category": {"type": "string", "enum": ["read", "write", "identity"]},
+                "description": {"type": "string", "description": "What this tool does — shown to the LLM"},
+                "mcp_server_url": {"type": "string", "description": "Base URL of the MCP server"},
+                "tool_name": {"type": "string", "description": "Tool name as returned by MCP tools/list"},
+                "input_schema": {"type": "object", "description": "JSON Schema from MCP tools/list response"},
+                "timeout_ms": {"type": "integer", "default": 5000},
+            },
+            "required": ["id", "category", "description", "mcp_server_url", "tool_name"],
+        },
+    },
+    {
+        "name": "set_reach_channels",
+        "description": (
+            "Record which deployment channels the user wants (web, cli, voice). "
+            "Call this at the start of the reach phase, before collecting per-channel config. "
+            "Only the selected channels will be configured."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "channels": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["web", "cli", "voice"]},
+                    "description": "One or more of: web, cli, voice",
+                    "minItems": 1,
+                },
+            },
+            "required": ["channels"],
+        },
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -225,6 +353,11 @@ class ToolHandler:
             "remove_subagent": self._handle_remove_subagent,
             "finalize_config": self._handle_finalize_config,
             "rollback_to_checkpoint": self._handle_rollback_to_checkpoint,
+            "parse_openapi_spec": self._handle_parse_openapi_spec,
+            "add_rest_api_tool": self._handle_add_rest_api_tool,
+            "discover_mcp_tools": self._handle_discover_mcp_tools,
+            "add_mcp_tool": self._handle_add_mcp_tool,
+            "set_reach_channels": self._handle_set_reach_channels,
         }
         handler = handlers.get(tool_name)
         if handler is None:
@@ -353,3 +486,223 @@ class ToolHandler:
     def _handle_rollback_to_checkpoint(self, inputs: dict) -> str:
         self._state["rollback_to"] = inputs["phase"]
         return f"Rollback to checkpoint '{inputs['phase']}' requested."
+
+    def _handle_parse_openapi_spec(self, inputs: dict) -> str:
+        """Parse an OpenAPI spec string and return candidate tool definitions as JSON.
+
+        Args:
+            inputs: Dict with 'spec_json' key containing a JSON or YAML string.
+
+        Returns:
+            JSON array of candidate tool dicts, or an ERROR string on failure.
+        """
+        import json
+        import yaml as _yaml
+        from dev_kit.agent.openapi_parser import parse_openapi_spec
+
+        spec_json = inputs.get("spec_json", "")
+        try:
+            try:
+                spec = json.loads(spec_json)
+            except json.JSONDecodeError:
+                spec = _yaml.safe_load(spec_json)
+            if not isinstance(spec, dict):
+                return "ERROR: spec must be a JSON or YAML object"
+        except Exception as exc:
+            return f"ERROR: could not parse spec — {exc}"
+
+        try:
+            tools = parse_openapi_spec(spec)
+        except ValueError as exc:
+            return f"ERROR: {exc}"
+
+        candidates = [
+            {
+                "suggested_id": t.suggested_id,
+                "path": t.path,
+                "method": t.method,
+                "description": t.description,
+                "base_url": t.base_url,
+                "param_names": [p.name for p in t.params],
+                "auth_type": t.auth_type,
+                "auth_header": t.auth_header,
+            }
+            for t in tools
+        ]
+        return json.dumps(candidates, ensure_ascii=False, indent=2)
+
+    def _handle_add_rest_api_tool(self, inputs: dict) -> str:
+        """Add a REST API tool to action_gateway and auto-sync agent_core connector.
+
+        Args:
+            inputs: Dict containing id, category, description, base_url, auth_type,
+                    and endpoints. Optional: auth_header, auth_secret_env, timeout_ms.
+
+        Returns:
+            Confirmation string, or an ERROR string if the tool id is duplicate.
+        """
+        auth: dict = {"type": inputs["auth_type"]}
+        if inputs.get("auth_header"):
+            auth["header"] = inputs["auth_header"]
+        if inputs.get("auth_secret_env"):
+            auth["secret_env"] = inputs["auth_secret_env"]
+
+        tool = {
+            "id": inputs["id"],
+            "type": "rest_api",
+            "category": inputs["category"],
+            "description": inputs["description"],
+            "base_url": inputs["base_url"],
+            "auth": auth,
+            "timeout_ms": inputs.get("timeout_ms", 5000),
+            "endpoints": inputs.get("endpoints", []),
+            "response": {"max_size_chars": 4000},
+        }
+        try:
+            self._acc.add_action_gateway_tool(tool)
+        except ValueError as exc:
+            return f"ERROR: {exc}"
+
+        self._sync_connector_from_tool(tool)
+        return f"Tool '{inputs['id']}' added to Action Gateway config."
+
+    def _handle_discover_mcp_tools(self, inputs: dict) -> str:
+        """Fetch tools/list from an MCP server and return the tool list as JSON.
+
+        Args:
+            inputs: Dict with 'mcp_server_url' key.
+
+        Returns:
+            JSON array of tool summaries, or an ERROR string on connection failure.
+        """
+        import json
+        import httpx
+
+        url = inputs["mcp_server_url"].rstrip("/")
+        payload = {"jsonrpc": "2.0", "method": "tools/list", "id": 1}
+        try:
+            response = httpx.post(
+                f"{url}/",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=10.0,
+            )
+            response.raise_for_status()
+            data = response.json()
+        except httpx.HTTPError as exc:
+            return f"ERROR: could not reach MCP server at {url} — {exc}"
+        except Exception as exc:
+            return f"ERROR: unexpected error contacting MCP server — {exc}"
+
+        tools = data.get("result", {}).get("tools", [])
+        if not tools:
+            return f"No tools found at {url}. Verify the URL and that the server supports JSON-RPC tools/list."
+
+        summary = [
+            {
+                "name": t.get("name", ""),
+                "description": t.get("description", ""),
+                "input_schema": t.get("inputSchema", {}),
+            }
+            for t in tools
+        ]
+        return json.dumps(summary, ensure_ascii=False, indent=2)
+
+    def _handle_add_mcp_tool(self, inputs: dict) -> str:
+        """Add an MCP tool to action_gateway and auto-sync agent_core connector.
+
+        Args:
+            inputs: Dict containing id, category, description, mcp_server_url,
+                    tool_name. Optional: input_schema, timeout_ms.
+
+        Returns:
+            Confirmation string, or an ERROR string if the tool id is duplicate.
+        """
+        tool = {
+            "id": inputs["id"],
+            "type": "mcp",
+            "category": inputs["category"],
+            "description": inputs["description"],
+            "mcp_server_url": inputs["mcp_server_url"],
+            "tool_name": inputs["tool_name"],
+            "input_schema": inputs.get("input_schema", {}),
+            "timeout_ms": inputs.get("timeout_ms", 5000),
+        }
+        try:
+            self._acc.add_action_gateway_tool(tool)
+        except ValueError as exc:
+            return f"ERROR: {exc}"
+
+        self._sync_connector_from_tool(tool)
+        return f"MCP tool '{inputs['id']}' added to Action Gateway config."
+
+    def _handle_set_reach_channels(self, inputs: dict) -> str:
+        """Store the user's selected deployment channels in reach_layer config.
+
+        Args:
+            inputs: Dict with 'channels' key containing a list of channel names.
+
+        Returns:
+            Confirmation string, or an ERROR string for unknown/empty channel list.
+        """
+        channels = inputs.get("channels", [])
+        valid = {"web", "cli", "voice"}
+        invalid = [c for c in channels if c not in valid]
+        if invalid:
+            return f"ERROR: unknown channel(s): {invalid}. Valid channels: {sorted(valid)}"
+        if not channels:
+            return "ERROR: at least one channel must be selected."
+        self._acc._data["reach_layer"]["_selected_channels"] = list(channels)
+        return f"Channels selected: {', '.join(channels)}. Now configure each selected channel."
+
+    def _sync_connector_from_tool(self, tool: dict) -> None:
+        """Auto-create or update agent_core connector from a tool definition.
+
+        Generates the LLM-facing connector (name, description, input_schema) from
+        the full tool definition. For rest_api tools, only agent-sourced params are
+        included (static params are hidden from the LLM). For mcp tools, the
+        input_schema from the MCP server is used directly.
+
+        Args:
+            tool: Tool dict from action_gateway.tools with at minimum:
+                  id, category, description, type. Plus endpoints (rest_api) or
+                  input_schema (mcp).
+        """
+        category = tool.get("category", "read")
+        tool_id = tool["id"]
+
+        if tool.get("type") == "mcp":
+            input_schema = tool.get("input_schema") or {"type": "object", "properties": {}}
+        else:
+            properties: dict = {}
+            required_list: list = []
+            for endpoint in tool.get("endpoints", []):
+                for param in endpoint.get("params", []):
+                    if param.get("source") != "agent":
+                        continue
+                    prop: dict = {"type": param.get("type", "string")}
+                    if param.get("description"):
+                        prop["description"] = param["description"]
+                    if param.get("default") is not None:
+                        prop["default"] = param["default"]
+                    properties[param["name"]] = prop
+                    if param.get("required"):
+                        required_list.append(param["name"])
+            input_schema = {"type": "object", "properties": properties}
+            if required_list:
+                input_schema["required"] = required_list
+
+        connector = {
+            "name": tool_id,
+            "description": tool.get("description", ""),
+            "input_schema": input_schema,
+        }
+
+        connectors_block = self._acc._data["agent_core"].setdefault("connectors", {})
+        connector_list: list = connectors_block.setdefault(category, [])
+
+        for i, c in enumerate(connector_list):
+            if c.get("name") == tool_id:
+                connector_list[i] = connector
+                return
+        connector_list.append(connector)

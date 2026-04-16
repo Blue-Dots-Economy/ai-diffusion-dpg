@@ -209,6 +209,31 @@ class ConfigAccumulator:
         subagents[:] = [sa for sa in subagents if sa.get("id") != subagent_id]
         return len(subagents) < original_len
 
+    def add_action_gateway_tool(self, tool: dict) -> None:
+        """Add a tool definition to the action_gateway tools list.
+
+        Args:
+            tool: Tool dict. Must include 'id' and 'type' ('rest_api' or 'mcp') keys.
+
+        Raises:
+            ValueError: If tool has no 'id' key.
+            ValueError: If a tool with the same id already exists.
+        """
+        if "id" not in tool:
+            raise ValueError("Tool must have an 'id' key")
+        tools: list[dict] = self._data["action_gateway"].setdefault("tools", [])
+        if any(t.get("id") == tool["id"] for t in tools):
+            raise ValueError(f"Tool with id {tool['id']!r} already exists")
+        tools.append(deepcopy(tool))
+
+    def get_action_gateway_tools(self) -> list[dict]:
+        """Return the current list of action_gateway tool definitions.
+
+        Returns:
+            Deep copy of the tools list (empty list if none configured).
+        """
+        return deepcopy(self._data["action_gateway"].get("tools", []))
+
     def add_routing_rule(
         self,
         from_subagent_id: str,
