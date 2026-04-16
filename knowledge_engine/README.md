@@ -46,7 +46,7 @@ knowledge_engine/
 │       ├── glossary.py                  # Colloquial-term → canonical-concept mapping
 │       ├── static_knowledge_base.py     # ChromaDB semantic RAG with intent and location filters
 │       └── multimodal_input_handler.py  # PDF/image extraction (disabled via config)
-└── tests/                               # 117 tests across 7 files
+└── tests/                               # 108 tests across 7 files
     ├── test_engine.py
     ├── test_glossary.py
     ├── test_static_knowledge_base.py
@@ -202,7 +202,7 @@ cd knowledge_engine
 uv run pytest tests/ -v --cov=src --cov-report=term-missing
 ```
 
-117 tests across 7 files. Coverage threshold: 70% (enforced via `fail_under`).
+108 tests across 7 files. Coverage threshold: 70% (enforced via `fail_under`).
 
 ---
 
@@ -238,3 +238,13 @@ The Multimodal Input Handler block is fully implemented but disabled by default 
 - **Audio** is not implemented — the block logs "ASR is out of scope" and returns nothing.
 
 No API or interface changes are needed to enable it — set `knowledge.blocks.multimodal_input_handler.enabled: true` in the domain config.
+
+---
+
+## Known gaps
+
+**Audio input not implemented.** The Multimodal Input Handler logs "ASR is out of scope" and returns nothing for audio inputs. ASR/STT is handled upstream by the Reach Layer voice channel, not here.
+
+**No caching layer.** Identical queries (same intent + same entities) re-run full vector search on every call. A caching strategy for high-cardinality repeated queries (e.g. common trade lookups) is an open design question (#18) — no implementation exists yet.
+
+**Bhashini embedding not integrated.** The embedding pipeline uses sentence-transformers or OpenAI. Bhashini-native embeddings for Indic languages are not yet supported.

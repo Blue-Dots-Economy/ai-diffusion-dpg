@@ -412,3 +412,19 @@ Python 3.11+; Node 18+.
 6. Write a `Dockerfile` following the pattern in `cli/`, `web/`, or `voice/` (build context = repo root; `sed` rewrite of the `../base` path dep).
 7. Register the service in `automation/docker/docker-compose*.yml`.
 8. Agent Core and all other services require no changes.
+
+---
+
+## Known gaps
+
+**Web channel does not stream sentences to the browser.** The web server buffers all `SentenceEvent`s from Agent Core's SSE stream and returns a single JSON response to `/chat`. A planned `POST /chat/stream` endpoint (#99) will expose the per-sentence stream to the browser with typewriter animation, eliminating the 4–6 s blank wait.
+
+**TTS audio does not stop mid-playback on barge-in.** The voice channel cancels the active turn via `cancel_turn()` when barge-in is detected, but Raya TTS audio that is already buffered in the pipecat pipeline continues playing. Stopping in-flight audio output mid-utterance requires an additional signal to the TTS service (#98).
+
+**Voice notes input not supported in web UI.** The web channel accepts only text. A planned enhancement (#52) will add microphone recording → audio blob upload → whisper transcription in the browser.
+
+**Production channel adapters pending.** Three channels described in the original DPG spec are not yet implemented: WhatsApp (Gupshup/Twilio), Mobile SDK (iOS/Android), and outbound campaign manager (#9). The current CLI, Web, and Voice implementations cover the PoC scope only.
+
+**Voice channel TTS audio does not stop on barge-in (#98).** `handle_barge_in()` cancels the active turn but cannot stop Raya TTS audio already in-flight through the pipecat pipeline. The user and agent speech overlap until the buffered audio drains.
+
+**`on_session_start` / `on_session_end` / `on_vad_event` hooks are structured-log no-ops.** These lifecycle hooks exist on `VobizAdapter` and are called by pipecat at the right moments, but their bodies only emit structured log entries. Wiring them to the Observability Layer (emit signal events) is deferred.

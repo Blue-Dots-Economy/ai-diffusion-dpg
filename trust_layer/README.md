@@ -42,16 +42,16 @@ trust_layer/
 │       ├── guardrails.py # GuardrailsBlock
 │       ├── consent.py    # ConsentBlock
 │       └── hitl.py       # HiTLBlock
-└── tests/
-    ├── test_models.py
-    ├── test_server.py
-    ├── test_main.py
-    ├── test_guardrails.py   # tests legacy BasicTrustLayer
+└── tests/                   # 115 tests across 8 files
+    ├── test_models.py       (6 tests)
+    ├── test_server.py       (28 tests)
+    ├── test_main.py         (23 tests)
+    ├── test_guardrails.py   (21 tests) — tests legacy BasicTrustLayer
     └── blocks/
-        ├── test_content.py
-        ├── test_guardrails.py
-        ├── test_consent.py
-        └── test_hitl.py
+        ├── test_content.py  (13 tests)
+        ├── test_guardrails.py (8 tests)
+        ├── test_consent.py  (10 tests)
+        └── test_hitl.py     (6 tests)
 ```
 
 ---

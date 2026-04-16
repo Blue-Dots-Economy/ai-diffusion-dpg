@@ -44,7 +44,7 @@ action_gateway/
     └── test_main.py
 ```
 
-Total: 124 tests.
+Total: 140 tests.
 
 ---
 
@@ -281,3 +281,15 @@ opentelemetry-instrumentation-fastapi
 ```
 
 Requires Python 3.11+.
+
+---
+
+## Known gaps and roadmap
+
+**No response mapping layer.** Tool results are returned as-is from the upstream API. A config-driven response mapping layer — field remapping, value normalisation, error-code canonicalisation — is an open design question (#93). Currently, Agent Core receives raw adapter output and the LLM is responsible for interpreting it.
+
+**No OpenAPI spec ingestion.** Adding a new tool requires hand-authoring the YAML entry. A planned Dev-Kit feature (#94) will ingest an OpenAPI spec and emit a ready-to-use `tools[]` YAML block, removing the manual step.
+
+**MCP adapter timeout handling.** The `McpAdapter` delegates timeout management to the underlying MCP SDK. An explicit per-call timeout matching the `action_gateway.timeout_ms` config is not yet enforced at the adapter level.
+
+**Tool configuration phase in Dev-Kit not yet built.** The Configuration Agent (Dev-Kit Tier 1) does not yet have a tool configuration phase that walks domain experts through defining connector entries. This is tracked in #95.
