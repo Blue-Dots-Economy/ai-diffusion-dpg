@@ -16,7 +16,7 @@ cd automation/docker
 docker compose -f docker-compose.dev.yml up -d                    # all services except reach_layer
 docker compose -f docker-compose.dev.yml run --rm reach_layer     # interactive CLI session
 ```
-Ports: Agent Core `:8000`, Knowledge Engine `:8001`, Memory Layer `:8002`, Trust Layer `:8003`, Observability Layer `:8004`, Action Gateway `:9999`.
+Ports: Agent Core `:8000`, Knowledge Engine `:8001`, Memory Layer `:8002`, Trust Layer `:8003`, Observability Layer `:8004`, Reach Layer Web `:8005`, Reach Layer Voice `:8006`, Action Gateway `:9999`.
 
 **Run tests (per module):**
 ```bash
@@ -82,11 +82,13 @@ Reach Layer (input)
   → [async] emit events → Observability Layer
 ```
 
+Two execution paths: `POST /process_turn` (sync JSON, used by web direct mode) and `POST /stream_turn` (SSE, used by CLI/voice session mode via TurnAssembler). Both run the same sequence.
+
 ### Module interaction rules
 
 Only Agent Core initiates calls to other blocks. No other cross-module calls exist — do not introduce new ones.
 
-> **Approved exception — Reach Layer web channel (PR #29):** The web channel's session-restore feature (`GET /user-history/{user_id}` in `reach_layer/server.py`) makes a direct call to the Memory Layer to load chat history before the first turn. This is a deliberate, scoped exception for the dev/demo web adapter only. All other Reach Layer → Memory Layer calls are still prohibited. Future production channel adapters must route state retrieval through Agent Core.
+> **Approved exception — Reach Layer web channel:** The web channel's session-restore feature (`GET /user-history/{user_id}` in `reach_layer/web/server.py`) makes a direct call to the Memory Layer to load chat history before the first turn. This is a deliberate, scoped exception for the dev/demo web adapter only. All other Reach Layer → Memory Layer calls are still prohibited. Future production channel adapters must route state retrieval through Agent Core.
 
 | Caller | Callee | Purpose |
 |---|---|---|
@@ -107,9 +109,9 @@ Only Agent Core initiates calls to other blocks. No other cross-module calls exi
 
 ### PoC scope
 
-Full implementations: **Agent Core** (414 tests), **Knowledge Engine** (117 tests), **Memory Layer** (200 tests, Redis + Memgraph + SQLite), **Domain Configuration Kit**.
+Full implementations: **Agent Core** (457+ tests — sync + async streaming + TurnAssembler), **Knowledge Engine** (108 tests), **Memory Layer** (205 tests, Redis + Memgraph + SQLite), **Action Gateway** (140 tests — RestApiAdapter + McpAdapter), **Domain Configuration Kit**.
 
-Stubs (same interfaces, lightweight behaviour): Trust Layer (39 tests — ContentBlock, GuardrailsBlock, ConsentBlock, HiTLBlock; sub-block test suites pending), Action Gateway (mock JSON responses), Reach Layer (CLI stdin/stdout + web adapter), Observability Layer (OTel instrumentation; audit trail via Loki + Jaeger through OTel Collector; Grafana dashboards pending).
+Partial implementations (correct interface, some gaps): **Trust Layer** (115 tests — all 4 sub-blocks; HiTL log backend only, consent store in-process), **Reach Layer** (217 Python + 143 UI tests — CLI ✅, Web/React SPA ✅, Voice/pipecat 🟡), **Observability Layer** (94 tests — OTel functional; Grafana dashboards pending).
 
 **Stub interfaces must exactly match the real interface** — they must be replaceable without changing Agent Core or other modules.
 

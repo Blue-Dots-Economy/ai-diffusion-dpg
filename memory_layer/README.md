@@ -44,12 +44,12 @@ memory_layer/
 │   ├── graph_context_store.py  # GraphContextStore — Signal and ContextAttribute nodes
 │   ├── audit_store_base.py     # AuditStoreBase ABC (4 abstract methods)
 │   └── audit_store.py          # SQLiteAuditStore — session lifecycle + turn history
-└── tests/                      # 200 tests across 6 files
+└── tests/                      # 205 tests across 6 files
     ├── test_memory_layer.py    (48 tests)
     ├── test_server.py          (29 tests)
     ├── test_session_store.py   (40 tests)
     ├── test_graph_stores.py    (41 tests)
-    ├── test_audit_store.py     (19 tests)
+    ├── test_audit_store.py     (24 tests)
     └── test_main.py            (23 tests)
 ```
 
@@ -246,3 +246,15 @@ No Python changes are needed to extend the graph model. All extensions are drive
 **Add new edge types** — edge labels are read from config at startup. New domain-specific edges (e.g. `OFFERED`, `APPLIED`) require only a config entry, not a code change.
 
 **Adjust TTLs** — set `state.session.ttl_minutes` per deployment. The same TTL is applied to both `session:{id}` and `user:{id}` Redis keys.
+
+---
+
+## Known gaps
+
+**SQLite audit log has no retention or cleanup policy.** The `turn_audit` and `session_audit` tables grow unboundedly. Periodic cleanup and cold storage migration are not yet implemented (#62). For production deployments, a scheduled job should archive or prune rows older than the configured `audit.retention_days`.
+
+**Consent store is not shared across instances.** The Trust Layer's `ConsentStore` (SQLite, in-process) is separate from the Memory Layer. Consent granted in one Trust Layer instance is invisible to another instance. Multi-instance deployments require a shared consent store (Redis or PostgreSQL) to be wired across both services (#47).
+
+**`BROADCAST` write scope not implemented.** The `write()` interface accepts `scope: "broadcast"` in the design but this scope is not handled — it is reserved for a future multi-session fan-out use case.
+
+**Memgraph `KGExternal` market knowledge graph not implemented.** The design includes a `KGExternal` node type for cross-domain market data stored in Memgraph. This track is deferred to post-PoC.

@@ -35,7 +35,8 @@ The reference domain is **KKB (Kaam Ki Baat)** — a labour-market assistant hel
 | Memory Layer | 8002 |
 | Trust Layer | 8003 |
 | Observability Layer | 8004 |
-| Telephony Adapter | 8006 |
+| Reach Layer — Web | 8005 |
+| Reach Layer — Voice | 8006 |
 | Action Gateway | 9999 |
 
 ---
@@ -107,22 +108,30 @@ Sole orchestrator and sole LLM caller. Stateless between turns.
 - Write state to Memory Layer (async, after response) — includes `current_subagent_id` and `user_storage_mode`.
 - Emit turn event to Observability Layer (async, after response). Block/escalate turns also emit — observability never skipped.
 
+**Streaming path (`POST /stream_turn`):** Agent Core also exposes an async SSE endpoint. `stream_turn()` uses async HTTP clients (`interfaces/async_/`) for all external calls, yields `SignalEvent`s at each pipeline stage, streams LLM tokens split into sentences, runs a per-sentence Trust output check, and emits a final `DoneEvent`. Steps 12–13 (memory write + observability emit) fire via `asyncio.create_task` after `DoneEvent` — never in the response path.
+
+**TurnAssembler:** For channels that deliver multi-segment input (voice VAD, rapid corrections), `TurnAssembler` sits between the server and `stream_turn()`. Buffers segments in a `SessionBuffer` and invokes the pipeline via a three-policy stack: semantic completeness gate (NLU confidence), silence trigger (reset on every segment), and max-wait ceiling (absolute). Exposes `POST /sessions/{id}/input`, `GET /sessions/{id}/events` (SSE), and `DELETE /sessions/{id}/active_turn` (barge-in).
+
 **Key files:**
-- `agent_core/src/orchestrator.py` — main turn handler
-- `agent_core/src/manager_agent.py` — system prompt + tool selection, tool-use loop
-- `agent_core/src/llm_wrapper/claude_wrapper.py` — only file that imports `anthropic`
+- `agent_core/src/orchestrator.py` — `process_turn()` (sync) and `stream_turn()` (async generator)
+- `agent_core/src/turn_assembler.py` — `TurnAssembler`, `SessionBuffer`, `TurnStatus` state machine
+- `agent_core/src/manager_agent.py` — system prompt assembly, tool-use loop (sync + async)
+- `agent_core/src/llm_wrapper/claude_wrapper.py` — only file that imports `anthropic`; exposes `call()` and `stream_call()`
 - `agent_core/src/preprocessing/language_normaliser.py`
 - `agent_core/src/preprocessing/nlu_processor.py`
 - `agent_core/src/tool_registry.py`
 - `agent_core/src/workflow_loader.py` — loads subagent graph from config at startup
-- `agent_core/src/http_clients/` — HTTP adapters for all downstream blocks
-- `agent_core/src/interfaces/` — abstract base classes for all block contracts
-- `agent_core/src/servers/orchestration_server.py` — FastAPI: `/process_turn`, `/health`, `/internal/llm/call`
+- `agent_core/src/http_clients/` — sync HTTP adapters; `http_clients/async_/` — async variants
+- `agent_core/src/interfaces/` — sync ABCs; `interfaces/async_/` — async ABCs used by `stream_turn()`
+- `agent_core/src/servers/orchestration_server.py` — FastAPI: `POST /process_turn`, `POST /stream_turn`, session endpoints, `/health`, `POST /internal/llm/call`
 
-**Tests:** 414 tests, ≥70% line coverage.
+**Tests:** 457+ tests across 18 files, ≥70% line coverage (currently ~75%). `turn_assembler.py` at 96%.
 
 **Known gaps:**
-- HiTL escalation for output path not wired: `orchestrator.py` line 646 — output escalation TODO deferred to HiTL queue issue.
+- HiTL escalation for output path not wired: `orchestrator.py` — when Trust output returns `action: "escalate"`, the escalation call is deferred.
+- `/internal/llm/call` proxy endpoint is implemented but not yet wired to downstream callers.
+- Only `ClaudeLLMWrapper` is implemented. OpenAI-compatible and Ollama wrappers are planned to allow model substitution without changing the orchestration layer.
+- Channel-aware prompt assembly not implemented — all channels receive the same system prompt (#97).
 
 ---
 
@@ -146,7 +155,7 @@ Assembles retrieval context for the LLM prompt. Receives NLU results and session
 - `knowledge_engine/src/blocks/static_knowledge_base.py`
 - `knowledge_engine/src/server.py` — FastAPI: `POST /retrieve`, `/health`
 
-**Tests:** 117 tests, ≥70% line coverage.
+**Tests:** 108 tests across 7 files, ≥70% line coverage.
 
 ---
 
@@ -163,11 +172,12 @@ Manages state at three scopes. Agent Core reads at turn start and writes asynchr
 | Audit / Cross-session | SQLite (`audit_store`) | ✅ | Two purposes: (1) session lifecycle events with `consent_given` for DPDP compliance; (2) raw turn-by-turn conversation transcript (user_message + system_message + subagent_id + intent + model + latency_ms per turn). Never read back into LLM context. Distinct from OTel telemetry. Fully implemented. |
 
 **Redis keys:**
-- `profile:{phone_number}` — RedisJSON, user profile with all 5 entity layers
-- `session:{session_id}` — RedisJSON, workflow_step, collection_round, turn history
-- `user_sessions:{phone_number}` — Sorted Set, reverse index for session lookup by phone
+- `session:{session_id}` — Hash, TTL-bound (default 1440 min / 24 h). All session schema fields stored as strings; lists and dicts JSON-encoded. TTL reset on every `write` and `context_bundle` call.
+- `user:{user_id}` — Hash, TTL-bound. Fields: `{session_id: ISO-8601 last_accessed}`. Lazy cleanup of expired entries on `get_active_sessions`.
 
-**Memgraph edge types (KKB, from config):** `HAS_TRADE`, `HAS_LOCATION`, `HAS_EDUCATION_LEVEL`, `HAS_EXPERIENCE_YEARS`, `HAS_INCOME_URGENCY`, `HAS_COMMUTE_PREFERENCE`, `HAS_SALARY_EXPECTATION`, `HAS_SECTOR_PREFERENCE`, `HAS_TRAINING_PREFERENCE`, `HAS_GROWTH_HORIZON`, `HAS_LANGUAGE_PREFERENCE`.
+**Memgraph node types:** `User`, `UserProfile`, `UserAttribute` (ad-hoc fields), `JourneyHistory`, `Journey` (= session), Journey child nodes (domain-defined labels), `ContextGraph`, `Signal`, `ContextAttribute`.
+
+**Memgraph edge types:** `HAS_PROFILE`, `HAS_JOURNEY_HISTORY`, `HAS_CONTEXT`, `JOURNEY`, `HAS_ATTRIBUTE`, `SIGNAL`, plus domain-specific edges from config (e.g. `OFFERED`, `DROPPED_AT`). Edge labels are never hardcoded.
 
 **Public interface (5 methods + audit):** `context_bundle()`, `write()`, `flush_session()`, `get_active_sessions()`, `delete_user()`, plus audit write.
 
@@ -178,7 +188,7 @@ Manages state at three scopes. Agent Core reads at turn start and writes asynchr
 - `memory_layer/src/audit_store.py` — SQLite audit log (fully implemented)
 - `memory_layer/src/server.py` — FastAPI: 10 endpoints including `/context_bundle`, `/write`, `/flush_session`, `/audit`, `/users/{user_id}/active-history`, `/profile/{session_id}`, `/session/{session_id}`, `/health`
 
-**Tests:** 200 tests.
+**Tests:** 205 tests across 6 files.
 
 ---
 
@@ -216,12 +226,13 @@ Mandatory safety gate. Stateless. Runs on every turn — never skipped. Structur
 - `check_consent`: SQLite consent store writes consent when `verify_consent` returns True. Cross-session consent persistence is in-process only; a shared consent store is needed for multi-instance deployments.
 
 **Key files:**
-- `trust_layer/src/trust_layer.py` — TrustLayer orchestrator
+- `trust_layer/src/orchestrator.py` — `TrustLayer` orchestrator wiring all 4 sub-blocks
 - `trust_layer/src/blocks/content.py`, `guardrails.py`, `consent.py`, `hitl.py`
+- `trust_layer/src/consent_store.py` — SQLite consent persistence
 - `trust_layer/src/server.py` — FastAPI: all endpoints above
 - `trust_layer/src/models.py` — all Pydantic request/response types
 
-**Tests:** 39 tests, 100% coverage (ContentBlock). GuardrailsBlock/ConsentBlock/HiTLBlock coverage pending.
+**Tests:** 115 tests across 8 files (4 top-level + 4 per-block). All sub-blocks covered.
 
 ---
 
@@ -263,35 +274,47 @@ Sole interface with external systems. Executes tool calls expressed by the LLM. 
 - `action_gateway/src/registry/adapter_factory.py` — `AdapterFactory`: instantiates adapters from YAML config
 - `action_gateway/src/models.py` — Pydantic request/response types
 
-**Tests:** 124 tests.
+**Tests:** 140 tests across 7 files.
 
 ---
 
 ### Reach Layer 🟡
 
-Normalises inbound channels and delivers responses.
+Normalises inbound channels and delivers responses. Ships as **three independently-deployable services** sharing a common `reach_layer/base/` package.
 
-**Current implementation:** CLI adapter (`CLIReachLayer`) reads stdin, writes stdout. Web adapter (`server.py`) serves a single-page chat UI on port 8005 via `POST /chat`.
+**Architecture:** `reach_layer/base/` (shared library, not a service) defines `ReachLayerBase` (async ABC), `TextChannelBase`, `VoiceChannelBase`, and the `SignalEvent` / `SentenceEvent` / `DoneEvent` dataclasses. Each channel imports `reach-layer-base` and overrides only its input/output surface. The HTTP wire protocol to Agent Core (submit, subscribe, cancel) is concrete on the base class and identical for all channels.
 
-**Approved exception:** The web adapter's session-restore feature calls Memory Layer `GET /users/{user_id}/active-history` directly before the first turn. This is a scoped exception for the dev/demo web adapter only — all other state access routes through Agent Core.
+**Assembly modes:**
+
+| mode | submit endpoint | used by |
+|---|---|---|
+| `session` | `POST /sessions/{id}/input` → 202; stream via `GET /sessions/{id}/events` | CLI, Voice |
+| `direct` | `POST /process_turn` → sync `TurnResult` | Web |
 
 **Channel implementation status:**
 
 | Channel | Status | Notes |
 |---------|--------|-------|
-| CLI (stdin/stdout) | ✅ | `CLIReachLayer` — dev/test REPL |
-| Web UI | ✅ | FastAPI + single-page chat UI on port 8005; session restore via `GET /user-history/{user_id}` |
-| Telephony (VoBiz/Exotel) | 🟡 | `telephony_adapter/` — WebSocket media stream, STT (Raya), TTS (Raya), Agent Core integration; port 8006. `POST /campaign` for outbound. Build from repo root: `docker build -f telephony_adapter/Dockerfile -t telephony_adapter .` |
-| Voice / VOIP | ⏳ | Production SIP/PSTN integration (Exotel inbound 5226) — pending |
+| CLI (`reach_layer/cli/`) | ✅ | `CLIReach` — session mode, readline loop, port-free |
+| Web (`reach_layer/web/`) | ✅ | FastAPI + React 19 SPA, port 8005. `POST /chat`, `GET /user-history/{user_id}`, `GET /app-config`. Direct mode. Google Sign-In optional. |
+| Voice (`reach_layer/voice/`) | 🟡 | `VobizAdapter` on pipecat pipeline (VAD → Raya STT → AgentCoreLLM → Raya TTS → SIP), port 8006. Session mode. Barge-in supported. 48 tests, 92% coverage. |
+| Production SIP/PSTN | ❌ | Out of scope — VOIP via pipecat/Vobiz is the production path |
 | WhatsApp | ⏳ | Gupshup/Twilio webhook — pending |
 | Mobile SDK | ⏳ | Pending |
-| Outbound campaigns | ⏳ | Re-engagement, alerts, follow-through — pending |
+| Outbound campaigns | ⏳ | `campaign_manager.py` skeleton exists; full implementation pending |
+
+**Approved exception:** `reach_layer/web/server.py` calls Memory Layer `GET /users/{user_id}/active-history` directly for session restore before the first turn. Scoped to dev/demo web adapter only. All other Reach Layer → Memory Layer calls are prohibited.
 
 **Key files:**
-- `reach_layer/src/cli_reach.py` — CLI stdin/stdout adapter
-- `reach_layer/server.py` — FastAPI web adapter; `POST /chat`, `GET /user-history/{user_id}`, port 8005
+- `reach_layer/base/reach_layer_base.py` — `ReachLayerBase` ABC + concrete HTTP helpers
+- `reach_layer/base/text_channel.py`, `voice_channel.py`, `events.py`
+- `reach_layer/cli/src/cli_reach.py` — `CLIReach`
+- `reach_layer/web/server.py` — FastAPI web server; `web/src/web_reach.py` — `WebReachLayer`
+- `reach_layer/web/web-src/` — React 19 + Vite 6 + Tailwind SPA
+- `reach_layer/voice/src/vobiz_adapter.py` — `VobizAdapter`; `voice/src/bot.py`, `campaign_manager.py`
+- `reach_layer/voice/src/pipecat_services/` — Raya STT/TTS pipecat services
 
-**Tests:** 125+ tests.
+**Tests:** 217 Python tests across 8 files + 143 React UI tests across 14 files.
 
 ---
 
@@ -334,7 +357,7 @@ vs. audit log — `user_id` allowed in traces for dashboarding, excluded from au
 - `observability_layer/src/otel_observability_layer.py` — `OtelObservabilityLayer` (primary implementation)
 - `observability_layer/src/server.py` — FastAPI: `/emit/turn`, `/emit/signal`, `/validate-config`, `/health`
 
-**Tests:** ≥70% coverage.
+**Tests:** 94 tests across 7 files.
 
 ---
 
@@ -389,6 +412,16 @@ Agent Core: deliver response → Reach Layer
 **Latency target:** 800–1200ms per turn (voice-first).
 - One LLM call for most turns; two for tool turns.
 
+**Execution paths:**
+
+| Path | Endpoint | Response | Used by |
+|---|---|---|---|
+| Sync | `POST /process_turn` | `TurnResult` JSON | Web (direct mode) |
+| Streaming (SSE) | `POST /stream_turn` | `SignalEvent` → `SentenceEvent`s → `DoneEvent` | CLI/Voice (session mode) |
+| Session/TurnAssembler | `POST /sessions/{id}/input` + `GET /sessions/{id}/events` | SSE subscription | CLI, Voice (via TurnAssembler) |
+
+All three paths run the same 13-step sequence. TurnAssembler buffers multi-segment input and calls `stream_turn()` in-process when a trigger fires (semantic gate, silence timer, or max-wait ceiling).
+
 ---
 
 ## 5. Module Interaction Rules
@@ -402,7 +435,8 @@ Only Agent Core initiates calls to other blocks. No other cross-module calls exi
 | Agent Core | Knowledge Engine | Assemble retrieval context (NLU results + session state in body) |
 | Agent Core | Action Gateway | Execute LLM-requested tool calls |
 | Agent Core | Observability Layer | Emit turn metadata (async, daemon thread) |
-| Reach Layer | Agent Core | POST /process_turn (blocking) |
+| Reach Layer (web) | Agent Core | `POST /process_turn` — direct mode |
+| Reach Layer (cli/voice) | Agent Core | `POST /sessions/{id}/input` + `GET /sessions/{id}/events` — session mode |
 | Action Gateway | External systems | Only on instruction from Agent Core |
 
 **No other cross-module calls are permitted.**
@@ -545,13 +579,13 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 
 | Block | Status | Notes |
 |---|---|---|
-| Agent Core | ✅ | Orchestrator, LLM wrapper, preprocessing, tool-use loop, 10-subagent workflow. 414 tests, ≥70% coverage. |
-| Knowledge Engine | ✅ | Glossary, ChromaDB RAG, HTTP server (`POST /retrieve`). 117 tests, ≥70% coverage. |
-| Memory Layer | ✅ | Redis (session/profile) + Memgraph (context graph) + SQLite (audit). 10 HTTP endpoints. 200 tests. |
-| Trust Layer | 🟡 | All 4 sub-blocks implemented. Fail-closed. HiTL: log backend only. Consent: in-process SQLite. |
-| Action Gateway | ✅ | Generic adapter framework (RestApiAdapter + McpAdapter). Config-driven via `tools:[]` in `action_gateway.yaml`. Agent Core fetches tool defs at startup via `GET /tools`. 124 tests. |
-| Reach Layer | 🟡 | CLI + Web (port 8005). Web calls Memory Layer for session restore (approved exception). Telephony Adapter (port 8006): WebSocket media stream, STT/TTS via Raya, 48 tests, 92% coverage. |
-| Observability Layer | 🟡 | OTel instrumentation functional. Audit = Loki+Jaeger via OTel Collector. Grafana dashboards pending. |
+| Agent Core | ✅ | Orchestrator, LLM wrapper, preprocessing, tool-use loop, async SSE streaming, TurnAssembler, 10-subagent workflow. 457+ tests, 18 files, ≥70% coverage. |
+| Knowledge Engine | ✅ | Glossary, ChromaDB RAG, HTTP server (`POST /retrieve`). 108 tests, 7 files, ≥70% coverage. |
+| Memory Layer | ✅ | Redis (session) + Memgraph (user/journey/context graph) + SQLite (audit). 10 HTTP endpoints. 205 tests. |
+| Trust Layer | 🟡 | All 4 sub-blocks implemented. Fail-closed. HiTL: log backend only. Consent: in-process SQLite. 115 tests. |
+| Action Gateway | ✅ | Generic adapter framework (RestApiAdapter + McpAdapter). Config-driven via `tools:[]`. OTel instrumented. 140 tests. |
+| Reach Layer | 🟡 | 3 channels: CLI (✅) + Web/React 19 SPA (✅) + Voice/pipecat (🟡 48 tests, 92% cov). 217 Python + 143 UI tests. |
+| Observability Layer | 🟡 | OTel instrumentation functional. Audit = Loki+Jaeger via OTel Collector. Grafana dashboards pending. 94 tests. |
 
 ### By feature
 
@@ -578,10 +612,16 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 | Orchestrator consent gate | ✅ | Consent gate implemented in orchestrator; user_storage_mode flag logic active |
 | Fail-closed Trust Layer | ✅ | All endpoints and AC HTTP client are fail-closed (resolved) |
 | Reach Layer web adapter | ✅ | Web UI + POST /chat + session restore via Memory Layer (approved exception) |
-| Action Gateway adapter framework | ✅ | RestApiAdapter + McpAdapter; config-driven via `tools:[]` |
+| Async SSE streaming (`stream_turn`) | ✅ | Per-sentence Trust output check; `SignalEvent`/`SentenceEvent`/`DoneEvent` |
+| TurnAssembler (multi-segment input) | ✅ | Semantic gate + silence trigger + max-wait ceiling; session endpoints |
+| Action Gateway adapter framework | ✅ | RestApiAdapter + McpAdapter; config-driven via `tools:[]`; OTel instrumented |
+| Reach Layer restructure (3 channels) | ✅ | `reach_layer/base/` + `cli/` + `web/` + `voice/` as independent deployables |
+| Web UI React SPA | ✅ | React 19 + Vite 6 + Tailwind; dark/light theme; Markdown; Google Sign-In optional |
+| Voice channel (pipecat) | 🟡 | VobizAdapter wired; TTS barge-in stop pending (#98) |
 | Real ONEST connector | ⏳ | Add ONEST tool entry to `action_gateway.yaml` once live API is available |
-| Telephony adapter (VoBiz/Exotel) | 🟡 | `telephony_adapter/` — WebSocket media stream, STT/TTS, Agent Core integration, outbound campaign endpoint |
-| WhatsApp/Mobile channels | ⏳ | Replace CLIReachLayer for production |
+| Browser-side SSE streaming | ⏳ | `POST /chat/stream` endpoint — typewriter animation (#99) |
+| TTS stop on barge-in | ⏳ | In-flight Raya TTS audio does not stop mid-utterance on barge-in (#98) |
+| WhatsApp/Mobile channels | ⏳ | Pending |
 | Grafana dashboard provisioning | ⏳ | `automation/docker/grafana/provisioning/` not yet implemented |
 | Configuration Agent (Tier 1) | ✅ | FastAPI + React SPA; conversation-driven YAML generation for all 7 DPGs |
 | Live Tuning Dashboard (Tier 3) | ⏳ | Dashboard reading Observability Layer signals |
@@ -606,9 +646,14 @@ The adapter framework is production-ready. To connect a new external API:
 
 ### Reach Layer
 
-1. Implement `ReachLayerBase` (`agent_core/src/interfaces/reach_layer.py`): `receive()`, `deliver()`.
-2. Implement per-channel adapter (WhatsApp webhook, VOIP SIP, etc.).
-3. Wire into the reach layer entrypoint.
+The 3-channel base class hierarchy is in place. Adding a new channel:
+
+1. Create `reach_layer/<channel>/` with its own `pyproject.toml` declaring `reach-layer-base` as a path dependency.
+2. Inherit from `TextChannelBase` or `VoiceChannelBase` (not `ReachLayerBase` directly).
+3. Implement only the abstract methods: `on_session_start`, `on_session_end`, plus `run_loop` (text) or `handle_call`/`handle_barge_in`/`on_vad_event` (voice). HTTP wire methods come for free.
+4. Add the channel to `reach_layer.yaml` under `reach_layer.channels.<name>` with `assembly_mode: session` or `direct`.
+5. Write a `Dockerfile` and register in `automation/docker/docker-compose*.yml`.
+6. Agent Core and all other services require no changes.
 
 ### Observability Layer
 

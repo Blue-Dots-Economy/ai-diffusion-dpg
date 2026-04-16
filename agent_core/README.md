@@ -85,7 +85,7 @@ agent_core/
 │       │                                #   DELETE /sessions/{id}/active_turn (barge-in)
 │       │                                #   GET  /health
 │       └── llm_proxy_server.py          # POST /internal/llm/call
-└── tests/                               # 454+ tests across ~17 files, ≥70% coverage
+└── tests/                               # 457+ tests across 18 files, ≥70% coverage
     ├── test_orchestrator.py
     ├── test_manager_agent.py
     ├── test_llm_wrapper.py
@@ -289,7 +289,7 @@ LLM → tool → LLM loop. Both sync and async variants. Used by `process_turn()
 Only file in the codebase that imports the `anthropic` SDK. Exposes `call()` (sync) and `stream_call()` (async generator). Both share the same retry + fallback model logic. `stream_call()` accumulates tool_use blocks during the stream; if the final `stop_reason == "tool_use"` it raises `ToolUseRequested(tool_calls)` — the caller executes the tool and resumes streaming.
 
 **`preprocessing/language_normalisation.py` — LanguageNormaliser**
-Runs before NLU. Detects dialect, normalises code-switching (Hindi/Kannada/English), and transliterates Romanised Indic text. The `bhashini` provider raises `NotImplementedError`.
+Runs before NLU. Detects dialect, normalises code-switching (Hindi/Kannada/English), and transliterates Romanised Indic text. Currently only the `internal` provider (LLM-based normalisation via a haiku model) is implemented.
 
 **`preprocessing/nlu_processor.py` — NLUProcessor**
 Classifies intent, extracts entities, produces confidence score. Low-confidence → clarification response without a second LLM call. Also used by TurnAssembler's semantic gate.
@@ -380,7 +380,7 @@ cd agent_core
 uv run pytest tests/ -v --cov=src --cov-report=term-missing
 ```
 
-454+ tests across ~17 files. Coverage threshold: 70% (currently ~75%). `turn_assembler.py` is covered at 96%.
+457+ tests across 18 files. Coverage threshold: 70% (currently ~75%). `turn_assembler.py` is covered at 96%.
 
 ---
 
@@ -414,3 +414,17 @@ Agent Core expects implementations of the 6 sync interfaces in `src/interfaces/`
 - Return the correct type and structure documented on the base class
 
 See `CLAUDE.md` and `ARCHITECTURE.md` in the repository root for full engineering standards and block responsibilities.
+
+---
+
+## Known gaps
+
+**Only the Anthropic (Claude) LLM wrapper is implemented.** `ClaudeLLMWrapper` is the only concrete `LLMWrapperBase` implementation. OpenAI-compatible and Ollama wrappers are planned to allow model substitution without changing the orchestration layer.
+
+**`POST /internal/llm/call` proxy is not yet wired to downstream callers.** The endpoint is implemented and registered, but no other DPG block calls it. The intended architecture routes all Anthropic API calls from other blocks through this proxy; current state has only Agent Core calling the Anthropic SDK directly.
+
+**HiTL output escalation path deferred.** When `POST /check/output` returns `action: "escalate"`, Agent Core does not call `/escalate` — this path is not wired. Blocked sentences in the stream are replaced with fallback text only.
+
+**Channel-aware prompt assembly not yet implemented.** All channels (voice, web, CLI) receive the same system prompt regardless of channel. A future optimisation should shorten prompts for voice channels, which have tighter latency budgets and no Markdown rendering (#97).
+
+**NLU mode switching not yet implemented.** The `workflow_step`-based NLU mode switching described in issue #4 (conditional NLU execution) is not yet built. NLU runs on every turn regardless of workflow step.

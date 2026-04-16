@@ -46,16 +46,16 @@ observability_layer/
 │       ├── resource.py                # build_resource() — OTel Resource with service.name, dpg.block, dpg.domain
 │       └── propagator.py             # configure_propagator() — W3C TraceContext + Baggage
 └── tests/
-    ├── test_schema.py                     (12 tests)
-    ├── test_outcome_tracker.py            (16 tests)
-    ├── test_console_logger.py             (18 tests)
+    ├── test_schema.py                     (9 tests)
+    ├── test_outcome_tracker.py            (10 tests)
+    ├── test_console_logger.py             (20 tests)
     ├── test_otel_observability_layer.py   (6 tests)
-    ├── test_dpg_telemetry.py              (12 tests)
-    ├── test_server.py                     (20 tests)
+    ├── test_dpg_telemetry.py              (10 tests)
+    ├── test_server.py                     (16 tests)
     └── test_main.py                       (23 tests)
 ```
 
-Total: 7 test modules, 70+ test functions.
+Total: 7 test modules, 94 tests.
 
 ---
 
