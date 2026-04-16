@@ -22,11 +22,13 @@ dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "pytest-mock>=3.0",
+    "pytest-asyncio>=0.23",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+asyncio_mode = "auto"
 
 [tool.coverage.run]
 source = ["src"]
@@ -41,3 +43,8 @@ show_missing = true
 
 [tool.uv.sources]
 observability-layer = { path = "../observability_layer" }
+
+[dependency-groups]
+dev = [
+    "pytest-asyncio>=0.23",
+]
