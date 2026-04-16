@@ -39,12 +39,12 @@ class TestGetPhaseAddition:
         assert len(result) > 0
         assert "Trust" in result or "trust" in result.lower()
 
-    def test_connectors_phase_returns_non_empty_string(self):
-        """Connectors phase should return non-empty schema context."""
-        result = get_phase_addition("connectors")
+    def test_tools_phase_returns_non_empty_string(self):
+        """Tools phase should return non-empty schema context."""
+        result = get_phase_addition("tools")
         assert isinstance(result, str)
         assert len(result) > 0
-        assert "Connectors" in result or "connectors" in result.lower()
+        assert "Tools" in result or "tools" in result.lower()
 
     def test_workflow_phase_returns_non_empty_string(self):
         """Workflow phase should return non-empty schema context."""
@@ -65,24 +65,24 @@ class TestGetPhaseAddition:
         result = get_phase_addition("unknown_phase")
         assert result == ""
 
-    def test_workflow_with_available_connectors_includes_connector_names(self):
-        """Workflow phase with available_connectors should include connector names in output."""
-        connectors = ["crm_api", "sms_service"]
-        result = get_phase_addition("workflow", available_connectors=connectors)
+    def test_workflow_with_available_tools_includes_tool_names(self):
+        """Workflow phase with available_tools should include tool names in output."""
+        tools = ["crm_api", "sms_service"]
+        result = get_phase_addition("workflow", available_tools=tools)
         assert isinstance(result, str)
         assert len(result) > 0
         assert "crm_api" in result
         assert "sms_service" in result
 
-    def test_workflow_with_none_connectors_does_not_raise(self):
-        """Workflow phase with available_connectors=None should not raise."""
-        result = get_phase_addition("workflow", available_connectors=None)
+    def test_workflow_with_none_tools_does_not_raise(self):
+        """Workflow phase with available_tools=None should not raise."""
+        result = get_phase_addition("workflow", available_tools=None)
         assert isinstance(result, str)
         assert len(result) > 0
 
-    def test_workflow_with_empty_connectors_list(self):
-        """Workflow phase with empty connectors list should return base workflow context."""
-        result = get_phase_addition("workflow", available_connectors=[])
+    def test_workflow_with_empty_tools_list(self):
+        """Workflow phase with empty tools list should return base workflow context."""
+        result = get_phase_addition("workflow", available_tools=[])
         assert isinstance(result, str)
         assert len(result) > 0
 
@@ -93,7 +93,7 @@ class TestGetPhaseAddition:
 
     def test_all_phase_names_case_sensitive(self):
         """Verify case sensitivity for all known phase names."""
-        known_phases = ["overview", "language", "knowledge", "memory", "trust", "connectors", "workflow", "review"]
+        known_phases = ["overview", "language", "knowledge", "memory", "trust", "tools", "workflow", "review"]
         for phase in known_phases:
             capitalized = phase.capitalize()
             result = get_phase_addition(capitalized)
@@ -106,12 +106,12 @@ class TestGetPhaseAddition:
             result = get_phase_addition(phase)
             assert isinstance(result, str), f"Expected str for phase '{phase}', got {type(result)}"
 
-    def test_workflow_with_multiple_connectors_in_output(self):
-        """Workflow phase should include all connectors in the output."""
-        connectors = ["api_1", "api_2", "api_3"]
-        result = get_phase_addition("workflow", available_connectors=connectors)
-        for connector in connectors:
-            assert connector in result, f"Expected connector '{connector}' in workflow output"
+    def test_workflow_with_multiple_tools_in_output(self):
+        """Workflow phase should include all tools in the output."""
+        tools = ["api_1", "api_2", "api_3"]
+        result = get_phase_addition("workflow", available_tools=tools)
+        for tool in tools:
+            assert tool in result, f"Expected tool '{tool}' in workflow output"
 
     def test_language_phase_includes_schema_header(self):
         """Language phase should include a schema context header."""

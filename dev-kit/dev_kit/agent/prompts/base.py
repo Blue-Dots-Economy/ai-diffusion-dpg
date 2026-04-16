@@ -40,7 +40,7 @@ def build_system_prompt(
     accumulator: ConfigAccumulator,
     phase: str,
     checkpoint_summaries: list[str],
-    available_connectors: list[str] | None = None,
+    available_tools: list[str] | None = None,
 ) -> str:
     """Build the full system prompt for the given conversation phase.
 
@@ -50,7 +50,7 @@ def build_system_prompt(
         accumulator: Current config accumulator.
         phase: Current phase name (e.g. "language", "workflow").
         checkpoint_summaries: List of summary strings from prior phase checkpoints.
-        available_connectors: Connector names declared in Connectors phase (for workflow prompt).
+        available_tools: Tool IDs declared in the Tools phase (for workflow prompt).
 
     Returns:
         Full system prompt string.
@@ -72,7 +72,7 @@ def build_system_prompt(
     sections.append(f"## Current phase: {phase}")
 
     # Phase-specific schema context
-    addition = get_phase_addition(phase, available_connectors=available_connectors)
+    addition = get_phase_addition(phase, available_tools=available_tools)
     if addition:
         sections.append(addition)
 

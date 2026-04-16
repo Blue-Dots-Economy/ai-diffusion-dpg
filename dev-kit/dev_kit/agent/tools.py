@@ -64,7 +64,7 @@ TOOL_DEFINITIONS: list[dict] = [
             "properties": {
                 "phase": {
                     "type": "string",
-                    "enum": ["overview", "language", "knowledge", "memory", "trust", "connectors", "workflow", "observability", "reach", "review"],
+                    "enum": ["overview", "language", "knowledge", "memory", "trust", "tools", "workflow", "observability", "reach", "review"],
                 },
             },
             "required": ["phase"],

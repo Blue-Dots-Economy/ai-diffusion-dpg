@@ -4,7 +4,7 @@ from dev_kit.agent.accumulator import ConfigAccumulator
 from dev_kit.agent.prompts.base import build_system_prompt
 
 
-def _make_prompt(phase="overview", summaries=None, connectors=None, name="TestProject", desc="A test"):
+def _make_prompt(phase="overview", summaries=None, available_tools=None, name="TestProject", desc="A test"):
     acc = ConfigAccumulator()
     return build_system_prompt(
         project_name=name,
@@ -12,7 +12,7 @@ def _make_prompt(phase="overview", summaries=None, connectors=None, name="TestPr
         accumulator=acc,
         phase=phase,
         checkpoint_summaries=summaries or [],
-        available_connectors=connectors,
+        available_tools=available_tools,
     )
 
 
@@ -59,9 +59,9 @@ class TestBuildSystemPrompt:
         prompt = _make_prompt(phase="language")
         assert len(prompt) > len(_make_prompt(phase="overview"))
 
-    def test_connectors_injected_in_workflow_phase(self):
-        """Available connectors must appear in the workflow-phase prompt."""
-        prompt = _make_prompt(phase="workflow", connectors=["crm_api", "sms_gateway"])
+    def test_tools_injected_in_workflow_phase(self):
+        """Available tools must appear in the workflow-phase prompt."""
+        prompt = _make_prompt(phase="workflow", available_tools=["crm_api", "sms_gateway"])
         assert "crm_api" in prompt or "sms_gateway" in prompt
 
     def test_unknown_phase_produces_valid_prompt(self):

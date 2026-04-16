@@ -61,7 +61,7 @@ Example subagent (condensed from KKB reference):
 """
 
 
-def get_phase_addition(phase: str, available_connectors: list[str] | None = None) -> str:
+def get_phase_addition(phase: str, available_tools: list[str] | None = None) -> str:
     """Return schema context to append to the base system prompt for a given phase.
 
     Injects the YAML template for the relevant block(s) so Claude sees the
@@ -70,7 +70,7 @@ def get_phase_addition(phase: str, available_connectors: list[str] | None = None
 
     Args:
         phase: Current conversation phase name.
-        available_connectors: Connector names declared in agent_core (used in workflow phase).
+        available_tools: Tool IDs declared in the Tools phase (used in workflow phase).
 
     Returns:
         Additional system prompt text for the phase, or empty string if none.
@@ -85,7 +85,7 @@ def get_phase_addition(phase: str, available_connectors: list[str] | None = None
             "3. knowledge — RAG knowledge base, persona, document sources\n"
             "4. memory    — session state fields, persistent graph, consent mode\n"
             "5. trust     — blocked phrases, escalation topics, safety guardrails\n"
-            "6. connectors — external API connectors (or confirm none needed)\n"
+            "6. tools      — external API / MCP tools (or confirm none needed)\n"
             "7. workflow  — subagent state machine, routing rules\n"
             "8. observability — outcome lifecycle states, metrics, domain name\n"
             "9. reach     — web UI branding (app name, icon, tagline)\n"
@@ -172,37 +172,35 @@ def get_phase_addition(phase: str, available_connectors: list[str] | None = None
             "```yaml\n"
             + load_template_text("trust_layer")
             + "```\n\n"
-            "➡️ When input rules, output rules, and consent phrases are set, call `set_phase('connectors')`."
+            "➡️ When input rules, output rules, and consent phrases are set, call `set_phase('tools')`."
         )
 
-    if phase == "connectors":
+    if phase == "tools":
         return (
-            "## Connectors phase — valid fields\n\n"
-            "There are TWO separate configs to write:\n\n"
-            "**1. Agent Core connectors** (tool definitions shown to the LLM — input schema, descriptions):\n"
-            "   section=`connectors`, values={read: [...], write: [...], identity: [...], internal: [...]}\n"
-            "   Each item: {name, description, input_schema: {type: object, properties: {...}, required: [...]}}\n\n"
-            "**2. Action Gateway** (endpoint URLs only — no input schema, no type, no params lists):\n"
-            "   block=`action_gateway`, section=`action_gateway`, values={connectors: {connector_name: {endpoint, timeout_ms}}}\n"
-            "   ❌ NEVER add: action_gateway.connectors.read, .write, .internal subsections\n"
-            "   ❌ NEVER add: authentication, type, required_params, optional_params to action_gateway\n"
-            "   The action_gateway ONLY maps connector_name → {endpoint: url, timeout_ms: number}\n\n"
-            "The `update_config` tool will return an ERROR if you use wrong key names. Read the error and retry.\n\n"
-            "**agent_core connectors section:**\n"
-            "```yaml\n"
-            + _extract_template_sections("agent_core", ["connectors"])
-            + "```\n\n"
-            "**action_gateway template:**\n"
-            "```yaml\n"
-            + load_template_text("action_gateway")
-            + "```\n\n"
-            "➡️ When connectors are defined (or confirmed empty), call `set_phase('workflow')`."
+            "## Tools phase\n\n"
+            "In this phase you configure the external tools the agent can call via the Action Gateway.\n\n"
+            "**If the user has an OpenAPI spec:**\n"
+            "  1. Ask them to paste it, then call `parse_openapi_spec` to extract candidate tools.\n"
+            "  2. Present the candidates and confirm which ones to add.\n"
+            "  3. Call `add_rest_api_tool` once per confirmed tool.\n\n"
+            "**If the user has an MCP server:**\n"
+            "  1. Ask for the MCP server URL, then call `discover_mcp_tools` to fetch available tools.\n"
+            "  2. Present the list and confirm which ones to add.\n"
+            "  3. Call `add_mcp_tool` once per confirmed tool.\n\n"
+            "**If the user wants to configure a REST API tool manually (no spec):**\n"
+            "  Collect: tool ID, description, base URL, auth type, and at least one endpoint.\n"
+            "  Then call `add_rest_api_tool`.\n\n"
+            "**If no external tools are needed:**\n"
+            "  Confirm with the user and proceed directly.\n\n"
+            "Each `add_rest_api_tool` or `add_mcp_tool` call automatically creates the matching\n"
+            "connector entry in agent_core.connectors so the LLM can route to it.\n\n"
+            "➡️ When all tools are configured (or confirmed none needed), call `set_phase('workflow')`."
         )
 
     if phase == "workflow":
         connector_note = ""
-        if available_connectors:
-            connector_note = f"\n\nAvailable connectors (declared in Connectors phase): {', '.join(available_connectors)}"
+        if available_tools:
+            connector_note = f"\n\nAvailable tools (configured in Tools phase): {', '.join(available_tools)}"
         return (
             "## Workflow Design phase\n\n"
             "**CRITICAL — forbidden keys that will cause validation failure:**\n"

@@ -15,7 +15,7 @@ from pathlib import Path
 import anthropic
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from dev_kit.agent.accumulator import ConfigAccumulator
+from dev_kit.agent.accumulator import PHASES, ConfigAccumulator
 from dev_kit.agent.checkpoints import build_summary, list_checkpoints, restore_checkpoint, save_checkpoint
 from dev_kit.agent.errors import ConversationError
 from dev_kit.agent.prompts.base import build_system_prompt
@@ -173,16 +173,14 @@ class ConversationEngine:
     def _build_system_prompt(self) -> str:
         """Build the system prompt for the current phase and accumulator state."""
         meta = self._state.get("project_meta", {})
-        connectors = list(
-            self.accumulator.get_block("agent_core").get("connectors", {}).keys()
-        )
+        available_tools = [t["id"] for t in self.accumulator.get_action_gateway_tools()]
         return build_system_prompt(
             project_name=meta.get("name", ""),
             project_description=meta.get("description", ""),
             accumulator=self.accumulator,
             phase=self._state["phase"],
             checkpoint_summaries=self._get_checkpoint_summaries(),
-            available_connectors=connectors or None,
+            available_tools=available_tools or None,
         )
 
     async def chat(self, user_message: str) -> dict:
@@ -276,7 +274,7 @@ class ConversationEngine:
             if self._state["phase_changed"]:
                 old_phase = self._state["phase"]
                 new_phase = self._state["phase_changed"]
-                phase_list = ["overview", "language", "knowledge", "memory", "trust", "connectors", "workflow", "observability", "reach", "review"]
+                phase_list = PHASES
                 phase_number = phase_list.index(old_phase) + 1 if old_phase in phase_list else 0
                 phase_label = f"{phase_number:02d}_{old_phase}"
                 save_checkpoint(self._project_path, phase_label, self.accumulator, self._history[:-2])
