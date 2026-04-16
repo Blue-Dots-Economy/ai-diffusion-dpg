@@ -1,21 +1,16 @@
 # Action Gateway
 
-> Status: 🟡 stub — no real ONEST API calls; all responses are fixture data.
+> Status: ✅ production — generic adapter framework
 
-The sole interface between the DPG framework and external systems. Agent Core routes every tool call here; the LLM never calls external APIs directly. Write and identity connectors require Trust Layer consent before execution.
+The sole interface between the DPG framework and external systems. Agent Core routes every LLM-requested tool call here; the LLM never calls external APIs directly. Write and identity connectors require Trust Layer consent before execution.
 
 ---
 
 ## What this service does
 
-When the LLM decides to use a tool, it returns a `tool_use` block to Agent Core. Agent Core sends that request to Action Gateway via `POST /execute`. Action Gateway dispatches to the correct connector, normalises the result, and returns it to Agent Core. The LLM sees only the normalised result — never the raw API response.
+When the LLM decides to use a tool, it returns a `tool_use` block to Agent Core. Agent Core calls `POST /execute` on Action Gateway with the tool name and parameters. Action Gateway looks up the registered adapter for that tool, executes it against the external system, normalises the result, and returns it to Agent Core. The LLM sees only the normalised result — never the raw API response.
 
-Two connectors are implemented for the PoC:
-
-- `onest_market_lookup` — read connector. Returns live labour market data (salary range, demand signal, top employers) for a given trade and location.
-- `onest_apply` — write connector. Submits a job application. Requires Trust Layer consent before Agent Core will call this.
-
-**Write connector rule:** Agent Core calls Trust Layer `POST /check/consent` before executing any `write` or `identity` connector. The PoC always returns `granted: true` for non-blocked connectors.
+Tool definitions live entirely in `action_gateway.yaml` under `tools:[]`. Agent Core fetches the assembled tool list from `GET /tools` at startup and injects it into every LLM request. Adding or removing tools requires only a YAML change and a restart — no code changes.
 
 ---
 
@@ -27,18 +22,29 @@ action_gateway/
 ├── pyproject.toml
 ├── Dockerfile
 ├── config/
-│   ├── dpg.yaml          # Server port (9999), global timeout_ms
-│   └── domain.yaml       # Connector endpoint URLs, per-connector timeout
+│   ├── dpg.yaml          # Framework defaults: server port (9999), global timeout_ms
+│   └── domain.yaml       # Merged at startup with dev-kit/configs/<domain>/action_gateway.yaml
 ├── src/
-│   ├── mock_server.py    # FastAPI mock ONEST API (POST /onest/market_lookup, POST /onest/apply, POST /execute)
-│   └── mock_gateway.py   # MockActionGateway — implements list_available_tools() + execute()
+│   ├── server.py         # FastAPI: GET /tools, POST /execute, GET /health
+│   ├── models.py         # Pydantic request/response types
+│   ├── adapters/
+│   │   ├── base.py       # ToolAdapter ABC
+│   │   ├── rest_api.py   # RestApiAdapter — HTTP connectors
+│   │   └── mcp.py        # McpAdapter — Model Context Protocol servers
+│   └── registry/
+│       ├── adapter_registry.py   # AdapterRegistry: holds instantiated adapters by tool name
+│       └── adapter_factory.py    # AdapterFactory: instantiates adapters from YAML at startup
 └── tests/
-    ├── test_mock_server.py   (31 tests)
-    ├── test_mock_gateway.py  (28 tests)
-    └── test_main.py          (5 tests)
+    ├── test_models.py
+    ├── test_rest_api_adapter.py
+    ├── test_mcp_adapter.py
+    ├── test_adapter_registry.py
+    ├── test_adapter_factory.py
+    ├── test_server.py
+    └── test_main.py
 ```
 
-Total: 64 tests.
+Total: 124 tests.
 
 ---
 
@@ -46,69 +52,34 @@ Total: 64 tests.
 
 The service runs on port **9999**.
 
-### `POST /onest/market_lookup`
+### `GET /tools`
 
-Returns labour market data for a trade and location.
-
-**Request:**
-```json
-{
-  "trade": "electrician",
-  "location": "Hubli",
-  "distance_km": 50
-}
-```
-
-`trade` is required. `location` defaults to `""`. `distance_km` defaults to `50`.
+Returns all registered tool definitions in Anthropic tool-use format. Agent Core calls this once at startup.
 
 **Response:**
 ```json
-{
-  "trade": "electrician",
-  "salary_range": "₹15k–₹28k",
-  "market_signal": "steady signal 12% QoQ",
-  "top_employers": ["Hubli Distribution Co", "Karnataka Power"],
-  "source": "ONEST",
-  "location_queried": "Hubli"
-}
+[
+  {
+    "name": "onest_market_lookup",
+    "description": "Search ONEST live job market data by trade and location.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "trade": { "type": "string", "description": "Trade or occupation to search." },
+        "location": { "type": "string", "description": "City or district." },
+        "distance_km": { "type": "integer", "description": "Search radius in km." }
+      },
+      "required": ["trade"]
+    }
+  }
+]
 ```
-
----
-
-### `POST /onest/apply`
-
-Submits a job application. Always returns success in the PoC.
-
-**Request:**
-```json
-{
-  "trade": "electrician",
-  "employer": "Hubli Distribution Co",
-  "location": "Hubli",
-  "applicant_name": "Rahul"
-}
-```
-
-`trade` and `employer` are required. `location` and `applicant_name` default to `""`.
-
-**Response:**
-```json
-{
-  "status": "success",
-  "reference_number": "APP-X7K2M9",
-  "message": "Application submitted successfully",
-  "employer": "Hubli Distribution Co",
-  "trade": "electrician"
-}
-```
-
-`reference_number` is 6 random alphanumeric characters prefixed with `APP-`.
 
 ---
 
 ### `POST /execute`
 
-Generic router used by Agent Core. Dispatches to the correct connector by `tool_name`.
+Executes a single tool call. Never raises an HTTP error — always returns 200 with `success: false` and a structured error code on failure.
 
 **Request:**
 ```json
@@ -125,18 +96,32 @@ Generic router used by Agent Core. Dispatches to the correct connector by `tool_
 
 `session_id` is optional.
 
-**Response:**
+**Response (success):**
 ```json
 {
   "tool_use_id": "toolu_01abc",
   "success": true,
-  "result": { ... },
+  "result": {
+    "trade": "welder",
+    "salary_range": "₹13k–₹22k",
+    "market_signal": "8% QoQ",
+    "top_employers": ["Hubli Iron Works", "Dharwad Fabrication"]
+  },
   "result_text": "Welder salary range: ₹13k–₹22k ...",
   "error": null
 }
 ```
 
-On failure, `success` is `false`, `error` contains a structured error code (see error codes below), and the endpoint never raises — it always returns 200.
+**Response (failure):**
+```json
+{
+  "tool_use_id": "toolu_01abc",
+  "success": false,
+  "result": null,
+  "result_text": null,
+  "error": "unknown_tool: onest_market_lookup"
+}
+```
 
 Emits OTel span `action.execute` with attributes `dpg.tool_name` and `dpg.tool_status`.
 
@@ -150,86 +135,117 @@ Emits OTel span `action.execute` with attributes `dpg.tool_name` and `dpg.tool_s
 
 ---
 
-## Fixture data
+## YAML config schema
 
-Trade matching is case-insensitive (`Electrician`, `ELECTRICIAN`, and `electrician` all match).
-
-| Trade | Salary Range | Market Signal | Top Employers |
-|-------|-------------|---------------|---------------|
-| electrician | ₹15k–₹28k | steady signal 12% QoQ | Hubli Distribution Co, Karnataka Power |
-| welder | ₹13k–₹22k | 8% QoQ | Hubli Iron Works, Dharwad Fabrication |
-| fitter | ₹14k–₹24k | 10% QoQ | BEML Hubli, KA Manufacturing |
-| plumber / plumbing | ₹12k–₹22k | growing 9% QoQ | Hubli Municipal Corp, KA Infrastructure Projects |
-| carpenter | ₹13k–₹24k | stable 6% QoQ | Dharwad Furniture Hub, Urban Interiors Hubli |
-| mason | ₹14k–₹25k | growing 11% QoQ | KA Construction Co, Hubli Builders Association |
-| driver | ₹14k–₹26k | high demand 15% QoQ | Ola Fleet Hubli, Karnataka Road Transport |
-| tailor | ₹10k–₹18k | stable 5% QoQ | Dharwad Garments, KA Textile Mills |
-| *(any other trade)* | ₹12k–₹20k | stable | Local Contractor Network, District Employment Exchange |
-
----
-
-## Tool definitions (as seen by the LLM)
-
-Agent Core loads these from config and includes them in every LLM request:
+Tools are defined in `dev-kit/configs/<domain>/action_gateway.yaml` under `tools:[]`.
 
 ```yaml
-connectors:
-  read:
+action_gateway:
+  timeout_ms: 5000
+  tools:
     - name: onest_market_lookup
-      description: "Search ONEST live job market data by trade and location"
-      parameters:
-        trade:
+      description: "Search ONEST live job market data by trade and location."
+      type: rest_api          # rest_api | mcp
+      category: read          # read | write | identity
+      auth:
+        type: api_key         # api_key | bearer | none
+        header: X-Api-Key
+        env_var: ONEST_API_KEY
+      endpoints:
+        execute: "https://api.onest.network/v1/market_lookup"
+      params:
+        - name: trade
+          source: agent       # agent (LLM-supplied) | static (config-supplied)
           type: string
           required: true
-        location:
+          description: "Trade or occupation to search."
+        - name: location
+          source: agent
           type: string
-        distance_km:
+          required: false
+          description: "City or district."
+        - name: distance_km
+          source: agent
           type: integer
+          required: false
+          description: "Search radius in km."
 
-  write:
     - name: onest_apply
-      description: "Submit a job application via ONEST"
-      parameters:
-        trade:
+      description: "Submit a job application via ONEST."
+      type: rest_api
+      category: write         # write: Agent Core checks Trust Layer consent before calling /execute
+      auth:
+        type: bearer
+        env_var: ONEST_BEARER_TOKEN
+      endpoints:
+        execute: "https://api.onest.network/v1/apply"
+      params:
+        - name: trade
+          source: agent
           type: string
           required: true
-        employer:
+        - name: employer
+          source: agent
           type: string
           required: true
-        location:
+        - name: location
+          source: agent
           type: string
-        applicant_name:
+          required: false
+        - name: applicant_name
+          source: agent
           type: string
+          required: false
 ```
 
-`onest_apply` is a write connector. Agent Core checks Trust Layer `POST /check/consent` before executing it.
+### Auth types
+
+| Type | Behaviour |
+|---|---|
+| `api_key` | Sends the key in the header named by `auth.header`. Key value read from env var `auth.env_var`. |
+| `bearer` | Sends `Authorization: Bearer <token>`. Token read from env var `auth.env_var`. |
+| `none` | No auth header added. |
+
+### Param sources
+
+| Source | Behaviour |
+|---|---|
+| `agent` | Value supplied by the LLM in the `tool_use` block. Validated against `type` and `required`. |
+| `static` | Value read from config at startup. Never exposed to the LLM. |
+
+### Write connector rule
+
+Tools with `category: write` or `category: identity` require Trust Layer consent before Agent Core calls `POST /execute`. The gateway itself does not enforce this — it is enforced by Agent Core before routing to the gateway.
 
 ---
 
-## Error codes
+## Adding new tools
 
-`MockActionGateway.execute()` never raises. On failure it returns `success: false` with one of these error codes:
-
-| Condition | Error code |
-|-----------|-----------|
-| Unknown tool name | `unknown_tool: {tool_name}` |
-| Lookup request timed out | `onest_lookup_timeout` |
-| Apply request timed out | `apply_timeout` |
-| HTTP error from mock server | `onest_http_error: {status_code}` |
-| Any other exception | `onest_error: {ExceptionType}` |
+1. Add a `tools[]` entry to `dev-kit/configs/<domain>/action_gateway.yaml` with the tool's `type`, `category`, `auth`, `endpoints`, and `params`.
+2. Restart Action Gateway. `AdapterFactory` instantiates the adapter at startup — no code changes required.
+3. Agent Core picks up the new tool definition on next startup via `GET /tools`.
 
 ---
 
-## Configuration
+## Adding new adapter types
 
-| Key | Description |
-|-----|-------------|
-| `server.port` | HTTP port (default: `9999`) |
-| `action_gateway.timeout_ms` | Global request timeout in milliseconds (default: `5000`) |
-| `action_gateway.connectors.{tool_name}.endpoint` | Endpoint URL for the connector |
-| `action_gateway.connectors.{tool_name}.timeout_ms` | Per-connector timeout override |
+1. Implement `ToolAdapter` ABC in `action_gateway/src/adapters/`:
+   ```python
+   from action_gateway.src.adapters.base import ToolAdapter
 
-Config is loaded once at startup by deep-merging `config/dpg.yaml` (framework defaults) with `config/domain.yaml` (domain overrides).
+   class DatabaseAdapter(ToolAdapter):
+       def execute(self, tool_name: str, input_params: dict) -> dict: ...
+       def get_tool_definition(self, tool_name: str) -> dict: ...
+   ```
+2. Register the class in `ADAPTER_TYPES` in `action_gateway/src/registry/adapter_factory.py`:
+   ```python
+   ADAPTER_TYPES = {
+       "rest_api": RestApiAdapter,
+       "mcp": McpAdapter,
+       "database": DatabaseAdapter,   # add here
+   }
+   ```
+3. Add tests in `tests/test_database_adapter.py`.
 
 ---
 
@@ -237,7 +253,7 @@ Config is loaded once at startup by deep-merging `config/dpg.yaml` (framework de
 
 ```bash
 cd action_gateway
-uv run uvicorn src.mock_server:app --port 9999
+uv run python main.py
 ```
 
 ---
@@ -259,18 +275,9 @@ uvicorn[standard]                        >= 0.29
 httpx                                    >= 0.27
 pydantic                                 >= 2.0
 pyyaml                                   >= 6.0
+mcp                                      >= 1.0
 observability-layer                      (local path)
 opentelemetry-instrumentation-fastapi
 ```
 
 Requires Python 3.11+.
-
----
-
-## Adding new connectors
-
-1. Add a new endpoint to `src/mock_server.py` with the mock response (or point to a real API endpoint).
-2. Add the tool definition to the domain config under `connectors.read` or `connectors.write`.
-3. Add the connector's `endpoint` and `timeout_ms` under `action_gateway.connectors.{tool_name}` in `config/domain.yaml`.
-4. If it is a `write` connector, consent gating is automatic — Agent Core checks Trust Layer before calling `POST /execute`.
-5. The LLM picks up the new tool definition on next startup.

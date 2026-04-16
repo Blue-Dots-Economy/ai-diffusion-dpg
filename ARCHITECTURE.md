@@ -225,24 +225,45 @@ Mandatory safety gate. Stateless. Runs on every turn — never skipped. Structur
 
 ---
 
-### Action Gateway 🟡
+### Action Gateway ✅
 
 Sole interface with external systems. Executes tool calls expressed by the LLM. LLM never calls APIs directly. Write/identity connectors require Trust Layer consent before execution.
 
-**Current stub:** `MockActionGateway` calls `mock_server.py` which returns hardcoded fixture data (10 fixture trades).
+**Architecture:** Generic adapter framework. Each external tool is described in `action_gateway.yaml` under `tools:[]`; the gateway instantiates the correct adapter at startup based on `type`. Agent Core fetches the full tool-definition list at startup via `GET /tools` and includes it in every LLM request.
 
-**Available tools (KKB domain):**
+**Adapter types:**
 
-| Tool | Endpoint | Type | Description |
+| Type | Class | Status | Description |
 |---|---|---|---|
-| `onest_market_lookup` | `POST /execute` | read | Returns trade, salary range, market signal, top employers. 10 fixture trades. |
-| `onest_apply` | `POST /onest/apply` | write | Submits job application. Requires Trust Layer consent. Returns `applied: true` for all requests. |
+| `rest_api` | `RestApiAdapter` | ✅ | Calls external HTTP APIs. Supports `api_key`, `bearer`, and `none` auth. Params sourced from `agent` (LLM-supplied) or `static` (config). |
+| `mcp` | `McpAdapter` | ✅ | Connects to MCP servers via the Model Context Protocol. Tool definitions fetched from server at startup. |
+| `database` | — | ⏳ | Reserved |
+| `file_upload` | — | ⏳ | Reserved |
+| `gRPC` | — | ⏳ | Reserved |
+| `GraphQL` | — | ⏳ | Reserved |
+
+**Adding a new tool:** Add a `tools[]` entry in `action_gateway.yaml` (type, category, auth, endpoints, params) and restart. No code changes required.
+
+**Adding a new adapter type:** Implement `ToolAdapter` ABC (`src/adapters/base.py`) and register the class in `ADAPTER_TYPES` in `src/registry/adapter_factory.py`.
+
+**Endpoints:**
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /tools` | Returns tool definitions in Anthropic tool-use format. Agent Core fetches this at startup. |
+| `POST /execute` | Executes a single tool call. Never raises — returns `success: false` with structured error on failure. |
+| `GET /health` | Liveness probe. |
 
 **Key files:**
-- `action_gateway/src/mock_gateway.py`
-- `action_gateway/src/mock_server.py` — FastAPI mock ONEST API on port 9999; endpoints: `/execute`, `/onest/apply`
+- `action_gateway/src/server.py` — FastAPI: `GET /tools`, `POST /execute`, `GET /health`
+- `action_gateway/src/adapters/base.py` — `ToolAdapter` ABC
+- `action_gateway/src/adapters/rest_api.py` — `RestApiAdapter`
+- `action_gateway/src/adapters/mcp.py` — `McpAdapter`
+- `action_gateway/src/registry/adapter_registry.py` — `AdapterRegistry`: holds all instantiated adapters
+- `action_gateway/src/registry/adapter_factory.py` — `AdapterFactory`: instantiates adapters from YAML config
+- `action_gateway/src/models.py` — Pydantic request/response types
 
-**Tests:** 64 tests.
+**Tests:** 124 tests.
 
 ---
 
@@ -388,6 +409,8 @@ Only Agent Core initiates calls to other blocks. No other cross-module calls exi
 
 > **Approved exception — Reach Layer web channel:** The web channel's session-restore feature (`GET /user-history/{user_id}` in `reach_layer/server.py`) makes a direct call to the Memory Layer to load chat history before the first turn. This is a deliberate, scoped exception for the dev/demo web adapter only. All other Reach Layer → Memory Layer calls are still prohibited. Future production channel adapters must route state retrieval through Agent Core.
 
+> **Planned exception — Action Gateway caching (#18):** When caching is implemented, Action Gateway will call Knowledge Engine and Memory Layer to read/write cached tool results. This is not yet implemented. For now, Action Gateway only talks to external APIs and MCP servers.
+
 ---
 
 ## 6. Configuration Architecture
@@ -438,6 +461,8 @@ dev-kit/
 ### Rule: nothing domain-specific may be hardcoded
 
 Model names, persona text, tool definitions, guardrail rules, intent definitions, connector endpoints, TTLs, thresholds, and graph edge types must all come from YAML. Config is read once at startup. Never re-read inside request paths.
+
+> **Note — External tool definitions:** Tool definitions for external connectors (name, description, parameters, auth, endpoints) live in `action_gateway.yaml` under `tools:[]`, not in `agent_core.yaml`. Agent Core fetches the assembled tool list from Action Gateway at startup via `GET /tools` and injects it into the LLM request. This keeps tool schema ownership with Action Gateway and removes the need to duplicate connector config in `agent_core.yaml`.
 
 ---
 
@@ -524,7 +549,7 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 | Knowledge Engine | ✅ | Glossary, ChromaDB RAG, HTTP server (`POST /retrieve`). 117 tests, ≥70% coverage. |
 | Memory Layer | ✅ | Redis (session/profile) + Memgraph (context graph) + SQLite (audit). 10 HTTP endpoints. 200 tests. |
 | Trust Layer | 🟡 | All 4 sub-blocks implemented. Fail-closed. HiTL: log backend only. Consent: in-process SQLite. |
-| Action Gateway | 🟡 | Mock ONEST API: market_lookup + apply. 10 fixture trades. 64 tests. |
+| Action Gateway | ✅ | Generic adapter framework (RestApiAdapter + McpAdapter). Config-driven via `tools:[]` in `action_gateway.yaml`. Agent Core fetches tool defs at startup via `GET /tools`. 124 tests. |
 | Reach Layer | 🟡 | CLI + Web (port 8005). Web calls Memory Layer for session restore (approved exception). Telephony Adapter (port 8006): WebSocket media stream, STT/TTS via Raya, 48 tests, 92% coverage. |
 | Observability Layer | 🟡 | OTel instrumentation functional. Audit = Loki+Jaeger via OTel Collector. Grafana dashboards pending. |
 
@@ -553,7 +578,8 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 | Orchestrator consent gate | ✅ | Consent gate implemented in orchestrator; user_storage_mode flag logic active |
 | Fail-closed Trust Layer | ✅ | All endpoints and AC HTTP client are fail-closed (resolved) |
 | Reach Layer web adapter | ✅ | Web UI + POST /chat + session restore via Memory Layer (approved exception) |
-| Real ONEST connector | ⏳ | Replace MockActionGateway |
+| Action Gateway adapter framework | ✅ | RestApiAdapter + McpAdapter; config-driven via `tools:[]` |
+| Real ONEST connector | ⏳ | Add ONEST tool entry to `action_gateway.yaml` once live API is available |
 | Telephony adapter (VoBiz/Exotel) | 🟡 | `telephony_adapter/` — WebSocket media stream, STT/TTS, Agent Core integration, outbound campaign endpoint |
 | WhatsApp/Mobile channels | ⏳ | Replace CLIReachLayer for production |
 | Grafana dashboard provisioning | ⏳ | `automation/docker/grafana/provisioning/` not yet implemented |
@@ -572,9 +598,11 @@ Each stub implements the exact same abstract base class interface. Swapping requ
 
 ### Action Gateway
 
-1. Implement `ActionGatewayBase` (`agent_core/src/interfaces/action_gateway.py`): `list_available_tools()`, `execute()`.
-2. Replace fixture responses with real ONEST API calls. Add mandatory field validation for `onest_apply`.
-3. Wire into `action_gateway/src/server.py`.
+The adapter framework is production-ready. To connect a new external API:
+
+1. Add a `tools[]` entry to `dev-kit/configs/<domain>/action_gateway.yaml` with `type: rest_api` (or `mcp`), auth config, endpoint URLs, and parameter definitions.
+2. Restart — `AdapterFactory` instantiates the adapter from config. No code changes required.
+3. To support a new adapter type (e.g. `database`, `gRPC`), implement `ToolAdapter` ABC in `action_gateway/src/adapters/` and register the class in `ADAPTER_TYPES` in `action_gateway/src/registry/adapter_factory.py`.
 
 ### Reach Layer
 
