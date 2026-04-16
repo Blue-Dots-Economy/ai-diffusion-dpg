@@ -28,12 +28,11 @@ class ToolRegistry:
         if config is None:
             raise ValueError("config must not be None")
         
-        # 1. Build consent set from config
-        self._consent_tools: set[str] = self._build_consent_set(config)
-        
-        # 2. Extract tools from Gateway (Client already parsed domain.yaml)
-        # Note: action_gateway_http_client already returns read/write/identity
+        # 2. Extract tools from Gateway (fetched from /tools at startup)
         self._tool_definitions = gateway.list_available_tools()
+
+        # 1. Build consent set from gateway tool category field
+        self._consent_tools: set[str] = self._build_consent_set(self._tool_definitions)
         
         # 3. Add internal tools from config (not handled by AG client)
         internal_tools, tool_routes = self._load_internal_tools(config)
@@ -77,14 +76,22 @@ class ToolRegistry:
         """
         return self._tool_routes.get(tool_name)
 
-    def _build_consent_set(self, config: dict) -> set[str]:
+    def _build_consent_set(self, gateway_tools: list[dict]) -> set[str]:
+        """Build the set of tool names that require user consent before execution.
+
+        Consent is required for tools with category ``write`` or ``identity``,
+        as declared by the Action Gateway in the tool definition.
+
+        Args:
+            gateway_tools: Tool definitions returned by the Action Gateway /tools endpoint.
+
+        Returns:
+            Set of tool names that require consent.
+        """
         consent_tools: set[str] = set()
-        connectors = config.get("connectors", {})
-        for c_type, c_list in connectors.items():
-            if c_type in _CONSENT_REQUIRED_TYPES:
-                for c in c_list or []:
-                    if c.get("name"):
-                        consent_tools.add(c["name"])
+        for tool in gateway_tools or []:
+            if tool.get("category") in _CONSENT_REQUIRED_TYPES and tool.get("name"):
+                consent_tools.add(tool["name"])
         return consent_tools
 
     def _load_internal_tools(self, config: dict) -> tuple[list[dict], dict[str, str]]:

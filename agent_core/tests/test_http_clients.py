@@ -43,25 +43,7 @@ _BASE_CONFIG = {
     "trust_client": {"endpoint": "http://localhost:8003", "timeout_ms": 2000},
     "learning_client": {"endpoint": "http://localhost:8004", "timeout_ms": 2000},
     "ke_client": {"endpoint": "http://localhost:8001/retrieve", "timeout_ms": 8000},
-    "action_gateway_client": {"endpoint": "http://localhost:9999/onest/market_lookup", "timeout_ms": 5000},
-    "connectors": {
-        "read": [
-            {
-                "name": "onest_market_lookup",
-                "description": "Search ONEST live job market data by trade and location.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "trade": {"type": "string", "description": "Trade to search for"},
-                        "location": {"type": "string", "description": "City or district"},
-                    },
-                    "required": ["trade"],
-                },
-            }
-        ],
-        "write": [],
-        "identity": [],
-    },
+    "action_gateway_client": {"endpoint": "http://localhost:9999", "timeout_ms": 5000},
 }
 
 
@@ -453,18 +435,42 @@ class TestActionGatewayHttpClientInit:
             ActionGatewayHttpClient(None)
 
 
+_GATEWAY_TOOLS = [
+    {
+        "name": "onest_market_lookup",
+        "description": "Search ONEST live job market data.",
+        "category": "read",
+        "input_schema": {"type": "object", "properties": {"trade": {"type": "string"}}, "required": ["trade"]},
+    }
+]
+
+
+def _mock_get_tools(tools=None):
+    """Return a mock for httpx.get that responds with tool definitions."""
+    if tools is None:
+        tools = _GATEWAY_TOOLS
+    return _mock_response({"tools": tools})
+
+
 class TestActionGatewayListTools:
     def test_returns_list_of_dicts(self):
-        client = ActionGatewayHttpClient(_BASE_CONFIG)
+        with patch("httpx.get", return_value=_mock_get_tools()):
+            client = ActionGatewayHttpClient(_BASE_CONFIG)
         tools = client.list_available_tools()
         assert isinstance(tools, list)
         assert len(tools) >= 1
         assert "name" in tools[0]
 
     def test_onest_tool_present(self):
-        client = ActionGatewayHttpClient(_BASE_CONFIG)
+        with patch("httpx.get", return_value=_mock_get_tools()):
+            client = ActionGatewayHttpClient(_BASE_CONFIG)
         names = [t["name"] for t in client.list_available_tools()]
         assert "onest_market_lookup" in names
+
+    def test_fetch_failure_returns_empty_list(self):
+        with patch("httpx.get", side_effect=RuntimeError("unreachable")):
+            client = ActionGatewayHttpClient(_BASE_CONFIG)
+        assert client.list_available_tools() == []
 
 
 class TestActionGatewayExecute:
@@ -475,55 +481,43 @@ class TestActionGatewayExecute:
             input_params={"trade": "electrician", "location": "Hubli"},
         )
 
-    def _mock_client(self, mock_post_return=None, mock_post_side_effect=None):
-        """Return a context-manager-compatible httpx.Client mock."""
-        mock_client_cls = MagicMock()
-        mock_http = MagicMock()
-        mock_client_cls.return_value.__enter__.return_value = mock_http
-        mock_client_cls.return_value.__exit__.return_value = False
-        if mock_post_side_effect is not None:
-            mock_http.post.side_effect = mock_post_side_effect
-        else:
-            mock_http.post.return_value = mock_post_return
-        return mock_client_cls
+    def _make_client(self):
+        with patch("httpx.get", return_value=_mock_get_tools()):
+            return ActionGatewayHttpClient(_BASE_CONFIG)
 
     def test_success_returns_tool_result(self):
-        client = ActionGatewayHttpClient(_BASE_CONFIG)
+        client = self._make_client()
         inner_result = {"salary_range": "12000-18000", "market_signal": "growing"}
         gw_response = {"tool_use_id": "tu_1", "result": inner_result, "success": True, "result_text": ""}
-        mock_cls = self._mock_client(mock_post_return=_mock_response(gw_response))
-        with patch("httpx.Client", mock_cls):
+        with patch("httpx.post", return_value=_mock_response(gw_response)):
             result = client.execute(self._make_tool_call(), "s1")
         assert isinstance(result, ToolResult)
         assert result.success is True
         assert result.result == inner_result
 
     def test_timeout_returns_failure_result(self):
-        client = ActionGatewayHttpClient(_BASE_CONFIG)
-        mock_cls = self._mock_client(mock_post_side_effect=httpx.TimeoutException("timeout"))
-        with patch("httpx.Client", mock_cls):
+        client = self._make_client()
+        with patch("httpx.post", side_effect=httpx.TimeoutException("timeout")):
             result = client.execute(self._make_tool_call(), "s1")
         assert result.success is False
         assert "timeout" in result.error.lower()
 
     def test_http_error_returns_failure_result(self):
-        client = ActionGatewayHttpClient(_BASE_CONFIG)
+        client = self._make_client()
         with patch("httpx.post", side_effect=_mock_http_error(503)):
             result = client.execute(self._make_tool_call(), "s1")
         assert result.success is False
 
     def test_generic_exception_returns_failure_result(self):
-        client = ActionGatewayHttpClient(_BASE_CONFIG)
+        client = self._make_client()
         with patch("httpx.post", side_effect=RuntimeError("boom")):
             result = client.execute(self._make_tool_call(), "s1")
         assert result.success is False
 
     def test_unknown_tool_returns_failure_result(self):
-        # Source sends any tool name to the gateway and returns failure on errors.
-        client = ActionGatewayHttpClient(_BASE_CONFIG)
+        client = self._make_client()
         unknown = ToolCall(tool_name="unknown_tool", tool_use_id="tu_x", input_params={})
-        mock_cls = self._mock_client(mock_post_side_effect=RuntimeError("gateway rejected"))
-        with patch("httpx.Client", mock_cls):
+        with patch("httpx.post", side_effect=RuntimeError("gateway rejected")):
             result = client.execute(unknown, "s1")
         assert result.success is False
 

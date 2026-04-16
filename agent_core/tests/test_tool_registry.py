@@ -35,9 +35,9 @@ def _make_gateway(tools: list[dict]) -> MagicMock:
     return gateway
 
 
-READ_TOOL = {"name": "search_records", "description": "Search", "input_schema": {}}
-WRITE_TOOL = {"name": "submit_form", "description": "Submit", "input_schema": {}}
-IDENTITY_TOOL = {"name": "verify_id", "description": "Verify", "input_schema": {}}
+READ_TOOL = {"name": "search_records", "description": "Search", "category": "read", "input_schema": {}}
+WRITE_TOOL = {"name": "submit_form", "description": "Submit", "category": "write", "input_schema": {}}
+IDENTITY_TOOL = {"name": "verify_id", "description": "Verify", "category": "identity", "input_schema": {}}
 
 VALID_CONFIG = {
     "connectors": {
@@ -86,23 +86,21 @@ def test_get_tool_names_returns_set_of_names():
 
 
 def test_write_tool_requires_consent():
+    # Consent is derived from the 'category' field on gateway tool definitions.
     gateway = _make_gateway([WRITE_TOOL])
-    config = {"connectors": {"write": [{"name": "submit_form"}]}}
-    registry = ToolRegistry(config=config, gateway=gateway)
+    registry = ToolRegistry(config={}, gateway=gateway)
     assert registry.requires_consent("submit_form") is True
 
 
 def test_identity_tool_requires_consent():
     gateway = _make_gateway([IDENTITY_TOOL])
-    config = {"connectors": {"identity": [{"name": "verify_id"}]}}
-    registry = ToolRegistry(config=config, gateway=gateway)
+    registry = ToolRegistry(config={}, gateway=gateway)
     assert registry.requires_consent("verify_id") is True
 
 
 def test_read_tool_does_not_require_consent():
     gateway = _make_gateway([READ_TOOL])
-    config = {"connectors": {"read": [{"name": "search_records"}]}}
-    registry = ToolRegistry(config=config, gateway=gateway)
+    registry = ToolRegistry(config={}, gateway=gateway)
     assert registry.requires_consent("search_records") is False
 
 

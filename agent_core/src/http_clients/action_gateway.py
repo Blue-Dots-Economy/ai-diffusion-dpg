@@ -1,8 +1,8 @@
 """
 agent_core/src/http_clients/action_gateway.py
 
-Generic HTTP client for the Action Gateway DPG. 
-Implements a single-endpoint tool execution pattern to maintain domain-agnosticism.
+HTTP client for the Action Gateway DPG block.
+Fetches tool definitions from GET /tools at startup and routes tool calls via POST /execute.
 """
 
 from __future__ import annotations
@@ -18,116 +18,114 @@ from src.models import ToolCall, ToolResult
 logger = logging.getLogger(__name__)
 
 
-def _build_tool_definitions(config: dict) -> list[dict]:
-    """
-    Build Anthropic-formatted tool definitions from the connectors config.
-    Normally this would fetch from the Gateway, but for the PoC we derive 
-    from domain.yaml to ensure local consistency.
-    """
-    definitions: list[dict] = []
-    connectors = config.get("connectors", {})
-    
-    # Iterate through external connector types only (read, write, identity).
-    # Internal connectors (e.g. knowledge_retrieval) are loaded separately by
-    # ToolRegistry._load_internal_tools() and routed to the Knowledge Engine,
-    # not through the Action Gateway /execute endpoint.
-    for connector_type in ("read", "write", "identity"):
-        for connector in connectors.get(connector_type, []) or []:
-            name = connector.get("name")
-            description = connector.get("description", "")
-            input_schema = connector.get("input_schema")
-            
-            if not name or not input_schema:
-                logger.warning(
-                    "action_gateway_client.skip_connector",
-                    extra={"connector_name": name or "(unnamed)"}
-                )
-                continue
-                
-            definitions.append({
-                "name": name,
-                "description": description,
-                "input_schema": input_schema,
-            })
-            
-    return definitions
-
-
 class ActionGatewayHttpClient(ActionGatewayBase):
-    """
-    Domain-agnostic HTTP client that routes all tool calls to a generic 
-    Action Gateway execution endpoint.
+    """HTTP client for the Action Gateway service.
+
+    Fetches tool definitions from GET /tools at startup.
+    Routes tool calls via POST /execute.
     """
 
     def __init__(self, config: dict) -> None:
+        """Initialise the client and fetch tool definitions from the gateway.
+
+        Args:
+            config: Merged runtime config dict. Must contain
+                ``action_gateway_client.endpoint`` (base URL).
+
+        Raises:
+            ValueError: If config is None.
+        """
         if config is None:
             raise ValueError("config must not be None")
 
-        client_cfg = config.get("action_gateway_client", {})
-        self._endpoint: str = client_cfg.get(
-            "endpoint", "http://localhost:9999/execute"
-        )
-        self._timeout_s: float = client_cfg.get("timeout_ms", 5000) / 1000
-        
-        # Pre-compute definitions from config (derived from domain.yaml)
-        self._tool_definitions: list[dict] = _build_tool_definitions(config)
+        gw_config = config.get("action_gateway_client", {})
+        self._base_url = gw_config.get("endpoint", "http://action_gateway:9999").rstrip("/")
+        self._timeout_ms = gw_config.get("timeout_ms", 5000)
+        self._timeout_s = self._timeout_ms / 1000.0
+        self._tool_definitions = self._fetch_tool_definitions()
 
-        logger.info(
-            "action_gateway_http_client.init",
-            extra={
-                "endpoint": self._endpoint,
-                "timeout_s": self._timeout_s,
-                "tools_loaded": [t["name"] for t in self._tool_definitions]
-            },
-        )
+    def _fetch_tool_definitions(self) -> list[dict]:
+        """Fetch Anthropic-formatted tool definitions from GET /tools.
+
+        Returns:
+            List of tool definition dicts; empty list on failure.
+        """
+        try:
+            resp = httpx.get(f"{self._base_url}/tools", timeout=self._timeout_s)
+            resp.raise_for_status()
+            data = resp.json()
+            tools = data.get("tools", [])
+            logger.info(
+                "action_gateway_client.fetch_tools",
+                extra={
+                    "operation": "fetch_tool_definitions",
+                    "status": "success",
+                    "tools_count": len(tools),
+                },
+            )
+            return tools
+        except Exception as e:
+            logger.error(
+                "action_gateway_client.fetch_tools",
+                extra={
+                    "operation": "fetch_tool_definitions",
+                    "status": "failure",
+                    "error": f"{type(e).__name__}: {e}",
+                },
+            )
+            return []
 
     def list_available_tools(self) -> list[dict]:
-        """Return the pre-computed tool definitions."""
-        return list(self._tool_definitions)
+        """Return the tool definitions fetched at startup.
+
+        Returns:
+            Cached list of Anthropic-formatted tool definition dicts.
+        """
+        return self._tool_definitions
 
     def execute(self, tool_call: ToolCall, session_id: str) -> ToolResult:
-        """
-        Execute a single tool call via the generic Action Gateway router.
+        """Execute a single tool call via POST /execute.
+
+        Args:
+            tool_call: The tool call to execute.
+            session_id: Current session identifier for routing context.
+
+        Returns:
+            ToolResult with success/failure status and result data.
+
+        Raises:
+            ValueError: If tool_call is None.
         """
         if tool_call is None:
             raise ValueError("tool_call must not be None")
 
-        payload = {
-            "tool_name": tool_call.tool_name,
-            "tool_use_id": tool_call.tool_use_id,
-            "input_params": tool_call.input_params,
-            "session_id": session_id,
-        }
-
         try:
-            logger.info(
-                "action_gateway.execute_request",
-                extra={
+            resp = httpx.post(
+                f"{self._base_url}/execute",
+                json={
                     "tool_name": tool_call.tool_name,
+                    "tool_use_id": tool_call.tool_use_id,
+                    "input_params": tool_call.input_params,
                     "session_id": session_id,
                 },
+                timeout=self._timeout_s,
             )
-
-            with httpx.Client(timeout=self._timeout_s) as client:
-                res = client.post(self._endpoint, json=payload)
-                res.raise_for_status()
-                data = res.json()
-
+            data = resp.json()
             return ToolResult(
-                tool_use_id=data["tool_use_id"],
-                tool_name=tool_call.tool_name,
+                tool_use_id=data.get("tool_use_id", tool_call.tool_use_id),
+                tool_name=data.get("tool_name", tool_call.tool_name),
                 result=data.get("result", {}),
-                success=data.get("success", True),
+                success=data.get("success", False),
                 result_text=data.get("result_text", ""),
                 error=data.get("error"),
             )
-
-        except Exception as e:
+        except httpx.TimeoutException:
             logger.error(
-                "action_gateway.execution_failed",
+                "action_gateway_client.execute",
                 extra={
-                    "tool_name": tool_call.tool_name,
-                    "error": str(e),
+                    "operation": f"execute.{tool_call.tool_name}",
+                    "status": "failure",
+                    "error": "timeout",
                 },
             )
             return ToolResult(
@@ -135,6 +133,21 @@ class ActionGatewayHttpClient(ActionGatewayBase):
                 tool_name=tool_call.tool_name,
                 result={},
                 success=False,
-                result_text="",
-                error=f"Action Gateway error: {str(e)}",
+                error=f"gateway_timeout: {tool_call.tool_name}",
+            )
+        except Exception as e:
+            logger.error(
+                "action_gateway_client.execute",
+                extra={
+                    "operation": f"execute.{tool_call.tool_name}",
+                    "status": "failure",
+                    "error": f"{type(e).__name__}: {e}",
+                },
+            )
+            return ToolResult(
+                tool_use_id=tool_call.tool_use_id,
+                tool_name=tool_call.tool_name,
+                result={},
+                success=False,
+                error=f"gateway_error: {type(e).__name__}: {e}",
             )
