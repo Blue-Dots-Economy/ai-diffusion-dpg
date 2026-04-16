@@ -1,13 +1,18 @@
 # dev-kit/dpg/action_gateway.yaml
-# DPG framework defaults for Action Gateway — same for any domain deployment.
-# Connector definitions and external endpoints are domain-specific — never put them here.
+# Framework defaults for Action Gateway.
+# Domain config overrides these values.
 
 server:
   host: "0.0.0.0"
   port: 9999
 
+tools: []
+
 action_gateway:
   timeout_ms: 5000
+
+response:
+  default_max_size_chars: 4000
 
 observability:
   otel:

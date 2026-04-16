@@ -3,13 +3,7 @@
 # This file is the template a domain integrator fills in.
 # For local dev, set CONFIG_FOLDER in .env.local to point to your domain configs folder.
 
-action_gateway:
-  connectors: {}  # Required. Map of connector_name → {endpoint, timeout_ms}.
-                  # Keys must match connector names declared in agent_core domain config.
-                  # Example:
-                  #   my_connector:
-                  #     endpoint: "http://localhost:9999/my_connector"
-                  #     timeout_ms: 5000
+tools: []
 
 observability:
-  domain: ""  # Required. Domain identifier (e.g. "kkb", "farmer_friendly").
+  domain: ""

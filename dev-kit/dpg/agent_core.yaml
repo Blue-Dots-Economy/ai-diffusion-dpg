@@ -37,7 +37,7 @@ learning_client:
   timeout_ms: 2000
 
 action_gateway_client:
-  endpoint: "http://action_gateway:9999/execute"
+  endpoint: "http://action_gateway:9999"
   timeout_ms: 5000
 
 # Reach Layer channel config — grouped here because TurnAssembler is an
