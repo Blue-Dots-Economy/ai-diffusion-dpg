@@ -825,29 +825,109 @@ class ActionGatewayConfig(BaseModel):
 # Reach Layer
 # ---------------------------------------------------------------------------
 
-class CLIConfig(BaseModel):
-    prompt: str = "You: "
-    agent_prefix: str = "Agent: "
+
+class CLIChannelConfig(BaseModel):
+    """Configuration for the CLI (stdin/stdout) channel adapter."""
+
+    prompt: str = Field(default="You: ", description="Prompt prefix shown before user input")
+    agent_prefix: str = Field(default="Agent: ", description="Prefix shown before agent replies")
+
+
+class WebAuthConfig(BaseModel):
+    """Authentication settings for the web channel."""
+
+    enabled: bool = Field(default=False, description="Whether Google OAuth is enabled")
+    google_client_id: str = Field(default="", description="Google OAuth2 client ID")
+    cookie_secure: bool = Field(
+        default=True,
+        description="Set Secure flag on session cookie. False for local http:// dev.",
+    )
+
+
+class WebChannelConfig(BaseModel):
+    """Configuration for the web channel adapter (React frontend)."""
+
+    auth: WebAuthConfig = Field(default_factory=WebAuthConfig)
+    ui: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Web UI branding and copy. Common keys: app_name, app_tagline, app_icon, "
+            "agent_avatar, user_avatar, setup_heading, setup_subtitle, user_id_placeholder, "
+            "user_id_hint, start_btn_label, new_session_msg, returning_user_msg, "
+            "storage_key, theme_storage_key, sign_out_confirm, switch_user_confirm, "
+            "delete_conversation_confirm"
+        ),
+    )
+
+
+class RayaSTTTTSConfig(BaseModel):
+    """Raya STT/TTS configuration for the voice channel."""
+
+    stt_language: str = Field(..., description="BCP-47 language code for speech-to-text, e.g. 'hi', 'en'")
+    tts_language: str = Field(..., description="BCP-47 language code for text-to-speech")
+    voice_id: str = Field(..., description="Voice ID for the TTS provider")
+
+
+class VoiceAgentCoreConfig(BaseModel):
+    """Agent Core connection settings for the voice channel."""
+
+    timeout_ms: int = Field(default=15000, description="Agent Core call timeout in milliseconds")
+    greeting: str = Field(default="", description="First message spoken to the user when voice session starts")
+    fallback_phrase: str = Field(default="", description="Phrase spoken when STT fails or input is unintelligible")
+
+
+class VoiceChannelConfig(BaseModel):
+    """Configuration for the voice (VOIP/Raya) channel adapter."""
+
+    raya: RayaSTTTTSConfig = Field(..., description="Raya STT/TTS language and voice settings")
+    agent_core: VoiceAgentCoreConfig = Field(
+        default_factory=VoiceAgentCoreConfig,
+        description="Agent Core connection settings for voice",
+    )
+
+
+class ChannelsConfig(BaseModel):
+    """Per-channel configuration. Omit channels that are not deployed."""
+
+    cli: CLIChannelConfig | None = Field(default=None, description="CLI channel config. None = not deployed.")
+    web: WebChannelConfig | None = Field(default=None, description="Web channel config. None = not deployed.")
+    voice: VoiceChannelConfig | None = Field(default=None, description="Voice channel config. None = not deployed.")
+
+
+class CommonReachConfig(BaseModel):
+    """Common settings shared across all channels."""
+
+    observability: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Observability settings. At minimum: {domain: 'your_domain_slug'}",
+    )
 
 
 class ReachLayerSettings(BaseModel):
-    cli: CLIConfig = CLIConfig()
+    """Top-level reach layer settings wrapping channel configs."""
+
+    common: CommonReachConfig = Field(default_factory=CommonReachConfig)
+    channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
 
 
 class AgentCoreClientConfig(BaseModel):
-    endpoint: str
-    timeout_s: float = 30.0
+    """Agent Core HTTP client settings for the Reach Layer."""
+
+    endpoint: str = Field(default="http://agent_core:8000", description="Agent Core base URL")
+    timeout_s: float = Field(default=30.0, description="HTTP request timeout in seconds")
 
 
 class ReachLayerConfig(BaseModel):
-    server: ServerConfig
-    reach_layer: ReachLayerSettings
-    agent_core_client: AgentCoreClientConfig
-    ui: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Web UI configuration for the web channel adapter. "
-                    "Keys vary by domain. Common keys: app_name, app_tagline, app_icon, "
-                    "storage_key, setup_heading, new_session_msg, returning_user_msg.",
+    """Top-level config for the Reach Layer domain config file."""
+
+    server: ServerConfig = Field(
+        default_factory=lambda: ServerConfig(port=3000),
+        description="HTTP server bind settings for the Reach Layer",
+    )
+    reach_layer: ReachLayerSettings = Field(default_factory=ReachLayerSettings)
+    agent_core_client: AgentCoreClientConfig = Field(
+        default_factory=AgentCoreClientConfig,
+        description="Agent Core HTTP client settings",
     )
 
 
