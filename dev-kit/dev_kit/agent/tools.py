@@ -309,6 +309,37 @@ TOOL_DEFINITIONS: list[dict] = [
 ]
 
 # ---------------------------------------------------------------------------
+# Transport helpers
+# ---------------------------------------------------------------------------
+
+
+def _parse_sse_json(text: str) -> dict | None:
+    """Extract the first JSON-RPC payload from an SSE response body.
+
+    SSE lines have the form ``data: <json>``.  This function scans the
+    response text for the first such line and returns the parsed dict, or
+    ``None`` if no ``data:`` line is found or the payload is not valid JSON.
+
+    Args:
+        text: Raw response body string.
+
+    Returns:
+        Parsed dict from the first ``data:`` line, or None.
+    """
+    import json
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("data:"):
+            payload = stripped[len("data:"):].strip()
+            try:
+                return json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Handler dispatch
 # ---------------------------------------------------------------------------
 
@@ -569,6 +600,11 @@ class ToolHandler:
     def _handle_discover_mcp_tools(self, inputs: dict) -> str:
         """Fetch tools/list from an MCP server and return the tool list as JSON.
 
+        Supports both plain JSON-RPC responses and SSE (Server-Sent Events)
+        transport. The response format is detected automatically: plain JSON is
+        tried first; if that fails, each line is scanned for a ``data:`` prefix
+        and the JSON payload is extracted from the first matching line.
+
         Args:
             inputs: Dict with 'mcp_server_url' key.
 
@@ -584,15 +620,28 @@ class ToolHandler:
             response = httpx.post(
                 f"{url}/",
                 json=payload,
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                },
                 timeout=10.0,
             )
             response.raise_for_status()
-            data = response.json()
         except httpx.HTTPError as exc:
             return f"ERROR: could not reach MCP server at {url} — {exc}"
         except Exception as exc:
             return f"ERROR: unexpected error contacting MCP server — {exc}"
+
+        # Auto-detect transport: try plain JSON first, fall back to SSE parsing.
+        try:
+            data = response.json()
+        except Exception:
+            data = _parse_sse_json(response.text)
+            if data is None:
+                return (
+                    f"ERROR: MCP server at {url} returned an unrecognised response format. "
+                    f"Expected JSON-RPC or SSE. Response preview: {response.text[:200]!r}"
+                )
 
         tools = data.get("result", {}).get("tools", [])
         if not tools:

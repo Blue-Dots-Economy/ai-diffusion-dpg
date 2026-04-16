@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from dev_kit.agent.accumulator import ConfigAccumulator
-from dev_kit.agent.tools import ToolHandler
+from dev_kit.agent.tools import ToolHandler, _parse_sse_json
 
 
 @pytest.fixture()
@@ -203,3 +203,134 @@ def test_set_reach_channels_requires_at_least_one(handler):
     """set_reach_channels rejects empty list."""
     result = handler.dispatch("set_reach_channels", {"channels": []})
     assert "ERROR" in result
+
+
+# ---- _parse_sse_json ----
+
+def test_parse_sse_json_extracts_data_line():
+    """_parse_sse_json returns the JSON payload from the first data: line."""
+    sse = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"result\":{\"tools\":[]},\"id\":1}\n\n"
+    result = _parse_sse_json(sse)
+    assert result == {"jsonrpc": "2.0", "result": {"tools": []}, "id": 1}
+
+
+def test_parse_sse_json_ignores_non_data_lines():
+    """_parse_sse_json skips event: and comment lines."""
+    sse = ": comment\nevent: message\ndata: {\"ok\":true}\n"
+    result = _parse_sse_json(sse)
+    assert result == {"ok": True}
+
+
+def test_parse_sse_json_returns_none_for_no_data_line():
+    """_parse_sse_json returns None when no data: line is found."""
+    assert _parse_sse_json("event: message\n") is None
+    assert _parse_sse_json("") is None
+
+
+def test_parse_sse_json_returns_none_for_invalid_json():
+    """_parse_sse_json returns None when the data: payload is not valid JSON."""
+    assert _parse_sse_json("data: not-json\n") is None
+
+
+# ---- discover_mcp_tools (transport auto-detection) ----
+
+def _make_response(text: str, content_type: str = "application/json"):
+    """Build a minimal mock httpx.Response."""
+    resp = MagicMock()
+    resp.text = text
+    resp.raise_for_status = MagicMock()
+
+    def _json():
+        import json as _json_mod
+        return _json_mod.loads(text)
+
+    resp.json = _json
+    return resp
+
+
+def _mcp_tools_payload():
+    return {
+        "jsonrpc": "2.0",
+        "result": {
+            "tools": [
+                {
+                    "name": "searchDocumentation",
+                    "description": "Search docs",
+                    "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}}},
+                },
+                {
+                    "name": "getPage",
+                    "description": "Get a page by URL",
+                    "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}}},
+                },
+            ]
+        },
+        "id": 1,
+    }
+
+
+@patch("httpx.post")
+def test_discover_mcp_tools_plain_json(mock_post, handler):
+    """discover_mcp_tools works with a plain JSON-RPC response."""
+    payload = _mcp_tools_payload()
+    mock_post.return_value = _make_response(json.dumps(payload))
+
+    result = handler.dispatch("discover_mcp_tools", {"mcp_server_url": "https://mcp.example.com"})
+    tools = json.loads(result)
+    assert len(tools) == 2
+    assert tools[0]["name"] == "searchDocumentation"
+    assert tools[1]["name"] == "getPage"
+
+
+@patch("httpx.post")
+def test_discover_mcp_tools_sse_transport(mock_post, handler):
+    """discover_mcp_tools falls back to SSE parsing when response.json() fails."""
+    payload = _mcp_tools_payload()
+    sse_body = f"event: message\ndata: {json.dumps(payload)}\n\n"
+
+    resp = MagicMock()
+    resp.text = sse_body
+    resp.raise_for_status = MagicMock()
+    resp.json.side_effect = ValueError("not json")  # simulate SSE content-type failure
+    mock_post.return_value = resp
+
+    result = handler.dispatch("discover_mcp_tools", {"mcp_server_url": "https://mcp.example.com"})
+    tools = json.loads(result)
+    assert len(tools) == 2
+    assert tools[0]["name"] == "searchDocumentation"
+
+
+@patch("httpx.post")
+def test_discover_mcp_tools_sends_accept_header(mock_post, handler):
+    """discover_mcp_tools sends Accept: application/json, text/event-stream."""
+    payload = _mcp_tools_payload()
+    mock_post.return_value = _make_response(json.dumps(payload))
+
+    handler.dispatch("discover_mcp_tools", {"mcp_server_url": "https://mcp.example.com"})
+
+    _, kwargs = mock_post.call_args
+    headers = kwargs.get("headers", {})
+    assert "text/event-stream" in headers.get("Accept", "")
+
+
+@patch("httpx.post")
+def test_discover_mcp_tools_http_error_returns_error_string(mock_post, handler):
+    """discover_mcp_tools returns an ERROR string on HTTP failure."""
+    import httpx
+    mock_post.side_effect = httpx.HTTPError("connection refused")
+
+    result = handler.dispatch("discover_mcp_tools", {"mcp_server_url": "https://mcp.example.com"})
+    assert result.startswith("ERROR")
+
+
+@patch("httpx.post")
+def test_discover_mcp_tools_unrecognised_format_returns_error(mock_post, handler):
+    """discover_mcp_tools returns ERROR when neither JSON nor SSE can be parsed."""
+    resp = MagicMock()
+    resp.text = "totally unexpected format"
+    resp.raise_for_status = MagicMock()
+    resp.json.side_effect = ValueError("not json")
+    mock_post.return_value = resp
+
+    result = handler.dispatch("discover_mcp_tools", {"mcp_server_url": "https://mcp.example.com"})
+    assert result.startswith("ERROR")
