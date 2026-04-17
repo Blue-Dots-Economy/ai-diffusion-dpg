@@ -1673,10 +1673,11 @@ class AgentCore(AgentCoreBase):
         default_language = (
             self._config.get("preprocessing", {})
             .get("language_normalisation", {})
-            .get("default_language", "")
+            .get("default_language", "hindi")
         )
         if target_language == default_language:
             return message
+        t_translate = time.time()
         try:
             response = self._llm.call(
                 messages=[{"role": "user", "content": message}],
@@ -1687,6 +1688,15 @@ class AgentCore(AgentCoreBase):
                 ),
             )
             if response.stop_reason != "error" and response.content:
+                logger.info(
+                    "orchestrator.consent_translation_success",
+                    extra={
+                        "operation": "orchestrator._translate_consent_message",
+                        "status": "success",
+                        "target_language": target_language,
+                        "latency_ms": int((time.time() - t_translate) * 1000),
+                    },
+                )
                 return response.content.strip()
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -1696,6 +1706,7 @@ class AgentCore(AgentCoreBase):
                     "status": "failure",
                     "error": str(exc),
                     "target_language": target_language,
+                    "latency_ms": int((time.time() - t_translate) * 1000),
                 },
             )
         return message
