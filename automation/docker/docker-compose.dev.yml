@@ -33,6 +33,7 @@ services:
   # ---------------------------------------------------------------------------
   action_gateway:
     image: sanketikahub/dpg-action-gateway:latest
+    pull_policy: always
     container_name: action_gateway
     environment:
       - CONFIG_FOLDER=/app/config
@@ -60,6 +61,7 @@ services:
   # ---------------------------------------------------------------------------
   agent_core:
     image: sanketikahub/dpg-agent-core:latest
+    pull_policy: always
     container_name: agent_core
     environment:
       - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
@@ -98,6 +100,7 @@ services:
   # ---------------------------------------------------------------------------
   dev_kit:
     image: sanketikahub/dpg-dev-kit:latest
+    pull_policy: always
     container_name: dev_kit
     environment:
       - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
@@ -124,6 +127,7 @@ services:
   # ---------------------------------------------------------------------------
   knowledge_engine:
     image: sanketikahub/dpg-knowledge-engine:latest
+    pull_policy: always
     container_name: knowledge_engine
     environment:
       - CONFIG_FOLDER=/app/config
@@ -154,6 +158,7 @@ services:
   # ---------------------------------------------------------------------------
   memory_layer:
     image: sanketikahub/dpg-memory-layer:latest
+    pull_policy: always
     container_name: memory_layer
     environment:
       - CONFIG_FOLDER=/app/config
@@ -189,6 +194,7 @@ services:
   # ---------------------------------------------------------------------------
   observability_layer:
     image: sanketikahub/dpg-observability-layer:latest
+    pull_policy: always
     container_name: observability_layer
     environment:
       - CONFIG_FOLDER=/app/config
@@ -220,6 +226,7 @@ services:
   # ---------------------------------------------------------------------------
   reach_layer_web:
     image: sanketikahub/dpg-reach-layer-web:latest
+    pull_policy: always
     container_name: reach_layer_web
     environment:
       - CONFIG_FOLDER=/app/config
@@ -260,6 +267,7 @@ services:
   # ---------------------------------------------------------------------------
   reach_layer_cli:
     image: sanketikahub/dpg-reach-layer-cli:latest
+    pull_policy: always
     container_name: reach_layer_cli
     volumes:
       # Unified Reach Layer config: DPG defaults + per-domain overrides.
@@ -284,6 +292,7 @@ services:
   # ---------------------------------------------------------------------------
   reach_layer_voice:
     image: sanketikahub/dpg-reach-layer-voice:latest
+    pull_policy: always
     container_name: reach_layer_voice
     environment:
       - DPG_CONFIG_PATH=/app/config/dpg.yaml
@@ -325,6 +334,7 @@ services:
   # ---------------------------------------------------------------------------
   trust_layer:
     image: sanketikahub/dpg-trust-layer:latest
+    pull_policy: always
     container_name: trust_layer
     environment:
       - CONFIG_FOLDER=/app/config
