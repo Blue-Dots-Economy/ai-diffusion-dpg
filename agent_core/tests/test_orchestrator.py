@@ -53,6 +53,13 @@ SESSION_ID = "sess_orch_001"
 TIMESTAMP = int(time.time() * 1000)
 
 VALID_CONFIG = {
+    "agent": {
+        "channels": {
+            "cli": {"system_prompt_suffix": ""},
+            "voice": {"system_prompt_suffix": "Respond in 1-2 short sentences."},
+            "web": {"system_prompt_suffix": ""},
+        },
+    },
     "conversation": {
         "unknown_intent_message": "I didn't understand that.",
         "blocked_message": "Blocked.",
@@ -968,3 +975,29 @@ def test_language_switch_to_supported_language_continues_turn():
     result = agent.process_turn(_turn_input("Kannada mein baat karo"))
 
     assert result.response_text  # manager mock returns "Final response."
+
+
+# ---------------------------------------------------------------------------
+# Channel-aware prompting
+# ---------------------------------------------------------------------------
+
+
+def test_process_turn_unsupported_channel_raises_value_error():
+    """process_turn raises ValueError immediately for a channel not in agent.channels."""
+    agent = _make_agent()
+    turn = TurnInput(
+        session_id=SESSION_ID,
+        user_message="Hello",
+        channel="whatsapp",   # not in VALID_CONFIG agent.channels
+        timestamp_ms=TIMESTAMP,
+    )
+    with pytest.raises(ValueError, match="Unsupported channel: whatsapp"):
+        agent.process_turn(turn)
+
+
+def test_process_turn_passes_channel_config_to_build_system_prompt():
+    """channel_config resolved from agent.channels is forwarded to build_system_prompt."""
+    agent = _make_agent()
+    agent.process_turn(_turn_input())   # channel="cli"
+    call_kwargs = agent._manager_agent.build_system_prompt.call_args.kwargs
+    assert call_kwargs["channel_config"] == {"system_prompt_suffix": ""}
