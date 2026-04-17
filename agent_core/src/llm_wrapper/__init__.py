@@ -8,5 +8,6 @@ Callers import from here — not from submodules directly.
 from src.llm_wrapper.base import LLMWrapperBase
 from src.llm_wrapper.claude_wrapper import ClaudeLLMWrapper
 from src.llm_wrapper.openai_wrapper import OpenAILLMWrapper
+from src.llm_wrapper.ollama_wrapper import OllamaLLMWrapper
 
-__all__ = ["LLMWrapperBase", "ClaudeLLMWrapper", "OpenAILLMWrapper"]
+__all__ = ["LLMWrapperBase", "ClaudeLLMWrapper", "OpenAILLMWrapper", "OllamaLLMWrapper"]

@@ -50,6 +50,7 @@ load_dotenv()  # .env in block dir or injected environment (Docker/prod)
 
 from src.llm_wrapper.claude_wrapper import ClaudeLLMWrapper
 from src.llm_wrapper.openai_wrapper import OpenAILLMWrapper
+from src.llm_wrapper.ollama_wrapper import OllamaLLMWrapper
 from src.http_clients.knowledge_engine import HttpKnowledgeEngineClient
 from src.http_clients.memory_layer import MemoryLayerHttpClient
 from src.http_clients.trust_layer import TrustLayerHttpClient
@@ -166,6 +167,8 @@ def _build_app():
     llm_provider = agent_cfg.get("llm_provider", "anthropic")
     if llm_provider == "openai":
         llm = OpenAILLMWrapper(agent_cfg)
+    elif llm_provider == "ollama":
+        llm = OllamaLLMWrapper(agent_cfg)
     else:
         llm = ClaudeLLMWrapper(agent_cfg)
 
