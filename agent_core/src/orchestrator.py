@@ -496,6 +496,83 @@ class AgentCore(AgentCoreBase):
                     },
                 )
 
+        # ── Language switch — handle before routing ───────────────────────
+        if nlu_result.intent == "language_switch_request":
+            lang_cfg = (
+                self._config.get("preprocessing", {})
+                .get("language_normalisation", {})
+            )
+            supported = [
+                l.lower() for l in lang_cfg.get("supported_languages", [])
+            ]
+            requested_lang = (
+                (nlu_result.entities or {}).get("requested_language") or ""
+            ).lower().strip()
+
+            if requested_lang and requested_lang in supported:
+                pref_scope = self._config.get("entity_persistence", {}).get("scope", "persistent")
+                self._write_memory_sync(session_id, user_id, pref_scope, "language_preference", requested_lang)
+                bundle.session["language_preference"] = requested_lang
+                detected_language = requested_lang
+                logger.info(
+                    "orchestrator.language_switched",
+                    extra={
+                        "operation": "orchestrator.language_switch",
+                        "status": "success",
+                        "session_id": session_id,
+                        "requested_language": requested_lang,
+                    },
+                )
+            else:
+                supported_names = lang_cfg.get("supported_languages", [])
+                if supported_names:
+                    default_msg = f"I can only respond in: {', '.join(supported_names)}."
+                else:
+                    default_msg = "That language is not supported."
+                msg = self._config.get("conversation", {}).get(
+                    "unsupported_language_message", default_msg
+                )
+                logger.info(
+                    "orchestrator.language_switch_rejected",
+                    extra={
+                        "operation": "orchestrator.language_switch",
+                        "status": "skipped",
+                        "session_id": session_id,
+                        "requested_language": requested_lang,
+                        "reason": "not_in_supported_languages",
+                    },
+                )
+                latency_ms = int((time.time() - start) * 1000)
+                _trace_id = self._current_trace_id()
+                turn_event = TurnEvent(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_text=msg,
+                    tool_calls=[],
+                    trust_input_result=trust_input,
+                    trust_output_result=TrustCheckResult(passed=True, action="allow"),
+                    model_used="",
+                    intent=nlu_result.intent,
+                    input_tokens=0,
+                    output_tokens=0,
+                    latency_ms=latency_ms,
+                    timestamp_ms=int(time.time() * 1000),
+                    trace_id=_trace_id,
+                )
+                thread = threading.Thread(
+                    target=self._post_turn,
+                    args=(session_id, user_id, turn_id, msg, turn_input.user_message, turn_event, False, ""),
+                    daemon=True,
+                )
+                thread.start()
+                return TurnResult(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_text=msg,
+                    was_escalated=False,
+                    latency_ms=latency_ms,
+                )
+
         # ── Step 6: Routing — determine next_subagent_id ─────────────
         logger.info(
             "  [STEP 6] Routing  →  intent=%s  current_subagent=%s",
@@ -1884,6 +1961,56 @@ class AgentCore(AgentCoreBase):
                 profile_field = entity_map.get(entity_key, entity_key)
                 await self._async_memory.write(session_id, user_id, entity_scope, profile_field, entity_val)
                 bundle.session[profile_field] = entity_val
+
+            # ── Language switch — handle before routing ───────────────
+            if nlu_result.intent == "language_switch_request":
+                lang_cfg = (
+                    self._config.get("preprocessing", {})
+                    .get("language_normalisation", {})
+                )
+                supported = [
+                    l.lower() for l in lang_cfg.get("supported_languages", [])
+                ]
+                requested_lang = (
+                    (nlu_result.entities or {}).get("requested_language") or ""
+                ).lower().strip()
+
+                if requested_lang and requested_lang in supported:
+                    pref_scope = self._config.get("entity_persistence", {}).get("scope", "persistent")
+                    await self._async_memory.write(session_id, user_id, pref_scope, "language_preference", requested_lang)
+                    bundle.session["language_preference"] = requested_lang
+                    detected_language = requested_lang
+                    logger.info(
+                        "orchestrator.language_switched",
+                        extra={
+                            "operation": "orchestrator.language_switch",
+                            "status": "success",
+                            "session_id": session_id,
+                            "requested_language": requested_lang,
+                        },
+                    )
+                else:
+                    supported_names = lang_cfg.get("supported_languages", [])
+                    if supported_names:
+                        default_msg = f"I can only respond in: {', '.join(supported_names)}."
+                    else:
+                        default_msg = "That language is not supported."
+                    msg = self._config.get("conversation", {}).get(
+                        "unsupported_language_message", default_msg
+                    )
+                    logger.info(
+                        "orchestrator.language_switch_rejected",
+                        extra={
+                            "operation": "orchestrator.language_switch",
+                            "status": "skipped",
+                            "session_id": session_id,
+                            "requested_language": requested_lang,
+                            "reason": "not_in_supported_languages",
+                        },
+                    )
+                    yield SentenceEvent(text=msg, sentence_index=0)
+                    yield DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000))
+                    return
 
             # ── Step 6: Routing ────────────────────────────────────────
             logger.info(

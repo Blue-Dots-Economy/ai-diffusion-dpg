@@ -842,3 +842,88 @@ def test_language_preference_set_from_detection_on_first_turn():
     agent._memory.write.assert_any_call(
         SESSION_ID, SESSION_ID, "persistent", "language_preference", "hindi"
     )
+
+
+# ---------------------------------------------------------------------------
+# #125 — user-requested language switch
+# ---------------------------------------------------------------------------
+
+_SWITCH_NLU = NLUResult(
+    intent="language_switch_request",
+    entities={"requested_language": "kannada"},
+    sentiment="neutral",
+    confidence=0.95,
+)
+
+_SWITCH_UNSUPPORTED_NLU = NLUResult(
+    intent="language_switch_request",
+    entities={"requested_language": "french"},
+    sentiment="neutral",
+    confidence=0.95,
+)
+
+VALID_CONFIG_WITH_LANG = {
+    **VALID_CONFIG,
+    "entity_persistence": {"scope": "persistent"},
+    "preprocessing": {
+        **VALID_CONFIG.get("preprocessing", {}),
+        "language_normalisation": {
+            "default_language": "hindi",
+            "supported_languages": ["hindi", "kannada", "english", "hinglish"],
+        },
+    },
+    "conversation": {
+        **VALID_CONFIG.get("conversation", {}),
+        "unsupported_language_message": "Sorry, that language is not supported.",
+    },
+}
+
+
+def test_language_switch_to_supported_language_updates_preference():
+    """language_switch_request intent with a supported language persists the new preference."""
+    agent = _make_agent(
+        nlu_result=_SWITCH_NLU,
+        session_data={"current_subagent_id": "market_truth", "language_preference": "hindi"},
+    )
+    agent._config = VALID_CONFIG_WITH_LANG
+    agent.process_turn(_turn_input("Kannada mein baat karo"))
+
+    agent._memory.write.assert_any_call(
+        SESSION_ID, SESSION_ID, "persistent", "language_preference", "kannada"
+    )
+
+
+def test_language_switch_to_unsupported_language_returns_config_message():
+    """language_switch_request with unsupported language returns unsupported_language_message."""
+    agent = _make_agent(
+        nlu_result=_SWITCH_UNSUPPORTED_NLU,
+        session_data={"current_subagent_id": "market_truth"},
+    )
+    agent._config = VALID_CONFIG_WITH_LANG
+    result = agent.process_turn(_turn_input("Please respond in French"))
+
+    assert "Sorry, that language is not supported." in result.response_text
+
+
+def test_language_switch_to_unsupported_does_not_call_llm():
+    """Unsupported language switch returns early without an LLM call."""
+    agent = _make_agent(
+        nlu_result=_SWITCH_UNSUPPORTED_NLU,
+        session_data={"current_subagent_id": "market_truth"},
+    )
+    agent._config = VALID_CONFIG_WITH_LANG
+    agent.process_turn(_turn_input("Please respond in French"))
+
+    agent._llm.call.assert_not_called()
+
+
+def test_language_switch_to_supported_language_continues_turn():
+    """language_switch_request with a valid language does not short-circuit the turn."""
+    agent = _make_agent(
+        nlu_result=_SWITCH_NLU,
+        session_data={"current_subagent_id": "market_truth"},
+    )
+    agent._config = VALID_CONFIG_WITH_LANG
+    result = agent.process_turn(_turn_input("Kannada mein baat karo"))
+
+    assert result.response_text  # manager mock returns "Final response."
