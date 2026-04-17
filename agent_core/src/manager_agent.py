@@ -207,6 +207,7 @@ class ManagerAgent:
         detected_language: str,
         channel: str,
         profile: dict,
+        channel_config: dict | None = None,
         is_resumption: bool = False,
         guardrail_constraints: dict | None = None,
     ) -> str:
@@ -226,6 +227,10 @@ class ManagerAgent:
             detected_language:      Language detected by Language Normaliser.
             channel:                Channel type (e.g. "cli", "whatsapp", "voip").
             profile:                User profile dict for known field injection.
+            channel_config:         Per-channel config dict from agent.channels[channel].
+                                    When present and system_prompt_suffix is non-empty, the
+                                    suffix is appended as the final prompt section. Defaults
+                                    to None (no suffix injected).
             is_resumption:          Whether the user is resuming an ongoing session.
             guardrail_constraints:  Optional dict with prompt_constraints and
                                     required_disclosures from the Trust Layer.
@@ -292,6 +297,10 @@ class ManagerAgent:
                 parts.append(
                     "## Required Disclosures\n" + "\n".join(f"- {d}" for d in disclosures)
                 )
+
+        suffix = (channel_config or {}).get("system_prompt_suffix", "")
+        if suffix:
+            parts.append(suffix.strip())
 
         return "\n\n".join(parts)
 
