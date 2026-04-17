@@ -26,24 +26,36 @@ from src.llm_wrapper.base import LLMWrapperBase
 
 logger = logging.getLogger(__name__)
 
-_LANG_NORM_SYSTEM = """You are a language processing assistant for a Hindi/Kannada/Hinglish employment chatbot.
-Analyse the user's message and return a JSON object only — no explanation, no markdown.
+def _build_lang_norm_prompt(supported_languages: list[str], default_language: str) -> str:
+    """Build the language normalisation system prompt from config values.
 
-Supported languages: {supported_languages}
+    Args:
+        supported_languages: List of language names supported by the deployment.
+        default_language: Preferred language to use when detection is ambiguous.
 
-Return exactly this JSON structure:
-{{
-  "detected_language": "<one of: hindi, kannada, english, hinglish>",
-  "normalised_text": "<cleaned, normalised version of the input>"
-}}
-
-Normalisation rules:
-1. If the input is Roman-script Hindi (e.g. "bijli ka kaam chahiye"), keep it as-is — do not transliterate to Devanagari.
-2. If the input mixes Hindi and English (Hinglish), keep the mix but clean spelling inconsistencies.
-3. If the input is Kannada, keep it unchanged.
-4. If the input is pure English, keep it unchanged.
-5. Correct obvious typos only if clearly unambiguous.
-6. NEVER change the meaning or add words not present in the original."""
+    Returns:
+        System prompt string for the language normalisation LLM call.
+    """
+    lang_list = ", ".join(supported_languages)
+    return (
+        "You are a language processing assistant. Analyse the user's message and "
+        "return a JSON object only — no explanation, no markdown.\n\n"
+        f"Supported languages: {lang_list}\n"
+        f"Default language: {default_language}\n\n"
+        "Return exactly this JSON structure:\n"
+        "{{\n"
+        f'  "detected_language": "<one of: {lang_list}>",\n'
+        '  "normalised_text": "<cleaned, normalised version of the input>"\n'
+        "}}\n\n"
+        "Detection rules:\n"
+        f"1. When the message is short, ambiguous, or uses common words shared "
+        f"across supported languages, prefer {default_language}.\n"
+        "2. If the input uses Roman script for a non-Latin language (transliteration), "
+        "keep it as-is — do not convert to native script.\n"
+        "3. If the input mixes languages, keep the mix but clean spelling inconsistencies.\n"
+        "4. Correct obvious typos only if clearly unambiguous.\n"
+        "5. NEVER change the meaning or add words not present in the original."
+    )
 
 
 class LanguageNormaliser:
@@ -85,19 +97,32 @@ class LanguageNormaliser:
         supported_languages = block_cfg.get(
             "supported_languages", ["hindi", "kannada", "english", "hinglish"]
         )
+        default_language = block_cfg.get("default_language", "")
         model_override = block_cfg.get("model")
         provider = block_cfg.get("provider", "llm_native")
+        min_detection_tokens = int(block_cfg.get("min_detection_tokens", 3))
 
         try:
             if provider == "bhashini":
                 raise NotImplementedError(
                     "Bhashini provider is not yet implemented. "
-                    "Set preprocessing.language_normalisation.provider=llm_native for PoC."
+                    "Set preprocessing.language_normalisation.provider to 'llm_native'."
                 )
 
-            system_prompt = _LANG_NORM_SYSTEM.format(
-                supported_languages=", ".join(supported_languages)
-            )
+            # Short input: classification is unreliable — return default language directly.
+            if len(raw_input.split()) < min_detection_tokens:
+                logger.info(
+                    "language_normalisation.short_input_bypass",
+                    extra={
+                        "operation": "language_normalisation.normalise",
+                        "status": "skipped",
+                        "reason": "below_min_detection_tokens",
+                        "latency_ms": 0,
+                    },
+                )
+                return raw_input, default_language
+
+            system_prompt = _build_lang_norm_prompt(supported_languages, default_language)
             messages = [{"role": "user", "content": raw_input}]
 
             llm_response = llm.call(

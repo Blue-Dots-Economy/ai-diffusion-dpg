@@ -69,10 +69,10 @@ def normaliser():
 
 
 def test_hindi_input_detected_and_returned(normaliser):
-    llm = make_llm_returning("kaam chahiye", "hindi")
-    normalised, detected = normaliser.normalise("kaam chahiye", CONFIG, llm)
+    llm = make_llm_returning("kaam chahiye mujhe", "hindi")
+    normalised, detected = normaliser.normalise("kaam chahiye mujhe", CONFIG, llm)
     assert detected == "hindi"
-    assert normalised == "kaam chahiye"
+    assert normalised == "kaam chahiye mujhe"
 
 
 def test_hinglish_input_detected(normaliser):
@@ -95,35 +95,35 @@ def test_kannada_input_detected(normaliser):
 
 def test_normalised_text_from_llm_returned(normaliser):
     llm = make_llm_returning("cleaned and normalised text", "english")
-    normalised, _ = normaliser.normalise("original input", CONFIG, llm)
+    normalised, _ = normaliser.normalise("original input text", CONFIG, llm)
     assert normalised == "cleaned and normalised text"
 
 
 def test_model_override_passed_from_config(normaliser):
-    llm = make_llm_returning("hello", "english")
-    normaliser.normalise("hello", CONFIG, llm)
+    llm = make_llm_returning("hello world there", "english")
+    normaliser.normalise("hello world there", CONFIG, llm)
     call_kwargs = llm.call.call_args[1]
     assert call_kwargs.get("model_override") == "claude-haiku-4-5-20251001"
 
 
 def test_json_embedded_in_prose_parsed(normaliser):
     """LLM sometimes wraps JSON in prose — must still parse correctly."""
-    prose = 'Here is the result: {"detected_language": "hinglish", "normalised_text": "kaam chahiye"}'
+    prose = 'Here is the result: {"detected_language": "hinglish", "normalised_text": "kaam chahiye mujhe"}'
     llm = MagicMock()
     llm.call.return_value = LLMResponse(
         content=prose, stop_reason="end_turn", model_used="claude-haiku-4-5-20251001"
     )
-    normalised, detected = normaliser.normalise("kaam chahiye", CONFIG, llm)
+    normalised, detected = normaliser.normalise("kaam chahiye mujhe", CONFIG, llm)
     assert detected == "hinglish"
-    assert normalised == "kaam chahiye"
+    assert normalised == "kaam chahiye mujhe"
 
 
 def test_missing_preprocessing_config_uses_defaults(normaliser):
     """No preprocessing section → uses supported_languages default, no model_override."""
-    llm = make_llm_returning("hello", "english")
-    normalised, detected = normaliser.normalise("hello", CONFIG_NO_PREPROCESSING, llm)
+    llm = make_llm_returning("hello world there", "english")
+    normalised, detected = normaliser.normalise("hello world there", CONFIG_NO_PREPROCESSING, llm)
     assert detected == "english"
-    assert normalised == "hello"
+    assert normalised == "hello world there"
     call_kwargs = llm.call.call_args[1]
     assert call_kwargs.get("model_override") is None
 
@@ -177,7 +177,7 @@ def test_llm_error_stop_reason_falls_back_to_raw_input(normaliser):
 def test_llm_exception_falls_back_gracefully(normaliser):
     llm = MagicMock()
     llm.call.side_effect = RuntimeError("network error")
-    original = "kaam chahiye"
+    original = "kaam chahiye Hubli mein"
     normalised, detected = normaliser.normalise(original, CONFIG, llm)
     assert normalised == original
     assert detected == ""
@@ -190,7 +190,7 @@ def test_malformed_json_falls_back_to_raw_input(normaliser):
         stop_reason="end_turn",
         model_used="claude-haiku-4-5-20251001",
     )
-    original = "kaam chahiye"
+    original = "kaam chahiye Hubli mein"
     normalised, detected = normaliser.normalise(original, CONFIG, llm)
     assert normalised == original
     assert detected == ""
@@ -203,3 +203,89 @@ def test_never_raises_on_unexpected_exception(normaliser):
     result = normaliser.normalise("some input", CONFIG, llm)
     assert isinstance(result, tuple)
     assert len(result) == 2
+
+
+# ---------------------------------------------------------------------------
+# #124 — config-driven prompt, default_language weighting, short-input bypass
+# ---------------------------------------------------------------------------
+
+CONFIG_WITH_DEFAULT = {
+    "preprocessing": {
+        "language_normalisation": {
+            "model": "claude-haiku-4-5-20251001",
+            "provider": "llm_native",
+            "default_language": "hindi",
+            "supported_languages": ["hindi", "kannada", "english", "hinglish"],
+        }
+    }
+}
+
+
+def test_system_prompt_contains_default_language(normaliser):
+    """System prompt sent to LLM must mention the configured default_language."""
+    llm = make_llm_returning("hello", "english")
+    normaliser.normalise("hello world there", CONFIG_WITH_DEFAULT, llm)
+    call_kwargs = llm.call.call_args[1]
+    assert "hindi" in call_kwargs["system"]
+
+
+def test_system_prompt_has_no_hardcoded_domain_content(normaliser):
+    """No employment-chatbot or domain-specific example text in the system prompt."""
+    llm = make_llm_returning("hello", "english")
+    normaliser.normalise("hello world there", CONFIG_WITH_DEFAULT, llm)
+    call_kwargs = llm.call.call_args[1]
+    assert "employment" not in call_kwargs["system"]
+    assert "bijli" not in call_kwargs["system"]
+
+
+def test_short_input_skips_llm_and_returns_default_language(normaliser):
+    """Input with fewer than min_detection_tokens words skips LLM call."""
+    llm = MagicMock()
+    normalised, detected = normaliser.normalise("ok", CONFIG_WITH_DEFAULT, llm)
+    llm.call.assert_not_called()
+    assert normalised == "ok"
+    assert detected == "hindi"
+
+
+def test_short_input_default_token_threshold_is_three(normaliser):
+    """Exactly 3 words should trigger the LLM; fewer should not."""
+    llm = make_llm_returning("hello world foo", "english")
+    normaliser.normalise("hello world foo", CONFIG_WITH_DEFAULT, llm)
+    llm.call.assert_called_once()  # 3 words → LLM called
+
+    llm2 = MagicMock()
+    normaliser.normalise("hello world", CONFIG_WITH_DEFAULT, llm2)
+    llm2.call.assert_not_called()  # 2 words → skipped
+
+
+def test_custom_min_detection_tokens_respected(normaliser):
+    """min_detection_tokens from config overrides the default of 3."""
+    cfg = {
+        "preprocessing": {
+            "language_normalisation": {
+                "provider": "llm_native",
+                "default_language": "english",
+                "supported_languages": ["english"],
+                "min_detection_tokens": 1,
+            }
+        }
+    }
+    llm = make_llm_returning("ok", "english")
+    normaliser.normalise("ok", cfg, llm)
+    llm.call.assert_called_once()  # threshold = 1 → single word triggers LLM
+
+
+def test_bhashini_error_message_is_generic(normaliser):
+    """Bhashini error message must not reference 'PoC' or domain-specific scope."""
+    bhashini_config = {
+        "preprocessing": {
+            "language_normalisation": {
+                "provider": "bhashini",
+                "supported_languages": ["hindi"],
+            }
+        }
+    }
+    llm = MagicMock()
+    with pytest.raises(NotImplementedError) as exc_info:
+        normaliser.normalise("kaam chahiye", bhashini_config, llm)
+    assert "PoC" not in str(exc_info.value)
