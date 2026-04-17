@@ -10,8 +10,9 @@
     sanketikahub/dpg-knowledge-engine \
     sanketikahub/dpg-memory-layer \
     sanketikahub/dpg-observability-layer \
-    sanketikahub/dpg-reach-layer \
-    sanketikahub/dpg-telephony-adapter \
+    sanketikahub/dpg-reach-layer-cli \
+    sanketikahub/dpg-reach-layer-voice \
+    sanketikahub/dpg-reach-layer-web \
     sanketikahub/dpg-trust-layer; do
     docker tag ${repo}:${GIT_SHA} ${repo}:latest
     docker push ${repo}:latest

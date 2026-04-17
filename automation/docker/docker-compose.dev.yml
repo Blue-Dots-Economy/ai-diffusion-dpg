@@ -472,7 +472,7 @@ services:
   ngrok:
     image: ngrok/ngrok:latest
     container_name: ngrok
-    command: http reach_layer_voice:8006 --log stdout
+    command: http reach_layer_web:8005 --log stdout
     environment:
       - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
     ports:
@@ -485,7 +485,7 @@ services:
           cpus: '0.1'
           memory: 128M
     depends_on:
-      reach_layer_voice:
+      reach_layer_web:
         condition: service_healthy
     restart: unless-stopped
 
