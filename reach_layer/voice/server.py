@@ -25,6 +25,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from opentelemetry import trace as otel_trace
+
 import src.bot as bot
 from reach_layer_base import load_reach_config
 from src.campaign_manager import CampaignManager
@@ -111,6 +113,11 @@ def create_app(config: dict | None = None) -> FastAPI:
 
     _config = config
     init_otel("telephony_adapter", config)
+    try:
+        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+        HTTPXClientInstrumentor().instrument()
+    except Exception:
+        pass  # Observability must not prevent startup
     _campaign_manager = CampaignManager(config)
 
     public_url: str = config.get("telephony_adapter", {}).get("public_url", "").rstrip("/")
@@ -146,6 +153,11 @@ def create_app(config: dict | None = None) -> FastAPI:
         description="DPG Reach Layer telephony channel adapter — Vobiz + Raya + Agent Core.",
         version="0.1.0",
     )
+    try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        FastAPIInstrumentor.instrument_app(app)
+    except Exception:
+        pass  # Observability must not prevent startup
 
     app.add_middleware(
         CORSMiddleware,
@@ -218,18 +230,23 @@ def create_app(config: dict | None = None) -> FastAPI:
         )
         await websocket.accept()
         caller_id = _caller_id_map.pop(call_sid, "")
-        try:
-            await bot.run_bot(websocket, call_sid, caller_id, _config)
-        except Exception as exc:
-            logger.error(
-                "server.ws_error",
-                extra={
-                    "operation": "server.websocket_endpoint",
-                    "status": "failure",
-                    "call_sid": call_sid,
-                    "error": f"{type(exc).__name__}: {exc}",
-                },
-            )
+        with otel_trace.get_tracer(__name__).start_as_current_span("reach.inbound") as span:
+            span.set_attribute("session_id", call_sid)
+            span.set_attribute("dpg.channel", "voice")
+            span.set_attribute("dpg.assembly_mode", "session")
+            try:
+                await bot.run_bot(websocket, call_sid, caller_id, _config)
+            except Exception as exc:
+                span.record_exception(exc)
+                logger.error(
+                    "server.ws_error",
+                    extra={
+                        "operation": "server.websocket_endpoint",
+                        "status": "failure",
+                        "call_sid": call_sid,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                )
 
     @app.post("/campaign")
     async def campaign(body: CampaignRequest) -> dict:

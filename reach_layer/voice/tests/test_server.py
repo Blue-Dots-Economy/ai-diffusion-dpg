@@ -157,3 +157,122 @@ async def test_websocket_caller_id_empty_when_from_missing():
             pass
 
     assert captured.get("caller_id") == ""
+
+
+# ---------------------------------------------------------------------------
+# OTel instrumentation tests
+# ---------------------------------------------------------------------------
+
+_MINIMAL_CONFIG = {
+    "telephony_adapter": {
+        "public_url": "https://example.com",
+        "vobiz": {"auth_id": "aid", "auth_token": "tok", "sample_rate": 8000,
+                  "api_base": "https://api.vobiz.ai/api/v1", "from_number": "+91"},
+        "vad": {},
+        "raya": {"api_key": "k", "tts_base_url": "https://hub.getraya.app/v1",
+                 "language": "hi", "voice_id": "v", "tts_speed": 1.0},
+        "agent_core": {"base_url": "http://ac:8000", "timeout_ms": 5000,
+                       "greeting": "hi", "fallback_phrase": "sorry"},
+    },
+    "observability": {"otel": {"collector_endpoint": "http://otelcol:4317",
+                               "sample_rate": 1.0, "export_interval_ms": 5000}},
+}
+
+
+def test_fastapi_instrumented_on_startup():
+    """FastAPIInstrumentor.instrument_app must be called during create_app."""
+    with patch("src.bot.run_bot", new_callable=AsyncMock), \
+         patch("server.CampaignManager"), \
+         patch("server.load_reach_config", return_value=_MINIMAL_CONFIG), \
+         patch("server.init_otel"), \
+         patch("opentelemetry.instrumentation.fastapi.FastAPIInstrumentor.instrument_app") as mock_instrument:
+        from server import create_app
+        create_app()
+        mock_instrument.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_websocket_span_attributes_set():
+    """websocket_endpoint must emit reach.inbound span with correct attributes."""
+    import src.bot as bot_module
+    from starlette.testclient import TestClient
+
+    recorded_attrs: dict = {}
+
+    class _MockSpan:
+        def set_attribute(self, k, v):
+            recorded_attrs[k] = v
+
+        def record_exception(self, exc):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+    async def mock_run_bot(websocket, call_sid, caller_id, config):
+        pass
+
+    mock_tracer = MagicMock()
+    mock_tracer.start_as_current_span.return_value = _MockSpan()
+
+    with patch.object(bot_module, "run_bot", mock_run_bot), \
+         patch("server.CampaignManager"), \
+         patch("server.init_otel"), \
+         patch("server.otel_trace") as mock_otel_trace:
+        mock_otel_trace.get_tracer.return_value = mock_tracer
+        from server import create_app
+        app = create_app(_MINIMAL_CONFIG)
+        tc = TestClient(app)
+        tc.post("/answer", data={"CallUUID": "call-otel", "From": "+911234567890"})
+        with tc.websocket_connect("/ws/call-otel"):
+            pass
+
+    assert recorded_attrs.get("dpg.channel") == "voice"
+    assert recorded_attrs.get("dpg.assembly_mode") == "session"
+    assert "session_id" in recorded_attrs
+
+
+@pytest.mark.asyncio
+async def test_websocket_span_records_exception():
+    """websocket_endpoint must call span.record_exception when run_bot raises."""
+    import src.bot as bot_module
+    from starlette.testclient import TestClient
+
+    recorded_exceptions: list = []
+
+    class _MockSpan:
+        def set_attribute(self, k, v):
+            pass
+
+        def record_exception(self, exc):
+            recorded_exceptions.append(exc)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+    async def mock_run_bot_raises(websocket, call_sid, caller_id, config):
+        raise RuntimeError("pipeline failure")
+
+    mock_tracer = MagicMock()
+    mock_tracer.start_as_current_span.return_value = _MockSpan()
+
+    with patch.object(bot_module, "run_bot", mock_run_bot_raises), \
+         patch("server.CampaignManager"), \
+         patch("server.init_otel"), \
+         patch("server.otel_trace") as mock_otel_trace:
+        mock_otel_trace.get_tracer.return_value = mock_tracer
+        from server import create_app
+        app = create_app(_MINIMAL_CONFIG)
+        tc = TestClient(app)
+        tc.post("/answer", data={"CallUUID": "call-err", "From": "+91"})
+        with tc.websocket_connect("/ws/call-err"):
+            pass
+
+    assert len(recorded_exceptions) == 1
+    assert isinstance(recorded_exceptions[0], RuntimeError)
