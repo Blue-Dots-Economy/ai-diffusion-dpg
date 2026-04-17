@@ -387,11 +387,10 @@ class AgentCore(AgentCoreBase):
             default_language
         )
         
-        # Save language preference if new, or update if user switched language
+        # Lock in language_preference on the first turn only.
+        # Explicit user switches are handled after NLU (Step 5 → language_switch_request).
         saved_preference = session_data.get("language_preference") or profile_data.get("language_preference")
-        if not saved_preference or (turn_language and turn_language != saved_preference):
-            if turn_language and turn_language != saved_preference:
-                language_preference = turn_language
+        if not saved_preference:
             pref_scope: str = self._config.get("entity_persistence", {}).get("scope", "persistent")
             self._write_memory_sync(session_id, user_id, pref_scope, "language_preference", language_preference)
             bundle.session["language_preference"] = language_preference
@@ -1838,10 +1837,10 @@ class AgentCore(AgentCoreBase):
                 or default_language
             )
 
+            # Lock in language_preference on the first turn only.
+            # Explicit user switches are handled after NLU (Step 5 → language_switch_request).
             saved_preference = session_data.get("language_preference") or profile_data.get("language_preference")
-            if not saved_preference or (turn_language and turn_language != saved_preference):
-                if turn_language and turn_language != saved_preference:
-                    language_preference = turn_language
+            if not saved_preference:
                 pref_scope: str = self._config.get("entity_persistence", {}).get("scope", "persistent")
                 await self._async_memory.write(session_id, user_id, pref_scope, "language_preference", language_preference)
                 bundle.session["language_preference"] = language_preference

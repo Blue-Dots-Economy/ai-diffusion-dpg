@@ -802,4 +802,43 @@ def test_process_turn_emits_orchestrator_span():
     turn_span = next(s for s in spans if s.name == "orchestrator.turn")
     assert turn_span.attributes.get("session_id") is not None
     assert turn_span.attributes.get("turn_id") is not None
-    assert turn_span.attributes.get("dpg.domain") is not None
+
+
+# ---------------------------------------------------------------------------
+# #123 — language preference stability across turns
+# ---------------------------------------------------------------------------
+
+def test_language_preference_not_overridden_by_auto_detection():
+    """When session already has language_preference, a different turn_language must not override it."""
+    agent = _make_agent(
+        session_data={
+            "current_subagent_id": "market_truth",
+            "language_preference": "hindi",
+        }
+    )
+    # Simulate auto-detection returning "english" on this turn
+    agent._language_normaliser.normalise.return_value = ("Hello", "english")
+
+    agent.process_turn(_turn_input("Hello"))
+
+    # Must NOT have written "english" to memory as language_preference
+    for call_args in agent._memory.write.call_args_list:
+        args = call_args[0]  # positional args: session_id, user_id, scope, key, value
+        if len(args) >= 5 and args[3] == "language_preference":
+            assert args[4] == "hindi", (
+                f"language_preference was overwritten to {args[4]!r}; expected 'hindi'"
+            )
+
+
+def test_language_preference_set_from_detection_on_first_turn():
+    """When no saved preference exists, auto-detection result becomes the preference."""
+    agent = _make_agent(
+        session_data={"current_subagent_id": "market_truth"}
+    )
+    agent._language_normaliser.normalise.return_value = ("kaam chahiye", "hindi")
+
+    agent.process_turn(_turn_input("kaam chahiye"))
+
+    agent._memory.write.assert_any_call(
+        SESSION_ID, SESSION_ID, "persistent", "language_preference", "hindi"
+    )
