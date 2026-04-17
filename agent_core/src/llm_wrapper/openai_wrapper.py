@@ -237,57 +237,17 @@ class OpenAILLMWrapper(LLMWrapperBase):
         oai_tools = self._convert_tools(tools) if tools else []
 
         for attempt in range(self._max_attempts):
-            delay = self._backoff_seconds[min(attempt, len(self._backoff_seconds) - 1)]
-            if delay > 0:
-                time.sleep(delay)
-
-            start = time.time()
-            _tracer = otel_trace.get_tracer(__name__)
+            self._wait_before_retry(attempt)
+            
             try:
-                kwargs: dict = {
-                    "model": model,
-                    "max_tokens": 4096,
-                    "messages": oai_messages,
-                    "timeout": self._timeout_s,
-                }
-                if oai_tools:
-                    kwargs["tools"] = oai_tools
-
-                with _tracer.start_as_current_span("llm.call") as span:
-                    span.set_attribute("gen_ai.model", model)
-                    span.set_attribute("llm.attempt", attempt + 1)
-                    raw = self._client.chat.completions.create(**kwargs)
-                    response = self._parse_response(raw, model)
-                    span.set_attribute("gen_ai.usage.input_tokens", response.input_tokens)
-                    span.set_attribute("gen_ai.usage.output_tokens", response.output_tokens)
-
-                logger.info(
-                    "llm_wrapper.call",
-                    extra={
-                        "operation": "llm_wrapper.call",
-                        "status": "success",
-                        "model": model,
-                        "attempt": attempt + 1,
-                        "latency_ms": int((time.time() - start) * 1000),
-                        "input_tokens": response.input_tokens,
-                        "output_tokens": response.output_tokens,
-                    },
-                )
-                return response
-
+                response = self._execute_call(model, oai_messages, oai_tools, attempt)
+                if response:
+                    return response
             except (openai.RateLimitError, openai.APITimeoutError) as e:
                 last_error = e
-                self._log_error("retryable_error", e, "call", model, attempt + 1, start)
-
-            except openai.APIError as e:
-                self._log_error("api_error", e, "call", model, attempt + 1, start)
-                return LLMResponse(content=None, stop_reason="error")
-
-            except Exception as e:
-                # Catches SDK errors raised before the HTTP request fires —
-                # e.g. AuthenticationError from missing API key.
-                # These are non-retryable configuration errors.
-                self._log_error("unexpected_error", e, "call", model, attempt + 1, start)
+                self._log_error("retryable_error", e, "call", model, attempt + 1, time.time())
+            except (openai.APIError, Exception) as e:
+                self._log_error("non_retryable_error", e, "call", model, attempt + 1, time.time())
                 return LLMResponse(content=None, stop_reason="error")
 
         logger.error(
@@ -332,110 +292,43 @@ class OpenAILLMWrapper(LLMWrapperBase):
         oai_tools = self._convert_tools(tools) if tools else []
 
         for attempt in range(self._max_attempts):
-            delay = self._backoff_seconds[min(attempt, len(self._backoff_seconds) - 1)]
-            if delay > 0:
-                await asyncio.sleep(delay)
-
+            await self._async_wait_before_retry(attempt)
+            
             start = time.time()
             try:
-                kwargs: dict = {
-                    "model": model,
-                    "max_tokens": 4096,
-                    "messages": oai_messages,
-                    "stream": True,
-                    "stream_options": {"include_usage": True},
-                    "timeout": self._timeout_s,
-                }
-                if oai_tools:
-                    kwargs["tools"] = oai_tools
-
-                # Accumulate tool call argument chunks keyed by index
+                # Local state for this session
                 accumulated_tool_calls: dict[int, dict] = {}
-                finish_reason: str | None = None
-                input_tokens = 0
-                output_tokens = 0
+                state = {"finish_reason": None, "input_tokens": 0, "output_tokens": 0}
 
-                async for chunk in await self._async_client.chat.completions.create(**kwargs):
-                    # Final usage chunk has no choices (stream_options include_usage)
-                    if not chunk.choices:
-                        if chunk.usage:
-                            input_tokens = chunk.usage.prompt_tokens
-                            output_tokens = chunk.usage.completion_tokens
-                        continue
+                async for chunk in await self._async_client.chat.completions.create(
+                    model=model,
+                    messages=oai_messages,
+                    tools=oai_tools,
+                    stream=True,
+                    stream_options={"include_usage": True},
+                    timeout=self._timeout_s,
+                    max_tokens=4096
+                ):
+                    message = self._process_stream_chunk(chunk, accumulated_tool_calls, state)
+                    if message:
+                        yield message
 
-                    choice = chunk.choices[0]
-                    delta = choice.delta
+                self._log_success("stream_call", model, attempt + 1, start, 
+                                 in_tokens=state["input_tokens"], 
+                                 out_tokens=state["output_tokens"], 
+                                 finish_reason=state["finish_reason"])
 
-                    if delta.content:
-                        yield delta.content
-
-                    if delta.tool_calls:
-                        for tc_chunk in delta.tool_calls:
-                            idx = tc_chunk.index
-                            if idx not in accumulated_tool_calls:
-                                accumulated_tool_calls[idx] = {
-                                    "id": "",
-                                    "name": "",
-                                    "arguments": "",
-                                }
-                            if tc_chunk.id:
-                                accumulated_tool_calls[idx]["id"] += tc_chunk.id
-                            if tc_chunk.function:
-                                if tc_chunk.function.name:
-                                    accumulated_tool_calls[idx]["name"] += tc_chunk.function.name
-                                if tc_chunk.function.arguments:
-                                    accumulated_tool_calls[idx]["arguments"] += tc_chunk.function.arguments
-
-                    if choice.finish_reason:
-                        finish_reason = choice.finish_reason
-
-                logger.info(
-                    "llm_wrapper.stream_call",
-                    extra={
-                        "operation": "llm_wrapper.stream_call",
-                        "status": "success",
-                        "model": model,
-                        "attempt": attempt + 1,
-                        "latency_ms": int((time.time() - start) * 1000),
-                        "input_tokens": input_tokens,
-                        "output_tokens": output_tokens,
-                        "finish_reason": finish_reason,
-                    },
-                )
-
-                if finish_reason == "tool_calls" and accumulated_tool_calls:
-                    tool_calls: list[ToolCall] = []
-                    for idx in sorted(accumulated_tool_calls.keys()):
-                        tc = accumulated_tool_calls[idx]
-                        try:
-                            input_params = json.loads(tc["arguments"])
-                        except (json.JSONDecodeError, TypeError):
-                            input_params = {}
-                        tool_calls.append(
-                            ToolCall(
-                                tool_name=tc["name"],
-                                tool_use_id=tc["id"],
-                                input_params=input_params,
-                            )
-                        )
-                    raise ToolUseRequested(tool_calls)
-
-                return  # Stream complete
-
+                if state["finish_reason"] == "tool_calls" and accumulated_tool_calls:
+                    raise ToolUseRequested(self._finalize_tool_calls(accumulated_tool_calls))
+                return
             except ToolUseRequested:
-                raise  # Propagate immediately — not retryable
-
+                raise
             except (openai.RateLimitError, openai.APITimeoutError) as e:
                 last_error = e
                 self._log_error("retryable_error", e, "stream_call", model, attempt + 1, start)
-
-            except openai.APIError as e:
-                self._log_error("api_error", e, "stream_call", model, attempt + 1, start)
-                return  # Non-retryable API error
-
-            except Exception as e:
-                self._log_error("unexpected_error", e, "stream_call", model, attempt + 1, start)
-                return  # Non-retryable
+            except (openai.APIError, Exception) as e:
+                self._log_error("non_retryable_error", e, "stream_call", model, attempt + 1, start)
+                return
 
         logger.error(
             "llm_wrapper.stream_exhausted",
@@ -449,9 +342,132 @@ class OpenAILLMWrapper(LLMWrapperBase):
         )
         raise _RetryableExhausted(f"All {self._max_attempts} stream retry attempts exhausted for model {model}")
 
-    def _switch_to_fallback(self) -> None:
-        """Switch the active model to the configured fallback model."""
-        self._active_model = self._fallback_model
+    def _wait_before_retry(self, attempt: int) -> None:
+        """Apply exponential backoff delay before a retry attempt."""
+        delay = self._backoff_seconds[min(attempt, len(self._backoff_seconds) - 1)]
+        if delay > 0:
+            time.sleep(delay)
+
+    def _execute_call(
+        self,
+        model: str,
+        messages: list[dict],
+        tools: list[dict],
+        attempt_idx: int,
+    ) -> Optional[LLMResponse]:
+        """Execute a single OpenAI API call tracked with OpenTelemetry."""
+        start = time.time()
+        tracer = otel_trace.get_tracer(__name__)
+        
+        kwargs: dict = {
+            "model": model,
+            "max_tokens": 4096,
+            "messages": messages,
+            "timeout": self._timeout_s,
+        }
+        if tools:
+            kwargs["tools"] = tools
+
+        with tracer.start_as_current_span("llm.call") as span:
+            span.set_attribute("gen_ai.model", model)
+            span.set_attribute("llm.attempt", attempt_idx + 1)
+            raw = self._client.chat.completions.create(**kwargs)
+            response = self._parse_response(raw, model)
+            span.set_attribute("gen_ai.usage.input_tokens", response.input_tokens)
+            span.set_attribute("gen_ai.usage.output_tokens", response.output_tokens)
+
+        self._log_success("call", model, attempt_idx + 1, start, response)
+        return response
+
+    def _log_success(
+        self,
+        op: str,
+        model: str,
+        attempt: int,
+        start_time: float,
+        resp: Optional[LLMResponse] = None,
+        in_tokens: int = 0,
+        out_tokens: int = 0,
+        finish_reason: str = "stop"
+    ) -> None:
+        """Log a successful LLM call or stream session."""
+        latency = int((time.time() - start_time) * 1000)
+        tokens_in = resp.input_tokens if resp else in_tokens
+        tokens_out = resp.output_tokens if resp else out_tokens
+        
+        logger.info(
+            f"llm_wrapper.{op}",
+            extra={
+                "operation": f"llm_wrapper.{op}",
+                "status": "success",
+                "model": model,
+                "attempt": attempt,
+                "latency_ms": latency,
+                "input_tokens": tokens_in,
+                "output_tokens": tokens_out,
+                "finish_reason": finish_reason,
+            },
+        )
+
+    def _accumulate_tool_call(self, tc_chunk: dict | object, accumulated: dict[int, dict]) -> None:
+        """Helper to append streamed tool call chunks into a single tracked dictionary."""
+        idx = tc_chunk.index
+        if idx not in accumulated:
+            accumulated[idx] = {"id": "", "name": "", "arguments": ""}
+        if tc_chunk.id:
+            accumulated[idx]["id"] += tc_chunk.id
+        if tc_chunk.function:
+            if tc_chunk.function.name:
+                accumulated[idx]["name"] += tc_chunk.function.name
+            if tc_chunk.function.arguments:
+                accumulated[idx]["arguments"] += tc_chunk.function.arguments
+
+    def _finalize_tool_calls(self, accumulated: dict[int, dict]) -> list[ToolCall]:
+        """Convert accumulated string arguments back into JSON objects for ToolCall creation."""
+        tool_calls: list[ToolCall] = []
+        for idx in sorted(accumulated.keys()):
+            tc = accumulated[idx]
+            try:
+                input_params = json.loads(tc["arguments"])
+            except (json.JSONDecodeError, TypeError):
+                input_params = {}
+            tool_calls.append(ToolCall(
+                tool_name=tc["name"],
+                tool_use_id=tc["id"],
+                input_params=input_params,
+            ))
+        return tool_calls
+
+    async def _async_wait_before_retry(self, attempt: int) -> None:
+        """Apply async delay before a retry attempt."""
+        delay = self._backoff_seconds[min(attempt, len(self._backoff_seconds) - 1)]
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+    def _process_stream_chunk(
+        self,
+        chunk: object,
+        accumulated: dict[int, dict],
+        state: dict
+    ) -> Optional[str]:
+        """Update session state from a chunk; return content token if present."""
+        if not chunk.choices:
+            if chunk.usage:
+                state["input_tokens"] = chunk.usage.prompt_tokens
+                state["output_tokens"] = chunk.usage.completion_tokens
+            return None
+
+        choice = chunk.choices[0]
+        delta = choice.delta
+
+        if delta.tool_calls:
+            for tc_chunk in delta.tool_calls:
+                self._accumulate_tool_call(tc_chunk, accumulated)
+
+        if choice.finish_reason:
+            state["finish_reason"] = choice.finish_reason
+
+        return delta.content
 
     def _log_error(self, error_type: str, e: Exception, operation: str, model: str, attempt: int, start_time: float) -> None:
         """Helper to uniformly log API errors."""
@@ -550,18 +566,27 @@ class OpenAILLMWrapper(LLMWrapperBase):
         if system:
             result.append({"role": "system", "content": system})
         for msg in messages:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if isinstance(content, str):
-                result.append({"role": role, "content": content})
-            elif not isinstance(content, list):
-                result.append({"role": role, "content": str(content)})
-            elif role == "assistant":
-                result.append(self._convert_assistant_blocks(content))
-            elif role == "user":
-                result.extend(self._convert_user_blocks(content))
-
+            result.extend(self._convert_single_message(msg))
         return result
+
+    def _convert_single_message(self, msg: dict) -> list[dict]:
+        """Convert a single Anthropic-format message to OpenAI chat format(s)."""
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        
+        if isinstance(content, str):
+            return [{"role": role, "content": content}]
+        
+        if not isinstance(content, list):
+            return [{"role": role, "content": str(content)}]
+            
+        if role == "assistant":
+            return [self._convert_assistant_blocks(content)]
+        
+        if role == "user":
+            return self._convert_user_blocks(content)
+            
+        return []
 
     def _convert_assistant_blocks(self, content: list) -> dict:
         """Convert a list of Anthropic assistant content blocks to an OpenAI message dict.
@@ -578,18 +603,8 @@ class OpenAILLMWrapper(LLMWrapperBase):
         for block in content:
             if not isinstance(block, dict):
                 continue
-            block_type = block.get("type", "")
-            if block_type == "text":
-                text_parts.append(block.get("text", ""))
-            elif block_type == "tool_use":
-                oai_tool_calls.append({
-                    "id": block.get("id", ""),
-                    "type": "function",
-                    "function": {
-                        "name": block.get("name", ""),
-                        "arguments": json.dumps(block.get("input", {})),
-                    },
-                })
+            
+            self._process_assistant_block(block, text_parts, oai_tool_calls)
         oai_msg: dict = {
             "role": "assistant",
             "content": " ".join(text_parts) if text_parts else None,
@@ -612,23 +627,49 @@ class OpenAILLMWrapper(LLMWrapperBase):
         """
         result: list[dict] = []
         for block in content:
-            if not isinstance(block, dict):
-                continue
-            block_type = block.get("type", "")
-            if block_type == "tool_result":
-                tool_content = block.get("content", "")
-                if isinstance(tool_content, list):
-                    text = " ".join(b.get("text", "") for b in tool_content if isinstance(b, dict) and b.get("type") == "text")
-                else:
-                    text = str(tool_content) if tool_content is not None else ""
-                result.append({
-                    "role": "tool",
-                    "tool_call_id": block.get("tool_use_id", ""),
-                    "content": text,
-                })
-            elif block_type == "text":
-                result.append({"role": "user", "content": block.get("text", "")})
-        return result
+            if isinstance(block, dict):
+                result.append(self._convert_user_block(block))
+        return [r for r in result if r]
+
+    def _process_assistant_block(self, block: dict, text_parts: list[str], tools: list[dict]) -> None:
+        """Process a single assistant content block."""
+        block_type = block.get("type", "")
+        if block_type == "text":
+            text_parts.append(block.get("text", ""))
+        elif block_type == "tool_use":
+            tools.append({
+                "id": block.get("id", ""),
+                "type": "function",
+                "function": {
+                    "name": block.get("name", ""),
+                    "arguments": json.dumps(block.get("input", {})),
+                },
+            })
+
+    def _convert_user_block(self, block: dict) -> Optional[dict]:
+        """Convert a single user content block to an OpenAI-format message."""
+        block_type = block.get("type", "")
+        if block_type == "tool_result":
+            return {
+                "role": "tool",
+                "tool_call_id": block.get("tool_use_id", ""),
+                "content": self._resolve_tool_content(block.get("content", ""))
+            }
+        
+        if block_type == "text":
+            return {"role": "user", "content": block.get("text", "")}
+            
+        return None
+
+    def _resolve_tool_content(self, content: any) -> str:
+        """Normalize tool result content to a string."""
+        if isinstance(content, list):
+            return " ".join(
+                b.get("text", "") 
+                for b in content 
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        return str(content) if content is not None else ""
 
     def _convert_tools(self, tools: list[dict]) -> list[dict]:
         """Convert neutral DPG tool definitions to OpenAI function-calling format.
