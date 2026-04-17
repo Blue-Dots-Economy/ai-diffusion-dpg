@@ -1,5 +1,3 @@
-# Auto-provisioned Grafana datasources for DPG observability stack.
-# Grafana reads this file on startup — no manual datasource setup needed.
 apiVersion: 1
 
 datasources:
