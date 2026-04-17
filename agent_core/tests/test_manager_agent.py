@@ -308,6 +308,68 @@ def test_build_system_prompt_channel_injected():
     assert "whatsapp" in result
 
 
+def test_build_system_prompt_voice_suffix_appended():
+    """Voice channel_config suffix appears as the last section of the prompt."""
+    agent = _make_manager_for_prompt()
+    channel_config = {"system_prompt_suffix": "Respond in 1-2 short spoken sentences. No bullet points."}
+    result = agent.build_system_prompt(
+        "You are a domain agent.",
+        "Help with jobs.",
+        "hindi",
+        "voice",
+        {},
+        channel_config=channel_config,
+    )
+    assert result.endswith("Respond in 1-2 short spoken sentences. No bullet points.")
+
+
+def test_build_system_prompt_empty_suffix_does_not_change_output():
+    """Empty system_prompt_suffix leaves the prompt unchanged."""
+    agent = _make_manager_for_prompt()
+    baseline = agent.build_system_prompt("You are a domain agent.", "", "hindi", "web", {})
+    result = agent.build_system_prompt(
+        "You are a domain agent.",
+        "",
+        "hindi",
+        "web",
+        {},
+        channel_config={"system_prompt_suffix": ""},
+    )
+    assert result == baseline
+
+
+def test_build_system_prompt_suffix_is_after_guardrails():
+    """Suffix must appear after the guardrail constraints section."""
+    agent = _make_manager_for_prompt()
+    channel_config = {"system_prompt_suffix": "Keep it short."}
+    guardrails = {
+        "prompt_constraints": ["No financial advice"],
+        "required_disclosures": [],
+    }
+    result = agent.build_system_prompt(
+        "You are an agent.",
+        "",
+        "hindi",
+        "voice",
+        {},
+        channel_config=channel_config,
+        guardrail_constraints=guardrails,
+    )
+    guardrail_pos = result.index("No financial advice")
+    suffix_pos = result.index("Keep it short.")
+    assert suffix_pos > guardrail_pos
+
+
+def test_build_system_prompt_none_channel_config_no_suffix():
+    """channel_config=None (default) produces the same output as not passing it."""
+    agent = _make_manager_for_prompt()
+    without = agent.build_system_prompt("You are an agent.", "", "hindi", "cli", {})
+    with_none = agent.build_system_prompt(
+        "You are an agent.", "", "hindi", "cli", {}, channel_config=None
+    )
+    assert without == with_none
+
+
 # ---------------------------------------------------------------------------
 # build_messages — E2
 # ---------------------------------------------------------------------------
