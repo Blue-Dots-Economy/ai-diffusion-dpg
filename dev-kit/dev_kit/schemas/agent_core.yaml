@@ -8,6 +8,13 @@ agent:
   fallback_model: ""            # required — Claude model ID used if primary call fails
   ask_for_consent: false        # true to ask new users for DPDP data-storage consent before saving anything
   consent_prompt: ""            # message shown when asking for consent (used when ask_for_consent is true)
+  channels:                      # per-channel prompt shaping
+    voice:
+      system_prompt_suffix: "Respond in 1–2 short spoken sentences. No bullet points or markdown."
+    web:
+      system_prompt_suffix: ""   # no suffix — full formatting preserved
+    cli:
+      system_prompt_suffix: ""   # no suffix — full formatting preserved
 
 conversation:
   blocked_message: ""           # shown when user input is blocked by Trust Layer

@@ -6,6 +6,13 @@ agent:
   fallback_model: claude-haiku-4-5-20251001
   ask_for_consent: true
   consent_prompt: "Namaste! Kya main aapki trade aur location yaad rakh sakta hoon? Isse agle baar aapko dobara batana nahi padega."
+  channels:
+    voice:
+      system_prompt_suffix: "1-2 chhote vakya bolein. Bullet points ya markdown mat use karein."
+    web:
+      system_prompt_suffix: ""
+    cli:
+      system_prompt_suffix: ""
 
 conversation:
   blocked_message: "Maafi kijiye, main is vishay mein madad nahi kar sakta."
