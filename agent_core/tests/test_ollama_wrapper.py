@@ -253,18 +253,18 @@ def test_init_raises_on_missing_fallback_model():
 @patch("src.llm_wrapper.ollama_wrapper.openai.OpenAI")
 @patch("src.llm_wrapper.ollama_wrapper.openai.AsyncOpenAI")
 def test_init_forwards_base_url_to_client(mock_async_cls, mock_cls):
-    config = {**VALID_CONFIG, "ollama_base_url": "https://my-endpoint.com/v1"}
+    config = {**VALID_CONFIG, "ollama_base_url": "https://my-endpoint.com"}
     OllamaLLMWrapper(config)
-    mock_cls.assert_called_once_with(base_url="https://my-endpoint.com/v1")
-    mock_async_cls.assert_called_once_with(base_url="https://my-endpoint.com/v1")
+    mock_cls.assert_called_once_with(api_key="ollama", base_url="https://my-endpoint.com/v1")
+    mock_async_cls.assert_called_once_with(api_key="ollama", base_url="https://my-endpoint.com/v1")
 
 
 @patch("src.llm_wrapper.ollama_wrapper.openai.OpenAI")
 @patch("src.llm_wrapper.ollama_wrapper.openai.AsyncOpenAI")
 def test_init_no_base_url_uses_default_client(mock_async_cls, mock_cls):
     OllamaLLMWrapper(VALID_CONFIG)
-    mock_cls.assert_called_once_with()
-    mock_async_cls.assert_called_once_with()
+    mock_cls.assert_called_once_with(api_key="ollama", base_url="http://localhost:11434/v1")
+    mock_async_cls.assert_called_once_with(api_key="ollama", base_url="http://localhost:11434/v1")
 
 
 # ---------------------------------------------------------------------------

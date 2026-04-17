@@ -797,7 +797,7 @@ class AgentCore(AgentCoreBase):
         active_tools = self._workflow.tool_defs.get(next_subagent_id, [])
         output_format = next_subagent.output_format
         primary_model = self._config.get("agent", {}).get("primary_model", "claude-haiku-4-5-20251001")
-        llm_provider = self._config.get("agent", {}).get("llm_provider", "anthropic").capitalize()
+        llm_provider = self._config.get("agent", {}).get("llm_provider", "llm").capitalize()
         logger.info(
             "  [STEP 8] LLM Call #1  →  %s API (model=%s)"
             "  tools_available=%d  message_count=%d  output_format=%s",
@@ -2279,7 +2279,7 @@ class AgentCore(AgentCoreBase):
             sentence_index = 0
             token_buffer = ""
             primary_model = self._config.get("agent", {}).get("primary_model", "claude-haiku-4-5-20251001")
-            llm_provider = self._config.get("agent", {}).get("llm_provider", "anthropic").capitalize()
+            llm_provider = self._config.get("agent", {}).get("llm_provider", "llm").capitalize()
             logger.info(
                 "  [STEP 8] LLM Stream Call #1  →  %s API (model=%s)"
                 "  tools_available=%d  message_count=%d",

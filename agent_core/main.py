@@ -165,6 +165,9 @@ def _build_app():
     agent_cfg = config.get("agent", {})
 
     llm_provider = agent_cfg.get("llm_provider", "anthropic")
+    primary_model = agent_cfg.get("primary_model", "unknown")
+    logger.info(f"DPG BOOTSTRAP: Using LLM provider '{llm_provider}' with primary model '{primary_model}'")
+
     if llm_provider == "openai":
         llm = OpenAILLMWrapper(agent_cfg)
     elif llm_provider == "ollama":

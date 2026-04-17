@@ -61,10 +61,12 @@ class OllamaLLMWrapper(LLMWrapperBase):
         self._active_model: str = self._primary_model
 
         ollama_base_url = config.get("ollama_base_url", "http://localhost:11434").rstrip("/")
+        if not ollama_base_url.endswith("/v1"):
+            ollama_base_url = f"{ollama_base_url}/v1"
         
         client_kwargs: dict = {
             "api_key": "ollama",
-            "base_url": f"{ollama_base_url}/v1"
+            "base_url": ollama_base_url
         }
 
         self._client = openai.OpenAI(**client_kwargs)
@@ -173,6 +175,7 @@ class OllamaLLMWrapper(LLMWrapperBase):
                     span.set_attribute("gen_ai.model", model)
                     span.set_attribute("llm.attempt", attempt + 1)
                     raw = self._client.chat.completions.create(**kwargs)
+                    logger.debug(f"[OllamaLLMWrapper] RAW RESPONSE: {raw}")
                     response = self._parse_response(raw, model)
                     span.set_attribute("gen_ai.usage.input_tokens", response.input_tokens)
                     span.set_attribute("gen_ai.usage.output_tokens", response.output_tokens)
@@ -260,10 +263,10 @@ class OllamaLLMWrapper(LLMWrapperBase):
                     choice = chunk.choices[0]
                     delta = choice.delta
 
-                    if delta.content:
+                    if hasattr(delta, "content") and delta.content:
                         yield delta.content
 
-                    if delta.tool_calls:
+                    if hasattr(delta, "tool_calls") and delta.tool_calls:
                         for tc_chunk in delta.tool_calls:
                             idx = tc_chunk.index
                             if idx not in accumulated_tool_calls:
@@ -274,14 +277,15 @@ class OllamaLLMWrapper(LLMWrapperBase):
                                 }
                             if tc_chunk.id:
                                 accumulated_tool_calls[idx]["id"] += tc_chunk.id
-                            if tc_chunk.function:
-                                if tc_chunk.function.name:
+                            if hasattr(tc_chunk, "function") and tc_chunk.function:
+                                if hasattr(tc_chunk.function, "name") and tc_chunk.function.name:
                                     accumulated_tool_calls[idx]["name"] += tc_chunk.function.name
-                                if tc_chunk.function.arguments:
+                                if hasattr(tc_chunk.function, "arguments") and tc_chunk.function.arguments:
                                     accumulated_tool_calls[idx]["arguments"] += tc_chunk.function.arguments
 
                     if choice.finish_reason:
                         finish_reason = choice.finish_reason
+                        logger.debug(f"[OllamaLLMWrapper] STREAM FINISH REASON: {finish_reason}")
 
                 logger.info(
                     "llm_wrapper.stream_call",
@@ -297,7 +301,8 @@ class OllamaLLMWrapper(LLMWrapperBase):
                     },
                 )
 
-                if finish_reason == "tool_calls" and accumulated_tool_calls:
+                if finish_reason in ["tool_calls", "stop"] and accumulated_tool_calls:
+                    logger.debug(f"[OllamaLLMWrapper] ACCUMULATED TOOL CALLS: {accumulated_tool_calls}")
                     tool_calls: list[ToolCall] = []
                     for idx in sorted(accumulated_tool_calls.keys()):
                         tc = accumulated_tool_calls[idx]
@@ -388,10 +393,14 @@ class OllamaLLMWrapper(LLMWrapperBase):
                     )
                 )
 
+        stop_reason = self._map_stop_reason(choice.finish_reason)
+        if tool_calls:
+            stop_reason = "tool_use"
+
         return LLMResponse(
             content=text_content,
             tool_calls=tool_calls,
-            stop_reason=self._map_stop_reason(choice.finish_reason),
+            stop_reason=stop_reason,
             model_used=model,
             input_tokens=raw.usage.prompt_tokens if raw.usage else 0,
             output_tokens=raw.usage.completion_tokens if raw.usage else 0,
