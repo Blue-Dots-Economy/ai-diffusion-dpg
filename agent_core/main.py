@@ -5,7 +5,8 @@ Startup entrypoint for the Agent Core orchestration service.
 
 Responsibilities:
 - Load config from config/config.yaml
-- Instantiate ClaudeLLMWrapper with agent config
+- Instantiate the configured LLM wrapper (ClaudeLLMWrapper or OpenAILLMWrapper)
+  based on agent.llm_provider in config (default: "anthropic")
 - Create HTTP clients for Memory Layer, Trust Layer, Observability Layer, Knowledge Engine,
   and Action Gateway
 - Wire ToolRegistry, AgentWorkflowLoader, ManagerAgent, and AgentCore
@@ -17,8 +18,9 @@ Run:
     uvicorn main:app --reload         (dev hot-reload)
 
 Environment:
-    ANTHROPIC_API_KEY must be set. ClaudeLLMWrapper reads it from the environment
-    via the Anthropic SDK -- never hardcoded here.
+    ANTHROPIC_API_KEY must be set when agent.llm_provider is "anthropic" (default).
+    OPENAI_API_KEY must be set when agent.llm_provider is "openai".
+    Keys are read from the environment by the respective SDK — never hardcoded here.
 
 Prerequisites (all must be running before this starts):
     memory_layer/main.py     (port 8002)
@@ -47,6 +49,7 @@ _env_local_warn = _env_local.exists() and not load_dotenv(_env_local)
 load_dotenv()  # .env in block dir or injected environment (Docker/prod)
 
 from src.llm_wrapper.claude_wrapper import ClaudeLLMWrapper
+from src.llm_wrapper.openai_wrapper import OpenAILLMWrapper
 from src.http_clients.knowledge_engine import HttpKnowledgeEngineClient
 from src.http_clients.memory_layer import MemoryLayerHttpClient
 from src.http_clients.trust_layer import TrustLayerHttpClient
@@ -160,7 +163,11 @@ def _build_app():
 
     agent_cfg = config.get("agent", {})
 
-    llm = ClaudeLLMWrapper(agent_cfg)
+    llm_provider = agent_cfg.get("llm_provider", "anthropic")
+    if llm_provider == "openai":
+        llm = OpenAILLMWrapper(agent_cfg)
+    else:
+        llm = ClaudeLLMWrapper(agent_cfg)
 
     memory   = MemoryLayerHttpClient(config)
     trust    = TrustLayerHttpClient(config)

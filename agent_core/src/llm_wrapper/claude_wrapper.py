@@ -218,7 +218,7 @@ class ClaudeLLMWrapper(LLMWrapperBase):
                 if system:
                     kwargs["system"] = system
                 if tools:
-                    kwargs["tools"] = tools
+                    kwargs["tools"] = self._convert_tools(tools)
 
                 tool_calls: list[ToolCall] = []
                 stop_reason: str | None = None
@@ -368,7 +368,7 @@ class ClaudeLLMWrapper(LLMWrapperBase):
                     "timeout": self._timeout_s,
                 }
                 if tools:
-                    kwargs["tools"] = tools
+                    kwargs["tools"] = self._convert_tools(tools)
                 if output_format:
                     kwargs["response_format"] = output_format
 
@@ -453,6 +453,17 @@ class ClaudeLLMWrapper(LLMWrapperBase):
 
     def _switch_to_fallback(self) -> None:
         self._active_model = self._fallback_model
+
+    def _convert_tools(self, tools: list[dict]) -> list[dict]:
+        """Convert neutral DPG standard tool definitions to Anthropic format."""
+        anthropic_tools = []
+        for t in tools:
+            anthropic_tools.append({
+                "name": t.get("name", ""),
+                "description": t.get("description", ""),
+                "input_schema": t.get("parameters", {})
+            })
+        return anthropic_tools
 
     def _parse_response(self, raw: anthropic.types.Message, model: str) -> LLMResponse:
         tool_calls: list[ToolCall] = []

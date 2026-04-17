@@ -29,18 +29,22 @@ class ToolRegistry:
             raise ValueError("config must not be None")
         
         # 2. Extract tools from Gateway (fetched from /tools at startup)
-        self._tool_definitions = gateway.list_available_tools()
+        gateway_tools = gateway.list_available_tools()
 
         # 1. Build consent set from gateway tool category field (before stripping it)
-        self._consent_tools: set[str] = self._build_consent_set(self._tool_definitions)
+        self._consent_tools: set[str] = self._build_consent_set(gateway_tools)
 
-        # Strip non-Anthropic fields (e.g. "category") from gateway tool definitions.
-        # The Anthropic API only accepts name, description, and input_schema.
-        _ANTHROPIC_TOOL_KEYS = {"name", "description", "input_schema"}
-        self._tool_definitions = [
-            {k: v for k, v in t.items() if k in _ANTHROPIC_TOOL_KEYS}
-            for t in self._tool_definitions
-        ]
+        # Build the neutral DPG Tool Schema: name, description, parameters.
+        # Fallback to 'input_schema' for backwards compatibility with older gateway YAMLs.
+        self._tool_definitions = []
+        for t in gateway_tools:
+            if "name" in t:
+                schema = t.get("parameters") or t.get("input_schema") or {}
+                self._tool_definitions.append({
+                    "name": t.get("name", ""),
+                    "description": t.get("description", ""),
+                    "parameters": schema
+                })
 
         # 3. Add internal tools from config (not handled by AG client)
         internal_tools, tool_routes = self._load_internal_tools(config)
@@ -107,18 +111,19 @@ class ToolRegistry:
 
         Returns:
             Tuple of (tool_definitions, tool_routes) where tool_definitions are
-            Anthropic-compatible tool dicts and tool_routes maps tool name to its
+            neutral Tool Schema dicts and tool_routes maps tool name to its
             declared route target (e.g. "knowledge_engine"), omitting tools that
             have no route declared.
         """
         internal_tools: list[dict] = []
         tool_routes: dict[str, str] = {}
         for c in config.get("connectors", {}).get("internal", []) or []:
-            if c.get("name") and c.get("input_schema"):
+            schema = c.get("parameters") or c.get("input_schema")
+            if c.get("name") and schema is not None:
                 internal_tools.append({
                     "name": c["name"],
                     "description": c.get("description", ""),
-                    "input_schema": c["input_schema"]
+                    "parameters": schema
                 })
                 if c.get("route"):
                     tool_routes[c["name"]] = c["route"]

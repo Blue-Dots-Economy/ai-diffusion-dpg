@@ -132,7 +132,7 @@ def test_call_returns_tool_use_response(mock_anthropic_cls):
     mock_client.messages.create.return_value = _mock_tool_response()
 
     wrapper = ClaudeLLMWrapper(VALID_CONFIG)
-    tools = [{"name": "get_data", "description": "Fetch data", "input_schema": {}}]
+    tools = [{"name": "get_data", "description": "Fetch data", "parameters": {}}]
     response = wrapper.call(messages=MESSAGES, tools=tools, system=SYSTEM)
 
     assert response.stop_reason == "tool_use"
