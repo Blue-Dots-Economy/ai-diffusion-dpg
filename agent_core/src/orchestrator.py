@@ -224,9 +224,6 @@ class AgentCore(AgentCoreBase):
             "═══════════════════════════════════════════════════════════════",
             session_id, turn_input.channel, turn_input.user_message[:120],
         )
-        # TEMP DEBUG
-        logger.warning("[DEBUG] process_turn INPUT: %r", turn_input.user_message)
-
         # ── Step 1: Read session state ────────────────────────────────
         memory_endpoint = (
             self._config.get("memory_client", {}).get("endpoint", "http://memory_layer:8002")
@@ -309,7 +306,7 @@ class AgentCore(AgentCoreBase):
             user_storage_mode: str | None = bundle.session.get("user_storage_mode")
             turn_count: int = int(bundle.session.get("turn_count", 0) or 0)
 
-            if not user_storage_mode and turn_count == 0:
+            if user_storage_mode is None and turn_count == 0:
                 # Turn 1: deliver consent prompt (translated to user's language),
                 # no LLM inference, no Trust Layer call.
                 consent_prompt_text: str = self._config.get("agent", {}).get("consent_prompt", "")
@@ -329,7 +326,7 @@ class AgentCore(AgentCoreBase):
                     latency_ms=int((time.time() - start) * 1000),
                 )
 
-            if not user_storage_mode and turn_count > 0:
+            if user_storage_mode is None and turn_count > 0:
                 # Turn 2: evaluate response, write storage mode, continue to workflow
                 granted: bool = self._trust.verify_consent(session_id, turn_input.user_message)
                 new_storage_mode = "saved" if granted else "anonymous"
@@ -900,8 +897,6 @@ class AgentCore(AgentCoreBase):
         _do_flush = next_subagent.is_terminal
         _flush_reason = next_subagent_id if _do_flush else ""
 
-        # TEMP DEBUG
-        logger.warning("[DEBUG] process_turn REPLY: %r", final_text)
         result = self._build_result(
             session_id=session_id,
             user_id=user_id,
@@ -1073,6 +1068,21 @@ class AgentCore(AgentCoreBase):
 
         Trust Layer output check is still applied before returning — CLAUDE.md guideline
         "Trust Layer runs on every I/O pass. Never skip either."
+
+        Args:
+            handler: The special_handler string from the subagent config (e.g. "hitl", "whatsapp_handoff").
+            current_subagent: The resolved SubAgent with special_handler set.
+            session_id: Current session identifier.
+            user_id: Current user identifier.
+            bundle: Memory context bundle for this turn.
+            turn_input: The current turn's input data.
+            start: Turn start timestamp for latency calculation.
+            trust_input: The Trust Layer input check result.
+            turn_id: Unique turn identifier.
+            intent: Intent label used for observability logging.
+
+        Returns:
+            TurnResult with response text and latency; may have was_escalated=True for hitl/escalation handlers.
         """
         if handler == "hitl":
             hitl_msg = self._config.get("hitl", {}).get(
@@ -1203,7 +1213,7 @@ class AgentCore(AgentCoreBase):
     def _blocked_response(
         self,
         session_id: str,
-        trust_result: TrustCheckResult,
+        trust_result: Optional[TrustCheckResult],
         start: float,
         trust_input: TrustCheckResult,
         turn_id: str,
@@ -1233,7 +1243,7 @@ class AgentCore(AgentCoreBase):
                 "operation": "orchestrator.process_turn",
                 "status": "skipped",
                 "session_id": session_id,
-                "reason": trust_result.reason,
+                "reason": trust_result.reason if trust_result else "guardrail_unavailable",
             },
         )
         blocked_text = self._config.get("conversation", {}).get(
@@ -1284,7 +1294,7 @@ class AgentCore(AgentCoreBase):
     def _escalated_response(
         self,
         session_id: str,
-        trust_result: TrustCheckResult,
+        trust_result: Optional[TrustCheckResult],
         start: float,
         trust_input: TrustCheckResult,
         turn_id: str,
@@ -1314,7 +1324,7 @@ class AgentCore(AgentCoreBase):
                 "operation": "orchestrator.process_turn",
                 "status": "skipped",
                 "session_id": session_id,
-                "reason": trust_result.reason,
+                "reason": trust_result.reason if trust_result else "guardrail_unavailable",
             },
         )
         escalation_text = self._config.get("conversation", {}).get(
