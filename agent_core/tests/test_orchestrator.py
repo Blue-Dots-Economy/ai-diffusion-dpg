@@ -726,13 +726,54 @@ def test_consent_gate_disabled_skips_entirely():
 
 
 def test_consent_gate_turn1_returns_prompt():
-    """Fresh session (turn_count=0, user_storage_mode=None) → return consent prompt, no LLM."""
+    """Fresh session (turn_count=0, user_storage_mode=None) → return consent prompt, no LLM.
+
+    Language normaliser returns the default language (hindi) so no translation is triggered,
+    and the raw consent text is returned unchanged.
+    """
     consent_text = "Kya aap agree karte hain?"
     agent, memory, trust = _make_agent_with_consent(
         consent_prompt=consent_text,
         session_data={"current_subagent_id": None, "turn_count": 0},
     )
+    # Normaliser returns the default language → no translation triggered
+    agent._language_normaliser.normalise.return_value = ("Kya aap agree karte hain?", "hindi")
     result = agent.process_turn(_turn_input("hello"))
+    assert result.response_text == consent_text
+    trust.verify_consent.assert_not_called()
+
+
+def test_consent_gate_turn1_translated_to_detected_language():
+    """Turn 1 with Kannada user input → consent prompt is translated to Kannada."""
+    consent_text = "Kya aap agree karte hain?"
+    translated_text = "Neevu sahomatiyaa?"
+    agent, memory, trust = _make_agent_with_consent(
+        consent_prompt=consent_text,
+        session_data={"current_subagent_id": None, "turn_count": 0},
+    )
+    agent._language_normaliser.normalise.return_value = ("namaskara", "kannada")
+    from src.models import LLMResponse
+    agent._llm.call.return_value = LLMResponse(
+        content=translated_text,
+        tool_calls=[],
+        stop_reason="end_turn",
+        model_used="claude-primary",
+    )
+    result = agent.process_turn(_turn_input("namaskara"))
+    assert result.response_text == translated_text
+    trust.verify_consent.assert_not_called()
+
+
+def test_consent_gate_turn1_falls_back_on_translation_failure():
+    """Turn 1 translation failure → consent prompt returned untranslated."""
+    consent_text = "Kya aap agree karte hain?"
+    agent, memory, trust = _make_agent_with_consent(
+        consent_prompt=consent_text,
+        session_data={"current_subagent_id": None, "turn_count": 0},
+    )
+    agent._language_normaliser.normalise.return_value = ("namaskara", "kannada")
+    agent._llm.call.side_effect = RuntimeError("LLM unavailable")
+    result = agent.process_turn(_turn_input("namaskara"))
     assert result.response_text == consent_text
     trust.verify_consent.assert_not_called()
 

@@ -250,6 +250,59 @@ class AgentCore(AgentCoreBase):
             int((time.time() - t1) * 1000),
         )
 
+        # ── Step 4: Language Normalisation ───────────────────────────
+        # Runs before the consent gate so the detected language is available
+        # to translate the consent prompt on Turn 1.
+        lang_model = (
+            self._config.get("preprocessing", {})
+            .get("language_normalisation", {})
+            .get("model_override", "haiku")
+        )
+        logger.info(
+            "  [STEP 4] Language Normalisation  →  LLM call (model_override=%s)",
+            lang_model,
+        )
+        t4 = time.time()
+        normalised_input, turn_language = self._language_normaliser.normalise(
+            raw_input=turn_input.user_message,
+            config=self._config,
+            llm=self._llm,
+        )
+
+        # Determine language preference — lock it in if not already set
+        profile_data = bundle.profile if bundle.profile is not None else {}
+        session_data = bundle.session if bundle.session is not None else {}
+
+        default_language = (
+            self._config.get("preprocessing", {})
+            .get("language_normalisation", {})
+            .get("default_language", "hindi")
+        )
+        language_preference = (
+            profile_data.get("language_preference") or
+            session_data.get("language_preference") or
+            turn_language or
+            default_language
+        )
+
+        # Lock in language_preference on the first turn only.
+        # Explicit user switches are handled after NLU (Step 5 → language_switch_request).
+        saved_preference = session_data.get("language_preference") or profile_data.get("language_preference")
+        if not saved_preference:
+            pref_scope: str = self._config.get("entity_persistence", {}).get("scope", "persistent")
+            self._write_memory_sync(session_id, user_id, pref_scope, "language_preference", language_preference)
+            bundle.session["language_preference"] = language_preference
+
+        logger.info(
+            "  [STEP 4] Language Normalisation  ✓  detected=%s  preference=%s  normalised=%r  latency=%dms",
+            turn_language or "—",
+            language_preference,
+            (normalised_input or turn_input.user_message)[:100],
+            int((time.time() - t4) * 1000),
+        )
+        # Use preference for the rest of the turn logic
+        detected_language = language_preference
+
         # ── Consent gate (Step 1b) ────────────────────────────────────
         ask_for_consent: bool = self._config.get("agent", {}).get("ask_for_consent", False)
         if ask_for_consent:
@@ -257,7 +310,8 @@ class AgentCore(AgentCoreBase):
             turn_count: int = int(bundle.session.get("turn_count", 0) or 0)
 
             if not user_storage_mode and turn_count == 0:
-                # Turn 1: deliver consent prompt, no LLM call, no Trust Layer call
+                # Turn 1: deliver consent prompt (translated to user's language),
+                # no LLM inference, no Trust Layer call.
                 consent_prompt_text: str = self._config.get("agent", {}).get("consent_prompt", "")
                 logger.info(
                     "orchestrator.consent_gate",
@@ -271,7 +325,7 @@ class AgentCore(AgentCoreBase):
                 return TurnResult(
                     session_id=session_id,
                     turn_id=turn_id,
-                    response_text=consent_prompt_text,
+                    response_text=self._translate_consent_message(consent_prompt_text, detected_language),
                     latency_ms=int((time.time() - start) * 1000),
                 )
 
@@ -354,56 +408,10 @@ class AgentCore(AgentCoreBase):
             self._schedule_flush(session_id, user_id, "escalation_trust_input")
             return self._escalated_response(session_id, trust_input, start, trust_input, turn_id, intent="unknown", user_id=user_id, user_message=turn_input.user_message)
 
-        # ── Step 4: Language Normalisation ───────────────────────────
-        lang_model = (
-            self._config.get("preprocessing", {})
-            .get("language_normalisation", {})
-            .get("model_override", "haiku")
-        )
-        logger.info(
-            "  [STEP 4] Language Normalisation  →  LLM call (model_override=%s)",
-            lang_model,
-        )
-        t4 = time.time()
-        normalised_input, turn_language = self._language_normaliser.normalise(
-            raw_input=turn_input.user_message,
-            config=self._config,
-            llm=self._llm,
-        )
-        
-        # Determine language preference — lock it in if not already set
-        profile_data = bundle.profile if bundle.profile is not None else {}
-        session_data = bundle.session if bundle.session is not None else {}
-        
-        default_language = (
-            self._config.get("preprocessing", {})
-            .get("language_normalisation", {})
-            .get("default_language", "hindi")
-        )
-        language_preference = (
-            profile_data.get("language_preference") or
-            session_data.get("language_preference") or
-            turn_language or
-            default_language
-        )
-        
-        # Lock in language_preference on the first turn only.
-        # Explicit user switches are handled after NLU (Step 5 → language_switch_request).
-        saved_preference = session_data.get("language_preference") or profile_data.get("language_preference")
-        if not saved_preference:
-            pref_scope: str = self._config.get("entity_persistence", {}).get("scope", "persistent")
-            self._write_memory_sync(session_id, user_id, pref_scope, "language_preference", language_preference)
-            bundle.session["language_preference"] = language_preference
-
-        logger.info(
-            "  [STEP 4] Language Normalisation  ✓  detected=%s  preference=%s  normalised=%r  latency=%dms",
-            turn_language or "—",
-            language_preference,
-            (normalised_input or turn_input.user_message)[:100],
-            int((time.time() - t4) * 1000),
-        )
-        # Use preference for the rest of the turn logic
-        detected_language = language_preference
+        # Step 4 (Language Normalisation) has been moved to run before the consent
+        # gate so that detected_language is available when translating the consent
+        # prompt on Turn 1.  The variables normalised_input, turn_language,
+        # language_preference, and detected_language are already set above.
 
         # ── Step 5: NLU Processor ─────────────────────────────────────
         allowed_intents = self._workflow.nlu_intent_set.get(current_subagent_id, [])
@@ -1647,6 +1655,52 @@ class AgentCore(AgentCoreBase):
             )
 
     # ------------------------------------------------------------------
+    # Private: consent translation helper
+    # ------------------------------------------------------------------
+
+    def _translate_consent_message(self, message: str, target_language: str) -> str:
+        """Translate the consent prompt to the user's detected language.
+
+        Args:
+            message: The raw consent prompt string from config.
+            target_language: Language detected from the user's input.
+
+        Returns:
+            Translated message, or the original if translation is unnecessary or fails.
+        """
+        if not message or not target_language:
+            return message
+        default_language = (
+            self._config.get("preprocessing", {})
+            .get("language_normalisation", {})
+            .get("default_language", "")
+        )
+        if target_language == default_language:
+            return message
+        try:
+            response = self._llm.call(
+                messages=[{"role": "user", "content": message}],
+                tools=[],
+                system=(
+                    f"Translate the user message to {target_language}. "
+                    "Return ONLY the translated text, no explanation."
+                ),
+            )
+            if response.stop_reason != "error" and response.content:
+                return response.content.strip()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "orchestrator.consent_translation_failed",
+                extra={
+                    "operation": "orchestrator._translate_consent_message",
+                    "status": "failure",
+                    "error": str(exc),
+                    "target_language": target_language,
+                },
+            )
+        return message
+
+    # ------------------------------------------------------------------
     # Private: synchronous memory write helper
     # ------------------------------------------------------------------
 
@@ -1772,6 +1826,46 @@ class AgentCore(AgentCoreBase):
                 int((time.time() - t1) * 1000),
             )
 
+            # ── Step 4: Language Normalisation ──────────────────────────
+            # Runs before the consent gate so detected_language is available
+            # to translate the consent prompt on Turn 1.
+            logger.info("  [STEP 4] Language Normalisation  →  (session=%s)", session_id)
+            t4 = time.time()
+            yield SignalEvent(stage="nlu", status="start")
+            normalised_input, turn_language = self._language_normaliser.normalise(
+                raw_input=turn_input.user_message,
+                config=self._config,
+                llm=self._llm,
+            )
+            logger.info(
+                "  [STEP 4] Language Normalisation  ✓  detected=%s  latency=%dms",
+                turn_language or "—", int((time.time() - t4) * 1000),
+            )
+
+            profile_data = bundle.profile if bundle.profile is not None else {}
+            session_data = bundle.session if bundle.session is not None else {}
+            default_language = (
+                self._config.get("preprocessing", {})
+                .get("language_normalisation", {})
+                .get("default_language", "hindi")
+            )
+            language_preference = (
+                profile_data.get("language_preference")
+                or session_data.get("language_preference")
+                or turn_language
+                or default_language
+            )
+
+            # Lock in language_preference on the first turn only.
+            # Explicit user switches are handled after NLU (Step 5 → language_switch_request).
+            saved_preference = session_data.get("language_preference") or profile_data.get("language_preference")
+            if not saved_preference:
+                pref_scope: str = self._config.get("entity_persistence", {}).get("scope", "persistent")
+                await self._async_memory.write(session_id, user_id, pref_scope, "language_preference", language_preference)
+                bundle.session["language_preference"] = language_preference
+
+            detected_language = language_preference
+
             # ── Consent gate (Step 1b) ──────────────────────────────────
             ask_for_consent: bool = self._config.get("agent", {}).get("ask_for_consent", False)
             if ask_for_consent:
@@ -1779,9 +1873,14 @@ class AgentCore(AgentCoreBase):
                 turn_count: int = int(bundle.session.get("turn_count", 0) or 0)
 
                 if user_storage_mode is None and turn_count == 0:
+                    # Turn 1: deliver consent prompt (translated to user's language),
+                    # no LLM inference, no Trust Layer call.
                     consent_prompt_text: str = self._config.get("agent", {}).get("consent_prompt", "")
                     await self._async_memory.write(session_id, user_id, "session", "turn_count", 1)
-                    yield SentenceEvent(text=consent_prompt_text, sentence_index=0)
+                    yield SentenceEvent(
+                        text=self._translate_consent_message(consent_prompt_text, detected_language),
+                        sentence_index=0,
+                    )
                     yield DoneEvent(
                         turn_id=turn_id,
                         latency_ms=int((time.time() - start) * 1000),
@@ -1886,43 +1985,10 @@ class AgentCore(AgentCoreBase):
                 yield DoneEvent(turn_id=turn_id, was_escalated=True, latency_ms=int((time.time() - start) * 1000))
                 return
 
-            # ── Step 4: Language Normalisation ──────────────────────────
-            logger.info("  [STEP 4] Language Normalisation  →  (session=%s)", session_id)
-            t4 = time.time()
-            yield SignalEvent(stage="nlu", status="start")
-            normalised_input, turn_language = self._language_normaliser.normalise(
-                raw_input=turn_input.user_message,
-                config=self._config,
-                llm=self._llm,
-            )
-            logger.info(
-                "  [STEP 4] Language Normalisation  ✓  detected=%s  latency=%dms",
-                turn_language or "—", int((time.time() - t4) * 1000),
-            )
-
-            profile_data = bundle.profile if bundle.profile is not None else {}
-            session_data = bundle.session if bundle.session is not None else {}
-            default_language = (
-                self._config.get("preprocessing", {})
-                .get("language_normalisation", {})
-                .get("default_language", "hindi")
-            )
-            language_preference = (
-                profile_data.get("language_preference")
-                or session_data.get("language_preference")
-                or turn_language
-                or default_language
-            )
-
-            # Lock in language_preference on the first turn only.
-            # Explicit user switches are handled after NLU (Step 5 → language_switch_request).
-            saved_preference = session_data.get("language_preference") or profile_data.get("language_preference")
-            if not saved_preference:
-                pref_scope: str = self._config.get("entity_persistence", {}).get("scope", "persistent")
-                await self._async_memory.write(session_id, user_id, pref_scope, "language_preference", language_preference)
-                bundle.session["language_preference"] = language_preference
-
-            detected_language = language_preference
+            # Step 4 (Language Normalisation) has been moved to run before the consent
+            # gate so that detected_language is available when translating the consent
+            # prompt on Turn 1.  The variables normalised_input, turn_language,
+            # language_preference, and detected_language are already set above.
 
             # ── Step 5: NLU Processor ──────────────────────────────────
             allowed_intents = self._workflow.nlu_intent_set.get(current_subagent_id, [])
