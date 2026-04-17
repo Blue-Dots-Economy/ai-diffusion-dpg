@@ -2,6 +2,7 @@
 # In Docker/Kubernetes this file is replaced by dev-kit/configs/kkb/agent_core.yaml.
 
 agent:
+  llm_provider: anthropic
   primary_model: claude-haiku-4-5-20251001
   fallback_model: claude-haiku-4-5-20251001
   ask_for_consent: true

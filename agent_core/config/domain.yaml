@@ -7,8 +7,9 @@
 # All keys are required unless marked optional.
 
 agent:
-  primary_model: ""       # Required. Claude model ID for primary inference.
-  fallback_model: ""      # Required. Claude model ID used if primary fails.
+  llm_provider: "anthropic"        # Required. "anthropic" | "openai" | "ollama"
+  primary_model: "claude-haiku-4-5-20251001"       # Required. Model ID for primary inference.
+  fallback_model: "claude-haiku-4-5-20251001"      # Required. Model ID used if primary fails.
 
 conversation:
   blocked_message: ""         # Required. Shown when input is blocked by Trust Layer.
@@ -29,7 +30,7 @@ connectors:
 
 preprocessing:
   language_normalisation:
-    model: ""              # Required. Claude model ID for language normalisation.
+    model: ""              # Required. Model ID for language normalisation.
     provider: ""           # Required. "llm_native" or "bhashini".
     default_language: ""   # Required. e.g. "hindi"
     supported_languages: []  # Required. List of supported language codes.
@@ -41,7 +42,7 @@ preprocessing:
       endpoint: ""         # Bhashini inference pipeline endpoint URL.
 
   nlu_processor:
-    model: ""                  # Required. Claude model ID for NLU classification.
+    model: ""                  # Required. Model ID for NLU classification.
     confidence_threshold: 0.5  # Optional. Float 0–1. Intents below this are treated as unknown.
     domain_instruction: ""     # Required. System instruction describing the domain to the NLU.
     intents: []                # Required. List of intent string identifiers.

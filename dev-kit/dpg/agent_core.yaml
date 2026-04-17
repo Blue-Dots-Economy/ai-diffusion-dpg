@@ -6,7 +6,6 @@ server:
   port: 8000
 
 agent:
-  llm_provider: anthropic       # "anthropic" | "openai"
   # llm_base_url: ""            # Optional: custom base URL for OpenAI-compatible endpoints
                                  # e.g. Azure OpenAI, Together AI, Fireworks. Leave unset for defaults.
   ask_for_consent: false

@@ -87,7 +87,7 @@ class NLUProcessor:
                     never re-parsed during request processing.
         """
         nlu_config = (config or {}).get("preprocessing", {}).get("nlu_processor", {})
-        self._model: str = nlu_config.get("model", "")
+        self._model: str = nlu_config.get("model") or config.get("agent", {}).get("primary_model", "claude-haiku-4-5-20251001")
         if not self._model:
             raise ConfigurationError(
                 "preprocessing.nlu_processor.model is missing in domain configuration."

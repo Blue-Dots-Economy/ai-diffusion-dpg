@@ -93,12 +93,12 @@ class OpenAILLMWrapper(LLMWrapperBase):
         self._backoff_seconds: list[float] = config.get("retry_backoff_seconds", [0, 0.5, 1.0])
 
         self._active_model: str = self._primary_model
-
+ 
         client_kwargs: dict = {}
         base_url = config.get("llm_base_url", "")
         if base_url:
             client_kwargs["base_url"] = base_url
-
+ 
         self._client = openai.OpenAI(**client_kwargs)
         self._async_client = openai.AsyncOpenAI(**client_kwargs)
 
@@ -248,7 +248,7 @@ class OpenAILLMWrapper(LLMWrapperBase):
                 self._log_error("retryable_error", e, "call", model, attempt + 1, time.time())
             except (openai.APIError, Exception) as e:
                 self._log_error("non_retryable_error", e, "call", model, attempt + 1, time.time())
-                return LLMResponse(content=None, stop_reason="error")
+                return LLMResponse(content="", stop_reason="error", model_used=model)
 
         logger.error(
             "llm_wrapper.exhausted",
@@ -303,7 +303,7 @@ class OpenAILLMWrapper(LLMWrapperBase):
                 async for chunk in await self._async_client.chat.completions.create(
                     model=model,
                     messages=oai_messages,
-                    tools=oai_tools,
+                    tools=oai_tools if oai_tools else None,
                     stream=True,
                     stream_options={"include_usage": True},
                     timeout=self._timeout_s,
@@ -313,13 +313,9 @@ class OpenAILLMWrapper(LLMWrapperBase):
                     if message:
                         yield message
 
-                self._log_success("stream_call", model, attempt + 1, start, 
-                                 in_tokens=state["input_tokens"], 
-                                 out_tokens=state["output_tokens"], 
-                                 finish_reason=state["finish_reason"])
-
-                if state["finish_reason"] == "tool_calls" and accumulated_tool_calls:
-                    raise ToolUseRequested(self._finalize_tool_calls(accumulated_tool_calls))
+                self._finalize_stream_session(
+                    model, attempt, start, state, accumulated_tool_calls
+                )
                 return
             except ToolUseRequested:
                 raise
@@ -341,6 +337,25 @@ class OpenAILLMWrapper(LLMWrapperBase):
             },
         )
         raise _RetryableExhausted(f"All {self._max_attempts} stream retry attempts exhausted for model {model}")
+
+    def _finalize_stream_session(
+        self,
+        model: str,
+        attempt: int,
+        start_time: float,
+        state: dict,
+        accumulated: dict[int, dict]
+    ) -> None:
+        """Log success and raise tool calls if requested by the LLM."""
+        self._log_success(
+            "stream_call", model, attempt + 1, start_time,
+            in_tokens=state["input_tokens"],
+            out_tokens=state["output_tokens"],
+            finish_reason=state["finish_reason"]
+        )
+
+        if state["finish_reason"] == "tool_calls" and accumulated:
+            raise ToolUseRequested(self._finalize_tool_calls(accumulated))
 
     def _wait_before_retry(self, attempt: int) -> None:
         """Apply exponential backoff delay before a retry attempt."""
@@ -416,10 +431,10 @@ class OpenAILLMWrapper(LLMWrapperBase):
             accumulated[idx] = {"id": "", "name": "", "arguments": ""}
         if tc_chunk.id:
             accumulated[idx]["id"] += tc_chunk.id
-        if tc_chunk.function:
-            if tc_chunk.function.name:
+        if hasattr(tc_chunk, "function") and tc_chunk.function:
+            if hasattr(tc_chunk.function, "name") and tc_chunk.function.name:
                 accumulated[idx]["name"] += tc_chunk.function.name
-            if tc_chunk.function.arguments:
+            if hasattr(tc_chunk.function, "arguments") and tc_chunk.function.arguments:
                 accumulated[idx]["arguments"] += tc_chunk.function.arguments
 
     def _finalize_tool_calls(self, accumulated: dict[int, dict]) -> list[ToolCall]:
@@ -460,14 +475,14 @@ class OpenAILLMWrapper(LLMWrapperBase):
         choice = chunk.choices[0]
         delta = choice.delta
 
-        if delta.tool_calls:
+        if hasattr(delta, "tool_calls") and delta.tool_calls:
             for tc_chunk in delta.tool_calls:
                 self._accumulate_tool_call(tc_chunk, accumulated)
 
         if choice.finish_reason:
             state["finish_reason"] = choice.finish_reason
 
-        return delta.content
+        return getattr(delta, "content", None) or ""
 
     def _log_error(self, error_type: str, e: Exception, operation: str, model: str, attempt: int, start_time: float) -> None:
         """Helper to uniformly log API errors."""

@@ -98,7 +98,7 @@ class LanguageNormaliser:
             "supported_languages", ["hindi", "kannada", "english", "hinglish"]
         )
         default_language = block_cfg.get("default_language", "")
-        model_override = block_cfg.get("model")
+        model_override = block_cfg.get("model") or config.get("agent", {}).get("primary_model", "claude-haiku-4-5-20251001")
         provider = block_cfg.get("provider", "llm_native")
         min_detection_tokens = int(block_cfg.get("min_detection_tokens", 3))
 

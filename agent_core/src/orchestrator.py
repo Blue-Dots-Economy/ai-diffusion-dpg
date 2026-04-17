@@ -413,13 +413,64 @@ class AgentCore(AgentCoreBase):
         # gate so that detected_language is available when translating the consent
         # prompt on Turn 1.  The variables normalised_input, turn_language,
         # language_preference, and detected_language are already set above.
+        primary_model = self._config.get("agent", {}).get("primary_model", "claude-haiku-4-5-20251001")
+        lang_model = (
+            self._config.get("preprocessing", {})
+            .get("language_normalisation", {})
+            .get("model_override", primary_model)
+        )
+        logger.info(
+            "  [STEP 4] Language Normalisation  →  LLM call (model_override=%s)",
+            lang_model,
+        )
+        t4 = time.time()
+        normalised_input, turn_language = self._language_normaliser.normalise(
+            raw_input=turn_input.user_message,
+            config=self._config,
+            llm=self._llm,
+        )
+        
+        # Determine language preference — lock it in if not already set
+        profile_data = bundle.profile if bundle.profile is not None else {}
+        session_data = bundle.session if bundle.session is not None else {}
+        
+        default_language = (
+            self._config.get("preprocessing", {})
+            .get("language_normalisation", {})
+            .get("default_language", "hindi")
+        )
+        language_preference = (
+            profile_data.get("language_preference") or
+            session_data.get("language_preference") or
+            turn_language or
+            default_language
+        )
+        
+        # Save language preference if new, or update if user switched language
+        saved_preference = session_data.get("language_preference") or profile_data.get("language_preference")
+        if not saved_preference or (turn_language and turn_language != saved_preference):
+            if turn_language and turn_language != saved_preference:
+                language_preference = turn_language
+            pref_scope: str = self._config.get("entity_persistence", {}).get("scope", "persistent")
+            self._write_memory_sync(session_id, user_id, pref_scope, "language_preference", language_preference)
+            bundle.session["language_preference"] = language_preference
+
+        logger.info(
+            "  [STEP 4] Language Normalisation  ✓  detected=%s  preference=%s  normalised=%r  latency=%dms",
+            turn_language or "—",
+            language_preference,
+            (normalised_input or turn_input.user_message)[:100],
+            int((time.time() - t4) * 1000),
+        )
+        # Use preference for the rest of the turn logic
+        detected_language = language_preference
 
         # ── Step 5: NLU Processor ─────────────────────────────────────
         allowed_intents = self._workflow.nlu_intent_set.get(current_subagent_id, [])
         nlu_model = (
             self._config.get("preprocessing", {})
             .get("nlu_processor", {})
-            .get("model_override", "haiku")
+            .get("model_override", primary_model)
         )
 
         # Collect existing profile keys (declared + ad-hoc) so the NLU prompt
@@ -745,11 +796,12 @@ class AgentCore(AgentCoreBase):
         # ── Step 8: LLM call #1 with scoped tools ────────────────────
         active_tools = self._workflow.tool_defs.get(next_subagent_id, [])
         output_format = next_subagent.output_format
-        primary_model = self._config.get("agent", {}).get("primary_model", "unknown")
+        primary_model = self._config.get("agent", {}).get("primary_model", "claude-haiku-4-5-20251001")
+        llm_provider = self._config.get("agent", {}).get("llm_provider", "anthropic").capitalize()
         logger.info(
-            "  [STEP 8] LLM Call #1  →  Anthropic API (model=%s)"
+            "  [STEP 8] LLM Call #1  →  %s API (model=%s)"
             "  tools_available=%d  message_count=%d  output_format=%s",
-            primary_model, len(active_tools), len(messages),
+            llm_provider, primary_model, len(active_tools), len(messages),
             "structured" if output_format else "free-form",
         )
         t8 = time.time()
@@ -2226,11 +2278,12 @@ class AgentCore(AgentCoreBase):
             active_tools = self._workflow.tool_defs.get(next_subagent_id, [])
             sentence_index = 0
             token_buffer = ""
-            primary_model = self._config.get("agent", {}).get("primary_model", "unknown")
+            primary_model = self._config.get("agent", {}).get("primary_model", "claude-haiku-4-5-20251001")
+            llm_provider = self._config.get("agent", {}).get("llm_provider", "anthropic").capitalize()
             logger.info(
-                "  [STEP 8] LLM Stream Call #1  →  Anthropic API (model=%s)"
+                "  [STEP 8] LLM Stream Call #1  →  %s API (model=%s)"
                 "  tools_available=%d  message_count=%d",
-                primary_model, len(active_tools), len(messages),
+                llm_provider, primary_model, len(active_tools), len(messages),
             )
             t8 = time.time()
 
