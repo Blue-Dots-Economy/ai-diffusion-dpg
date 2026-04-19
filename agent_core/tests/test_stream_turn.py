@@ -419,3 +419,38 @@ class TestStreamTurnTrustOutput:
         done_events = [e for e in events if isinstance(e, DoneEvent)]
         assert len(done_events) == 1
         assert done_events[0].turn_status == "abandoned"
+
+
+class TestStreamTurnChannelValidation:
+
+    @pytest.mark.asyncio
+    async def test_stream_turn_unsupported_channel_raises_value_error(self):
+        """stream_turn raises ValueError before yielding for a channel not in agent.channels."""
+        agent = _make_agent_core()
+        turn = _make_turn_input(channel="whatsapp")
+
+        with pytest.raises(ValueError, match="Unsupported channel: whatsapp"):
+            await _collect_events(agent, turn)
+
+    @pytest.mark.asyncio
+    async def test_stream_turn_supported_channel_does_not_raise(self):
+        """stream_turn does not raise ValueError for a channel that is in agent.channels."""
+        agent = _make_agent_core()
+
+        async def mock_stream(*args, **kwargs):
+            yield "Hello. "
+
+        agent._llm.stream_call = mock_stream
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("Hello", "english")
+        agent._nlu_processor = MagicMock()
+        agent._nlu_processor.process.return_value = NLUResult(
+            intent="greeting", entities={}, sentiment="neutral", confidence=0.9
+        )
+
+        # "web" is in the config channels — should not raise
+        turn = _make_turn_input(channel="web")
+        events = await _collect_events(agent, turn)
+
+        done_events = [e for e in events if isinstance(e, DoneEvent)]
+        assert len(done_events) == 1

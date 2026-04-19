@@ -1841,6 +1841,8 @@ class AgentCore(AgentCoreBase):
             session_id, turn_input.channel, turn_input.user_message[:120],
         )
 
+        channel_config = self._resolve_channel_config(turn_input.channel)
+
         memory_endpoint = (
             self._config.get("memory_client", {}).get("endpoint", "http://memory_layer:8002")
         )
@@ -2193,7 +2195,6 @@ class AgentCore(AgentCoreBase):
                     yield DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000))
                     return
 
-            channel_config = self._resolve_channel_config(turn_input.channel)
             system = self._manager_agent.build_system_prompt(
                 agent_system_prompt=self._workflow.agent_system_prompt,
                 subagent_system_prompt=next_subagent.system_prompt,
