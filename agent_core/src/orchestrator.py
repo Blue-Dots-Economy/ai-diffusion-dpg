@@ -224,6 +224,10 @@ class AgentCore(AgentCoreBase):
             "═══════════════════════════════════════════════════════════════",
             session_id, turn_input.channel, turn_input.user_message[:120],
         )
+        # Validate channel before any memory read or LLM call — unsupported
+        # channels must fail fast without consuming LLM resources.
+        channel_config = self._resolve_channel_config(turn_input.channel)
+
         # ── Step 1: Read session state ────────────────────────────────
         memory_endpoint = (
             self._config.get("memory_client", {}).get("endpoint", "http://memory_layer:8002")
@@ -692,7 +696,6 @@ class AgentCore(AgentCoreBase):
                     user_message=turn_input.user_message,
                 )
 
-        channel_config = self._resolve_channel_config(turn_input.channel)
         system = self._manager_agent.build_system_prompt(
             agent_system_prompt=self._workflow.agent_system_prompt,
             subagent_system_prompt=next_subagent.system_prompt,
