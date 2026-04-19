@@ -692,12 +692,14 @@ class AgentCore(AgentCoreBase):
                     user_message=turn_input.user_message,
                 )
 
+        channel_config = self._resolve_channel_config(turn_input.channel)
         system = self._manager_agent.build_system_prompt(
             agent_system_prompt=self._workflow.agent_system_prompt,
             subagent_system_prompt=next_subagent.system_prompt,
             detected_language=final_language,
             channel=turn_input.channel,
             profile=profile_context,
+            channel_config=channel_config,
             is_resumption=is_resumption,
             guardrail_constraints=guardrail_constraints,
         )
@@ -1722,6 +1724,28 @@ class AgentCore(AgentCoreBase):
         return message
 
     # ------------------------------------------------------------------
+    # Private: channel config resolver
+    # ------------------------------------------------------------------
+
+    def _resolve_channel_config(self, channel: str) -> dict:
+        """Resolve per-channel config from agent.channels, raising for unsupported channels.
+
+        Args:
+            channel: Channel name from the inbound TurnInput.
+
+        Returns:
+            Channel config dict with at least system_prompt_suffix key.
+
+        Raises:
+            ValueError: If the channel is not present in agent.channels config.
+        """
+        channels = self._config.get("agent", {}).get("channels", {})
+        config = channels.get(channel)
+        if config is None:
+            raise ValueError(f"Unsupported channel: {channel}")
+        return config
+
+    # ------------------------------------------------------------------
     # Private: synchronous memory write helper
     # ------------------------------------------------------------------
 
@@ -2169,12 +2193,14 @@ class AgentCore(AgentCoreBase):
                     yield DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000))
                     return
 
+            channel_config = self._resolve_channel_config(turn_input.channel)
             system = self._manager_agent.build_system_prompt(
                 agent_system_prompt=self._workflow.agent_system_prompt,
                 subagent_system_prompt=next_subagent.system_prompt,
                 detected_language=final_language,
                 channel=turn_input.channel,
                 profile=profile_context,
+                channel_config=channel_config,
                 is_resumption=is_resumption,
                 guardrail_constraints=guardrail_constraints,
             )

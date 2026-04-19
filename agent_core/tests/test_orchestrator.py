@@ -670,6 +670,7 @@ def _make_agent_with_consent(
     config = {
         **VALID_CONFIG,
         "agent": {
+            **VALID_CONFIG.get("agent", {}),
             "ask_for_consent": ask,
             "consent_prompt": consent_prompt,
         },

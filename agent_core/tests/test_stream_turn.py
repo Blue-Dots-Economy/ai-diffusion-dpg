@@ -129,7 +129,15 @@ def _make_workflow():
 def _make_agent_core(**overrides):
     """Create an AgentCore with all mocked dependencies."""
     config = {
-        "agent": {"primary_model": "test-model", "fallback_model": "test-fallback"},
+        "agent": {
+            "primary_model": "test-model",
+            "fallback_model": "test-fallback",
+            "channels": {
+                "cli": {"system_prompt_suffix": ""},
+                "voice": {"system_prompt_suffix": ""},
+                "web": {"system_prompt_suffix": ""},
+            },
+        },
         "conversation": {
             "blocked_message": "Blocked.",
             "escalation_message": "Escalated.",
