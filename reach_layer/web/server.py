@@ -824,7 +824,7 @@ try:
     from dpg_telemetry import init_otel
     from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
-    init_otel(service_name="reach_layer", config=_config)
+    init_otel(service_name="reach_layer.web", config=_config)
 
     if not _HTTPX_INSTRUMENTED:
         try:

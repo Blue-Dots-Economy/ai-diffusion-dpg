@@ -112,7 +112,7 @@ def create_app(config: dict | None = None) -> FastAPI:
         )
 
     _config = config
-    init_otel("telephony_adapter", config)
+    init_otel("reach_layer.voice", config)
     try:
         from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
         HTTPXClientInstrumentor().instrument()
