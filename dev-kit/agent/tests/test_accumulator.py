@@ -163,3 +163,10 @@ class TestWorkflowGraph:
         assert len(graph["nodes"]) == 2
         assert len(graph["edges"]) == 1
         assert graph["edges"][0] == {"from": "greeting", "to": "profile", "intent": "consent_granted"}
+
+
+class TestPhasesOrdering:
+    def test_user_state_phase_between_memory_and_trust(self):
+        assert "user_state" in PHASES
+        assert PHASES.index("user_state") == PHASES.index("memory") + 1
+        assert PHASES.index("user_state") == PHASES.index("trust") - 1

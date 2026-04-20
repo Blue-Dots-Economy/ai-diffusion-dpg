@@ -30,6 +30,7 @@ PHASES: list[str] = [
     "language",
     "knowledge",
     "memory",
+    "user_state",
     "trust",
     "tools",
     "workflow",
