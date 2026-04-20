@@ -236,7 +236,7 @@ def create_app(ke: KnowledgeEngine, config: dict) -> FastAPI:
         devkit_callback_url=_DEVKIT_CALLBACK_URL or None,
         ke_to_devkit_api_key=_KE_TO_DEVKIT_API_KEY or None,
         ke_config=config,
-        static_kb_block=ke._blocks[1] if len(ke._blocks) > 1 else None,
+        static_kb_block=ke.get_static_kb_block(),
     )
     app.include_router(upload_router)
     app.state.ingest_db = ingest_db
@@ -245,7 +245,7 @@ def create_app(ke: KnowledgeEngine, config: dict) -> FastAPI:
     @app.on_event("startup")
     async def _start_queue_worker():
         """Start the singleton async queue worker on app startup."""
-        static_kb = ke._blocks[1] if len(ke._blocks) > 1 else None
+        static_kb = ke.get_static_kb_block()
         _asyncio.create_task(
             run_queue_worker(
                 db=ingest_db,
