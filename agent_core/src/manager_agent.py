@@ -228,10 +228,10 @@ class ManagerAgent:
             detected_language:      Language detected by Language Normaliser.
             channel:                Channel type (e.g. "cli", "whatsapp", "voip").
             profile:                User profile dict for known field injection.
-            channel_config:         Per-channel config dict from agent.channels[channel].
-                                    When present and system_prompt_suffix is non-empty, the
-                                    suffix is appended as the final prompt section. Defaults
-                                    to None (no suffix injected).
+            channel_config:         Per-channel config dict from the top-level `channels.<name>`
+                                    block in agent_core.yaml (post-GH-137). When present and
+                                    system_prompt_suffix is non-empty, the suffix is appended
+                                    as the final prompt section.
             is_resumption:          Whether the user is resuming an ongoing session.
             guardrail_constraints:  Optional dict with prompt_constraints and
                                     required_disclosures from the Trust Layer.
