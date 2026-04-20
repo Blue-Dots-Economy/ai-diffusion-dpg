@@ -161,6 +161,7 @@ class TestSetResponseTransformation:
             "fields": [{"source": "data.id", "target": "id", "type": "string"}],
         })
         assert result.startswith("ERROR")
+        assert "nonexistent" in result
 
     def test_replaces_existing_mapping(self, handler):
         """Calling set_response_transformation twice replaces the previous mapping."""

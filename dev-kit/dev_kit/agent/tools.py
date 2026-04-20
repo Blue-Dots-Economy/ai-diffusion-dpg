@@ -862,9 +862,12 @@ class ToolHandler:
             Confirmation string with the number and names of mapped fields,
             or an ERROR string if the tool does not exist.
         """
+        import time
+
         tool_id = inputs.get("tool_id", "")
         fields = inputs.get("fields", [])
 
+        start = time.time()
         try:
             self._acc.update_tool_response_mapping(tool_id, fields)
         except ValueError as exc:
@@ -875,6 +878,7 @@ class ToolHandler:
                     "status": "failure",
                     "tool_id": tool_id,
                     "error": str(exc),
+                    "latency_ms": int((time.time() - start) * 1000),
                 },
             )
             return f"ERROR: {exc}"
@@ -886,6 +890,7 @@ class ToolHandler:
                 "status": "success",
                 "tool_id": tool_id,
                 "field_count": len(fields),
+                "latency_ms": int((time.time() - start) * 1000),
             },
         )
         field_names = ", ".join(f["target"] for f in fields[:5])
