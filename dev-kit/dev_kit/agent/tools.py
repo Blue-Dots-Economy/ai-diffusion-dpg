@@ -327,6 +327,32 @@ TOOL_DEFINITIONS: list[dict] = [
             "required": ["channels"],
         },
     },
+    {
+        "name": "set_azure_storage",
+        "description": (
+            "Save Azure Blob Storage credentials for KB document ingestion. "
+            "Call only if the operator confirms they have Azure Blob Storage. "
+            "If the operator does not have Azure, do not call this tool."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "account_name": {
+                    "type": "string",
+                    "description": "Azure storage account name."
+                },
+                "account_key": {
+                    "type": "string",
+                    "description": "Azure storage account key (Base64-encoded)."
+                },
+                "container_name": {
+                    "type": "string",
+                    "description": "Azure Blob container name where KB documents are stored."
+                }
+            },
+            "required": ["account_name", "account_key", "container_name"]
+        }
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -410,6 +436,7 @@ class ToolHandler:
             "discover_mcp_tools": self._handle_discover_mcp_tools,
             "add_mcp_tool": self._handle_add_mcp_tool,
             "set_reach_channels": self._handle_set_reach_channels,
+            "set_azure_storage": self._handle_set_azure_storage,
         }
         handler = handlers.get(tool_name)
         if handler is None:
@@ -732,6 +759,39 @@ class ToolHandler:
             return "ERROR: at least one channel must be selected."
         self._acc.set_reach_channel_selection(channels)
         return f"Channels selected: {', '.join(channels)}. Now configure each selected channel."
+
+    def _handle_set_azure_storage(self, tool_input: dict) -> str:
+        """Save Azure Blob Storage credentials to the session state.
+
+        Credentials are stored under the 'azure_storage' key in self._state.
+        The account_key is stored as-is; encryption is applied by the calling
+        endpoint before writing to disk.
+
+        Args:
+            tool_input: dict with account_name, account_key, container_name.
+
+        Returns:
+            Confirmation message string.
+        """
+        account_name = tool_input.get("account_name", "")
+        account_key = tool_input.get("account_key", "")
+        container_name = tool_input.get("container_name", "")
+
+        if not account_name or not account_key or not container_name:
+            return "Error: account_name, account_key, and container_name are all required."
+
+        self._state["azure_storage"] = {
+            "account_name": account_name,
+            "account_key": account_key,
+            "container_name": container_name,
+        }
+
+        return (
+            f"Azure Blob Storage credentials saved: account={account_name}, "
+            f"container={container_name}. "
+            "Local files can be uploaded without Azure — "
+            "Azure fetch and upload modes will be available at the IngestDocumentsStep."
+        )
 
     def _sync_connector_from_tool(self, tool: dict) -> None:
         """Auto-create or update agent_core connector from a tool definition.

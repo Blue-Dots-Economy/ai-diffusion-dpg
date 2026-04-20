@@ -134,11 +134,27 @@ def get_phase_addition(phase: str, available_tools: list[str] | None = None) -> 
             "  ❌ NEVER use: conversation.assistant_persona, conversation.persona_text\n"
             "- Language instruction: section=`conversation`, key: `language_instruction`\n\n"
             "The `update_config` tool will return an ERROR if you use wrong key names. Read the error and retry.\n\n"
+            "**KB Document Sources — ask ONE question:**\n"
+            "Ask: 'Do you have Azure Blob Storage for your KB documents?\n"
+            "- If yes: I need your Azure account name, account key, and container name.\n"
+            "- If no: no setup needed — you will upload local files after deployment.'\n\n"
+            "  ┌─ Yes, Azure ──────────────────────────────────────────────────────────┐\n"
+            "  │  → Call set_azure_storage({account_name, account_key, container_name}) │\n"
+            "  │  → At IngestDocumentsStep (post-deploy), per file the operator chooses: │\n"
+            "  │      'Fetch from Azure', 'Upload local + push to Azure', or 'Local only' │\n"
+            "  └───────────────────────────────────────────────────────────────────────┘\n\n"
+            "  ┌─ No cloud storage ────────────────────────────────────────────────────┐\n"
+            "  │  → Do NOT call set_azure_storage                                       │\n"
+            "  │  → At IngestDocumentsStep, only 'Upload local only' will be available  │\n"
+            "  └───────────────────────────────────────────────────────────────────────┘\n\n"
+            "Do NOT collect document filenames or a list of files — operators upload files\n"
+            "directly in IngestDocumentsStep after deployment.\n\n"
             "Use EXACTLY the key names shown in the template below:\n\n"
             "```yaml\n"
             + load_template_text("knowledge_engine")
             + "```\n\n"
-            "➡️ When collection_name, persona, and language_instruction are set, call `set_phase('memory')`."
+            "➡️ When collection_name, persona, and language_instruction are set "
+            "(and azure_storage is saved if applicable), call `set_phase('memory')`."
         )
 
     if phase == "memory":
