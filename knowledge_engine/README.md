@@ -247,4 +247,4 @@ No API or interface changes are needed to enable it — set `knowledge.blocks.mu
 
 **No caching layer.** Identical queries (same intent + same entities) re-run full vector search on every call. A caching strategy for high-cardinality repeated queries (e.g. common trade lookups) is an open design question (#18) — no implementation exists yet.
 
-**Bhashini embedding not integrated.** The embedding pipeline uses sentence-transformers or OpenAI. Bhashini-native embeddings for Indic languages are not yet supported.
+

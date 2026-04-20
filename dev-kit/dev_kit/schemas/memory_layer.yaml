@@ -20,15 +20,26 @@ state:
       subnodes:                 # map of NodeName → subnode definition
         NodeName:               # replace with actual node name e.g. Profile, Journey
           rel: HAS_NODE         # required — relationship type e.g. HAS_PROFILE, HAS_APPOINTMENT
-          declared_fields:      # list of known field names on this node
+          grouping: false       # true = grouper node with no properties, used as a structural anchor
+          declared_fields:      # list of known field names on this node (omit if grouping: true)
             - field_one
             - field_two
-          child:                # optional nested child node
+          child:                # optional single nested child node
             label: ChildNode
             rel: HAS_CHILD
             fields:
               - field_name
-          adhoc:                # optional adhoc/dynamic subnode
+          children:             # optional list of child node types (use instead of child when multiple types exist)
+            - label: ChildNodeA  # e.g. Role
+              rel: HAS_CHILD_A   # e.g. OFFERED
+              fields:
+                - field_one
+                - field_two
+            - label: ChildNodeB  # e.g. DropOff
+              rel: HAS_CHILD_B   # e.g. DROPPED_AT
+              fields:
+                - field_name
+          adhoc:                # optional adhoc/dynamic subnode for free-form attributes
             label: AdhocNode
             rel: HAS_ADHOC
             fields:
@@ -43,6 +54,11 @@ user_data_persistence:
 reengagement:
   triggers:                     # optional — re-engagement messages after drop-off
     - event: ""                 # required — drop-off event code e.g. DOP_MT
-      delay_hours: 24           # hours after event to send message
-      channel: whatsapp         # required — outbound_call | whatsapp | sms
-      message_template: ""      # message content to send
+      delay_hours: 24           # hours after event to send message (omit when using loop_threshold)
+      channel: whatsapp         # required for time-based triggers — outbound_call | whatsapp | sms
+      message_template: ""      # message content to send (omit when using action)
+      loop_threshold: null      # optional — trigger when loop_count reaches this value instead of a time delay
+      action: null              # optional — action to execute e.g. hitl_counsellor (use instead of channel+message_template)
+
+observability:
+  domain: ""                    # domain slug, e.g. kkb

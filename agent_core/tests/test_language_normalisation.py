@@ -10,7 +10,6 @@ Coverage:
 - Normal: JSON embedded in prose is still parsed correctly
 - Edge: empty input returns (raw_input, "") without calling LLM
 - Edge: missing config section uses defaults
-- Failure: bhashini provider raises NotImplementedError
 - Failure: LLM returns error stop_reason → falls back to (raw_input, "")
 - Failure: LLM raises exception → falls back to (raw_input, "")
 - Failure: malformed JSON → falls back to (raw_input, "")
@@ -142,25 +141,6 @@ def test_empty_input_returns_raw_and_empty_language_without_llm_call(normaliser)
 
 
 # ---------------------------------------------------------------------------
-# Bhashini provider stub
-# ---------------------------------------------------------------------------
-
-
-def test_bhashini_provider_raises_not_implemented(normaliser):
-    bhashini_config = {
-        "preprocessing": {
-            "language_normalisation": {
-                "provider": "bhashini",
-                "supported_languages": ["hindi"],
-            }
-        }
-    }
-    llm = MagicMock()
-    with pytest.raises(NotImplementedError, match="Bhashini provider"):
-        normaliser.normalise("kaam chahiye", bhashini_config, llm)
-
-
-# ---------------------------------------------------------------------------
 # Failure scenarios
 # ---------------------------------------------------------------------------
 
@@ -275,17 +255,3 @@ def test_custom_min_detection_tokens_respected(normaliser):
     llm.call.assert_called_once()  # threshold = 1 → single word triggers LLM
 
 
-def test_bhashini_error_message_is_generic(normaliser):
-    """Bhashini error message must not reference 'PoC' or domain-specific scope."""
-    bhashini_config = {
-        "preprocessing": {
-            "language_normalisation": {
-                "provider": "bhashini",
-                "supported_languages": ["hindi"],
-            }
-        }
-    }
-    llm = MagicMock()
-    with pytest.raises(NotImplementedError) as exc_info:
-        normaliser.normalise("kaam chahiye", bhashini_config, llm)
-    assert "PoC" not in str(exc_info.value)

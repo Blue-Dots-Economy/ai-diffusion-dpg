@@ -35,3 +35,6 @@ trust:
     queue_backend: "log"              # backend for HITL queuing: log | redis | webhook
     holding_message: ""               # message shown to user while waiting for a human agent
     notification_webhook: null        # webhook URL notified when an HITL case is queued
+
+observability:
+  domain: ""                          # domain slug, e.g. kkb

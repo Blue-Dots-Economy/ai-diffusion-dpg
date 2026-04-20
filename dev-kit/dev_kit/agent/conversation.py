@@ -176,6 +176,7 @@ class ConversationEngine:
         available_tools = [t["id"] for t in self.accumulator.get_action_gateway_tools()]
         return build_system_prompt(
             project_name=meta.get("name", ""),
+            project_slug=meta.get("slug", ""),
             project_description=meta.get("description", ""),
             accumulator=self.accumulator,
             phase=self._state["phase"],

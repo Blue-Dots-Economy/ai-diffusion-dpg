@@ -34,3 +34,6 @@ conversation:
   language_instruction: ""      # optional — additional language/style instruction e.g. "Respond in Hindi"
   guardrail_reminders:          # optional — safety reminders appended to the prompt
     - ""
+
+observability:
+  domain: ""                    # domain slug, e.g. kkb

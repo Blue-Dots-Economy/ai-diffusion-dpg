@@ -134,15 +134,9 @@ class ConversationAgentConfig(BaseModel):
     )
 
 
-class BhashiniConfig(BaseModel):
-    api_key_env: str
-    user_id_env: str
-    endpoint: str
-
-
 class LanguageNormalisationConfig(BaseModel):
     model: str = Field(..., description="Claude model ID for language normalisation")
-    provider: str = Field(default="llm_native", description="Normalisation provider: llm_native or bhashini")
+    provider: str = Field(default="llm_native", description="Normalisation provider (llm_native)")
     default_language: str = Field(
         default="",
         description="Default language used when none is detected from user input, e.g. hindi",
@@ -150,7 +144,6 @@ class LanguageNormalisationConfig(BaseModel):
     supported_languages: list[str] = Field(..., description="Languages the agent supports, e.g. [hindi, english, kannada, hinglish]")
     transliteration: bool = Field(default=True, description="Normalise transliterated input to canonical script")
     code_switching: bool = Field(default=True, description="Handle mixed-language input within a single message")
-    bhashini: BhashiniConfig | None = Field(default=None, description="Required only if provider is bhashini")
 
 
 class NLUProcessorConfig(BaseModel):
