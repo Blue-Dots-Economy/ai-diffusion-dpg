@@ -101,7 +101,7 @@ class TestIngestSingleEdge:
         mock_add.assert_not_called()
 
     def test_nonexistent_file_raises_value_error(self, block):
-        with pytest.raises((ValueError, FileNotFoundError)):
+        with pytest.raises(ValueError):
             block.ingest_single(CONFIG, Path("/data/kb/nonexistent.pdf"))
 
 

@@ -272,6 +272,8 @@ class StaticKnowledgeBaseBlock(KnowledgeBlock):
         Raises:
             ValueError: If file_path does not exist.
         """
+        start = time.time()
+
         if not file_path.exists():
             raise ValueError(f"File not found: {file_path}")
 
@@ -298,11 +300,12 @@ class StaticKnowledgeBaseBlock(KnowledgeBlock):
                     "status": "dedup",
                     "filename": file_path.name,
                     "deleted_chunks": len(existing_ids),
+                    "latency_ms": int((time.time() - start) * 1000),
                 },
             )
 
         # Load, chunk, and embed
-        doc_type = "general"
+        doc_type = block_cfg.get("default_doc_type", "general")
         chunks = self._load_and_chunk(str(file_path), doc_type)
         if not chunks:
             return 0
@@ -315,6 +318,7 @@ class StaticKnowledgeBaseBlock(KnowledgeBlock):
                 "status": "success",
                 "filename": file_path.name,
                 "chunks_added": len(chunks),
+                "latency_ms": int((time.time() - start) * 1000),
             },
         )
         return len(chunks)
@@ -522,7 +526,7 @@ class StaticKnowledgeBaseBlock(KnowledgeBlock):
         """
         Load a document from path and split into chunks.
         Returns list of {"text": str, "metadata": dict} dicts.
-        Supports: .pdf, .csv, .md, .txt
+        Supports: .pdf, .csv, .md, .txt, .json, .html, .docx
         """
         ext = os.path.splitext(path)[1].lower()
 
