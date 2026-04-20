@@ -38,7 +38,6 @@
 
 Additional gaps:
 - Short inputs (1–2 words) are sent to the LLM even though single words cannot be reliably language-classified.
-- The `bhashini` error message references "PoC" (hardcoded scope).
 
 ---
 
@@ -117,27 +116,13 @@ def test_custom_min_detection_tokens_respected(normaliser):
     llm.call.assert_called_once()  # threshold = 1 → single word triggers LLM
 
 
-def test_bhashini_error_message_is_generic(normaliser):
-    """Bhashini error message must not reference 'PoC' or domain-specific scope."""
-    bhashini_config = {
-        "preprocessing": {
-            "language_normalisation": {
-                "provider": "bhashini",
-                "supported_languages": ["hindi"],
-            }
-        }
-    }
-    llm = MagicMock()
-    with pytest.raises(NotImplementedError) as exc_info:
-        normaliser.normalise("kaam chahiye", bhashini_config, llm)
-    assert "PoC" not in str(exc_info.value)
 ```
 
 - [ ] **Step 2: Run to verify tests fail**
 
 ```bash
 cd agent_core
-uv run pytest tests/test_language_normalisation.py -v -k "domain_content or default_language or short_input or min_detection or bhashini_error" 2>&1 | tail -20
+uv run pytest tests/test_language_normalisation.py -v -k "domain_content or default_language or short_input or min_detection" 2>&1 | tail -20
 ```
 
 Expected: 6 FAILED (functions not yet changed).
@@ -209,16 +194,9 @@ def normalise(
     )
     default_language = block_cfg.get("default_language", "")
     model_override = block_cfg.get("model")
-    provider = block_cfg.get("provider", "llm_native")
     min_detection_tokens = int(block_cfg.get("min_detection_tokens", 3))
 
     try:
-        if provider == "bhashini":
-            raise NotImplementedError(
-                "Bhashini provider is not yet implemented. "
-                "Set preprocessing.language_normalisation.provider to 'llm_native'."
-            )
-
         # Short input: classification is unreliable — return default language directly.
         if len(raw_input.split()) < min_detection_tokens:
             logger.info(
@@ -742,7 +720,7 @@ Also add `min_detection_tokens` to the `preprocessing.language_normalisation` bl
 preprocessing:
   language_normalisation:
     model: ""                   # required — Claude model ID for language normalisation
-    provider: llm_native        # llm_native | bhashini
+    provider: llm_native        # llm_native
     default_language: ""        # required — primary language e.g. english, hindi
     supported_languages: []     # required — e.g. [english, hindi, hinglish, kannada]
     min_detection_tokens: 3     # inputs with fewer tokens skip LLM detection; returns default_language
@@ -801,7 +779,6 @@ git commit -m "feat(orchestrator): handle language_switch_request intent with su
 | Requirement | Task |
 |---|---|
 | Remove hardcoded domain prompts from language_normalisation.py | Task 1 Step 3 |
-| Remove bhashini domain-specific messaging | Task 1 Step 4 |
 | Weight default_language in detection prompt | Task 1 Step 3 |
 | Short-input bypass (configurable threshold) | Task 1 Step 4 |
 | Add min_detection_tokens to schema | Task 3 Step 5 |

@@ -173,8 +173,6 @@ KKB users speak Hindi, Hinglish (mixed Hindi-English), Kannada, and Roman-script
 - Provider `llm_native`: single `self._llm.call()` using `model_override` pointing to the NLU model
   from YAML. Prompt asks the model to detect language, transliterate Roman-script Hindi to Devanagari
   concepts, and return normalised text.
-- Provider `bhashini`: stub — raises `NotImplementedError` with a clear message. Real Bhashini API
-  integration is post-PoC.
 - Provider is read from `knowledge.blocks.language_normalisation.provider` in YAML.
 
 **Writes to KEContext:**
@@ -190,8 +188,7 @@ knowledge:
     language_normalisation:
       enabled: true
       supported_languages: [hindi, kannada, english, hinglish]
-      provider: llm_native          # options: llm_native | bhashini
-      bhashini_api_key_env: BHASHINI_API_KEY
+      provider: llm_native          # llm_native
       transliteration: true
       code_switching: true
 ```
