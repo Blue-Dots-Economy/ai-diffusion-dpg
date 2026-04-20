@@ -1,0 +1,3 @@
+# Never commit project.json files — they contain Azure credentials and API keys.
+*/project.json
+*/_meta/project.json
