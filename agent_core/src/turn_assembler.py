@@ -228,11 +228,18 @@ class TurnAssembler(TurnAssemblerBase):
         self._workflow = workflow
         self._async_memory = async_memory
 
-        # Parse config from reach_layer section with safe defaults.
-        # Defaults: reach_layer.turn_assembler
-        # Per-channel: reach_layer.channels.<name>.turn_assembler
-        rl_config = (config or {}).get("reach_layer", {})
-        ta_defaults = rl_config.get("turn_assembler", {})
+        # Defaults: reach_layer.turn_assembler (unchanged)
+        rl_config: dict = (config or {}).get("reach_layer", {})
+        ta_defaults: dict = rl_config.get("turn_assembler", {})
+
+        # Hard-cut: reject legacy reach_layer.channels path (GH-137 migration).
+        if rl_config.get("channels"):
+            raise ValueError(
+                "reach_layer.channels in agent_core config is removed — move per-channel "
+                "turn_assembler to top-level channels.<name>.turn_assembler "
+                "(see docs/superpowers/specs/2026-04-21-gh137-framework-uplift-design.md)"
+            )
+
         self._default_config = {
             "semantic_gate": ta_defaults.get("semantic_gate", {
                 "enabled": False,
@@ -246,8 +253,8 @@ class TurnAssembler(TurnAssemblerBase):
             }),
         }
 
-        # Per-channel config: reach_layer.channels
-        self._channels_config: dict = rl_config.get("channels", {})
+        # Per-channel overrides now come from top-level channels.<name>.turn_assembler
+        self._channels_config: dict = (config or {}).get("channels", {})
 
         self._sessions: dict[str, SessionBuffer] = {}
 
@@ -259,8 +266,9 @@ class TurnAssembler(TurnAssemblerBase):
         """Resolve turn assembler config with per-channel overrides.
 
         Defaults come from reach_layer.turn_assembler. Per-channel overrides
-        come from reach_layer.channels.<channel>.turn_assembler. This keeps the
-        implementation domain-agnostic — all tuning is in YAML.
+        come from the top-level channels.<channel>.turn_assembler block
+        (GH-137). This keeps the implementation domain-agnostic — all tuning
+        is in YAML.
 
         Args:
             channel: Channel identifier (e.g. "voice", "web", "cli").

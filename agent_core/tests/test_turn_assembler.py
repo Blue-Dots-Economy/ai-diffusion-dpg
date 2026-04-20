@@ -45,12 +45,11 @@ def _make_config(
     max_wait_ms=200,     # Short for fast tests
     channel_overrides=None,
 ):
-    """Build a reach_layer config dict for tests.
+    """Build a config dict for tests.
 
-    channel_overrides uses the old flat format for convenience:
+    channel_overrides uses the flat format for convenience:
       {"voice": {"silence_trigger": {"silence_ms": 200}}}
-    and is converted to the new nested structure:
-      {"voice": {"turn_assembler": {"silence_trigger": {"silence_ms": 200}}}}
+    and is placed under top-level channels.<name>.turn_assembler (post-GH-137).
     """
     cfg = {
         "reach_layer": {
@@ -62,12 +61,12 @@ def _make_config(
                 "silence_trigger": {"silence_ms": silence_ms},
                 "max_wait_ceiling": {"max_wait_ms": max_wait_ms},
             },
-            "channels": {},
         },
+        "channels": {},
     }
     if channel_overrides:
         for ch, overrides in channel_overrides.items():
-            cfg["reach_layer"]["channels"][ch] = {"turn_assembler": overrides}
+            cfg["channels"][ch] = {"turn_assembler": overrides}
     return cfg
 
 
@@ -1054,3 +1053,43 @@ class TestEndToEnd:
         # New turn should have assembled both original + correction
         assert len(captured_inputs) == 1
         assert captured_inputs[0] == "मुझे जॉब चाहिए wait wait that is not correct"
+
+
+# ---------------------------------------------------------------------------
+# GH-137: top-level channels path
+# ---------------------------------------------------------------------------
+
+
+class TestGH137ChannelsPath:
+
+    def test_turn_assembler_reads_top_level_channels(self):
+        cfg = {
+            "reach_layer": {
+                "turn_assembler": {
+                    "semantic_gate": {"enabled": True, "confidence_threshold": 0.75},
+                    "silence_trigger": {"silence_ms": 400},
+                    "max_wait_ceiling": {"max_wait_ms": 8000},
+                }
+            },
+            "channels": {
+                "voice": {
+                    "turn_assembler": {
+                        "semantic_gate": {"enabled": False, "confidence_threshold": 0.9},
+                    }
+                }
+            },
+        }
+        ta = _make_assembler(config=cfg)
+        policy = ta._resolve_config("voice")
+        assert policy["semantic_gate"]["enabled"] is False
+        assert policy["semantic_gate"]["confidence_threshold"] == 0.9
+
+    def test_turn_assembler_rejects_legacy_reach_layer_channels(self):
+        cfg = {
+            "reach_layer": {
+                "turn_assembler": {"silence_trigger": {"silence_ms": 400}},
+                "channels": {"voice": {"turn_assembler": {"silence_trigger": {"silence_ms": 200}}}},
+            },
+        }
+        with pytest.raises(ValueError, match="reach_layer.channels"):
+            _make_assembler(config=cfg)
