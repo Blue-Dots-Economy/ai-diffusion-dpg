@@ -63,10 +63,6 @@ preprocessing:
     supported_languages: [hindi, kannada, english, hinglish]
     transliteration: true
     code_switching: true
-    bhashini:
-      api_key_env: BHASHINI_API_KEY
-      user_id_env: BHASHINI_USER_ID
-      endpoint: https://dhruva-api.bhashini.gov.in/services/inference/pipeline
 
   nlu_processor:
     model: claude-haiku-4-5-20251001

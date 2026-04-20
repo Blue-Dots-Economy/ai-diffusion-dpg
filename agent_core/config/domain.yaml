@@ -30,15 +30,11 @@ connectors:
 preprocessing:
   language_normalisation:
     model: ""              # Required. Claude model ID for language normalisation.
-    provider: ""           # Required. "llm_native" or "bhashini".
+    provider: ""           # Required. "llm_native".
     default_language: ""   # Required. e.g. "hindi"
     supported_languages: []  # Required. List of supported language codes.
     transliteration: true  # Reserved. Not yet implemented.
     code_switching: true  # Reserved. Not yet implemented.
-    bhashini:              # Required only if provider is "bhashini".
-      api_key_env: ""      # Env var name holding the Bhashini API key.
-      user_id_env: ""      # Env var name holding the Bhashini user ID.
-      endpoint: ""         # Bhashini inference pipeline endpoint URL.
 
   nlu_processor:
     model: ""                  # Required. Claude model ID for NLU classification.

@@ -5,9 +5,7 @@ Language detection and normalisation — executed in Agent Core before the KE ca
 
 Runs after Trust check (step 2), before NLU Processor (step 4).
 
-Provider options (from YAML config preprocessing.language_normalisation.provider):
-- llm_native: Single LLM call using the configured model (Haiku). Default for PoC.
-- bhashini:   Stub only — raises NotImplementedError. Real integration is post-PoC.
+Uses a single LLM call (llm_native provider) with the configured model.
 
 On any LLM failure or JSON parse error, degrades gracefully:
     returns (raw_input, "") — original text, no language detected.
@@ -99,16 +97,9 @@ class LanguageNormaliser:
         )
         default_language = block_cfg.get("default_language", "")
         model_override = block_cfg.get("model")
-        provider = block_cfg.get("provider", "llm_native")
         min_detection_tokens = int(block_cfg.get("min_detection_tokens", 3))
 
         try:
-            if provider == "bhashini":
-                raise NotImplementedError(
-                    "Bhashini provider is not yet implemented. "
-                    "Set preprocessing.language_normalisation.provider to 'llm_native'."
-                )
-
             # Short input: classification is unreliable — return default language directly.
             if len(raw_input.split()) < min_detection_tokens:
                 logger.info(
@@ -158,9 +149,6 @@ class LanguageNormaliser:
                 },
             )
             return normalised, detected
-
-        except NotImplementedError:
-            raise  # re-raise config errors — these are programmer errors, not runtime errors
 
         except Exception as e:
             logger.error(

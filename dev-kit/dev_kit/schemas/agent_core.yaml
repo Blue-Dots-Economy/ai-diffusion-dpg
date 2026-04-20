@@ -72,16 +72,12 @@ connectors:
 preprocessing:
   language_normalisation:
     model: ""                   # required — Claude model ID for language normalisation
-    provider: llm_native        # llm_native | bhashini
+    provider: llm_native        # llm_native
     default_language: ""        # required — primary language e.g. english, hindi
     supported_languages: []     # required — e.g. [english, hindi, hinglish, kannada]
     min_detection_tokens: 3     # inputs with fewer tokens skip LLM detection; returns default_language
     transliteration: true       # normalise transliterated input to canonical script
     code_switching: true        # handle mixed-language input in a single message
-    bhashini:                   # required only when provider is bhashini
-      api_key_env: ""           # env var holding the Bhashini API key
-      user_id_env: ""           # env var holding the Bhashini user ID
-      endpoint: ""              # Bhashini inference pipeline endpoint URL
   nlu_processor:
     model: ""                   # required — Claude model ID for NLU classification
     confidence_threshold: 0.5   # intents below this treated as unknown (0.0–1.0)

@@ -115,7 +115,6 @@ def get_phase_addition(phase: str, available_tools: list[str] | None = None) -> 
             "- Claude model IDs: section=`agent`, keys: `primary_model`, `fallback_model`, `ask_for_consent`, `consent_prompt`\n"
             "  ❌ NEVER use: agent.name, agent.system_prompt, conversation.llm_model, conversation.language_config\n"
             "- Language normalisation: section=`preprocessing.language_normalisation`, keys: `model`, `provider`, `default_language`, `supported_languages`, `transliteration`, `code_switching`\n"
-            "  ⚠️ DO NOT ask for `bhashini` config — leave those sub-fields with their default empty values.\n"
             "- NLU: section=`preprocessing.nlu_processor`, keys: `model`, `confidence_threshold`, `domain_instruction`, `intents`, `entities`, `sentiment_classes`\n"
             "- Signal intents (optional): section=`preprocessing.nlu_processor`, key: `signal_intents`\n"
             "  Ask: 'Are there intents that should write a longitudinal signal to the context graph? (e.g. pay_disappointment → objection)'\n"
