@@ -117,3 +117,69 @@ class TestGetStorageBackendFactory:
             MockAzure.return_value = MagicMock()
             backend = get_storage_backend()
             MockAzure.assert_called_once_with("acct", "key==", "container")
+
+
+# ---------------------------------------------------------------------------
+# AzureBlobStorageBackend — mocked Azure SDK
+# ---------------------------------------------------------------------------
+
+class TestAzureBlobNormal:
+    @patch("src.storage.azure_blob.BlobServiceClient")
+    def test_upload_calls_sdk_upload(self, MockBlobServiceClient):
+        mock_client = MagicMock()
+        mock_blob = MagicMock()
+        MockBlobServiceClient.return_value = mock_client
+        mock_client.get_blob_client.return_value = mock_blob
+
+        from src.storage.azure_blob import AzureBlobStorageBackend
+        backend = AzureBlobStorageBackend("acct", "key==", "container")
+        path = backend.upload(b"data", "guide.pdf")
+
+        mock_client.get_blob_client.assert_called_once_with(
+            container="container", blob="guide.pdf"
+        )
+        mock_blob.upload_blob.assert_called_once_with(b"data", overwrite=True)
+        assert path == "guide.pdf"
+
+    @patch("src.storage.azure_blob.BlobServiceClient")
+    def test_download_calls_sdk_download(self, MockBlobServiceClient):
+        mock_client = MagicMock()
+        mock_blob = MagicMock()
+        mock_stream = MagicMock()
+        mock_stream.readall.return_value = b"file bytes"
+        MockBlobServiceClient.return_value = mock_client
+        mock_client.get_blob_client.return_value = mock_blob
+        mock_blob.download_blob.return_value = mock_stream
+
+        from src.storage.azure_blob import AzureBlobStorageBackend
+        backend = AzureBlobStorageBackend("acct", "key==", "container")
+        data = backend.download("docs/guide.pdf")
+        assert data == b"file bytes"
+
+
+class TestAzureBlobFailure:
+    @patch("src.storage.azure_blob.BlobServiceClient")
+    def test_upload_failure_raises_storage_error(self, MockBlobServiceClient):
+        mock_client = MagicMock()
+        mock_blob = MagicMock()
+        MockBlobServiceClient.return_value = mock_client
+        mock_client.get_blob_client.return_value = mock_blob
+        mock_blob.upload_blob.side_effect = Exception("Azure error")
+
+        from src.storage.azure_blob import AzureBlobStorageBackend
+        backend = AzureBlobStorageBackend("acct", "key==", "container")
+        with pytest.raises(StorageError):
+            backend.upload(b"data", "file.pdf")
+
+    @patch("src.storage.azure_blob.BlobServiceClient")
+    def test_download_failure_raises_storage_error(self, MockBlobServiceClient):
+        mock_client = MagicMock()
+        mock_blob = MagicMock()
+        MockBlobServiceClient.return_value = mock_client
+        mock_client.get_blob_client.return_value = mock_blob
+        mock_blob.download_blob.side_effect = Exception("Not found")
+
+        from src.storage.azure_blob import AzureBlobStorageBackend
+        backend = AzureBlobStorageBackend("acct", "key==", "container")
+        with pytest.raises(StorageError):
+            backend.download("missing.pdf")
