@@ -47,6 +47,52 @@ class TestToolHandlerSetPhase:
         assert state["phase_changed"] == "language"
 
 
+class TestToolHandlerSetPhaseGating:
+    """GH-137: set_phase honours SHEET_REQUIREMENTS and persists phase_decisions."""
+
+    def _seed_meta(self, tmp_path, meta: dict) -> None:
+        import json
+        (tmp_path / "_meta").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "_meta" / "project.json").write_text(json.dumps(meta))
+
+    def test_auto_skips_user_state_for_transactional(self, tmp_path):
+        import json
+        self._seed_meta(tmp_path, {"agent_type": "transactional", "phase_decisions": {}})
+        state = {"phase": "memory", "phase_changed": None, "rollback_to": None, "project_meta": {}}
+        handler = ToolHandler(ConfigAccumulator(), state, project_path=tmp_path)
+        result = handler.dispatch("set_phase", {"phase": "user_state"})
+        assert "skip" in result.lower() or "trust" in result.lower()
+        meta = json.loads((tmp_path / "_meta" / "project.json").read_text())
+        assert meta["phase_decisions"]["user_state"]["status"] == "not_applicable_for_type"
+
+    def test_respects_answered_decision_when_advancing(self, tmp_path):
+        self._seed_meta(tmp_path, {
+            "agent_type": "conversational",
+            "phase_decisions": {"memory": {"status": "answered", "timestamp": "x"}},
+        })
+        state = {"phase": "memory", "phase_changed": None, "rollback_to": None, "project_meta": {}}
+        handler = ToolHandler(ConfigAccumulator(), state, project_path=tmp_path)
+        result = handler.dispatch("set_phase", {"phase": "user_state"})
+        assert "ERROR" not in result
+        assert state["phase_changed"] == "user_state"
+
+    def test_skip_optional_records_decision_when_user_initiated(self, tmp_path):
+        import json
+        self._seed_meta(tmp_path, {"agent_type": "conversational", "phase_decisions": {}})
+        state = {"phase": "knowledge", "phase_changed": None, "rollback_to": None, "project_meta": {}}
+        handler = ToolHandler(ConfigAccumulator(), state, project_path=tmp_path)
+        handler.dispatch("skip_optional_phase", {"phase": "knowledge"})
+        meta = json.loads((tmp_path / "_meta" / "project.json").read_text())
+        assert meta["phase_decisions"]["knowledge"]["status"] == "skipped_by_user"
+
+    def test_skip_optional_rejects_required_phase(self, tmp_path):
+        self._seed_meta(tmp_path, {"agent_type": "conversational", "phase_decisions": {}})
+        state = {"phase": "overview", "phase_changed": None, "rollback_to": None, "project_meta": {}}
+        handler = ToolHandler(ConfigAccumulator(), state, project_path=tmp_path)
+        result = handler.dispatch("skip_optional_phase", {"phase": "overview"})
+        assert "ERROR" in result
+
+
 class TestToolHandlerSubagents:
     def test_create_subagent(self):
         acc = ConfigAccumulator()

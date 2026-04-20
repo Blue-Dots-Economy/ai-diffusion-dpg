@@ -580,13 +580,38 @@ class ToolHandler:
         return f"ok: updated {block}.{section}"
 
     def _handle_set_phase(self, inputs: dict) -> str:
-        requested = inputs["phase"]
-        current = self._state.get("phase", "overview")
-        current_idx = PHASES.index(current) if current in PHASES else 0
-        requested_idx = PHASES.index(requested) if requested in PHASES else -1
+        """Advance the conversation to ``inputs['phase']``.
 
-        # Only allow moving to the immediately next phase (or staying on the same one).
-        # Skipping phases is not permitted — each phase must be visited in order.
+        Consults SHEET_REQUIREMENTS for the requested phase: if the matrix
+        marks the phase as ``skip`` for the current project's agent type,
+        the phase is auto-advanced and a ``not_applicable_for_type`` entry
+        is written to ``phase_decisions``. When leaving an ``optional``
+        phase the current phase is recorded as ``answered`` unless it was
+        previously skipped by the user.
+
+        Args:
+            inputs: Dict with a ``phase`` key naming a member of PHASES.
+
+        Returns:
+            Human-readable advance/skip message, or an ERROR string when
+            the requested phase is unknown or sequencing is invalid.
+        """
+        from datetime import datetime, timezone
+
+        requested = inputs["phase"]
+        current = self._state.get("phase", PHASES[0])
+
+        if requested not in PHASES:
+            return f"ERROR — unknown phase: {requested!r}"
+
+        current_idx = PHASES.index(current) if current in PHASES else 0
+        requested_idx = PHASES.index(requested)
+
+        if requested_idx < current_idx:
+            return (
+                f"ERROR — cannot go back from '{current}' to '{requested}'. "
+                "Use rollback_to_checkpoint if you need to revisit an earlier phase."
+            )
         if requested_idx > current_idx + 1:
             next_phase = PHASES[current_idx + 1]
             return (
@@ -594,12 +619,45 @@ class ToolHandler:
                 f"You must complete '{next_phase}' next. "
                 f"Call set_phase('{next_phase}') when you are ready."
             )
-        if requested_idx < current_idx:
-            return (
-                f"ERROR — cannot go back from '{current}' to '{requested}'. "
-                f"Use rollback_to_checkpoint if you need to revisit an earlier phase."
-            )
+
+        # Consult SHEET_REQUIREMENTS for the phase we are entering.
+        meta = self._read_project_meta()
+        agent_type = meta.get("agent_type", "")
+        phase_decisions = dict(meta.get("phase_decisions", {}))
+        status = (
+            SHEET_REQUIREMENTS.get(requested, {}).get(agent_type, "optional")
+            if agent_type else "required"
+        )
+
+        if status == "skip":
+            # Auto-advance past this phase; record the decision for audit.
+            phase_decisions[requested] = {
+                "status": "not_applicable_for_type",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            self._update_project_meta({"phase_decisions": phase_decisions})
+            self._state["phase_changed"] = requested
+            next_idx = requested_idx + 1
+            if next_idx < len(PHASES):
+                return (
+                    f"Phase '{requested}' skipped ({agent_type} agents). "
+                    f"Advancing directly past it. Call set_phase('{PHASES[next_idx]}') next."
+                )
+            return f"Phase '{requested}' skipped ({agent_type} agents)."
+
+        # Required / optional phases are entered normally. When leaving an
+        # 'optional' phase, record the answered decision unless the user
+        # explicitly skipped it via skip_optional_phase.
         self._state["phase_changed"] = requested
+        if current in PHASES and agent_type:
+            if SHEET_REQUIREMENTS.get(current, {}).get(agent_type) == "optional":
+                existing = phase_decisions.get(current, {})
+                if existing.get("status") != "skipped_by_user":
+                    phase_decisions[current] = {
+                        "status": "answered",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+                    self._update_project_meta({"phase_decisions": phase_decisions})
         return f"Phase advancing to: {requested}"
 
     def _handle_create_subagent(self, inputs: dict) -> str:
