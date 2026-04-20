@@ -1,0 +1,19 @@
+# =============================================================================
+# reach_layer/web/config/reach_layer.yaml — Web channel upload proxy config.
+# =============================================================================
+# Upload-proxy-specific configuration for the Reach Layer web server.
+# Extends the base framework config at reach_layer/config/dpg.yaml.
+# These keys are read at startup by create_app() in server.py.
+# =============================================================================
+
+# Internal Kubernetes service URL for the Knowledge Engine.
+# Used by the upload proxy to forward document ingestion requests.
+# Override via KE_INTERNAL_URL env var at deploy time.
+ke_internal_url: "http://knowledge-engine.dpg.svc.cluster.local:8001"
+
+# CORS origins allowed for the dev-kit upload flow.
+# Must include the dev-kit VM's public URL.
+cors:
+  allowed_origins:
+    - "https://devkit.your-vm.example.com"
+    - "http://localhost:5173"
