@@ -184,3 +184,148 @@ class TestGetJobStatus:
     def test_missing_api_key_returns_401(self, client):
         response = client.get("/upload/job/job-1")
         assert response.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# run_queue_worker — success and failure paths
+# ---------------------------------------------------------------------------
+
+class TestRunQueueWorker:
+    @pytest.mark.asyncio
+    async def test_worker_success_path(self, mock_db):
+        """Worker processes a job: ingesting → ingested, with correct DB updates."""
+        from src.upload_router import run_queue_worker, _IngestJob
+
+        queue = asyncio.Queue()
+        job = _IngestJob("j1", "b1", "guide.pdf", "local_write_ingest", None, b"bytes")
+        await queue.put(job)
+
+        mock_kb = MagicMock()
+        mock_kb.ingest_single.return_value = 5
+
+        with patch("src.upload_router.LocalPVCStorageBackend") as MockPVC:
+            mock_pvc = MagicMock()
+            mock_pvc.upload.return_value = "/data/kb/guide.pdf"
+            MockPVC.return_value = mock_pvc
+
+            # Run worker but stop after processing one item
+            async def run_once():
+                task = asyncio.create_task(
+                    run_queue_worker(
+                        db=mock_db,
+                        ingest_queue=queue,
+                        ke_config={},
+                        static_kb_block=mock_kb,
+                        devkit_callback_url=None,
+                        ke_to_devkit_api_key=None,
+                        kb_data_dir="/data/kb",
+                    )
+                )
+                await queue.join()  # wait until task_done() is called
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+            await run_once()
+
+        from unittest.mock import ANY
+        mock_db.update_status.assert_any_call("j1", "ingesting")
+        mock_db.update_status.assert_any_call("j1", "ingested", chunks_added=5, ingested_at=ANY)
+        # Verify ingested was called (chunks_added=5 in the kwargs)
+        calls = [str(c) for c in mock_db.update_status.call_args_list]
+        assert any("ingested" in c and "chunks_added" in c for c in calls)
+
+    @pytest.mark.asyncio
+    async def test_worker_failure_path(self, mock_db):
+        """Worker marks job failed when ingest_single raises."""
+        from src.upload_router import run_queue_worker, _IngestJob
+
+        queue = asyncio.Queue()
+        job = _IngestJob("j2", "b1", "bad.pdf", "local_write_ingest", None, b"bytes")
+        await queue.put(job)
+
+        mock_kb = MagicMock()
+        mock_kb.ingest_single.side_effect = RuntimeError("ChromaDB write failed")
+
+        with patch("src.upload_router.LocalPVCStorageBackend") as MockPVC:
+            mock_pvc = MagicMock()
+            mock_pvc.upload.return_value = "/data/kb/bad.pdf"
+            MockPVC.return_value = mock_pvc
+
+            async def run_once():
+                task = asyncio.create_task(
+                    run_queue_worker(
+                        db=mock_db,
+                        ingest_queue=queue,
+                        ke_config={},
+                        static_kb_block=mock_kb,
+                        devkit_callback_url=None,
+                        ke_to_devkit_api_key=None,
+                        kb_data_dir="/data/kb",
+                    )
+                )
+                await queue.join()
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+            await run_once()
+
+        calls = [str(c) for c in mock_db.update_status.call_args_list]
+        assert any("failed" in c for c in calls)
+
+
+# ---------------------------------------------------------------------------
+# _send_callback — no-url early exit and retry-exhaustion paths
+# ---------------------------------------------------------------------------
+
+class TestSendCallback:
+    @pytest.mark.asyncio
+    async def test_no_callback_url_is_noop(self):
+        """_send_callback returns immediately when callback_url is None."""
+        from src.upload_router import _send_callback
+
+        with patch("httpx.AsyncClient") as MockClient:
+            await _send_callback(None, None, "j1", "ingested")
+            MockClient.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_callback_sends_correct_payload(self):
+        """_send_callback POSTs the correct payload to callback_url."""
+        from src.upload_router import _send_callback
+        import respx
+        import httpx as _httpx
+
+        with respx.mock:
+            route = respx.post("http://devkit:5000/api/ingest/callback").mock(
+                return_value=_httpx.Response(200)
+            )
+            await _send_callback(
+                "http://devkit:5000", "my-key", "j1", "ingested", chunks_added=7
+            )
+
+        assert route.called
+        payload = json.loads(route.calls[0].request.content)
+        assert payload["job_id"] == "j1"
+        assert payload["status"] == "ingested"
+        assert payload["chunks_added"] == 7
+
+    @pytest.mark.asyncio
+    async def test_callback_retries_on_500(self):
+        """_send_callback retries up to 3 times on 5xx response."""
+        from src.upload_router import _send_callback
+        import respx
+        import httpx as _httpx
+
+        with patch("asyncio.sleep"):  # skip actual sleep in test
+            with respx.mock:
+                route = respx.post("http://devkit:5000/api/ingest/callback").mock(
+                    return_value=_httpx.Response(500)
+                )
+                await _send_callback("http://devkit:5000", "key", "j1", "failed")
+
+        assert route.call_count == 3
