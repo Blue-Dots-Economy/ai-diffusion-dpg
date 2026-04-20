@@ -147,3 +147,33 @@ agent_workflow:
           conditions: []        # optional list of conditions — ALL must be true
                                 # each item: {field, operator, value}
           session_writes: {}    # optional — {field_name: value} written when rule fires
+
+# Reach Layer turn-assembler tuning — controls how Agent Core receives assembled turns per channel.
+# These are technical defaults; override only if your domain has specific VAD or typing-speed needs.
+reach_layer:
+  turn_assembler:
+    semantic_gate:
+      enabled: true               # true = NLU gate active; improves VAD accuracy for voice
+      confidence_threshold: 0.75  # minimum NLU confidence to accept an input segment
+  channels:
+    voice:
+      turn_assembler:
+        silence_trigger:
+          silence_ms: 400         # ms of silence before triggering (VAD-driven; shorter for voice)
+        max_wait_ceiling:
+          max_wait_ms: 8000       # hard cap in ms to wait for more input before forcing a turn
+    web:
+      turn_assembler:
+        silence_trigger:
+          silence_ms: 1500        # ms of silence before triggering (longer — users type slower)
+        max_wait_ceiling:
+          max_wait_ms: 15000
+    cli:
+      turn_assembler:
+        silence_trigger:
+          silence_ms: 200         # ms of silence before triggering (very short — dev/test convenience)
+        max_wait_ceiling:
+          max_wait_ms: 5000
+
+observability:
+  domain: ""                      # required — set to project slug automatically; do not fill manually

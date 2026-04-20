@@ -40,6 +40,7 @@ def build_system_prompt(
     accumulator: ConfigAccumulator,
     phase: str,
     checkpoint_summaries: list[str],
+    project_slug: str = "",
     available_tools: list[str] | None = None,
 ) -> str:
     """Build the full system prompt for the given conversation phase.
@@ -50,6 +51,7 @@ def build_system_prompt(
         accumulator: Current config accumulator.
         phase: Current phase name (e.g. "language", "workflow").
         checkpoint_summaries: List of summary strings from prior phase checkpoints.
+        project_slug: URL-safe slug used as the domain identifier across all blocks.
         available_tools: Tool IDs declared in the Tools phase (for workflow prompt).
 
     Returns:
@@ -59,7 +61,8 @@ def build_system_prompt(
 
     # Project context
     if project_name:
-        sections.append(f"## Project\nName: {project_name}\nDescription: {project_description}")
+        slug_line = f"\nSlug: {project_slug}" if project_slug else ""
+        sections.append(f"## Project\nName: {project_name}{slug_line}\nDescription: {project_description}")
 
     # Prior phase summaries
     if checkpoint_summaries:
