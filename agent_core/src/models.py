@@ -217,6 +217,7 @@ class TurnResult:
     was_tool_used: bool               = False
     model_used: str                   = ""
     latency_ms: int                   = 0
+    session_ended: bool               = False
 
 
 # ---------------------------------------------------------------------------
@@ -305,6 +306,7 @@ class DoneEvent:
     latency_ms: int = 0
     turn_id: str = ""
     turn_status: str = "completed"  # "completed" | "interrupted" | "abandoned"
+    session_ended: bool = False
 
     def to_sse(self) -> str:
         """Serialise to SSE data line."""

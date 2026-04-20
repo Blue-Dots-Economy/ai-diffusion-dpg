@@ -76,3 +76,31 @@ def test_nlu_result_accepts_user_state():
     )
     assert result.user_state is usc
     assert result.user_state.id == "orientation"
+
+
+def test_turn_result_session_ended_default_false():
+    """Test that TurnResult.session_ended defaults to False when not provided."""
+    from src.models import TurnResult
+    result = TurnResult(session_id="s1", turn_id="t1", response_text="hi")
+    assert result.session_ended is False
+
+
+def test_turn_result_session_ended_accepts_true():
+    """Test that TurnResult accepts and stores session_ended=True."""
+    from src.models import TurnResult
+    result = TurnResult(session_id="s1", turn_id="t1", response_text="bye", session_ended=True)
+    assert result.session_ended is True
+
+
+def test_done_event_session_ended_default_false():
+    """Test that DoneEvent.session_ended defaults to False when not provided."""
+    from src.models import DoneEvent
+    evt = DoneEvent()
+    assert evt.session_ended is False
+
+
+def test_done_event_session_ended_accepts_true():
+    """Test that DoneEvent accepts and stores session_ended=True."""
+    from src.models import DoneEvent
+    evt = DoneEvent(session_ended=True)
+    assert evt.session_ended is True
