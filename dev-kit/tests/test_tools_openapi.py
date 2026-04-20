@@ -118,3 +118,72 @@ class TestFetchOpenApiSpecFromUrl:
         result = handler.dispatch("fetch_openapi_spec_from_url", {"url": "https://api.example.com/list.json"})
         assert result.startswith("ERROR")
         assert "not a JSON/YAML object" in result
+
+
+# ---------------------------------------------------------------------------
+# set_response_transformation
+# ---------------------------------------------------------------------------
+
+class TestSetResponseTransformation:
+    def _add_sample_tool(self, handler):
+        """Helper: add a REST API tool so transformation tests have a target."""
+        handler.dispatch("add_rest_api_tool", {
+            "id": "job_search",
+            "category": "read",
+            "description": "Search for job listings",
+            "base_url": "https://api.example.com",
+            "auth_type": "api_key",
+            "auth_header": "X-API-Key",
+            "auth_secret_env": "JOB_API_KEY",
+            "endpoints": [{"name": "search", "method": "POST", "path": "/search", "params": []}],
+        })
+
+    def test_sets_field_mapping_on_tool(self, handler):
+        self._add_sample_tool(handler)
+        fields = [
+            {"source": "results[*].title", "target": "job_title", "type": "string", "description": "Job title"},
+            {"source": "results[*].employer_name", "target": "company", "type": "string"},
+        ]
+        result = handler.dispatch("set_response_transformation", {"tool_id": "job_search", "fields": fields})
+        assert "job_search" in result
+        # Verify it was written to accumulator
+        tools = handler._acc.get_action_gateway_tools()
+        job_tool = next(t for t in tools if t["id"] == "job_search")
+        mapping = job_tool["response"]["field_mapping"]
+        assert len(mapping) == 2
+        assert mapping[0]["source"] == "results[*].title"
+        assert mapping[0]["target"] == "job_title"
+        assert mapping[1]["target"] == "company"
+
+    def test_returns_error_for_nonexistent_tool(self, handler):
+        result = handler.dispatch("set_response_transformation", {
+            "tool_id": "nonexistent",
+            "fields": [{"source": "data.id", "target": "id", "type": "string"}],
+        })
+        assert result.startswith("ERROR")
+
+    def test_replaces_existing_mapping(self, handler):
+        """Calling set_response_transformation twice replaces the previous mapping."""
+        self._add_sample_tool(handler)
+        handler.dispatch("set_response_transformation", {
+            "tool_id": "job_search",
+            "fields": [{"source": "old.path", "target": "old_field", "type": "string"}],
+        })
+        handler.dispatch("set_response_transformation", {
+            "tool_id": "job_search",
+            "fields": [{"source": "new.path", "target": "new_field", "type": "string"}],
+        })
+        tools = handler._acc.get_action_gateway_tools()
+        job_tool = next(t for t in tools if t["id"] == "job_search")
+        mapping = job_tool["response"]["field_mapping"]
+        assert len(mapping) == 1
+        assert mapping[0]["target"] == "new_field"
+
+    def test_empty_fields_list_is_accepted(self, handler):
+        """Empty field list clears the mapping without error."""
+        self._add_sample_tool(handler)
+        result = handler.dispatch("set_response_transformation", {
+            "tool_id": "job_search",
+            "fields": [],
+        })
+        assert "job_search" in result

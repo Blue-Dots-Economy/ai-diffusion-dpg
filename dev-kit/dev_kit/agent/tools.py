@@ -270,6 +270,52 @@ TOOL_DEFINITIONS: list[dict] = [
         },
     },
     {
+        "name": "set_response_transformation",
+        "description": (
+            "Set the response field mapping for a REST API tool. "
+            "Call this after add_rest_api_tool, once the user tells you which fields from the API response the LLM should see. "
+            "Each field maps a JSONPath in the raw response (e.g. 'results[*].title') to a clean target name the LLM works with. "
+            "Calling this again for the same tool replaces the previous mapping."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tool_id": {
+                    "type": "string",
+                    "description": "ID of the REST API tool to configure (must already exist via add_rest_api_tool)",
+                },
+                "fields": {
+                    "type": "array",
+                    "description": "Response fields to extract and expose to the LLM",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "source": {
+                                "type": "string",
+                                "description": "JSONPath from the response root, e.g. 'results[*].title' or 'data.employer_name'",
+                            },
+                            "target": {
+                                "type": "string",
+                                "description": "Field name the LLM sees in the extracted result, e.g. 'job_title'",
+                            },
+                            "type": {
+                                "type": "string",
+                                "enum": ["string", "integer", "number", "boolean", "array", "object"],
+                                "default": "string",
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Optional human-readable description of this field",
+                            },
+                        },
+                        "required": ["source", "target"],
+                    },
+                },
+            },
+            "required": ["tool_id", "fields"],
+        },
+    },
+    {
         "name": "discover_mcp_tools",
         "description": (
             "Fetch the list of available tools from an MCP server by calling its tools/list endpoint. "
@@ -456,6 +502,7 @@ class ToolHandler:
             "parse_openapi_spec": self._handle_parse_openapi_spec,
             "fetch_openapi_spec_from_url": self._handle_fetch_openapi_spec_from_url,
             "add_rest_api_tool": self._handle_add_rest_api_tool,
+            "set_response_transformation": self._handle_set_response_transformation,
             "discover_mcp_tools": self._handle_discover_mcp_tools,
             "add_mcp_tool": self._handle_add_mcp_tool,
             "set_reach_channels": self._handle_set_reach_channels,
@@ -803,6 +850,52 @@ class ToolHandler:
 
         self._sync_connector_from_tool(tool)
         return f"Tool '{inputs['id']}' added to Action Gateway config."
+
+    def _handle_set_response_transformation(self, inputs: dict) -> str:
+        """Write response field_mapping for a REST API tool into the accumulator.
+
+        Args:
+            inputs: Dict with 'tool_id' (str) and 'fields' (list of dicts with
+                    'source', 'target', optional 'type' and 'description').
+
+        Returns:
+            Confirmation string with the number and names of mapped fields,
+            or an ERROR string if the tool does not exist.
+        """
+        tool_id = inputs.get("tool_id", "")
+        fields = inputs.get("fields", [])
+
+        try:
+            self._acc.update_tool_response_mapping(tool_id, fields)
+        except ValueError as exc:
+            logger.warning(
+                "set_response_transformation.failure",
+                extra={
+                    "operation": "tools.set_response_transformation",
+                    "status": "failure",
+                    "tool_id": tool_id,
+                    "error": str(exc),
+                },
+            )
+            return f"ERROR: {exc}"
+
+        logger.info(
+            "set_response_transformation",
+            extra={
+                "operation": "tools.set_response_transformation",
+                "status": "success",
+                "tool_id": tool_id,
+                "field_count": len(fields),
+            },
+        )
+        field_names = ", ".join(f["target"] for f in fields[:5])
+        if len(fields) > 5:
+            field_names += "…"
+        return (
+            f"Response mapping set for tool '{tool_id}': "
+            f"{len(fields)} field(s)"
+            + (f" — {field_names}" if field_names else "")
+        )
 
     def _handle_discover_mcp_tools(self, inputs: dict) -> str:
         """Fetch tools/list from an MCP server and return the tool list as JSON.

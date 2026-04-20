@@ -234,6 +234,27 @@ class ConfigAccumulator:
         """
         return deepcopy(self._data["action_gateway"].get("tools", []))
 
+    def update_tool_response_mapping(self, tool_id: str, fields: list[dict]) -> None:
+        """Set the response field_mapping for an existing action_gateway tool.
+
+        Replaces any existing field_mapping with the provided list. An empty
+        list clears the mapping.
+
+        Args:
+            tool_id: ID of the REST API tool to update.
+            fields: List of field mapping dicts, each with at minimum
+                    'source' (JSONPath) and 'target' (name for the LLM).
+
+        Raises:
+            ValueError: If no tool with the given id exists in action_gateway.
+        """
+        tools: list[dict] = self._data["action_gateway"].get("tools", [])
+        for tool in tools:
+            if tool.get("id") == tool_id:
+                tool.setdefault("response", {})["field_mapping"] = deepcopy(fields)
+                return
+        raise ValueError(f"Tool {tool_id!r} not found in action_gateway — call add_rest_api_tool first")
+
     def set_reach_channel_selection(self, channels: list[str]) -> None:
         """Store the selected deployment channels in reach_layer config.
 
