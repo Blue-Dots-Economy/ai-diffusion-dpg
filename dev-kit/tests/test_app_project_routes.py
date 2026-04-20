@@ -583,3 +583,49 @@ class TestGetEngine:
         """Returns 404 when trying to load engine for non-existent project."""
         res = client.get("/api/projects/ghost-project/configs")
         assert res.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /api/projects/{slug} — azure_storage field
+# ---------------------------------------------------------------------------
+
+
+class TestGetProjectAzureStorage:
+    def test_returns_azure_storage_masked_key(self, client):
+        """GET /api/projects/{slug} includes azure_storage with masked account_key."""
+        # Create a project first
+        resp = client.post("/api/projects", json={"name": "azure-test", "description": "test"})
+        assert resp.status_code == 200
+        slug = resp.json()["slug"]
+
+        # Simulate set_azure_storage having been called (populate engine state directly)
+        from dev_kit.agent.app import _engines
+        engine = _engines.get(slug)
+        if engine:
+            engine._tool_handler._state["azure_storage"] = {
+                "account_name": "mystorageacct",
+                "account_key": "supersecretkey1234",
+                "container_name": "kb-docs",
+            }
+
+        # Get project — should have masked key
+        resp = client.get(f"/api/projects/{slug}")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "azure_storage" in body
+        az = body["azure_storage"]
+        assert az["account_name"] == "mystorageacct"
+        assert az["container_name"] == "kb-docs"
+        assert "supersecretkey1234" not in az["account_key"]  # key is masked
+        assert az["account_key"].endswith("1234")  # last 4 chars visible
+
+    def test_returns_null_azure_storage_when_not_set(self, client):
+        """GET /api/projects/{slug} returns null azure_storage when not configured."""
+        resp = client.post("/api/projects", json={"name": "no-azure-test", "description": "test"})
+        assert resp.status_code == 200
+        slug = resp.json()["slug"]
+
+        resp = client.get(f"/api/projects/{slug}")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("azure_storage") is None

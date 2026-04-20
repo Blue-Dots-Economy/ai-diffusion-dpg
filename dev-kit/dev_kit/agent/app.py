@@ -214,6 +214,19 @@ def get_project(slug: str) -> dict:
     meta = _load_project_meta(slug)
     engine = _get_engine(slug)
     meta["config_statuses"] = {block: engine.accumulator.get_status(block).value for block in BLOCKS}
+
+    # Include azure_storage with masked key for frontend pre-fill
+    azure_storage = engine._tool_handler._state.get("azure_storage")
+    if azure_storage:
+        key = azure_storage.get("account_key", "")
+        meta["azure_storage"] = {
+            "account_name": azure_storage.get("account_name", ""),
+            "account_key": "***" + key[-4:] if key else "",
+            "container_name": azure_storage.get("container_name", ""),
+        }
+    else:
+        meta["azure_storage"] = None
+
     return meta
 
 
