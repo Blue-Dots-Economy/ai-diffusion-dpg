@@ -95,6 +95,10 @@ class UpdateConfigRequest(BaseModel):
     content: str  # Raw YAML string from the editor
 
 
+class ImportProjectRequest(BaseModel):
+    slug: str
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -143,6 +147,131 @@ def _get_engine(slug: str) -> ConversationEngine:
             raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
         _engines[slug] = ConversationEngine(project_path, _anthropic_client)
     return _engines[slug]
+
+
+# ---------------------------------------------------------------------------
+# Import helpers
+# ---------------------------------------------------------------------------
+
+_BLOCK_YAML_NAMES: frozenset[str] = frozenset(f"{b}.yaml" for b in BLOCKS)
+
+_PHASE_BLOCK_MAP: list[tuple[str, str]] = [
+    ("overview", "agent_core"),
+    ("knowledge", "knowledge_engine"),
+    ("memory", "memory_layer"),
+    ("trust", "trust_layer"),
+    ("tools", "action_gateway"),
+    ("observability", "observability_layer"),
+    ("reach", "reach_layer"),
+]
+
+_PHASES_ORDERED: list[str] = [
+    "overview", "language", "knowledge", "memory",
+    "trust", "tools", "workflow", "observability", "reach", "review",
+]
+
+
+def _is_importable_folder(folder: Path) -> bool:
+    """Return True if folder contains block YAMLs but no _meta/project.json.
+
+    Args:
+        folder: Path to check.
+
+    Returns:
+        True if the folder is a bare config directory eligible for import.
+    """
+    if not folder.is_dir():
+        return False
+    if (folder / "_meta" / "project.json").exists():
+        return False
+    return any(f.name in _BLOCK_YAML_NAMES for f in folder.iterdir() if f.is_file())
+
+
+def _list_importable_slugs(configs_dir: Path) -> list[str]:
+    """List slugs of importable config folders under configs_dir.
+
+    Args:
+        configs_dir: Root configs directory (e.g. dev-kit/configs/).
+
+    Returns:
+        Sorted list of folder names that are importable.
+    """
+    if not configs_dir.exists():
+        return []
+    return sorted(
+        folder.name
+        for folder in configs_dir.iterdir()
+        if _is_importable_folder(folder)
+    )
+
+
+def _infer_phases_completed(yamls: dict[str, dict]) -> tuple[list[str], str]:
+    """Infer which phases are complete based on which block YAMLs have data.
+
+    Conversational phases with no dedicated block YAML (language, workflow)
+    are auto-marked complete when their preceding block-backed phase is done:
+    language is inferred from overview; workflow is inferred from tools.
+
+    Args:
+        yamls: Dict mapping block name to its parsed YAML dict.
+
+    Returns:
+        Tuple of (phases_completed list, current_phase string).
+    """
+    phases_done: set[str] = set()
+    for phase, block in _PHASE_BLOCK_MAP:
+        if yamls.get(block):
+            phases_done.add(phase)
+
+    if "overview" in phases_done:
+        phases_done.add("language")
+    if "tools" in phases_done:
+        phases_done.add("workflow")
+
+    ordered_done = [p for p in _PHASES_ORDERED if p in phases_done]
+    for phase in _PHASES_ORDERED:
+        if phase not in phases_done:
+            return ordered_done, phase
+    return ordered_done, "review"
+
+
+def _derive_meta_from_folder(folder: Path, slug: str) -> dict:
+    """Derive project.json metadata by reading block YAML files.
+
+    Args:
+        folder: Path to the bare config folder.
+        slug: The folder name used as the project slug.
+
+    Returns:
+        Dict suitable for writing as project.json.
+    """
+    yamls: dict[str, dict] = {}
+    for block in BLOCKS:
+        yaml_path = folder / f"{block}.yaml"
+        if yaml_path.exists():
+            try:
+                parsed = yaml.safe_load(yaml_path.read_text()) or {}
+                yamls[block] = parsed if isinstance(parsed, dict) else {}
+            except yaml.YAMLError:
+                yamls[block] = {}
+        else:
+            yamls[block] = {}
+
+    phases_done, current_phase = _infer_phases_completed(yamls)
+    name = slug.replace("-", " ").replace("_", " ").title()
+    primary_model = yamls.get("agent_core", {}).get("agent", {}).get("primary_model", "")
+
+    meta: dict = {
+        "slug": slug,
+        "name": name,
+        "description": f"Imported from existing config folder: {slug}",
+        "current_phase": current_phase,
+        "phases_completed": phases_done,
+        "imported": True,
+    }
+    if primary_model:
+        meta["primary_model"] = primary_model
+    return meta
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +327,103 @@ def list_projects() -> list[dict]:
                     },
                 )
     return projects
+
+
+@app.get("/api/projects/importable")
+def list_importable_projects() -> list[dict]:
+    """List config folders that have block YAMLs but no _meta/project.json.
+
+    Returns:
+        List of dicts with slug, detected_blocks, and validation_errors keys.
+    """
+    slugs = _list_importable_slugs(CONFIGS_DIR)
+    result = []
+    for slug in slugs:
+        folder = CONFIGS_DIR / slug
+        detected_blocks: list[str] = [
+            b for b in BLOCKS if (folder / f"{b}.yaml").exists()
+        ]
+        validation_errors: dict[str, list[str]] = {}
+        for block in detected_blocks:
+            yaml_path = folder / f"{block}.yaml"
+            try:
+                parsed = yaml.safe_load(yaml_path.read_text()) or {}
+            except yaml.YAMLError as exc:
+                validation_errors[block] = [f"Invalid YAML: {exc}"]
+                continue
+            errors = validate_partial(block, parsed if isinstance(parsed, dict) else {})
+            if errors:
+                validation_errors[block] = errors
+        result.append({
+            "slug": slug,
+            "detected_blocks": detected_blocks,
+            "validation_errors": validation_errors,
+        })
+    return result
+
+
+@app.post("/api/projects/import")
+def import_project(body: ImportProjectRequest) -> dict:
+    """Import a bare config folder as a fully-managed dev-kit project.
+
+    Derives project.json metadata from the YAML contents, loads block data
+    into a ConfigAccumulator, backfills an 'imported' checkpoint, persists
+    the accumulator, and registers a ConversationEngine so the project is
+    immediately usable.
+
+    Args:
+        body: Contains slug of the folder under dev-kit/configs/ to import.
+
+    Returns:
+        Project metadata dict (same shape as create_project).
+
+    Raises:
+        HTTPException: 404 if folder does not exist.
+        HTTPException: 409 if folder is already a managed project.
+        HTTPException: 422 if folder contains no recognisable block YAML files.
+    """
+    from dev_kit.agent.accumulator import ConfigStatus
+    from dev_kit.agent.checkpoints import save_checkpoint
+
+    slug = body.slug
+    folder = _get_project_path(slug)
+
+    if not folder.exists():
+        raise HTTPException(status_code=404, detail=f"Folder '{slug}' not found under configs/")
+    if (folder / "_meta" / "project.json").exists():
+        raise HTTPException(status_code=409, detail=f"'{slug}' is already a managed project")
+    if not _is_importable_folder(folder):
+        raise HTTPException(status_code=422, detail=f"'{slug}' contains no recognisable block YAML files")
+
+    meta = _derive_meta_from_folder(folder, slug)
+    meta_dir = folder / "_meta"
+    meta_dir.mkdir(parents=True, exist_ok=True)
+    (meta_dir / "project.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
+
+    from dev_kit.agent.accumulator import ConfigAccumulator as _Acc
+    acc = _Acc()
+    for block in BLOCKS:
+        yaml_path = folder / f"{block}.yaml"
+        if yaml_path.exists():
+            try:
+                parsed = yaml.safe_load(yaml_path.read_text()) or {}
+                if isinstance(parsed, dict) and parsed:
+                    acc._data[block] = parsed
+                    errors = validate_partial(block, parsed)
+                    acc.set_status(block, ConfigStatus.STALE if errors else ConfigStatus.COMPLETE)
+            except yaml.YAMLError:
+                pass
+
+    save_checkpoint(folder, "00_imported", acc, [])
+    (meta_dir / "accumulator.json").write_text(json.dumps(acc.to_dict(), ensure_ascii=False, indent=2))
+
+    _engines[slug] = ConversationEngine(folder, _anthropic_client)
+
+    logger.info(
+        "project_imported",
+        extra={"operation": "import_project", "status": "success", "latency_ms": 0, "slug": slug},
+    )
+    return meta
 
 
 @app.get("/api/projects/{slug}")

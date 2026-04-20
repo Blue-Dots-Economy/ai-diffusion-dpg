@@ -22,6 +22,10 @@ export const api = {
   getProject: (slug) => request('GET', `/projects/${slug}`),
   deleteProject: (slug) => request('DELETE', `/projects/${slug}`),
 
+  // Import
+  listImportableProjects: () => request('GET', '/projects/importable'),
+  importProject: (slug) => request('POST', '/projects/import', { slug }),
+
   // Chat
   chat: (slug, message) => request('POST', `/projects/${slug}/chat`, { message }),
   getHistory: (slug) => request('GET', `/projects/${slug}/history`),

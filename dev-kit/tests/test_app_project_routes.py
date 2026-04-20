@@ -3,6 +3,8 @@
 Covers:
   - POST /api/projects (create project)
   - GET /api/projects (list projects)
+  - GET /api/projects/importable (list importable folders)
+  - POST /api/projects/import (import bare config folder)
   - GET /api/projects/{slug} (get project)
   - DELETE /api/projects/{slug} (delete project)
   - POST /api/projects/{slug}/chat (async chat endpoint)
@@ -14,7 +16,8 @@ Covers:
   - PUT /api/projects/{slug}/configs/{block} (update config)
   - POST /api/projects/{slug}/configs/validate (validate all)
   - GET /api/projects/{slug}/workflow/graph (workflow graph)
-  - _slugify helper function
+  - _slugify, _is_importable_folder, _list_importable_slugs,
+    _infer_phases_completed, _derive_meta_from_folder helpers
 """
 from __future__ import annotations
 
@@ -583,3 +586,275 @@ class TestGetEngine:
         """Returns 404 when trying to load engine for non-existent project."""
         res = client.get("/api/projects/ghost-project/configs")
         assert res.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Import helpers unit tests
+# ---------------------------------------------------------------------------
+
+from dev_kit.agent.app import (
+    _is_importable_folder,
+    _list_importable_slugs,
+    _derive_meta_from_folder,
+    _infer_phases_completed,
+)
+
+
+class TestIsImportableFolder:
+    def test_returns_true_when_has_yaml_and_no_meta(self, tmp_path):
+        folder = tmp_path / "my-domain"
+        folder.mkdir()
+        (folder / "agent_core.yaml").write_text("agent:\n  primary_model: claude-haiku-4-5\n")
+        assert _is_importable_folder(folder) is True
+
+    def test_returns_false_when_meta_exists(self, tmp_path):
+        folder = tmp_path / "managed"
+        folder.mkdir()
+        (folder / "agent_core.yaml").write_text("agent:\n  primary_model: x\n")
+        meta = folder / "_meta"
+        meta.mkdir()
+        (meta / "project.json").write_text("{}")
+        assert _is_importable_folder(folder) is False
+
+    def test_returns_false_when_no_block_yamls(self, tmp_path):
+        folder = tmp_path / "empty"
+        folder.mkdir()
+        (folder / "readme.txt").write_text("hi")
+        assert _is_importable_folder(folder) is False
+
+    def test_returns_false_for_file_not_dir(self, tmp_path):
+        f = tmp_path / "notadir.yaml"
+        f.write_text("")
+        assert _is_importable_folder(f) is False
+
+
+class TestListImportableSlugs:
+    def test_returns_importable_slugs(self, tmp_path):
+        for slug in ["bare-domain", "another-bare"]:
+            d = tmp_path / slug
+            d.mkdir()
+            (d / "agent_core.yaml").write_text("agent:\n  primary_model: x\n")
+        managed = tmp_path / "managed"
+        managed.mkdir()
+        (managed / "agent_core.yaml").write_text("")
+        meta = managed / "_meta"
+        meta.mkdir()
+        (meta / "project.json").write_text("{}")
+        result = _list_importable_slugs(tmp_path)
+        assert set(result) == {"bare-domain", "another-bare"}
+
+    def test_returns_empty_when_no_configs_dir(self, tmp_path):
+        assert _list_importable_slugs(tmp_path / "nonexistent") == []
+
+
+class TestInferPhasesCompleted:
+    def test_all_empty_returns_overview_phase(self):
+        yamls = {b: {} for b in ["agent_core", "knowledge_engine", "memory_layer",
+                                  "trust_layer", "action_gateway", "reach_layer",
+                                  "observability_layer"]}
+        phases_done, current = _infer_phases_completed(yamls)
+        assert phases_done == []
+        assert current == "overview"
+
+    def test_agent_core_data_marks_overview_complete(self):
+        yamls = {b: {} for b in ["agent_core", "knowledge_engine", "memory_layer",
+                                  "trust_layer", "action_gateway", "reach_layer",
+                                  "observability_layer"]}
+        yamls["agent_core"] = {"agent": {"primary_model": "x"}}
+        phases_done, current = _infer_phases_completed(yamls)
+        assert "overview" in phases_done
+
+    def test_all_blocks_filled_returns_review_phase(self):
+        yamls = {
+            "agent_core": {"agent": {"primary_model": "x"}},
+            "knowledge_engine": {"rag": {"sources": []}},
+            "memory_layer": {"session": {"ttl_seconds": 3600}},
+            "trust_layer": {"guardrails": {"enabled": True}},
+            "action_gateway": {"tools": [{"id": "t1"}]},
+            "reach_layer": {"channels": ["web"]},
+            "observability_layer": {"lifecycle_states": []},
+        }
+        phases_done, current = _infer_phases_completed(yamls)
+        assert current == "review"
+
+
+class TestDeriveMetaFromFolder:
+    def test_derives_name_from_slug(self, tmp_path):
+        folder = tmp_path / "hospital-helpdesk"
+        folder.mkdir()
+        (folder / "agent_core.yaml").write_text("agent:\n  primary_model: claude-haiku-4-5\n")
+        meta = _derive_meta_from_folder(folder, "hospital-helpdesk")
+        assert meta["name"] == "Hospital Helpdesk"
+        assert meta["slug"] == "hospital-helpdesk"
+
+    def test_derives_primary_model_from_agent_core(self, tmp_path):
+        folder = tmp_path / "mybot"
+        folder.mkdir()
+        (folder / "agent_core.yaml").write_text("agent:\n  primary_model: claude-sonnet-4-6\n")
+        meta = _derive_meta_from_folder(folder, "mybot")
+        assert meta.get("primary_model") == "claude-sonnet-4-6"
+
+    def test_handles_missing_yaml_gracefully(self, tmp_path):
+        folder = tmp_path / "partial"
+        folder.mkdir()
+        meta = _derive_meta_from_folder(folder, "partial")
+        assert meta["slug"] == "partial"
+        assert "name" in meta
+
+    def test_imported_flag_is_true(self, tmp_path):
+        folder = tmp_path / "mybot"
+        folder.mkdir()
+        (folder / "agent_core.yaml").write_text("agent:\n  primary_model: x\n")
+        meta = _derive_meta_from_folder(folder, "mybot")
+        assert meta["imported"] is True
+
+
+# ---------------------------------------------------------------------------
+# GET /api/projects/importable
+# ---------------------------------------------------------------------------
+
+
+class TestListImportableEndpoint:
+    def test_returns_importable_folders(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(app_module, "CONFIGS_DIR", tmp_path)
+        app_module._engines.clear()
+        bare = tmp_path / "kkb"
+        bare.mkdir()
+        (bare / "agent_core.yaml").write_text("agent:\n  primary_model: claude-haiku-4-5\n")
+        managed = tmp_path / "managed"
+        managed.mkdir()
+        (managed / "agent_core.yaml").write_text("")
+        meta_dir = managed / "_meta"
+        meta_dir.mkdir()
+        (meta_dir / "project.json").write_text('{"slug":"managed"}')
+        client = TestClient(app_module.app)
+        res = client.get("/api/projects/importable")
+        assert res.status_code == 200
+        data = res.json()
+        assert len(data) == 1
+        assert data[0]["slug"] == "kkb"
+        assert "detected_blocks" in data[0]
+        assert "agent_core" in data[0]["detected_blocks"]
+
+    def test_returns_empty_when_no_importable_folders(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(app_module, "CONFIGS_DIR", tmp_path)
+        app_module._engines.clear()
+        client = TestClient(app_module.app)
+        res = client.get("/api/projects/importable")
+        assert res.status_code == 200
+        assert res.json() == []
+
+    def test_returns_validation_errors_per_block(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(app_module, "CONFIGS_DIR", tmp_path)
+        app_module._engines.clear()
+        folder = tmp_path / "invalid-domain"
+        folder.mkdir()
+        (folder / "agent_core.yaml").write_text("agent:\n  primary_model: x\n")
+        client = TestClient(app_module.app)
+        res = client.get("/api/projects/importable")
+        assert res.status_code == 200
+        item = res.json()[0]
+        assert "validation_errors" in item
+
+
+# ---------------------------------------------------------------------------
+# POST /api/projects/import
+# ---------------------------------------------------------------------------
+
+
+class TestImportProjectEndpoint:
+    def test_imports_bare_folder_successfully(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(app_module, "CONFIGS_DIR", tmp_path)
+        app_module._engines.clear()
+        folder = tmp_path / "kkb"
+        folder.mkdir()
+        (folder / "agent_core.yaml").write_text(
+            "agent:\n  primary_model: claude-haiku-4-5\n  fallback_model: claude-haiku-4-5\n"
+        )
+        (folder / "knowledge_engine.yaml").write_text("rag:\n  similarity_threshold: 0.7\n")
+        client = TestClient(app_module.app)
+        res = client.post("/api/projects/import", json={"slug": "kkb"})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["slug"] == "kkb"
+        assert data["imported"] is True
+        assert (tmp_path / "kkb" / "_meta" / "project.json").exists()
+
+    def test_import_creates_checkpoint(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(app_module, "CONFIGS_DIR", tmp_path)
+        app_module._engines.clear()
+        folder = tmp_path / "mybot"
+        folder.mkdir()
+        (folder / "agent_core.yaml").write_text("agent:\n  primary_model: x\n")
+        client = TestClient(app_module.app)
+        client.post("/api/projects/import", json={"slug": "mybot"})
+        checkpoint_dir = tmp_path / "mybot" / "_meta" / "checkpoints" / "00_imported"
+        assert checkpoint_dir.exists()
+        assert (checkpoint_dir / "accumulator.json").exists()
+        assert (checkpoint_dir / "summary.txt").exists()
+
+    def test_import_creates_accumulator_json(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(app_module, "CONFIGS_DIR", tmp_path)
+        app_module._engines.clear()
+        folder = tmp_path / "mybot"
+        folder.mkdir()
+        (folder / "agent_core.yaml").write_text("agent:\n  primary_model: x\n")
+        client = TestClient(app_module.app)
+        client.post("/api/projects/import", json={"slug": "mybot"})
+        acc_path = tmp_path / "mybot" / "_meta" / "accumulator.json"
+        assert acc_path.exists()
+        data = json.loads(acc_path.read_text())
+        assert data["data"]["agent_core"] == {"agent": {"primary_model": "x"}}
+
+    def test_import_rejects_already_managed_folder(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(app_module, "CONFIGS_DIR", tmp_path)
+        app_module._engines.clear()
+        folder = tmp_path / "managed"
+        folder.mkdir()
+        (folder / "agent_core.yaml").write_text("")
+        meta_dir = folder / "_meta"
+        meta_dir.mkdir()
+        (meta_dir / "project.json").write_text('{"slug":"managed"}')
+        client = TestClient(app_module.app)
+        res = client.post("/api/projects/import", json={"slug": "managed"})
+        assert res.status_code == 409
+
+    def test_import_rejects_nonexistent_folder(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(app_module, "CONFIGS_DIR", tmp_path)
+        app_module._engines.clear()
+        client = TestClient(app_module.app)
+        res = client.post("/api/projects/import", json={"slug": "ghost"})
+        assert res.status_code == 404
+
+    def test_import_rejects_folder_with_no_block_yamls(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(app_module, "CONFIGS_DIR", tmp_path)
+        app_module._engines.clear()
+        folder = tmp_path / "empty-folder"
+        folder.mkdir()
+        (folder / "notes.txt").write_text("hi")
+        client = TestClient(app_module.app)
+        res = client.post("/api/projects/import", json={"slug": "empty-folder"})
+        assert res.status_code == 422
+
+    def test_existing_projects_unaffected_after_import(self, tmp_path, monkeypatch):
+        from dev_kit.agent.renderer import render_all
+        monkeypatch.setattr(app_module, "CONFIGS_DIR", tmp_path)
+        app_module._engines.clear()
+        managed = tmp_path / "managed"
+        managed.mkdir()
+        meta_dir = managed / "_meta"
+        meta_dir.mkdir()
+        managed_meta = {
+            "slug": "managed", "name": "Managed", "description": "",
+            "current_phase": "overview", "phases_completed": [],
+        }
+        (meta_dir / "project.json").write_text(json.dumps(managed_meta))
+        render_all(managed, ConfigAccumulator())
+        bare = tmp_path / "bare-domain"
+        bare.mkdir()
+        (bare / "agent_core.yaml").write_text("agent:\n  primary_model: x\n")
+        client = TestClient(app_module.app)
+        client.post("/api/projects/import", json={"slug": "bare-domain"})
+        res = client.get("/api/projects/managed")
+        assert res.status_code == 200
+        assert res.json()["slug"] == "managed"
