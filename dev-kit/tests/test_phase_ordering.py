@@ -22,9 +22,9 @@ from dev_kit.agent.tools import ToolHandler
 # ---------------------------------------------------------------------------
 
 
-def test_phases_contains_tools_at_index_6():
-    """PHASES[6] must be 'tools' after the connectors→tools rename and user_state insertion."""
-    assert PHASES[6] == "tools"
+def test_phases_contains_tools_at_index_7():
+    """PHASES[7] must be 'tools' after the tier pre-phase insertion (GH-137)."""
+    assert PHASES[7] == "tools"
 
 
 def test_phases_does_not_contain_connectors():
@@ -32,9 +32,9 @@ def test_phases_does_not_contain_connectors():
     assert "connectors" not in PHASES
 
 
-def test_phases_has_eleven_entries():
-    """PHASES must contain exactly 11 phases after user_state insertion."""
-    assert len(PHASES) == 11
+def test_phases_has_twelve_entries():
+    """PHASES must contain exactly 12 phases after tier pre-phase insertion (GH-137)."""
+    assert len(PHASES) == 12
 
 
 # ---------------------------------------------------------------------------

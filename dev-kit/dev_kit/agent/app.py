@@ -164,6 +164,8 @@ def create_project(body: CreateProjectRequest) -> dict:
         "description": body.description,
         "current_phase": "overview",
         "phases_completed": [],
+        "agent_type": "",
+        "phase_decisions": {},
     }
     (meta_dir / "project.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
     # Initialise empty config files

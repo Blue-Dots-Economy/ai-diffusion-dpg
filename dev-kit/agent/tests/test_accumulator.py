@@ -170,3 +170,11 @@ class TestPhasesOrdering:
         assert "user_state" in PHASES
         assert PHASES.index("user_state") == PHASES.index("memory") + 1
         assert PHASES.index("user_state") == PHASES.index("trust") - 1
+
+    def test_tier_phase_is_first(self):
+        """GH-137: 'tier' is the first phase (pre-phase before overview)."""
+        assert PHASES[0] == "tier"
+
+    def test_phases_count(self):
+        """GH-137: PHASES has 12 entries (tier + original 11)."""
+        assert len(PHASES) == 12

@@ -188,8 +188,8 @@ class TestPhaseSequenceWithNewTools:
         handler = ToolHandler(acc, state)
         return acc, state, handler
 
-    def test_tools_is_phase_7_in_sequence(self):
-        assert PHASES[6] == "tools"
+    def test_tools_is_phase_8_in_sequence(self):
+        assert PHASES[7] == "tools"
 
     def test_cannot_skip_tools_to_workflow(self):
         acc, state, handler = self._make_handler(phase="trust")

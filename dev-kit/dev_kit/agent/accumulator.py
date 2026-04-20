@@ -26,6 +26,7 @@ BLOCKS: list[str] = [
 DRAFT_BLOCKS: set[str] = set()
 
 PHASES: list[str] = [
+    "tier",
     "overview",
     "language",
     "knowledge",

@@ -125,6 +125,14 @@ class TestCreateProject:
         meta = json.loads(meta_file.read_text())
         assert meta["slug"] == "disk-test"
 
+    def test_create_initialises_agent_type_and_phase_decisions(self, client, tmp_path):
+        """GH-137: project meta seeds empty agent_type and phase_decisions."""
+        client.post("/api/projects", json={"name": "Meta Keys", "description": "d"})
+        meta_file = tmp_path / "meta-keys" / "_meta" / "project.json"
+        meta = json.loads(meta_file.read_text())
+        assert meta["agent_type"] == ""
+        assert meta["phase_decisions"] == {}
+
     def test_create_registers_engine(self, client):
         """Engine is registered in _engines after creation."""
         client.post("/api/projects", json={"name": "Engine Check", "description": ""})
