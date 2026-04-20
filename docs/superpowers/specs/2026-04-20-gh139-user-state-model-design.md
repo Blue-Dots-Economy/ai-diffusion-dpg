@@ -10,7 +10,7 @@
 
 The DPG runtime tracks **system state** — profile-fetched, post-application, do-not-call — via subagents, Memory Layer session scope, and NLU-driven transitions. This covers operational routing.
 
-Tier-4 complex-conversational domains need a second, orthogonal dimension: **user mental state** — where the user is emotionally and cognitively *right now*. The KKB prompt doc (`docs/KKB Current Prompt.pdf`) and the Voice & Chat Agent Prompt Engineering Guide v2 (`docs/Voice_Chat_Agent_Prompt_Guide_v2.pdf`) both model this explicitly. KKB declares five states: Fog / Orientation / Evaluation / Commitment / Follow-through. Other domains declare different states, or none at all.
+**Conversational**-type domains (per the agent-type taxonomy in `docs/Agent_Configuration_Guide_Main.pdf`) need a second, orthogonal dimension: **user mental state** — where the user is emotionally and cognitively *right now*. The KKB prompt doc (`docs/KKB Current Prompt.pdf`) and the new Agent Configuration Guide (April 2026, v3.0) both model this explicitly. Sheet D (Conversational) makes the state model mandatory and specifies observable triggers plus agent behaviours per state. Sheet C (Agentic) explicitly forbids it. Sheets A and B (Transactional / Informational) skip it entirely. KKB declares five states: Fog / Orientation / Evaluation / Commitment / Follow-through. Other Conversational domains declare different states.
 
 User state is not rule-driven — it is inferred each turn from the user's message. The same user can cycle through states freely within a session. This is fundamentally different from system state and cannot be collapsed into the existing subagent DAG without distorting either abstraction.
 
@@ -51,7 +51,7 @@ New optional block under `conversation` in the agent_core YAML:
 ```yaml
 conversation:
   user_state_model:
-    enabled: false                # default off — T1/T2 domains never touch this
+    enabled: false                # default off — Transactional/Informational/Agentic domains never touch this
     default_state: ""             # REQUIRED when enabled=true; must match an id below
     states:                       # REQUIRED when enabled=true; must be non-empty
       - id: ""                    # unique stable key
@@ -266,7 +266,7 @@ Metrics (e.g. `user_state_transitions_total{from,to}`) are intentionally deferre
 
 ### Dev-kit questionnaire
 
-New dedicated phase `user_state`, slotted between `memory` and `trust` in the 10-phase flow. Tier-gated (T3/T4 only) once #137's tier gate lands; until then, always visited with a "answer `skip` if not applicable" hint.
+New dedicated phase `user_state`, slotted between `memory` and `trust` in the 10-phase flow. Gated on **agent type = Conversational** once #137's agent-type selector lands (per the 3-question selector in Part 1 of the Main Guide; Sheet C explicitly forbids a state model for Agentic). Until then, the phase is always visited with an "answer `skip` if not applicable" hint.
 
 Changes:
 
@@ -362,8 +362,9 @@ Single PR, cohesive surface. Implementation order:
 - Cross-session user-state persistence (session scope only).
 - Power-user template vars like `{user_state.id}` or `{user_state.turn_count}` (deferred; automatic injection is sufficient for v1).
 - Metrics dashboard (deferred; needs production data).
-- Tier gate (delivered as part of #137).
+- Agent-type selector + type-based phase gating (delivered as part of #137).
 - KKB's actual 5-state declarations (delivered as part of #137).
+- Strict-override opening logic, pre-response dignity check, rigorous tool-trigger schema, TTS rules checklist, fixed terminal word (all delivered as part of #137 — orthogonal to user-state).
 
 ## Acceptance criteria
 
