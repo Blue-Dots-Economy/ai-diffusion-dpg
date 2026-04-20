@@ -558,6 +558,23 @@ class ToolHandler:
         section = inputs["section"]
         values = inputs["values"]
 
+        # GH-137 hard-cut: channel configuration has moved to the top-level
+        # `channels` section inside each block. Reject the legacy paths with
+        # explicit migration guidance so the LLM retries with the new path.
+        if block == "agent_core":
+            if section == "agent.channels" or section.startswith("agent.channels."):
+                return (
+                    "ERROR — agent.channels is removed (GH-137). "
+                    "Use section=`channels` at the top level instead "
+                    "(e.g. section=`channels`, values={voice: {...}})."
+                )
+            if section == "reach_layer.channels" or section.startswith("reach_layer.channels."):
+                return (
+                    "ERROR — reach_layer.channels inside agent_core is removed (GH-137). "
+                    "Use section=`channels.<name>.turn_assembler` at the top level for "
+                    "turn_assembler policy overrides."
+                )
+
         # Build the nested partial and validate key names before writing.
         partial: dict = {}
         node = partial

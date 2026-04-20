@@ -38,6 +38,55 @@ class TestToolHandlerUpdateConfig:
         assert "ok" in result.lower() or "updated" in result.lower()
 
 
+class TestToolHandlerUpdateConfigChannelGuards:
+    """GH-137: update_config rejects the removed agent.channels / reach_layer.channels paths."""
+
+    def _handler(self):
+        acc = ConfigAccumulator()
+        state = {"phase": "reach", "phase_changed": None, "rollback_to": None, "project_meta": {}}
+        return ToolHandler(acc, state), acc
+
+    def test_rejects_agent_channels(self):
+        handler, _acc = self._handler()
+        result = handler.dispatch("update_config", {
+            "block": "agent_core",
+            "section": "agent.channels",
+            "values": {"voice": {"system_prompt_suffix": "x"}},
+        })
+        assert "error" in result.lower()
+        assert "channels" in result.lower()
+
+    def test_rejects_agent_channels_subpath(self):
+        handler, _acc = self._handler()
+        result = handler.dispatch("update_config", {
+            "block": "agent_core",
+            "section": "agent.channels.voice",
+            "values": {"system_prompt_suffix": "x"},
+        })
+        assert "error" in result.lower()
+
+    def test_rejects_reach_layer_channels_for_agent_core(self):
+        handler, _acc = self._handler()
+        result = handler.dispatch("update_config", {
+            "block": "agent_core",
+            "section": "reach_layer.channels",
+            "values": {"voice": {"turn_assembler": {}}},
+        })
+        assert "error" in result.lower()
+
+    def test_accepts_top_level_channels(self):
+        handler, acc = self._handler()
+        result = handler.dispatch("update_config", {
+            "block": "agent_core",
+            "section": "channels",
+            "values": {"voice": {"system_prompt_suffix": "short"}},
+        })
+        assert "error" not in result.lower() or "ok" in result.lower()
+        assert acc.get_block("agent_core").get("channels", {}).get("voice", {}).get(
+            "system_prompt_suffix"
+        ) == "short"
+
+
 class TestToolHandlerSetPhase:
     def test_updates_phase_in_state(self):
         acc = ConfigAccumulator()
