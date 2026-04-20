@@ -108,6 +108,38 @@ Sole orchestrator and sole LLM caller. Stateless between turns.
 - Write state to Memory Layer (async, after response) — includes `current_subagent_id` and `user_storage_mode`.
 - Emit turn event to Observability Layer (async, after response). Block/escalate turns also emit — observability never skipped.
 
+**Channel configuration (GH-137).** Per-channel LLM-facing config lives at the
+top-level `channels:` block in `agent_core.yaml`. Each channel declares
+`system_prompt_suffix`, `tts_rules` (voice only), `terminal_word` (voice only),
+and `turn_assembler` policy. The legacy `agent.channels` and
+`reach_layer.channels` nested paths are removed — domains must use the top-level
+`channels:` block. Reach Layer's own `channels:` block (in `reach_layer.yaml`)
+stays for adapter-specific internals (TTS provider endpoints, websocket URLs).
+
+**Session-end signalling (GH-137).** When `conversation.session_end_eval.enabled:
+true`, the orchestrator registers an `end_session` internal tool that the LLM can
+call when the conversation has naturally concluded (user said goodbye, task
+completed, user asked to stop). The tool has no external executor — the
+orchestrator intercepts it inside the tool loop and sets
+`TurnResult.session_ended = True`. The voice adapter (`reach_layer_voice`)
+reacts to this flag by appending `channels.voice.terminal_word` to the outbound
+TTS stream and emitting a websocket close frame. Chat / web / CLI adapters close
+the session without appending.
+
+**Dignity check (GH-137).** Conversational agents enable
+`trust_layer.dignity_check`, which auto-populates 5 canonical pre-response
+questions. Trust Layer's `/assemble_constraints` endpoint appends these questions
+to the `prompt_constraints` payload returned to Agent Core, which threads them
+into the main LLM system prompt as a "Pre-response dignity check" section. The
+LLM self-checks before emitting its response. No additional LLM call.
+
+**Opening phrase (GH-137).** Each subagent may declare an `opening_phrase` that
+the orchestrator emits once per session — on the first post-consent turn. The
+subagent active on turn 1 is determined by Memory Layer (either `is_start: true`
+for new sessions, or the `current_subagent` restored from a prior session).
+Subsequent turns run the subagent's normal `system_prompt`. The session flag
+`opening_phrase_emitted` prevents re-emission.
+
 **User-state model (optional, Conversational agents only).** Orthogonal to the
 system state described above, Conversational domains may declare a
 `conversation.user_state_model` block with a list of states (id, signals,
