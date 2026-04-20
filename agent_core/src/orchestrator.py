@@ -1768,18 +1768,25 @@ class AgentCore(AgentCoreBase):
     # ------------------------------------------------------------------
 
     def _resolve_channel_config(self, channel: str) -> dict:
-        """Resolve per-channel config from agent.channels, raising for unsupported channels.
+        """Resolve per-channel config from top-level channels.<name>.
 
         Args:
             channel: Channel name from the inbound TurnInput.
 
         Returns:
-            Channel config dict with at least system_prompt_suffix key.
+            Channel config dict (at minimum has `system_prompt_suffix` key).
 
         Raises:
-            ValueError: If the channel is not present in agent.channels config.
+            ValueError: If the channel is not present in the top-level channels config,
+                OR if the legacy `agent.channels` path is present (hard-cut migration).
         """
-        channels = self._config.get("agent", {}).get("channels", {})
+        if self._config.get("agent", {}).get("channels"):
+            raise ValueError(
+                "agent.channels is removed — migrate to top-level channels.<name> "
+                "(see docs/superpowers/specs/2026-04-21-gh137-framework-uplift-design.md)"
+            )
+
+        channels = self._config.get("channels", {})
         config = channels.get(channel)
         if config is None:
             raise ValueError(f"Unsupported channel: {channel}")

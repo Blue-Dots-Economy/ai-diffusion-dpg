@@ -53,12 +53,11 @@ SESSION_ID = "sess_orch_001"
 TIMESTAMP = int(time.time() * 1000)
 
 VALID_CONFIG = {
-    "agent": {
-        "channels": {
-            "cli": {"system_prompt_suffix": ""},
-            "voice": {"system_prompt_suffix": "Respond in 1-2 short sentences."},
-            "web": {"system_prompt_suffix": ""},
-        },
+    "agent": {},
+    "channels": {
+        "cli": {"system_prompt_suffix": ""},
+        "voice": {"system_prompt_suffix": "Respond in 1-2 short sentences."},
+        "web": {"system_prompt_suffix": ""},
     },
     "conversation": {
         "unknown_intent_message": "I didn't understand that.",
@@ -997,11 +996,29 @@ def test_process_turn_unsupported_channel_raises_value_error():
 
 
 def test_process_turn_passes_channel_config_to_build_system_prompt():
-    """channel_config resolved from agent.channels is forwarded to build_system_prompt."""
+    """channel_config resolved from top-level channels is forwarded to build_system_prompt."""
     agent = _make_agent()
     agent.process_turn(_turn_input())   # channel="cli"
     call_kwargs = agent._manager_agent.build_system_prompt.call_args.kwargs
     assert call_kwargs["channel_config"] == {"system_prompt_suffix": ""}
+
+
+def test_resolve_channel_config_reads_top_level_channels():
+    """_resolve_channel_config returns the entry from the top-level channels block."""
+    agent = _make_agent()
+    result = agent._resolve_channel_config("voice")
+    assert result == {"system_prompt_suffix": "Respond in 1-2 short sentences."}
+
+
+def test_resolve_channel_config_rejects_legacy_agent_channels():
+    """Legacy agent.channels path is rejected at resolve time (GH-137 hard cut)."""
+    agent = _make_agent()
+    agent._config = {
+        **VALID_CONFIG,
+        "agent": {"channels": {"voice": {"system_prompt_suffix": "old"}}},
+    }
+    with pytest.raises(ValueError, match="agent.channels"):
+        agent._resolve_channel_config("voice")
 
 
 # ── User-state model init tests (GH-139) ─────────────────────────────────────
