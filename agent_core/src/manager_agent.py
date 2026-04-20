@@ -210,6 +210,7 @@ class ManagerAgent:
         channel_config: dict | None = None,
         is_resumption: bool = False,
         guardrail_constraints: dict | None = None,
+        user_state_guidance: str | None = None,
     ) -> str:
         """
         Build the system prompt for one LLM call.
@@ -235,6 +236,12 @@ class ManagerAgent:
             guardrail_constraints:  Optional dict with prompt_constraints and
                                     required_disclosures from the Trust Layer.
                                     When present, appended to the system prompt.
+            user_state_guidance:    Optional — when non-empty, rendered as a
+                                    "## Current user state guidance" section between
+                                    the subagent prompt and the guardrail constraints.
+                                    Orchestrator supplies the text from
+                                    conversation.user_state_model based on the current
+                                    user_state payload. Empty/None renders no section.
 
         Returns:
             Assembled system prompt string.
@@ -284,6 +291,11 @@ class ManagerAgent:
 
         if subagent_system_prompt:
             parts.append(subagent_system_prompt.strip())
+
+        if user_state_guidance:
+            parts.append(
+                "## Current user state guidance\n" + user_state_guidance.strip()
+            )
 
         if guardrail_constraints:
             constraints = guardrail_constraints.get("prompt_constraints", [])

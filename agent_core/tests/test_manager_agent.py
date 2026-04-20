@@ -370,6 +370,57 @@ def test_build_system_prompt_none_channel_config_no_suffix():
     assert without == with_none
 
 
+def test_build_system_prompt_user_state_guidance_none_no_section():
+    """user_state_guidance=None does not inject a section."""
+    agent = _make_manager_for_prompt()
+    result = agent.build_system_prompt(
+        agent_system_prompt="A", subagent_system_prompt="B",
+        detected_language="hindi", channel="cli", profile={},
+        user_state_guidance=None,
+    )
+    assert "Current user state guidance" not in result
+
+
+def test_build_system_prompt_user_state_guidance_empty_no_section():
+    """user_state_guidance="" does not inject a section."""
+    agent = _make_manager_for_prompt()
+    result = agent.build_system_prompt(
+        agent_system_prompt="A", subagent_system_prompt="B",
+        detected_language="hindi", channel="cli", profile={},
+        user_state_guidance="",
+    )
+    assert "Current user state guidance" not in result
+
+
+def test_build_system_prompt_user_state_guidance_rendered():
+    """user_state_guidance non-empty renders as a ## Current user state guidance section."""
+    agent = _make_manager_for_prompt()
+    result = agent.build_system_prompt(
+        agent_system_prompt="A", subagent_system_prompt="B",
+        detected_language="hindi", channel="cli", profile={},
+        user_state_guidance="Orient gently. Surface 2-3 directions.",
+    )
+    assert "## Current user state guidance" in result
+    assert "Orient gently. Surface 2-3 directions." in result
+    subagent_idx = result.index("B")
+    state_idx = result.index("## Current user state guidance")
+    assert state_idx > subagent_idx
+
+
+def test_build_system_prompt_user_state_guidance_before_guardrails():
+    """user_state_guidance section appears between subagent prompt and guardrail constraints."""
+    agent = _make_manager_for_prompt()
+    result = agent.build_system_prompt(
+        agent_system_prompt="A", subagent_system_prompt="B",
+        detected_language="hindi", channel="cli", profile={},
+        user_state_guidance="UG",
+        guardrail_constraints={"prompt_constraints": ["C1"], "required_disclosures": []},
+    )
+    state_idx = result.index("## Current user state guidance")
+    guardrail_idx = result.index("## Guardrail Constraints")
+    assert state_idx < guardrail_idx
+
+
 # ---------------------------------------------------------------------------
 # build_messages — E2
 # ---------------------------------------------------------------------------
