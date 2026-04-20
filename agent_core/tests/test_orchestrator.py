@@ -1002,3 +1002,66 @@ def test_process_turn_passes_channel_config_to_build_system_prompt():
     agent.process_turn(_turn_input())   # channel="cli"
     call_kwargs = agent._manager_agent.build_system_prompt.call_args.kwargs
     assert call_kwargs["channel_config"] == {"system_prompt_suffix": ""}
+
+
+# ── User-state model init tests (GH-139) ─────────────────────────────────────
+
+def _make_usm_config(enabled: bool) -> dict:
+    """Build a minimal config with user_state_model at the correct nesting level."""
+    base = {
+        **VALID_CONFIG,
+        "conversation": {
+            **VALID_CONFIG.get("conversation", {}),
+        },
+    }
+    if enabled:
+        base["conversation"]["user_state_model"] = {
+            "enabled": True,
+            "default_state": "fog",
+            "states": [
+                {"id": "fog", "label": "Fog", "guidance": "User is in fog state."},
+                {"id": "aware", "label": "Aware", "guidance": "User is aware."},
+            ],
+        }
+    return base
+
+
+def test_agentcore_init_user_state_enabled_caches_guidance():
+    """AgentCore caches user-state guidance lookup when user_state_model.enabled is true."""
+    config = _make_usm_config(enabled=True)
+    agent = AgentCore(
+        config=config,
+        llm_wrapper=MagicMock(),
+        memory=MagicMock(),
+        trust=MagicMock(),
+        knowledge_engine=MagicMock(),
+        tool_registry=MagicMock(),
+        manager_agent=MagicMock(),
+        learning=MagicMock(),
+        workflow=_make_workflow(),
+    )
+
+    assert agent._user_state_enabled is True
+    assert agent._user_state_guidance_by_id["fog"] == "User is in fog state."
+    assert agent._user_state_guidance_by_id["aware"] == "User is aware."
+    assert agent._user_state_default == "fog"
+
+
+def test_agentcore_init_user_state_disabled_empty_cache():
+    """AgentCore leaves user-state caches empty when user_state_model is absent."""
+    config = _make_usm_config(enabled=False)
+    agent = AgentCore(
+        config=config,
+        llm_wrapper=MagicMock(),
+        memory=MagicMock(),
+        trust=MagicMock(),
+        knowledge_engine=MagicMock(),
+        tool_registry=MagicMock(),
+        manager_agent=MagicMock(),
+        learning=MagicMock(),
+        workflow=_make_workflow(),
+    )
+
+    assert agent._user_state_enabled is False
+    assert agent._user_state_guidance_by_id == {}
+    assert agent._user_state_default == ""

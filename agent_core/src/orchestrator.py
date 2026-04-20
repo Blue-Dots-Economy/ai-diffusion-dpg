@@ -133,6 +133,20 @@ class AgentCore(AgentCoreBase):
         self._language_normaliser = LanguageNormaliser()
         self._nlu_processor = NLUProcessor(self._config)
 
+        # User-state model (GH-139) — cached lookup for per-turn guidance injection.
+        usm = (self._config or {}).get("conversation", {}).get("user_state_model", {}) or {}
+        self._user_state_enabled: bool = bool(usm.get("enabled", False))
+        if self._user_state_enabled:
+            self._user_state_guidance_by_id: dict[str, str] = {
+                (s.get("id", "")): (s.get("guidance", "") or "")
+                for s in (usm.get("states") or [])
+                if s.get("id")
+            }
+            self._user_state_default: str = usm.get("default_state", "")
+        else:
+            self._user_state_guidance_by_id = {}
+            self._user_state_default = ""
+
         # Instrument HTTPX once per process so all downstream HTTP calls are
         # automatically traced as child spans of orchestrator.turn.
         global _HTTPX_INSTRUMENTED
@@ -433,6 +447,16 @@ class AgentCore(AgentCoreBase):
             if attr_key:
                 existing_profile_keys.append(attr_key)
 
+        previous_user_state_payload: dict | None = None
+        previous_user_state_id: str | None = None
+        if self._user_state_enabled:
+            maybe = bundle.session.get("user_state")
+            if isinstance(maybe, dict):
+                previous_user_state_payload = maybe
+                previous_user_state_id = maybe.get("id")
+            if previous_user_state_id is None:
+                previous_user_state_id = self._user_state_default
+
         logger.info(
             "  [STEP 5] NLU Processor  →  LLM call (model_override=%s)"
             "  current_subagent_id=%s  allowed_intents=%d  current_question=%r"
@@ -449,6 +473,7 @@ class AgentCore(AgentCoreBase):
             llm=self._llm,
             allowed_intents=allowed_intents,
             existing_profile_keys=existing_profile_keys,
+            previous_user_state=previous_user_state_id,
         )
         logger.info(
             "  [STEP 5] NLU Processor  ✓  intent=%s  confidence=%.2f  entities=%s"
@@ -457,6 +482,17 @@ class AgentCore(AgentCoreBase):
             nlu_result.entities if nlu_result.entities else {},
             nlu_result.sentiment,
             int((time.time() - t5) * 1000),
+        )
+
+        user_state_guidance_text = self._handle_user_state_turn(
+            session_id=session_id,
+            user_id=user_id,
+            turn_id=turn_id,
+            bundle=bundle,
+            nlu_result=nlu_result,
+            previous_state_id=previous_user_state_id,
+            previous_payload=previous_user_state_payload,
+            span=_span,
         )
         
         # After NLU: write extracted entities synchronously so routing in Step 6
@@ -705,6 +741,7 @@ class AgentCore(AgentCoreBase):
             channel_config=channel_config,
             is_resumption=is_resumption,
             guardrail_constraints=guardrail_constraints,
+            user_state_guidance=user_state_guidance_text,
         )
 
         # Clear resumption flag in session so it only affects the first turn
@@ -1789,6 +1826,127 @@ class AgentCore(AgentCoreBase):
             )
 
     # ------------------------------------------------------------------
+    # Private: user-state model helper (GH-139)
+    # ------------------------------------------------------------------
+
+    def _handle_user_state_turn(
+        self,
+        *,
+        session_id: str,
+        user_id: str | None,
+        turn_id: str,
+        bundle,
+        nlu_result: NLUResult,
+        previous_state_id: str | None,
+        previous_payload: dict | None,
+        span,
+    ) -> str | None:
+        """Resolve, persist, observe, and return user-state guidance for the current turn.
+
+        No-op when the user-state model is disabled — returns None.
+
+        Args:
+            session_id:        Active session id.
+            user_id:           Active user id.
+            turn_id:           Active turn id (for event emission).
+            bundle:            Mutated in place — bundle.session["user_state"] is set.
+            nlu_result:        NLUResult containing the freshly-classified user_state.
+            previous_state_id: State id read at turn start (or default on first turn).
+            previous_payload:  Full previous payload from memory (None on first turn).
+            span:              Active OTel span for attribute attachment.
+
+        Returns:
+            Guidance text for the current state (string) or None when the model
+            is disabled. Empty guidance resolves to None.
+        """
+        if not self._user_state_enabled:
+            return None
+
+        from datetime import datetime, timezone
+        from src.preprocessing.user_state_resolver import resolve_user_state
+
+        new_payload, transitioned = resolve_user_state(
+            classification=nlu_result.user_state,
+            previous=previous_payload,
+            config=self._config,
+            now=datetime.now(timezone.utc),
+        )
+        if new_payload is None:
+            return None
+
+        # Piggy-back on the per-turn session write — same call, same scope.
+        self._write_memory_sync(
+            session_id, user_id, "session", "user_state", new_payload,
+        )
+        bundle.session["user_state"] = new_payload
+
+        # OTel span attributes — operational telemetry on the existing turn span.
+        try:
+            span.set_attribute("user_state.enabled", True)
+            span.set_attribute("user_state.previous", previous_state_id or "")
+            span.set_attribute("user_state.current", new_payload["id"])
+            span.set_attribute("user_state.transitioned", transitioned)
+            span.set_attribute(
+                "user_state.confidence", float(new_payload["confidence"])
+            )
+            span.set_attribute(
+                "user_state.turn_count", int(new_payload["turn_count"])
+            )
+        except Exception as _otel_err:
+            logger.warning(
+                "orchestrator.user_state_otel_attr_failed",
+                extra={
+                    "operation": "orchestrator.user_state",
+                    "status": "skipped",
+                    "error": f"{type(_otel_err).__name__}: {_otel_err}",
+                },
+            )
+
+        logger.info(
+            "user_state.resolved",
+            extra={
+                "operation": "orchestrator.resolve_user_state",
+                "status": "success",
+                "transitioned": transitioned,
+                "state_id": new_payload["id"],
+                "previous_state_id": previous_state_id,
+                "latency_ms": 0,
+            },
+        )
+
+        # Observability Layer event — async, only on actual transitions.
+        if transitioned:
+            try:
+                self._learning.emit_signal(
+                    "user_state_transition",
+                    {
+                        "session_id": session_id,
+                        "turn_id": turn_id,
+                        "timestamp_ms": int(time.time() * 1000),
+                        "from_state": previous_state_id,
+                        "to_state": new_payload["id"],
+                        "confidence": new_payload["confidence"],
+                        "trigger_intent": nlu_result.intent,
+                        "turns_in_previous_state": (
+                            int((previous_payload or {}).get("turn_count", 0))
+                            if previous_payload else 0
+                        ),
+                    },
+                )
+            except Exception as _evt_err:
+                logger.warning(
+                    "orchestrator.user_state_event_emit_failed",
+                    extra={
+                        "operation": "orchestrator.emit_user_state_transition",
+                        "status": "skipped",
+                        "error": f"{type(_evt_err).__name__}: {_evt_err}",
+                    },
+                )
+
+        guidance = self._user_state_guidance_by_id.get(new_payload["id"], "")
+        return guidance or None
+
+    # ------------------------------------------------------------------
     # Streaming: stream_turn() — async SSE pipeline
     # ------------------------------------------------------------------
 
@@ -2049,6 +2207,16 @@ class AgentCore(AgentCoreBase):
                 if attr_key:
                     existing_profile_keys.append(attr_key)
 
+            stream_previous_user_state_payload: dict | None = None
+            stream_previous_user_state_id: str | None = None
+            if self._user_state_enabled:
+                stream_maybe = bundle.session.get("user_state")
+                if isinstance(stream_maybe, dict):
+                    stream_previous_user_state_payload = stream_maybe
+                    stream_previous_user_state_id = stream_maybe.get("id")
+                if stream_previous_user_state_id is None:
+                    stream_previous_user_state_id = self._user_state_default
+
             logger.info(
                 "  [STEP 5] NLU Processor  →  (normalised=%r  subagent=%s)",
                 normalised_input[:80], current_subagent_id,
@@ -2061,6 +2229,7 @@ class AgentCore(AgentCoreBase):
                 llm=self._llm,
                 allowed_intents=allowed_intents,
                 existing_profile_keys=existing_profile_keys,
+                previous_user_state=stream_previous_user_state_id,
             )
             yield SignalEvent(stage="nlu", status="complete")
             logger.info(
@@ -2068,6 +2237,17 @@ class AgentCore(AgentCoreBase):
                 "  entities=%s  latency=%dms",
                 nlu_result.intent, nlu_result.confidence,
                 list((nlu_result.entities or {}).keys()), int((time.time() - t5) * 1000),
+            )
+
+            stream_user_state_guidance_text = self._handle_user_state_turn(
+                session_id=session_id,
+                user_id=user_id,
+                turn_id=turn_id,
+                bundle=bundle,
+                nlu_result=nlu_result,
+                previous_state_id=stream_previous_user_state_id,
+                previous_payload=stream_previous_user_state_payload,
+                span=otel_trace.get_current_span(),
             )
 
             # Write entities
@@ -2207,6 +2387,7 @@ class AgentCore(AgentCoreBase):
                 channel_config=channel_config,
                 is_resumption=is_resumption,
                 guardrail_constraints=guardrail_constraints,
+                user_state_guidance=stream_user_state_guidance_text,
             )
 
             if is_resumption:
