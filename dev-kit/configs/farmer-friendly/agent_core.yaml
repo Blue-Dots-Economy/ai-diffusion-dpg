@@ -213,5 +213,27 @@ agent_workflow:
   global_routing: []
   default_fallback_subagent_id: symptom_collection
 
+conversation:
+  # GH-139 example: minimal 2-state user-state model so the feature is
+  # self-documenting. Replace with domain-specific states before production.
+  user_state_model:
+    enabled: true
+    default_state: exploring
+    states:
+      - id: exploring
+        signals:
+          - "vague query"
+          - "not sure what to ask"
+        guidance: |
+          Offer 2-3 directions. Avoid giving a single-answer recommendation.
+          Ask one clarifying question at most.
+      - id: ready
+        signals:
+          - "user picks a crop or scheme"
+          - "user says 'apply karo'"
+        guidance: |
+          Confirm the user's choice explicitly and walk through the next step.
+          Do not introduce new options.
+
 observability:
   domain: "farmer_friendly"
