@@ -114,6 +114,19 @@ class ContextBundle:
 
 
 @dataclass
+class UserStateClassification:
+    """
+    Classification output for the user's mental state dimension.
+
+    Populated by NLU Processor when the domain declares conversation.user_state_model.
+    None on NLUResult when the model is disabled or absent.
+    """
+
+    id: str
+    confidence: float
+
+
+@dataclass
 class NLUResult:
     """
     Combined output of Language Normalisation and NLU Processor steps run in Agent Core.
@@ -125,6 +138,7 @@ class NLUResult:
     sentiment: str                           # one of the configured sentiment classes
     confidence: float                        # 0.0–1.0; below threshold triggers early exit
     active_risks: list[str] | None = None    # risk signals from NLU; None if not classified
+    user_state: UserStateClassification | None = None   # classified user mental state (GH-139); None when model disabled
 
 
 # ---------------------------------------------------------------------------
