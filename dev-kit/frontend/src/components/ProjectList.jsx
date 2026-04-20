@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../api'
 import ConfirmModal from './ConfirmModal'
+import ImportModal from './ImportModal'
 
 export default function ProjectList({ onOpen }) {
   const [projects, setProjects] = useState([])
@@ -10,6 +11,7 @@ export default function ProjectList({ onOpen }) {
   const [error, setError] = useState(null)
   const [deletingSlug, setDeletingSlug] = useState(null)
   const [deleteModal, setDeleteModal] = useState(null)  // null | { slug, name }
+  const [showImportModal, setShowImportModal] = useState(false)
 
   useEffect(() => {
     api.listProjects().then(setProjects).catch(() => setProjects([]))
@@ -51,6 +53,12 @@ export default function ProjectList({ onOpen }) {
     } finally {
       setDeletingSlug(null)
     }
+  }
+
+  function handleImport(project) {
+    setProjects(p => [...p, project])
+    setShowImportModal(false)
+    onOpen(project.slug)
   }
 
   const phaseLabel = (phase) =>
@@ -99,6 +107,16 @@ export default function ProjectList({ onOpen }) {
         </form>
       </div>
 
+      {/* Import existing */}
+      <div className="w-full max-w-lg mb-4">
+        <button
+          onClick={() => setShowImportModal(true)}
+          className="w-full text-sm text-gray-400 hover:text-gray-200 border border-gray-800 hover:border-gray-600 rounded-xl py-2.5 transition-colors"
+        >
+          Import existing config folder →
+        </button>
+      </div>
+
       {/* Existing projects */}
       {projects.length > 0 && (
         <div className="w-full max-w-lg">
@@ -117,6 +135,11 @@ export default function ProjectList({ onOpen }) {
                   )}
                   <p className="text-gray-600 text-xs mt-1">
                     Phase: <span className="text-gray-400">{phaseLabel(p.current_phase)}</span>
+                    {p.imported && (
+                      <span className="ml-2 text-blue-400 bg-blue-950/40 border border-blue-800 rounded-lg px-1.5 py-0.5">
+                        Imported
+                      </span>
+                    )}
                   </p>
                 </div>
                 <div className="flex items-center gap-2 ml-4 shrink-0">
@@ -138,6 +161,13 @@ export default function ProjectList({ onOpen }) {
 
       {projects.length === 0 && (
         <p className="text-gray-600 text-sm">No projects yet. Create one above.</p>
+      )}
+
+      {showImportModal && (
+        <ImportModal
+          onImport={handleImport}
+          onClose={() => setShowImportModal(false)}
+        />
       )}
 
       {deleteModal && (

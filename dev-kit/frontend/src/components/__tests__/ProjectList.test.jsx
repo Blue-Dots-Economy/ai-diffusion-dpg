@@ -8,10 +8,17 @@ vi.mock('../../api', () => ({
     listProjects: vi.fn(),
     createProject: vi.fn(),
     deleteProject: vi.fn(),
+    listImportableProjects: vi.fn(),
+    importProject: vi.fn(),
   },
 }))
 
+vi.mock('../ImportModal', () => ({
+  default: vi.fn(() => null),
+}))
+
 import { api } from '../../api'
+import ImportModal from '../ImportModal'
 
 const sampleProjects = [
   { slug: 'farmer-friendly', name: 'Farmer Friendly', description: 'Crop disease diagnosis', current_phase: 'memory' },
@@ -137,5 +144,68 @@ describe('ProjectList', () => {
     render(<ProjectList onOpen={vi.fn()} />)
     const submitBtn = screen.getByRole('button', { name: /Create & Start/ })
     expect(submitBtn).toBeDisabled()
+  })
+})
+
+describe('ProjectList — Import button', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    api.listProjects.mockResolvedValue(sampleProjects)
+    ImportModal.mockImplementation(({ onClose }) => (
+      <div data-testid="import-modal">
+        <button onClick={onClose}>Close</button>
+      </div>
+    ))
+  })
+
+  it('renders the Import existing button', () => {
+    render(<ProjectList onOpen={vi.fn()} />)
+    expect(screen.getByRole('button', { name: /import existing/i })).toBeInTheDocument()
+  })
+
+  it('opens ImportModal when Import existing is clicked', () => {
+    render(<ProjectList onOpen={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /import existing/i }))
+    expect(screen.getByTestId('import-modal')).toBeInTheDocument()
+  })
+
+  it('closes ImportModal when onClose is called', () => {
+    render(<ProjectList onOpen={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /import existing/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    expect(screen.queryByTestId('import-modal')).toBeNull()
+  })
+
+  it('adds imported project to list and opens it via onImport callback', async () => {
+    const importedProject = {
+      slug: 'kkb', name: 'Kkb', imported: true,
+      current_phase: 'review', phases_completed: [],
+    }
+    ImportModal.mockImplementation(({ onImport }) => (
+      <div>
+        <button onClick={() => onImport(importedProject)}>Trigger import</button>
+      </div>
+    ))
+    const onOpen = vi.fn()
+    render(<ProjectList onOpen={onOpen} />)
+    fireEvent.click(screen.getByRole('button', { name: /import existing/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Trigger import' }))
+    await waitFor(() => {
+      expect(onOpen).toHaveBeenCalledWith('kkb')
+      expect(screen.getByText('Kkb')).toBeInTheDocument()
+    })
+  })
+
+  it('shows imported badge on imported projects in the list', async () => {
+    const importedProject = {
+      slug: 'kkb', name: 'Kkb', description: '', imported: true,
+      current_phase: 'review', phases_completed: [],
+    }
+    api.listProjects.mockResolvedValue([...sampleProjects, importedProject])
+    render(<ProjectList onOpen={vi.fn()} />)
+    await waitFor(() => {
+      expect(screen.getByText('Kkb')).toBeInTheDocument()
+      expect(screen.getByText('Imported')).toBeInTheDocument()
+    })
   })
 })
