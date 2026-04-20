@@ -8,13 +8,6 @@ agent:
   fallback_model: ""            # required — Claude model ID used if primary call fails
   ask_for_consent: false        # true to ask new users for DPDP data-storage consent before saving anything
   consent_prompt: ""            # message shown when asking for consent (used when ask_for_consent is true)
-  channels:                      # per-channel prompt shaping
-    voice:
-      system_prompt_suffix: "Respond in 1–2 short spoken sentences. No bullet points or markdown."
-    web:
-      system_prompt_suffix: ""   # no suffix — full formatting preserved
-    cli:
-      system_prompt_suffix: ""   # no suffix — full formatting preserved
 
 conversation:
   blocked_message: ""           # shown when user input is blocked by Trust Layer
@@ -34,6 +27,56 @@ conversation:
       - id: ""                   # unique, non-empty, snake_case
         signals: []              # natural-language phrases the NLU uses as hints
         guidance: ""             # required when enabled=true; injected into main LLM prompt
+  session_end_eval:                # NEW (GH-137) — opt-in session-end signalling
+    enabled: false                  # set true for agents that should detect call-end
+    prompt: ""                      # appended to main system prompt; teaches LLM when to call end_session tool
+    fail_action: "none"             # schema-accepted; runtime ignored in this PR
+
+channels:                         # NEW (GH-137) — per-channel LLM-facing config
+  voice:
+    system_prompt_suffix: ""      # appended to the main system prompt for this channel
+    tts_rules:                    # canonical rules; dev-kit renders into system_prompt_suffix at authoring time
+      numbers: ""
+      money: ""
+      dates: ""
+      time: ""
+      phone: ""
+      abbreviations: ""
+      output_script: ""
+      english_loanwords: ""
+    terminal_word: ""             # required when voice channel declared
+    turn_assembler:               # migrated from reach_layer.channels.voice.turn_assembler
+      semantic_gate:
+        enabled: false
+        confidence_threshold: 0.75
+      silence_trigger:
+        silence_ms: 400
+      max_wait_ceiling:
+        max_wait_ms: 8000
+  chat:
+    system_prompt_suffix: ""
+    tts_rules: null
+    terminal_word: null
+    turn_assembler:
+      semantic_gate: {enabled: false, confidence_threshold: 0.75}
+      silence_trigger: {silence_ms: 0}
+      max_wait_ceiling: {max_wait_ms: 0}
+  web:
+    system_prompt_suffix: ""
+    tts_rules: null
+    terminal_word: null
+    turn_assembler:
+      semantic_gate: {enabled: false, confidence_threshold: 0.75}
+      silence_trigger: {silence_ms: 0}
+      max_wait_ceiling: {max_wait_ms: 0}
+  cli:
+    system_prompt_suffix: ""
+    tts_rules: null
+    terminal_word: null
+    turn_assembler:
+      semantic_gate: {enabled: false, confidence_threshold: 0.75}
+      silence_trigger: {silence_ms: 0}
+      max_wait_ceiling: {max_wait_ms: 0}
 
 connectors:
   read:                         # connectors that retrieve data; no consent needed
@@ -47,6 +90,13 @@ connectors:
             description: ""
         required: []            # list required parameter names here
         additionalProperties: false  # optional — set to false to reject unknown params
+      invocation_rules:              # NEW (GH-137) — LLM invocation contract
+        call_when: ""                # exact trigger condition in plain language
+        required_before_calling: []  # list of data field names required before tool may be invoked
+        must_not_substitute: ""      # what the LLM must never treat as a substitute
+        on_empty: ""                 # what the agent says when tool returns empty
+        on_failure: ""               # what the agent says on tool failure / timeout
+        bridge_line: ""              # single natural line spoken right before the tool call (for voice)
   write:                        # connectors that modify external state; Trust Layer consent required
     - name: ""
       description: ""
@@ -58,6 +108,13 @@ connectors:
             description: ""
         required: []
         additionalProperties: false  # optional — set to false to reject unknown params
+      invocation_rules:              # NEW (GH-137) — LLM invocation contract
+        call_when: ""
+        required_before_calling: []
+        must_not_substitute: ""
+        on_empty: ""
+        on_failure: ""
+        bridge_line: ""
   identity: []                  # identity verification connectors — same structure as read
   internal:                     # routes tool calls to internal DPG blocks
     - name: knowledge_retrieval  # always include this for RAG-enabled domains
@@ -75,6 +132,13 @@ connectors:
         required:
           - query
         additionalProperties: false  # optional — set to false to reject unknown params
+      invocation_rules:              # NEW (GH-137) — LLM invocation contract
+        call_when: ""
+        required_before_calling: []
+        must_not_substitute: ""
+        on_empty: ""
+        on_failure: ""
+        bridge_line: ""
 
 preprocessing:
   language_normalisation:
@@ -137,6 +201,7 @@ agent_workflow:
       description: ""           # required — what this subagent does
       is_start: false           # required — exactly ONE subagent must have is_start: true
       is_terminal: false        # required — terminal subagents must have routing: []
+      opening_phrase: ""             # NEW (GH-137) — emitted on first turn only (after consent)
       special_handler: null     # null | hitl | whatsapp_handoff
       valid_intents: []         # intents this subagent handles (exclude global_intents)
       tools: []                 # connector names available e.g. [knowledge_retrieval]
@@ -159,25 +224,6 @@ reach_layer:
     semantic_gate:
       enabled: true               # true = NLU gate active; improves VAD accuracy for voice
       confidence_threshold: 0.75  # minimum NLU confidence to accept an input segment
-  channels:
-    voice:
-      turn_assembler:
-        silence_trigger:
-          silence_ms: 400         # ms of silence before triggering (VAD-driven; shorter for voice)
-        max_wait_ceiling:
-          max_wait_ms: 8000       # hard cap in ms to wait for more input before forcing a turn
-    web:
-      turn_assembler:
-        silence_trigger:
-          silence_ms: 1500        # ms of silence before triggering (longer — users type slower)
-        max_wait_ceiling:
-          max_wait_ms: 15000
-    cli:
-      turn_assembler:
-        silence_trigger:
-          silence_ms: 200         # ms of silence before triggering (very short — dev/test convenience)
-        max_wait_ceiling:
-          max_wait_ms: 5000
 
 observability:
   domain: ""                      # required — set to project slug automatically; do not fill manually

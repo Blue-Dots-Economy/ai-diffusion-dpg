@@ -47,12 +47,42 @@ class ClientConfig(BaseModel):
 # Agent Core
 # ---------------------------------------------------------------------------
 
+class InvocationRulesConfig(BaseModel):
+    """LLM invocation contract for a connector (GH-137)."""
+
+    call_when: str = Field(default="", description="Exact trigger condition in plain language")
+    required_before_calling: list[str] = Field(
+        default=[],
+        description="Data field names that must be known before the tool may be invoked",
+    )
+    must_not_substitute: str = Field(
+        default="",
+        description="What the LLM must never treat as a substitute for this tool",
+    )
+    on_empty: str = Field(
+        default="",
+        description="What the agent says when the tool returns empty results",
+    )
+    on_failure: str = Field(
+        default="",
+        description="What the agent says on tool failure or timeout",
+    )
+    bridge_line: str = Field(
+        default="",
+        description="Single natural line spoken right before the tool call (for voice channels)",
+    )
+
+
 class ConnectorDef(BaseModel):
     name: str = Field(..., description="Connector name matching a key in action_gateway.connectors")
     description: str = Field(default="", description="Description shown to LLM explaining when to call this connector")
     input_schema: dict[str, Any] = Field(
         default_factory=dict,
         description="JSON Schema object for the tool's input. Passed verbatim to the Anthropic tools API.",
+    )
+    invocation_rules: InvocationRulesConfig = Field(
+        default_factory=InvocationRulesConfig,
+        description="LLM invocation contract for this connector (GH-137)",
     )
 
 
@@ -63,6 +93,10 @@ class InternalConnectorDef(BaseModel):
     input_schema: dict[str, Any] = Field(
         default_factory=dict,
         description="JSON Schema object for the tool's input.",
+    )
+    invocation_rules: InvocationRulesConfig = Field(
+        default_factory=InvocationRulesConfig,
+        description="LLM invocation contract for this connector (GH-137)",
     )
 
 
@@ -131,6 +165,27 @@ class ConversationAgentConfig(BaseModel):
     returning_user_greeting: str = Field(
         default="",
         description="Personalised greeting for returning users whose profile already exists.",
+    )
+    session_end_eval: "SessionEndEvalConfig" = Field(
+        default_factory=lambda: SessionEndEvalConfig(),
+        description="Opt-in session-end signalling config (GH-137)",
+    )
+
+
+class SessionEndEvalConfig(BaseModel):
+    """Opt-in configuration for detecting session-end via LLM tool (GH-137)."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Set true for agents that should detect call-end via end_session tool",
+    )
+    prompt: str = Field(
+        default="",
+        description="Appended to main system prompt; teaches LLM when to call end_session tool",
+    )
+    fail_action: str = Field(
+        default="none",
+        description="Action to take when end_session evaluation fails; runtime ignores in current PR",
     )
 
 
@@ -229,6 +284,11 @@ class SubAgentSchema(BaseModel):
         description="True if this subagent ends the conversation. "
                     "Terminal subagents must have an empty routing list.",
     )
+    opening_phrase: str = Field(
+        default="",
+        description="Phrase emitted on the first turn only (after consent). "
+                    "Empty string means no opening phrase (GH-137).",
+    )
     special_handler: Literal["hitl", "whatsapp_handoff"] | None = Field(
         default=None,
         description="Optional framework-level handler. "
@@ -290,10 +350,90 @@ class AgentWorkflowConfig(BaseModel):
     )
 
 
+# ---------------------------------------------------------------------------
+# Top-level channel config models (GH-137)
+# ---------------------------------------------------------------------------
+
+class TtsRulesConfig(BaseModel):
+    """TTS formatting rules for a voice channel (GH-137)."""
+
+    numbers: str = Field(default="", description="How to read numeric values aloud")
+    money: str = Field(default="", description="How to read monetary values aloud")
+    dates: str = Field(default="", description="How to read date values aloud")
+    time: str = Field(default="", description="How to read time values aloud")
+    phone: str = Field(default="", description="How to read phone numbers aloud")
+    abbreviations: str = Field(default="", description="How to expand abbreviations aloud")
+    output_script: str = Field(default="", description="Script/language to use for TTS output")
+    english_loanwords: str = Field(default="", description="How to handle English loanwords in TTS")
+
+
+class ChannelTurnAssemblerConfig(BaseModel):
+    """Turn-assembler settings for a channel (GH-137)."""
+
+    semantic_gate: dict[str, Any] = Field(
+        default_factory=lambda: {"enabled": False, "confidence_threshold": 0.75},
+        description="NLU gate configuration for this channel",
+    )
+    silence_trigger: dict[str, Any] = Field(
+        default_factory=lambda: {"silence_ms": 0},
+        description="Silence trigger configuration for this channel",
+    )
+    max_wait_ceiling: dict[str, Any] = Field(
+        default_factory=lambda: {"max_wait_ms": 0},
+        description="Max wait ceiling configuration for this channel",
+    )
+
+
+class ChannelConfig(BaseModel):
+    """Per-channel LLM-facing configuration (GH-137)."""
+
+    system_prompt_suffix: str = Field(
+        default="",
+        description="Appended to the main system prompt for this channel",
+    )
+    tts_rules: TtsRulesConfig | None = Field(
+        default=None,
+        description="TTS formatting rules; non-null for voice channels only",
+    )
+    terminal_word: str | None = Field(
+        default=None,
+        description="Required when voice channel is declared; signals end of spoken turn",
+    )
+    turn_assembler: ChannelTurnAssemblerConfig = Field(
+        default_factory=ChannelTurnAssemblerConfig,
+        description="Turn-assembler settings for this channel",
+    )
+
+
+class ChannelsTopLevelConfig(BaseModel):
+    """Top-level per-channel configuration block (GH-137)."""
+
+    voice: ChannelConfig = Field(
+        default_factory=lambda: ChannelConfig(tts_rules=TtsRulesConfig()),
+        description="Voice channel configuration",
+    )
+    chat: ChannelConfig = Field(
+        default_factory=ChannelConfig,
+        description="Chat channel configuration",
+    )
+    web: ChannelConfig = Field(
+        default_factory=ChannelConfig,
+        description="Web channel configuration",
+    )
+    cli: ChannelConfig = Field(
+        default_factory=ChannelConfig,
+        description="CLI channel configuration",
+    )
+
+
 class AgentCoreConfig(BaseModel):
     server: ServerConfig
     agent: AgentConfig
     conversation: ConversationAgentConfig
+    channels: ChannelsTopLevelConfig = Field(
+        default_factory=ChannelsTopLevelConfig,
+        description="Per-channel LLM-facing configuration (GH-137)",
+    )
     connectors: ConnectorsConfig = ConnectorsConfig()
     ke_client: ClientConfig
     memory_client: ClientConfig
