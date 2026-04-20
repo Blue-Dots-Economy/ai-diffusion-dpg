@@ -108,6 +108,20 @@ Sole orchestrator and sole LLM caller. Stateless between turns.
 - Write state to Memory Layer (async, after response) — includes `current_subagent_id` and `user_storage_mode`.
 - Emit turn event to Observability Layer (async, after response). Block/escalate turns also emit — observability never skipped.
 
+**User-state model (optional, Conversational agents only).** Orthogonal to the
+system state described above, Conversational domains may declare a
+`conversation.user_state_model` block with a list of states (id, signals,
+guidance). The NLU Processor classifies the user's current mental state
+alongside intent on the same LLM call. The orchestrator resolves the new
+state via `agent_core/src/preprocessing/user_state_resolver.py` — sticky on
+low confidence, transition on confident id change. The active state's
+guidance text is injected into the main LLM system prompt by
+`ManagerAgent.build_system_prompt()`. The state payload piggy-backs on the
+existing per-turn Memory Layer session write; transitions emit a
+`user_state_transition` signal to the Observability Layer and set span
+attributes on the turn OTel span. Feature is off by default; domains that do
+not declare the block are unaffected.
+
 **Streaming path (`POST /stream_turn`):** Agent Core also exposes an async SSE endpoint. `stream_turn()` uses async HTTP clients (`interfaces/async_/`) for all external calls, yields `SignalEvent`s at each pipeline stage, streams LLM tokens split into sentences, runs a per-sentence Trust output check, and emits a final `DoneEvent`. Steps 12–13 (memory write + observability emit) fire via `asyncio.create_task` after `DoneEvent` — never in the response path.
 
 **TurnAssembler:** For channels that deliver multi-segment input (voice VAD, rapid corrections), `TurnAssembler` sits between the server and `stream_turn()`. Buffers segments in a `SessionBuffer` and invokes the pipeline via a three-policy stack: semantic completeness gate (NLU confidence), silence trigger (reset on every segment), and max-wait ceiling (absolute). Exposes `POST /sessions/{id}/input`, `GET /sessions/{id}/events` (SSE), and `DELETE /sessions/{id}/active_turn` (barge-in).
