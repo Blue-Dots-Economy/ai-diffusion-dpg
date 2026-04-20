@@ -32,6 +32,7 @@ from src.auth import (
     AuthError,
     Reason,
     issue_session_token,
+    verify_api_key as _verify_api_key,
     verify_google_id_token,
     verify_session_token,
 )
@@ -784,12 +785,9 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
     _REACH_TO_KE_API_KEY = os.environ.get("REACH_TO_KE_API_KEY", "")
     _KE_INTERNAL_URL = os.environ.get("KE_INTERNAL_URL") or config.get("ke_internal_url", "")
 
-    from src.auth import verify_api_key as _verify_api_key
-
     @app.post("/ingest/upload")
     async def ingest_upload(
         request: Request,
-        x_api_key: Optional[str] = None,
     ):
         """Stream multipart upload from dev-kit to KE without buffering.
 
@@ -875,8 +873,24 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
                 media_type=response.headers.get("content-type", "application/json"),
             )
         except httpx.ConnectError as e:
+            logger.error(
+                "reach.ingest_job_status_ke_unreachable",
+                extra={
+                    "operation": "reach.ingest_job_status",
+                    "status": "failure",
+                    "error": str(e),
+                },
+            )
             raise HTTPException(503, "Knowledge Engine is unreachable") from e
         except httpx.TimeoutException as e:
+            logger.error(
+                "reach.ingest_job_status_timeout",
+                extra={
+                    "operation": "reach.ingest_job_status",
+                    "status": "failure",
+                    "error": str(e),
+                },
+            )
             raise HTTPException(504, "Knowledge Engine timed out") from e
 
     return app
