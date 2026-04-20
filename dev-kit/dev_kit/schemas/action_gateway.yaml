@@ -8,6 +8,7 @@ tools:
     type: rest_api                 # rest_api | mcp
     category: read                 # read | write | identity
     description: ""                # shown to the LLM for routing decisions
+    timeout_ms: 5000               # request timeout in milliseconds
     # --- rest_api fields (omit for mcp tools) ---
     base_url: ""                   # base URL of the API
     auth:

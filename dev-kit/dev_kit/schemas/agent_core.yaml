@@ -78,6 +78,10 @@ preprocessing:
     min_detection_tokens: 3     # inputs with fewer tokens skip LLM detection; returns default_language
     transliteration: true       # normalise transliterated input to canonical script
     code_switching: true        # handle mixed-language input in a single message
+    bhashini:                   # required only when provider is bhashini
+      api_key_env: ""           # env var holding the Bhashini API key
+      user_id_env: ""           # env var holding the Bhashini user ID
+      endpoint: ""              # Bhashini inference pipeline endpoint URL
   nlu_processor:
     model: ""                   # required — Claude model ID for NLU classification
     confidence_threshold: 0.5   # intents below this treated as unknown (0.0–1.0)
@@ -93,6 +97,8 @@ preprocessing:
       - positive
       - distressed
       - frustrated
+    signal_intents:             # optional — map of intent → signal_type written to ContextGraph Signal node
+      intent_name: signal_type  # e.g. pay_disappointment: objection
 
 entity_to_profile_field:        # maps extracted entity name → persistent graph profile field
   name: name                    # example: entity "name" → profile field "name"
@@ -110,6 +116,17 @@ agent_workflow:
     - intent: ""                # must be listed in global_intents
       next_subagent_id: ""      # target subagent id
   default_fallback_subagent_id: ""  # subagent to route to when no routing rule matches
+
+  subagent_mental_state_map:    # optional — maps subagent id → mental_state value written to session after routing
+    subagent_id: mental_state   # e.g. profile_building: fog — aligns Five Mental States with conversation progression
+
+  tool_result_mappings:         # optional — maps tool name → journey event config for persisting tool outputs to graph nodes
+    tool_name:                  # replace with actual tool name, e.g. onest_market_lookup
+      journey_event_label: ""   # required — graph node label to create, e.g. Role
+      result_list_key: ""       # dot-path to the list in the tool result, e.g. data.items — creates one node per item
+      field_map:                # maps graph node property names → dot-path in tool result item
+        graph_field: result_field  # e.g. role_id: job.job_id
+
   subagents:                    # one or more — use create_subagent tool to add each one
     - id: ""                    # required — unique snake_case identifier
       name: ""                  # required — human-readable name
