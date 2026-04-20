@@ -339,3 +339,111 @@ def test_process_without_profile_keys_backward_compatible(processor):
     result = processor.process("kaam chahiye Hubli mein", "", "", llm)
     assert result.intent == "market_truth_query"
     assert result.entities.get("location") == "Hubli"
+
+
+# ---------------------------------------------------------------------------
+# User-state model — init / config validation (GH-139 Task 3)
+# ---------------------------------------------------------------------------
+
+import pytest
+from src.exceptions import ConfigurationError
+
+
+def _base_config(user_state_model=None):
+    cfg = {
+        "preprocessing": {
+            "nlu_processor": {
+                "model": "claude-haiku-4-5-20251001",
+                "confidence_threshold": 0.5,
+                "domain_instruction": "d",
+                "intents": ["unknown"],
+                "entities": [],
+                "sentiment_classes": ["neutral"],
+            },
+        },
+    }
+    if user_state_model is not None:
+        cfg["conversation"] = {"user_state_model": user_state_model}
+    return cfg
+
+
+def test_nlu_user_state_disabled_by_default():
+    p = NLUProcessor(_base_config())
+    assert p._user_state_enabled is False
+    assert p._user_states == []
+    assert p._user_state_threshold == 0.4
+
+
+def test_nlu_user_state_threshold_read_from_config():
+    cfg = _base_config()
+    cfg["preprocessing"]["nlu_processor"]["user_state_confidence_threshold"] = 0.3
+    p = NLUProcessor(cfg)
+    assert p._user_state_threshold == 0.3
+
+
+def test_nlu_user_state_enabled_reads_states():
+    p = NLUProcessor(_base_config({
+        "enabled": True,
+        "default_state": "fog",
+        "states": [
+            {"id": "fog", "signals": ["vague"], "guidance": "Orient gently."},
+            {"id": "orientation", "signals": [], "guidance": "Show the map."},
+        ],
+    }))
+    assert p._user_state_enabled is True
+    assert {s["id"] for s in p._user_states} == {"fog", "orientation"}
+    assert p._user_state_default == "fog"
+
+
+def test_nlu_user_state_enabled_without_default_raises():
+    with pytest.raises(ConfigurationError, match="default_state"):
+        NLUProcessor(_base_config({
+            "enabled": True,
+            "states": [{"id": "fog", "signals": [], "guidance": "g"}],
+        }))
+
+
+def test_nlu_user_state_enabled_without_states_raises():
+    with pytest.raises(ConfigurationError, match="states"):
+        NLUProcessor(_base_config({
+            "enabled": True,
+            "default_state": "fog",
+            "states": [],
+        }))
+
+
+def test_nlu_user_state_default_not_in_states_raises():
+    with pytest.raises(ConfigurationError, match="default_state"):
+        NLUProcessor(_base_config({
+            "enabled": True,
+            "default_state": "nonexistent",
+            "states": [{"id": "fog", "signals": [], "guidance": "g"}],
+        }))
+
+
+def test_nlu_user_state_duplicate_ids_raise():
+    with pytest.raises(ConfigurationError, match="unique"):
+        NLUProcessor(_base_config({
+            "enabled": True,
+            "default_state": "fog",
+            "states": [
+                {"id": "fog", "signals": [], "guidance": "g1"},
+                {"id": "fog", "signals": [], "guidance": "g2"},
+            ],
+        }))
+
+
+def test_nlu_user_state_empty_guidance_raises():
+    with pytest.raises(ConfigurationError, match="guidance"):
+        NLUProcessor(_base_config({
+            "enabled": True,
+            "default_state": "fog",
+            "states": [{"id": "fog", "signals": [], "guidance": ""}],
+        }))
+
+
+def test_nlu_user_state_threshold_out_of_range_raises():
+    cfg = _base_config()
+    cfg["preprocessing"]["nlu_processor"]["user_state_confidence_threshold"] = 1.5
+    with pytest.raises(ConfigurationError, match="user_state_confidence_threshold"):
+        NLUProcessor(cfg)

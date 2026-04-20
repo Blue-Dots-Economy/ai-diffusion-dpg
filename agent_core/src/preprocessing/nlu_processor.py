@@ -102,6 +102,66 @@ class NLUProcessor:
         )
         self._default_intents: list[str] = nlu_config.get("intents", ["unknown"])
 
+        # ------------------------------------------------------------------
+        # User-state model (GH-139) — optional, Conversational domains only
+        # ------------------------------------------------------------------
+        usm = (config or {}).get("conversation", {}).get("user_state_model", {}) or {}
+        self._user_state_enabled: bool = bool(usm.get("enabled", False))
+        self._user_states: list[dict] = []
+        self._user_state_default: str = ""
+
+        raw_threshold = nlu_config.get("user_state_confidence_threshold", 0.4)
+        try:
+            threshold = float(raw_threshold)
+        except (TypeError, ValueError) as e:
+            raise ConfigurationError(
+                f"preprocessing.nlu_processor.user_state_confidence_threshold "
+                f"must be a float, got {raw_threshold!r}"
+            ) from e
+        if not 0.0 <= threshold <= 1.0:
+            raise ConfigurationError(
+                f"preprocessing.nlu_processor.user_state_confidence_threshold "
+                f"must be in [0.0, 1.0], got {threshold}"
+            )
+        self._user_state_threshold: float = threshold
+
+        if self._user_state_enabled:
+            states = usm.get("states") or []
+            if not states:
+                raise ConfigurationError(
+                    "conversation.user_state_model.states must be non-empty when enabled=true"
+                )
+            ids: list[str] = []
+            for idx, s in enumerate(states):
+                sid = (s or {}).get("id", "")
+                guidance = (s or {}).get("guidance", "")
+                if not sid:
+                    raise ConfigurationError(
+                        f"conversation.user_state_model.states[{idx}].id must be non-empty"
+                    )
+                if not guidance:
+                    raise ConfigurationError(
+                        f"conversation.user_state_model.states[{idx}].guidance "
+                        f"must be non-empty for state {sid!r}"
+                    )
+                ids.append(sid)
+            if len(ids) != len(set(ids)):
+                raise ConfigurationError(
+                    "conversation.user_state_model.states ids must be unique"
+                )
+            default = usm.get("default_state", "")
+            if not default:
+                raise ConfigurationError(
+                    "conversation.user_state_model.default_state is required when enabled=true"
+                )
+            if default not in ids:
+                raise ConfigurationError(
+                    f"conversation.user_state_model.default_state {default!r} "
+                    f"must match one of the declared state ids: {ids}"
+                )
+            self._user_states = list(states)
+            self._user_state_default = default
+
     def process(
         self,
         normalised_input: str,
