@@ -6,13 +6,31 @@ agent:
   fallback_model: claude-haiku-4-5-20251001
   ask_for_consent: true
   consent_prompt: "Namaste! Kya main aapki trade aur location yaad rakh sakta hoon? Isse agle baar aapko dobara batana nahi padega."
-  channels:
-    voice:
-      system_prompt_suffix: "1-2 chhote vakya bolein. Bullet points ya markdown mat use karein."
-    web:
-      system_prompt_suffix: ""
-    cli:
-      system_prompt_suffix: ""
+
+channels:
+  voice:
+    system_prompt_suffix: "1-2 chhote vakya bolein. Bullet points ya markdown mat use karein."
+    terminal_word: "Goodbye"
+    tts_rules: null
+    turn_assembler:
+      silence_trigger:
+        silence_ms: 400         # Voice: short silence before trigger (VAD-driven segments)
+      max_wait_ceiling:
+        max_wait_ms: 8000
+  web:
+    system_prompt_suffix: ""
+    turn_assembler:
+      silence_trigger:
+        silence_ms: 1500        # Web: longer silence — users type slower than they speak
+      max_wait_ceiling:
+        max_wait_ms: 15000
+  cli:
+    system_prompt_suffix: ""
+    turn_assembler:
+      silence_trigger:
+        silence_ms: 200         # CLI: very short — dev/test convenience
+      max_wait_ceiling:
+        max_wait_ms: 5000
 
 conversation:
   blocked_message: "Maafi kijiye, main is vishay mein madad nahi kar sakta."
@@ -1020,33 +1038,12 @@ agent_workflow:
           next_subagent_id: clarification   # Orchestrator will re-evaluate after re-prompt
                                         # Loop detection: if stuck here > 2 turns → counsellor_request
 
-# Reach Layer channel config — turn assembler tuning per channel.
-# Defaults come from dpg/agent_core.yaml reach_layer.turn_assembler section.
-# assembly_mode lives in reach_layer.yaml (Reach Layer concern, not Agent Core).
+# Reach Layer — cross-channel semantic gate only; per-channel turn_assembler lives under channels.*.
 reach_layer:
   turn_assembler:
     semantic_gate:
       enabled: true               # KKB uses NLU gate — reduces unnecessary silence waits
       confidence_threshold: 0.75
-  channels:
-    voice:
-      turn_assembler:
-        silence_trigger:
-          silence_ms: 400         # Voice: short silence before trigger (VAD-driven segments)
-        max_wait_ceiling:
-          max_wait_ms: 8000
-    web:
-      turn_assembler:
-        silence_trigger:
-          silence_ms: 1500        # Web: longer silence — users type slower than they speak
-        max_wait_ceiling:
-          max_wait_ms: 15000
-    cli:
-      turn_assembler:
-        silence_trigger:
-          silence_ms: 200         # CLI: very short — dev/test convenience
-        max_wait_ceiling:
-          max_wait_ms: 5000
 
 observability:
   domain: "kkb"
