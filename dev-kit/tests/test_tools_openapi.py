@@ -58,7 +58,6 @@ MINIMAL_SPEC = {
 class TestFetchOpenApiSpecFromUrl:
     @respx.mock
     def test_fetches_json_spec_and_returns_candidates(self, handler):
-        import yaml as _yaml
         respx.get("https://api.example.com/openapi.json").mock(
             return_value=_httpx.Response(200, json=MINIMAL_SPEC)
         )

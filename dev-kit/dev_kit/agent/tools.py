@@ -655,6 +655,16 @@ class ToolHandler:
 
         url = inputs.get("url", "").strip()
         if not url:
+            logger.warning(
+                "fetch_openapi_spec_from_url.failure",
+                extra={
+                    "operation": "tools.fetch_openapi_spec_from_url",
+                    "status": "failure",
+                    "url": url,
+                    "error": "url is required",
+                    "latency_ms": 0,
+                },
+            )
             return "ERROR: url is required"
 
         start = time.time()
@@ -662,8 +672,28 @@ class ToolHandler:
             response = httpx.get(url, timeout=15.0, follow_redirects=True)
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "fetch_openapi_spec_from_url.failure",
+                extra={
+                    "operation": "tools.fetch_openapi_spec_from_url",
+                    "status": "failure",
+                    "url": url,
+                    "error": f"HTTP {exc.response.status_code}",
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
             return f"ERROR: HTTP {exc.response.status_code} fetching {url}"
         except httpx.HTTPError as exc:
+            logger.warning(
+                "fetch_openapi_spec_from_url.failure",
+                extra={
+                    "operation": "tools.fetch_openapi_spec_from_url",
+                    "status": "failure",
+                    "url": url,
+                    "error": str(exc),
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
             return f"ERROR: could not fetch spec from {url} — {exc}"
 
         content = response.text
@@ -673,13 +703,43 @@ class ToolHandler:
             except json.JSONDecodeError:
                 spec = _yaml.safe_load(content)
             if not isinstance(spec, dict):
+                logger.warning(
+                    "fetch_openapi_spec_from_url.failure",
+                    extra={
+                        "operation": "tools.fetch_openapi_spec_from_url",
+                        "status": "failure",
+                        "url": url,
+                        "error": "fetched content is not a JSON/YAML object",
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
                 return "ERROR: fetched content is not a JSON/YAML object"
         except Exception as exc:
+            logger.warning(
+                "fetch_openapi_spec_from_url.failure",
+                extra={
+                    "operation": "tools.fetch_openapi_spec_from_url",
+                    "status": "failure",
+                    "url": url,
+                    "error": f"could not parse fetched content — {exc}",
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
             return f"ERROR: could not parse fetched content — {exc}"
 
         try:
             tools = parse_openapi_spec(spec)
         except ValueError as exc:
+            logger.warning(
+                "fetch_openapi_spec_from_url.failure",
+                extra={
+                    "operation": "tools.fetch_openapi_spec_from_url",
+                    "status": "failure",
+                    "url": url,
+                    "error": str(exc),
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
             return f"ERROR: {exc}"
 
         candidates = [
