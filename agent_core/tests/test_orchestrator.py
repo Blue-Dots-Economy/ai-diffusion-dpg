@@ -123,6 +123,7 @@ def _make_subagent(subagent_id: str = "market_truth", special_handler=None) -> M
     sa.system_prompt = f"Test prompt for {subagent_id}."
     sa.output_format = None
     sa.routing = []  # empty — falls through to global_routing, then default_fallback
+    sa.opening_phrase = ""  # GH-137: default to empty so opening-phrase gate no-ops in tests
     return sa
 
 
@@ -1019,6 +1020,41 @@ def test_resolve_channel_config_rejects_legacy_agent_channels():
     }
     with pytest.raises(ValueError, match="agent.channels"):
         agent._resolve_channel_config("voice")
+
+
+# ── Opening-phrase gate tests (GH-137) ───────────────────────────────────────
+
+def test_opening_phrase_emitted_on_first_turn_when_configured():
+    """When opening_phrase is set on the start subagent, it is emitted on turn 0."""
+    agent = _make_agent(session_data={})   # fresh session — no opening_phrase_emitted flag
+    agent._workflow.subagents["market_truth"].opening_phrase = "नमस्ते।"
+    agent._workflow.start_subagent_id = "market_truth"
+
+    result = agent.process_turn(_turn_input(""))
+    assert result.response_text == "नमस्ते।"
+
+
+def test_opening_phrase_skipped_when_already_emitted():
+    """opening_phrase_emitted flag in session prevents re-emission."""
+    agent = _make_agent(
+        session_data={"current_subagent_id": "market_truth", "opening_phrase_emitted": True},
+    )
+    agent._workflow.subagents["market_truth"].opening_phrase = "नमस्ते।"
+
+    result = agent.process_turn(_turn_input("hello"))
+    assert result.response_text != "नमस्ते।"
+
+
+def test_opening_phrase_empty_sets_flag_and_falls_through():
+    """Empty opening_phrase still sets opening_phrase_emitted flag; turn proceeds."""
+    agent = _make_agent(session_data={"current_subagent_id": "market_truth"})
+    agent._workflow.subagents["market_truth"].opening_phrase = ""
+
+    agent.process_turn(_turn_input("hello"))
+    # Gate wrote the flag
+    agent._memory.write.assert_any_call(
+        SESSION_ID, SESSION_ID, "session", "opening_phrase_emitted", True
+    )
 
 
 # ── User-state model init tests (GH-139) ─────────────────────────────────────

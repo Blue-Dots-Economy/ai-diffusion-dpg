@@ -362,6 +362,36 @@ class AgentCore(AgentCoreBase):
                 bundle.session["user_storage_mode"] = new_storage_mode
             # if user_storage_mode is set → fall through, skip consent gate entirely
 
+        # ── Opening-phrase gate (Step 1c, GH-137) ────────────────────────
+        # Emit the current subagent's opening_phrase exactly once per session,
+        # on the first post-consent turn. Subsequent turns skip this check.
+        if not bundle.session.get("opening_phrase_emitted", False):
+            current_sa = self._workflow.subagents.get(current_subagent_id)
+            opening_phrase = (getattr(current_sa, "opening_phrase", "") or "").strip()
+
+            # Always set the flag so we don't re-check every turn.
+            self._write_memory_sync(session_id, user_id, "session", "opening_phrase_emitted", True)
+
+            if opening_phrase:
+                # Ensure current_subagent_id is persisted so next turn has it.
+                self._write_memory_sync(session_id, user_id, "session", "current_subagent_id", current_subagent_id)
+                logger.info(
+                    "orchestrator.opening_phrase_emitted",
+                    extra={
+                        "operation": "orchestrator.opening_phrase_gate",
+                        "status": "emitted",
+                        "session_id": session_id,
+                        "subagent_id": current_subagent_id,
+                    },
+                )
+                return TurnResult(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_text=opening_phrase,
+                    latency_ms=int((time.time() - start) * 1000),
+                )
+            # else: empty opening_phrase — flag is set; fall through to normal turn.
+
         # ── Step 2: Resolve current subagent + special handler ────────
         current_subagent: SubAgent = self._workflow.subagents[current_subagent_id]
         logger.info(
