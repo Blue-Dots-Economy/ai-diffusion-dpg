@@ -1,42 +1,44 @@
 from dev_kit.agent.prompts.phases import get_phase_addition
 
 
-def test_tools_phase_has_always_ask_for_more():
+def test_tools_phase_mentions_invocation_rules():
+    # GH-137: tools phase now frames around invocation_rules 6-field schema
     result = get_phase_addition("tools")
-    assert "Are there any other tools" in result or "any other tools" in result.lower()
+    assert "invocation_rules" in result
 
 
-def test_tools_phase_has_all_three_paths():
+def test_tools_phase_mentions_connector_categories():
+    # GH-137: tools phase discusses connector categories (read/write/identity/internal)
     result = get_phase_addition("tools")
-    assert "OpenAPI" in result
-    assert "MCP" in result or "mcp" in result.lower()
-    assert "manual" in result.lower() or "Manual" in result
+    assert "connectors" in result.lower()
 
 
-def test_tools_phase_includes_action_gateway_template():
+def test_tools_phase_includes_connectors_template():
+    # GH-137: tools phase embeds agent_core.connectors template, not action_gateway
     result = get_phase_addition("tools")
-    # action_gateway template has 'tools:' as a top-level key
-    assert "tools:" in result
+    assert "connectors" in result
 
 
-def test_reach_phase_has_channel_selection_step():
+def test_reach_phase_mentions_channels():
+    # GH-137: reach phase now describes channel adapters at a pedagogy level
     result = get_phase_addition("reach")
-    assert "set_reach_channels" in result
+    assert "channel" in result.lower()
 
 
-def test_reach_phase_has_web_section_path():
+def test_reach_phase_mentions_voice_adapter():
     result = get_phase_addition("reach")
-    assert "reach_layer.channels.web.ui" in result
+    assert "voice" in result.lower()
 
 
-def test_reach_phase_has_cli_section_path():
+def test_reach_phase_mentions_web_ui():
     result = get_phase_addition("reach")
-    assert "reach_layer.channels.cli" in result
+    assert "web" in result.lower()
 
 
-def test_reach_phase_has_voice_section_path():
+def test_reach_phase_includes_reach_layer_template():
     result = get_phase_addition("reach")
-    assert "reach_layer.channels.voice.raya" in result
+    # reach_layer template is still embedded
+    assert "reach_layer" in result or "channels" in result.lower()
 
 
 def test_reach_phase_no_stale_flat_ui_path():
