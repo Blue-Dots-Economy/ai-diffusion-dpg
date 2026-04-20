@@ -516,3 +516,116 @@ def test_user_history_with_session_uses_cookie_user_id(auth_client):
     assert r.status_code == 200
     assert r.json()["session_id"] == "sX"
     assert route.called
+
+
+# ---------------------------------------------------------------------------
+# Fixtures for upload proxy tests — need env vars set
+# ---------------------------------------------------------------------------
+
+import os
+import respx as _respx_module
+import httpx as _httpx
+
+
+@pytest.fixture
+def upload_client(config, web_reach):
+    """TestClient with upload proxy env vars set."""
+    os.environ["DEVKIT_TO_REACH_API_KEY"] = "devkit-key-test"
+    os.environ["REACH_TO_KE_API_KEY"] = "ke-key-test"
+    os.environ["KE_INTERNAL_URL"] = "http://ke-test:8001"
+
+    from server import create_app
+    test_app = create_app(web_reach, config)
+    client = TestClient(test_app)
+    yield client
+
+    os.environ.pop("DEVKIT_TO_REACH_API_KEY", None)
+    os.environ.pop("REACH_TO_KE_API_KEY", None)
+    os.environ.pop("KE_INTERNAL_URL", None)
+
+
+# ---------------------------------------------------------------------------
+# POST /ingest/upload
+# ---------------------------------------------------------------------------
+
+class TestIngestUploadProxy:
+    @respx.mock
+    def test_proxies_to_ke_and_returns_response(self, upload_client):
+        ke_response = {"batch_id": "b1", "jobs": [{"filename": "doc.pdf", "job_id": "j1"}]}
+        respx.post("http://ke-test:8001/upload").mock(
+            return_value=_httpx.Response(200, json=ke_response)
+        )
+
+        response = upload_client.post(
+            "/ingest/upload",
+            content=b"--boundary\r\nContent-Disposition: form-data; name=\"metadata\"\r\n\r\n[]\r\n--boundary--",
+            headers={
+                "X-API-Key": "devkit-key-test",
+                "Content-Type": "multipart/form-data; boundary=boundary",
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["batch_id"] == "b1"
+
+    def test_missing_api_key_returns_401(self, upload_client):
+        response = upload_client.post(
+            "/ingest/upload",
+            content=b"body",
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        assert response.status_code == 401
+
+    def test_wrong_api_key_returns_401(self, upload_client):
+        response = upload_client.post(
+            "/ingest/upload",
+            content=b"body",
+            headers={"X-API-Key": "wrong-key", "Content-Type": "application/octet-stream"},
+        )
+        assert response.status_code == 401
+
+    @respx.mock
+    def test_ke_error_propagated(self, upload_client):
+        respx.post("http://ke-test:8001/upload").mock(
+            return_value=_httpx.Response(429, json={"detail": "Queue full"})
+        )
+        response = upload_client.post(
+            "/ingest/upload",
+            content=b"body",
+            headers={"X-API-Key": "devkit-key-test", "Content-Type": "multipart/form-data; boundary=b"},
+        )
+        assert response.status_code == 429
+
+
+# ---------------------------------------------------------------------------
+# GET /ingest/job/{job_id}
+# ---------------------------------------------------------------------------
+
+class TestIngestJobProxy:
+    @respx.mock
+    def test_proxies_job_status_from_ke(self, upload_client):
+        job_response = {"job_id": "j1", "status": "ingested", "chunks_added": 42}
+        respx.get("http://ke-test:8001/upload/job/j1").mock(
+            return_value=_httpx.Response(200, json=job_response)
+        )
+
+        response = upload_client.get(
+            "/ingest/job/j1",
+            headers={"X-API-Key": "devkit-key-test"},
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "ingested"
+
+    def test_missing_api_key_returns_401(self, upload_client):
+        response = upload_client.get("/ingest/job/j1")
+        assert response.status_code == 401
+
+    @respx.mock
+    def test_ke_404_propagated(self, upload_client):
+        respx.get("http://ke-test:8001/upload/job/nonexistent").mock(
+            return_value=_httpx.Response(404, json={"detail": "Not found"})
+        )
+        response = upload_client.get(
+            "/ingest/job/nonexistent",
+            headers={"X-API-Key": "devkit-key-test"},
+        )
+        assert response.status_code == 404
