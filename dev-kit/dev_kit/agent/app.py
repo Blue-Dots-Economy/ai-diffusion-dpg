@@ -1429,6 +1429,35 @@ def _append_callback_to_ingest_log(
 
 
 # ---------------------------------------------------------------------------
+# Dev-kit config endpoint
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/devkit-config")
+async def get_devkit_config():
+    """Return dev-kit operational config values for the frontend.
+
+    Used by IngestDocumentsStep to read upload limits and polling parameters
+    without hardcoding them in the frontend bundle.
+
+    Returns:
+        Upload limits and polling config from devkit.yaml.
+    """
+    return {
+        "user_id": _DEVKIT_CONFIG.user_id,
+        "upload": {
+            "max_files_per_upload": _DEVKIT_CONFIG.upload.max_files_per_upload,
+            "max_file_size_mb": _DEVKIT_CONFIG.upload.max_file_size_mb,
+            "supported_extensions": _DEVKIT_CONFIG.upload.supported_extensions,
+        },
+        "polling": {
+            "poll_interval_seconds": _DEVKIT_CONFIG.polling.poll_interval_seconds,
+            "poll_timeout_minutes": _DEVKIT_CONFIG.polling.poll_timeout_minutes,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Static frontend
 # ---------------------------------------------------------------------------
 
