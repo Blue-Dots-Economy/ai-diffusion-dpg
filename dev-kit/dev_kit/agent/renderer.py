@@ -35,6 +35,26 @@ def render_all(project_path: Path, accumulator: ConfigAccumulator) -> dict[str, 
     return statuses
 
 
+def _strip_status_header(raw: str) -> str:
+    """Strip the leading STATUS comment block from a YAML file's raw text.
+
+    Removes all consecutive comment lines at the top of the file so that
+    the returned string contains only the YAML body, preserving its original
+    formatting exactly.
+
+    Args:
+        raw: Full file contents including any STATUS header.
+
+    Returns:
+        YAML body with no leading comment lines.
+    """
+    lines = raw.splitlines(keepends=True)
+    i = 0
+    while i < len(lines) and lines[i].startswith("#"):
+        i += 1
+    return "".join(lines[i:])
+
+
 def render_block(project_path: Path, block: str, accumulator: ConfigAccumulator) -> None:
     """Write a single block's domain config YAML and update its status in the accumulator.
 
@@ -43,6 +63,10 @@ def render_block(project_path: Path, block: str, accumulator: ConfigAccumulator)
     - Draft block (one of the 4 open blocks) with data → DRAFT
     - Non-draft block with data → COMPLETE (agent-generated content is assumed valid)
     - STALE is set externally by the PUT /configs/:block endpoint on validation failure.
+
+    When a YAML file already exists its body is preserved verbatim; only the
+    STATUS header comment at the top is added, replaced, or removed.  This
+    prevents yaml.dump() from reformatting hand-crafted or imported YAML.
 
     Args:
         project_path: Absolute path to the project's configs directory.
@@ -64,21 +88,36 @@ def render_block(project_path: Path, block: str, accumulator: ConfigAccumulator)
         accumulator.set_status(block, ConfigStatus.PENDING)
         return
 
-    yaml_content = yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    # Preserve the existing YAML body to avoid reformatting — but only when the
+    # file content matches the accumulator data.  If the AI has updated the
+    # block since the file was last written, fall through to yaml.dump so the
+    # file stays in sync with the accumulator.
+    if out_path.exists():
+        existing_body = _strip_status_header(out_path.read_text())
+        try:
+            existing_data = yaml.safe_load(existing_body) or {}
+        except yaml.YAMLError:
+            existing_data = {}
+        if existing_data == data:
+            raw_body = existing_body  # content unchanged — keep original formatting
+        else:
+            raw_body = yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    else:
+        raw_body = yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
     errors = validate_partial(block, data)
     if errors:
         error_lines = "\n".join(f"#   - {e}" for e in errors)
         header = _STALE_HEADER_TPL.format(errors=error_lines)
-        out_path.write_text(header + yaml_content)
+        out_path.write_text(header + raw_body)
         accumulator.set_status(block, ConfigStatus.STALE)
         return
 
     if block in DRAFT_BLOCKS:
-        out_path.write_text(_DRAFT_HEADER + yaml_content)
+        out_path.write_text(_DRAFT_HEADER + raw_body)
         accumulator.set_status(block, ConfigStatus.DRAFT)
     else:
-        out_path.write_text(yaml_content)
+        out_path.write_text(raw_body)
         accumulator.set_status(block, ConfigStatus.COMPLETE)
 
 
