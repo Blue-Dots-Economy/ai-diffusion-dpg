@@ -9,7 +9,7 @@
 
 ## Goal
 
-Allow operators to upload Knowledge Base (KB) documents into the Knowledge Engine after deployment. Documents are ingested into ChromaDB and immediately available to the agent's RAG pipeline. Supports local file upload and Azure Blob Storage fetch. All service-to-service communication is JWT-authenticated.
+Allow operators to upload Knowledge Base (KB) documents into the Knowledge Engine after deployment. Documents are ingested into ChromaDB and immediately available to the agent's RAG pipeline. Supports local file upload and Azure Blob Storage fetch. All service-to-service communication uses static API keys.
 
 ---
 
@@ -30,13 +30,13 @@ Allow operators to upload Knowledge Base (KB) documents into the Knowledge Engin
 ```
 Dev-Kit (VM)
   ├─ Chat (knowledge phase): ask where docs are (local/cloud) → determine mode → save Azure creds if needed → project.json
-  ├─ Deploy wizard: inject Azure creds + callback URL + JWT secrets as K8s secrets
+  ├─ Deploy wizard: inject Azure creds + callback URL + API keys as K8s secrets
   └─ IngestDocumentsStep (post-deploy, step 8):
-       │  JWT (devkit-signed, sub=devkit, user_id=<config>)
+       │  X-API-Key: <DEVKIT_TO_REACH_API_KEY>  (static API key)
        ▼
 Reach Layer (VM, public-facing)
   └─ POST /ingest/upload  (streaming proxy)
-       │  JWT (reach-signed, internal)
+       │  X-API-Key: <REACH_TO_KE_API_KEY>  (static API key, internal)
        ▼
 Knowledge Engine (K8s, ClusterIP)
   └─ POST /upload → batch enqueue → async queue worker → ingest_single()
@@ -45,10 +45,10 @@ Knowledge Engine (K8s, ClusterIP)
        ├─ Mode B: cloud_fetch_ingest  → fetch from Azure Blob → ingest from PVC copy
        └─ Mode C: local_write_ingest  → write to /data/kb PVC → ingest
             │
-            │  JWT (ke-signed, 5 min), per-job callback on completion
+            │  X-API-Key: <KE_TO_DEVKIT_API_KEY>, per-job callback on completion
             ▼
 Dev-Kit (VM)
-  └─ POST /api/ingest/callback → update in-memory job map + project.json
+  └─ POST /api/ingest/callback → persist to project.json ingest_log
        ▲
        │  Frontend polls every <poll_interval_seconds>s
        │  Stops on: ingested | failed | poll timeout (<poll_timeout_minutes>)
@@ -72,6 +72,7 @@ All values are framework-scoped. This file is the single source of truth for dev
 # dev-kit/dev_kit/config/devkit.yaml
 
 # Identity used for all upload requests until login is implemented.
+# Passed explicitly in the multipart request body to KE.
 # When login is added, user_id will come from the authenticated session instead.
 user_id: "devkit-operator"
 
@@ -100,62 +101,67 @@ polling:
 
 ---
 
-## JWT Authentication Design
+## Service Authentication Design
 
-### Service Identity Model
+### Auth Model per Call
 
-Each service pair that communicates shares a distinct HS256 secret. Compromise of one secret does not affect other pairs.
+All service-to-service calls use static API keys (`X-API-Key` header). No JWT in this iteration.
 
-| Caller | Callee | Secret name | Who holds what |
-|--------|--------|-------------|----------------|
-| Dev-Kit | Reach Layer | `DEVKIT_TO_REACH_SECRET` | Dev-Kit signs, Reach Layer verifies |
-| Reach Layer | Knowledge Engine | `REACH_TO_KE_SECRET` | Reach Layer signs, KE verifies |
-| Knowledge Engine | Dev-Kit | `KE_TO_DEVKIT_SECRET` | KE signs, Dev-Kit verifies |
+| Caller | Callee | Key name | Who sends | Who validates |
+|--------|--------|----------|-----------|---------------|
+| Dev-Kit | Reach Layer | `DEVKIT_TO_REACH_API_KEY` | Dev-Kit | Reach Layer |
+| Reach Layer | Knowledge Engine | `REACH_TO_KE_API_KEY` | Reach Layer | KE |
+| Knowledge Engine | Dev-Kit (callback) | `KE_TO_DEVKIT_API_KEY` | KE | Dev-Kit |
 
-### Token Payload (service-to-service)
+### Key Generation and Sharing
 
-```python
-# Dev-Kit → Reach Layer token
-{
-    "sub": "devkit",
-    "iss": "devkit",
-    "user_id": "<devkit.yaml user_id>",   # stored in KE ingestion records table
-    "iat": <unix timestamp>,
-    "exp": <iat + 86400>,     # 24h lifetime for upload session tokens
-}
+Dev-kit generates all 3 keys on first visit to MandatoryInputsStep using `secrets.token_urlsafe(32)` and stores them in `project.json`. On subsequent deploys, reads from `project.json` and reuses — never regenerates unless operator requests rotation.
 
-# Reach Layer → KE token
-{
-    "sub": "reach_layer",
-    "iss": "reach_layer",
-    "iat": <unix timestamp>,
-    "exp": <iat + 300>,       # 5 min — short-lived for internal forwarding
-}
+At deploy time, dev-kit runs Helm and injects each key into exactly the services that need it:
 
-# KE → Dev-Kit callback token
-{
-    "sub": "knowledge_engine",
-    "iss": "knowledge_engine",
-    "iat": <unix timestamp>,
-    "exp": <iat + 300>,       # 5 min — single callback use
-}
+```
+DEVKIT_TO_REACH_API_KEY → Dev-Kit env (to send)
+                        → Reach Layer K8s secret (to validate)
+
+REACH_TO_KE_API_KEY     → Reach Layer K8s secret (to send)
+                        → KE K8s secret (to validate)
+
+KE_TO_DEVKIT_API_KEY    → KE K8s secret (to send)
+                        → Dev-Kit env (to validate)
 ```
 
-`user_id` is extracted from the dev-kit JWT payload by KE and written to the ingestion records table. It is not a request body field — this prevents callers from forging arbitrary user IDs.
+Each service only sees the keys relevant to its own calls. No service has access to all three keys.
 
-Reach layer already uses HS256 via PyJWT (`issue_session_token` / `verify_session_token` in `reach_layer/web/src/auth.py`). The same pattern is extended here.
+### Static API Key — How It Works
 
-### Secret Generation and Injection
+```
+Reach Layer (caller)              KE (receiver)
+────────────────────              ────────────────────
+reads REACH_TO_KE_API_KEY         reads expected REACH_TO_KE_API_KEY
+from env at startup               from env at startup
 
-Secrets are **auto-generated** at deploy time — not manually entered. Dev-kit generates three random 32-byte hex strings using `secrets.token_hex(32)` on first visit to MandatoryInputsStep and stores them in deploy state. They are injected into Helm values and become K8s secrets:
+adds to every request:  ───────▶  checks header:
+X-API-Key: <key>                  if header == expected key → proceed
+                                  else → return 401 Unauthorized
+```
 
-- `DEVKIT_TO_REACH_SECRET` → K8s secret in Reach Layer + env var in Dev-Kit
-- `REACH_TO_KE_SECRET` → K8s secret in KE + env var in Reach Layer
-- `KE_TO_DEVKIT_SECRET` → K8s secret in Dev-Kit + env var in KE
+No signing, no expiry, no token libraries — just a string comparison on the receiver side.
 
-### Token Validation
+### user_id Source
 
-Every service validates the incoming `Authorization: Bearer <token>` header via `verify_service_token(token, secret)` — a new function following the same shape as `verify_session_token`. Returns the decoded payload. Rejects expired, malformed, or wrong-issuer tokens with HTTP 401.
+`user_id` is passed explicitly in the **request body** from reach layer to KE. It is not derived from a token since the API key carries no claims.
+
+```json
+POST /upload  (reach layer → KE)
+Headers: X-API-Key: <REACH_TO_KE_API_KEY>
+Body (multipart metadata field): includes "user_id": "devkit-operator"
+```
+
+KE reads `user_id` from the request body and writes it to the SQLite `ingestion_records` table.
+
+### Validation
+
+All three pairs follow the same pattern — receiver checks `X-API-Key` header against its stored expected key. Returns HTTP 401 if missing or wrong. No libraries needed.
 
 ---
 
@@ -254,7 +260,7 @@ These become the `{{ .Release.Name }}-azure-creds` K8s secret in Helm (optional,
 - Description: "Internal Kubernetes service URL for KE. Used by Reach Layer to proxy upload requests."
 - Becomes `KE_INTERNAL_URL` env var in Reach Layer.
 
-**JWT secrets** are auto-generated silently — dev-kit creates them on first visit to this step and stores in deploy state. Not shown to the operator.
+**API keys** are auto-generated silently — dev-kit creates all three API keys (`DEVKIT_TO_REACH_API_KEY`, `REACH_TO_KE_API_KEY`, `KE_TO_DEVKIT_API_KEY`) on first visit to this step using `secrets.token_urlsafe(32)`, stores them in `project.json`, and reuses them on subsequent deploys. Not shown to the operator.
 
 ---
 
@@ -322,7 +328,7 @@ They will be ingested into the vector store immediately.
 
 **`POST /api/ingest/submit`**
 
-Accepts a multipart batch from the browser, issues a service JWT, and forwards to Reach Layer.
+Accepts a multipart batch from the browser and forwards to Reach Layer with an API key.
 
 **Request format:** `multipart/form-data`
 
@@ -349,8 +355,8 @@ Content-Type: application/octet-stream
 
 **Dev-kit backend steps:**
 1. Parse `metadata` JSON, validate each entry (extension, size ≤ `max_file_size_mb`, no path separators, no duplicates).
-2. Issue a service JWT: `sub=devkit`, `user_id=<devkit.yaml user_id>`, signed with `DEVKIT_TO_REACH_SECRET`, 24h TTL.
-3. Stream the full multipart body to `POST <REACH_LAYER_URL>/ingest/upload` with JWT in `Authorization: Bearer`.
+2. Inject `user_id` (from `devkit.yaml`) into the metadata JSON for each file entry.
+3. Stream the full multipart body to `POST <REACH_LAYER_URL>/ingest/upload` with `X-API-Key: DEVKIT_TO_REACH_API_KEY`.
 4. Return batch response to frontend.
 
 **Response:**
@@ -368,7 +374,7 @@ Content-Type: application/octet-stream
 
 **`GET /api/ingest/job/{job_id}`**
 
-Returns current status from the in-memory job map. Called by the frontend poller.
+Returns current status from SQLite (via KE). Called by the frontend poller.
 
 Response:
 ```json
@@ -389,7 +395,7 @@ Status values: `queued` | `ingesting` | `ingested` | `failed`
 
 **`POST /api/ingest/callback`**
 
-Called by KE when a job completes. Protected by `KE_TO_DEVKIT_SECRET` JWT validation.
+Called by KE when a job completes. Protected by `KE_TO_DEVKIT_API_KEY` validation.
 
 Request body:
 ```json
@@ -402,9 +408,8 @@ Request body:
 ```
 
 Dev-kit steps:
-1. Validate JWT (`Authorization: Bearer <ke-signed-token>`).
-2. Update in-memory job map entry.
-3. If status is `ingested`, persist to `project.json` (optional audit trail — `ingest_log` array).
+1. Validate API key (`X-API-Key` header must match `KE_TO_DEVKIT_API_KEY`).
+2. If status is `ingested`, persist to `project.json` (optional audit trail — `ingest_log` array).
 
 ---
 
@@ -414,28 +419,26 @@ Dev-kit steps:
 
 **`POST /ingest/upload`**
 
-Validates the dev-kit JWT, then **streams** the full multipart body to KE without buffering.
+Validates the dev-kit API key, then **streams** the full multipart body to KE without buffering.
 
 ```python
 @router.post("/ingest/upload")
 async def ingest_upload(
     request: Request,
-    authorization: str = Header(...),
+    x_api_key: str = Header(..., alias="X-API-Key"),
 ):
-    # 1. Validate dev-kit JWT
-    verify_service_token(authorization.removeprefix("Bearer "), DEVKIT_TO_REACH_SECRET)
+    # 1. Validate dev-kit API key
+    if x_api_key != DEVKIT_TO_REACH_API_KEY:
+        raise HTTPException(401, "Invalid API key")
 
-    # 2. Issue reach layer JWT for KE (5 min)
-    ke_token = issue_service_token("reach_layer", REACH_TO_KE_SECRET, ttl=300)
-
-    # 3. Stream (not buffer) multipart body to KE
+    # 2. Stream (not buffer) multipart body to KE with static API key
     async with httpx.AsyncClient() as client:
         response = await client.post(
             f"{KE_INTERNAL_URL}/upload",
             content=request.stream(),      # streaming passthrough — no full-body buffer
             headers={
                 "Content-Type": request.headers["Content-Type"],
-                "Authorization": f"Bearer {ke_token}",
+                "X-API-Key": REACH_TO_KE_API_KEY,
             },
             timeout=60.0,
         )
@@ -447,7 +450,7 @@ async def ingest_upload(
 
 **`GET /ingest/job/{job_id}`**
 
-Polling fallback — proxies to `GET <KE_INTERNAL_URL>/upload/job/{job_id}` with a reach-signed JWT. Used when the dev-kit wants to confirm job status independently of callbacks.
+Polling fallback — proxies to `GET <KE_INTERNAL_URL>/upload/job/{job_id}` with `X-API-Key: REACH_TO_KE_API_KEY`. Used when the dev-kit wants to confirm job status independently of callbacks.
 
 **CORS:** Reach layer `cors.allowed_origins` must include the dev-kit VM URL. Configurable in YAML — not hardcoded:
 
@@ -472,15 +475,16 @@ Accepts a multipart batch, validates each file, inserts all rows into the SQLite
 @router.post("/upload")
 async def upload_batch(
     request: Request,
-    authorization: str = Header(...),
+    x_api_key: str = Header(..., alias="X-API-Key"),
 ):
-    # 1. Validate reach layer JWT; extract user_id from dev-kit token chain
-    payload = verify_service_token(authorization.removeprefix("Bearer "), REACH_TO_KE_SECRET)
-    user_id = payload.get("user_id", "unknown")
+    # 1. Validate reach layer API key
+    if x_api_key != REACH_TO_KE_API_KEY:
+        raise HTTPException(401, "Invalid API key")
 
     # 2. Parse multipart: metadata JSON + file parts
     form = await request.form()
     metadata_entries = json.loads(form["metadata"])
+    user_id = form.get("user_id", "unknown")   # passed explicitly in request body
     file_parts = {f.filename: f for f in form.getlist("files")}
 
     # 3. Validate each entry
@@ -529,8 +533,6 @@ async def upload_batch(
     try:
         for job in jobs:
             await ingest_queue.put(job)
-            job_store[job.job_id] = JobStatus(job.job_id, job.filename, "queued",
-                                               queue_position=ingest_queue.qsize())
     except Exception as e:
         db.rollback_batch(batch_id)
         raise HTTPException(500, f"Queue enqueue failed: {e}")
@@ -543,7 +545,7 @@ async def upload_batch(
 
 **`GET /upload/job/{job_id}`**
 
-Returns job status from `job_store`. Reached via reach layer proxy when dev-kit polls for fallback status.
+Returns job status from SQLite `ingestion_records` table. No in-memory store — reads directly from DB, so status survives pod restarts. Reached via reach layer proxy when dev-kit polls for fallback status.
 
 ```json
 {
@@ -562,18 +564,15 @@ async def _queue_worker():
     """Process upload jobs sequentially. One job at a time to protect ChromaDB writes."""
     while True:
         job = await ingest_queue.get()
-        job_store[job.job_id].status = "ingesting"
         db.update_status(job.job_id, "ingesting")
         try:
             storage = get_storage_backend()
             file_path = await _stage_file(storage, job)   # write to PVC or fetch from Azure
             chunks = block.ingest_single(config, file_path)
-            job_store[job.job_id] = JobStatus(job.job_id, job.filename, "ingested", chunks_added=chunks)
             db.update_status(job.job_id, "ingested", chunks_added=chunks, ingested_at=utcnow())
             await _send_callback(job.job_id, "ingested", chunks_added=chunks)
         except Exception as e:
             logger.error("ke.ingest_failed", extra={"job_id": job.job_id, "error": str(e), "status": "failure"})
-            job_store[job.job_id] = JobStatus(job.job_id, job.filename, "failed", error=str(e))
             db.update_status(job.job_id, "failed", error=str(e))
             await _send_callback(job.job_id, "failed", error=str(e))
         finally:
@@ -584,7 +583,7 @@ async def _queue_worker():
 **Queue constraints:**
 - `MAX_QUEUE_SIZE` = 20 (accommodates multiple concurrent operator sessions).
 - Job IDs: `uuid.uuid4()` — non-enumerable.
-- `job_store` (in-memory): lost on pod restart. Jobs in flight at restart must be re-submitted by the operator. This is documented operational behaviour.
+- No in-memory `job_store`. SQLite is the single source of truth for all job state. `GET /upload/job/{job_id}` reads directly from `ingestion_records` table — survives pod restarts with no loss of status.
 
 **KE Callback to Dev-Kit:**
 
@@ -593,7 +592,6 @@ async def _send_callback(job_id: str, status: str, **kwargs):
     """Notify dev-kit of job completion. Retries 3× with exponential backoff."""
     if not DEVKIT_CALLBACK_URL:
         return
-    token = issue_service_token("knowledge_engine", KE_TO_DEVKIT_SECRET, ttl=300)
     payload = {"job_id": job_id, "status": status, **kwargs}
     for attempt in range(3):
         try:
@@ -601,7 +599,7 @@ async def _send_callback(job_id: str, status: str, **kwargs):
                 r = await client.post(
                     f"{DEVKIT_CALLBACK_URL}/api/ingest/callback",
                     json=payload,
-                    headers={"Authorization": f"Bearer {token}"},
+                    headers={"X-API-Key": KE_TO_DEVKIT_API_KEY},
                     timeout=10.0,
                 )
                 if r.status_code < 500:
@@ -638,7 +636,7 @@ CREATE TABLE IF NOT EXISTS ingestion_records (
     status          TEXT NOT NULL DEFAULT 'queued',  -- queued | ingesting | ingested | failed | expired
     chunks_added    INTEGER,                    -- null until ingested
     error           TEXT,                       -- null unless failed
-    user_id         TEXT NOT NULL,              -- from JWT sub; devkit.yaml value until login is implemented
+    user_id         TEXT NOT NULL,              -- from request body; devkit.yaml value until login is implemented
     uploaded_at     TEXT NOT NULL,              -- ISO 8601 UTC
     ingested_at     TEXT,                       -- null until ingested
     expires_at      TEXT,                       -- null if no expiry; ISO 8601 UTC
@@ -797,7 +795,7 @@ def ingest_single(self, config: dict, file_path: Path) -> int:
 **`knowledge-engine/templates/deployment.yaml`:**
 - **Remove** `initContainers` block entirely (replaced by upload API)
 - Add `/data/kb` PVC volume mount
-- Add Azure + JWT + callback env vars from K8s secrets
+- Add Azure + API keys + callback env vars from K8s secrets
 
 ```yaml
 containers:
@@ -826,16 +824,16 @@ containers:
           secretKeyRef:
             name: {{ .Release.Name }}-ingest-config
             key: devkit_callback_url
-      - name: KE_TO_DEVKIT_SECRET
+      - name: KE_TO_DEVKIT_API_KEY
         valueFrom:
           secretKeyRef:
-            name: {{ .Release.Name }}-jwt-secrets
-            key: ke_to_devkit_secret
-      - name: REACH_TO_KE_SECRET
+            name: {{ .Release.Name }}-ingest-api-keys
+            key: ke_to_devkit_api_key
+      - name: REACH_TO_KE_API_KEY
         valueFrom:
           secretKeyRef:
-            name: {{ .Release.Name }}-jwt-secrets
-            key: reach_to_ke_secret
+            name: {{ .Release.Name }}-ingest-api-keys
+            key: reach_to_ke_api_key
     volumeMounts:
       - name: kb-data
         mountPath: /data/kb
@@ -848,7 +846,7 @@ volumes:
 **New K8s secrets:**
 - `{{ .Release.Name }}-azure-creds` — optional; created only if `azureStorage.enabled = true` in values
 - `{{ .Release.Name }}-ingest-config` — `devkit_callback_url`
-- `{{ .Release.Name }}-jwt-secrets` — all three JWT shared secrets (auto-generated by dev-kit)
+- `{{ .Release.Name }}-ingest-api-keys` — all three API keys: `DEVKIT_TO_REACH_API_KEY`, `REACH_TO_KE_API_KEY`, `KE_TO_DEVKIT_API_KEY` (auto-generated by dev-kit)
 
 **New PVC (`pvc-kb.yaml`):**
 
@@ -902,16 +900,16 @@ Supports both same-VM (loopback CIDR) and cross-VM deployments. When `networkPol
 | `dev-kit/dev_kit/agent/tools.py` | Add `set_azure_storage` tool + handler (replaces old `set_knowledge_documents`) |
 | `dev-kit/dev_kit/agent/prompts/phases.py` | Update knowledge phase prompt — ask about cloud storage only, no file list |
 | `dev-kit/dev_kit/agent/app.py` | Add `POST /api/ingest/submit`, `GET /api/ingest/job/{id}`, `POST /api/ingest/callback` |
-| `dev-kit/dev_kit/agent/auth.py` | **New** — `issue_service_token`, `verify_service_token` (HS256) |
+| `dev-kit/dev_kit/agent/auth.py` | **New** — `verify_api_key(header, expected)` helper |
 | `dev-kit/frontend/src/api.js` | Add `submitIngestBatch(slug, formData)`, `getJobStatus(jobId)` |
 | `dev-kit/frontend/src/components/deploy/DeployWizard.jsx` | Add step 8, bump max step to 8 |
 | `dev-kit/frontend/src/components/deploy/IngestDocumentsStep.jsx` | **New** — add-file UI, batch submission, per-file polling with timeout |
 | `dev-kit/frontend/src/components/deploy/MandatoryInputsStep.jsx` | Add Azure fields (conditional), callback URL field, KE internal URL field |
 | `dev-kit/configs/.gitignore` | Add `*/project.json` |
 | `reach_layer/web/server.py` | Add `POST /ingest/upload` (streaming proxy), `GET /ingest/job/{id}` proxy |
-| `reach_layer/web/src/auth.py` | Add `issue_service_token`, `verify_service_token` |
+| `reach_layer/web/src/auth.py` | Add `verify_api_key(header, expected)` helper |
 | `reach_layer/web/config/reach_layer.yaml` | Add `cors.allowed_origins`, `ke_internal_url` |
-| `reach_layer/web/templates/deployment.yaml` (Helm) | Add JWT env vars (`DEVKIT_TO_REACH_SECRET`, `REACH_TO_KE_SECRET`), `KE_INTERNAL_URL` |
+| `reach_layer/web/templates/deployment.yaml` (Helm) | Add `DEVKIT_TO_REACH_API_KEY`, `REACH_TO_KE_API_KEY`, `KE_INTERNAL_URL` env vars |
 | `knowledge_engine/src/storage/base.py` | **New** — `StorageBackend` ABC |
 | `knowledge_engine/src/storage/azure_blob.py` | **New** — `AzureBlobStorageBackend` |
 | `knowledge_engine/src/storage/local_pvc.py` | **New** — `LocalPVCStorageBackend` |
@@ -919,12 +917,12 @@ Supports both same-VM (loopback CIDR) and cross-VM deployments. When `networkPol
 | `knowledge_engine/src/db/ingestion_db.py` | **New** — `IngestionDB` (SQLite, `/data/kb/ke_metadata.db`) |
 | `knowledge_engine/src/blocks/static_knowledge_base.py` | Add `ingest_single()` method |
 | `knowledge_engine/src/upload_router.py` | **New** — `POST /upload`, `GET /upload/job/{id}`, queue worker, callback sender |
-| `knowledge_engine/src/auth.py` | **New** — `issue_service_token`, `verify_service_token` |
+| `knowledge_engine/src/auth.py` | **New** — `verify_api_key(header, expected)` helper |
 | `knowledge_engine/src/app.py` | Register `upload_router`, start queue worker on startup, init `IngestionDB` |
 | `knowledge_engine/pyproject.toml` | Add `azure-storage-blob>=12.0` |
 | `automation/helm/dpg/knowledge-engine/templates/deployment.yaml` | Remove `initContainers`, add env vars, add `/data/kb` volume mount |
 | `automation/helm/dpg/knowledge-engine/templates/secret-azure.yaml` | **New** — optional Azure K8s secret |
-| `automation/helm/dpg/knowledge-engine/templates/secret-ingest.yaml` | **New** — callback URL + JWT secrets |
+| `automation/helm/dpg/knowledge-engine/templates/secret-ingest.yaml` | **New** — callback URL, JWT secret, and API keys |
 | `automation/helm/dpg/knowledge-engine/templates/pvc-kb.yaml` | **New** — kb-data PVC (holds both KB docs and SQLite DB) |
 | `automation/helm/dpg/knowledge-engine/templates/networkpolicy.yaml` | **New** — optional KE egress to dev-kit |
 | `automation/helm/dpg/knowledge-engine/values.yaml` | Add `azureStorage.*`, `kbStorage.size`, `networkPolicy.*` |
@@ -942,7 +940,7 @@ CHAT PHASE (Knowledge Phase)
 DEPLOY WIZARD (MandatoryInputsStep)
   Dev-kit reads project.json → pre-fills Azure fields + callback URL
   Operator verifies/edits → confirms
-  Dev-kit silently auto-generates 3 JWT secrets → stored in deploy state
+  Dev-kit silently auto-generates 3 API keys → stored in project.json
   Deploy executes → K8s secrets created → KE starts without init-container
 
 POST-DEPLOY (IngestDocumentsStep — step 8)
@@ -964,16 +962,17 @@ POST-DEPLOY (IngestDocumentsStep — step 8)
 
   4. Dev-kit backend:
        - Validates entries ✓
-       - Issues JWT: sub=devkit, user_id=devkit-operator (24h)
+       - Injects user_id=devkit-operator into metadata JSON
        - Streams multipart to POST https://reach.vm.example.com/ingest/upload
+         with X-API-Key: <DEVKIT_TO_REACH_API_KEY>
 
   5. Reach Layer:
-       - Validates dev-kit JWT ✓
-       - Issues reach JWT (5 min)
-       - Streams multipart to POST http://ke.dpg.svc.cluster.local:8001/upload
+       - Validates dev-kit API key ✓
+       - Forwards multipart to POST http://ke.dpg.svc.cluster.local:8001/upload
+         with X-API-Key: <REACH_TO_KE_API_KEY>
 
   6. KE:
-       - Validates reach JWT ✓, extracts user_id=devkit-operator
+       - Validates API key ✓, reads user_id=devkit-operator from request body
        - Sanitizes filenames ✓
        - Validates extensions ✓
        - batch_id = UUID4
@@ -995,12 +994,12 @@ POST-DEPLOY (IngestDocumentsStep — step 8)
       → chunks + embeds → 47 chunks added to ChromaDB
     - SQLite: UPDATE status=ingested, chunks_added=47, ingested_at=now()
     - POST https://devkit.vm.example.com/api/ingest/callback
-        Authorization: Bearer <ke-signed JWT, 5min>
+        X-API-Key: <KE_TO_DEVKIT_API_KEY>
         {"job_id": "<job_1>", "status": "ingested", "chunks_added": 47}
 
   Dev-kit callback endpoint:
-    - Validates KE JWT ✓
-    - Updates job_store[job_1].status = "ingested"
+    - Validates API key ✓
+    - Persists to project.json ingest_log (optional audit trail)
 
   Next frontend poll for job_1 → {status: "ingested", chunks_added: 47}
   UI: row 1 shows ✓ Ingested (47 chunks). Polling for job_1 stops.
@@ -1022,7 +1021,7 @@ POST-DEPLOY (IngestDocumentsStep — step 8)
 
 | Failure | HTTP | Behaviour |
 |---------|------|-----------|
-| Invalid or expired JWT | 401 | Rejected at validation layer; not forwarded |
+| Invalid or missing API key (any service-to-service call) | 401 | Rejected at receiver; not forwarded |
 | Filename with path separators | 422 | Rejected at KE immediately |
 | Unsupported file extension | 422 | Rejected at dev-kit backend and KE |
 | File > `max_file_size_mb` | 413 | Rejected at dev-kit backend (from devkit.yaml limit) |
@@ -1036,7 +1035,7 @@ POST-DEPLOY (IngestDocumentsStep — step 8)
 | Queue enqueue fails after DB insert | 500 | DB rows rolled back; operator retries |
 | ChromaDB write fails | 500 | Job marked `failed` in DB; retry by re-uploading file |
 | KE callback fails (all retries) | — | Logged; dev-kit polling via reach layer detects completion |
-| KE pod restart mid-ingestion | — | `job_store` lost; poll API returns 404 → UI shows "KE unavailable, re-select files" |
+| KE pod restart mid-ingestion | — | SQLite survives restart; poll API returns last known status. If status is `ingesting` and stuck, re-upload the file. |
 | Poll timeout (configured max) | — | If poll 404/error → "KE may be unavailable, re-select files"; if still `ingesting` → extend polling another full period |
 | Temp file leak | — | `try/finally` in queue worker guarantees cleanup |
 | KE unreachable from reach layer | 503 | Reach layer returns 503; dev-kit shows "KE unreachable" |
@@ -1047,10 +1046,10 @@ POST-DEPLOY (IngestDocumentsStep — step 8)
 
 | Control | Where | Mechanism |
 |---------|-------|-----------|
-| Dev-kit → reach layer auth | Reach layer | Verify dev-kit JWT (HS256, DEVKIT_TO_REACH_SECRET) |
-| Reach layer → KE auth | KE | Verify reach JWT (HS256, REACH_TO_KE_SECRET) |
-| KE → dev-kit callback auth | Dev-kit | Verify KE JWT (HS256, KE_TO_DEVKIT_SECRET) |
-| user_id source of truth | KE | Extracted from JWT payload — not from request body |
+| Dev-kit → reach layer auth | Reach layer | Verify `X-API-Key` header against `DEVKIT_TO_REACH_API_KEY` |
+| Reach layer → KE auth | KE | Verify `X-API-Key` header against `REACH_TO_KE_API_KEY` |
+| KE → dev-kit callback auth | Dev-kit | Verify `X-API-Key` header against `KE_TO_DEVKIT_API_KEY` |
+| user_id source of truth | KE | Read from request body (`user_id` field in multipart metadata) |
 | Path traversal prevention | KE | `Path(filename).name`; reject if `"/" in filename` |
 | File extension whitelist | Dev-kit backend + KE | From `devkit.yaml supported_extensions`; double-enforced |
 | File size limit | Dev-kit frontend + backend | From `devkit.yaml max_file_size_mb` |
@@ -1061,20 +1060,20 @@ POST-DEPLOY (IngestDocumentsStep — step 8)
 | Azure creds in K8s | KE | Stored as K8s Opaque secret; mounted via `secretKeyRef` |
 | CORS for dev-kit origin | Reach layer | Configurable `cors.allowed_origins` in reach_layer.yaml |
 | KE egress to dev-kit | Helm NetworkPolicy | Optional; CIDR-scoped; supports same-VM and cross-VM |
-| No bash/curl direct access | KE `/upload` | Requires valid reach layer JWT — unauthenticated requests rejected with 401 |
+| No bash/curl direct access | KE `/upload` | Requires valid `X-API-Key` — unauthenticated requests rejected with 401 |
 
 ---
 
-## 15. Open Questions
+## 15. Resolved Design Decisions
 
-1. **Azure account_key encryption in project.json** — Stored unencrypted in the operator's local `project.json`. Should it be encrypted (OS keychain, project-level key)?.
+1. **Azure account_key encryption in project.json** — **Resolved:** The browser encrypts the Azure account_key before sending it to the dev-kit backend. Dev-kit stores the encrypted value in `project.json`. At deploy time, dev-kit decrypts and injects the plaintext into the K8s secret. This means the key is never stored unencrypted on disk. Encryption mechanism (key derivation, passphrase) is an implementation detail to be decided during implementation.
 
-2. **JWT secret custodianship** — Shared secrets are auto-generated by dev-kit at deploy time. Should they be externally managed (HashiCorp Vault, Azure Key Vault)?.
+2. **Auth mechanism for all service-to-service calls** — **Resolved:** All three service pairs (Dev-Kit → Reach Layer, Reach Layer → KE, KE → Dev-Kit callback) use static API keys (`X-API-Key` header). No JWT, no JWKS server, no OAuth2 infrastructure required in this iteration.
 
-3. **JWT secret rotation** — No rotation mechanism. Compromised secret requires full redeploy to replace K8s secrets. Rotation procedure needed?.
+3. **Secret/key rotation** — **Resolved:** If a key or secret is compromised, the operator manually updates the relevant K8s secret YAML and restarts the affected service(s). No automated rotation mechanism is needed at this stage.
 
-4. **JWT secret stability across redeployments** — JWT secrets are currently auto-generated fresh on each deploy wizard run. The devkit→reach JWT has a 24h lifetime. If the operator deploys at 9am (secrets generated + pushed to K8s), then uploads documents at 3pm, then triggers another deploy at 5pm for any reason (config change, Helm update), new secrets are generated and the K8s secrets are overwritten. The reach layer and KE now hold new secrets. The 24h JWT issued at 9am is immediately invalid — all in-flight or pending uploads fail with 401. **Recommendation:** generate the 3 JWT secrets once on first deploy and store them in `project.json`. On subsequent deploys, read from `project.json` and reuse them — only regenerate if the operator explicitly requests a secret rotation. Flagged for lead review.
+4. **Key stability across redeployments** — **Resolved:** Generate all three API keys once on the first deploy wizard run using `secrets.token_urlsafe(32)` and store them in `project.json`. On subsequent deploys, read from `project.json` and reuse the same values — do not regenerate. Only regenerate if the operator explicitly triggers rotation (per point 3 above). Static API keys have no expiry, so redeployment of any service has zero impact on token or key validity.
 
-5. **Per-user document scoping** — Future: each end-user uploads personal documents via Reach Layer. Requires per-user ChromaDB sub-collections or `user_id` metadata filtering at retrieval time. `ingest_single` should accept an optional `scope` parameter to allow this without API redesign. No decision made — tracked as future work.
+5. **Per-user document scoping** — **Resolved (deferred):** The `ingestion_records` SQLite table already stores `user_id` on every row. When per-user scoping is implemented, `ingest_single` will accept an optional `scope` parameter and `StaticKnowledgeBaseBlock.retrieve()` will filter by `user_id` metadata. No implementation in this iteration.
 
-6. **Job status durability** — `job_store` is in-memory, lost on pod restart. For production, persist to SQLite (the table already exists)..
+6. **Job status durability** — **Resolved:** No in-memory `job_store`. SQLite `ingestion_records` is the single source of truth for all job state. The queue worker writes status transitions directly to SQLite (`queued → ingesting → ingested/failed`). `GET /upload/job/{job_id}` reads from SQLite. Status survives pod restarts with no data loss and no additional complexity.
