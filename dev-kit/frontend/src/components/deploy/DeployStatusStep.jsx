@@ -29,11 +29,13 @@ const SERVICE_LABELS = {
   observability_layer: 'Observability Layer',
 }
 
-export default function DeployStatusStep({ slug, data }) {
+export default function DeployStatusStep({ slug, data, onSuccess }) {
   const [status, setStatus] = useState({ services: [], overall: 'deploying' })
   const [deployed, setDeployed] = useState(false)
   const [error, setError] = useState(null)
   const pollRef = useRef(null)
+  const onSuccessRef = useRef(onSuccess)
+  onSuccessRef.current = onSuccess
 
   useEffect(() => {
     // Start deployment on mount
@@ -65,6 +67,9 @@ export default function DeployStatusStep({ slug, data }) {
         if (result.overall === 'complete' || result.overall === 'failed') {
           clearInterval(pollRef.current)
           pollRef.current = null
+          if (result.overall === 'complete' && onSuccessRef.current) {
+            onSuccessRef.current()
+          }
         }
       } catch (e) {
         console.error('Status poll error:', e)

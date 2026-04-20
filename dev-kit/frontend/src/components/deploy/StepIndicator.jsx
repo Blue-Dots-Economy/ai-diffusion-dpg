@@ -9,6 +9,7 @@ const STEPS = [
   { key: 5, label: 'Target' },
   { key: 6, label: 'Preview' },
   { key: 7, label: 'Status' },
+  { key: 8, label: 'Ingest' },
 ]
 
 export default function StepIndicator({ currentStep, completedSteps }) {
