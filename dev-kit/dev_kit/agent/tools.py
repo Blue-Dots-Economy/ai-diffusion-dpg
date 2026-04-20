@@ -669,8 +669,10 @@ class ToolHandler:
 
         start = time.time()
         try:
-            response = httpx.get(url, timeout=15.0, follow_redirects=True)
-            response.raise_for_status()
+            transport = httpx.HTTPTransport(retries=1)
+            with httpx.Client(transport=transport, timeout=15.0, follow_redirects=True) as client:
+                response = client.get(url)
+                response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             logger.warning(
                 "fetch_openapi_spec_from_url.failure",

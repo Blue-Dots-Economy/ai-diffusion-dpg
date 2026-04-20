@@ -104,3 +104,17 @@ class TestFetchOpenApiSpecFromUrl:
         )
         result = handler.dispatch("fetch_openapi_spec_from_url", {"url": "https://unreachable.example.com/spec.json"})
         assert result.startswith("ERROR")
+
+    def test_returns_error_on_empty_url(self, handler):
+        result = handler.dispatch("fetch_openapi_spec_from_url", {"url": ""})
+        assert result.startswith("ERROR")
+        assert "url is required" in result
+
+    @respx.mock
+    def test_returns_error_when_response_is_not_object(self, handler):
+        respx.get("https://api.example.com/list.json").mock(
+            return_value=_httpx.Response(200, json=["not", "an", "object"])
+        )
+        result = handler.dispatch("fetch_openapi_spec_from_url", {"url": "https://api.example.com/list.json"})
+        assert result.startswith("ERROR")
+        assert "not a JSON/YAML object" in result
