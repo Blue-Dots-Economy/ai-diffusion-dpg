@@ -1,1 +1,1 @@
-# knowledge_engine/src/db/__init__.py
+"""Database persistence layer for the Knowledge Engine block."""

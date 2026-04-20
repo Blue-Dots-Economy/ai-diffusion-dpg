@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -88,12 +89,16 @@ class IngestionDB:
         with self._connect() as conn:
             conn.executescript(_CREATE_TABLE)
 
-    def _connect(self) -> sqlite3.Connection:
-        """Open a new SQLite connection with WAL mode for concurrent reads."""
+    @contextmanager
+    def _connect(self):
+        """Open a SQLite connection with WAL mode, yields it, then closes."""
         conn = sqlite3.connect(str(self._db_path), timeout=10.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def insert_batch(self, records: list[IngestionRecord]) -> None:
         """Insert all records in a single transaction.
@@ -138,6 +143,10 @@ class IngestionDB:
         with self._connect() as conn:
             conn.execute("DELETE FROM ingestion_records WHERE batch_id = ?", (batch_id,))
             conn.commit()
+        logger.info(
+            "ingestion_db.rollback_batch",
+            extra={"operation": "ingestion_db.rollback_batch", "status": "success", "batch_id": batch_id},
+        )
 
     def update_status(self, job_id: str, status: str, **kwargs) -> None:
         """Update status and optional fields for a job.
@@ -159,11 +168,20 @@ class IngestionDB:
         set_clause = ", ".join(f"{k} = ?" for k in fields)
         values = list(fields.values()) + [job_id]
         with self._connect() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 f"UPDATE ingestion_records SET {set_clause} WHERE job_id = ?",
                 values,
             )
+            if cursor.rowcount == 0:
+                logger.warning(
+                    "ingestion_db.update_status_noop",
+                    extra={"operation": "ingestion_db.update_status", "status": "skipped", "job_id": job_id},
+                )
             conn.commit()
+        logger.info(
+            "ingestion_db.update_status",
+            extra={"operation": "ingestion_db.update_status", "status": "success", "job_id": job_id, "new_status": status},
+        )
 
     def get_record(self, job_id: str) -> Optional[IngestionRecord]:
         """Fetch a record by job_id and calculate queue_position.

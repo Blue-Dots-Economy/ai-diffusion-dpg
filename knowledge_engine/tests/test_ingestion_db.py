@@ -87,9 +87,8 @@ class TestIngestionDBEdge:
     def test_queue_position_is_calculated(self, tmp_path):
         db = IngestionDB(tmp_path / "ke.db")
         db.insert_batch([_make_record("j1", "b1"), _make_record("j2", "b1")])
-        rec = db.get_record("j1")
-        assert rec.queue_position is not None
-        assert rec.queue_position >= 1
+        assert db.get_record("j1").queue_position == 1
+        assert db.get_record("j2").queue_position == 2
 
 
 # ---------------------------------------------------------------------------
