@@ -1,10 +1,15 @@
 import React from 'react'
 
-export default function MandatoryInputsStep({ data, updateData }) {
+export default function MandatoryInputsStep({ data, updateData, onUpdate, project, onNext, onBack }) {
   const secrets = data.secrets || {}
 
   function update(field, value) {
-    updateData('secrets', { ...secrets, [field]: value })
+    const updated = { ...secrets, [field]: value }
+    if (onUpdate) {
+      onUpdate({ secrets: updated })
+    } else if (updateData) {
+      updateData('secrets', updated)
+    }
   }
 
   return (
@@ -85,6 +90,84 @@ export default function MandatoryInputsStep({ data, updateData }) {
           </div>
         </div>
       </div>
+
+      {/* Dev-Kit Callback URL — always shown */}
+      <div className="mb-4">
+        <div className="border border-gray-700 rounded-xl p-4 bg-gray-900 flex flex-col gap-4">
+          <div className="field-group">
+            <label htmlFor="devkit_callback_url" className="block text-xs text-gray-300 mb-1">Dev-Kit Callback URL</label>
+            <input
+              id="devkit_callback_url"
+              type="url"
+              placeholder="https://devkit.your-vm.example.com"
+              value={secrets.devkit_callback_url || ''}
+              onChange={e => update('devkit_callback_url', e.target.value)}
+              className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
+            />
+            <p className="field-hint text-xs text-gray-500 mt-1">
+              URL of this Dev-Kit, reachable from inside the cluster. KE uses this to notify when ingestion completes.
+            </p>
+          </div>
+
+          {/* KE Internal Service URL — always shown */}
+          <div className="field-group">
+            <label htmlFor="ke_internal_url" className="block text-xs text-gray-300 mb-1">KE Internal Service URL</label>
+            <input
+              id="ke_internal_url"
+              type="url"
+              placeholder="http://knowledge-engine.dpg.svc.cluster.local:8001"
+              value={secrets.ke_internal_url || ''}
+              onChange={e => update('ke_internal_url', e.target.value)}
+              className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
+            />
+            <p className="field-hint text-xs text-gray-500 mt-1">
+              Internal Kubernetes service URL for KE. Used by Reach Layer to proxy upload requests.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Azure Blob Storage — conditional on project.azure_storage */}
+      {project?.azure_storage && (
+        <div className="mb-4">
+          <fieldset className="field-group azure-creds border border-gray-700 rounded-xl p-4 bg-gray-900">
+            <legend className="text-sm font-medium text-gray-300 px-1">Azure Blob Storage</legend>
+            <div className="flex flex-col gap-4 mt-2">
+              <div>
+                <label htmlFor="azure_account_name" className="block text-xs text-gray-300 mb-1">Azure Account Name</label>
+                <input
+                  id="azure_account_name"
+                  type="text"
+                  value={secrets.azure_account_name || project.azure_storage.account_name || ''}
+                  onChange={e => update('azure_account_name', e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
+                />
+              </div>
+              <div>
+                <label htmlFor="azure_account_key" className="block text-xs text-gray-300 mb-1">Azure Account Key</label>
+                <input
+                  id="azure_account_key"
+                  type="password"
+                  placeholder="Paste your Azure storage account key"
+                  value={secrets.azure_account_key || ''}
+                  onChange={e => update('azure_account_key', e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
+                />
+              </div>
+              <div>
+                <label htmlFor="azure_container_name" className="block text-xs text-gray-300 mb-1">Azure Container Name</label>
+                <input
+                  id="azure_container_name"
+                  type="text"
+                  value={secrets.azure_container_name || project.azure_storage.container_name || ''}
+                  onChange={e => update('azure_container_name', e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
+                />
+              </div>
+            </div>
+          </fieldset>
+        </div>
+      )}
 
       <p className="text-xs text-gray-500 italic">
         Fields marked <span className="text-red-400">*</span> are required. All others have sensible defaults and can be left unchanged.
