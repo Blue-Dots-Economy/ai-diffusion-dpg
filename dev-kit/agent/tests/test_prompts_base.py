@@ -68,3 +68,33 @@ class TestBuildSystemPrompt:
         """An unrecognised phase name must not raise — returns a prompt without phase addition."""
         prompt = _make_prompt(phase="totally_unknown_phase")
         assert "totally_unknown_phase" in prompt
+
+
+class TestAgentTypesAndSheetRequirements:
+    """GH-137: AGENT_TYPES enum + SHEET_REQUIREMENTS matrix."""
+
+    def test_agent_types_enum(self):
+        from dev_kit.agent.prompts.base import AGENT_TYPES
+        assert set(AGENT_TYPES) == {"transactional", "informational", "agentic", "conversational"}
+
+    def test_sheet_requirements_user_state_only_conversational(self):
+        from dev_kit.agent.prompts.base import SHEET_REQUIREMENTS
+        row = SHEET_REQUIREMENTS["user_state"]
+        assert row["conversational"] == "required"
+        assert row["transactional"] == "skip"
+        assert row["informational"] == "skip"
+        assert row["agentic"] == "skip"
+
+    def test_sheet_requirements_tools_skipped_for_informational(self):
+        from dev_kit.agent.prompts.base import SHEET_REQUIREMENTS
+        assert SHEET_REQUIREMENTS["tools"]["informational"] == "skip"
+
+    def test_sheet_requirements_knowledge_skipped_for_transactional(self):
+        from dev_kit.agent.prompts.base import SHEET_REQUIREMENTS
+        assert SHEET_REQUIREMENTS["knowledge"]["transactional"] == "skip"
+
+    def test_sheet_requirements_all_phases_covered(self):
+        from dev_kit.agent.prompts.base import SHEET_REQUIREMENTS
+        expected = {"overview", "language", "knowledge", "memory", "user_state", "trust",
+                    "tools", "workflow", "observability", "reach", "review"}
+        assert expected.issubset(set(SHEET_REQUIREMENTS.keys()))

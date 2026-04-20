@@ -8,6 +8,26 @@ from __future__ import annotations
 from dev_kit.agent.accumulator import ConfigAccumulator
 from dev_kit.agent.prompts.phases import get_phase_addition
 
+# GH-137: agent-type taxonomy driven by the 3-question decision tree in the tier phase.
+AGENT_TYPES: list[str] = ["transactional", "informational", "agentic", "conversational"]
+
+# GH-137: per-phase requirement matrix by agent type.
+# Values are 'required', 'optional', or 'skip'. Consulted by set_phase and
+# skip_optional_phase to gate visits and auto-advance.
+SHEET_REQUIREMENTS: dict[str, dict[str, str]] = {
+    "overview":      {"transactional": "required", "informational": "required", "agentic": "required", "conversational": "required"},
+    "language":      {"transactional": "required", "informational": "required", "agentic": "required", "conversational": "required"},
+    "knowledge":     {"transactional": "skip",     "informational": "required", "agentic": "optional", "conversational": "optional"},
+    "memory":        {"transactional": "required", "informational": "required", "agentic": "required", "conversational": "required"},
+    "user_state":    {"transactional": "skip",     "informational": "skip",     "agentic": "skip",     "conversational": "required"},
+    "trust":         {"transactional": "required", "informational": "required", "agentic": "required", "conversational": "required"},
+    "tools":         {"transactional": "required", "informational": "skip",     "agentic": "required", "conversational": "required"},
+    "workflow":      {"transactional": "required", "informational": "required", "agentic": "required", "conversational": "required"},
+    "observability": {"transactional": "required", "informational": "required", "agentic": "required", "conversational": "required"},
+    "reach":         {"transactional": "required", "informational": "required", "agentic": "required", "conversational": "required"},
+    "review":        {"transactional": "required", "informational": "required", "agentic": "required", "conversational": "required"},
+}
+
 _DPG_OVERVIEW = """
 You are a DPG Configuration Assistant. You help users configure AI-powered conversation agents
 on the DPG (Digital Public Good) framework without needing to understand YAML or code.
