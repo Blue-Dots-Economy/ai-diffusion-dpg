@@ -337,3 +337,48 @@ def test_discover_mcp_tools_unrecognised_format_returns_error(mock_post, handler
 
     result = handler.dispatch("discover_mcp_tools", {"mcp_server_url": "https://mcp.example.com"})
     assert result.startswith("ERROR")
+
+
+# ---------------------------------------------------------------------------
+# ToolHandler._handle_set_azure_storage
+# ---------------------------------------------------------------------------
+
+class TestSetAzureStorageTool:
+    def _make_handler(self):
+        """Create a ToolHandler with empty accumulator and minimal state."""
+        from dev_kit.agent.accumulator import ConfigAccumulator
+        from dev_kit.agent.tools import ToolHandler
+        acc = ConfigAccumulator()
+        state = {"phase": "tools", "phase_changed": None, "rollback_to": None, "project_meta": {}}
+        return ToolHandler(acc, state)
+
+    def test_saves_credentials_to_state(self):
+        handler = self._make_handler()
+        result = handler._handle_set_azure_storage({
+            "account_name": "myaccount",
+            "account_key": "bXlrZXk=",
+            "container_name": "kb-docs",
+        })
+        assert "azure_storage" in handler._state
+        assert handler._state["azure_storage"]["account_name"] == "myaccount"
+        assert handler._state["azure_storage"]["container_name"] == "kb-docs"
+        assert "myaccount" in result
+
+    def test_empty_field_returns_error(self):
+        handler = self._make_handler()
+        result = handler._handle_set_azure_storage({
+            "account_name": "myaccount",
+            "account_key": "",
+            "container_name": "kb-docs",
+        })
+        assert "Error" in result
+        assert "azure_storage" not in handler._state
+
+    def test_missing_field_returns_error(self):
+        handler = self._make_handler()
+        result = handler._handle_set_azure_storage({
+            "account_name": "myaccount",
+            # account_key and container_name missing
+        })
+        assert "Error" in result
+        assert "azure_storage" not in handler._state
