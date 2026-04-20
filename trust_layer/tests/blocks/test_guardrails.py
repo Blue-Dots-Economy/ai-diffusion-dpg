@@ -97,6 +97,53 @@ def test_missing_policy_pack_returns_empty():
     assert result["prompt_constraints"] == []
 
 
+# ── dignity_check (GH-137) ────────────────────────────────────────────────
+def test_assemble_constraints_appends_dignity_check_when_enabled():
+    cfg = {
+        "dignity_check": {
+            "enabled": True,
+            "questions": ["Does this blame the user?", "Does it over-promise?"],
+            "fail_action": "rewrite",
+        },
+    }
+    handler = GuardrailsBlock(cfg)
+    result = handler.assemble_constraints(
+        session_id="s1",
+        workflow_step="ready",
+        active_risks=[],
+        user_segment=None,
+    )
+    constraints = result["prompt_constraints"]
+    assert any("## Pre-response dignity check" in c for c in constraints) \
+        or any("Does this blame the user?" in c for c in constraints)
+
+
+def test_assemble_constraints_skips_dignity_when_disabled():
+    cfg = {"dignity_check": {"enabled": False, "questions": ["X"]}}
+    handler = GuardrailsBlock(cfg)
+    result = handler.assemble_constraints(
+        session_id="s1",
+        workflow_step="ready",
+        active_risks=[],
+        user_segment=None,
+    )
+    constraints = result["prompt_constraints"]
+    assert not any("dignity check" in c.lower() for c in constraints)
+
+
+def test_assemble_constraints_no_block_default_disabled():
+    cfg = {}  # no dignity_check key
+    handler = GuardrailsBlock(cfg)
+    result = handler.assemble_constraints(
+        session_id="s1",
+        workflow_step="ready",
+        active_risks=[],
+        user_segment=None,
+    )
+    constraints = result["prompt_constraints"]
+    assert not any("dignity" in c.lower() for c in constraints)
+
+
 def test_action_gates_key_present_in_result(block):
     result = block.assemble_constraints(
         session_id="s1",

@@ -35,6 +35,10 @@ class GuardrailsBlock:
         # guardrail definitions keyed by risk ID
         self._guardrails: dict = pack.get("guardrails", {})
 
+        # top-level dignity_check block (GH-137) — appended to prompt_constraints
+        # when enabled. Lives at root of config, not under `trust:`.
+        self._config: dict = config or {}
+
         logger.info(
             "guardrails_block.init",
             extra={
@@ -92,6 +96,16 @@ class GuardrailsBlock:
             template = guardrail.get("refusal_template")
             if template:
                 refusal_templates[risk_id] = template
+
+        # GH-137: append dignity-check block to prompt_constraints when enabled.
+        dignity = (self._config or {}).get("dignity_check", {}) or {}
+        if dignity.get("enabled", False):
+            questions = dignity.get("questions") or []
+            if questions:
+                block = "## Pre-response dignity check\n" + "\n".join(
+                    f"- {q}" for q in questions
+                )
+                prompt_constraints.append(block)
 
         logger.info(
             "guardrails_block.assemble_constraints",
