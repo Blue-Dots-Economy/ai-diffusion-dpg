@@ -6,6 +6,10 @@ DPG conversation agent.
 """
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 from dev_kit.agent.accumulator import BLOCKS, PHASES, ConfigAccumulator, ConfigStatus
 from dev_kit.schemas.loader import get_valid_sections
 
@@ -194,6 +198,24 @@ TOOL_DEFINITIONS: list[dict] = [
                 },
             },
             "required": ["spec_json"],
+        },
+    },
+    {
+        "name": "fetch_openapi_spec_from_url",
+        "description": (
+            "Fetch an OpenAPI 3.0/3.1 spec from a URL and return candidate tool definitions. "
+            "Use this when the user pastes a URL to their API spec. "
+            "Supports JSON and YAML. Returns the same candidate list as parse_openapi_spec."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "URL of the OpenAPI spec file (JSON or YAML), e.g. https://api.example.com/openapi.yaml",
+                },
+            },
+            "required": ["url"],
         },
     },
     {
@@ -432,6 +454,7 @@ class ToolHandler:
             "finalize_config": self._handle_finalize_config,
             "rollback_to_checkpoint": self._handle_rollback_to_checkpoint,
             "parse_openapi_spec": self._handle_parse_openapi_spec,
+            "fetch_openapi_spec_from_url": self._handle_fetch_openapi_spec_from_url,
             "add_rest_api_tool": self._handle_add_rest_api_tool,
             "discover_mcp_tools": self._handle_discover_mcp_tools,
             "add_mcp_tool": self._handle_add_mcp_tool,
@@ -608,6 +631,80 @@ class ToolHandler:
             }
             for t in tools
         ]
+        return json.dumps(candidates, ensure_ascii=False, indent=2)
+
+    def _handle_fetch_openapi_spec_from_url(self, inputs: dict) -> str:
+        """Fetch an OpenAPI spec from a URL and return candidate tool definitions as JSON.
+
+        Downloads the spec via httpx (JSON or YAML), validates it is an OpenAPI 3.x
+        document, parses it, and returns the same candidate array as
+        _handle_parse_openapi_spec.
+
+        Args:
+            inputs: Dict with 'url' key containing the spec URL.
+
+        Returns:
+            JSON array of candidate tool dicts, or an ERROR string on failure.
+        """
+        import json
+        import yaml as _yaml
+        import httpx
+        import time
+
+        from dev_kit.agent.openapi_parser import parse_openapi_spec
+
+        url = inputs.get("url", "").strip()
+        if not url:
+            return "ERROR: url is required"
+
+        start = time.time()
+        try:
+            response = httpx.get(url, timeout=15.0, follow_redirects=True)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            return f"ERROR: HTTP {exc.response.status_code} fetching {url}"
+        except httpx.HTTPError as exc:
+            return f"ERROR: could not fetch spec from {url} — {exc}"
+
+        content = response.text
+        try:
+            try:
+                spec = json.loads(content)
+            except json.JSONDecodeError:
+                spec = _yaml.safe_load(content)
+            if not isinstance(spec, dict):
+                return "ERROR: fetched content is not a JSON/YAML object"
+        except Exception as exc:
+            return f"ERROR: could not parse fetched content — {exc}"
+
+        try:
+            tools = parse_openapi_spec(spec)
+        except ValueError as exc:
+            return f"ERROR: {exc}"
+
+        candidates = [
+            {
+                "suggested_id": t.suggested_id,
+                "path": t.path,
+                "method": t.method,
+                "description": t.description,
+                "base_url": t.base_url,
+                "param_names": [p.name for p in t.params],
+                "auth_type": t.auth_type,
+                "auth_header": t.auth_header,
+            }
+            for t in tools
+        ]
+        logger.info(
+            "fetch_openapi_spec_from_url",
+            extra={
+                "operation": "tools.fetch_openapi_spec_from_url",
+                "status": "success",
+                "url": url,
+                "endpoint_count": len(candidates),
+                "latency_ms": int((time.time() - start) * 1000),
+            },
+        )
         return json.dumps(candidates, ensure_ascii=False, indent=2)
 
     def _handle_add_rest_api_tool(self, inputs: dict) -> str:
