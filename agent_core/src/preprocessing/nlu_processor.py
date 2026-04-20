@@ -23,10 +23,27 @@ import time
 from typing import Any
 
 from src.llm_wrapper.base import LLMWrapperBase
-from src.models import NLUResult
+from src.models import NLUResult, UserStateClassification
 from src.exceptions import ConfigurationError
 
 logger = logging.getLogger(__name__)
+
+_USER_STATE_SECTION_TEMPLATE = """
+
+## User mental state classification
+The user may be in one of these mental states. Classify which one best fits
+their latest message, using the signals as hints (not strict rules).
+
+Previous state: {previous_state}
+If the message is ambiguous or does not clearly shift the state, return the
+previous state with lower confidence.
+
+States:
+{states_block}
+
+Return an additional top-level field in your JSON:
+  "user_state": {{ "id": "<one of the declared ids>", "confidence": <0.0..1.0> }}
+"""
 
 _NLU_SYSTEM_PROMPT_TEMPLATE = """{domain_instruction}
 
@@ -53,7 +70,7 @@ Rules:
 - Use the current subagent and the last question asked (if provided) to resolve
   follow-up or ambiguous messages (e.g. a one-word answer like "welder" after "what trade
   do you work in?" should be classified as a profile answer, not an unknown intent).
-- Never include keys outside the four specified (intent, entities, sentiment, confidence)."""
+- Never include keys outside the four specified (intent, entities, sentiment, confidence).{user_state_section}"""
 
 # Injected when the orchestrator passes existing profile keys.
 _PROFILE_KEYS_RULE = (
@@ -170,6 +187,7 @@ class NLUProcessor:
         llm: LLMWrapperBase,
         allowed_intents: list[str] | None = None,
         existing_profile_keys: list[str] | None = None,
+        previous_user_state: str | None = None,
     ) -> NLUResult:
         """
         Run NLU classification with workflow context.
@@ -190,6 +208,11 @@ class NLUProcessor:
                               profile (declared fields + ad-hoc attribute keys). When provided,
                               the NLU prompt instructs the LLM to reuse an existing key
                               instead of inventing a semantically equivalent new one.
+            previous_user_state: User-state id from the prior turn (or the configured
+                                 default on first turn). Passed to the LLM as "previous
+                                 state" context and used as the sticky fallback when the
+                                 returned classification is below threshold or invalid.
+                                 Ignored when the user-state model is disabled.
 
         Returns:
             NLUResult. On any failure: NLUResult(intent="unknown", confidence=0.0).
@@ -213,12 +236,36 @@ class NLUProcessor:
             else:
                 keys_rule = _PROFILE_KEYS_RULE_NONE
 
+            # User-state classification section (GH-139) — empty string when disabled
+            if self._user_state_enabled:
+                state_lines: list[str] = []
+                for s in self._user_states:
+                    sid = s.get("id", "")
+                    signals = s.get("signals", []) or []
+                    guidance_raw = (s.get("guidance", "") or "").strip()
+                    guidance_first = (
+                        guidance_raw.splitlines()[0] if guidance_raw else ""
+                    )
+                    signals_str = (
+                        " | ".join(f'"{sig}"' for sig in signals) if signals else "(none)"
+                    )
+                    state_lines.append(
+                        f"- {sid}:\n    signals: {signals_str}\n    meaning: {guidance_first}"
+                    )
+                user_state_section = _USER_STATE_SECTION_TEMPLATE.format(
+                    previous_state=previous_user_state or self._user_state_default,
+                    states_block="\n".join(state_lines),
+                )
+            else:
+                user_state_section = ""
+
             system_prompt = _NLU_SYSTEM_PROMPT_TEMPLATE.format(
                 domain_instruction=self._domain_instruction,
                 intents=", ".join(intents),
                 entities=", ".join(self._global_entities),
                 sentiment_classes=", ".join(self._sentiment_classes),
                 existing_profile_keys_rule=keys_rule,
+                user_state_section=user_state_section,
             )
 
             # Build NLU context message with workflow and last-question grounding
@@ -271,11 +318,54 @@ class NLUProcessor:
             if not isinstance(extracted_entities, dict):
                 extracted_entities = {}
 
+            user_state_obj: UserStateClassification | None = None
+            if self._user_state_enabled:
+                raw_state = parsed.get("user_state")
+                valid_ids = {s.get("id") for s in self._user_states}
+                fallback_id = previous_user_state or self._user_state_default
+                if isinstance(raw_state, dict):
+                    parsed_id = raw_state.get("id", "")
+                    try:
+                        parsed_conf = float(raw_state.get("confidence", 0.0))
+                    except (TypeError, ValueError):
+                        parsed_conf = 0.0
+                    if parsed_id in valid_ids and parsed_conf >= self._user_state_threshold:
+                        user_state_obj = UserStateClassification(
+                            id=parsed_id, confidence=parsed_conf,
+                        )
+                    else:
+                        if parsed_id and parsed_id not in valid_ids:
+                            logger.warning(
+                                "nlu_processor.user_state_invalid_id",
+                                extra={
+                                    "operation": "nlu_processor.process",
+                                    "status": "skipped",
+                                    "returned_id": parsed_id,
+                                    "fallback_id": fallback_id,
+                                },
+                            )
+                        user_state_obj = UserStateClassification(
+                            id=fallback_id, confidence=parsed_conf,
+                        )
+                else:
+                    logger.warning(
+                        "nlu_processor.user_state_missing",
+                        extra={
+                            "operation": "nlu_processor.process",
+                            "status": "skipped",
+                            "fallback_id": fallback_id,
+                        },
+                    )
+                    user_state_obj = UserStateClassification(
+                        id=fallback_id, confidence=0.0,
+                    )
+
             result = NLUResult(
                 intent=intent,
                 entities=extracted_entities,
                 sentiment=parsed.get("sentiment", "neutral"),
                 confidence=float(parsed.get("confidence", 0.0)),
+                user_state=user_state_obj,
             )
 
             logger.info(

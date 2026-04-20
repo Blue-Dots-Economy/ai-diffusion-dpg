@@ -447,3 +447,151 @@ def test_nlu_user_state_threshold_out_of_range_raises():
     cfg["preprocessing"]["nlu_processor"]["user_state_confidence_threshold"] = 1.5
     with pytest.raises(ConfigurationError, match="user_state_confidence_threshold"):
         NLUProcessor(cfg)
+
+
+# ---------------------------------------------------------------------------
+# User-state model — process() integration (GH-139 Task 4)
+# ---------------------------------------------------------------------------
+
+from src.models import LLMResponse, UserStateClassification
+
+
+def _enabled_processor():
+    return NLUProcessor(_base_config({
+        "enabled": True,
+        "default_state": "fog",
+        "states": [
+            {"id": "fog", "signals": ["vague"], "guidance": "Orient gently. Surface 2-3 directions."},
+            {"id": "orientation", "signals": ["asking about options"], "guidance": "Show the real market picture."},
+        ],
+    }))
+
+
+def _disabled_processor():
+    return NLUProcessor(_base_config())
+
+
+def _mock_llm(payload_json: str):
+    llm = MagicMock()
+    llm.call.return_value = LLMResponse(
+        content=payload_json, stop_reason="end_turn", model_used="haiku",
+    )
+    return llm
+
+
+def test_process_returns_user_state_when_enabled_and_valid():
+    p = _enabled_processor()
+    llm = _mock_llm(
+        '{"intent":"unknown","entities":{},"sentiment":"neutral","confidence":0.9,'
+        '"user_state":{"id":"orientation","confidence":0.82}}'
+    )
+    result = p.process(
+        normalised_input="kitna pay hai",
+        current_question="",
+        current_subagent_id="main",
+        llm=llm,
+        previous_user_state="fog",
+    )
+    assert result.user_state is not None
+    assert result.user_state.id == "orientation"
+    assert abs(result.user_state.confidence - 0.82) < 1e-6
+
+
+def test_process_sticky_when_below_threshold():
+    p = _enabled_processor()
+    llm = _mock_llm(
+        '{"intent":"unknown","entities":{},"sentiment":"neutral","confidence":0.9,'
+        '"user_state":{"id":"orientation","confidence":0.2}}'
+    )
+    result = p.process(
+        normalised_input="hmm",
+        current_question="",
+        current_subagent_id="main",
+        llm=llm,
+        previous_user_state="fog",
+    )
+    assert result.user_state is not None
+    assert result.user_state.id == "fog"
+    assert result.user_state.confidence == 0.2
+
+
+def test_process_sticky_when_id_unknown():
+    p = _enabled_processor()
+    llm = _mock_llm(
+        '{"intent":"unknown","entities":{},"sentiment":"neutral","confidence":0.9,'
+        '"user_state":{"id":"gibberish","confidence":0.95}}'
+    )
+    result = p.process(
+        normalised_input="x",
+        current_question="",
+        current_subagent_id="main",
+        llm=llm,
+        previous_user_state="fog",
+    )
+    assert result.user_state is not None
+    assert result.user_state.id == "fog"
+
+
+def test_process_sticky_when_key_missing():
+    p = _enabled_processor()
+    llm = _mock_llm(
+        '{"intent":"unknown","entities":{},"sentiment":"neutral","confidence":0.9}'
+    )
+    result = p.process(
+        normalised_input="x",
+        current_question="",
+        current_subagent_id="main",
+        llm=llm,
+        previous_user_state="orientation",
+    )
+    assert result.user_state is not None
+    assert result.user_state.id == "orientation"
+
+
+def test_process_returns_none_when_disabled():
+    p = _disabled_processor()
+    llm = _mock_llm(
+        '{"intent":"unknown","entities":{},"sentiment":"neutral","confidence":0.9}'
+    )
+    result = p.process(
+        normalised_input="x",
+        current_question="",
+        current_subagent_id="main",
+        llm=llm,
+        previous_user_state=None,
+    )
+    assert result.user_state is None
+
+
+def test_process_prompt_includes_state_section_when_enabled():
+    p = _enabled_processor()
+    llm = _mock_llm(
+        '{"intent":"unknown","entities":{},"sentiment":"neutral","confidence":0.9,'
+        '"user_state":{"id":"fog","confidence":0.9}}'
+    )
+    p.process(
+        normalised_input="x",
+        current_question="",
+        current_subagent_id="main",
+        llm=llm,
+        previous_user_state="fog",
+    )
+    system_prompt = llm.call.call_args.kwargs["system"]
+    assert "User mental state classification" in system_prompt
+    assert "fog" in system_prompt
+    assert "orientation" in system_prompt
+    assert "Previous state: fog" in system_prompt
+
+
+def test_process_prompt_excludes_state_section_when_disabled():
+    p = _disabled_processor()
+    llm = _mock_llm('{"intent":"unknown","entities":{},"sentiment":"neutral","confidence":0.9}')
+    p.process(
+        normalised_input="x",
+        current_question="",
+        current_subagent_id="main",
+        llm=llm,
+        previous_user_state=None,
+    )
+    system_prompt = llm.call.call_args.kwargs["system"]
+    assert "User mental state classification" not in system_prompt
