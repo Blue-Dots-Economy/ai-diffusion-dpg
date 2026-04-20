@@ -129,3 +129,30 @@ class TestGetPhaseAddition:
         """Memory phase should mention session schema."""
         result = get_phase_addition("memory")
         assert "Session" in result or "session" in result.lower()
+
+    def test_user_state_phase_returns_non_empty(self):
+        """User state phase should return non-empty text."""
+        text = get_phase_addition("user_state")
+        assert text
+        assert "user_state_model" in text
+        assert "Conversational" in text
+
+    def test_user_state_phase_mentions_schema_fields(self):
+        """User state phase should mention schema fields."""
+        text = get_phase_addition("user_state")
+        assert "default_state" in text
+        assert "states" in text
+        assert "signals" in text
+        assert "guidance" in text
+
+    def test_user_state_phase_mentions_threshold_location(self):
+        """User state phase should mention threshold location."""
+        text = get_phase_addition("user_state")
+        assert "user_state_confidence_threshold" in text
+        assert "preprocessing.nlu_processor" in text
+
+    def test_overview_phase_lists_user_state_in_sequence(self):
+        """Overview phase should list user_state in correct sequence."""
+        text = get_phase_addition("overview")
+        assert "user_state" in text
+        assert text.index("memory") < text.index("user_state") < text.index("trust")
