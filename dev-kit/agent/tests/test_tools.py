@@ -8,7 +8,8 @@ class TestToolDefinitions:
     def test_all_tools_defined(self):
         names = {t["name"] for t in TOOL_DEFINITIONS}
         assert names == {
-            "set_project_meta", "update_config", "set_phase",
+            "set_project_meta", "set_agent_type", "skip_optional_phase",
+            "update_config", "set_phase",
             "create_subagent", "update_subagent", "add_routing_rule",
             "update_routing_rule", "remove_subagent",
             "finalize_config", "rollback_to_checkpoint",
@@ -145,6 +146,42 @@ def test_dispatch_unknown_tool_raises_value_error():
     handler = ToolHandler(ConfigAccumulator(), state)
     with pytest.raises(ValueError, match="Unknown tool"):
         handler.dispatch("totally_made_up_tool", {})
+
+
+class TestToolHandlerSetAgentType:
+    """GH-137: set_agent_type tool writes agent_type to project meta."""
+
+    def test_writes_meta_on_disk(self, tmp_path):
+        import json
+        acc = ConfigAccumulator()
+        state = {"phase": "tier", "phase_changed": None, "rollback_to": None, "project_meta": {}}
+        # Seed a minimal project.json so the writer merges instead of creating fresh.
+        (tmp_path / "_meta").mkdir(parents=True)
+        (tmp_path / "_meta" / "project.json").write_text(json.dumps({"slug": "p", "name": "P"}))
+        handler = ToolHandler(acc, state, project_path=tmp_path)
+        result = handler.dispatch("set_agent_type", {"type": "conversational"})
+        assert "ok" in result.lower()
+        meta = json.loads((tmp_path / "_meta" / "project.json").read_text())
+        assert meta["agent_type"] == "conversational"
+
+    def test_rejects_unknown_type(self):
+        acc = ConfigAccumulator()
+        state = {"phase": "tier", "phase_changed": None, "rollback_to": None, "project_meta": {}}
+        handler = ToolHandler(acc, state)
+        result = handler.dispatch("set_agent_type", {"type": "hybrid"})
+        assert "error" in result.lower() or "invalid" in result.lower()
+
+    def test_tool_definition_present(self):
+        names = {t["name"] for t in TOOL_DEFINITIONS}
+        assert "set_agent_type" in names
+
+    def test_writes_to_state_when_no_project_path(self):
+        """Without a project_path, agent_type still lands in state['project_meta']."""
+        acc = ConfigAccumulator()
+        state = {"phase": "tier", "phase_changed": None, "rollback_to": None, "project_meta": {}}
+        handler = ToolHandler(acc, state)
+        handler.dispatch("set_agent_type", {"type": "agentic"})
+        assert state["project_meta"]["agent_type"] == "agentic"
 
 
 class TestToolHandlerFinalizeConfig:
