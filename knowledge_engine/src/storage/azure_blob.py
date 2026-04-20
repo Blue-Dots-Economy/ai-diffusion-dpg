@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import time
 
+from azure.core.exceptions import AzureError
 from azure.storage.blob import BlobServiceClient
 
 from src.storage.base import StorageBackend, StorageError
@@ -48,15 +49,20 @@ class AzureBlobStorageBackend(StorageBackend):
             Blob name (filename) in the configured container.
 
         Raises:
+            ValueError: If content is None or filename is empty.
             StorageError: If upload fails after one retry.
         """
+        if content is None:
+            raise ValueError("content must not be None")
+        if not filename:
+            raise ValueError("filename must not be empty")
         start = time.time()
         for attempt in range(2):
             try:
                 blob_client = self._client.get_blob_client(
                     container=self._container, blob=filename
                 )
-                blob_client.upload_blob(content, overwrite=True)
+                blob_client.upload_blob(content, overwrite=True, timeout=_TIMEOUT_S)
                 logger.info(
                     "azure_blob.upload",
                     extra={
@@ -67,10 +73,19 @@ class AzureBlobStorageBackend(StorageBackend):
                     },
                 )
                 return filename
+            except AzureError as e:
+                if attempt == 1:
+                    logger.error(
+                        "azure_blob.upload_failed",
+                        extra={
+                            "operation": "azure_blob.upload",
+                            "status": "failure",
+                            "error": f"{type(e).__name__}: {e}",
+                        },
+                    )
+                    raise StorageError(f"Azure upload failed: {e}") from e
+                time.sleep(0.5)
             except Exception as e:
-                if attempt == 0:
-                    # Retry once on transient failures.
-                    continue
                 logger.error(
                     "azure_blob.upload_failed",
                     extra={
@@ -92,36 +107,54 @@ class AzureBlobStorageBackend(StorageBackend):
             Raw file bytes.
 
         Raises:
-            StorageError: If blob does not exist or download fails.
+            ValueError: If path is empty.
+            StorageError: If blob does not exist or download fails after one retry.
         """
+        if not path:
+            raise ValueError("path must not be empty")
         start = time.time()
-        try:
-            blob_client = self._client.get_blob_client(
-                container=self._container, blob=path
-            )
-            stream = blob_client.download_blob(timeout=_TIMEOUT_S)
-            data = stream.readall()
-            logger.info(
-                "azure_blob.download",
-                extra={
-                    "operation": "azure_blob.download",
-                    "status": "success",
-                    "blob": path,
-                    "latency_ms": int((time.time() - start) * 1000),
-                },
-            )
-            return data
-        except Exception as e:
-            logger.error(
-                "azure_blob.download_failed",
-                extra={
-                    "operation": "azure_blob.download",
-                    "status": "failure",
-                    "blob": path,
-                    "error": f"{type(e).__name__}: {e}",
-                },
-            )
-            raise StorageError(f"Azure download failed: {e}") from e
+        for attempt in range(2):
+            try:
+                blob_client = self._client.get_blob_client(
+                    container=self._container, blob=path
+                )
+                stream = blob_client.download_blob(timeout=_TIMEOUT_S)
+                data = stream.readall()
+                logger.info(
+                    "azure_blob.download",
+                    extra={
+                        "operation": "azure_blob.download",
+                        "status": "success",
+                        "blob": path,
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+                return data
+            except AzureError as e:
+                if attempt == 1:
+                    logger.error(
+                        "azure_blob.download_failed",
+                        extra={
+                            "operation": "azure_blob.download",
+                            "status": "failure",
+                            "blob": path,
+                            "error": str(e),
+                        },
+                    )
+                    raise StorageError(f"Azure download failed: {e}") from e
+                time.sleep(0.5)
+            except Exception as e:
+                logger.error(
+                    "azure_blob.download_failed",
+                    extra={
+                        "operation": "azure_blob.download",
+                        "status": "failure",
+                        "blob": path,
+                        "error": f"{type(e).__name__}: {e}",
+                    },
+                )
+                raise StorageError(f"Azure download failed: {e}") from e
+        return b""  # unreachable, satisfies type checker
 
     def health_check(self) -> bool:
         """Return True if the Azure container is reachable.
@@ -133,5 +166,13 @@ class AzureBlobStorageBackend(StorageBackend):
             container_client = self._client.get_container_client(self._container)
             container_client.get_container_properties(timeout=5.0)
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                "azure_blob.health_check_failed",
+                extra={
+                    "operation": "azure_blob.health_check",
+                    "status": "failure",
+                    "error": f"{type(e).__name__}: {e}",
+                },
+            )
             return False

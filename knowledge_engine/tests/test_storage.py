@@ -138,8 +138,20 @@ class TestAzureBlobNormal:
         mock_client.get_blob_client.assert_called_once_with(
             container="container", blob="guide.pdf"
         )
-        mock_blob.upload_blob.assert_called_once_with(b"data", overwrite=True)
+        mock_blob.upload_blob.assert_called_once_with(b"data", overwrite=True, timeout=30.0)
         assert path == "guide.pdf"
+
+    @patch("src.storage.azure_blob.BlobServiceClient")
+    def test_health_check_returns_true_when_reachable(self, MockBlobServiceClient):
+        mock_client = MagicMock()
+        mock_container = MagicMock()
+        MockBlobServiceClient.return_value = mock_client
+        mock_client.get_container_client.return_value = mock_container
+
+        from src.storage.azure_blob import AzureBlobStorageBackend
+        backend = AzureBlobStorageBackend("acct", "key==", "container")
+        result = backend.health_check()
+        assert result is True
 
     @patch("src.storage.azure_blob.BlobServiceClient")
     def test_download_calls_sdk_download(self, MockBlobServiceClient):
@@ -183,3 +195,16 @@ class TestAzureBlobFailure:
         backend = AzureBlobStorageBackend("acct", "key==", "container")
         with pytest.raises(StorageError):
             backend.download("missing.pdf")
+
+    @patch("src.storage.azure_blob.BlobServiceClient")
+    def test_health_check_returns_false_on_error(self, MockBlobServiceClient):
+        mock_client = MagicMock()
+        mock_container = MagicMock()
+        MockBlobServiceClient.return_value = mock_client
+        mock_client.get_container_client.return_value = mock_container
+        mock_container.get_container_properties.side_effect = Exception("unreachable")
+
+        from src.storage.azure_blob import AzureBlobStorageBackend
+        backend = AzureBlobStorageBackend("acct", "key==", "container")
+        result = backend.health_check()
+        assert result is False
