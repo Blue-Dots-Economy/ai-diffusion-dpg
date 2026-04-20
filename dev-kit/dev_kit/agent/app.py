@@ -1146,8 +1146,18 @@ async def ingest_submit(request: Request):
     Validates entries (extension, size, count, path traversal), injects user_id
     from devkit.yaml into the metadata, then streams the batch to Reach Layer.
 
+    Args:
+        request: Incoming FastAPI request containing the multipart form.
+
     Returns:
         Batch response from KE via Reach Layer (batch_id + per-file job_ids).
+
+    Raises:
+        HTTPException: 413 if a file exceeds the size limit.
+        HTTPException: 422 if metadata is missing, invalid JSON, too many files, path traversal, or unsupported extension.
+        HTTPException: 503 if Reach Layer is unreachable.
+        HTTPException: 504 if Reach Layer times out.
+        HTTPException: 502 on other upstream errors.
     """
     import httpx as _httpx
     form = await request.form()
@@ -1242,6 +1252,12 @@ async def ingest_submit(request: Request):
             extra={"operation": "devkit.ingest_submit", "status": "failure", "error": str(e)},
         )
         raise HTTPException(504, "Reach Layer timed out") from e
+    except _httpx.HTTPError as e:
+        logger.error(
+            "devkit.ingest_submit_error",
+            extra={"operation": "devkit.ingest_submit", "status": "failure", "error": str(e)},
+        )
+        raise HTTPException(502, "Upstream error communicating with Reach Layer") from e
 
 
 @app.get("/api/ingest/job/{job_id}")
@@ -1250,25 +1266,57 @@ async def ingest_job_status(job_id: str):
 
     Called by the frontend poller every poll_interval_seconds.
 
+    Args:
+        job_id: Unique identifier of the ingestion job to query.
+
     Returns:
         Job status response from KE.
+
+    Raises:
+        HTTPException: 422 if job_id contains invalid characters.
+        HTTPException: 503 if Reach Layer is unreachable.
+        HTTPException: 504 if Reach Layer times out.
+        HTTPException: 502 on other upstream errors.
     """
     import httpx as _httpx
+    import re as _re
+    if not _re.match(r'^[a-zA-Z0-9_-]+$', job_id):
+        raise HTTPException(422, "Invalid job_id format")
+    start = time.time()
     try:
         async with _httpx.AsyncClient(timeout=10.0) as http_client:
             ke_response = await http_client.get(
                 f"{_REACH_LAYER_URL}/ingest/job/{job_id}",
                 headers={"X-API-Key": _DEVKIT_TO_REACH_API_KEY},
             )
+        logger.info(
+            "devkit.ingest_job_status",
+            extra={
+                "operation": "devkit.ingest_job_status",
+                "status": "success",
+                "reach_status": ke_response.status_code,
+                "latency_ms": int((time.time() - start) * 1000),
+            },
+        )
         return Response(
             content=ke_response.content,
             status_code=ke_response.status_code,
             media_type=ke_response.headers.get("content-type", "application/json"),
         )
     except _httpx.ConnectError as e:
+        logger.error(
+            "devkit.ingest_job_status_unreachable",
+            extra={"operation": "devkit.ingest_job_status", "status": "failure", "error": str(e)},
+        )
         raise HTTPException(503, "Reach Layer is unreachable") from e
     except _httpx.TimeoutException as e:
+        logger.error(
+            "devkit.ingest_job_status_timeout",
+            extra={"operation": "devkit.ingest_job_status", "status": "failure", "error": str(e)},
+        )
         raise HTTPException(504, "Reach Layer timed out") from e
+    except _httpx.HTTPError as e:
+        raise HTTPException(502, "Upstream error communicating with Reach Layer") from e
 
 
 class _CallbackBody(BaseModel):

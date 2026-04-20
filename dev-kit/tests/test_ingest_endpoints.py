@@ -63,6 +63,18 @@ class TestIngestSubmitNormal:
         assert body["jobs"][0]["job_id"] == "j1"
 
     @respx.mock
+    def test_submit_returns_503_on_connect_error(self, client):
+        respx.post("http://reach-test:8005/ingest/upload").mock(
+            side_effect=_httpx.ConnectError("connection refused")
+        )
+        response = client.post(
+            "/api/ingest/submit",
+            data={"metadata": json.dumps([{"filename": "doc.pdf", "mode": "local_write_ingest"}])},
+            files=[("files", ("doc.pdf", b"x", "application/octet-stream"))],
+        )
+        assert response.status_code == 503
+
+    @respx.mock
     def test_submit_injects_user_id(self, client):
         """Verify user_id from devkit.yaml is injected into the metadata."""
         captured_body = {}
@@ -87,6 +99,23 @@ class TestIngestSubmitNormal:
 # ---------------------------------------------------------------------------
 
 class TestIngestSubmitValidation:
+    def test_missing_metadata_returns_422(self, client):
+        response = client.post(
+            "/api/ingest/submit",
+            files=[("files", ("doc.pdf", b"x", "application/octet-stream"))],
+        )
+        assert response.status_code == 422
+
+    def test_file_too_large_returns_413(self, client):
+        """File exceeding max_file_size_mb (30 MB) should be rejected."""
+        big_content = b"x" * (31 * 1024 * 1024)  # 31 MB
+        response = client.post(
+            "/api/ingest/submit",
+            data={"metadata": json.dumps([{"filename": "big.pdf", "mode": "local_write_ingest"}])},
+            files=[("files", ("big.pdf", big_content, "application/octet-stream"))],
+        )
+        assert response.status_code == 413
+
     def test_unsupported_extension_rejected(self, client):
         response = client.post(
             "/api/ingest/submit",
@@ -137,6 +166,25 @@ class TestIngestJobStatus:
         )
         response = client.get("/api/ingest/job/unknown")
         assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /api/ingest/job/{job_id} — edge cases
+# ---------------------------------------------------------------------------
+
+class TestIngestJobStatusEdge:
+    def test_invalid_job_id_returns_422(self, client):
+        # Special characters like '!' are rejected by the alphanumeric regex guard
+        response = client.get("/api/ingest/job/invalid!job@id")
+        assert response.status_code == 422
+
+    @respx.mock
+    def test_connect_error_returns_503(self, client):
+        respx.get("http://reach-test:8005/ingest/job/j1").mock(
+            side_effect=_httpx.ConnectError("refused")
+        )
+        response = client.get("/api/ingest/job/j1")
+        assert response.status_code == 503
 
 
 # ---------------------------------------------------------------------------
