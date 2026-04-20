@@ -67,6 +67,8 @@ class ManagerAgent:
         self._ke = knowledge_engine
         self._trust = trust_layer
         self._max_tool_rounds = max(1, max_tool_rounds)
+        # GH-137: Per-turn flag set when the LLM invokes the end_session internal tool.
+        self._session_ended_flag: bool = False
 
     # ------------------------------------------------------------------
     # Public interface
@@ -116,6 +118,9 @@ class ManagerAgent:
         if initial_llm_response is None:
             raise ValueError("initial_llm_response must not be None")
 
+        # GH-137: Reset per-turn flags before driving the tool loop.
+        self._reset_turn_flags()
+
         current_response = initial_llm_response
         all_tool_calls: list[ToolCall] = []
         all_tool_results: list[ToolResult] = []
@@ -143,6 +148,40 @@ class ManagerAgent:
             tool_results_content: list[dict] = []
 
             for tool_call in current_response.tool_calls:
+                if tool_call.tool_name == "end_session":
+                    # GH-137: internal signal — no external execution, just mark the flag.
+                    self._session_ended_flag = True
+                    logger.info(
+                        "manager_agent.end_session",
+                        extra={
+                            "operation": "manager_agent.run_turn",
+                            "status": "success",
+                            "tool_name": "end_session",
+                            "session_id": session_id,
+                            "reason": (tool_call.input_params or {}).get("reason", ""),
+                        },
+                    )
+                    tool_result = ToolResult(
+                        tool_use_id=tool_call.tool_use_id,
+                        tool_name="end_session",
+                        result={"acknowledged": True},
+                        success=True,
+                        result_text="Session end acknowledged.",
+                    )
+                    all_tool_calls.append(tool_call)
+                    all_tool_results.append(tool_result)
+                    assistant_content.append({
+                        "type": "tool_use",
+                        "id": tool_call.tool_use_id,
+                        "name": tool_call.tool_name,
+                        "input": tool_call.input_params,
+                    })
+                    tool_results_content.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_call.tool_use_id,
+                        "content": "Session end acknowledged.",
+                    })
+                    continue
                 if self._registry.get_route(tool_call.tool_name) == "knowledge_engine":
                     tool_result = self._execute_knowledge_retrieval(tool_call, ke_context)
                 else:
@@ -196,6 +235,18 @@ class ManagerAgent:
         final_text = current_response.content or ""
         return final_text, all_tool_calls, all_tool_results
 
+    @property
+    def session_ended(self) -> bool:
+        """True iff the LLM invoked the ``end_session`` tool during the last turn.
+
+        Reset to False at the start of every ``run_turn`` call.
+        """
+        return self._session_ended_flag
+
+    def _reset_turn_flags(self) -> None:
+        """Clear per-turn flags at the top of each ``run_turn`` invocation."""
+        self._session_ended_flag = False
+
     # ------------------------------------------------------------------
     # Prompt assembly helpers
     # ------------------------------------------------------------------
@@ -211,6 +262,7 @@ class ManagerAgent:
         is_resumption: bool = False,
         guardrail_constraints: dict | None = None,
         user_state_guidance: str | None = None,
+        session_end_eval_prompt: str | None = None,
     ) -> str:
         """
         Build the system prompt for one LLM call.
@@ -295,6 +347,11 @@ class ManagerAgent:
         if user_state_guidance:
             parts.append(
                 "## Current user state guidance\n" + user_state_guidance.strip()
+            )
+
+        if session_end_eval_prompt:
+            parts.append(
+                "## Session-end evaluation\n" + session_end_eval_prompt.strip()
             )
 
         if guardrail_constraints:

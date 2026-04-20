@@ -121,6 +121,67 @@ class AgentCore(AgentCoreBase):
         self._learning = learning
         self._workflow = workflow
 
+        # Session-end signal (GH-137) — optional, opt-in per domain.
+        session_end_cfg = (self._config or {}).get("conversation", {}).get("session_end_eval", {}) or {}
+        self._session_end_eval_enabled: bool = bool(session_end_cfg.get("enabled", False))
+        self._session_end_eval_prompt: str = str(session_end_cfg.get("prompt", "") or "")
+
+        if self._session_end_eval_enabled:
+            # Register end_session as an internal tool routed to the orchestrator
+            # (no external executor — intercepted by manager_agent's tool loop).
+            end_session_def = {
+                "name": "end_session",
+                "description": (
+                    "Call when the conversation has naturally concluded (user said "
+                    "goodbye, task completed, user asked to stop). Emits the session-"
+                    "end signal to runtime; still include your natural final response "
+                    "text alongside this tool call."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "reason": {
+                            "type": "string",
+                            "enum": [
+                                "user_goodbye",
+                                "task_complete",
+                                "user_requested_stop",
+                                "other",
+                            ],
+                        },
+                    },
+                    "required": ["reason"],
+                },
+            }
+            try:
+                self._tool_registry.register_internal(
+                    name="end_session",
+                    route="orchestrator",
+                    description=end_session_def["description"],
+                    input_schema=end_session_def["input_schema"],
+                )
+            except AttributeError:
+                # Tolerate mock registries in tests that don't implement the method.
+                pass
+            # Ensure every subagent's scoped tool list includes end_session.
+            try:
+                tool_defs = getattr(self._workflow, "tool_defs", None)
+                if isinstance(tool_defs, dict):
+                    for _sa_id, _tools in list(tool_defs.items()):
+                        if not isinstance(_tools, list):
+                            continue
+                        if not any(t.get("name") == "end_session" for t in _tools):
+                            _tools.append(end_session_def)
+            except Exception as _err:  # defensive — never break init
+                logger.warning(
+                    "orchestrator.end_session_tool_defs_extension_failed",
+                    extra={
+                        "operation": "orchestrator.init",
+                        "status": "failure",
+                        "error": f"{type(_err).__name__}: {_err}",
+                    },
+                )
+
         # Async clients for stream_turn() — optional, only needed for streaming
         self._async_memory = async_memory
         self._async_trust = async_trust
@@ -772,6 +833,9 @@ class AgentCore(AgentCoreBase):
             is_resumption=is_resumption,
             guardrail_constraints=guardrail_constraints,
             user_state_guidance=user_state_guidance_text,
+            session_end_eval_prompt=(
+                self._session_end_eval_prompt if self._session_end_eval_enabled else None
+            ),
         )
 
         # Clear resumption flag in session so it only affects the first turn
@@ -986,6 +1050,7 @@ class AgentCore(AgentCoreBase):
             do_flush=_do_flush,
             flush_reason=_flush_reason,
             trace_id=_trace_id,
+            session_ended=bool(getattr(self._manager_agent, "session_ended", False)),
         )
 
         logger.info(
@@ -1534,6 +1599,7 @@ class AgentCore(AgentCoreBase):
         do_flush: bool = False,
         flush_reason: str = "",
         trace_id: str = "",
+        session_ended: bool = False,
     ) -> TurnResult:
         """
         Construct the TurnResult and schedule async post-turn work.
@@ -1569,6 +1635,7 @@ class AgentCore(AgentCoreBase):
             was_tool_used=was_tool_used,
             model_used=model_used,
             latency_ms=latency_ms,
+            session_ended=session_ended,
         )
 
         turn_event = TurnEvent(
@@ -2425,6 +2492,9 @@ class AgentCore(AgentCoreBase):
                 is_resumption=is_resumption,
                 guardrail_constraints=guardrail_constraints,
                 user_state_guidance=stream_user_state_guidance_text,
+                session_end_eval_prompt=(
+                    self._session_end_eval_prompt if self._session_end_eval_enabled else None
+                ),
             )
 
             if is_resumption:
@@ -2673,6 +2743,7 @@ class AgentCore(AgentCoreBase):
                 model_used=model_used,
                 latency_ms=latency_ms,
                 turn_id=turn_id,
+                session_ended=bool(getattr(self._manager_agent, "session_ended", False)),
             )
 
             # ── Steps 12-13: Async post-turn ───────────────────────────

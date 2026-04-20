@@ -58,6 +58,38 @@ class ToolRegistry:
             },
         )
 
+    def register_internal(
+        self,
+        *,
+        name: str,
+        route: str,
+        description: str,
+        input_schema: dict,
+    ) -> None:
+        """Register an orchestrator-routed internal tool at runtime.
+
+        Used by the orchestrator (GH-137) to inject built-in signals such as
+        ``end_session`` without requiring a domain config entry. Idempotent:
+        re-registering a tool with the same name overwrites the previous entry.
+
+        Args:
+            name:         Tool name exposed to the LLM.
+            route:        Route target (e.g. ``"orchestrator"``) used by the
+                          manager_agent to decide how to handle the tool call.
+            description:  Tool description shown to the LLM.
+            input_schema: JSON Schema for the tool's input parameters.
+        """
+        if not name:
+            raise ValueError("name must not be empty")
+        # Replace any existing entry with the same name, then append.
+        self._tool_definitions = [t for t in self._tool_definitions if t.get("name") != name]
+        self._tool_definitions.append({
+            "name": name,
+            "description": description,
+            "input_schema": input_schema,
+        })
+        self._tool_routes[name] = route
+
     def get_tool_definitions(self) -> list[dict]:
         """Return all enabled tool definitions."""
         return list(self._tool_definitions)

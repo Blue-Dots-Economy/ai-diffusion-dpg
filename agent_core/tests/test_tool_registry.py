@@ -150,3 +150,48 @@ def test_raises_error_when_gateway_raises():
     gateway.list_available_tools.side_effect = RuntimeError("gateway down")
     with pytest.raises(RuntimeError, match="gateway down"):
         ToolRegistry(config={}, gateway=gateway)
+
+
+# ---------------------------------------------------------------------------
+# GH-137: register_internal
+# ---------------------------------------------------------------------------
+
+
+def test_register_internal_adds_tool_definition_and_route():
+    gateway = _make_gateway([])
+    registry = ToolRegistry(config={}, gateway=gateway)
+    registry.register_internal(
+        name="end_session",
+        route="orchestrator",
+        description="desc",
+        input_schema={"type": "object", "properties": {}, "required": []},
+    )
+    names = registry.get_tool_names()
+    assert "end_session" in names
+    assert registry.get_route("end_session") == "orchestrator"
+    # Tool definition only carries Anthropic-compatible keys.
+    defs = [t for t in registry.get_tool_definitions() if t["name"] == "end_session"]
+    assert defs and set(defs[0].keys()) == {"name", "description", "input_schema"}
+
+
+def test_register_internal_idempotent_on_duplicate_name():
+    gateway = _make_gateway([])
+    registry = ToolRegistry(config={}, gateway=gateway)
+    registry.register_internal(
+        name="end_session", route="orchestrator",
+        description="v1", input_schema={"type": "object"},
+    )
+    registry.register_internal(
+        name="end_session", route="orchestrator",
+        description="v2", input_schema={"type": "object"},
+    )
+    defs = [t for t in registry.get_tool_definitions() if t["name"] == "end_session"]
+    assert len(defs) == 1
+    assert defs[0]["description"] == "v2"
+
+
+def test_register_internal_rejects_empty_name():
+    gateway = _make_gateway([])
+    registry = ToolRegistry(config={}, gateway=gateway)
+    with pytest.raises(ValueError, match="name must not be empty"):
+        registry.register_internal(name="", route="orchestrator", description="d", input_schema={})

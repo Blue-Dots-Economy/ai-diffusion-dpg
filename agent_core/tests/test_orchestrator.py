@@ -1118,3 +1118,138 @@ def test_agentcore_init_user_state_disabled_empty_cache():
     assert agent._user_state_enabled is False
     assert agent._user_state_guidance_by_id == {}
     assert agent._user_state_default == ""
+
+
+# ---------------------------------------------------------------------------
+# GH-137: session_end_eval + end_session tool registration
+# ---------------------------------------------------------------------------
+
+
+def _config_with_session_end_eval(enabled: bool, prompt: str = "") -> dict:
+    """Clone VALID_CONFIG and inject conversation.session_end_eval."""
+    cfg = {k: (v.copy() if isinstance(v, dict) else v) for k, v in VALID_CONFIG.items()}
+    conv = dict(cfg.get("conversation", {}))
+    conv["session_end_eval"] = {"enabled": enabled, "prompt": prompt}
+    cfg["conversation"] = conv
+    return cfg
+
+
+def _make_agent_with_config(config: dict, workflow: MagicMock = None) -> AgentCore:
+    """Build an AgentCore with a specific config and a real-ish tool_registry mock."""
+    memory = MagicMock()
+    memory.context_bundle.return_value = ContextBundle(
+        session={"current_subagent_id": "market_truth"}, profile={}, journey=None
+    )
+    trust = MagicMock()
+    trust.check_input.return_value = ALLOW
+    trust.check_output.return_value = ALLOW
+    knowledge_engine = MagicMock()
+    llm = MagicMock()
+    llm.call.return_value = LLMResponse(
+        content="LLM response.", tool_calls=[], stop_reason="end_turn",
+        model_used="claude-primary",
+    )
+    tool_registry = MagicMock()
+    tool_registry.get_tool_definitions.return_value = []
+    # Record register_internal calls so tests can assert on them.
+    manager = MagicMock()
+    manager.build_system_prompt.return_value = ""
+    manager.build_messages.return_value = [{"role": "user", "content": "Hello"}]
+    manager.run_turn.return_value = ("Final response.", [], [])
+    manager.session_ended = False
+    learning = MagicMock()
+    if workflow is None:
+        workflow = _make_workflow()
+
+    agent = AgentCore(
+        config=config,
+        llm_wrapper=llm,
+        memory=memory,
+        trust=trust,
+        knowledge_engine=knowledge_engine,
+        tool_registry=tool_registry,
+        manager_agent=manager,
+        learning=learning,
+        workflow=workflow,
+    )
+    agent._language_normaliser = MagicMock()
+    agent._language_normaliser.normalise.return_value = ("Hello", "english")
+    agent._nlu_processor = MagicMock()
+    agent._nlu_processor.process.return_value = _DEFAULT_NLU
+    return agent
+
+
+def test_session_end_eval_disabled_by_default():
+    """VALID_CONFIG has no session_end_eval — orchestrator caches disabled + empty prompt."""
+    agent = _make_agent()
+    assert agent._session_end_eval_enabled is False
+    assert agent._session_end_eval_prompt == ""
+
+
+def test_session_end_eval_enabled_registers_end_session_tool():
+    """When enabled, orchestrator calls tool_registry.register_internal for end_session."""
+    cfg = _config_with_session_end_eval(enabled=True, prompt="Call end_session at goodbye.")
+    agent = _make_agent_with_config(cfg)
+    assert agent._session_end_eval_enabled is True
+    assert agent._session_end_eval_prompt == "Call end_session at goodbye."
+    # register_internal should have been called with name=end_session, route=orchestrator.
+    agent._tool_registry.register_internal.assert_called_once()
+    kwargs = agent._tool_registry.register_internal.call_args.kwargs
+    assert kwargs["name"] == "end_session"
+    assert kwargs["route"] == "orchestrator"
+    assert "reason" in kwargs["input_schema"]["properties"]
+
+
+def test_session_end_eval_disabled_does_not_register_end_session():
+    """When disabled, no register_internal call is made."""
+    cfg = _config_with_session_end_eval(enabled=False)
+    agent = _make_agent_with_config(cfg)
+    agent._tool_registry.register_internal.assert_not_called()
+
+
+def test_session_end_eval_enabled_extends_subagent_tool_defs():
+    """When enabled, every subagent's tool_defs entry gains end_session."""
+    cfg = _config_with_session_end_eval(enabled=True, prompt="p")
+    wf = _make_workflow()
+    # Seed with a pre-existing tool in the subagent's defs list.
+    wf.tool_defs = {"market_truth": [{"name": "existing_tool"}]}
+    _ = _make_agent_with_config(cfg, workflow=wf)
+    names = {t["name"] for t in wf.tool_defs["market_truth"]}
+    assert "end_session" in names
+    assert "existing_tool" in names
+
+
+def test_session_end_eval_prompt_passed_into_build_system_prompt():
+    """process_turn passes session_end_eval_prompt to build_system_prompt when enabled."""
+    cfg = _config_with_session_end_eval(enabled=True, prompt="Call end_session at goodbye.")
+    agent = _make_agent_with_config(cfg)
+    agent.process_turn(_turn_input())
+    kwargs = agent._manager_agent.build_system_prompt.call_args.kwargs
+    assert kwargs.get("session_end_eval_prompt") == "Call end_session at goodbye."
+
+
+def test_session_end_eval_prompt_none_when_disabled():
+    """When disabled, session_end_eval_prompt arg is None."""
+    cfg = _config_with_session_end_eval(enabled=False, prompt="ignored")
+    agent = _make_agent_with_config(cfg)
+    agent.process_turn(_turn_input())
+    kwargs = agent._manager_agent.build_system_prompt.call_args.kwargs
+    assert kwargs.get("session_end_eval_prompt") is None
+
+
+def test_process_turn_threads_session_ended_true_into_turn_result():
+    """When manager.session_ended=True, TurnResult.session_ended is True."""
+    cfg = _config_with_session_end_eval(enabled=True, prompt="p")
+    agent = _make_agent_with_config(cfg)
+    agent._manager_agent.session_ended = True
+    result = agent.process_turn(_turn_input())
+    assert result.session_ended is True
+
+
+def test_process_turn_session_ended_default_false():
+    """When manager.session_ended=False, TurnResult.session_ended is False (default)."""
+    agent = _make_agent()
+    # Default manager mock has no session_ended attr explicitly set → None/Mock; guard below.
+    agent._manager_agent.session_ended = False
+    result = agent.process_turn(_turn_input())
+    assert result.session_ended is False

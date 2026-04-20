@@ -522,3 +522,98 @@ def test_system_prompt_no_guardrails_backward_compatible():
         profile={},
     )
     assert "You are an assistant." in result
+
+
+# ---------------------------------------------------------------------------
+# GH-137: session_end_eval + end_session tool
+# ---------------------------------------------------------------------------
+
+
+def test_build_system_prompt_session_end_eval_prompt_rendered():
+    """session_end_eval_prompt is rendered as a '## Session-end evaluation' section."""
+    manager = _make_manager_for_prompt()
+    result = manager.build_system_prompt(
+        agent_system_prompt="A",
+        subagent_system_prompt="B",
+        detected_language="hindi",
+        channel="cli",
+        profile={},
+        session_end_eval_prompt="Call end_session when the user says goodbye.",
+    )
+    assert "## Session-end evaluation" in result
+    assert "Call end_session when the user says goodbye." in result
+
+
+def test_build_system_prompt_session_end_eval_prompt_none_no_section():
+    """When session_end_eval_prompt is None, no section is emitted."""
+    manager = _make_manager_for_prompt()
+    result = manager.build_system_prompt(
+        agent_system_prompt="A",
+        subagent_system_prompt="B",
+        detected_language="hindi",
+        channel="cli",
+        profile={},
+        session_end_eval_prompt=None,
+    )
+    assert "Session-end evaluation" not in result
+    assert "end_session" not in result
+
+
+def test_build_system_prompt_session_end_eval_empty_string_no_section():
+    """Empty string also renders no section (falsy)."""
+    manager = _make_manager_for_prompt()
+    result = manager.build_system_prompt(
+        agent_system_prompt="A",
+        subagent_system_prompt="B",
+        detected_language="hindi",
+        channel="cli",
+        profile={},
+        session_end_eval_prompt="",
+    )
+    assert "Session-end evaluation" not in result
+
+
+def test_session_ended_flag_defaults_false():
+    """Fresh ManagerAgent reports session_ended=False before any turn."""
+    agent, *_ = _make_manager([_text_llm_response()])
+    assert agent.session_ended is False
+
+
+def test_end_session_tool_sets_session_ended_and_skips_executor():
+    """LLM calling end_session marks the flag, synthesises benign tool_result, and does not call gateway."""
+    end_session_call = ToolCall(
+        tool_name="end_session",
+        tool_use_id="tu_end_1",
+        input_params={"reason": "user_goodbye"},
+    )
+    first = LLMResponse(
+        content=None,
+        tool_calls=[end_session_call],
+        stop_reason="tool_use",
+        model_used="claude-primary",
+    )
+    final = _text_llm_response("Goodbye.")
+    agent, llm, _registry, gateway, _trust = _make_manager([first, final])
+
+    text, tool_calls, tool_results = agent.run_turn(MESSAGES, SESSION_ID, first)
+
+    assert agent.session_ended is True
+    assert text == "Goodbye."
+    assert len(tool_calls) == 1 and tool_calls[0].tool_name == "end_session"
+    assert len(tool_results) == 1
+    assert tool_results[0].success is True
+    assert tool_results[0].tool_name == "end_session"
+    # Gateway must NOT be invoked — end_session is orchestrator-routed, no external exec.
+    gateway.execute.assert_not_called()
+    # Follow-up LLM call is expected (one tool round completed).
+    llm.call.assert_called_once()
+
+
+def test_run_turn_resets_session_ended_flag_each_turn():
+    """Calling run_turn resets the session_ended flag at the top of the loop."""
+    initial = _text_llm_response("ok")
+    agent, *_ = _make_manager([initial])
+    # Pre-set the flag and run a no-tool turn; flag must reset to False.
+    agent._session_ended_flag = True
+    agent.run_turn(MESSAGES, SESSION_ID, initial)
+    assert agent.session_ended is False
