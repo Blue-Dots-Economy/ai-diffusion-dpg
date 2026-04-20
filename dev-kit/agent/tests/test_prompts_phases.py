@@ -193,3 +193,22 @@ def test_memory_phase_mentions_contact_memory_states():
     text = get_phase_addition("memory")
     for s in ["new", "sparse", "rich", "mid-journey", "post-application"]:
         assert s in text.lower() or s.replace("-", "_") in text.lower()
+
+
+def test_user_state_phase_mentions_guide_section_and_threshold():
+    text = get_phase_addition("user_state")
+    assert "§2.5" in text or "Conversation State Model" in text
+    assert "user_state_confidence_threshold" in text
+
+
+def test_trust_phase_dignity_check_questions_present():
+    text = get_phase_addition("trust")
+    for q in ["blame", "over-promise", "urgency", "agency", "script"]:
+        assert q in text.lower()
+
+
+def test_tools_phase_lists_six_invocation_rule_fields():
+    text = get_phase_addition("tools")
+    for f in ["call_when", "required_before_calling", "must_not_substitute",
+              "on_empty", "on_failure", "bridge_line"]:
+        assert f in text
