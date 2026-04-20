@@ -156,3 +156,18 @@ class TestGetPhaseAddition:
         text = get_phase_addition("overview")
         assert "user_state" in text
         assert text.index("memory") < text.index("user_state") < text.index("trust")
+
+
+def test_tier_phase_returns_decision_tree():
+    text = get_phase_addition("tier")
+    assert "Q1" in text and "Q2" in text and "Q3" in text and "Q4" in text
+    assert "Transactional" in text
+    assert "Informational" in text
+    assert "Agentic" in text
+    assert "Conversational" in text
+    assert "set_agent_type" in text
+
+
+def test_overview_phase_mentions_tier_as_first():
+    text = get_phase_addition("overview")
+    assert "tier" in text.lower()
