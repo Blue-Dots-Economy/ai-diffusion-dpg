@@ -38,3 +38,13 @@ trust:
 
 observability:
   domain: ""                          # domain slug, e.g. kkb
+
+dignity_check:                        # NEW (GH-137) — auto-populated for Conversational agents
+  enabled: false                      # dev-kit flips true for Conversational
+  questions:                          # authors can override; defaults from the guide
+    - "Does this blame the user?"
+    - "Does it over-promise?"
+    - "Does it push urgency?"
+    - "Does it reduce their agency?"
+    - "Does it sound like a script instead of a human call?"
+  fail_action: "rewrite"              # schema-accepted; runtime ignores in this PR
