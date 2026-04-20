@@ -375,3 +375,99 @@ async def test_direct_mode_default_does_not_require_channel(config):
     # Should construct without channel and without raising.
     proc = AgentCoreLLMProcessor(config, call_sid="CA1", session_id="s1")
     assert proc._assembly_mode == "direct"
+
+
+# ---------------------------------------------------------------------------
+# GH-137 Task 14 — terminal word + telephony close on DoneEvent.session_ended
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_telephony():
+    """Fake telephony with an async close_call recording the reason."""
+    tel = MagicMock()
+    tel.closed = False
+    tel.close_reason = None
+
+    async def _close(*, reason: str = "normal"):
+        tel.closed = True
+        tel.close_reason = reason
+
+    tel.close_call = _close
+    return tel
+
+
+@pytest.mark.asyncio
+async def test_done_event_session_ended_appends_terminal_word(config):
+    """On DoneEvent.session_ended=True, terminal word is pushed and telephony close is invoked."""
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+    from reach_layer_base import DoneEvent
+
+    pushed = []
+    telephony = _make_fake_telephony()
+    proc = AgentCoreLLMProcessor(
+        config,
+        call_sid="CA1",
+        session_id="s1",
+        channel_config={"terminal_word": "Goodbye"},
+        telephony=telephony,
+    )
+    proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
+
+    await proc._handle_done_event(DoneEvent(session_ended=True, turn_status="completed"))
+
+    assert any(getattr(f, "text", "") == "Goodbye" for f in pushed)
+    assert telephony.closed is True
+    assert telephony.close_reason == "session_end"
+
+
+@pytest.mark.asyncio
+async def test_done_event_session_ended_false_does_not_append_or_close(config):
+    """When session_ended=False the processor must not append terminal word or close the call."""
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+    from reach_layer_base import DoneEvent
+
+    pushed = []
+    telephony = _make_fake_telephony()
+    proc = AgentCoreLLMProcessor(
+        config,
+        call_sid="CA1",
+        session_id="s1",
+        channel_config={"terminal_word": "Goodbye"},
+        telephony=telephony,
+    )
+    proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
+
+    await proc._handle_done_event(DoneEvent(session_ended=False, turn_status="completed"))
+
+    assert not any(getattr(f, "text", "") == "Goodbye" for f in pushed)
+    assert telephony.closed is False
+
+
+@pytest.mark.asyncio
+async def test_done_event_session_ended_empty_terminal_word_logs_warning(config, caplog):
+    """Empty terminal_word still triggers close but logs a warning and appends nothing."""
+    import logging as _logging
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+    from reach_layer_base import DoneEvent
+
+    pushed = []
+    telephony = _make_fake_telephony()
+    proc = AgentCoreLLMProcessor(
+        config,
+        call_sid="CA1",
+        session_id="s1",
+        channel_config={"terminal_word": ""},
+        telephony=telephony,
+    )
+    proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
+
+    with caplog.at_level(_logging.WARNING, logger="src.pipecat_services.agent_core_llm"):
+        await proc._handle_done_event(DoneEvent(session_ended=True, turn_status="completed"))
+
+    assert telephony.closed is True
+    # Nothing text-bearing was pushed.
+    assert all(getattr(f, "text", "") == "" for f in pushed)
+    assert any(
+        "terminal_word" in rec.getMessage() or "terminal word" in rec.getMessage()
+        for rec in caplog.records
+    )

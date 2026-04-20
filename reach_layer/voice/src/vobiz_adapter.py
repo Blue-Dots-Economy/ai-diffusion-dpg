@@ -64,6 +64,10 @@ class VobizAdapter(TelephonyAdapterBase):
         self._sample_rate = int(
             config.get("telephony_adapter", {}).get("vobiz", {}).get("sample_rate", 8000)
         )
+        # GH-137: reference to the active call's WebSocket, populated inside
+        # handle_call(). Used by close_call() to terminate the call when Agent
+        # Core signals a session end (DoneEvent.session_ended=True).
+        self._active_websocket: WebSocket | None = None
 
     async def handle_call(self, call_sid: str, caller_id: str, websocket: WebSocket) -> None:
         """Handle the full lifecycle of one Vobiz inbound call.
@@ -119,12 +123,23 @@ class VobizAdapter(TelephonyAdapterBase):
         session_id = str(uuid.uuid4())
 
         stt = RayaSTTService(self._config)
+        # GH-137: pass the top-level channels.voice block and the adapter itself
+        # so the processor can append the terminal word and request a call close
+        # when Agent Core signals DoneEvent.session_ended=True.
+        channel_config = (
+            self._config.get("channels", {}).get("voice", {})
+            if isinstance(self._config, dict)
+            else {}
+        )
+        self._active_websocket = websocket
         agent = AgentCoreLLMProcessor(
             self._config,
             call_sid=call_sid,
             session_id=session_id,
             user_id=caller_id,
             channel=self,
+            channel_config=channel_config,
+            telephony=self,
         )
         tts = RayaTTSService(self._config)
         sanitizer = TTSTextSanitizerProcessor()
@@ -226,6 +241,47 @@ class VobizAdapter(TelephonyAdapterBase):
     # future streaming refactors (issue #71 follow-ups) have observable
     # extension points without another signature change.
     # ------------------------------------------------------------------
+
+    async def close_call(self, *, reason: str = "normal") -> None:
+        """Close the active call (GH-137).
+
+        Invoked by AgentCoreLLMProcessor when Agent Core signals
+        DoneEvent.session_ended=True so the telephony leg is released after the
+        terminal word is spoken.
+
+        Args:
+            reason: Free-form reason string recorded in structured logs.
+        """
+        logger.info(
+            "vobiz_adapter.close_call",
+            extra={
+                "operation": "vobiz_adapter.close_call",
+                "status": "invoked",
+                "reason": reason,
+            },
+        )
+        ws = self._active_websocket
+        if ws is None:
+            logger.warning(
+                "vobiz_adapter.close_call_no_active_ws",
+                extra={
+                    "operation": "vobiz_adapter.close_call",
+                    "status": "skipped",
+                    "reason": "no active websocket",
+                },
+            )
+            return
+        try:
+            await ws.close()
+        except Exception as exc:
+            logger.error(
+                "vobiz_adapter.close_call_failed",
+                extra={
+                    "operation": "vobiz_adapter.close_call",
+                    "status": "failure",
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
 
     async def on_session_start(self, session_id: str, user_id: str) -> None:
         """No-op. Voice sessions are established inside handle_call()."""

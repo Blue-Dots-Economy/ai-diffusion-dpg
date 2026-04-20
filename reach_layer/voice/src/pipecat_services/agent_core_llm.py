@@ -32,7 +32,7 @@ from typing import Optional
 
 import httpx
 
-from pipecat.frames.frames import EndFrame, Frame, TTSSpeakFrame, TranscriptionFrame
+from pipecat.frames.frames import EndFrame, Frame, TextFrame, TTSSpeakFrame, TranscriptionFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from reach_layer_base import DoneEvent, ReachLayerBase, SentenceEvent, SignalEvent
@@ -69,6 +69,8 @@ class AgentCoreLLMProcessor(FrameProcessor):
         session_id: str,
         user_id: str = "",
         channel: Optional[ReachLayerBase] = None,
+        channel_config: Optional[dict] = None,
+        telephony: Optional[object] = None,
     ) -> None:
         super().__init__()
         if config is None:
@@ -90,6 +92,15 @@ class AgentCoreLLMProcessor(FrameProcessor):
         self._session_id = session_id
         self._user_id = user_id
         self._channel = channel
+        # Per-channel runtime config (GH-137). Falls back to the top-level
+        # ``channels.voice`` block in the merged config so callers that only
+        # pass ``config`` keep working without plumbing changes.
+        if channel_config is None:
+            channel_config = (
+                config.get("channels", {}).get("voice", {}) if isinstance(config, dict) else {}
+            )
+        self._channel_config = channel_config or {}
+        self._telephony = telephony
 
         # Read assembly_mode from reach_layer.channels.voice. Defaults to "direct"
         # so existing tests and pre-config installs keep their current behaviour.
@@ -307,9 +318,11 @@ class AgentCoreLLMProcessor(FrameProcessor):
                             "was_escalated": was_escalated,
                             "was_tool_used": event.was_tool_used,
                             "turn_status": event.turn_status,
+                            "session_ended": getattr(event, "session_ended", False),
                             "call_sid": self._call_sid,
                         },
                     )
+                    await self._handle_done_event(event)
                     break
         except Exception as exc:
             latency_ms = int((time.time() - start) * 1000)
@@ -344,3 +357,54 @@ class AgentCoreLLMProcessor(FrameProcessor):
                 },
             )
             await self.push_frame(EndFrame())
+
+    async def _handle_done_event(self, event: DoneEvent) -> None:
+        """Handle session-ending semantics on a DoneEvent (GH-137).
+
+        When ``event.session_ended`` is True, push the configured terminal word
+        as a final utterance frame (so TTS speaks it before the call drops) and
+        request the telephony adapter to close the call. If the configured
+        terminal word is empty, log a warning and still close the call.
+
+        Args:
+            event: The DoneEvent emitted by Agent Core at end of turn.
+        """
+        if not getattr(event, "session_ended", False):
+            return
+
+        terminal_word = (self._channel_config or {}).get("terminal_word", "") or ""
+        if terminal_word:
+            await self.push_frame(TextFrame(terminal_word))
+        else:
+            logger.warning(
+                "agent_core_llm.session_ended_no_terminal_word",
+                extra={
+                    "operation": "agent_core_llm.done",
+                    "status": "skipped",
+                    "reason": "terminal_word empty",
+                    "call_sid": self._call_sid,
+                },
+            )
+
+        if self._telephony is not None:
+            try:
+                await self._telephony.close_call(reason="session_end")
+            except Exception as exc:
+                logger.error(
+                    "agent_core_llm.close_call_error",
+                    extra={
+                        "operation": "agent_core_llm.done",
+                        "status": "failure",
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "call_sid": self._call_sid,
+                    },
+                )
+
+        logger.info(
+            "agent_core_llm.session_ended",
+            extra={
+                "operation": "agent_core_llm.done",
+                "status": "success",
+                "call_sid": self._call_sid,
+            },
+        )

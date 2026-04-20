@@ -43,6 +43,7 @@ class DoneEvent:
     model_used: str = ""
     latency_ms: int = 0
     turn_id: str = ""
+    session_ended: bool = False
     type: str = "done"
 
 

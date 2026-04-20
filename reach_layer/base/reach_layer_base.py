@@ -392,6 +392,7 @@ class ReachLayerBase(ABC):
                 model_used=payload.get("model_used", ""),
                 latency_ms=payload.get("latency_ms", 0),
                 turn_id=payload.get("turn_id", ""),
+                session_ended=payload.get("session_ended", False),
             )
         else:
             return None
