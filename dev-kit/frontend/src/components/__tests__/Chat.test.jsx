@@ -63,6 +63,29 @@ describe('Chat — file attachment', () => {
     })
   })
 
+  it('resets the file input value after selection so the same file can be re-selected', async () => {
+    render(<Chat slug="test-project" onDashboard={vi.fn()} onBack={vi.fn()} />)
+    await waitFor(() => screen.getByTitle(/attach spec file/i))
+
+    const fileInput = document.querySelector('input[type="file"]')
+    const specContent = 'openapi: "3.0.0"\npaths: {}'
+    const file = new File([specContent], 'api.yaml', { type: 'text/yaml' })
+
+    // Simulate the browser setting a value before the change event
+    Object.defineProperty(fileInput, 'value', { value: 'C:\\fakepath\\api.yaml', writable: true, configurable: true })
+
+    await act(async () => {
+      Object.defineProperty(fileInput, 'files', { value: [file], configurable: true })
+      fireEvent.change(fileInput)
+    })
+
+    // attachFile should have reset value to '' immediately
+    expect(fileInput.value).toBe('')
+
+    // Wait for the async api.chat call triggered by FileReader to complete
+    await waitFor(() => expect(api.chat).toHaveBeenCalled())
+  })
+
   it('does not send a message if file exceeds 500 KB', async () => {
     render(<Chat slug="test-project" onDashboard={vi.fn()} onBack={vi.fn()} />)
     await waitFor(() => screen.getByTitle(/attach spec file/i))

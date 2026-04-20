@@ -151,6 +151,7 @@ export default function Chat({ slug, onDashboard, onBack }) {
         setMessages(m => [...m, { role: 'error', text: `Error: ${err.message}` }])
       } finally {
         setLoading(false)
+        setTimeout(() => textareaRef.current?.focus(), 0)
       }
     }
     reader.readAsText(file)
