@@ -893,7 +893,7 @@ class ToolHandler:
                 "latency_ms": int((time.time() - start) * 1000),
             },
         )
-        field_names = ", ".join(f["target"] for f in fields[:5])
+        field_names = ", ".join(f.get("target", "?") for f in fields[:5])
         if len(fields) > 5:
             field_names += "…"
         return (

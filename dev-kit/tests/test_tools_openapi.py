@@ -154,6 +154,7 @@ class TestSetResponseTransformation:
         assert mapping[0]["source"] == "results[*].title"
         assert mapping[0]["target"] == "job_title"
         assert mapping[1]["target"] == "company"
+        assert job_tool["response"]["max_size_chars"] == 4000
 
     def test_returns_error_for_nonexistent_tool(self, handler):
         result = handler.dispatch("set_response_transformation", {
