@@ -27,6 +27,13 @@ conversation:
   unsupported_language_message: ""  # shown when user requests a language not in supported_languages
   profile_complete_message: ""  # confirm profile collection is complete
   returning_user_greeting: ""   # personalised greeting for returning users
+  user_state_model:              # optional — Conversational agents only (GH-139)
+    enabled: false               # when false, block is a no-op
+    default_state: ""            # required when enabled=true; must match a state id below
+    states:                       # required when enabled=true; non-empty
+      - id: ""                   # unique, non-empty, snake_case
+        signals: []              # natural-language phrases the NLU uses as hints
+        guidance: ""             # required when enabled=true; injected into main LLM prompt
 
 connectors:
   read:                         # connectors that retrieve data; no consent needed
@@ -81,6 +88,7 @@ preprocessing:
   nlu_processor:
     model: ""                   # required — Claude model ID for NLU classification
     confidence_threshold: 0.5   # intents below this treated as unknown (0.0–1.0)
+    user_state_confidence_threshold: 0.4   # below this, user-state classification stays sticky (previous state retained)
     domain_instruction: ""      # system prompt context for NLU classifier
     intents:                    # required — complete flat list of ALL intent identifiers
       - greeting
