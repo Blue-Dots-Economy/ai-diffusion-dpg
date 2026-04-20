@@ -171,3 +171,25 @@ def test_tier_phase_returns_decision_tree():
 def test_overview_phase_mentions_tier_as_first():
     text = get_phase_addition("overview")
     assert "tier" in text.lower()
+
+
+def test_language_phase_mentions_tts_rules():
+    text = get_phase_addition("language")
+    assert "TTS" in text or "tts_rules" in text
+
+
+def test_language_phase_mentions_terminal_word_for_voice():
+    text = get_phase_addition("language")
+    assert "terminal_word" in text or "terminal word" in text.lower()
+
+
+def test_knowledge_phase_per_type_hint():
+    text = get_phase_addition("knowledge")
+    assert "Informational" in text
+    assert "Transactional" in text or "skip" in text.lower()
+
+
+def test_memory_phase_mentions_contact_memory_states():
+    text = get_phase_addition("memory")
+    for s in ["new", "sparse", "rich", "mid-journey", "post-application"]:
+        assert s in text.lower() or s.replace("-", "_") in text.lower()
