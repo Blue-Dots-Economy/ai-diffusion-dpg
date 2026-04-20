@@ -132,11 +132,11 @@ def _make_agent_core(**overrides):
         "agent": {
             "primary_model": "test-model",
             "fallback_model": "test-fallback",
-            "channels": {
-                "cli": {"system_prompt_suffix": ""},
-                "voice": {"system_prompt_suffix": ""},
-                "web": {"system_prompt_suffix": ""},
-            },
+        },
+        "channels": {
+            "cli": {"system_prompt_suffix": ""},
+            "voice": {"system_prompt_suffix": ""},
+            "web": {"system_prompt_suffix": ""},
         },
         "conversation": {
             "blocked_message": "Blocked.",
