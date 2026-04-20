@@ -119,7 +119,7 @@ export default function Chat({ slug, onDashboard, onBack }) {
 
   async function attachFile(e) {
     const file = e.target.files?.[0]
-    if (!file) return
+    if (!file || loading) return
 
     // Reset the input so the same file can be re-selected
     e.target.value = ''
@@ -153,6 +153,9 @@ export default function Chat({ slug, onDashboard, onBack }) {
         setLoading(false)
         setTimeout(() => textareaRef.current?.focus(), 0)
       }
+    }
+    reader.onerror = () => {
+      setMessages(m => [...m, { role: 'error', text: `Error: Failed to read file "${file.name}".` }])
     }
     reader.readAsText(file)
   }

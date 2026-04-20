@@ -86,6 +86,26 @@ describe('Chat — file attachment', () => {
     await waitFor(() => expect(api.chat).toHaveBeenCalled())
   })
 
+  it('shows an error message when api.chat fails during file attachment', async () => {
+    api.chat.mockRejectedValueOnce(new Error('Network error'))
+
+    render(<Chat slug="test-project" onDashboard={vi.fn()} onBack={vi.fn()} />)
+    await waitFor(() => screen.getByTitle(/attach spec file/i))
+
+    const fileInput = document.querySelector('input[type="file"]')
+    const specContent = 'openapi: "3.0.0"\npaths: {}'
+    const file = new File([specContent], 'api.yaml', { type: 'text/yaml' })
+
+    await act(async () => {
+      Object.defineProperty(fileInput, 'files', { value: [file], configurable: true })
+      fireEvent.change(fileInput)
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText(/Error: Network error/i)).toBeInTheDocument()
+    })
+  })
+
   it('does not send a message if file exceeds 500 KB', async () => {
     render(<Chat slug="test-project" onDashboard={vi.fn()} onBack={vi.fn()} />)
     await waitFor(() => screen.getByTitle(/attach spec file/i))
