@@ -212,3 +212,19 @@ def test_tools_phase_lists_six_invocation_rule_fields():
     for f in ["call_when", "required_before_calling", "must_not_substitute",
               "on_empty", "on_failure", "bridge_line"]:
         assert f in text
+
+
+def test_workflow_phase_mentions_opening_phrase():
+    text = get_phase_addition("workflow")
+    assert "opening_phrase" in text
+    assert "is_start" in text
+
+
+def test_reach_phase_mentions_consolidated_channels_note():
+    text = get_phase_addition("reach")
+    assert "agent_core.channels" in text or "channels.voice" in text
+
+
+def test_review_phase_mentions_validate_config():
+    text = get_phase_addition("review")
+    assert "validate_config" in text
