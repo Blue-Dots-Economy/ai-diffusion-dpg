@@ -94,6 +94,7 @@ class SubAgent:
         system_prompt:    System prompt injected for LLM calls in this subagent.
         output_format:    JSON schema for structured output validation, or None.
         routing:          Routing rules emitted from this subagent.
+        opening_phrase:   Optional opening phrase spoken/displayed when entering this subagent.
     """
 
     id: str
@@ -107,6 +108,7 @@ class SubAgent:
     system_prompt: str
     output_format: dict | None
     routing: list[RoutingRule]
+    opening_phrase: str = ""
 
 
 @dataclass
@@ -439,6 +441,7 @@ class AgentWorkflowLoader:
         tools: list[str] = raw.get("tools") or []
         system_prompt: str = raw.get("system_prompt", "")
         output_format: dict | None = raw.get("output_format") or None
+        opening_phrase: str = str(raw.get("opening_phrase", "") or "")
 
         routing_raw: list[dict] = raw.get("routing") or []
         routing: list[RoutingRule] = [
@@ -458,6 +461,7 @@ class AgentWorkflowLoader:
             system_prompt=system_prompt,
             output_format=output_format,
             routing=routing,
+            opening_phrase=opening_phrase,
         )
 
     # ------------------------------------------------------------------

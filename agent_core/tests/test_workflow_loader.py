@@ -717,3 +717,130 @@ def test_session_writes_list_value_raises_config_error(loader, registry):
     )
     with pytest.raises(ConfigurationError, match="session_writes"):
         loader.load(config, registry)
+
+
+# ---------------------------------------------------------------------------
+# opening_phrase field tests (GH-137)
+# ---------------------------------------------------------------------------
+
+
+def test_subagent_opening_phrase_default_empty():
+    from src.workflow_loader import SubAgent
+    sa = SubAgent(
+        id="greeting", name="Greeting", description="d",
+        is_start=True, is_terminal=False, special_handler=None,
+        valid_intents=[], tools=[], system_prompt="",
+        output_format=None, routing=[],
+    )
+    assert sa.opening_phrase == ""
+
+
+def test_subagent_opening_phrase_accepts_string():
+    from src.workflow_loader import SubAgent
+    sa = SubAgent(
+        id="greeting", name="Greeting", description="d",
+        is_start=True, is_terminal=False, special_handler=None,
+        valid_intents=[], tools=[], system_prompt="",
+        output_format=None, routing=[],
+        opening_phrase="नमस्ते।",
+    )
+    assert sa.opening_phrase == "नमस्ते।"
+
+
+def test_loader_extracts_opening_phrase_from_yaml():
+    from src.workflow_loader import AgentWorkflowLoader
+    config = {
+        "agent_workflow": {
+            "workflow_id": "test",
+            "version": "1.0.0",
+            "agent_system_prompt": "You are helpful.",
+            "global_intents": [],
+            "global_routing": [],
+            "default_fallback_subagent_id": "greeting",
+            "subagents": [
+                {
+                    "id": "greeting",
+                    "name": "Greeting",
+                    "description": "Opener",
+                    "is_start": True,
+                    "is_terminal": False,
+                    "valid_intents": ["greeting"],
+                    "tools": [],
+                    "system_prompt": "Greet.",
+                    "opening_phrase": "नमस्ते।",
+                    "routing": [
+                        {"intent": "*", "next_subagent_id": "end"}
+                    ],
+                },
+                {
+                    "id": "end",
+                    "name": "End",
+                    "description": "Terminal",
+                    "is_start": False,
+                    "is_terminal": True,
+                    "valid_intents": [],
+                    "tools": [],
+                    "system_prompt": "Done.",
+                    "routing": [],
+                }
+            ],
+        },
+        "preprocessing": {
+            "nlu_processor": {
+                "intents": ["greeting"],
+            }
+        },
+    }
+    loader = AgentWorkflowLoader()
+    registry = _make_tool_registry()
+    workflow = loader.load(config, registry)
+    assert workflow.subagents["greeting"].opening_phrase == "नमस्ते।"
+
+
+def test_loader_opening_phrase_defaults_empty_when_missing():
+    from src.workflow_loader import AgentWorkflowLoader
+    config = {
+        "agent_workflow": {
+            "workflow_id": "test",
+            "version": "1.0.0",
+            "agent_system_prompt": "You are helpful.",
+            "global_intents": [],
+            "global_routing": [],
+            "default_fallback_subagent_id": "greeting",
+            "subagents": [
+                {
+                    "id": "greeting",
+                    "name": "Greeting",
+                    "description": "Opener",
+                    "is_start": True,
+                    "is_terminal": False,
+                    "valid_intents": ["greeting"],
+                    "tools": [],
+                    "system_prompt": "Greet.",
+                    "routing": [
+                        {"intent": "*", "next_subagent_id": "end"}
+                    ],
+                },
+                {
+                    "id": "end",
+                    "name": "End",
+                    "description": "Terminal",
+                    "is_start": False,
+                    "is_terminal": True,
+                    "valid_intents": [],
+                    "tools": [],
+                    "system_prompt": "Done.",
+                    "routing": [],
+                }
+            ],
+        },
+        "preprocessing": {
+            "nlu_processor": {
+                "intents": ["greeting"],
+            }
+        },
+    }
+    loader = AgentWorkflowLoader()
+    registry = _make_tool_registry()
+    workflow = loader.load(config, registry)
+    assert workflow.subagents["greeting"].opening_phrase == ""
