@@ -15,6 +15,7 @@ from enum import Enum
 from typing import Optional
 
 import jwt
+from fastapi import HTTPException
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
 
@@ -266,6 +267,26 @@ def verify_session_token(token: str, secret: str) -> SessionClaims:
     )
 
 
+# ---------------------------------------------------------------------------
+# Static API key verification — ingest proxy endpoints
+# ---------------------------------------------------------------------------
+
+def verify_api_key(header: Optional[str], expected: str) -> None:
+    """Verify that the X-API-Key header matches the expected static key.
+
+    Used for Reach Layer ingest proxy endpoints to authenticate dev-kit requests.
+
+    Args:
+        header: Value of the X-API-Key header from the incoming request.
+        expected: Expected API key read from env at startup.
+
+    Raises:
+        HTTPException: 401 if header is missing, empty, or does not match expected.
+    """
+    if not header or not expected or header != expected:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+
 def _classify_google_error(message: str) -> Reason:
     """Map google-auth ValueError messages to a Reason enum.
 
@@ -288,6 +309,7 @@ __all__ = [
     "Reason",
     "SessionClaims",
     "issue_session_token",
+    "verify_api_key",
     "verify_google_id_token",
     "verify_session_token",
 ]
