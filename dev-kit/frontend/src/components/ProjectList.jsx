@@ -1,20 +1,22 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../api'
 import ConfirmModal from './ConfirmModal'
-import ImportModal from './ImportModal'
 
 export default function ProjectList({ onOpen }) {
   const [projects, setProjects] = useState([])
+  const [importable, setImportable] = useState([])
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState(null)
   const [deletingSlug, setDeletingSlug] = useState(null)
   const [deleteModal, setDeleteModal] = useState(null)  // null | { slug, name }
-  const [showImportModal, setShowImportModal] = useState(false)
+  const [importingSlug, setImportingSlug] = useState(null)
+  const [importError, setImportError] = useState(null)
 
   useEffect(() => {
     api.listProjects().then(setProjects).catch(() => setProjects([]))
+    api.listImportableProjects().then(setImportable).catch(() => setImportable([]))
   }, [])
 
   async function handleCreate(e) {
@@ -55,10 +57,19 @@ export default function ProjectList({ onOpen }) {
     }
   }
 
-  function handleImport(project) {
-    setProjects(p => [...p, project])
-    setShowImportModal(false)
-    onOpen(project.slug)
+  async function handleImport(slug) {
+    setImportingSlug(slug)
+    setImportError(null)
+    try {
+      const project = await api.importProject(slug)
+      setProjects(p => [...p, project])
+      setImportable(list => list.filter(item => item.slug !== slug))
+      onOpen(project.slug)
+    } catch (err) {
+      setImportError(err.message)
+    } finally {
+      setImportingSlug(null)
+    }
   }
 
   const phaseLabel = (phase) =>
@@ -107,15 +118,49 @@ export default function ProjectList({ onOpen }) {
         </form>
       </div>
 
-      {/* Import existing */}
-      <div className="w-full max-w-lg mb-4">
-        <button
-          onClick={() => setShowImportModal(true)}
-          className="w-full text-sm text-gray-400 hover:text-gray-200 border border-gray-800 hover:border-gray-600 rounded-xl py-2.5 transition-colors"
-        >
-          Import existing config folder →
-        </button>
-      </div>
+      {/* Importable config folders */}
+      {importable.length > 0 && (
+        <div className="w-full max-w-lg mb-8">
+          <h2 className="text-base font-semibold mb-3 text-gray-200">Import Existing Config Folder</h2>
+          {importError && (
+            <p className="text-red-400 text-sm bg-red-950/40 border border-red-800 rounded-lg px-3 py-2 mb-3">
+              {importError}
+            </p>
+          )}
+          <div className="flex flex-col gap-2">
+            {importable.map(item => {
+              const hasErrors = Object.keys(item.validation_errors || {}).length > 0
+              const blockCount = item.detected_blocks.length
+              return (
+                <div
+                  key={item.slug}
+                  data-testid="importable-row"
+                  className="flex items-center justify-between bg-gray-900 border border-gray-800 hover:border-gray-600 rounded-xl px-4 py-3 transition-colors group"
+                >
+                  <div className="min-w-0">
+                    <p className="font-medium text-sm truncate">{item.slug}</p>
+                    <p className="text-gray-500 text-xs mt-0.5">
+                      {blockCount} {blockCount === 1 ? 'block' : 'blocks'} detected
+                      {hasErrors && (
+                        <span className="ml-2 text-yellow-400 bg-yellow-950/40 border border-yellow-800 rounded-lg px-1.5 py-0.5">
+                          Validation issues
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => handleImport(item.slug)}
+                    disabled={!!importingSlug}
+                    className="ml-4 shrink-0 text-xs bg-gray-800 hover:bg-gray-700 disabled:opacity-40 border border-gray-700 rounded-lg px-3 py-1.5 transition-colors"
+                  >
+                    {importingSlug === item.slug ? 'Importing…' : 'Import →'}
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Existing projects */}
       {projects.length > 0 && (
@@ -159,15 +204,8 @@ export default function ProjectList({ onOpen }) {
         </div>
       )}
 
-      {projects.length === 0 && (
+      {projects.length === 0 && importable.length === 0 && (
         <p className="text-gray-600 text-sm">No projects yet. Create one above.</p>
-      )}
-
-      {showImportModal && (
-        <ImportModal
-          onImport={handleImport}
-          onClose={() => setShowImportModal(false)}
-        />
       )}
 
       {deleteModal && (
