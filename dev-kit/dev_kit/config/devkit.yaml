@@ -1,0 +1,28 @@
+# dev-kit/dev_kit/config/devkit.yaml
+#
+# Framework-level dev-kit operational parameters.
+# All values are framework-scoped and apply to all deployments.
+# Do not add domain-specific values here.
+
+# Identity used for all upload requests until login is implemented.
+user_id: "devkit-operator"
+
+upload:
+  # Maximum number of files allowed per batch submission.
+  max_files_per_upload: 5
+  # Maximum size (MB) for a single file.
+  max_file_size_mb: 30
+  # Supported file extensions for KB document upload.
+  supported_extensions:
+    - ".pdf"
+    - ".txt"
+    - ".md"
+    - ".csv"
+    - ".docx"
+    - ".html"
+
+polling:
+  # How often the frontend polls for job status (seconds).
+  poll_interval_seconds: 5
+  # Maximum total polling duration before showing a timeout message (minutes).
+  poll_timeout_minutes: 15
