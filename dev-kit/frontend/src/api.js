@@ -55,4 +55,26 @@ export const api = {
   getDeployPreview: (slug, options) => request('POST', `/projects/${slug}/deploy/preview`, options),
   executeDeploy: (slug, options) => request('POST', `/projects/${slug}/deploy/execute`, options),
   getDeployStatus: (slug) => request('GET', `/projects/${slug}/deploy/status`),
+
+  // Ingest endpoints
+  getDevKitConfig: () =>
+    request('GET', '/devkit-config'),
+
+  submitIngestBatch: (slug, formData) =>
+    // formData is a FormData object containing metadata + file parts
+    // Must use raw fetch (not request()) so the browser sets the multipart boundary
+    fetch(`/api/ingest/submit`, {
+      method: 'POST',
+      body: formData,
+      // Do NOT set Content-Type — browser sets it with correct boundary for multipart
+    }).then(async (res) => {
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ detail: res.statusText }))
+        throw new Error(body.detail || `HTTP ${res.status}`)
+      }
+      return res.json()
+    }),
+
+  getJobStatus: (jobId) =>
+    request('GET', `/ingest/job/${jobId}`),
 }
