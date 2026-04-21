@@ -78,10 +78,22 @@ class AsyncActionGatewayHttpClient(AsyncActionGatewayBase):
         """Return pre-computed tool definitions."""
         return list(self._tool_definitions)
 
-    async def execute(self, tool_call: ToolCall, session_id: str) -> ToolResult:
+    async def execute(
+        self,
+        tool_call: ToolCall,
+        session_id: str,
+        user_id: str = "",
+    ) -> ToolResult:
         """Execute a single tool call via the Action Gateway.
 
         Always returns ToolResult — never raises.
+
+        Args:
+            tool_call: Tool_use block from the LLM.
+            session_id: Session identifier.
+            user_id: Stable user ID (E.164 for voice). Forwarded to Action
+                Gateway so path-templated tools like ``get_profile`` can
+                substitute ``{user_id}`` without the LLM having to pass it.
         """
         if tool_call is None:
             raise ValueError("tool_call must not be None")
@@ -91,6 +103,7 @@ class AsyncActionGatewayHttpClient(AsyncActionGatewayBase):
             "tool_use_id": tool_call.tool_use_id,
             "input_params": tool_call.input_params,
             "session_id": session_id,
+            "user_id": user_id,
         }
 
         try:

@@ -333,3 +333,80 @@ class TestOtelInstrumentation:
         spans = exporter.get_finished_spans()
         action_spans = [s for s in spans if s.name == "action.execute"]
         assert len(action_spans) == 0
+
+
+# ---------------------------------------------------------------------------
+# GH-151 follow-up: /mock/* endpoints backing the demo tools
+# ---------------------------------------------------------------------------
+
+
+class TestMockProfileAndApply:
+    """Deterministic canned responses that back get_profile / update_profile /
+    apply_job. They are demo fixtures served from the Action Gateway itself so
+    the existing rest_api adapter can exercise the end-to-end tool path
+    without any external service."""
+
+    def _client(self):
+        registry = AdapterRegistry()
+        return TestClient(create_app(registry))
+
+    def test_get_profile_returns_deterministic_payload(self):
+        client = self._client()
+        r1 = client.get("/mock/profile/+919876543210")
+        r2 = client.get("/mock/profile/+919876543210")
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        # Deterministic: same caller → identical payload across calls.
+        assert r1.json() == r2.json()
+
+        body = r1.json()
+        assert body["user_id"] == "+919876543210"
+        assert body["profile_id"].startswith("prof_")
+        assert body["trade"] == "electrician"
+        assert body["location"] == "Hubli"
+        assert isinstance(body["languages"], list)
+
+    def test_update_profile_acknowledges_fields(self):
+        client = self._client()
+        response = client.post(
+            "/mock/profile/+919876543210",
+            json={"trade": "plumber", "location": "Pune"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "ok"
+        assert body["user_id"] == "+919876543210"
+        assert set(body["updated_fields"]) == {"trade", "location"}
+        assert body["profile_id"].startswith("prof_")
+
+    def test_update_profile_handles_empty_body(self):
+        """Empty dict body must not crash and returns updated_fields=[]."""
+        client = self._client()
+        response = client.post("/mock/profile/user-x", json={})
+        assert response.status_code == 200
+        assert response.json()["updated_fields"] == []
+
+    def test_apply_job_requires_both_ids(self):
+        client = self._client()
+        r1 = client.post("/mock/apply", json={"job_id": "j-1"})
+        assert r1.status_code == 400
+        r2 = client.post("/mock/apply", json={"profile_id": "prof_abc"})
+        assert r2.status_code == 400
+        r3 = client.post("/mock/apply", json={})
+        assert r3.status_code == 400
+
+    def test_apply_job_returns_application_id(self):
+        client = self._client()
+        response = client.post(
+            "/mock/apply",
+            json={"job_id": "j-42", "profile_id": "prof_mock_0001"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "submitted"
+        assert body["job_id"] == "j-42"
+        assert body["profile_id"] == "prof_mock_0001"
+        # application_id is deterministically derived
+        assert body["application_id"] == "app_j-42_0001"
+        assert body["expected_callback_within_hours"] == 24
+        assert body["employer_name"]

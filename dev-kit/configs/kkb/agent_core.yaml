@@ -282,7 +282,13 @@ preprocessing:
     code_switching: true
 
   nlu_processor:
-    model: claude-haiku-4-5-20251001
+    # GH-151 follow-up: moved from Haiku-4.5 to Sonnet-4.6 so prompt caching
+    # actually triggers. Haiku requires ~2048 cacheable tokens to start
+    # caching; the KKB NLU system prompt is ~1100 tokens, so on Haiku every
+    # call was a cold read (~1.8 s). Sonnet's 1024-token minimum means the
+    # same prompt is cached from turn 2 onward, dropping NLU latency to
+    # ~500–800 ms once warm.
+    model: claude-sonnet-4-6
     confidence_threshold: 0.5
     user_state_confidence_threshold: 0.4  # (GH-139) below this, state classification stays sticky
     domain_instruction: |
@@ -680,7 +686,9 @@ agent_workflow:
         - skip_question
         - profile_complete
 
-      tools: []
+      tools:
+        - get_profile
+        - update_profile
 
       system_prompt: |
         ## INTRODUCTION PRIORITY RULE — Check FIRST before anything else
@@ -700,7 +708,7 @@ agent_workflow:
         If this is a new user with no profile in memory:
           1. Say you do not have their profile data and ask permission to fetch it:
              "मेरे पास अभी आपकी प्रोफाइल की जानकारी नहीं है। क्या मैं आपकी प्रोफाइल fetch कर सकती हूँ?"
-          2. If user agrees: call the profile fetch tool. If profile found: give a brief summary of what
+          2. If user agrees: call get_profile. If profile found: give a brief summary of what
              you found, then ask one open-ended question — do NOT immediately call another tool.
           3. If user declines or profile not found: continue naturally with one opening question.
 
@@ -1243,9 +1251,10 @@ agent_workflow:
         - connect_counsellor
         - action_declined   # User backs out at last moment
 
-      tools: []
-        # onest_apply and counsellor_schedule are commented out in action_gateway.yaml (not yet live).
-        # Add them back here once the connectors are uncommented and the env secrets are set.
+      tools:
+        - apply_job
+        # counsellor_schedule is commented out in action_gateway.yaml (not yet live).
+        # Add it back here once the connector is uncommented and the env secret is set.
 
       system_prompt: |
         The user has decided to act. This is the final commitment stage.

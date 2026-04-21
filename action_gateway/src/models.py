@@ -92,12 +92,15 @@ class ExecuteRequest(BaseModel):
         tool_use_id: Identifier from the LLM's tool_use block, returned in the result.
         input_params: Parameters to pass to the tool adapter.
         session_id: Session identifier for contextual or consent checks; defaults to empty string.
+        user_id: Stable user identifier (e.g. E.164 caller ID) used for path
+            templating on tools like ``get_profile``; defaults to empty string.
     """
 
     tool_name: str
     tool_use_id: str
     input_params: dict
     session_id: str = ""
+    user_id: str = ""
 
 
 class ExecuteResponse(BaseModel):

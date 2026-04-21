@@ -140,6 +140,7 @@ def create_app(registry: AdapterRegistry) -> FastAPI:
                 request.tool_name,
                 request.input_params,
                 request.session_id,
+                request.user_id,
             )
 
             if not result.success:
@@ -206,5 +207,124 @@ def create_app(registry: AdapterRegistry) -> FastAPI:
             },
         )
         return HealthResponse(status=overall, adapters=adapter_status)
+
+    # ------------------------------------------------------------------
+    # Mock upstream endpoints (GH-151 follow-up)
+    # ------------------------------------------------------------------
+    # Deterministic canned responses backing the ``get_profile``,
+    # ``update_profile``, and ``apply_job`` tools in the KKB config. They
+    # live on the Action Gateway itself so the existing RestApiAdapter
+    # can call them via http://action_gateway:9999/mock/... without any
+    # extra service, while still exercising the full tool → HTTP →
+    # response-shaping path the real connectors will follow later.
+    #
+    # These endpoints are demo-grade fixtures; switch each tool's
+    # base_url to a real service once one exists and drop these routes.
+
+    _MOCK_PROFILE: dict = {
+        "profile_id": "prof_mock_0001",
+        "trade": "electrician",
+        "location": "Hubli",
+        "age": 28,
+        "languages": ["Hindi", "Kannada"],
+        "years_experience": 5,
+        "certifications": ["ITI"],
+        "preferred_work_mode": ["on-site-no-shift"],
+        "monthly_in_hand_expected": 15000,
+        "language_preference": "hindi",
+        "actions_taken": [],
+    }
+
+    @app.get("/mock/profile/{user_id}")
+    async def mock_get_profile(user_id: str) -> dict:
+        """Return a deterministic canned profile.
+
+        Backs the ``get_profile`` tool. ``user_id`` is echoed back in the
+        response so call logs can correlate, but the payload is the same
+        ``_MOCK_PROFILE`` dict for every caller — this is a demo fixture,
+        not real storage.
+        """
+        logger.info(
+            "mock.get_profile",
+            extra={
+                "operation": "mock.get_profile",
+                "status": "success",
+                "user_id": user_id or "",
+            },
+        )
+        return {**_MOCK_PROFILE, "user_id": user_id or ""}
+
+    @app.post("/mock/profile/{user_id}")
+    async def mock_update_profile(user_id: str, body: dict) -> dict:
+        """Acknowledge a profile update without persisting anything.
+
+        Backs the ``update_profile`` tool. Returns which fields the LLM
+        attempted to update so the bot can confirm back to the caller
+        ("updated your location to Pune") without us needing a real
+        write path.
+        """
+        updated = [k for k in (body or {}).keys() if k not in ("user_id",)]
+        logger.info(
+            "mock.update_profile",
+            extra={
+                "operation": "mock.update_profile",
+                "status": "success",
+                "user_id": user_id or "",
+                "updated_fields": updated,
+            },
+        )
+        return {
+            "status": "ok",
+            "profile_id": _MOCK_PROFILE["profile_id"],
+            "user_id": user_id or "",
+            "updated_fields": updated,
+        }
+
+    @app.post("/mock/apply")
+    async def mock_apply_job(body: dict) -> dict:
+        """Acknowledge a job application submission.
+
+        Backs the ``apply_job`` tool. Requires both ``job_id`` and
+        ``profile_id`` in the body; returns 400 if either is missing so
+        the LLM gets a structured error it can react to.
+        """
+        body = body or {}
+        job_id = (body.get("job_id") or "").strip()
+        profile_id = (body.get("profile_id") or "").strip()
+        if not job_id or not profile_id:
+            logger.warning(
+                "mock.apply_job_bad_request",
+                extra={
+                    "operation": "mock.apply_job",
+                    "status": "failure",
+                    "missing": [
+                        k for k, v in (("job_id", job_id), ("profile_id", profile_id))
+                        if not v
+                    ],
+                },
+            )
+            from fastapi import HTTPException
+
+            raise HTTPException(
+                status_code=400,
+                detail="job_id and profile_id are both required",
+            )
+        logger.info(
+            "mock.apply_job",
+            extra={
+                "operation": "mock.apply_job",
+                "status": "success",
+                "job_id": job_id,
+                "profile_id": profile_id,
+            },
+        )
+        return {
+            "status": "submitted",
+            "application_id": f"app_{job_id}_{profile_id[-4:]}",
+            "job_id": job_id,
+            "profile_id": profile_id,
+            "expected_callback_within_hours": 24,
+            "employer_name": "Sundaram Electricals",
+        }
 
     return app

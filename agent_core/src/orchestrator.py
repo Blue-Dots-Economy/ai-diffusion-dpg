@@ -2613,7 +2613,7 @@ class AgentCore(AgentCoreBase):
                 tool_results_for_llm = []
                 for tc in e.tool_calls:
                     if self._async_gateway:
-                        tool_result = await self._async_gateway.execute(tc, session_id)
+                        tool_result = await self._async_gateway.execute(tc, session_id, user_id)
                     else:
                         # Fallback: no async gateway — cannot execute tools in streaming mode
                         logger.error(
@@ -2696,7 +2696,7 @@ class AgentCore(AgentCoreBase):
                         _nested_results = []
                         for tc in nested_e.tool_calls:
                             if self._async_gateway:
-                                tool_result = await self._async_gateway.execute(tc, session_id)
+                                tool_result = await self._async_gateway.execute(tc, session_id, user_id)
                                 _nested_results.append({
                                     "type": "tool_result",
                                     "tool_use_id": tc.tool_use_id,
