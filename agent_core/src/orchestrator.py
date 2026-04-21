@@ -2418,18 +2418,40 @@ class AgentCore(AgentCoreBase):
                 session=routing_state,
             )
 
+            # GH-151 #5: collect the routing-phase state writes and flush
+            # them concurrently instead of serially. These are all session-
+            # scoped (Redis-backed) but each still carries a round-trip to
+            # Memory Layer; awaiting them sequentially added ~N × 5–100 ms
+            # per turn. They're independent and can land in any order —
+            # their in-memory shadows on ``bundle`` are updated synchronously
+            # so subsequent reads in this turn still see the new values.
+            routing_writes: list = []
             if matched_rule and matched_rule.session_writes:
                 for field_name, field_val in matched_rule.session_writes.items():
-                    await self._async_memory.write(session_id, user_id, "session", field_name, field_val)
+                    routing_writes.append(
+                        self._async_memory.write(
+                            session_id, user_id, "session", field_name, field_val
+                        )
+                    )
                     bundle.session[field_name] = field_val
 
             raw_counts = bundle.session.get("subagent_entry_count")
             subagent_entry_count = dict(raw_counts) if isinstance(raw_counts, dict) else {}
             subagent_entry_count[next_subagent_id] = int(subagent_entry_count.get(next_subagent_id, 0)) + 1
-            await self._async_memory.write(session_id, user_id, "session", "subagent_entry_count", subagent_entry_count)
             bundle.session["subagent_entry_count"] = subagent_entry_count
             bundle.session["current_subagent_id"] = next_subagent_id
-            await self._async_memory.write(session_id, user_id, "session", "current_subagent_id", next_subagent_id)
+            routing_writes.extend(
+                [
+                    self._async_memory.write(
+                        session_id, user_id, "session", "subagent_entry_count", subagent_entry_count
+                    ),
+                    self._async_memory.write(
+                        session_id, user_id, "session", "current_subagent_id", next_subagent_id
+                    ),
+                ]
+            )
+            if routing_writes:
+                await asyncio.gather(*routing_writes, return_exceptions=True)
             yield SignalEvent(stage="routing", status="complete")
             logger.info(
                 "  [STEP 6] Routing  ✓  next_subagent=%s  matched_rule_intent=%s  latency=%dms",
@@ -2688,17 +2710,22 @@ class AgentCore(AgentCoreBase):
                 yield SentenceEvent(text=remaining, sentence_index=sentence_index)
 
             # ── Step 11: Write current_question ────────────────────────
+            # GH-151 #5: fire-and-forget. The next turn reads context_bundle,
+            # which includes current_question; by the time the caller finishes
+            # speaking and STT/TurnAssembler have produced a segment (hundreds
+            # of ms later at minimum), the Redis write has landed. Awaiting
+            # it synchronously here blocked the DoneEvent by ~5–100 ms on
+            # every turn with no functional benefit.
             logger.info(
                 "  [STEP 11] Delivering response  (async: memory write + learning emit follow)",
             )
             yield SignalEvent(stage="memory_write", status="start")
-            t11 = time.time()
-            await self._async_memory.write(session_id, user_id, "session", "current_question", full_response_text.strip())
-            yield SignalEvent(stage="memory_write", status="complete")
-            logger.info(
-                "  [STEP 11] Memory write  ✓  latency=%dms",
-                int((time.time() - t11) * 1000),
+            asyncio.create_task(
+                self._async_memory.write(
+                    session_id, user_id, "session", "current_question", full_response_text.strip()
+                )
             )
+            yield SignalEvent(stage="memory_write", status="complete")
 
             latency_ms = int((time.time() - start) * 1000)
             logger.info(
