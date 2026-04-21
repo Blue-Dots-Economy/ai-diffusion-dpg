@@ -145,7 +145,7 @@ services:
       # Upload chain auth — reach-layer calls KE with this key; KE calls back dev-kit with KE_TO_DEVKIT_API_KEY.
       - REACH_TO_KE_API_KEY=${REACH_TO_KE_API_KEY:-}
       - KE_TO_DEVKIT_API_KEY=${KE_TO_DEVKIT_API_KEY:-}
-      - KE_DEVKIT_CALLBACK_URL=http://dev_kit:8080
+      - KE_DEVKIT_CALLBACK_URL=${KE_DEVKIT_CALLBACK_URL:-http://dev_kit:8080}
       - KB_DATA_DIR=/data/kb
       # Azure Blob Storage — required only when the domain uses Azure for KB ingestion.
       - AZURE_STORAGE_ACCOUNT=${AZURE_STORAGE_ACCOUNT:-}
@@ -183,10 +183,10 @@ services:
     container_name: memory_layer
     environment:
       - CONFIG_FOLDER=/app/config
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - MEMGRAPH_URI=bolt://memgraph:7687
       - MEMGRAPH_USER=memgraph
-      - MEMGRAPH_PASSWORD=
+      - MEMGRAPH_PASSWORD=${MEMGRAPH_PASSWORD:-}
     volumes:
       - ../../dev-kit/dpg/memory_layer.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-kkb}/memory_layer.yaml:/app/config/memory_layer.yaml:ro
@@ -258,7 +258,7 @@ services:
       # Upload chain auth — dev-kit → reach-layer and reach-layer → KE keys.
       - DEVKIT_TO_REACH_API_KEY=${DEVKIT_TO_REACH_API_KEY:-}
       - REACH_TO_KE_API_KEY=${REACH_TO_KE_API_KEY:-}
-      - KE_INTERNAL_URL=http://knowledge_engine:8001
+      - KE_INTERNAL_URL=${KE_INTERNAL_URL:-http://knowledge_engine:8001}
     ports:
       - "8005:8005"
     volumes:

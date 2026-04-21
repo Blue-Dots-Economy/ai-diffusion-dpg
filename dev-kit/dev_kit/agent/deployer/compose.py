@@ -199,7 +199,8 @@ async def run_compose_up(
         if secrets.get("memgraph_password"):
             env["MEMGRAPH_PASSWORD"] = secrets["memgraph_password"]
         if secrets.get("redis_password"):
-            env["REDIS_PASSWORD"] = secrets["redis_password"]
+            # Build password-authenticated URL; the compose file interpolates REDIS_URL.
+            env["REDIS_URL"] = f"redis://:{secrets['redis_password']}@redis:6379/0"
         if secrets.get("grafana_admin_password"):
             env["GF_SECURITY_ADMIN_PASSWORD"] = secrets["grafana_admin_password"]
         if secrets.get("google_client_id"):
@@ -215,6 +216,11 @@ async def run_compose_up(
         for secret_key, env_var in _upload_chain.items():
             if secrets.get(secret_key):
                 env[env_var] = secrets[secret_key]
+        # Internal service URLs — allow override when services run at non-default addresses
+        if secrets.get("ke_internal_url"):
+            env["KE_INTERNAL_URL"] = secrets["ke_internal_url"]
+        if secrets.get("ke_devkit_callback_url"):
+            env["KE_DEVKIT_CALLBACK_URL"] = secrets["ke_devkit_callback_url"]
         # Azure Blob Storage — resolves ${VAR:-} placeholders in the compose file
         _azure = {
             "azure_storage_account": "AZURE_STORAGE_ACCOUNT",
