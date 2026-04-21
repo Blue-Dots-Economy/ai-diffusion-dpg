@@ -591,36 +591,33 @@ class TestGetEngine:
 
 
 class TestGetProjectAzureStorage:
-    def test_returns_azure_storage_masked_key(self, client):
-        """GET /api/projects/{slug} includes azure_storage with masked account_key."""
+    def test_returns_azure_storage_needed_true_when_declared(self, client):
+        """GET /api/projects/{slug} returns azure_storage.needed=True after declare_azure_storage."""
         # Create a project first
         resp = client.post("/api/projects", json={"name": "azure-test", "description": "test"})
         assert resp.status_code == 200
         slug = resp.json()["slug"]
 
-        # Simulate set_azure_storage having been called (populate engine state directly)
+        # Simulate declare_azure_storage having been called (sets intent flag, no credentials)
         from dev_kit.agent.app import _engines
         engine = _engines.get(slug)
         if engine:
-            engine._tool_handler._state["azure_storage"] = {
-                "account_name": "mystorageacct",
-                "account_key": "supersecretkey1234",
-                "container_name": "kb-docs",
-            }
+            engine.accumulator.declare_azure_needed()
 
-        # Get project — should have masked key
+        # Get project — should report needed=True; no credentials stored
         resp = client.get(f"/api/projects/{slug}")
         assert resp.status_code == 200
         body = resp.json()
         assert "azure_storage" in body
         az = body["azure_storage"]
-        assert az["account_name"] == "mystorageacct"
-        assert az["container_name"] == "kb-docs"
-        assert "supersecretkey1234" not in az["account_key"]  # key is masked
-        assert az["account_key"].endswith("1234")  # last 4 chars visible
+        assert az["needed"] is True
+        # Confirm no credential fields are ever exposed
+        assert "account_name" not in az
+        assert "account_key" not in az
+        assert "container_name" not in az
 
-    def test_returns_null_azure_storage_when_not_set(self, client):
-        """GET /api/projects/{slug} returns null azure_storage when not configured."""
+    def test_returns_azure_storage_needed_false_when_not_declared(self, client):
+        """GET /api/projects/{slug} returns azure_storage.needed=False when not configured."""
         resp = client.post("/api/projects", json={"name": "no-azure-test", "description": "test"})
         assert resp.status_code == 200
         slug = resp.json()["slug"]
@@ -628,4 +625,6 @@ class TestGetProjectAzureStorage:
         resp = client.get(f"/api/projects/{slug}")
         assert resp.status_code == 200
         body = resp.json()
-        assert body.get("azure_storage") is None
+        az = body.get("azure_storage")
+        assert az is not None
+        assert az["needed"] is False

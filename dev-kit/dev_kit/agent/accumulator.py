@@ -255,6 +255,50 @@ class ConfigAccumulator:
                 return
         raise ValueError(f"Tool {tool_id!r} not found in action_gateway — call add_rest_api_tool first")
 
+    def declare_azure_needed(self) -> None:
+        """Record that this domain uses Azure Blob Storage for KB documents.
+
+        Collects no configuration values — account name, account key, and
+        container name are all entered securely in the Deployment Inputs UI.
+        This method just sets the intent flag so the deploy wizard knows to
+        show the Azure credential fields.
+        """
+        self._data["azure_storage"] = {
+            "needed": True,
+        }
+
+    def is_azure_needed(self) -> bool:
+        """Return True if Azure Blob Storage has been declared for this domain.
+
+        Returns:
+            True if ``declare_azure_needed`` has been called, False otherwise.
+        """
+        return bool(self._data.get("azure_storage", {}).get("needed"))
+
+    def get_required_secrets(self) -> list[dict]:
+        """Return the list of API key secrets required by configured tools.
+
+        Scans all action_gateway tools for non-none auth with a ``secret_env``
+        field. Each entry tells the deploy wizard what password fields to show.
+
+        Returns:
+            List of dicts, each with keys:
+                ``env_var``     — environment variable name (e.g. ``ONEST_API_KEY``)
+                ``tool_id``     — id of the tool that needs it
+                ``description`` — human-readable tool description for the UI label
+            Returns an empty list when no tools have auth secrets configured.
+        """
+        result = []
+        for tool in self._data["action_gateway"].get("tools", []):
+            secret_env = tool.get("auth", {}).get("secret_env", "")
+            if secret_env:
+                result.append({
+                    "env_var": secret_env,
+                    "tool_id": tool.get("id", ""),
+                    "description": tool.get("description", ""),
+                })
+        return deepcopy(result)
+
     def set_reach_channel_selection(self, channels: list[str]) -> None:
         """Store the selected deployment channels in reach_layer config.
 

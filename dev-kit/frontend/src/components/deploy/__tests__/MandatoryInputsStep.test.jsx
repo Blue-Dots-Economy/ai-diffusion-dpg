@@ -35,12 +35,13 @@ describe('MandatoryInputsStep — new fields', () => {
     expect(screen.queryByLabelText(/azure account name/i)).not.toBeInTheDocument()
   })
 
-  it('shows Azure fields when azure_storage is present', () => {
+  it('shows Azure fields when azure_storage.needed is true', () => {
     const props = {
       ...defaultProps,
       project: {
         slug: 'test',
         azure_storage: {
+          needed: true,
           account_name: 'myaccount',
           account_key: '***KEY',
           container_name: 'kb-docs',
@@ -49,9 +50,9 @@ describe('MandatoryInputsStep — new fields', () => {
       data: {
         secrets: {
           ...defaultProps.data.secrets,
-          azure_account_name: 'myaccount',
+          azure_account_name: '',
           azure_account_key: '',
-          azure_container_name: 'kb-docs',
+          azure_container_name: '',
         },
       },
     }
@@ -61,18 +62,31 @@ describe('MandatoryInputsStep — new fields', () => {
     expect(screen.getByLabelText(/azure container name/i)).toBeInTheDocument()
   })
 
-  it('pre-fills Azure account name from project.azure_storage', () => {
+  it('does NOT show Azure fields when azure_storage.needed is not true', () => {
     const props = {
       ...defaultProps,
       project: {
         slug: 'test',
-        azure_storage: { account_name: 'prefilledacct', account_key: '***XYZ', container_name: 'docs' },
-      },
-      data: {
-        secrets: { ...defaultProps.data.secrets, azure_account_name: 'prefilledacct' },
+        azure_storage: { needed: false, account_name: 'myaccount', container_name: 'kb-docs' },
       },
     }
     render(<MandatoryInputsStep {...props} />)
-    expect(screen.getByDisplayValue('prefilledacct')).toBeInTheDocument()
+    expect(screen.queryByLabelText(/azure account name/i)).not.toBeInTheDocument()
+  })
+
+  it('does not pre-fill Azure account name from project.azure_storage (user fills it)', () => {
+    const props = {
+      ...defaultProps,
+      project: {
+        slug: 'test',
+        azure_storage: { needed: true, account_name: 'prefilledacct', account_key: '***XYZ', container_name: 'docs' },
+      },
+      data: {
+        secrets: { ...defaultProps.data.secrets, azure_account_name: '' },
+      },
+    }
+    render(<MandatoryInputsStep {...props} />)
+    // Azure section is shown but account name field is empty (no pre-fill from project)
+    expect(screen.getByLabelText(/azure account name/i)).toHaveValue('')
   })
 })

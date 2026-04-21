@@ -504,3 +504,67 @@ class TestGetDeployStatus:
         data = res.json()
         assert data["overall"] in ("deploying", "complete", "failed")
         assert isinstance(data["services"], list)
+
+
+# ---------------------------------------------------------------------------
+# Tests for encrypted_secrets decryption in deploy endpoints
+# ---------------------------------------------------------------------------
+
+def _make_mock_encrypted_secrets():
+    """Return a mock encrypted_secrets structure (cipher objects)."""
+    return {
+        "anthropic_api_key": {
+            "encrypted_key": "a" * 10,
+            "iv": "b" * 10,
+            "encrypted_value": "c" * 10,
+        },
+        "tool_secrets": {
+            "ONEST_API_KEY": {
+                "encrypted_key": "d" * 10,
+                "iv": "e" * 10,
+                "encrypted_value": "f" * 10,
+            }
+        },
+    }
+
+
+def test_get_project_returns_required_secrets_and_azure_needed(tmp_path, monkeypatch):
+    """GET /api/projects/{slug} includes required_secrets and azure_storage.needed."""
+    import json
+    import dev_kit.agent.app as app_module
+    from dev_kit.agent.accumulator import ConfigAccumulator
+
+    project_path = tmp_path / "configs" / "test-proj"
+    project_path.mkdir(parents=True)
+    meta_dir = project_path / "_meta"
+    meta_dir.mkdir()
+    (meta_dir / "project.json").write_text(
+        '{"slug": "test-proj", "name": "Test", "description": "", '
+        '"current_phase": "tools", "phases_completed": []}'
+    )
+
+    acc = ConfigAccumulator()
+    acc.add_action_gateway_tool({
+        "id": "onest_jobs",
+        "type": "rest_api",
+        "description": "ONEST jobs",
+        "auth": {"type": "api_key", "secret_env": "ONEST_API_KEY"},
+    })
+    acc.declare_azure_needed()
+    (meta_dir / "accumulator.json").write_text(json.dumps(acc.to_dict()))
+
+    monkeypatch.setattr(app_module, "CONFIGS_DIR", tmp_path / "configs")
+
+    from fastapi.testclient import TestClient
+    client = TestClient(app_module.app)
+    res = client.get("/api/projects/test-proj")
+    assert res.status_code == 200
+    data = res.json()
+
+    assert data["required_secrets"] == [
+        {"env_var": "ONEST_API_KEY", "tool_id": "onest_jobs", "description": "ONEST jobs"}
+    ]
+    assert data["azure_storage"]["needed"] is True
+    # Must NOT include account_key or container_name
+    assert "account_key" not in data["azure_storage"]
+    assert "container_name" not in data["azure_storage"]

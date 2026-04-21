@@ -24,11 +24,9 @@ spec:
           env:
             - name: CONFIG_FOLDER
               value: {{ .Values.configFolder | quote }}
-            - name: ONEST_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Release.Name }}-secrets
-                  key: ONEST_API_KEY
+          envFrom:
+            - secretRef:
+                name: {{ .Release.Name }}-secrets
           volumeMounts:
             - name: dpg-config
               mountPath: /app/config/dpg.yaml

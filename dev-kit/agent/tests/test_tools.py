@@ -12,8 +12,10 @@ class TestToolDefinitions:
             "create_subagent", "update_subagent", "add_routing_rule",
             "update_routing_rule", "remove_subagent",
             "finalize_config", "rollback_to_checkpoint",
-            "parse_openapi_spec", "add_rest_api_tool", "discover_mcp_tools",
-            "add_mcp_tool", "set_reach_channels",
+            "parse_openapi_spec", "fetch_openapi_spec_from_url",
+            "add_rest_api_tool", "set_response_transformation",
+            "discover_mcp_tools", "add_mcp_tool", "set_reach_channels",
+            "declare_azure_storage",
         }
 
     def test_each_tool_has_required_keys(self):
