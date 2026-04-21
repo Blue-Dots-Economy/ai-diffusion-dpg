@@ -70,6 +70,7 @@ async def test_handle_call_uses_caller_id_as_user_id(config):
          patch("src.vobiz_adapter.AgentCoreLLMProcessor", MockAgentCoreLLM), \
          patch("src.vobiz_adapter.RayaTTSService"), \
          patch("src.vobiz_adapter.VADProcessor"), \
+         patch("src.vobiz_adapter.UserTurnProcessor"), \
          patch("src.vobiz_adapter.Pipeline"), \
          patch("src.vobiz_adapter.PipelineTask"), \
          patch("src.vobiz_adapter.PipelineRunner", return_value=mock_runner):

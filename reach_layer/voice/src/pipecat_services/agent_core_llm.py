@@ -32,7 +32,13 @@ from typing import Optional
 
 import httpx
 
-from pipecat.frames.frames import EndFrame, Frame, TextFrame, TTSSpeakFrame, TranscriptionFrame
+from pipecat.frames.frames import (
+    EndFrame,
+    Frame,
+    TextFrame,
+    TTSSpeakFrame,
+    TranscriptionFrame,
+)
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from reach_layer_base import DoneEvent, ReachLayerBase, SentenceEvent, SignalEvent
@@ -88,6 +94,10 @@ class AgentCoreLLMProcessor(FrameProcessor):
         self._fallback_phrase = ac_cfg.get(
             "fallback_phrase", "I'm sorry, I couldn't process that. Please try again."
         )
+        # GH-152: optional template spoken when the caller interrupts the bot.
+        # Empty string → go silent on barge-in (pipecat still flushes TTS).
+        self._barge_in_acknowledgement: str = ac_cfg.get("barge_in_acknowledgement", "") or ""
+        self._interrupted: bool = False
         self._call_sid = call_sid
         self._session_id = session_id
         self._user_id = user_id
@@ -131,8 +141,8 @@ class AgentCoreLLMProcessor(FrameProcessor):
         """Route frames to Agent Core; pass all other frames through.
 
         TranscriptionFrame → forward utterance to Agent Core (direct or session).
-        Barge-in is handled automatically by TurnAssembler when new input arrives
-        while a turn is in flight — no explicit cancel needed from the Reach Layer.
+        Barge-in is handled via _start_interruption() below (GH-152) plus
+        TurnAssembler's own cancel() on the Agent Core side.
 
         Args:
             frame: Incoming pipeline frame.
@@ -144,6 +154,35 @@ class AgentCoreLLMProcessor(FrameProcessor):
             await self._handle_transcription(frame)
         else:
             await self.push_frame(frame, direction)
+
+    async def _start_interruption(self) -> None:
+        """Handle an InterruptionFrame (barge-in) from the UserTurnProcessor.
+
+        Sets the in-flight ``_interrupted`` flag so the active SSE consumer
+        loop exits on its next iteration (closing the HTTP stream, which in
+        turn ends the Agent Core-side ``stream_turn``), and pushes a configured
+        acknowledgement phrase so the caller hears that the interruption
+        landed. Pipecat's own machinery handles flushing the already-queued
+        TTS audio — see FrameProcessor._start_interruption.
+
+        Called by the pipecat framework, not by user code.
+        """
+        await super()._start_interruption()
+        self._interrupted = True
+        logger.info(
+            "agent_core_llm.interruption",
+            extra={
+                "operation": "agent_core_llm._start_interruption",
+                "status": "success",
+                "call_sid": self._call_sid,
+                "session_id": self._session_id,
+                "has_acknowledgement": bool(self._barge_in_acknowledgement),
+            },
+        )
+        if self._barge_in_acknowledgement:
+            await self.push_frame(
+                TTSSpeakFrame(text=self._barge_in_acknowledgement)
+            )
 
     async def _handle_transcription(self, frame: TranscriptionFrame) -> None:
         """Call Agent Core and push TTSSpeakFrame (and EndFrame on escalation).
@@ -268,6 +307,8 @@ class AgentCoreLLMProcessor(FrameProcessor):
         sentences_pushed = 0
         was_escalated = False
         was_interrupted = False
+        # GH-152: a fresh user turn means any prior barge-in is resolved.
+        self._interrupted = False
 
         try:
             await self._channel.submit_input(
@@ -292,6 +333,22 @@ class AgentCoreLLMProcessor(FrameProcessor):
             async for event in self._channel.subscribe_events(
                 self._session_id, user_id=self._user_id or None
             ):
+                # GH-152: exit early on barge-in so already-queued and
+                # still-arriving SentenceEvents don't reach TTS. The pipecat
+                # framework has already flushed in-flight TTS audio via the
+                # system-level InterruptionFrame before this flag is set.
+                if self._interrupted:
+                    was_interrupted = True
+                    logger.info(
+                        "agent_core_llm.interrupted_during_stream",
+                        extra={
+                            "operation": "agent_core_llm.subscribe_events",
+                            "status": "skipped",
+                            "sentences_pushed": sentences_pushed,
+                            "call_sid": self._call_sid,
+                        },
+                    )
+                    break
                 if isinstance(event, SentenceEvent):
                     if event.text:
                         await self.push_frame(TTSSpeakFrame(text=event.text))

@@ -24,6 +24,14 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.audio.vad_processor import VADProcessor
+from pipecat.turns.user_start.vad_user_turn_start_strategy import (
+    VADUserTurnStartStrategy,
+)
+from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
+    SpeechTimeoutUserTurnStopStrategy,
+)
+from pipecat.turns.user_turn_processor import UserTurnProcessor
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from reach_layer_base import VADEvent
 
 from src.base import TelephonyAdapterBase, TelephonyError
@@ -144,10 +152,26 @@ class VobizAdapter(TelephonyAdapterBase):
         tts = RayaTTSService(self._config)
         sanitizer = TTSTextSanitizerProcessor()
 
+        # GH-152: UserTurnProcessor sits between VAD and STT so a
+        # VADUserStartedSpeakingFrame during bot TTS emits an InterruptionFrame
+        # which flushes the TTS queue. VAD-based stop strategy avoids the
+        # default LocalSmartTurn ML model download.
+        vad_cfg = self._config.get("telephony_adapter", {}).get("vad", {})
+        user_speech_timeout = float(vad_cfg.get("stop_secs", 0.6))
+        user_turn_processor = UserTurnProcessor(
+            user_turn_strategies=UserTurnStrategies(
+                start=[VADUserTurnStartStrategy()],
+                stop=[SpeechTimeoutUserTurnStopStrategy(
+                    user_speech_timeout=user_speech_timeout
+                )],
+            ),
+        )
+
         pipeline = Pipeline(
             [
                 transport.input(),
                 VADProcessor(vad_analyzer=vad_analyzer),
+                user_turn_processor,
                 stt,
                 agent,
                 sanitizer,
