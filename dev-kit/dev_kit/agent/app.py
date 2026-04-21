@@ -775,12 +775,27 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
     """
     target = body.get("target", "docker")
     if target == "docker":
+        # Decrypt secrets here too so preview can show what will be written to disk.
+        encrypted_secrets = body.get("encrypted_secrets", {})
+        secrets = decrypt_secrets_dict(encrypted_secrets) if encrypted_secrets else body.get("secrets", {})
+
         raw = COMPOSE_FILE.read_text() if COMPOSE_FILE.exists() else "# docker-compose.dev.yml not found"
         content = raw.replace("${DOMAIN:-kkb}", slug).replace("${DOMAIN}", slug)
         resources = body.get("resources", {})
         if resources:
             content = _apply_resources_to_compose(content, resources)
-        return {"target": target, "preview": {"docker-compose.yml": content}}
+
+        preview: dict[str, str] = {"docker-compose.yml": content}
+
+        # Preview connector_secrets.env — shows which connector keys will be written
+        # to disk at deploy time (values masked; only key names shown).
+        tool_secrets = secrets.get("tool_secrets", {})
+        if tool_secrets:
+            lines = ["# Generated at deploy time by dev-kit — do not commit.\n"]
+            lines += [f"{env_var}=<set at deploy time>\n" for env_var in tool_secrets if tool_secrets[env_var]]
+            preview["connector_secrets.env"] = "".join(lines)
+
+        return {"target": target, "preview": preview}
 
     # Kubernetes — render all 14 charts via helm template
     from dev_kit.agent.deployer.helm import build_template_command, run_helm_command
@@ -945,6 +960,29 @@ async def _run_docker_deploy(slug: str, state, secrets: dict, resources: dict) -
     from dev_kit.agent.deployer.helm import DEPLOY_PHASES
 
     try:
+        # Write connector_secrets.env for action_gateway's env_file.
+        # Mirrors the Helm extraSecrets pattern: key names are not hardcoded in the
+        # compose file; whatever tool_secrets the chat agent collected go here.
+        tool_secrets = secrets.get("tool_secrets", {})
+        if tool_secrets:
+            secrets_file = CONFIGS_DIR / slug / "connector_secrets.env"
+            try:
+                secrets_file.parent.mkdir(parents=True, exist_ok=True)
+                with open(secrets_file, "w") as _f:
+                    _f.write("# Generated at deploy time by dev-kit — do not commit.\n")
+                    for env_var, value in tool_secrets.items():
+                        if value:
+                            _f.write(f"{env_var}={value}\n")
+                logger.info(
+                    "wrote_connector_secrets",
+                    extra={"operation": "_run_docker_deploy", "status": "success", "path": str(secrets_file)},
+                )
+            except OSError as _exc:
+                logger.error(
+                    "write_connector_secrets_failed",
+                    extra={"operation": "_run_docker_deploy", "status": "failure", "error": str(_exc)},
+                )
+
         # Read compose file, apply domain and resources
         raw = COMPOSE_FILE.read_text()
         content = raw.replace("${DOMAIN:-kkb}", slug).replace("${DOMAIN}", slug)

@@ -206,6 +206,24 @@ async def run_compose_up(
             env["GOOGLE_CLIENT_ID"] = secrets["google_client_id"]
         if secrets.get("reach_session_secret"):
             env["REACH_SESSION_SECRET"] = secrets["reach_session_secret"]
+        # Upload chain auth — resolves ${VAR:-} placeholders in the compose file
+        _upload_chain = {
+            "devkit_to_reach_api_key": "DEVKIT_TO_REACH_API_KEY",
+            "ke_to_devkit_api_key": "KE_TO_DEVKIT_API_KEY",
+            "reach_to_ke_api_key": "REACH_TO_KE_API_KEY",
+        }
+        for secret_key, env_var in _upload_chain.items():
+            if secrets.get(secret_key):
+                env[env_var] = secrets[secret_key]
+        # Azure Blob Storage — resolves ${VAR:-} placeholders in the compose file
+        _azure = {
+            "azure_storage_account": "AZURE_STORAGE_ACCOUNT",
+            "azure_storage_key": "AZURE_STORAGE_KEY",
+            "azure_container_name": "AZURE_CONTAINER_NAME",
+        }
+        for secret_key, env_var in _azure.items():
+            if secrets.get(secret_key):
+                env[env_var] = secrets[secret_key]
 
     try:
         proc = await asyncio.create_subprocess_exec(
