@@ -64,8 +64,8 @@ services:
       - CONFIG_FOLDER=/app/config
     # Connector API keys — mirrors the Helm extraSecrets pattern.
     # No key names are hardcoded here; the file lists only the keys your domain needs.
-    # Copy dev-kit/configs/<domain>/connector_secrets.env.example → connector_secrets.env
-    # and fill in values. The .env file is gitignored; never commit real secrets.
+    # Create dev-kit/configs/<domain>/connector_secrets.env with KEY=value lines.
+    # The .env file is gitignored; never commit real secrets.
     env_file:
       - path: ../../dev-kit/configs/${DOMAIN:-kkb}/connector_secrets.env
         required: false
