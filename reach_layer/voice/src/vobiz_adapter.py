@@ -376,11 +376,30 @@ class VobizAdapter(TelephonyAdapterBase):
         )
 
     async def handle_barge_in(self, session_id: str) -> None:
-        """No-op. Barge-in is handled automatically by TurnAssembler.
+        """No-op. Barge-in is handled inside the Pipecat pipeline (GH-152).
 
-        When new input arrives via submit_input() while a turn is in flight,
-        TurnAssembler.add_segment() detects the INVOKED state and calls cancel()
-        internally — no explicit cancel from the Reach Layer is needed.
+        End-to-end barge-in involves two independent layers that this
+        adapter wires up but does not drive explicitly:
+
+        1. **Voice pipeline side (immediate, audio-level).** The
+           UserTurnProcessor installed between VADProcessor and STT in
+           handle_call() converts VADUserStartedSpeakingFrame into a
+           pipecat InterruptionFrame when the bot is currently speaking.
+           Pipecat flushes the TTS queue, and AgentCoreLLMProcessor's
+           _start_interruption() override stops forwarding SentenceEvents
+           and optionally speaks the configured
+           ``agent_core.barge_in_acknowledgement`` template.
+
+        2. **Agent Core side (deferred, turn-logic level).** When the
+           caller's new utterance is transcribed and submitted as a
+           segment, TurnAssembler.add_segment() sees the active turn is
+           INVOKED, calls cancel() (emitting DoneEvent(interrupted)),
+           and — per GH-152 Phase 2 — discards the original segments so
+           only the barge-in speech drives the next turn.
+
+        Neither path routes through this method. It exists to satisfy the
+        VoiceChannelBase contract and to provide a single observability
+        breadcrumb if a future caller routes explicit barge-in signals here.
 
         Args:
             session_id: The session whose active turn should be cancelled.
@@ -390,7 +409,7 @@ class VobizAdapter(TelephonyAdapterBase):
             extra={
                 "operation": "vobiz_adapter.handle_barge_in",
                 "status": "skipped",
-                "reason": "barge-in handled by TurnAssembler on next add_segment()",
+                "reason": "barge-in is handled by UserTurnProcessor + TurnAssembler (GH-152)",
                 "session_id": session_id,
             },
         )

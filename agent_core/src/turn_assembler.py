@@ -429,30 +429,37 @@ class TurnAssembler(TurnAssemblerBase):
                 # connection per session; session_end() handles full cleanup.
                 if session_id in self._sessions:
                     pending = list(buffer.pending_segments)
-                    # Only carry forward interrupted segments on barge-in.
-                    # For COMPLETED or ABANDONED turns, segments were already
-                    # processed (or intentionally dropped) — don't replay them.
-                    # For INTERRUPTED: the LLM never saw those segments; carry
-                    # them forward so assembled_text = original + correction.
-                    # e.g. "मुझे जॉब चाहिए" + "wait wait that is not correct"
-                    interrupted_segments = []
-                    if event.turn_status == "interrupted":
-                        # buffer.segments stores plain strings; wrap back as
-                        # SegmentInput using the buffer's cached metadata.
-                        interrupted_segments = [
-                            SegmentInput(
-                                text=seg,
-                                channel=buffer.channel,
-                                user_id=buffer.user_id,
-                                timestamp_ms=buffer.first_timestamp_ms,
-                            )
-                            for seg in buffer.segments
-                        ]
+                    # GH-152 Phase 2: on INTERRUPTED, discard the original
+                    # segments. An "interrupted" status only fires when the
+                    # user barges in during INVOKED state — the LLM was
+                    # already running on the original input and has produced
+                    # (partial) output the user is now reacting to. Replaying
+                    # the original alongside the correction produces noisy
+                    # prompts like "I want electrician jobs wait that's wrong,
+                    # I said plumber" that mislead NLU / routing. The
+                    # user-visible contract is "whatever you say during bot
+                    # TTS replaces, not extends, your prior turn."
+                    #
+                    # For COMPLETED or ABANDONED turns we also don't replay —
+                    # COMPLETED processed all segments, ABANDONED dropped
+                    # them on purpose.
+                    if (
+                        event.turn_status == "interrupted"
+                        and buffer.segments
+                    ):
+                        logger.info(
+                            "turn_assembler.barge_in_discarded_segments",
+                            extra={
+                                "operation": "turn_assembler.subscribe",
+                                "status": "success",
+                                "session_id": session_id,
+                                "discarded_count": len(buffer.segments),
+                                "pending_count": len(pending),
+                            },
+                        )
                     self._reset_buffer(buffer)
-                    # Replay: original (interrupted) segments first, then
-                    # barge-in segments, so the new assembled_text preserves
-                    # the full conversational context.
-                    for seg in interrupted_segments + pending:
+                    # Replay only the barge-in (pending) segments.
+                    for seg in pending:
                         await self.add_segment(session_id, seg)
 
     async def _emit_opening_phrase_if_first(
