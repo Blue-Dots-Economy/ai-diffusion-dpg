@@ -91,6 +91,11 @@ reach_layer:
         tts_base_url: "https://hub.getraya.app/v1"
         tts_model: "standard"
         tts_speed: 1.0
+        # P99 latency (seconds) from end of user speech to final transcript.
+        # Broadcast via STTMetadataFrame so downstream turn strategies can time
+        # interruption / end-of-turn decisions. Measure on your deployment and
+        # tune — too low clips slow transcripts, too high delays turn handoff.
+        stt_ttfs_p99_latency: 0.02
         # language, voice_id are per-domain → dev-kit/configs/<domain>/
       agent_core:
         base_url: "http://agent_core:8000"
