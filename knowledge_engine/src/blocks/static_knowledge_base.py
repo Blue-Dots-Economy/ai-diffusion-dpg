@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 from src.base import KnowledgeBlock, KEContext, LLMWrapperBase
@@ -252,6 +253,76 @@ class StaticKnowledgeBaseBlock(KnowledgeBlock):
             },
         )
 
+    def ingest_single(self, config: dict, file_path: Path) -> int:
+        """Ingest a single document into the existing ChromaDB collection.
+
+        Deletes all existing chunks for this filename before re-ingesting,
+        ensuring no duplicate chunks on re-upload of the same file.
+        Appends to the collection — does not affect other documents.
+
+        Serialization is guaranteed by the queue worker (one job at a time).
+
+        Args:
+            config: Full KE YAML config dict.
+            file_path: Absolute path to the document on /data/kb PVC (must exist).
+
+        Returns:
+            Number of chunks added.
+
+        Raises:
+            ValueError: If file_path does not exist.
+        """
+        start = time.time()
+
+        if not file_path.exists():
+            raise ValueError(f"File not found: {file_path}")
+
+        block_cfg = (
+            config.get("knowledge", {})
+            .get("blocks", {})
+            .get("static_knowledge_base", {})
+        )
+
+        collection = self._get_collection(block_cfg)
+
+        # Delete all existing chunks for this filename (deduplication on re-upload)
+        existing = collection.get(
+            where={"source": {"$eq": file_path.name}},
+            include=[],
+        )
+        existing_ids = existing.get("ids", [])
+        if existing_ids:
+            collection.delete(ids=existing_ids)
+            logger.info(
+                "static_kb.ingest_single_dedup",
+                extra={
+                    "operation": "static_kb.ingest_single",
+                    "status": "dedup",
+                    "filename": file_path.name,
+                    "deleted_chunks": len(existing_ids),
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+
+        # Load, chunk, and embed
+        doc_type = block_cfg.get("default_doc_type", "general")
+        chunks = self._load_and_chunk(str(file_path), doc_type)
+        if not chunks:
+            return 0
+
+        self._add_chunks_to_collection(collection, chunks, doc_type)
+        logger.info(
+            "static_kb.ingest_single",
+            extra={
+                "operation": "static_kb.ingest_single",
+                "status": "success",
+                "filename": file_path.name,
+                "chunks_added": len(chunks),
+                "latency_ms": int((time.time() - start) * 1000),
+            },
+        )
+        return len(chunks)
+
     # ------------------------------------------------------------------
     # Private: collection management
     # ------------------------------------------------------------------
@@ -455,7 +526,7 @@ class StaticKnowledgeBaseBlock(KnowledgeBlock):
         """
         Load a document from path and split into chunks.
         Returns list of {"text": str, "metadata": dict} dicts.
-        Supports: .pdf, .csv, .md, .txt
+        Supports: .pdf, .csv, .md, .txt, .json, .html, .docx
         """
         ext = os.path.splitext(path)[1].lower()
 
@@ -467,6 +538,10 @@ class StaticKnowledgeBaseBlock(KnowledgeBlock):
             return self._chunk_text_file(path, doc_type)
         elif ext == ".json":
             return self._chunk_json(path, doc_type)
+        elif ext == ".html":
+            return self._chunk_html(path, doc_type)
+        elif ext == ".docx":
+            return self._chunk_docx(path, doc_type)
         else:
             logger.warning(
                 "static_kb.unsupported_format",
@@ -590,6 +665,113 @@ class StaticKnowledgeBaseBlock(KnowledgeBlock):
         )
         chunks_text = splitter.split_text(content)
 
+        return [
+            {
+                "text": chunk,
+                "metadata": {
+                    "doc_type": doc_type,
+                    "source": os.path.basename(path),
+                },
+            }
+            for chunk in chunks_text
+            if chunk.strip()
+        ]
+
+    def _chunk_html(self, path: str, doc_type: str) -> list[dict]:
+        """Extract text from an HTML file and split into chunks.
+
+        Uses stdlib html.parser to strip tags. No external dependencies.
+
+        Args:
+            path: Path to the .html file.
+            doc_type: Document type tag stored in ChromaDB metadata.
+
+        Returns:
+            List of chunk dicts with ``text`` and ``metadata`` keys.
+        """
+        from html.parser import HTMLParser
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+        class _TextExtractor(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self._parts: list[str] = []
+                self._skip_tags = {"script", "style"}
+                self._current_skip = 0
+
+            def handle_starttag(self, tag, attrs):
+                if tag in self._skip_tags:
+                    self._current_skip += 1
+
+            def handle_endtag(self, tag):
+                if tag in self._skip_tags:
+                    self._current_skip = max(0, self._current_skip - 1)
+
+            def handle_data(self, data):
+                if self._current_skip == 0:
+                    stripped = data.strip()
+                    if stripped:
+                        self._parts.append(stripped)
+
+            def get_text(self) -> str:
+                return " ".join(self._parts)
+
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            raw = f.read()
+
+        extractor = _TextExtractor()
+        extractor.feed(raw)
+        text = extractor.get_text()
+
+        if not text.strip():
+            return []
+
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=400,
+            chunk_overlap=50,
+            separators=["\n\n", "\n", ". ", " ", ""],
+        )
+        chunks_text = splitter.split_text(text)
+        return [
+            {
+                "text": chunk,
+                "metadata": {
+                    "doc_type": doc_type,
+                    "source": os.path.basename(path),
+                },
+            }
+            for chunk in chunks_text
+            if chunk.strip()
+        ]
+
+    def _chunk_docx(self, path: str, doc_type: str) -> list[dict]:
+        """Extract text from a .docx file and split into chunks.
+
+        Uses python-docx. Extracts paragraph text only.
+
+        Args:
+            path: Path to the .docx file.
+            doc_type: Document type tag stored in ChromaDB metadata.
+
+        Returns:
+            List of chunk dicts with ``text`` and ``metadata`` keys.
+        """
+        from docx import Document
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+        doc = Document(path)
+        paragraphs = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+        full_text = "\n\n".join(paragraphs)
+
+        if not full_text.strip():
+            return []
+
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=400,
+            chunk_overlap=50,
+            separators=["\n\n", "\n", ". ", " ", ""],
+        )
+        chunks_text = splitter.split_text(full_text)
         return [
             {
                 "text": chunk,

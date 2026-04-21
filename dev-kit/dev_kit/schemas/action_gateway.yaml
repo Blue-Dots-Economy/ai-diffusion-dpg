@@ -30,6 +30,11 @@ tools:
             default: null
     response:
       max_size_chars: 4000
+      field_mapping:         # optional — if set, only these fields are sent to the LLM
+        - source: ""         # JSONPath from response root, e.g. 'results[*].title' or 'data.name'
+          target: ""         # field name the LLM sees, e.g. 'job_title'
+          type: string       # string | integer | number | boolean | array | object
+          description: ""    # optional human-readable description
     # --- mcp fields (omit for rest_api tools) ---
     # McpAdapter connects to the server at startup and auto-discovers all tools.
     # tool_name and input_schema are NOT needed here — they are discovered at runtime.

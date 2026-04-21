@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../../api'
 import StatusBanner from '../shared/StatusBanner'
+import { encryptSecretsDict } from '../../crypto.js'
 
 const INFRA_LABELS = {
   redis: 'Redis',
@@ -31,20 +32,24 @@ export default function PreviewStep({ slug, data }) {
   const [expanded, setExpanded] = useState(null)
 
   useEffect(() => {
-    const options = {
-      target: data.target,
-      secrets: data.secrets,
-      preset: data.preset,
-      resources: data.resources,
-      kubeconfig: data.target === 'kubernetes' ? data.kubeconfig : undefined,
+    async function fetchPreview() {
+      try {
+        const options = {
+          target: data.target,
+          encrypted_secrets: await encryptSecretsDict(data.secrets),
+          preset: data.preset,
+          resources: data.resources,
+          kubeconfig: data.target === 'kubernetes' ? data.kubeconfig : undefined,
+        }
+        const result = await api.getDeployPreview(slug, options)
+        setPreview(result)
+      } catch (e) {
+        setError(e.message || 'Failed to generate preview')
+      } finally {
+        setLoading(false)
+      }
     }
-    api.getDeployPreview(slug, options).then(result => {
-      setPreview(result)
-      setLoading(false)
-    }).catch(e => {
-      setError(e.message || 'Failed to generate preview')
-      setLoading(false)
-    })
+    fetchPreview()
   }, [slug])
 
   if (loading) {

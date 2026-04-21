@@ -591,3 +591,48 @@ class TestGetEngine:
         """Returns 404 when trying to load engine for non-existent project."""
         res = client.get("/api/projects/ghost-project/configs")
         assert res.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /api/projects/{slug} — azure_storage field
+# ---------------------------------------------------------------------------
+
+
+class TestGetProjectAzureStorage:
+    def test_returns_azure_storage_needed_true_when_declared(self, client):
+        """GET /api/projects/{slug} returns azure_storage.needed=True after declare_azure_storage."""
+        # Create a project first
+        resp = client.post("/api/projects", json={"name": "azure-test", "description": "test"})
+        assert resp.status_code == 200
+        slug = resp.json()["slug"]
+
+        # Simulate declare_azure_storage having been called (sets intent flag, no credentials)
+        from dev_kit.agent.app import _engines
+        engine = _engines.get(slug)
+        if engine:
+            engine.accumulator.declare_azure_needed()
+
+        # Get project — should report needed=True; no credentials stored
+        resp = client.get(f"/api/projects/{slug}")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "azure_storage" in body
+        az = body["azure_storage"]
+        assert az["needed"] is True
+        # Confirm no credential fields are ever exposed
+        assert "account_name" not in az
+        assert "account_key" not in az
+        assert "container_name" not in az
+
+    def test_returns_azure_storage_needed_false_when_not_declared(self, client):
+        """GET /api/projects/{slug} returns azure_storage.needed=False when not configured."""
+        resp = client.post("/api/projects", json={"name": "no-azure-test", "description": "test"})
+        assert resp.status_code == 200
+        slug = resp.json()["slug"]
+
+        resp = client.get(f"/api/projects/{slug}")
+        assert resp.status_code == 200
+        body = resp.json()
+        az = body.get("azure_storage")
+        assert az is not None
+        assert az["needed"] is False

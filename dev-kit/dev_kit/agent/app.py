@@ -20,21 +20,24 @@ import time
 import yaml
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import anthropic
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from dev_kit.agent.accumulator import BLOCKS, ConfigAccumulator
+from dev_kit.agent.auth import verify_api_key as _verify_api_key
 from dev_kit.agent.checkpoints import list_checkpoints, restore_checkpoint
 from dev_kit.agent.conversation import ConversationEngine
+from dev_kit.agent.crypto import decrypt_secrets_dict, get_public_key_spki_b64
 from dev_kit.agent.errors import ConversationError
 from dev_kit.agent.renderer import load_block_from_file, render_all
+from dev_kit.config.loader import load_devkit_config as _load_devkit_config
 from dev_kit.schema import validate_partial
 
 load_dotenv(Path(__file__).parent.parent.parent / ".env.local")
@@ -64,6 +67,12 @@ _anthropic_client = anthropic.AsyncAnthropic(api_key=_api_key)
 _engines: dict[str, ConversationEngine] = {}
 
 logger = logging.getLogger(__name__)
+
+# Load dev-kit config once at startup
+_DEVKIT_CONFIG = _load_devkit_config()
+_KE_TO_DEVKIT_API_KEY = os.environ.get("KE_TO_DEVKIT_API_KEY", "")
+_DEVKIT_TO_REACH_API_KEY = os.environ.get("DEVKIT_TO_REACH_API_KEY", "")
+_REACH_LAYER_URL = os.environ.get("REACH_LAYER_URL", "http://localhost:8005")
 
 # ---------------------------------------------------------------------------
 # App
@@ -208,6 +217,15 @@ def get_project(slug: str) -> dict:
     meta = _load_project_meta(slug)
     engine = _get_engine(slug)
     meta["config_statuses"] = {block: engine.accumulator.get_status(block).value for block in BLOCKS}
+
+    # Azure Blob Storage — expose intent flag only; all details collected at deploy time
+    meta["azure_storage"] = {
+        "needed": engine.accumulator.is_azure_needed(),
+    }
+
+    # Required secrets — derived from tool auth configuration
+    meta["required_secrets"] = engine.accumulator.get_required_secrets()
+
     return meta
 
 
@@ -728,6 +746,20 @@ async def update_compose_file(slug: str, body: dict) -> dict:
     return {"status": "ok"}
 
 
+@app.get("/api/deploy/public-key")
+def get_deploy_public_key() -> dict:
+    """Return the server RSA public key for browser-side secret encryption.
+
+    The browser fetches this once and uses ``SubtleCrypto.importKey('spki', ...)``
+    to import it for RSA-OAEP encryption of each secret value before sending.
+
+    Returns:
+        Dict with ``public_key`` — base64 DER/SPKI of the server's RSA-4096
+        public key.
+    """
+    return {"public_key": get_public_key_spki_b64()}
+
+
 @app.post("/api/projects/{slug}/deploy/preview")
 async def get_deploy_preview(slug: str, body: dict) -> dict:
     """Read existing docker-compose file or render helm template preview.
@@ -754,7 +786,8 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
     from dev_kit.agent.deployer.helm import build_template_command, run_helm_command
 
     _helm_base = HELM_BASE
-    secrets = body.get("secrets", {})
+    encrypted_secrets = body.get("encrypted_secrets", {})
+    secrets = decrypt_secrets_dict(encrypted_secrets) if encrypted_secrets else body.get("secrets", {})
     resources = body.get("resources", {})
     preview: dict[str, str] = {}
 
@@ -812,6 +845,12 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
             if secrets.get("redis_password"):
                 set_values["redis.url"] = f"redis://:{secrets['redis_password']}@redis:6379/0"
 
+        # Inject domain-specific tool API keys as extraSecrets for action-gateway
+        if block_name == "action_gateway":
+            for env_var, secret_value in secrets.get("tool_secrets", {}).items():
+                if secret_value:
+                    set_values[f"extraSecrets.{env_var}"] = secret_value
+
         block_res = resources.get(block_name, {})
         limits = block_res.get("limits", {})
         requests = block_res.get("requests", {})
@@ -852,7 +891,8 @@ async def execute_deploy(slug: str, body: dict) -> dict:
 
     target = body.get("target", "docker")
     state = start_deploy(slug, target)
-    secrets = body.get("secrets", {})
+    encrypted_secrets = body.get("encrypted_secrets", {})
+    secrets = decrypt_secrets_dict(encrypted_secrets) if encrypted_secrets else body.get("secrets", {})
     resources = body.get("resources", {})
 
     # Mark all services as queued initially
@@ -1001,6 +1041,12 @@ async def _run_k8s_deploy(slug: str, state, secrets: dict, resources: dict, kube
                         if secrets.get("redis_password"):
                             set_values["redis.url"] = f"redis://:{secrets['redis_password']}@redis:6379/0"
 
+                    # Inject domain-specific tool API keys as extraSecrets for action-gateway
+                    if svc_name == "action_gateway":
+                        for env_var, secret_value in secrets.get("tool_secrets", {}).items():
+                            if secret_value:
+                                set_values[f"extraSecrets.{env_var}"] = secret_value
+
                     block_res = resources.get(svc_name, {})
                     limits = block_res.get("limits", {})
                     requests = block_res.get("requests", {})
@@ -1127,6 +1173,315 @@ async def get_deploy_status(slug: str) -> dict:
                 state.overall = "failed" if "failed" in statuses else "complete"
 
     return state.to_response()
+
+
+# ---------------------------------------------------------------------------
+# Ingest proxy endpoints (dev-kit → Reach Layer → KE)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/ingest/submit")
+async def ingest_submit(request: Request):
+    """Accept a multipart document batch from the browser and forward to Reach Layer.
+
+    Validates entries (extension, size, count, path traversal), injects user_id
+    from devkit.yaml into the metadata, then streams the batch to Reach Layer.
+
+    Args:
+        request: Incoming FastAPI request containing the multipart form.
+
+    Returns:
+        Batch response from KE via Reach Layer (batch_id + per-file job_ids).
+
+    Raises:
+        HTTPException: 413 if a file exceeds the size limit.
+        HTTPException: 422 if metadata is missing, invalid JSON, too many files, path traversal, or unsupported extension.
+        HTTPException: 503 if Reach Layer is unreachable.
+        HTTPException: 504 if Reach Layer times out.
+        HTTPException: 502 on other upstream errors.
+    """
+    import httpx as _httpx
+    form = await request.form()
+    raw_metadata = form.get("metadata")
+    if not raw_metadata:
+        raise HTTPException(422, "metadata field is required")
+
+    try:
+        metadata_entries = json.loads(raw_metadata)
+    except Exception as e:
+        raise HTTPException(422, f"Invalid metadata JSON: {e}")
+
+    # Validate batch size
+    if len(metadata_entries) > _DEVKIT_CONFIG.upload.max_files_per_upload:
+        raise HTTPException(
+            422,
+            f"Too many files: max {_DEVKIT_CONFIG.upload.max_files_per_upload} per batch"
+        )
+
+    # Collect file parts
+    file_parts: dict[str, bytes] = {}
+    for field_name, value in form.multi_items():
+        if field_name == "files" and hasattr(value, "filename") and hasattr(value, "read"):
+            content = await value.read()
+            file_parts[value.filename] = content
+
+    # Validate each entry
+    for entry in metadata_entries:
+        filename = entry.get("filename", "")
+        safe_name = Path(filename).name
+        if safe_name != filename or "/" in filename or "\\" in filename:
+            raise HTTPException(422, f"Invalid filename: {filename}")
+
+        ext = Path(safe_name).suffix.lower()
+        if ext not in set(_DEVKIT_CONFIG.upload.supported_extensions):
+            raise HTTPException(422, f"Unsupported extension: {ext}")
+
+        mode = entry.get("mode", "")
+        if mode in ("local_write_ingest", "cloud_upload_ingest"):
+            file_bytes = file_parts.get(safe_name)
+            if file_bytes is not None:
+                size_mb = len(file_bytes) / (1024 * 1024)
+                if size_mb > _DEVKIT_CONFIG.upload.max_file_size_mb:
+                    raise HTTPException(
+                        413,
+                        f"{filename} exceeds {_DEVKIT_CONFIG.upload.max_file_size_mb} MB limit"
+                    )
+
+    # Inject user_id into each metadata entry
+    for entry in metadata_entries:
+        entry["user_id"] = _DEVKIT_CONFIG.user_id
+
+    # Rebuild multipart body and forward to Reach Layer
+    multipart_data = {"metadata": json.dumps(metadata_entries)}
+    files_to_send = [
+        ("files", (fname, fbytes, "application/octet-stream"))
+        for fname, fbytes in file_parts.items()
+    ]
+
+    start = time.time()
+    try:
+        async with _httpx.AsyncClient(timeout=120.0) as http_client:
+            ke_response = await http_client.post(
+                f"{_REACH_LAYER_URL}/ingest/upload",
+                data=multipart_data,
+                files=files_to_send if files_to_send else None,
+                headers={"X-API-Key": _DEVKIT_TO_REACH_API_KEY},
+            )
+        logger.info(
+            "devkit.ingest_submit",
+            extra={
+                "operation": "devkit.ingest_submit",
+                "status": "success",
+                "reach_status": ke_response.status_code,
+                "latency_ms": int((time.time() - start) * 1000),
+            },
+        )
+        return Response(
+            content=ke_response.content,
+            status_code=ke_response.status_code,
+            media_type=ke_response.headers.get("content-type", "application/json"),
+        )
+    except _httpx.ConnectError as e:
+        logger.error(
+            "devkit.ingest_submit_unreachable",
+            extra={"operation": "devkit.ingest_submit", "status": "failure", "error": str(e)},
+        )
+        raise HTTPException(503, "Reach Layer is unreachable") from e
+    except _httpx.TimeoutException as e:
+        logger.error(
+            "devkit.ingest_submit_timeout",
+            extra={"operation": "devkit.ingest_submit", "status": "failure", "error": str(e)},
+        )
+        raise HTTPException(504, "Reach Layer timed out") from e
+    except _httpx.HTTPError as e:
+        logger.error(
+            "devkit.ingest_submit_error",
+            extra={"operation": "devkit.ingest_submit", "status": "failure", "error": str(e)},
+        )
+        raise HTTPException(502, "Upstream error communicating with Reach Layer") from e
+
+
+@app.get("/api/ingest/job/{job_id}")
+async def ingest_job_status(job_id: str):
+    """Return job status by proxying to Reach Layer → KE.
+
+    Called by the frontend poller every poll_interval_seconds.
+
+    Args:
+        job_id: Unique identifier of the ingestion job to query.
+
+    Returns:
+        Job status response from KE.
+
+    Raises:
+        HTTPException: 422 if job_id contains invalid characters.
+        HTTPException: 503 if Reach Layer is unreachable.
+        HTTPException: 504 if Reach Layer times out.
+        HTTPException: 502 on other upstream errors.
+    """
+    import httpx as _httpx
+    import re as _re
+    if not _re.match(r'^[a-zA-Z0-9_-]+$', job_id):
+        raise HTTPException(422, "Invalid job_id format")
+    start = time.time()
+    try:
+        async with _httpx.AsyncClient(timeout=10.0) as http_client:
+            ke_response = await http_client.get(
+                f"{_REACH_LAYER_URL}/ingest/job/{job_id}",
+                headers={"X-API-Key": _DEVKIT_TO_REACH_API_KEY},
+            )
+        logger.info(
+            "devkit.ingest_job_status",
+            extra={
+                "operation": "devkit.ingest_job_status",
+                "status": "success",
+                "reach_status": ke_response.status_code,
+                "latency_ms": int((time.time() - start) * 1000),
+            },
+        )
+        return Response(
+            content=ke_response.content,
+            status_code=ke_response.status_code,
+            media_type=ke_response.headers.get("content-type", "application/json"),
+        )
+    except _httpx.ConnectError as e:
+        logger.error(
+            "devkit.ingest_job_status_unreachable",
+            extra={"operation": "devkit.ingest_job_status", "status": "failure", "error": str(e)},
+        )
+        raise HTTPException(503, "Reach Layer is unreachable") from e
+    except _httpx.TimeoutException as e:
+        logger.error(
+            "devkit.ingest_job_status_timeout",
+            extra={"operation": "devkit.ingest_job_status", "status": "failure", "error": str(e)},
+        )
+        raise HTTPException(504, "Reach Layer timed out") from e
+    except _httpx.HTTPError as e:
+        raise HTTPException(502, "Upstream error communicating with Reach Layer") from e
+
+
+class _CallbackBody(BaseModel):
+    """Payload sent by KE when a job completes."""
+
+    job_id: str
+    status: str
+    chunks_added: Optional[int] = None
+    error: Optional[str] = None
+
+
+@app.post("/api/ingest/callback")
+async def ingest_callback(
+    body: _CallbackBody,
+    request: Request,
+):
+    """Receive ingestion completion callback from KE.
+
+    Validates the KE_TO_DEVKIT_API_KEY, then appends the result to
+    project.json ingest_log as an audit trail.
+
+    Returns:
+        {"ok": true} on success.
+    """
+    x_api_key = request.headers.get("X-API-Key")
+    _verify_api_key(x_api_key, _KE_TO_DEVKIT_API_KEY)
+
+    logger.info(
+        "devkit.ingest_callback",
+        extra={
+            "operation": "devkit.ingest_callback",
+            "status": "success",
+            "job_id": body.job_id,
+            "ingest_status": body.status,
+        },
+    )
+
+    _append_callback_to_ingest_log(body.job_id, body.status, body.chunks_added, body.error)
+    return {"ok": True}
+
+
+def _append_callback_to_ingest_log(
+    job_id: str,
+    status: str,
+    chunks_added: Optional[int],
+    error: Optional[str],
+) -> None:
+    """Append a callback result to the ingest_log of the relevant project.json.
+
+    Searches CONFIGS_DIR (or PROJECTS_DIR env if set, for tests) for directories
+    containing <project>/_meta/project.json and appends the callback result.
+    If no project is found or any error occurs, silently skips.
+
+    Args:
+        job_id: UUID of the completed job.
+        status: Terminal status ('ingested' or 'failed').
+        chunks_added: Number of chunks added (if ingested).
+        error: Error message (if failed).
+    """
+    try:
+        projects_dir = Path(os.environ.get("PROJECTS_DIR", str(CONFIGS_DIR)))
+        if not projects_dir.exists():
+            return
+
+        from datetime import datetime, timezone
+        entry = {
+            "job_id": job_id,
+            "status": status,
+            "chunks_added": chunks_added,
+            "error": error,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        for project_dir in projects_dir.iterdir():
+            if not project_dir.is_dir():
+                continue
+            project_json = project_dir / "_meta" / "project.json"
+            if not project_json.exists():
+                continue
+            with project_json.open("r") as f:
+                data = json.load(f)
+            ingest_log = data.get("ingest_log", [])
+            ingest_log.append(entry)
+            data["ingest_log"] = ingest_log
+            with project_json.open("w") as f:
+                json.dump(data, f, indent=2)
+            return
+    except Exception as e:
+        logger.warning(
+            "devkit.ingest_log_write_failed",
+            extra={
+                "operation": "devkit.ingest_callback",
+                "status": "failure",
+                "error": str(e),
+            },
+        )
+
+
+# ---------------------------------------------------------------------------
+# Dev-kit config endpoint
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/devkit-config")
+async def get_devkit_config():
+    """Return dev-kit operational config values for the frontend.
+
+    Used by IngestDocumentsStep to read upload limits and polling parameters
+    without hardcoding them in the frontend bundle.
+
+    Returns:
+        Upload limits and polling config from devkit.yaml.
+    """
+    return {
+        "user_id": _DEVKIT_CONFIG.user_id,
+        "upload": {
+            "max_files_per_upload": _DEVKIT_CONFIG.upload.max_files_per_upload,
+            "max_file_size_mb": _DEVKIT_CONFIG.upload.max_file_size_mb,
+            "supported_extensions": _DEVKIT_CONFIG.upload.supported_extensions,
+        },
+        "polling": {
+            "poll_interval_seconds": _DEVKIT_CONFIG.polling.poll_interval_seconds,
+            "poll_timeout_minutes": _DEVKIT_CONFIG.polling.poll_timeout_minutes,
+        },
+    }
 
 
 # ---------------------------------------------------------------------------

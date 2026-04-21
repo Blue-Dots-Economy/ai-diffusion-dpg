@@ -176,6 +176,20 @@ class TestSchemaDescriptions:
         assert data["descriptions"] == {}
 
 
+class TestDevKitConfigEndpoint:
+    def test_returns_expected_shape(self, client):
+        response = client.get("/api/devkit-config")
+        assert response.status_code == 200
+        body = response.json()
+        assert "upload" in body
+        assert "polling" in body
+        assert "max_files_per_upload" in body["upload"]
+        assert "max_file_size_mb" in body["upload"]
+        assert "supported_extensions" in body["upload"]
+        assert "poll_interval_seconds" in body["polling"]
+        assert isinstance(body["upload"]["supported_extensions"], list)
+
+
 def test_export_configs_404_for_missing_project(client):
     """Export endpoint returns 404 when the project does not exist."""
     res = client.get("/api/projects/nonexistent-project-xyz/configs/export")

@@ -141,3 +141,4 @@ reach_layer/web/dist/
 # Domain config meta directories
 # -----------------------------------------------------------------------------
 dev-kit/configs/**/_meta/
+.worktrees/

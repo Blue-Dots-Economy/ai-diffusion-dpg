@@ -175,3 +175,19 @@ def test_retrieve_emits_ke_span():
     ke_span = next(s for s in spans if s.name == "ke.rag_retrieve")
     assert ke_span.attributes.get("session_id") == VALID_REQUEST["session_id"]
     assert ke_span.attributes.get("intent") == VALID_REQUEST["intent"]
+
+
+# ---------------------------------------------------------------------------
+# Upload router registration
+# ---------------------------------------------------------------------------
+
+class TestUploadRouterRegistered:
+    def test_upload_endpoint_exists(self, client):
+        """Verify /upload endpoint is registered on the FastAPI app."""
+        routes = [r.path for r in client.app.routes]
+        assert "/upload" in routes
+
+    def test_upload_job_endpoint_exists(self, client):
+        """Verify /upload/job/{job_id} endpoint is registered on the FastAPI app."""
+        routes = [r.path for r in client.app.routes]
+        assert "/upload/job/{job_id}" in routes

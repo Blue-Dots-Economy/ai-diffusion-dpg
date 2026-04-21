@@ -225,3 +225,36 @@ def test_auth_error_carries_reason_and_message():
     assert err.reason is Reason.EXPIRED
     assert err.message == "expired"
     assert str(err) == "expired"
+
+
+# ---------------------------------------------------------------------------
+# verify_api_key — static API key auth for ingest proxy endpoints
+# ---------------------------------------------------------------------------
+
+from fastapi import HTTPException
+from src.auth import verify_api_key
+
+
+class TestVerifyApiKeyNormal:
+    def test_matching_key_does_not_raise(self):
+        # Should return None without raising
+        result = verify_api_key("my-secret-key", "my-secret-key")
+        assert result is None
+
+
+class TestVerifyApiKeyFailure:
+    def test_wrong_key_raises_401(self):
+        with pytest.raises(HTTPException) as exc_info:
+            verify_api_key("wrong", "right")
+        assert exc_info.value.status_code == 401
+        assert exc_info.value.detail == "Invalid API key"
+
+    def test_missing_header_raises_401(self):
+        with pytest.raises(HTTPException) as exc_info:
+            verify_api_key(None, "expected")
+        assert exc_info.value.status_code == 401
+
+    def test_empty_header_raises_401(self):
+        with pytest.raises(HTTPException) as exc_info:
+            verify_api_key("", "expected")
+        assert exc_info.value.status_code == 401

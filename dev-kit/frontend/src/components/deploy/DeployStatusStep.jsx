@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from 'react'
 import { api } from '../../api'
 import StatusBanner from '../shared/StatusBanner'
 import StatusBadge from '../shared/StatusBadge'
+import { encryptSecretsDict } from '../../crypto.js'
 
 const PHASES = [
   { name: 'Data', services: ['redis', 'memgraph'] },
@@ -29,28 +30,33 @@ const SERVICE_LABELS = {
   observability_layer: 'Observability Layer',
 }
 
-export default function DeployStatusStep({ slug, data }) {
+export default function DeployStatusStep({ slug, data, onSuccess }) {
   const [status, setStatus] = useState({ services: [], overall: 'deploying' })
   const [deployed, setDeployed] = useState(false)
   const [error, setError] = useState(null)
   const pollRef = useRef(null)
+  const onSuccessRef = useRef(onSuccess)
+  onSuccessRef.current = onSuccess
 
   useEffect(() => {
     // Start deployment on mount
-    const options = {
-      target: data.target,
-      secrets: data.secrets,
-      preset: data.preset,
-      resources: data.resources,
-      kubeconfig: data.target === 'kubernetes' ? data.kubeconfig : undefined,
-    }
-
-    api.executeDeploy(slug, options)
-      .then(() => {
+    async function startDeploy() {
+      try {
+        const options = {
+          target: data.target,
+          encrypted_secrets: await encryptSecretsDict(data.secrets),
+          preset: data.preset,
+          resources: data.resources,
+          kubeconfig: data.target === 'kubernetes' ? data.kubeconfig : undefined,
+        }
+        await api.executeDeploy(slug, options)
         setDeployed(true)
         startPolling()
-      })
-      .catch(e => setError(e.message || 'Deployment failed to start'))
+      } catch (e) {
+        setError(e.message || 'Deployment failed to start')
+      }
+    }
+    startDeploy()
 
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
@@ -65,6 +71,9 @@ export default function DeployStatusStep({ slug, data }) {
         if (result.overall === 'complete' || result.overall === 'failed') {
           clearInterval(pollRef.current)
           pollRef.current = null
+          if (result.overall === 'complete' && onSuccessRef.current) {
+            onSuccessRef.current()
+          }
         }
       } catch (e) {
         console.error('Status poll error:', e)
@@ -78,7 +87,7 @@ export default function DeployStatusStep({ slug, data }) {
     try {
       await api.executeDeploy(slug, {
         target: data.target,
-        secrets: data.secrets,
+        encrypted_secrets: await encryptSecretsDict(data.secrets),
         preset: data.preset,
         resources: data.resources,
         kubeconfig: data.target === 'kubernetes' ? data.kubeconfig : undefined,

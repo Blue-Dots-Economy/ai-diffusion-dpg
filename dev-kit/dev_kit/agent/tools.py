@@ -7,6 +7,9 @@ DPG conversation agent.
 from __future__ import annotations
 
 from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
 
 from dev_kit.agent.accumulator import BLOCKS, PHASES, ConfigAccumulator, ConfigStatus
 from dev_kit.agent.prompts.base import AGENT_TYPES, SHEET_REQUIREMENTS
@@ -231,6 +234,24 @@ TOOL_DEFINITIONS: list[dict] = [
         },
     },
     {
+        "name": "fetch_openapi_spec_from_url",
+        "description": (
+            "Fetch an OpenAPI 3.0/3.1 spec from a URL and return candidate tool definitions. "
+            "Use this when the user pastes a URL to their API spec. "
+            "Supports JSON and YAML. Returns the same candidate list as parse_openapi_spec."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "URL of the OpenAPI spec file (JSON or YAML), e.g. https://api.example.com/openapi.yaml",
+                },
+            },
+            "required": ["url"],
+        },
+    },
+    {
         "name": "add_rest_api_tool",
         "description": (
             "Add a REST API tool to the Action Gateway config. "
@@ -279,6 +300,52 @@ TOOL_DEFINITIONS: list[dict] = [
                 },
             },
             "required": ["id", "category", "description", "base_url", "auth_type", "endpoints"],
+        },
+    },
+    {
+        "name": "set_response_transformation",
+        "description": (
+            "Set the response field mapping for a REST API tool. "
+            "Call this after add_rest_api_tool, once the user tells you which fields from the API response the LLM should see. "
+            "Each field maps a JSONPath in the raw response (e.g. 'results[*].title') to a clean target name the LLM works with. "
+            "Calling this again for the same tool replaces the previous mapping."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tool_id": {
+                    "type": "string",
+                    "description": "ID of the REST API tool to configure (must already exist via add_rest_api_tool)",
+                },
+                "fields": {
+                    "type": "array",
+                    "description": "Response fields to extract and expose to the LLM",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "source": {
+                                "type": "string",
+                                "description": "JSONPath from the response root, e.g. 'results[*].title' or 'data.employer_name'",
+                            },
+                            "target": {
+                                "type": "string",
+                                "description": "Field name the LLM sees in the extracted result, e.g. 'job_title'",
+                            },
+                            "type": {
+                                "type": "string",
+                                "enum": ["string", "integer", "number", "boolean", "array", "object"],
+                                "default": "string",
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Optional human-readable description of this field",
+                            },
+                        },
+                        "required": ["source", "target"],
+                    },
+                },
+            },
+            "required": ["tool_id", "fields"],
         },
     },
     {
@@ -359,6 +426,21 @@ TOOL_DEFINITIONS: list[dict] = [
                 },
             },
             "required": ["channels"],
+        },
+    },
+    {
+        "name": "declare_azure_storage",
+        "description": (
+            "Record that this domain uses Azure Blob Storage for KB document ingestion. "
+            "Call only if the operator confirms they have Azure Blob Storage. "
+            "Takes no parameters — all Azure credentials and config (account name, "
+            "account key, container name) are entered securely in the Deployment "
+            "Inputs step, never in chat."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
         },
     },
 ]
@@ -493,10 +575,13 @@ class ToolHandler:
             "finalize_config": self._handle_finalize_config,
             "rollback_to_checkpoint": self._handle_rollback_to_checkpoint,
             "parse_openapi_spec": self._handle_parse_openapi_spec,
+            "fetch_openapi_spec_from_url": self._handle_fetch_openapi_spec_from_url,
             "add_rest_api_tool": self._handle_add_rest_api_tool,
+            "set_response_transformation": self._handle_set_response_transformation,
             "discover_mcp_tools": self._handle_discover_mcp_tools,
             "add_mcp_tool": self._handle_add_mcp_tool,
             "set_reach_channels": self._handle_set_reach_channels,
+            "declare_azure_storage": self._handle_declare_azure_storage,
         }
         handler = handlers.get(tool_name)
         if handler is None:
@@ -789,6 +874,142 @@ class ToolHandler:
         ]
         return json.dumps(candidates, ensure_ascii=False, indent=2)
 
+    def _handle_fetch_openapi_spec_from_url(self, inputs: dict) -> str:
+        """Fetch an OpenAPI spec from a URL and return candidate tool definitions as JSON.
+
+        Downloads the spec via httpx (JSON or YAML), validates it is an OpenAPI 3.x
+        document, parses it, and returns the same candidate array as
+        _handle_parse_openapi_spec.
+
+        Args:
+            inputs: Dict with 'url' key containing the spec URL.
+
+        Returns:
+            JSON array of candidate tool dicts, or an ERROR string on failure.
+        """
+        import json
+        import yaml as _yaml
+        import httpx
+        import time
+
+        from dev_kit.agent.openapi_parser import parse_openapi_spec
+
+        url = inputs.get("url", "").strip()
+        if not url:
+            logger.warning(
+                "fetch_openapi_spec_from_url.failure",
+                extra={
+                    "operation": "tools.fetch_openapi_spec_from_url",
+                    "status": "failure",
+                    "url": url,
+                    "error": "url is required",
+                    "latency_ms": 0,
+                },
+            )
+            return "ERROR: url is required"
+
+        start = time.time()
+        try:
+            transport = httpx.HTTPTransport(retries=1)
+            with httpx.Client(transport=transport, timeout=15.0, follow_redirects=True) as client:
+                response = client.get(url)
+                response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "fetch_openapi_spec_from_url.failure",
+                extra={
+                    "operation": "tools.fetch_openapi_spec_from_url",
+                    "status": "failure",
+                    "url": url,
+                    "error": f"HTTP {exc.response.status_code}",
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            return f"ERROR: HTTP {exc.response.status_code} fetching {url}"
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "fetch_openapi_spec_from_url.failure",
+                extra={
+                    "operation": "tools.fetch_openapi_spec_from_url",
+                    "status": "failure",
+                    "url": url,
+                    "error": str(exc),
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            return f"ERROR: could not fetch spec from {url} — {exc}"
+
+        content = response.text
+        try:
+            try:
+                spec = json.loads(content)
+            except json.JSONDecodeError:
+                spec = _yaml.safe_load(content)
+            if not isinstance(spec, dict):
+                logger.warning(
+                    "fetch_openapi_spec_from_url.failure",
+                    extra={
+                        "operation": "tools.fetch_openapi_spec_from_url",
+                        "status": "failure",
+                        "url": url,
+                        "error": "fetched content is not a JSON/YAML object",
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+                return "ERROR: fetched content is not a JSON/YAML object"
+        except Exception as exc:
+            logger.warning(
+                "fetch_openapi_spec_from_url.failure",
+                extra={
+                    "operation": "tools.fetch_openapi_spec_from_url",
+                    "status": "failure",
+                    "url": url,
+                    "error": f"could not parse fetched content — {exc}",
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            return f"ERROR: could not parse fetched content — {exc}"
+
+        try:
+            tools = parse_openapi_spec(spec)
+        except ValueError as exc:
+            logger.warning(
+                "fetch_openapi_spec_from_url.failure",
+                extra={
+                    "operation": "tools.fetch_openapi_spec_from_url",
+                    "status": "failure",
+                    "url": url,
+                    "error": str(exc),
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            return f"ERROR: {exc}"
+
+        candidates = [
+            {
+                "suggested_id": t.suggested_id,
+                "path": t.path,
+                "method": t.method,
+                "description": t.description,
+                "base_url": t.base_url,
+                "param_names": [p.name for p in t.params],
+                "auth_type": t.auth_type,
+                "auth_header": t.auth_header,
+            }
+            for t in tools
+        ]
+        logger.info(
+            "fetch_openapi_spec_from_url",
+            extra={
+                "operation": "tools.fetch_openapi_spec_from_url",
+                "status": "success",
+                "url": url,
+                "endpoint_count": len(candidates),
+                "latency_ms": int((time.time() - start) * 1000),
+            },
+        )
+        return json.dumps(candidates, ensure_ascii=False, indent=2)
+
     def _handle_add_rest_api_tool(self, inputs: dict) -> str:
         """Add a REST API tool to action_gateway and auto-sync agent_core connector.
 
@@ -823,6 +1044,57 @@ class ToolHandler:
 
         self._sync_connector_from_tool(tool)
         return f"Tool '{inputs['id']}' added to Action Gateway config."
+
+    def _handle_set_response_transformation(self, inputs: dict) -> str:
+        """Write response field_mapping for a REST API tool into the accumulator.
+
+        Args:
+            inputs: Dict with 'tool_id' (str) and 'fields' (list of dicts with
+                    'source', 'target', optional 'type' and 'description').
+
+        Returns:
+            Confirmation string with the number and names of mapped fields,
+            or an ERROR string if the tool does not exist.
+        """
+        import time
+
+        tool_id = inputs.get("tool_id", "")
+        fields = inputs.get("fields", [])
+
+        start = time.time()
+        try:
+            self._acc.update_tool_response_mapping(tool_id, fields)
+        except ValueError as exc:
+            logger.warning(
+                "set_response_transformation.failure",
+                extra={
+                    "operation": "tools.set_response_transformation",
+                    "status": "failure",
+                    "tool_id": tool_id,
+                    "error": str(exc),
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            return f"ERROR: {exc}"
+
+        logger.info(
+            "set_response_transformation",
+            extra={
+                "operation": "tools.set_response_transformation",
+                "status": "success",
+                "tool_id": tool_id,
+                "field_count": len(fields),
+                "latency_ms": int((time.time() - start) * 1000),
+            },
+        )
+        field_names = ", ".join(f.get("target", "?") for f in fields[:5])
+        if len(fields) > 5:
+            field_names += "…"
+        return (
+            f"Response mapping set for tool '{tool_id}': "
+            f"{len(fields)} field(s)"
+            + (f" — {field_names}" if field_names else "")
+        )
 
     def _handle_discover_mcp_tools(self, inputs: dict) -> str:
         """Fetch tools/list from an MCP server and return the tool list as JSON.
@@ -938,6 +1210,37 @@ class ToolHandler:
             return "ERROR: at least one channel must be selected."
         self._acc.set_reach_channel_selection(channels)
         return f"Channels selected: {', '.join(channels)}. Now configure each selected channel."
+
+    def _handle_declare_azure_storage(self, tool_input: dict) -> str:
+        """Record that Azure Blob Storage is needed for this domain.
+
+        Takes no parameters. All Azure details (account name, account key,
+        container name) are collected in the Deployment Inputs UI.
+        Credentials never travel through the LLM.
+
+        Args:
+            tool_input: Ignored — this tool accepts no parameters.
+
+        Returns:
+            Confirmation string prompting the user to have all Azure details ready.
+        """
+        import time
+
+        start = time.time()
+        self._acc.declare_azure_needed()
+        logger.info(
+            "declare_azure_storage",
+            extra={
+                "operation": "tools.declare_azure_storage",
+                "status": "success",
+                "latency_ms": int((time.time() - start) * 1000),
+            },
+        )
+        return (
+            "Azure Blob Storage noted. In the Deployment Inputs step you will be "
+            "asked for your Azure account name, account key, and container name — "
+            "keep all three ready."
+        )
 
     def _sync_connector_from_tool(self, tool: dict) -> None:
         """Auto-create or update agent_core connector from a tool definition.

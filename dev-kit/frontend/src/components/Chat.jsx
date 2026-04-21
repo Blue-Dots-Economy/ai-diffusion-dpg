@@ -117,6 +117,49 @@ export default function Chat({ slug, onDashboard, onBack }) {
     if (!showYaml) setShowGraph(false)
   }
 
+  async function attachFile(e) {
+    const file = e.target.files?.[0]
+    if (!file || loading) return
+
+    // Reset the input so the same file can be re-selected
+    e.target.value = ''
+
+    const MAX_BYTES = 500 * 1024  // 500 KB
+    if (file.size > MAX_BYTES) {
+      alert(`File "${file.name}" is too large (${(file.size / 1024).toFixed(0)} KB). Maximum is 500 KB.`)
+      return
+    }
+
+    const reader = new FileReader()
+    reader.onload = async (ev) => {
+      const content = ev.target.result
+      const message = `[Attached: ${file.name}]\n\n${content}`
+      setMessages(m => [...m, { role: 'user', text: message }])
+      setLoading(true)
+      try {
+        const res = await api.chat(slug, message)
+        if (res.reply) {
+          setMessages(m => [...m, { role: 'assistant', text: res.reply }])
+        }
+        setPhase(res.phase)
+        if (res.graph) setGraph(res.graph)
+        if (res.checkpoint_created) {
+          api.getCheckpoints(slug).then(setCheckpoints).catch(() => {})
+        }
+        api.getConfigs(slug).then(setConfigs).catch(() => {})
+      } catch (err) {
+        setMessages(m => [...m, { role: 'error', text: `Error: ${err.message}` }])
+      } finally {
+        setLoading(false)
+        setTimeout(() => textareaRef.current?.focus(), 0)
+      }
+    }
+    reader.onerror = () => {
+      setMessages(m => [...m, { role: 'error', text: `Error: Failed to read file "${file.name}".` }])
+    }
+    reader.readAsText(file)
+  }
+
   const showSidePanel = showGraph || showYaml
 
   return (
@@ -221,6 +264,24 @@ export default function Chat({ slug, onDashboard, onBack }) {
           </div>
 
           <form onSubmit={send} className="flex gap-2 px-4 py-3 border-t border-gray-800 bg-gray-900 shrink-0">
+            {/* Hidden file input for spec upload */}
+            <input
+              type="file"
+              accept=".yaml,.yml,.json"
+              className="hidden"
+              id="spec-file-input"
+              onChange={attachFile}
+              disabled={loading}
+            />
+            <label
+              htmlFor="spec-file-input"
+              title="Attach spec file (.yaml, .yml, .json)"
+              className={`flex items-center justify-center w-9 h-9 rounded-xl cursor-pointer transition-colors self-end shrink-0 ${
+                loading ? 'text-gray-600 cursor-not-allowed' : 'text-gray-400 hover:text-gray-200 hover:bg-gray-700'
+              }`}
+            >
+              📎
+            </label>
             <textarea
               ref={textareaRef}
               rows={1}

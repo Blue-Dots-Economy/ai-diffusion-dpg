@@ -196,3 +196,7 @@ class KnowledgeEngineBase(ABC):
         Returns list of RetrievalChunk (from src.models). Prompt assembly is
         Agent Core's responsibility. Never raises — returns [] on any failure.
         """
+
+    @abstractmethod
+    def get_static_kb_block(self) -> Optional[Any]:
+        """Return the StaticKnowledgeBaseBlock instance, or None if not present."""

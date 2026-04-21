@@ -26,6 +26,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+import asyncio as _asyncio
+import tempfile
 import uvicorn
 import yaml
 from dotenv import load_dotenv
@@ -43,6 +45,8 @@ load_dotenv()
 from dpg_telemetry import init_otel
 from src.engine import KnowledgeEngine
 from src.models import RetrievalChunk
+from src.db.ingestion_db import IngestionDB
+from src.upload_router import create_upload_router, run_queue_worker
 
 # ---------------------------------------------------------------------------
 # Logging — structured output, INFO level default
@@ -186,6 +190,77 @@ def create_app(ke: KnowledgeEngine, config: dict) -> FastAPI:
     FastAPIInstrumentor.instrument_app(app)
     app.state.ke = ke
     app.state.config = config
+
+    # ------------------------------------------------------------------
+    # Upload router — KB document ingestion API
+    # ------------------------------------------------------------------
+
+    _REACH_TO_KE_API_KEY = os.environ.get("REACH_TO_KE_API_KEY", "")
+    _AZURE_CONFIGURED = bool(
+        os.environ.get("AZURE_STORAGE_ACCOUNT")
+        and os.environ.get("AZURE_STORAGE_KEY")
+        and os.environ.get("AZURE_CONTAINER_NAME")
+    )
+    _KB_DATA_DIR = os.environ.get("KB_DATA_DIR", "/data/kb")
+    _DB_PATH = Path(_KB_DATA_DIR) / "ke_metadata.db"
+    _DEVKIT_CALLBACK_URL = os.environ.get("KE_DEVKIT_CALLBACK_URL", "")
+    _KE_TO_DEVKIT_API_KEY = os.environ.get("KE_TO_DEVKIT_API_KEY", "")
+    _MAX_QUEUE_SIZE = 20
+
+    # Fall back to a temporary directory if the configured KB_DATA_DIR is not
+    # writable (e.g. the /data PVC is absent in local dev / test environments).
+    try:
+        _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        _tmp_dir = Path(tempfile.mkdtemp(prefix="ke_data_"))
+        logger.warning(
+            "ke.startup.kb_data_dir_fallback",
+            extra={
+                "operation": "ke.startup",
+                "status": "skipped",
+                "error": f"{_KB_DATA_DIR} is not writable; using {_tmp_dir}",
+            },
+        )
+        _KB_DATA_DIR = str(_tmp_dir)
+        _DB_PATH = _tmp_dir / "ke_metadata.db"
+
+    ingest_db = IngestionDB(_DB_PATH)
+    ingest_queue: _asyncio.Queue = _asyncio.Queue()
+
+    upload_router = create_upload_router(
+        db=ingest_db,
+        ingest_queue=ingest_queue,
+        reach_to_ke_api_key=_REACH_TO_KE_API_KEY,
+        azure_configured=_AZURE_CONFIGURED,
+        max_queue_size=_MAX_QUEUE_SIZE,
+        devkit_callback_url=_DEVKIT_CALLBACK_URL or None,
+        ke_to_devkit_api_key=_KE_TO_DEVKIT_API_KEY or None,
+        ke_config=config,
+        static_kb_block=ke.get_static_kb_block(),
+    )
+    app.include_router(upload_router)
+    app.state.ingest_db = ingest_db
+    app.state.ingest_queue = ingest_queue
+
+    @app.on_event("startup")
+    async def _start_queue_worker():
+        """Start the singleton async queue worker on app startup."""
+        static_kb = ke.get_static_kb_block()
+        _asyncio.create_task(
+            run_queue_worker(
+                db=ingest_db,
+                ingest_queue=ingest_queue,
+                ke_config=config,
+                static_kb_block=static_kb,
+                devkit_callback_url=_DEVKIT_CALLBACK_URL or None,
+                ke_to_devkit_api_key=_KE_TO_DEVKIT_API_KEY or None,
+                kb_data_dir=_KB_DATA_DIR,
+            )
+        )
+        logger.info(
+            "ke.queue_worker.started",
+            extra={"operation": "ke.startup", "status": "success"},
+        )
 
     # ----------------------------------------------------------------
     # POST /retrieve

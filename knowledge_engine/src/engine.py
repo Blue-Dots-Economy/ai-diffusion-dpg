@@ -185,6 +185,19 @@ class KnowledgeEngine(KnowledgeEngineBase):
         )
         return chunks
 
+    def get_static_kb_block(self):
+        """Return the StaticKnowledgeBaseBlock instance, or None if not present.
+
+        Returns:
+            The StaticKnowledgeBaseBlock if it exists in the engine's block list,
+            otherwise None.
+        """
+        from src.blocks.static_knowledge_base import StaticKnowledgeBaseBlock
+        for block in self._blocks:
+            if isinstance(block, StaticKnowledgeBaseBlock):
+                return block
+        return None
+
     # ------------------------------------------------------------------
     # Private: block initialisation
     # ------------------------------------------------------------------

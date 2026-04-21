@@ -178,6 +178,8 @@ def _inject_legacy_aliases(merged: dict, channel_name: str) -> None:
                 merged.setdefault(key, channel_cfg[key])
         if isinstance(channel_cfg.get("sessions"), dict):
             reach_layer.setdefault("sessions", channel_cfg["sessions"])
+        if isinstance(channel_cfg.get("ke_internal_url"), str):
+            merged.setdefault("ke_internal_url", channel_cfg["ke_internal_url"])
 
     if channel_name == "voice":
         # Voice's 28-file codebase reads from config["telephony_adapter"][...];

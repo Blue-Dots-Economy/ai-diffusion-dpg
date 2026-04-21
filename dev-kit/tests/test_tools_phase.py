@@ -337,3 +337,38 @@ def test_discover_mcp_tools_unrecognised_format_returns_error(mock_post, handler
 
     result = handler.dispatch("discover_mcp_tools", {"mcp_server_url": "https://mcp.example.com"})
     assert result.startswith("ERROR")
+
+
+# ---------------------------------------------------------------------------
+# ToolHandler._handle_declare_azure_storage
+# ---------------------------------------------------------------------------
+
+class TestDeclareAzureStorageTool:
+    def _make_handler(self):
+        """Create a ToolHandler with empty accumulator and minimal state."""
+        from dev_kit.agent.accumulator import ConfigAccumulator
+        from dev_kit.agent.tools import ToolHandler
+        acc = ConfigAccumulator()
+        state = {"phase": "knowledge", "phase_changed": None, "rollback_to": None, "project_meta": {}}
+        return ToolHandler(acc, state), acc
+
+    def test_sets_azure_needed_on_accumulator(self):
+        """Calling declare_azure_storage flags azure as needed in the accumulator."""
+        handler, acc = self._make_handler()
+        result = handler._handle_declare_azure_storage({})
+        assert acc.is_azure_needed() is True
+        assert "Azure Blob Storage noted" in result or "Deployment Inputs" in result
+
+    def test_no_credentials_in_state(self):
+        """declare_azure_storage must NOT store any credential values in state."""
+        handler, acc = self._make_handler()
+        handler._handle_declare_azure_storage({})
+        assert "azure_storage" not in handler._state
+
+    def test_ignores_extra_input(self):
+        """declare_azure_storage must ignore any unexpected input parameters."""
+        handler, acc = self._make_handler()
+        # Should not raise even if extra params are passed
+        result = handler._handle_declare_azure_storage({"unexpected": "value"})
+        assert acc.is_azure_needed() is True
+        assert isinstance(result, str)
