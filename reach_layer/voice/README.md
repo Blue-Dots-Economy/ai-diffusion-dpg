@@ -47,12 +47,37 @@ The adapter is stateless across calls. All session state lives in the Memory Lay
 2. Vobiz opens a WebSocket → `VobizOperator.parse_handshake()` reads `stream_id` and `call_id` from the Vobiz start messages.
 3. `VobizOperator.create_transport()` builds a `FastAPIWebsocketTransport` with `VobizFrameSerializer`.
 4. `SileroVADWrapper` creates a `SileroVADAnalyzer` with config-driven parameters.
-5. Pipeline runs: `transport.input → VADProcessor → RayaSTTService → AgentCoreLLMProcessor → RayaTTSService → transport.output`.
-6. On client connect, a greeting `TTSSpeakFrame` is queued.
+5. Pipeline runs: `transport.input → VADProcessor → UserTurnProcessor → RayaSTTService → AgentCoreLLMProcessor → TTSTextSanitizerProcessor → RayaTTSService → transport.output`.
+6. On client connect, the adapter opens a `?user_id=<caller_id>` SSE subscription to Agent Core. For a brand-new session, Agent Core emits the entry subagent's `opening_phrase` as a `SentenceEvent` (GH-149); any other channel behaviour reuses the normal turn flow, so there is no static pickup greeting to maintain per domain.
 7. Each VAD-segmented utterance is transcribed by `RayaSTTService.transcribe()` (HTTP multipart POST to Raya).
 8. The transcript is forwarded to Agent Core (`POST /process_turn`) with `user_id = caller_id`.
 9. Agent Core response text is synthesised by `RayaTTSService.synthesize()` (SSE stream, F32LE → PCM16).
 10. If Agent Core returns `was_escalated=true`, an `EndFrame` is pushed to hang up.
+
+---
+
+## Barge-in (GH-152)
+
+The adapter supports mid-response interruption: when the caller starts speaking while the bot is playing, the bot goes silent immediately and treats the new speech as a fresh turn rather than a continuation.
+
+Two layers cooperate:
+
+1. **Audio-level (voice pipeline).** A `UserTurnProcessor` between `VADProcessor` and STT converts `VADUserStartedSpeakingFrame` into a pipecat `InterruptionFrame` whenever the bot is currently speaking. Pipecat flushes the TTS queue, and `AgentCoreLLMProcessor._start_interruption()` stops forwarding further `SentenceEvent`s from the in-flight Agent Core stream. If `barge_in_acknowledgement` is configured, it is spoken briefly (e.g. `"ठीक है, एक सेकंड।"`).
+2. **Turn-logic (Agent Core).** Once STT produces the caller's new transcript, `TurnAssembler.add_segment()` sees the turn is `INVOKED`, calls `cancel()` (emitting `DoneEvent(turn_status="interrupted")`), and discards the original interrupted segments. Only the barge-in segment replays into the next turn — so the LLM sees just the correction, not `"<original> <correction>"`.
+
+Relevant config keys under `reach_layer.channels.voice.agent_core`:
+
+| Key | Default | Purpose |
+|---|---|---|
+| `barge_in_acknowledgement` | `""` | Short phrase spoken when the caller interrupts. Empty → bot simply goes silent. |
+| `fallback_phrase` | `""` | Spoken only when the Agent Core HTTP call fails (timeout / 5xx / empty stream). **Not** a conversational fallback. |
+
+Relevant log lines (useful for Loki dashboards):
+- `agent_core_llm.interruption` — pipecat InterruptionFrame reached the processor.
+- `agent_core_llm.interrupted_during_stream` — SSE consumer exited because of the flag.
+- `turn_assembler.barge_in_discarded_segments` — Agent Core dropped original segments; includes `discarded_count` and `pending_count`.
+
+VAD tuning lives under `reach_layer.channels.voice.vad`; the UserTurnProcessor's stop strategy reuses `vad.stop_secs` as its `user_speech_timeout`.
 
 ---
 
@@ -158,8 +183,14 @@ reach_layer:
       agent_core:
         base_url: http://agent_core:8000
         timeout_ms: 5000
-        greeting: "Hello, how can I help you today?"
+        # Transport-failure fallback only. Conversational / low-confidence
+        # fallbacks are handled by the `clarification` subagent in
+        # agent_core.yaml. The per-call welcome is the entry subagent's
+        # opening_phrase, emitted via SSE (GH-149).
         fallback_phrase: "I'm sorry, I couldn't process that. Please try again."
+        # Short phrase spoken when the caller interrupts mid-response (GH-152).
+        # Empty = bot simply goes silent on barge-in.
+        barge_in_acknowledgement: ""
 ```
 
 ---
