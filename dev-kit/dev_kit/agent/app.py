@@ -785,17 +785,19 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
         if resources:
             content = _apply_resources_to_compose(content, resources)
 
-        preview: dict[str, str] = {"docker-compose.yml": content}
-
-        # Preview connector_secrets.env — shows which connector keys will be written
-        # to disk at deploy time (values masked; only key names shown).
+        # Inject tool secrets into the preview the same way _run_docker_deploy does,
+        # so the user sees exactly what will be deployed (values masked).
         tool_secrets = secrets.get("tool_secrets", {})
         if tool_secrets:
-            lines = ["# Generated at deploy time by dev-kit — do not commit.\n"]
-            lines += [f"{env_var}=<set at deploy time>\n" for env_var in tool_secrets if tool_secrets[env_var]]
-            preview["connector_secrets.env"] = "".join(lines)
+            import yaml as _yaml
+            compose_doc = _yaml.safe_load(content)
+            ag_env = compose_doc.get("services", {}).get("action_gateway", {}).setdefault("environment", [])
+            for env_var in tool_secrets:
+                if tool_secrets[env_var]:
+                    ag_env.append(f"{env_var}=<set at deploy time>")
+            content = _yaml.dump(compose_doc, default_flow_style=False, sort_keys=False)
 
-        return {"target": target, "preview": preview}
+        return {"target": target, "preview": {"docker-compose.yml": content}}
 
     # Kubernetes — render all 14 charts via helm template
     from dev_kit.agent.deployer.helm import build_template_command, run_helm_command
@@ -960,41 +962,25 @@ async def _run_docker_deploy(slug: str, state, secrets: dict, resources: dict) -
     from dev_kit.agent.deployer.helm import DEPLOY_PHASES
 
     try:
-        # Write connector_secrets.env for action_gateway's env_file.
-        # Mirrors the Helm extraSecrets pattern: key names are not hardcoded in the
-        # compose file; whatever tool_secrets the chat agent collected go here.
-        tool_secrets = secrets.get("tool_secrets", {})
-        if tool_secrets:
-            secrets_file = CONFIGS_DIR / slug / "connector_secrets.env"
-            try:
-                secrets_file.parent.mkdir(parents=True, exist_ok=True)
-                with open(secrets_file, "w") as _f:
-                    _f.write("# Generated at deploy time by dev-kit — do not commit.\n")
-                    for env_var, value in tool_secrets.items():
-                        if value:
-                            _f.write(f"{env_var}={value}\n")
-                logger.info(
-                    "wrote_connector_secrets",
-                    extra={"operation": "_run_docker_deploy", "status": "success", "path": str(secrets_file)},
-                )
-            except OSError as _exc:
-                logger.error(
-                    "write_connector_secrets_failed",
-                    extra={"operation": "_run_docker_deploy", "status": "failure", "error": str(_exc)},
-                )
-
         # Read compose file, apply domain and resources
         raw = COMPOSE_FILE.read_text()
         content = raw.replace("${DOMAIN:-kkb}", slug).replace("${DOMAIN}", slug)
         if resources:
             content = _apply_resources_to_compose(content, resources)
 
-        # Strip hardcoded container_name so Docker Compose auto-prefixes
-        # with the project name, avoiding conflicts with other deployments.
+        # Patch the parsed YAML in one pass:
+        #   - strip container_name (avoids conflicts across deployments)
+        #   - inject connector tool secrets directly into action_gateway environment
         import yaml as _yaml
         compose_doc = _yaml.safe_load(content)
-        for svc in compose_doc.get("services", {}).values():
+        tool_secrets = secrets.get("tool_secrets", {})
+        for svc_name, svc in compose_doc.get("services", {}).items():
             svc.pop("container_name", None)
+            if svc_name == "action_gateway" and tool_secrets:
+                env_list = svc.setdefault("environment", [])
+                for env_var, value in tool_secrets.items():
+                    if value:
+                        env_list.append(f"{env_var}={value}")
         content = _yaml.dump(compose_doc, default_flow_style=False, sort_keys=False)
 
         # Write to a temp file next to the original so relative paths resolve

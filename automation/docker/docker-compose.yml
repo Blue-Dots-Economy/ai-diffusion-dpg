@@ -62,14 +62,8 @@ services:
     container_name: action_gateway
     environment:
       - CONFIG_FOLDER=/app/config
-    # Connector API keys — mirrors the Helm extraSecrets pattern.
-    # When deploying via dev-kit, this file is written automatically at deploy time.
-    # When running docker compose manually, create dev-kit/configs/<domain>/connector_secrets.env
-    # with KEY=value lines for each connector tool your domain uses (e.g. ONEST_API_KEY=...).
-    # The .env file is gitignored; never commit real secrets.
-    env_file:
-      - path: ../../dev-kit/configs/${DOMAIN:-kkb}/connector_secrets.env
-        required: false
+      # Connector API keys are injected here at deploy time by dev-kit (e.g. ONEST_API_KEY=...).
+      # When running docker compose manually, add KEY=value lines to this section.
     volumes:
       - ../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-kkb}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
