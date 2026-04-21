@@ -5,65 +5,157 @@
 # instead of editing this file.
 #
 # All keys are required unless marked optional.
+# The full annotated reference is in dev-kit/dev_kit/schemas/agent_core.yaml.
 
 agent:
   primary_model: ""       # Required. Claude model ID for primary inference.
   fallback_model: ""      # Required. Claude model ID used if primary fails.
+  ask_for_consent: false  # Optional. True to ask new users for DPDP consent before saving data.
+  consent_prompt: ""      # Optional. Message shown when asking for consent.
 
 conversation:
-  blocked_message: ""         # Required. Shown when input is blocked by Trust Layer.
-  escalation_message: ""      # Required. Shown when escalating to a human agent.
-  output_blocked_message: ""  # Required. Shown when LLM output is blocked by Trust Layer.
-  unknown_intent_message: ""  # Required. Shown when NLU confidence is below threshold.
-  termination_message: ""     # Planned. Not yet read by agent_core. Shown when session ends. LLM translates to user language.
-  consent_message: ""         # Planned. Not yet read by agent_core. Shown to request user consent to save profile data.
-  consent_decline_ack: ""     # Planned. Not yet read by agent_core. Acknowledgement when user declines consent.
-  profile_complete_message: ""    # Planned. Not yet read by agent_core. Shown when profile collection completes.
-  returning_user_greeting: ""     # Planned. Not yet read by agent_core. Greeting for users whose profile is already saved.
+  blocked_message: ""              # Required. Shown when input is blocked by Trust Layer.
+  escalation_message: ""           # Required. Shown when escalating to a human agent.
+  output_blocked_message: ""       # Required. Shown when LLM output is blocked by Trust Layer.
+  unknown_intent_message: ""       # Required. Shown when NLU confidence is below threshold.
+  termination_message: ""          # Optional. Shown when session ends; LLM translates to user language.
+  consent_message: ""              # Optional. Shown to request user consent to save profile data.
+  consent_decline_ack: ""          # Optional. Acknowledgement when user declines consent.
+  profile_complete_message: ""     # Optional. Shown when profile collection completes.
+  returning_user_greeting: ""      # Optional. Greeting for users whose profile is already saved.
+  unsupported_language_message: "" # Optional. Shown when user speaks a language not in supported_languages.
+
+  # (GH-139) Optional — Conversational agents only.
+  # Classifies the user's mental state each turn to shape tone, pacing, and detail level.
+  user_state_model:
+    enabled: false          # Set true for Conversational agents.
+    default_state: ""       # Required when enabled. Must match a state id below.
+    states: []              # Required when enabled. Each entry: id, signals (list), guidance (str).
+    # Example entry:
+    # - id: fog
+    #   signals: ["koi kaam hai kya", "kuch samajh nahi aa raha"]
+    #   guidance: "User is disoriented. Ask only 1-2 questions before showing market data."
+
+  # (GH-137) Optional — Opt-in LLM-driven session-end detection.
+  # When enabled, registers an `end_session` internal tool the LLM calls to close the session.
+  session_end_eval:
+    enabled: false   # Set true for agents that should detect call-end via LLM tool.
+    prompt: ""       # Appended to main system prompt; teaches LLM when to call end_session.
+    fail_action: "none"  # Schema-accepted; runtime ignored in current implementation.
+
+# (GH-137) Per-channel LLM-facing configuration.
+# Replaces the legacy agent.channels path which is no longer accepted.
+channels:
+  voice:
+    system_prompt_suffix: ""  # Appended to the main system prompt for this channel.
+    tts_rules:                # Required when voice is declared. TTS formatting rules.
+      numbers: ""             # How to write numeric values for speech (e.g. "write as Hindi words").
+      money: ""               # How to write monetary values for speech.
+      dates: ""               # How to write date values for speech.
+      time: ""                # How to write time values for speech.
+      phone: ""               # How to speak phone numbers.
+      abbreviations: ""       # How to expand abbreviations for speech.
+      output_script: ""       # Script to use for TTS output (e.g. Devanagari).
+      english_loanwords: ""   # How to handle English loanwords in TTS output.
+    terminal_word: ""         # Required when voice is declared. Word that signals call end.
+    turn_assembler:
+      semantic_gate:
+        enabled: false
+        confidence_threshold: 0.75
+      silence_trigger:
+        silence_ms: 400
+      max_wait_ceiling:
+        max_wait_ms: 8000
+  web:
+    system_prompt_suffix: ""
+    tts_rules: null
+    terminal_word: null
+    turn_assembler:
+      semantic_gate: {enabled: false, confidence_threshold: 0.75}
+      silence_trigger: {silence_ms: 1500}
+      max_wait_ceiling: {max_wait_ms: 15000}
+  cli:
+    system_prompt_suffix: ""
+    tts_rules: null
+    terminal_word: null
+    turn_assembler:
+      semantic_gate: {enabled: false, confidence_threshold: 0.75}
+      silence_trigger: {silence_ms: 200}
+      max_wait_ceiling: {max_wait_ms: 5000}
 
 connectors:
-  read: []    # List of read connector tool definitions. Each entry: name, description, input_schema.
-  write: []   # List of write connector tool definitions. Each entry: name, description, input_schema.
-  identity: []  # List of identity connector definitions.
-  internal: []  # List of internal routing tools (e.g. knowledge_retrieval).
+  read: []   # List of read connector definitions. Each entry: name, description, input_schema, invocation_rules.
+  write: []  # List of write connector definitions. Each entry: name, description, input_schema, invocation_rules.
+             # Write connectors require Trust Layer consent before execution.
+  identity: []  # Identity verification connectors — same structure as read.
+  internal: []  # Internal routing tools (e.g. knowledge_retrieval).
+                # Each entry: name, route, description, input_schema, invocation_rules.
+  #
+  # (GH-137) invocation_rules structure (applies to all connector types):
+  #   invocation_rules:
+  #     call_when: ""               # Exact trigger condition in plain language.
+  #     required_before_calling: [] # Session field names required before tool may be invoked.
+  #     must_not_substitute: ""     # What the LLM must never treat as a substitute for this tool.
+  #     on_empty: ""                # What the agent says when the tool returns empty results.
+  #     on_failure: ""              # What the agent says on tool failure or timeout.
+  #     bridge_line: ""             # Single natural line spoken right before the call (voice only).
 
 preprocessing:
   language_normalisation:
     model: ""              # Required. Claude model ID for language normalisation.
-    provider: ""           # Required. "llm_native".
+    provider: llm_native   # Required. "llm_native".
     default_language: ""   # Required. e.g. "hindi"
     supported_languages: []  # Required. List of supported language codes.
-    transliteration: true  # Reserved. Not yet implemented.
-    code_switching: true  # Reserved. Not yet implemented.
+    transliteration: true
+    code_switching: true
 
   nlu_processor:
     model: ""                  # Required. Claude model ID for NLU classification.
     confidence_threshold: 0.5  # Optional. Float 0–1. Intents below this are treated as unknown.
+    user_state_confidence_threshold: 0.4  # (GH-139) Below this, user-state stays sticky (previous state retained).
     domain_instruction: ""     # Required. System instruction describing the domain to the NLU.
     intents: []                # Required. List of intent string identifiers.
     entities: []               # Required. List of entity string identifiers.
     sentiment_classes: []      # Required. List of sentiment class strings.
+    signal_intents: {}         # (GH-140) Optional. Map of intent → signal_type written to ContextGraph Signal node.
+                               # Example: { pay_disappointment: objection, hang_up: dropoff_signal }
 
 entity_to_profile_field: {}  # Required. Map of entity name → UserProfile field name.
 
 hitl:
-  response_message: ""  # Required. Message shown when handing off to a human agent.
-  # Note: "whatsapp_handoff" is a second available special_handler value for subagents.
-  # Its response is currently hardcoded in the orchestrator; no config key needed.
+  response_message: ""  # Required. Fixed message shown when HITL special_handler is triggered.
 
 agent_workflow:
-  workflow_id: ""    # Required. Unique identifier for this workflow.
-  version: ""        # Required. Version string e.g. "1.0.0".
-  agent_system_prompt: ""    # Required. System prompt used for all LLM calls in this workflow. Use YAML block scalar (|) for multi-line prompts.
-  global_intents: []         # Required. Intent IDs handled globally regardless of current subagent.
-  global_routing: []         # Required. Routing rules for global intents. Each: intent, next_subagent_id.
-  default_fallback_subagent_id: ""  # Required. Subagent to route to when no routing rule matches.
-  subagents: []              # Required. List of subagent definitions. See dev-kit/configs/kkb/agent_core.yaml for full example.
+  workflow_id: ""                      # Required. Unique snake_case identifier for this workflow.
+  version: ""                          # Required. Version string e.g. "1.0.0".
+  agent_system_prompt: ""              # Required. Top-level system prompt for the orchestrating LLM.
+  global_intents: []                   # Required. Intent IDs handled globally regardless of current subagent.
+  global_routing: []                   # Required. Routing rules for global intents. Each: intent, next_subagent_id.
+  default_fallback_subagent_id: ""     # Required. Subagent to route to when no routing rule matches.
 
-# reach_layer: Optional. Per-channel turn assembler overrides.
-# Defaults come from dpg.yaml. Only add this block if your domain needs
-# different turn assembler tuning per channel. See dev-kit/configs/kkb/agent_core.yaml
-# for a full example.
+  subagent_mental_state_map: {}        # (GH-140) Optional. Maps subagent id → mental_state value written
+                                       # to session after routing. Example: { profile_building: fog }
+
+  tool_result_mappings: {}             # (GH-140) Optional. Maps tool name → journey event config for
+                                       # persisting tool outputs to Neo4j child nodes.
+                                       # Example:
+                                       # tool_name:
+                                       #   journey_event_label: Role
+                                       #   result_list_key: data.items
+                                       #   field_map: { role_id: job.job_id, title: job.title }
+
+  subagents: []  # Required. List of subagent definitions. Each entry:
+                 #   id, name, description, is_start, is_terminal,
+                 #   opening_phrase (GH-137),  ← emitted on first session turn only (after consent)
+                 #   special_handler, valid_intents, tools, system_prompt, routing.
+                 # See dev-kit/dev_kit/schemas/agent_core.yaml for full annotated example.
+
+# Optional. Per-channel turn-assembler tuning (semantic gate).
+# reach_layer:
+#   turn_assembler:
+#     semantic_gate:
+#       enabled: true
+#       confidence_threshold: 0.75
 
 observability:
   domain: ""  # Required. Domain identifier (e.g. "kkb", "farmer_friendly").

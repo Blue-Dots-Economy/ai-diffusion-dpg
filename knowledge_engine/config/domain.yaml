@@ -2,23 +2,42 @@
 #
 # This file is the template a domain integrator fills in.
 # For local dev, set CONFIG_FOLDER in .env.local to point to your domain configs folder.
+# The full annotated reference is in dev-kit/dev_kit/schemas/knowledge_engine.yaml.
 
 knowledge:
   blocks:
     glossary:
       enabled: true
       mappings: []  # Required. List of {colloquial: [...], canonical: "..."} entries.
-      apply_to: []  # Required. Fields to apply glossary to. e.g. [normalised_input, entities]
+                    # Example: { colloquial: ["naukri chahiye", "job chahiye"], canonical: "market_truth_query" }
+      apply_to:     # Required. Fields to apply glossary normalisation to.
+        - normalised_input
+        - entities
 
     static_knowledge_base:
       enabled: true
-      collection_name: ""        # Required. ChromaDB collection name for this domain.
-      chroma_persist_dir: ""     # Required. Path to ChromaDB persistence directory.
-      sources: []                # Required. List of {path, type, doc_type, refresh} entries.
-      intent_filters: {}         # Required. Map of intent → list of doc_types to retrieve.
+      collection_name: ""           # Required. ChromaDB collection name for this domain.
+      chroma_persist_dir: ./data/chroma_db  # Path to ChromaDB persistence directory.
+      sources: []                   # Required. List of {path, type, doc_type, refresh} entries.
+                                    # type: static | always_include
+                                    # refresh: manual | annual | monthly
+                                    # Example: { path: ./data/schemes.pdf, type: static, doc_type: scheme, refresh: manual }
+      intent_filters: {}            # Required. Map of intent → list of doc_types to retrieve.
+                                    # Example: { market_truth_query: [scheme, trade], scheme_query: [scheme] }
 
     multimodal_input_handler:
-      image_model: ""  # Required. Claude model ID for image description.
+      enabled: false                # Set true if the agent accepts image inputs.
+      image_model: ""               # Optional. Claude model ID for image understanding (when enabled).
+
+# Persona and language instructions injected into every LLM prompt by Knowledge Engine.
+conversation:
+  persona:
+    text: ""              # Required. System prompt persona text. Describes who the agent is
+                          # and how it should behave. Injected at the start of every LLM call.
+  language_instruction: ""  # Optional. Additional language/script instruction, e.g.
+                             # "Respond in Hindi using Devanagari script. Write numbers in words."
+  guardrail_reminders: []   # Optional. Safety reminders appended to the assembled prompt.
+                             # Example: ["MUST NOT guarantee job placement outcomes."]
 
 observability:
   domain: ""  # Required. Domain identifier (e.g. "kkb", "farmer_friendly").

@@ -2,31 +2,49 @@
 #
 # This file is the template a domain integrator fills in.
 # For local dev, set CONFIG_FOLDER in .env.local to point to your domain configs folder.
+# The full annotated reference is in dev-kit/dev_kit/schemas/memory_layer.yaml.
+#
+# Infrastructure fields (user_id, journey_id, is_returning) are injected automatically
+# at session init — do NOT declare them in state.session.schema.
 
 state:
   session:
-    ttl_minutes: 1440  # Optional. Session TTL in minutes. Default 1440 (1 day).
-    schema: {}         # Required. Map of field_name → {type, default} or {type, values, default}.
-                       # Infrastructure fields (user_id, journey_id, is_returning) are injected
-                       # automatically — do not declare them here.
+    ttl_minutes: 1440  # Optional. Session TTL in minutes. Default 1440 (24 hours).
+    schema: {}         # Required. Map of field_name → field definition.
+                       # Supported types: enum, string, int, list.
+                       # Example:
+                       # mental_state:
+                       #   type: enum
+                       #   values: [fog, orientation, evaluation, commitment, follow_through]
+                       #   default: fog
+                       # income_urgency:
+                       #   type: enum
+                       #   values: [immediate, short_term, flexible]
+                       #   default: ""
 
   persistent:
-    backend: neo4j
+    backend: memgraph  # Required. Graph database backend: memgraph | neo4j
     graph:
       user_node:
-        label: ""   # Required. Neo4j node label for the user. e.g. "User"
-        key: ""     # Required. Property used as the unique user identifier. e.g. "user_id"
-      subnodes: {}  # Required. Map of subnode config. See dev-kit/configs/<domain>/memory_layer.yaml for full example.
+        label: User    # Required. Node label for the user, e.g. "User", "Patient", "Farmer".
+        key: user_id   # Required. Property used as the unique user identifier, e.g. "user_id", "phone_number".
+      subnodes: {}     # Required. Map of NodeName → subnode definition.
+                       # See dev-kit/dev_kit/schemas/memory_layer.yaml for the full structure.
+                       # Each subnode declares: rel, declared_fields (or grouping: true),
+                       # and optionally: child, children, adhoc.
 
-    merge_on_session_end: []  # Required. List of {session_field, target} mappings promoted to
-                               # Journey node on session close.
+    merge_on_session_end: []  # Required. Promotes session fields to graph nodes when the session closes.
+                               # Each entry: { session_field: "...", target: "NodeLabel.property_or_Role" }
+                               # Example: { session_field: mental_state, target: Journey.mental_state_at_end }
 
 user_data_persistence:
-  default_mode: ""  # Required. "saved" or "anonymous". Controls default profile retention.
+  default_mode: saved  # Required. "saved" (profile kept across sessions) or
+                       # "anonymous" (Neo4j data deleted at session end — DPDP-compliant).
 
 reengagement:
-  triggers: []  # Required. List of re-engagement trigger definitions.
-                # Each: {event, delay_hours, channel, message_template} or {event, loop_threshold, action}.
+  triggers: []  # Optional. Re-engagement messages sent after drop-off events.
+                # Time-based: { event: "DOP_MT", delay_hours: 72, channel: outbound_call, message_template: "..." }
+                # Loop-based: { event: "DOP_RL", loop_threshold: 3, action: hitl_counsellor }
 
 observability:
   domain: ""  # Required. Domain identifier (e.g. "kkb", "farmer_friendly").

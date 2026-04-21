@@ -19,9 +19,24 @@ trust:
 
   output_rules:
     blocked_phrases:
+      # English prohibited phrases
       - "guaranteed placement"
       - "100% job guarantee"
       - "as an AI, I"
+      # Hindi prohibited phrases from kkbconfig.txt — promotional/pressure language
+      - "बेस्ट ऑपर्च्युनिटी"
+      - "गारंटीड जॉब"
+      - "हाई पेइंग"
+      - "लाइफ चेंजिंग"
+      - "शोर शॉट"
+      - "डोंट वरी"
+      - "सब ठीक हो जाएगा"
+      - "आप कर सकते हो"
+      - "आपको करना चाहिए"
+      - "ट्रेमेन्डस ऑपर्च्युनिटीज़"
+      - "सौ प्रतिशत"
+      - "पक्का मिलेगा"
+      - "यह miss मत कीजिए"
     output_blocked_message: "Mujhe yeh jawab dene mein dikkat aa rahi hai."
 
   policy_packs:
@@ -104,3 +119,16 @@ trust:
 
 observability:
   domain: "kkb"
+
+# NEW (GH-137) — Pre-response dignity check for Conversational agents.
+# KKB is a Conversational agent; dignity_check MUST be enabled.
+# These 5 questions are evaluated by the LLM before every response via /assemble_constraints.
+dignity_check:
+  enabled: true
+  questions:
+    - "Does this blame the user for their situation or lack of opportunity?"
+    - "Does it over-promise job availability, placement rate, or income outcomes?"
+    - "Does it push urgency or use pressure language (e.g. 'offer sirf 2 din ke liye')?"
+    - "Does it reduce the user's agency to decide their own path?"
+    - "Does it sound like a scripted call rather than a genuine human conversation?"
+  fail_action: "rewrite"

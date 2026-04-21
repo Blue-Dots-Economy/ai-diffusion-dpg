@@ -1,18 +1,15 @@
 # =============================================================================
-# reach_layer/config/domain.yaml — Domain-specific Reach Layer config.
+# reach_layer/config/domain.yaml — Domain-specific Reach Layer config template.
 # =============================================================================
-# Contains DOMAIN-specific values only: UI branding, spoken/displayed text,
-# language/voice choice, and the domain identifier itself. Infrastructure
-# concerns (endpoints, ports, timeouts, protocol flags) live in dpg.yaml
-# and are NOT duplicated here.
+# Contains domain-specific values only: UI branding, spoken/displayed text,
+# language/voice choice, and the domain identifier itself.
+# Infrastructure concerns (endpoints, ports, timeouts, protocol flags) live in
+# dpg.yaml and are NOT duplicated here.
 #
-# This file is the local-dev baseline. At deploy time it is replaced by a
-# volume-mounted copy of `dev-kit/configs/<domain>/reach_layer.yaml`.
+# For local dev, set CONFIG_FOLDER in .env.local to point to your domain configs folder.
+# At deploy time this file is replaced by dev-kit/configs/<domain>/reach_layer.yaml.
 #
-# Every domain-overridable key is listed with either a sensible English
-# default (active) or commented examples showing the expected shape. When
-# you add a new domain, copy this file into `dev-kit/configs/<domain>/` and
-# replace the values.
+# The full annotated reference is in dev-kit/dev_kit/schemas/reach_layer.yaml.
 # =============================================================================
 
 reach_layer:
@@ -22,62 +19,53 @@ reach_layer:
   # ---------------------------------------------------------------------------
   common:
     observability:
-      domain: "local"                # Domain identifier (e.g. "kkb", "farmer_friendly").
+      domain: ""  # Required. Domain identifier (e.g. "kkb", "farmer_friendly").
 
   # ---------------------------------------------------------------------------
   # Per-channel — domain-specific values only
   # ---------------------------------------------------------------------------
   channels:
 
-    # ─── CLI ─────────────────────────────────────────────────────────────────
+    # ── CLI ───────────────────────────────────────────────────────────────────
     cli:
-      prompt: "You: "
-      agent_prefix: "Agent: "
+      prompt: "You: "           # Prompt prefix shown before user input.
+      agent_prefix: "Agent: "   # Prefix shown before agent replies.
 
-    # ─── Web ─────────────────────────────────────────────────────────────────
+    # ── Web ───────────────────────────────────────────────────────────────────
     web:
       auth:
-        enabled: false               # flip to true to require Google SSO
-        google_client_id: ""         # OAuth client ID for the domain's Google project
-        cookie_secure: false         # local dev runs on plain http://localhost; prod keeps true
+        enabled: false           # Set true to require Google SSO.
+        google_client_id: ""     # OAuth client ID for the domain's Google project.
+        cookie_secure: false     # Set false for local http://localhost; true for production TLS.
 
       ui:
-        app_name: "DPG Reach"
-        app_tagline: "Conversational AI"
-        app_icon: "💬"
-        agent_avatar: "🤖"
-        user_avatar: "👤"
-        setup_heading: "Start a session"
-        setup_subtitle: "Enter your user ID to begin. Returning users will have their previous conversation restored automatically."
-        user_id_placeholder: "your_user_id"
-        user_id_hint: "Use the same ID across sessions to restore your conversation history."
-        start_btn_label: "Start chatting →"
-        new_session_msg: "New session started. How can I help you today?"
-        returning_user_msg: "Welcome back! Continuing your previous conversation."
-        storage_key: "dpg_user_id"
-        theme_storage_key: "dpg_theme"
-        new_chat_label: "New chat"
-        conversations_heading: "Conversations"
-        no_conversations_msg: "No previous chats"
-        delete_conversation_confirm: "Delete this conversation? This cannot be undone."
-        delete_conversation_tooltip: "Delete conversation"
-        sign_out_confirm: "Sign out of your account?"
-        switch_user_confirm: "Switch user? Your current session will be closed."
+        app_name: ""                       # Required. Display name shown in browser tab and header.
+        app_tagline: ""                    # Required. Short subtitle shown under the app name.
+        app_icon: ""                       # Required. Emoji representing the app, e.g. 🌾 💊 💼
+        agent_avatar: ""                   # Emoji shown on agent chat bubbles.
+        user_avatar: "👤"                  # Emoji shown on user chat bubbles.
+        setup_heading: ""                  # Heading on the user ID setup screen.
+        setup_subtitle: ""                 # Subtitle under the setup heading.
+        user_id_placeholder: ""            # Hint text in the user ID input field.
+        user_id_hint: ""                   # Secondary hint below the user ID field.
+        start_btn_label: "Start chatting →"  # Label on the start/enter button.
+        new_session_msg: ""                # First message shown to a brand new user.
+        returning_user_msg: ""             # First message shown to a returning user.
+        storage_key: ""                    # localStorage key for persisting the user ID.
+        theme_storage_key: ""              # localStorage key for persisting the theme.
+        sign_out_confirm: ""               # Confirmation prompt for sign-out action.
+        switch_user_confirm: ""            # Confirmation prompt for switch-user action.
+        delete_conversation_confirm: ""    # Confirmation prompt for delete-conversation action.
 
-    # ─── Voice ───────────────────────────────────────────────────────────────
+    # ── Voice ─────────────────────────────────────────────────────────────────
     voice:
       raya:
-        # stt_language: "hi"           # STT supports: en, hi, mr, ta, te, kn, gu, bn, ml, ...
-        # tts_language: "hi"           # TTS language must match voice locale
-        # voice_id: "d6a002d0-230c-49b1-a137-b8a7d564b1ae"  # Priyanka, hi
-        # --- English ---
-        stt_language: "en"
-        tts_language: "en-us"
-        voice_id: "97a155d0-8192-410e-a97c-540481182fc7"  # Liam, us
-        # --- Marathi ---
-        # stt_language: "mr"
-        # tts_language: "mr"
-        # voice_id: "c849b31b-b0ba-488f-b97d-3fd12f2656f4"
+        stt_language: ""         # Required for voice. BCP-47 language code for STT, e.g. "hi", "en", "kn".
+        tts_language: ""         # Required for voice. BCP-47 language code for TTS, e.g. "hi", "en-us".
+        voice_id: ""             # Required for voice. Voice ID for the TTS provider.
+                                 # English example: "97a155d0-8192-410e-a97c-540481182fc7" (Liam, us)
+                                 # Hindi example:   "d6a002d0-230c-49b1-a137-b8a7d564b1ae" (Priyanka, hi)
       agent_core:
-        greeting: "Hello! I am Kaam Ki Baat. How can I help you today?"
-        fallback_phrase: "I'm sorry, I couldn't understand that. Please try again."
+        timeout_ms: 15000        # Timeout for Agent Core responses during voice turns (ms).
+        greeting: ""             # Required for voice. First message spoken when voice session starts.
+        fallback_phrase: ""      # Required for voice. Spoken when STT fails or input is unintelligible.

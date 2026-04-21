@@ -2,13 +2,54 @@
 #
 # This file is the template a domain integrator fills in.
 # For local dev, set CONFIG_FOLDER in .env.local to point to your domain configs folder.
+# The full annotated reference is in dev-kit/dev_kit/schemas/trust_layer.yaml.
 
 trust:
+  policy_pack: ""  # Required. Name of the active policy pack — must match a key in policy_packs below.
+
   input_rules:
-    blocked_phrases: []       # Required. List of strings that trigger input blocking.
-    escalation_topics: []     # Required. List of strings that trigger human escalation.
+    blocked_phrases: []        # Required. Exact strings that block user input entirely.
+    escalation_topics: []      # Required. Strings that trigger immediate human escalation.
+    blocked_input_message: ""  # Required. Message returned to user when input is blocked.
+
   output_rules:
-    blocked_phrases: []       # Required. List of strings that must not appear in LLM output.
+    blocked_phrases: []        # Required. Strings that must not appear in LLM output.
+    output_blocked_message: "" # Required. Message returned to user when LLM output is blocked.
+
+  policy_packs:
+    policy_pack_name:          # Replace with your pack name, e.g. "kkb_advisory_jobs".
+                               # Must match trust.policy_pack above.
+      risks: []                # Required. List of active risk identifiers in this pack.
+      guardrails:
+        guardrail_name:        # Replace with each risk name declared in risks[].
+          id: ""               # Required. Unique guardrail ID, e.g. "GR-001".
+          severity: ""         # Required. "blocker" or "warning".
+          failure_mode: ""     # Required. "block" or "constrain".
+          prompt_constraints: []   # MUST/MUST NOT instructions injected into the LLM prompt.
+          required_disclosures: [] # Disclosure strings appended to LLM output.
+          refusal_template: null   # Fixed refusal text when failure_mode is "block"; null to omit.
+
+  consent:
+    consent_phrases: []   # Required. Phrases the Trust Layer treats as user consent. e.g. [yes, haan, theek hai]
+    decline_phrases: []   # Required. Phrases treated as declined consent. e.g. [no, nahi]
+
+  hitl:
+    queue_backend: "log"       # Backend for HITL queuing: log | redis | webhook
+    holding_message: ""        # Required. Message shown to user while waiting for a human agent.
+    notification_webhook: null # Optional. Webhook URL notified when an HITL case is queued.
 
 observability:
   domain: ""  # Required. Domain identifier (e.g. "kkb", "farmer_friendly").
+
+# (GH-137) Pre-response dignity check — Conversational agents only.
+# Set enabled: true when agent_type is conversational.
+# Questions are evaluated by the LLM via /assemble_constraints before every response.
+dignity_check:
+  enabled: false   # Set true for Conversational agents.
+  questions:       # Override with domain-specific phrasing if needed.
+    - "Does this blame the user?"
+    - "Does it over-promise?"
+    - "Does it push urgency?"
+    - "Does it reduce their agency?"
+    - "Does it sound like a script instead of a human call?"
+  fail_action: "rewrite"  # Schema-accepted; runtime ignored in current implementation.

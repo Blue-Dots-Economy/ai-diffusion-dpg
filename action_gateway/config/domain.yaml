@@ -2,8 +2,50 @@
 #
 # This file is the template a domain integrator fills in.
 # For local dev, set CONFIG_FOLDER in .env.local to point to your domain configs folder.
+# The full annotated reference is in dev-kit/dev_kit/schemas/action_gateway.yaml.
+#
+# Add one entry per external tool the agent can invoke.
+# Each tool id must match the corresponding connector name in agent_core connectors.read/write/identity.
+# Supported types: rest_api | mcp
 
-tools: []
+tools:
+  - id: ""                    # Required. Snake_case tool id — must match agent_core connector name.
+    type: rest_api             # Required. rest_api | mcp
+    category: read             # Required. read | write | identity
+    description: ""            # Required. Shown to the LLM to explain when to call this tool.
+    timeout_ms: 5000           # Optional. Request timeout in ms. Default 5000.
+
+    # ── REST API fields (omit for mcp tools) ──────────────────────────────────
+    base_url: ""               # Required for rest_api. Base URL of the external API.
+    auth:
+      type: none               # Required. none | api_key | bearer | oauth2
+      header: ""               # Header name when type is api_key (e.g. X-API-KEY).
+      secret_env: ""           # Env var holding the API key or token (never hardcode values here).
+      token_url: ""            # Token endpoint URL when type is oauth2.
+    endpoints:
+      - name: ""               # Required. Endpoint name, e.g. "search", "submit".
+        method: POST           # Required. GET | POST | PUT | DELETE | PATCH
+        path: ""               # Required. Path appended to base_url, e.g. /search.
+        params:
+          - name: ""
+            source: agent      # agent (LLM supplies value) | static (fixed value below)
+            type: string       # string | integer | boolean | array
+            required: false    # Whether the LLM must provide this parameter.
+            description: ""    # Shown to the LLM explaining what this parameter means.
+            value: null        # Used when source is static.
+            default: null      # Default value when source is agent and the LLM omits it.
+    response:
+      max_size_chars: 4000     # Truncation limit sent to the LLM. Reduce for large payloads.
+      field_mapping: []        # Optional. When set, only mapped fields are sent to the LLM.
+                               # Each entry: { source: "JSONPath", target: "field_name", type: "string", description: "" }
+                               # Example: { source: "data.items[*].title", target: "job_title", type: "string" }
+
+    # ── MCP fields (omit for rest_api tools) ──────────────────────────────────
+    # McpAdapter connects at startup and discovers all tools automatically.
+    # Individual tool names and schemas are NOT declared here — they come from the server.
+    server_url: ""             # Required for mcp. Base URL of the MCP server.
+    transport: sse             # Required for mcp. sse | streamable_http
+    namespace: ""              # Optional. Prefix for discovered tool names (defaults to tool id).
 
 observability:
-  domain: ""
+  domain: ""  # Required. Domain identifier (e.g. "kkb", "farmer_friendly").

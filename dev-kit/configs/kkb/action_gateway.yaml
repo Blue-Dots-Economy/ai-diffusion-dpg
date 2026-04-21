@@ -6,7 +6,11 @@ tools:
   - id: onest_market_lookup
     type: rest_api
     category: read
-    description: "Search ONEST job listings by trade, location, or keyword query. Returns paginated job postings from the ONEST network including job titles, employers, locations, and salary details."
+    description: >
+      Search the ONEST job network for live job listings. Returns verified job postings
+      from the ONEST network including roles, employers, locations, and salary details.
+      Always call with a natural language query_text describing what the user is looking for.
+      Add structured filters only when the user has explicitly stated those preferences.
     base_url: "https://onest-lite-bap.dhiway.net/api/v3"
     auth:
       type: api_key
@@ -18,11 +22,52 @@ tools:
         method: POST
         path: /search
         params:
-          - name: query
+          - name: query_text
             source: agent
             type: string
             required: true
-            description: "Search query — trade name, location, or keyword (e.g. 'electrician', 'hubli', 'welder bangalore')"
+            description: >
+              Natural language sentence describing the user's job search in English.
+              Always include location and trade. 1-2 sentences max.
+              Examples: "electrician jobs in Hubballi with 15000 monthly in-hand",
+              "ITI fitter mechanical jobs in Pune immediate joining",
+              "helper warehouse jobs in Noida full-time day shift".
+          - name: industry
+            source: agent
+            type: string
+            required: false
+            description: >
+              Broad industry category. Include only if clearly known.
+              Examples: Manufacturing, Electrical, Construction, Customer Facing, Logistics.
+          - name: age
+            source: agent
+            type: integer
+            required: false
+            description: "Candidate age in years. Include only if known from profile."
+          - name: languages
+            source: agent
+            type: array
+            required: false
+            description: >
+              Languages the candidate speaks. Capitalised strings.
+              Examples: ["Hindi"], ["Hindi", "Kannada"].
+          - name: preferred_work_mode
+            source: agent
+            type: array
+            required: false
+            description: >
+              Work preference from: on-site-no-shift, on-site-shifts, remote, hybrid.
+              Include only if the user has stated a preference.
+          - name: monthly_in_hand
+            source: agent
+            type: integer
+            required: false
+            description: "Expected monthly in-hand salary in INR. Include only if stated."
+          - name: work_hours_per_day
+            source: agent
+            type: integer
+            required: false
+            description: "Preferred working hours per day. Include only if stated."
           - name: limit
             source: static
             type: integer

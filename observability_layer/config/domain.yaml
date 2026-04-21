@@ -1,7 +1,37 @@
 # observability_layer/config/domain.yaml — DPG domain configuration template.
 #
-# No domain-specific keys required. DPG defaults in config/dpg.yaml apply.
-# Add domain overrides here if needed.
+# This file is the template a domain integrator fills in.
+# For local dev, set CONFIG_FOLDER in .env.local to point to your domain configs folder.
+# The full annotated reference is in dev-kit/dev_kit/schemas/observability_layer.yaml.
+#
+# OTel/telemetry/audit PII fields are DPG framework defaults — not needed here.
 
 observability:
-  domain: ""  # Required. Domain identifier (e.g. "kkb", "farmer_friendly").
+  domain: ""  # Required. Short domain identifier, e.g. "kkb", "fasal_doctor".
+
+  sli:
+    turn_latency_p99_ms: 1200  # P99 latency threshold in ms. Override if your domain needs
+                                # stricter or looser targets. DPG target is 800–1200ms.
+    trust_block_rate_max: 0.05  # Max acceptable fraction of turns blocked by Trust Layer.
+
+  audit:
+    retention_days: 90  # Days to retain audit log records before deletion.
+
+  outcomes:
+    lifecycle: []  # Required. Ordered user journey states. First state is the entry state.
+                   # Each entry: { state: "state_name", trigger_tool: null|"tool_id", trigger_condition: null|"expr" }
+                   # Example:
+                   # - state: enquiry
+                   #   trigger_tool: null          # set at session start
+                   # - state: applied
+                   #   trigger_tool: onest_apply
+                   #   trigger_condition: "result == 'success'"
+
+    metrics: []    # Optional. Domain-defined OTel metric instruments.
+                   # Each entry: { name, instrument, description, unit, attributes }
+                   # instrument: counter | gauge | histogram
+                   # Example:
+                   # - name: placement.applications
+                   #   instrument: counter
+                   #   description: "Total job applications submitted"
+                   #   attributes: [intent, state]
