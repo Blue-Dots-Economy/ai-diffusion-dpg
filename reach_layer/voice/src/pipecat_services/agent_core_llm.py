@@ -289,7 +289,9 @@ class AgentCoreLLMProcessor(FrameProcessor):
             return
 
         try:
-            async for event in self._channel.subscribe_events(self._session_id):
+            async for event in self._channel.subscribe_events(
+                self._session_id, user_id=self._user_id or None
+            ):
                 if isinstance(event, SentenceEvent):
                     if event.text:
                         await self.push_frame(TTSSpeakFrame(text=event.text))

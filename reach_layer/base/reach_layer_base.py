@@ -39,7 +39,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 
@@ -238,7 +238,7 @@ class ReachLayerBase(ABC):
                 raise
 
     async def subscribe_events(
-        self, session_id: str
+        self, session_id: str, user_id: str | None = None
     ) -> AsyncGenerator[StreamEvent, None]:
         """Open SSE subscription to Agent Core for session-based channels.
 
@@ -250,6 +250,12 @@ class ReachLayerBase(ABC):
 
         Args:
             session_id: Unique session identifier.
+            user_id: Optional user identifier. When provided, appended as a
+                ``?user_id=`` query param so Agent Core can proactively emit
+                the entry subagent's opening_phrase on the first connect for
+                a brand-new session (GH-149). Omit on reconnects where the
+                session's opening_phrase has already been delivered — the
+                server-side flag gate makes the call idempotent either way.
 
         Yields:
             StreamEvent instances (SignalEvent, SentenceEvent, DoneEvent).
@@ -268,6 +274,8 @@ class ReachLayerBase(ABC):
 
         client = await self._get_client()
         url = f"{self._agent_core_base}/sessions/{session_id}/events"
+        if user_id:
+            url = f"{url}?user_id={quote(user_id, safe='')}"
 
         try:
             async with client.stream("GET", url) as response:

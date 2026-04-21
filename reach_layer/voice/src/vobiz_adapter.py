@@ -13,11 +13,13 @@ Belongs to the Reach Layer / Voice channel in the DPG framework.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 
 from fastapi import WebSocket
 from pipecat.frames.frames import TTSSpeakFrame
+from reach_layer_base import DoneEvent, SentenceEvent
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -59,8 +61,6 @@ class VobizAdapter(TelephonyAdapterBase):
         super().__init__(config, channel_name="voice")
         self._operator = VobizOperator(config)
         self._vad_wrapper = SileroVADWrapper()
-        ac_cfg = config.get("telephony_adapter", {}).get("agent_core", {})
-        self._greeting = ac_cfg.get("greeting", "Hello, how can I help you today?")
         self._sample_rate = int(
             config.get("telephony_adapter", {}).get("vobiz", {}).get("sample_rate", 8000)
         )
@@ -175,18 +175,16 @@ class VobizAdapter(TelephonyAdapterBase):
                     "session_id": session_id,
                 },
             )
-            try:
-                await task.queue_frame(TTSSpeakFrame(text=self._greeting))
-            except Exception as exc:
-                logger.error(
-                    "vobiz_adapter.greeting_failed",
-                    extra={
-                        "operation": "vobiz_adapter._on_connected",
-                        "status": "failure",
-                        "error": f"{type(exc).__name__}: {exc}",
-                        "call_sid": call_sid,
-                    },
-                )
+            # GH-149: eagerly open an SSE subscription so Agent Core can push
+            # the entry subagent's opening_phrase before the caller speaks.
+            # Runs as a background task so it doesn't block on_client_connected
+            # (Pipecat requires the handler to return promptly). The task
+            # consumes SentenceEvents as TTSSpeakFrames and exits on DoneEvent,
+            # closing the HTTP stream so the per-turn subscribe in
+            # AgentCoreLLMProcessor owns the session queue from then on.
+            asyncio.create_task(
+                self._play_opening_phrase(task, session_id, caller_id, call_sid)
+            )
 
         @transport.event_handler("on_client_disconnected")
         async def _on_disconnected(transport, client):
@@ -213,6 +211,51 @@ class VobizAdapter(TelephonyAdapterBase):
 
         runner = PipelineRunner(handle_sigint=False)
         await runner.run(task)
+
+    async def _play_opening_phrase(
+        self,
+        pipeline_task: PipelineTask,
+        session_id: str,
+        caller_id: str,
+        call_sid: str,
+    ) -> None:
+        """Consume the first SSE turn and speak any opening_phrase sentences.
+
+        Opens a ``?user_id=<caller_id>`` SSE subscription to Agent Core. If the
+        session is new, Agent Core emits the entry subagent's opening_phrase as
+        a SentenceEvent + DoneEvent pair; each sentence is queued as a
+        TTSSpeakFrame so the caller hears it immediately. Exits on DoneEvent,
+        closing the HTTP stream so the per-turn subscription in
+        AgentCoreLLMProcessor owns the session queue afterwards. On reconnect
+        (flag already set), Agent Core emits nothing and this task exits
+        silently. Errors never propagate — the normal transcription path still
+        works even if this task fails.
+
+        Args:
+            pipeline_task: The active PipelineTask; frames are queued onto it.
+            session_id: Session identifier for the SSE URL.
+            caller_id: Caller E.164 number used as user_id in the SSE query param.
+            call_sid: Vobiz call identifier, for log correlation.
+        """
+        try:
+            async for event in self.subscribe_events(
+                session_id, user_id=caller_id or None
+            ):
+                if isinstance(event, SentenceEvent) and event.text:
+                    await pipeline_task.queue_frame(TTSSpeakFrame(text=event.text))
+                elif isinstance(event, DoneEvent):
+                    break
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "vobiz_adapter.opening_phrase_failed",
+                extra={
+                    "operation": "vobiz_adapter._play_opening_phrase",
+                    "status": "failure",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "call_sid": call_sid,
+                    "session_id": session_id,
+                },
+            )
 
     async def teardown(self, call_sid: str) -> None:
         """Log call completion. Pipecat handles WebSocket resource cleanup.

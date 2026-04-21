@@ -241,7 +241,7 @@ def _make_channel(events):
     ch = MagicMock()
     ch.submit_input = AsyncMock(return_value=None)
 
-    async def _stream(_session_id):
+    async def _stream(_session_id, user_id=None):
         for ev in events:
             yield ev
 

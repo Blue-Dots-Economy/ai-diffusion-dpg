@@ -57,5 +57,8 @@ reach_layer:
         voice_id: "d6a002d0-230c-49b1-a137-b8a7d564b1ae"  # Priyanka, hi
       agent_core:
         timeout_ms: 15000
-        greeting: "नमस्ते। काम की बात में आपका स्वागत है।"
+        # GH-149: opening line on call pickup is emitted by Agent Core as the
+        # entry subagent's opening_phrase (see agent_core.yaml:
+        # agent_workflow.subagents[is_start=true].opening_phrase). Do not add a
+        # static `greeting` here.
         fallback_phrase: "माफ़ कीजिए, मैं इसे समझ नहीं पायी। कृपया दोबारा कहें।"

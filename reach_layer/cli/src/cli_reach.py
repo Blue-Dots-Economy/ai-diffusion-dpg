@@ -143,7 +143,15 @@ class CLIReachLayer(TextChannelBase):
         """
         await self.on_session_start(self._session_id, self._user_id or "")
 
+        # GH-149: in session mode, open the SSE subscription eagerly when we
+        # know the user_id so Agent Core can push the entry subagent's
+        # opening_phrase before the user types anything. Without user_id we
+        # fall back to the legacy lazy-subscribe-on-first-input flow, since
+        # opening_phrase emission on the server side is gated on user_id.
         subscribe_task: Optional[asyncio.Task] = None
+        if self.assembly_mode == "session" and self._user_id:
+            subscribe_task = asyncio.create_task(self._consume_events())
+
         try:
             while True:
                 try:
@@ -156,8 +164,7 @@ class CLIReachLayer(TextChannelBase):
                 if not line:
                     continue
 
-                # Start SSE subscription on first input (session mode only).
-                # Direct mode returns response synchronously from submit_input.
+                # Lazy fallback: no user_id → subscribe on first input like before.
                 if self.assembly_mode == "session" and subscribe_task is None:
                     subscribe_task = asyncio.create_task(self._consume_events())
 
@@ -210,7 +217,7 @@ class CLIReachLayer(TextChannelBase):
     async def _consume_events(self) -> None:
         """Consume SSE events for the session and render them to stdout."""
         try:
-            async for event in self.subscribe_events(self._session_id):
+            async for event in self.subscribe_events(self._session_id, user_id=self._user_id):
                 self._render_event(event)
                 if isinstance(event, DoneEvent):
                     # Signal the receive loop that it can re-prompt.

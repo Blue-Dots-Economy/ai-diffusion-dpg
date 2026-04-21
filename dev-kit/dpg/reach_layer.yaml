@@ -100,4 +100,10 @@ reach_layer:
       agent_core:
         base_url: "http://agent_core:8000"
         timeout_ms: 5000
-        # greeting, fallback_phrase are per-domain (spoken text) → dev-kit/configs/<domain>/
+        # fallback_phrase is per-domain (spoken text) → dev-kit/configs/<domain>/
+        # Spoken ONLY when the Agent Core call fails (timeout / 5xx / empty
+        # stream). NOT a conversational fallback — low-confidence turns are
+        # handled by the `clarification` subagent in agent_core.yaml.
+        # The per-call welcome is the entry subagent's opening_phrase, emitted
+        # by Agent Core on SSE connect (GH-149) — do NOT add a static greeting
+        # here.

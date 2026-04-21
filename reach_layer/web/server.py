@@ -210,6 +210,13 @@ async def _chat_session_mode(
     was_escalated = False
     was_tool_used = False
     try:
+        # Web intentionally does NOT pass user_id here — the /chat endpoint is
+        # request/response per user message, so the SSE only opens AFTER the user
+        # sends their first message. Passing user_id would trigger proactive
+        # opening_phrase emission, which would arrive interleaved with the LLM's
+        # reply to the first message. Web users receive opening_phrase via the
+        # orchestrator's first-turn gate (orchestrator.py) as the response_text
+        # of the first /chat call — identical to today's behavior. (GH-149)
         async for event in web_reach.subscribe_events(session_id):
             if isinstance(event, SentenceEvent):
                 parts.append(event.text)
