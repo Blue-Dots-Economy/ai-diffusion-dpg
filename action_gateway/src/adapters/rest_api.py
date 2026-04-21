@@ -337,9 +337,20 @@ class RestApiAdapter(ToolAdapter):
         the response status is below 500. Returns False on any error or
         server-side failure.
 
+        Tools whose config sets ``health_check.enabled: false`` skip the HTTP
+        probe entirely and always return True. This is important for
+        self-referential mock connectors — an adapter configured with
+        ``base_url: http://action_gateway:9999`` would otherwise deadlock
+        the single uvicorn event loop thread (the synchronous ``httpx.head``
+        blocks while the running ``/health`` handler holds the loop), making
+        the docker healthcheck time out.
+
         Returns:
             True if the service responds with a status < 500; False otherwise.
         """
+        hc_cfg = self.config.get("health_check", {}) or {}
+        if hc_cfg.get("enabled", True) is False:
+            return True
         try:
             resp = httpx.head(self._base_url, timeout=5.0)
             return resp.status_code < 500
