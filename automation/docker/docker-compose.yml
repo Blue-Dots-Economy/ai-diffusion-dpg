@@ -62,9 +62,13 @@ services:
     container_name: action_gateway
     environment:
       - CONFIG_FOLDER=/app/config
-      # Tool API keys are injected by dev-kit at deploy time via extraSecrets.
-      # For local dev, export any required tool key before running docker compose.
-      - ONEST_API_KEY=${ONEST_API_KEY:-}
+    # Connector API keys — mirrors the Helm extraSecrets pattern.
+    # No key names are hardcoded here; the file lists only the keys your domain needs.
+    # Copy dev-kit/configs/<domain>/connector_secrets.env.example → connector_secrets.env
+    # and fill in values. The .env file is gitignored; never commit real secrets.
+    env_file:
+      - path: ../../dev-kit/configs/${DOMAIN:-kkb}/connector_secrets.env
+        required: false
     volumes:
       - ../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-kkb}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
