@@ -12,12 +12,30 @@ export default function MandatoryInputsStep({ data, updateData, onUpdate, projec
     }
   }
 
+  function updateToolSecret(envVar, value) {
+    const updated = {
+      ...secrets,
+      tool_secrets: { ...(secrets.tool_secrets || {}), [envVar]: value },
+    }
+    if (onUpdate) {
+      onUpdate({ secrets: updated })
+    } else if (updateData) {
+      updateData('secrets', updated)
+    }
+  }
+
+  const requiredSecrets = project?.required_secrets || []
+  const azureNeeded = project?.azure_storage?.needed === true
+
   return (
     <div>
       <h2 className="text-lg font-semibold mb-1">Deployment Inputs</h2>
-      <p className="text-sm text-gray-400 mb-6">Provide required secrets and optional configuration for the deployment.</p>
+      <p className="text-sm text-gray-400 mb-6">
+        Provide required secrets and optional configuration. All values are
+        encrypted in your browser before being sent.
+      </p>
 
-      {/* Required */}
+      {/* Anthropic API Key — always required */}
       <div className="mb-8">
         <h3 className="text-sm font-medium text-gray-300 mb-3 flex items-center gap-2">
           <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
@@ -38,7 +56,36 @@ export default function MandatoryInputsStep({ data, updateData, onUpdate, projec
         </div>
       </div>
 
-      {/* Optional */}
+      {/* Tool API keys — one field per REST tool that has auth configured */}
+      {requiredSecrets.length > 0 && (
+        <div className="mb-8">
+          <h3 className="text-sm font-medium text-gray-300 mb-3 flex items-center gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-orange-400" />
+            Tool API Keys
+          </h3>
+          <div className="border border-gray-700 rounded-xl p-4 bg-gray-900 flex flex-col gap-4">
+            {requiredSecrets.map(({ env_var, tool_id, description }) => (
+              <div key={env_var}>
+                <label className="block text-xs text-gray-300 mb-1">
+                  {env_var} <span className="text-red-400">*</span>
+                </label>
+                <input
+                  type="password"
+                  value={(secrets.tool_secrets || {})[env_var] || ''}
+                  onChange={e => updateToolSecret(env_var, e.target.value)}
+                  placeholder={`API key for ${tool_id}`}
+                  className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
+                />
+                {description && (
+                  <p className="text-xs text-gray-500 mt-1">Used by tool: {description}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Optional infra secrets */}
       <div className="mb-6">
         <h3 className="text-sm font-medium text-gray-300 mb-3 flex items-center gap-2">
           <span className="w-1.5 h-1.5 rounded-full bg-gray-500" />
@@ -91,10 +138,10 @@ export default function MandatoryInputsStep({ data, updateData, onUpdate, projec
         </div>
       </div>
 
-      {/* Dev-Kit Callback URL — always shown */}
+      {/* Dev-Kit Callback URL + KE Internal URL */}
       <div className="mb-4">
         <div className="border border-gray-700 rounded-xl p-4 bg-gray-900 flex flex-col gap-4">
-          <div className="field-group">
+          <div>
             <label htmlFor="devkit_callback_url" className="block text-xs text-gray-300 mb-1">Dev-Kit Callback URL</label>
             <input
               id="devkit_callback_url"
@@ -104,13 +151,11 @@ export default function MandatoryInputsStep({ data, updateData, onUpdate, projec
               onChange={e => update('devkit_callback_url', e.target.value)}
               className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
             />
-            <p className="field-hint text-xs text-gray-500 mt-1">
-              URL of this Dev-Kit, reachable from inside the cluster. KE uses this to notify when ingestion completes.
+            <p className="text-xs text-gray-500 mt-1">
+              URL of this Dev-Kit, reachable from inside the cluster.
             </p>
           </div>
-
-          {/* KE Internal Service URL — always shown */}
-          <div className="field-group">
+          <div>
             <label htmlFor="ke_internal_url" className="block text-xs text-gray-300 mb-1">KE Internal Service URL</label>
             <input
               id="ke_internal_url"
@@ -120,17 +165,17 @@ export default function MandatoryInputsStep({ data, updateData, onUpdate, projec
               onChange={e => update('ke_internal_url', e.target.value)}
               className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
             />
-            <p className="field-hint text-xs text-gray-500 mt-1">
-              Internal Kubernetes service URL for KE. Used by Reach Layer to proxy upload requests.
+            <p className="text-xs text-gray-500 mt-1">
+              Internal Kubernetes service URL for KE.
             </p>
           </div>
         </div>
       </div>
 
-      {/* Azure Blob Storage — conditional on project.azure_storage */}
-      {project?.azure_storage && (
+      {/* Azure Blob Storage — shown only if domain declared Azure in the knowledge phase */}
+      {azureNeeded && (
         <div className="mb-4">
-          <fieldset className="field-group azure-creds border border-gray-700 rounded-xl p-4 bg-gray-900">
+          <fieldset className="border border-gray-700 rounded-xl p-4 bg-gray-900">
             <legend className="text-sm font-medium text-gray-300 px-1">Azure Blob Storage</legend>
             <div className="flex flex-col gap-4 mt-2">
               <div>
@@ -138,7 +183,7 @@ export default function MandatoryInputsStep({ data, updateData, onUpdate, projec
                 <input
                   id="azure_account_name"
                   type="text"
-                  value={secrets.azure_account_name || project.azure_storage.account_name || ''}
+                  value={secrets.azure_account_name || ''}
                   onChange={e => update('azure_account_name', e.target.value)}
                   className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
                 />
@@ -159,8 +204,9 @@ export default function MandatoryInputsStep({ data, updateData, onUpdate, projec
                 <input
                   id="azure_container_name"
                   type="text"
-                  value={secrets.azure_container_name || project.azure_storage.container_name || ''}
+                  value={secrets.azure_container_name || ''}
                   onChange={e => update('azure_container_name', e.target.value)}
+                  placeholder="e.g. kb-documents"
                   className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
                 />
               </div>
@@ -170,7 +216,8 @@ export default function MandatoryInputsStep({ data, updateData, onUpdate, projec
       )}
 
       <p className="text-xs text-gray-500 italic">
-        Fields marked <span className="text-red-400">*</span> are required. All others have sensible defaults and can be left unchanged.
+        Fields marked <span className="text-red-400">*</span> are required.
+        All secret values are encrypted in your browser before transmission.
       </p>
     </div>
   )

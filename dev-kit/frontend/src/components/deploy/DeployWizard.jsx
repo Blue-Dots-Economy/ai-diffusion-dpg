@@ -31,6 +31,7 @@ export default function DeployWizard({ slug, onBack }) {
       azure_account_name: '',
       azure_account_key: '',
       azure_container_name: '',
+      tool_secrets: {},
     },
     target: null, // 'docker' | 'kubernetes'
     kubeconfig: '',
