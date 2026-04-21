@@ -14,3 +14,20 @@ spec:
   {{- if .Values.storage.chromadb.storageClass }}
   storageClassName: {{ .Values.storage.chromadb.storageClass }}
   {{- end }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-kb-data
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Release.Name }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: {{ .Values.storage.kbData.size }}
+  {{- if .Values.storage.kbData.storageClass }}
+  storageClassName: {{ .Values.storage.kbData.storageClass }}
+  {{- end }}

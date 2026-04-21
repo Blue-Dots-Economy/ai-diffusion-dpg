@@ -33,6 +33,13 @@ spec:
                   name: {{ .Values.auth.sessionSecretName | required "auth.sessionSecretName is required when auth.enabled is true" | quote }}
                   key: {{ .Values.auth.sessionSecretKey | required "auth.sessionSecretKey is required when auth.enabled is true" | quote }}
             {{- end }}
+            # Upload chain auth — set at deploy time via uploadAuth values.
+            - name: DEVKIT_TO_REACH_API_KEY
+              value: {{ .Values.uploadAuth.devkitToReachApiKey | quote }}
+            - name: REACH_TO_KE_API_KEY
+              value: {{ .Values.uploadAuth.reachToKeApiKey | quote }}
+            - name: KE_INTERNAL_URL
+              value: {{ .Values.uploadAuth.keInternalUrl | quote }}
           volumeMounts:
             - name: dpg-config
               mountPath: /app/config/dpg.yaml

@@ -851,6 +851,30 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
                 if secret_value:
                     set_values[f"extraSecrets.{env_var}"] = secret_value
 
+        # Inject Azure creds and upload chain auth into knowledge-engine
+        if block_name == "knowledge_engine":
+            if secrets.get("azure_storage_account"):
+                set_values["azure.storageAccount"] = secrets["azure_storage_account"]
+            if secrets.get("azure_storage_key"):
+                set_values["azure.storageKey"] = secrets["azure_storage_key"]
+            if secrets.get("azure_container_name"):
+                set_values["azure.containerName"] = secrets["azure_container_name"]
+            if secrets.get("reach_to_ke_api_key"):
+                set_values["uploadAuth.reachToKeApiKey"] = secrets["reach_to_ke_api_key"]
+            if secrets.get("ke_to_devkit_api_key"):
+                set_values["uploadAuth.keToDevkitApiKey"] = secrets["ke_to_devkit_api_key"]
+            if secrets.get("ke_devkit_callback_url"):
+                set_values["uploadAuth.devkitCallbackUrl"] = secrets["ke_devkit_callback_url"]
+
+        # Inject upload chain auth into reach-layer
+        if block_name == "reach_layer":
+            if secrets.get("devkit_to_reach_api_key"):
+                set_values["uploadAuth.devkitToReachApiKey"] = secrets["devkit_to_reach_api_key"]
+            if secrets.get("reach_to_ke_api_key"):
+                set_values["uploadAuth.reachToKeApiKey"] = secrets["reach_to_ke_api_key"]
+            if secrets.get("ke_internal_url"):
+                set_values["uploadAuth.keInternalUrl"] = secrets["ke_internal_url"]
+
         block_res = resources.get(block_name, {})
         limits = block_res.get("limits", {})
         requests = block_res.get("requests", {})
@@ -1046,6 +1070,30 @@ async def _run_k8s_deploy(slug: str, state, secrets: dict, resources: dict, kube
                         for env_var, secret_value in secrets.get("tool_secrets", {}).items():
                             if secret_value:
                                 set_values[f"extraSecrets.{env_var}"] = secret_value
+
+                    # Inject Azure creds and upload chain auth into knowledge-engine
+                    if svc_name == "knowledge_engine":
+                        if secrets.get("azure_storage_account"):
+                            set_values["azure.storageAccount"] = secrets["azure_storage_account"]
+                        if secrets.get("azure_storage_key"):
+                            set_values["azure.storageKey"] = secrets["azure_storage_key"]
+                        if secrets.get("azure_container_name"):
+                            set_values["azure.containerName"] = secrets["azure_container_name"]
+                        if secrets.get("reach_to_ke_api_key"):
+                            set_values["uploadAuth.reachToKeApiKey"] = secrets["reach_to_ke_api_key"]
+                        if secrets.get("ke_to_devkit_api_key"):
+                            set_values["uploadAuth.keToDevkitApiKey"] = secrets["ke_to_devkit_api_key"]
+                        if secrets.get("ke_devkit_callback_url"):
+                            set_values["uploadAuth.devkitCallbackUrl"] = secrets["ke_devkit_callback_url"]
+
+                    # Inject upload chain auth into reach-layer
+                    if svc_name == "reach_layer":
+                        if secrets.get("devkit_to_reach_api_key"):
+                            set_values["uploadAuth.devkitToReachApiKey"] = secrets["devkit_to_reach_api_key"]
+                        if secrets.get("reach_to_ke_api_key"):
+                            set_values["uploadAuth.reachToKeApiKey"] = secrets["reach_to_ke_api_key"]
+                        if secrets.get("ke_internal_url"):
+                            set_values["uploadAuth.keInternalUrl"] = secrets["ke_internal_url"]
 
                     block_res = resources.get(svc_name, {})
                     limits = block_res.get("limits", {})

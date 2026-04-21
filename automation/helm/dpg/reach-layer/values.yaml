@@ -26,6 +26,12 @@ healthCheck:
     initialDelaySeconds: 30
     periodSeconds: 20
 
+# Upload chain auth — set at deploy time; never commit real values here.
+uploadAuth:
+  devkitToReachApiKey: ""
+  reachToKeApiKey: ""
+  keInternalUrl: ""
+
 # Injected at deploy time — do not set here
 dpgConfig: ""
 domainConfig: ""

@@ -37,7 +37,9 @@ services:
     container_name: action_gateway
     environment:
       - CONFIG_FOLDER=/app/config
-      - ONEST_API_KEY=${ONEST_API_KEY:?ONEST_API_KEY must be exported before running docker compose}
+      # Tool API keys are injected by dev-kit at deploy time via extraSecrets.
+      # For local dev, export any required tool key before running docker compose.
+      - ONEST_API_KEY=${ONEST_API_KEY:-}
     volumes:
       - ../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-kkb}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
@@ -104,6 +106,11 @@ services:
     container_name: dev_kit
     environment:
       - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
+      # Upload chain auth — dev-kit acts as upload orchestrator.
+      # Generate with: openssl rand -hex 32
+      - DEVKIT_TO_REACH_API_KEY=${DEVKIT_TO_REACH_API_KEY:-}
+      - KE_TO_DEVKIT_API_KEY=${KE_TO_DEVKIT_API_KEY:-}
+      - REACH_LAYER_URL=http://reach_layer_web:8005
     ports:
       - "8080:8080"
     networks:
@@ -131,6 +138,15 @@ services:
     container_name: knowledge_engine
     environment:
       - CONFIG_FOLDER=/app/config
+      # Upload chain auth — reach-layer calls KE with this key; KE calls back dev-kit with KE_TO_DEVKIT_API_KEY.
+      - REACH_TO_KE_API_KEY=${REACH_TO_KE_API_KEY:-}
+      - KE_TO_DEVKIT_API_KEY=${KE_TO_DEVKIT_API_KEY:-}
+      - KE_DEVKIT_CALLBACK_URL=http://dev_kit:8080
+      - KB_DATA_DIR=/data/kb
+      # Azure Blob Storage — required only when the domain uses Azure for KB ingestion.
+      - AZURE_STORAGE_ACCOUNT=${AZURE_STORAGE_ACCOUNT:-}
+      - AZURE_STORAGE_KEY=${AZURE_STORAGE_KEY:-}
+      - AZURE_CONTAINER_NAME=${AZURE_CONTAINER_NAME:-}
     user: root                               # needed to write to root-owned chroma_data named volume
     command: ["sh", "-c", "if [ ! -f /app/chroma_db/chroma.sqlite3 ]; then echo 'ChromaDB empty — running ingest...' && python -m scripts.ingest --config config/knowledge_engine.yaml; else echo 'ChromaDB exists — skipping ingest.'; fi && python main.py"]
     volumes:
@@ -138,6 +154,7 @@ services:
       - ../../dev-kit/configs/${DOMAIN:-kkb}/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
       - ../../knowledge_engine/data:/app/data:ro   # source docs (read-only)
       - chroma_data:/app/chroma_db            # embeddings (writable, overrides :ro for this subdir)
+      - kb_data:/data/kb                      # upload staging area for KB documents
     networks:
       - dpg_net
     deploy:
@@ -234,6 +251,10 @@ services:
       # at startup when auth.enabled: true — export both before running docker compose.
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - REACH_SESSION_SECRET=${REACH_SESSION_SECRET:-}
+      # Upload chain auth — dev-kit → reach-layer and reach-layer → KE keys.
+      - DEVKIT_TO_REACH_API_KEY=${DEVKIT_TO_REACH_API_KEY:-}
+      - REACH_TO_KE_API_KEY=${REACH_TO_KE_API_KEY:-}
+      - KE_INTERNAL_URL=http://knowledge_engine:8001
     ports:
       - "8005:8005"
     volumes:
@@ -576,3 +597,4 @@ networks:
 volumes:
   chroma_data:                             # ChromaDB embeddings, persisted across container restarts
   memgraph_data:                           # Memgraph graph database, persisted across container restarts
+  kb_data:                                 # KB document upload staging area (shared: reach-layer → knowledge-engine)

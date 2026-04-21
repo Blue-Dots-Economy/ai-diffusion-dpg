@@ -30,6 +30,22 @@ spec:
               value: "/tmp/huggingface"
             - name: TRANSFORMERS_CACHE
               value: "/tmp/huggingface/transformers"
+            # Upload chain auth — set at deploy time via uploadAuth values.
+            - name: REACH_TO_KE_API_KEY
+              value: {{ .Values.uploadAuth.reachToKeApiKey | quote }}
+            - name: KE_TO_DEVKIT_API_KEY
+              value: {{ .Values.uploadAuth.keToDevkitApiKey | quote }}
+            - name: KE_DEVKIT_CALLBACK_URL
+              value: {{ .Values.uploadAuth.devkitCallbackUrl | quote }}
+            - name: KB_DATA_DIR
+              value: {{ .Values.storage.kbData.mountPath | quote }}
+            # Azure Blob Storage — required only when the domain uses Azure for KB ingestion.
+            - name: AZURE_STORAGE_ACCOUNT
+              value: {{ .Values.azure.storageAccount | quote }}
+            - name: AZURE_STORAGE_KEY
+              value: {{ .Values.azure.storageKey | quote }}
+            - name: AZURE_CONTAINER_NAME
+              value: {{ .Values.azure.containerName | quote }}
           volumeMounts:
             - name: dpg-config
               mountPath: /app/config/dpg.yaml
@@ -39,6 +55,8 @@ spec:
               subPath: knowledge_engine.yaml
             - name: chroma-data
               mountPath: /app/chroma_db
+            - name: kb-data
+              mountPath: {{ .Values.storage.kbData.mountPath }}
           resources:
             requests:
               cpu: {{ .Values.resources.requests.cpu }}
@@ -68,3 +86,6 @@ spec:
         - name: chroma-data
           persistentVolumeClaim:
             claimName: {{ .Release.Name }}-chroma-data
+        - name: kb-data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-kb-data

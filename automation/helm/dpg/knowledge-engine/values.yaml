@@ -30,6 +30,22 @@ storage:
   chromadb:
     size: 5Gi
     storageClass: ""
+  kbData:
+    size: 10Gi
+    storageClass: ""
+    mountPath: /data/kb
+
+# Upload chain auth — set at deploy time; never commit real values here.
+uploadAuth:
+  reachToKeApiKey: ""
+  keToDevkitApiKey: ""
+  devkitCallbackUrl: ""
+
+# Azure Blob Storage — required only when the domain uses Azure for KB ingestion.
+azure:
+  storageAccount: ""
+  storageKey: ""
+  containerName: ""
 
 # Injected at deploy time — do not set here
 dpgConfig: ""
