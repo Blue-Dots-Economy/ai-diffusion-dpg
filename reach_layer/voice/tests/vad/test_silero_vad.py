@@ -65,9 +65,9 @@ def test_create_analyzer_uses_defaults_when_config_missing(empty_config):
         result = wrapper.create_analyzer(empty_config)
 
     mock_p.assert_called_once_with(
-        stop_secs=0.35,
-        min_volume=0.3,
-        confidence=0.4,
-        start_secs=0.1,
+        stop_secs=0.4,
+        min_volume=0.7,
+        confidence=0.75,
+        start_secs=0.25,
     )
     assert result._smoothing_factor == 0.1

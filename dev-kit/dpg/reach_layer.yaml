@@ -80,10 +80,18 @@ reach_layer:
         api_base: "https://api.vobiz.ai/api/v1"
         from_number: ${VOBIZ_FROM_NUMBER}
       vad:
-        stop_secs: 0.35
-        min_volume: 0.3
-        confidence: 0.4
-        start_secs: 0.1
+        # Silero VAD tuning for 8 kHz telephony audio (GH-152 follow-up).
+        # The prior defaults (confidence 0.4, min_volume 0.3, start_secs 0.1)
+        # were far below pipecat's own defaults (0.7 / 0.6 / 0.2) and caused
+        # ambient noise to fire VADUserStartedSpeakingFrame, which the
+        # UserTurnProcessor turned into InterruptionFrame — flushing the
+        # opening_phrase TTS and creating phantom reply turns. Tightened to
+        # telephony-realistic values; override per-domain only with measured
+        # evidence that a specific caller-population needs something else.
+        stop_secs: 0.4        # silence window before closing the utterance
+        min_volume: 0.7       # reject soft background noise / distant voices
+        confidence: 0.75      # require high-confidence speech, not static
+        start_secs: 0.25      # require ~250 ms of continuous speech to trigger
         smoothing_factor: 0.1
       raya:
         api_key: ${RAYA_API_KEY}

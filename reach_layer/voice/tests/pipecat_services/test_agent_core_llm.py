@@ -479,14 +479,15 @@ async def test_done_event_session_ended_empty_terminal_word_logs_warning(config,
 
 
 @pytest.mark.asyncio
-async def test_start_interruption_pushes_acknowledgement(session_config):
-    """_start_interruption speaks the configured template and sets the flag."""
+async def test_start_interruption_pushes_acknowledgement_when_bot_speaking(session_config):
+    """_start_interruption speaks the configured template when bot was mid-TTS."""
     from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
 
     session_config["telephony_adapter"]["agent_core"]["barge_in_acknowledgement"] = "ठीक है।"
     proc = AgentCoreLLMProcessor(
         session_config, call_sid="CA1", session_id="s1", channel=MagicMock()
     )
+    proc._bot_speaking = True  # simulate: bot was playing audio when user barged in
     pushed = []
     proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
 
@@ -499,6 +500,27 @@ async def test_start_interruption_pushes_acknowledgement(session_config):
 
 
 @pytest.mark.asyncio
+async def test_start_interruption_silent_when_bot_not_speaking(session_config):
+    """No ack when user-turn-start fires outside of bot TTS (e.g. idle, post-done)."""
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+
+    session_config["telephony_adapter"]["agent_core"]["barge_in_acknowledgement"] = "ठीक है।"
+    proc = AgentCoreLLMProcessor(
+        session_config, call_sid="CA1", session_id="s1", channel=MagicMock()
+    )
+    # _bot_speaking defaults False; explicit here for clarity.
+    proc._bot_speaking = False
+    pushed = []
+    proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
+
+    await proc._start_interruption()
+
+    # Flag still flips (so in-flight SSE loop exits) but no ack spoken.
+    assert proc._interrupted is True
+    assert not any(isinstance(f, TTSSpeakFrame) for f in pushed)
+
+
+@pytest.mark.asyncio
 async def test_start_interruption_empty_ack_stays_silent(session_config):
     """No acknowledgement configured → no TTSSpeakFrame pushed, flag still set."""
     from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
@@ -507,6 +529,7 @@ async def test_start_interruption_empty_ack_stays_silent(session_config):
     proc = AgentCoreLLMProcessor(
         session_config, call_sid="CA1", session_id="s1", channel=MagicMock()
     )
+    proc._bot_speaking = True  # even if bot was speaking, empty ack stays silent
     pushed = []
     proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
 
@@ -514,6 +537,26 @@ async def test_start_interruption_empty_ack_stays_silent(session_config):
 
     assert proc._interrupted is True
     assert not any(isinstance(f, TTSSpeakFrame) for f in pushed)
+
+
+@pytest.mark.asyncio
+async def test_bot_speaking_frame_tracking(session_config):
+    """BotStartedSpeakingFrame/BotStoppedSpeakingFrame toggle the _bot_speaking flag."""
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+    from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame
+
+    proc = AgentCoreLLMProcessor(
+        session_config, call_sid="CA1", session_id="s1", channel=MagicMock()
+    )
+    proc.push_frame = AsyncMock()
+
+    assert proc._bot_speaking is False
+
+    await proc.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    assert proc._bot_speaking is True
+
+    await proc.process_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    assert proc._bot_speaking is False
 
 
 @pytest.mark.asyncio
