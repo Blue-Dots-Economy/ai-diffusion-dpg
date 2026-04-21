@@ -104,6 +104,10 @@ tools:
       open-ended question — do NOT immediately make another tool call.
     base_url: "http://action_gateway:9999"
     timeout_ms: 3000
+    # Self-referential mocks would deadlock the synchronous /health probe;
+    # skip the reachability HEAD and always report healthy.
+    health_check:
+      enabled: false
     endpoints:
       - name: get_profile
         method: GET
@@ -124,6 +128,8 @@ tools:
       update to the user in one short sentence.
     base_url: "http://action_gateway:9999"
     timeout_ms: 3000
+    health_check:
+      enabled: false
     endpoints:
       - name: update_profile
         method: POST
@@ -185,6 +191,8 @@ tools:
       can confirm the submission to the user.
     base_url: "http://action_gateway:9999"
     timeout_ms: 5000
+    health_check:
+      enabled: false
     endpoints:
       - name: apply_job
         method: POST

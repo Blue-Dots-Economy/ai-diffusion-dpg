@@ -277,6 +277,21 @@ class TestRestApiAdapterHealthCheck:
         with patch("httpx.head", side_effect=Exception("connection refused")):
             assert adapter.health_check() is False
 
+    def test_health_check_disabled_via_config_returns_true(self, rest_tool_config):
+        """health_check.enabled=false skips the HTTP probe and returns True.
+
+        Required for self-referential mock connectors whose base_url points
+        back at the Action Gateway itself — probing them synchronously would
+        deadlock the single uvicorn event loop thread while serving /health.
+        """
+        rest_tool_config["health_check"] = {"enabled": False}
+        adapter = RestApiAdapter(rest_tool_config)
+
+        # httpx.head must never be called on this path; if the guard regresses
+        # it'd hit the external API during tests and leak credentials.
+        with patch("httpx.head", side_effect=AssertionError("must not probe")):
+            assert adapter.health_check() is True
+
 
 # ---------------------------------------------------------------------------
 # TestRestApiAdapterOtel
