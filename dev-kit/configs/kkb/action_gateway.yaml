@@ -79,35 +79,129 @@ tools:
     response:
       max_size_chars: 4000
 
-  # Stub profile fetch. The KKB system prompts instruct subagents to call
-  # ``get_profile`` when no profile data is in context; previously the LLM
-  # would announce the fetch verbally with no tool registered, so the call
-  # went nowhere. This hits Memory Layer's GET /profile/{user_id} and
-  # returns the raw profile dict so the LLM can summarise.
+  # ────────────────────────────────────────────────────────────────────
+  # Mocked profile / apply flow (demo fixtures).
   #
-  # The ``{user_id}`` placeholder in ``path`` is substituted by the rest_api
-  # adapter from the caller's session user_id — the LLM does NOT supply it.
+  # All three tools point at Action Gateway's own /mock/* routes — no
+  # external service is required to exercise the end-to-end tool path.
+  # Swap each base_url to a real upstream once one exists.
+  #
+  # The ``{user_id}`` in the paths is substituted by the rest_api adapter
+  # from the caller's session user_id — the LLM does NOT supply it.
+  # ────────────────────────────────────────────────────────────────────
+
   - id: get_profile
     type: rest_api
     category: read
     description: >
-      Fetch the caller's saved profile from Memory Layer. Call ONLY after the
-      user has explicitly agreed to let you look up their profile. Returns
-      the stored fields (trade, location, age, languages, prior outcomes,
-      etc.) when the user has been seen before; returns an empty object when
-      the user is new or the profile is unreachable. After receiving a
-      profile, briefly summarise what you found in one sentence and continue
-      with one open-ended question — do NOT immediately make another tool
-      call.
-    base_url: "http://memory_layer:8002"
+      Fetch the caller's saved profile. Call ONLY after the user has
+      explicitly agreed to let you look up their profile. Returns the
+      stored fields (trade, location, age, languages, years_experience,
+      certifications, preferred_work_mode, monthly_in_hand_expected,
+      actions_taken, profile_id) for returning users; returns an empty
+      object when the user is new. After receiving a profile, briefly
+      summarise what you found in one sentence and continue with one
+      open-ended question — do NOT immediately make another tool call.
+    base_url: "http://action_gateway:9999"
     timeout_ms: 3000
     endpoints:
       - name: get_profile
         method: GET
-        path: "/profile/{user_id}"
+        path: "/mock/profile/{user_id}"
         params: []
     response:
       max_size_chars: 3000
+
+  - id: update_profile
+    type: rest_api
+    category: write
+    description: >
+      Save a correction or an addition to the caller's profile. Call when
+      the user explicitly restates a field (e.g. "my trade is plumber,
+      not electrician" or "I'm based in Pune now"). Pass only the fields
+      the user actually mentioned — do NOT echo back the entire profile.
+      Returns the list of fields that were applied so you can confirm the
+      update to the user in one short sentence.
+    base_url: "http://action_gateway:9999"
+    timeout_ms: 3000
+    endpoints:
+      - name: update_profile
+        method: POST
+        path: "/mock/profile/{user_id}"
+        params:
+          - name: trade
+            source: agent
+            type: string
+            required: false
+            description: "User's primary trade (e.g. electrician, fitter, plumber)."
+          - name: location
+            source: agent
+            type: string
+            required: false
+            description: "City or district the user wants to work in."
+          - name: age
+            source: agent
+            type: integer
+            required: false
+            description: "User's age in years."
+          - name: languages
+            source: agent
+            type: array
+            required: false
+            description: 'Capitalised language names, e.g. ["Hindi", "Kannada"].'
+          - name: years_experience
+            source: agent
+            type: integer
+            required: false
+            description: "Years of experience in the stated trade."
+          - name: certifications
+            source: agent
+            type: array
+            required: false
+            description: 'Any formal certifications, e.g. ["ITI", "NCVT"].'
+          - name: preferred_work_mode
+            source: agent
+            type: array
+            required: false
+            description: >
+              One or more of: on-site-no-shift, on-site-shifts, remote, hybrid.
+          - name: monthly_in_hand_expected
+            source: agent
+            type: integer
+            required: false
+            description: "Expected monthly in-hand salary in INR."
+    response:
+      max_size_chars: 1000
+
+  - id: apply_job
+    type: rest_api
+    category: write
+    description: >
+      Submit a job application on the caller's behalf. Call ONLY after the
+      user has explicitly confirmed they want to apply to a specific job.
+      Both job_id (from a prior onest_market_lookup result) and profile_id
+      (from a prior get_profile result) are REQUIRED. Returns the
+      application_id, expected callback window, and employer name so you
+      can confirm the submission to the user.
+    base_url: "http://action_gateway:9999"
+    timeout_ms: 5000
+    endpoints:
+      - name: apply_job
+        method: POST
+        path: "/mock/apply"
+        params:
+          - name: job_id
+            source: agent
+            type: string
+            required: true
+            description: "Job listing ID from a previous onest_market_lookup result."
+          - name: profile_id
+            source: agent
+            type: string
+            required: true
+            description: "User's profile_id from a prior get_profile call."
+    response:
+      max_size_chars: 1000
 
   # - id: onest_apply
   #   type: rest_api

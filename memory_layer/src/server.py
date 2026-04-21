@@ -482,65 +482,6 @@ def create_app(memory: MemoryLayer) -> FastAPI:
 
         return StatusResponse(status="ok")
 
-    @app.get("/profile/{user_id}")
-    def get_profile(user_id: str) -> dict:
-        """Return a user's persistent profile (Memgraph-backed).
-
-        Exposes :py:meth:`GraphUserStore.get_profile` as an HTTP endpoint so
-        external callers (Action Gateway's ``get_profile`` tool) can fetch
-        the profile without going through a session. The response shape is
-        the same as :py:class:`ContextBundle.profile`:
-
-        .. code-block:: json
-
-            {
-              "<declared_field>": "<value>",
-              ...,
-              "attributes": [
-                {"key": "...", "value": "...", "raw": "...",
-                 "turn": "...", "journey_id": "..."}
-              ]
-            }
-
-        Returns an empty dict ``{}`` when no profile exists or the Memgraph
-        read fails — never 404s or 500s so the calling tool can uniformly
-        treat "no profile" and "profile system down" as "no data".
-        """
-        start = time.time()
-        user_id = (user_id or "").strip()
-        if not user_id:
-            return {}
-
-        with _get_tracer().start_as_current_span("memory.read") as span:
-            span.set_attribute("user_id", user_id)
-            span.set_attribute("db.system", "memgraph")
-            try:
-                profile = memory._user_store.get_profile(user_id)
-                logger.info(
-                    "memory_server.get_profile",
-                    extra={
-                        "operation": "server.get_profile",
-                        "status": "success",
-                        "user_id": user_id,
-                        "has_profile": bool(profile),
-                        "latency_ms": int((time.time() - start) * 1000),
-                    },
-                )
-                return profile or {}
-            except Exception as e:
-                span.record_exception(e)
-                logger.error(
-                    "memory_server.get_profile_error",
-                    extra={
-                        "operation": "server.get_profile",
-                        "status": "failure",
-                        "user_id": user_id,
-                        "error": f"{type(e).__name__}: {e}",
-                        "latency_ms": int((time.time() - start) * 1000),
-                    },
-                )
-                return {}
-
     @app.get("/health")
     def health() -> StatusResponse:
         """Liveness probe."""
