@@ -185,9 +185,6 @@ agent_workflow:
       next_subagent_id: ""      # target subagent id
   default_fallback_subagent_id: ""  # subagent to route to when no routing rule matches
 
-  subagent_mental_state_map:    # optional — maps subagent id → mental_state value written to session after routing
-    subagent_id: mental_state   # e.g. profile_building: fog — aligns Five Mental States with conversation progression
-
   tool_result_mappings:         # optional — maps tool name → journey event config for persisting tool outputs to graph nodes
     tool_name:                  # replace with actual tool name, e.g. onest_market_lookup
       journey_event_label: ""   # required — graph node label to create, e.g. Role

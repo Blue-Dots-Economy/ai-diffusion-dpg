@@ -414,24 +414,6 @@ agent_workflow:
   workflow_id: kkb_iti_graduate
   version: "1.0.0"
 
-  # Maps next_subagent_id → mental_state value written to session after routing resolves.
-  # Keeps the Five Mental States aligned with conversation progression automatically.
-  subagent_mental_state_map:
-    profile_building: fog
-    profile_incomplete: fog
-    market_truth: orientation
-    pay_branch: orientation
-    distance_branch: orientation
-    normalise_branch: orientation
-    skill_check: orientation
-    evaluation: evaluation
-    commitment: commitment
-    counsellor_request: commitment
-    follow_through: follow_through
-    capture_dropoff: fog          # Drop-off resets to fog for next re-engagement
-    ended: fog
-    clarification: fog
-
   # Maps tool name → journey_event config for persisting tool outputs to Neo4j child nodes.
   # result_list_key: if the result dict contains a list under this key, one node is created per item.
   # field_map: dest_field: src_field (maps from tool result keys to journey node property names).

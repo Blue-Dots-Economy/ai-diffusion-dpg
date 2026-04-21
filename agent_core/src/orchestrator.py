@@ -748,17 +748,6 @@ class AgentCore(AgentCoreBase):
         bundle.session["current_subagent_id"] = next_subagent_id
         self._write_memory_sync(session_id, user_id, "session", "current_subagent_id", next_subagent_id)
 
-        # Update mental_state from config mapping so session always reflects the
-        # current conversation stage without requiring domain logic in Python code.
-        mental_state_map: dict = (
-            self._config.get("agent_workflow", {})
-            .get("subagent_mental_state_map", {})
-        )
-        if next_subagent_id in mental_state_map:
-            new_mental_state = mental_state_map[next_subagent_id]
-            self._write_memory_sync(session_id, user_id, "session", "mental_state", new_mental_state)
-            bundle.session["mental_state"] = new_mental_state
-
         logger.info(
             "  [STEP 6] Routing  ✓  next_subagent_id=%s  entry_count=%d",
             next_subagent_id,
