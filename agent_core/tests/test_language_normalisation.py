@@ -255,3 +255,134 @@ def test_custom_min_detection_tokens_respected(normaliser):
     llm.call.assert_called_once()  # threshold = 1 → single word triggers LLM
 
 
+
+
+# ---------------------------------------------------------------------------
+# GH-151 #3: script-based bypass
+# ---------------------------------------------------------------------------
+
+
+def test_devanagari_input_with_hindi_default_bypasses_llm(normaliser):
+    """Pure Devanagari input + default_language=hindi → LLM call skipped."""
+    cfg = {
+        "preprocessing": {
+            "language_normalisation": {
+                "provider": "llm_native",
+                "default_language": "hindi",
+                "supported_languages": ["hindi", "hinglish", "english"],
+                "min_detection_tokens": 2,
+            }
+        }
+    }
+    llm = MagicMock()
+    normalised, detected = normaliser.normalise(
+        "मुझे इलेक्ट्रीशियन का काम चाहिए हुबली में", cfg, llm
+    )
+    assert detected == "hindi"
+    assert normalised == "मुझे इलेक्ट्रीशियन का काम चाहिए हुबली में"
+    llm.call.assert_not_called()
+
+
+def test_kannada_input_with_kannada_default_bypasses_llm(normaliser):
+    """Pure Kannada script + default_language=kannada → LLM call skipped."""
+    cfg = {
+        "preprocessing": {
+            "language_normalisation": {
+                "provider": "llm_native",
+                "default_language": "kannada",
+                "supported_languages": ["kannada", "english"],
+                "min_detection_tokens": 2,
+            }
+        }
+    }
+    llm = MagicMock()
+    normalised, detected = normaliser.normalise(
+        "ನಾನು ಇಲೆಕ್ಟ್ರೀಷಿಯನ್ ಕೆಲಸ ಮಾಡುತ್ತೇನೆ", cfg, llm
+    )
+    assert detected == "kannada"
+    llm.call.assert_not_called()
+
+
+def test_hinglish_roman_input_does_not_bypass(normaliser):
+    """Majority-Latin Hinglish input must still go through the LLM — Roman
+    script could be English, transliterated Hindi, or a mix."""
+    cfg = {
+        "preprocessing": {
+            "language_normalisation": {
+                "provider": "llm_native",
+                "default_language": "hindi",
+                "supported_languages": ["hindi", "hinglish", "english"],
+                "min_detection_tokens": 2,
+            }
+        }
+    }
+    llm = make_llm_returning("merko electrician ka kaam chahiye", "hinglish")
+    normaliser.normalise("merko electrician ka kaam chahiye", cfg, llm)
+    llm.call.assert_called_once()
+
+
+def test_mixed_script_minority_devanagari_does_not_bypass(normaliser):
+    """Devanagari fragment in a mostly-Latin sentence must not trigger bypass."""
+    cfg = {
+        "preprocessing": {
+            "language_normalisation": {
+                "provider": "llm_native",
+                "default_language": "hindi",
+                "supported_languages": ["hindi", "hinglish"],
+                "min_detection_tokens": 2,
+            }
+        }
+    }
+    llm = make_llm_returning("i want काम urgently please", "hinglish")
+    normaliser.normalise("i want काम urgently please", cfg, llm)
+    llm.call.assert_called_once()
+
+
+def test_script_bypass_can_be_disabled_by_config(normaliser):
+    """script_bypass=false forces the LLM path even for default-script input."""
+    cfg = {
+        "preprocessing": {
+            "language_normalisation": {
+                "provider": "llm_native",
+                "default_language": "hindi",
+                "supported_languages": ["hindi", "hinglish"],
+                "min_detection_tokens": 2,
+                "script_bypass": False,
+            }
+        }
+    }
+    llm = make_llm_returning("मुझे काम चाहिए हुबली में", "hindi")
+    normaliser.normalise("मुझे काम चाहिए हुबली में", cfg, llm)
+    llm.call.assert_called_once()
+
+
+def test_english_default_language_never_bypasses(normaliser):
+    """Latin script is ambiguous across English/Hinglish/mis-transcribed — the
+    bypass map intentionally excludes ``english`` so the LLM always runs."""
+    cfg = {
+        "preprocessing": {
+            "language_normalisation": {
+                "provider": "llm_native",
+                "default_language": "english",
+                "supported_languages": ["english", "hinglish"],
+                "min_detection_tokens": 2,
+            }
+        }
+    }
+    llm = make_llm_returning("I want an electrician job", "english")
+    normaliser.normalise("I want an electrician job", cfg, llm)
+    llm.call.assert_called_once()
+
+
+def test_is_input_in_default_script_helper():
+    from src.preprocessing.language_normalisation import _is_input_in_default_script
+
+    assert _is_input_in_default_script("मुझे काम चाहिए", "hindi") is True
+    assert _is_input_in_default_script("merko kaam chahiye", "hindi") is False
+    assert _is_input_in_default_script("ನಾನು ಕೆಲಸ ಮಾಡುತ್ತೇನೆ", "kannada") is True
+    assert _is_input_in_default_script("i want work", "kannada") is False
+    # Unsupported default language — always False
+    assert _is_input_in_default_script("whatever", "klingon") is False
+    # Empty and whitespace-only inputs
+    assert _is_input_in_default_script("", "hindi") is False
+    assert _is_input_in_default_script("   ", "hindi") is False

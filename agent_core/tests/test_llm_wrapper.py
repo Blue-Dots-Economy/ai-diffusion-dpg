@@ -562,3 +562,105 @@ async def test_stream_non_retryable_api_error_yields_nothing(mock_anthropic_cls,
     assert tokens == []
     # Only 1 attempt — non-retryable
     assert mock_async_client.messages.stream.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# GH-151: prompt caching, cache tokens, stream span instrumentation
+# ---------------------------------------------------------------------------
+
+
+def test_wrap_system_for_caching_returns_short_string_unchanged():
+    short = "You are a helpful assistant."
+    assert ClaudeLLMWrapper._wrap_system_for_caching(short) == short
+
+
+def test_wrap_system_for_caching_wraps_long_string_as_cache_block():
+    long = "x" * 5000  # well above _CACHE_MIN_CHARS
+    wrapped = ClaudeLLMWrapper._wrap_system_for_caching(long)
+    assert isinstance(wrapped, list)
+    assert wrapped[0]["type"] == "text"
+    assert wrapped[0]["cache_control"] == {"type": "ephemeral"}
+    assert wrapped[0]["text"] == long
+
+
+def test_wrap_system_for_caching_passes_through_empty_and_none():
+    assert ClaudeLLMWrapper._wrap_system_for_caching("") == ""
+    assert ClaudeLLMWrapper._wrap_system_for_caching(None) is None
+
+
+def test_wrap_system_for_caching_passes_through_preformed_list():
+    blocks = [{"type": "text", "text": "pre-formed"}]
+    assert ClaudeLLMWrapper._wrap_system_for_caching(blocks) is blocks
+
+
+@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+def test_call_forwards_cache_control_for_long_system_prompt(mock_anthropic_cls):
+    mock_client = MagicMock()
+    mock_anthropic_cls.return_value = mock_client
+    mock_client.messages.create.return_value = _mock_text_response()
+
+    wrapper = ClaudeLLMWrapper(VALID_CONFIG)
+    long_system = "You are a helpful assistant. " * 200  # >3000 chars
+    wrapper.call(messages=MESSAGES, tools=[], system=long_system)
+
+    kwargs = mock_client.messages.create.call_args.kwargs
+    assert isinstance(kwargs["system"], list)
+    assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+def test_call_leaves_short_system_prompt_as_string(mock_anthropic_cls):
+    mock_client = MagicMock()
+    mock_anthropic_cls.return_value = mock_client
+    mock_client.messages.create.return_value = _mock_text_response()
+
+    wrapper = ClaudeLLMWrapper(VALID_CONFIG)
+    wrapper.call(messages=MESSAGES, tools=[], system=SYSTEM)
+
+    kwargs = mock_client.messages.create.call_args.kwargs
+    assert isinstance(kwargs["system"], str)
+    assert kwargs["system"] == SYSTEM
+
+
+@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+def test_call_parses_cache_tokens_from_response(mock_anthropic_cls):
+    mock_client = MagicMock()
+    mock_anthropic_cls.return_value = mock_client
+    raw = _mock_text_response()
+    raw.usage.cache_read_input_tokens = 850
+    raw.usage.cache_creation_input_tokens = 0
+    mock_client.messages.create.return_value = raw
+
+    wrapper = ClaudeLLMWrapper(VALID_CONFIG)
+    response = wrapper.call(messages=MESSAGES, tools=[], system=SYSTEM)
+
+    assert response.cache_read_input_tokens == 850
+    assert response.cache_creation_input_tokens == 0
+
+
+@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+def test_call_zero_cache_tokens_when_fields_absent(mock_anthropic_cls):
+    """Old SDK versions without cache fields must not break us."""
+    mock_client = MagicMock()
+    mock_anthropic_cls.return_value = mock_client
+    raw = _mock_text_response()
+    # The auto-MagicMock returns non-int sentinels for unknown attrs; _safe_int
+    # must coerce to 0 to satisfy the dataclass's int type contract.
+    mock_client.messages.create.return_value = raw
+
+    wrapper = ClaudeLLMWrapper(VALID_CONFIG)
+    response = wrapper.call(messages=MESSAGES, tools=[], system=SYSTEM)
+
+    # No cache attrs set on the mock's usage → should default to 0.
+    assert isinstance(response.cache_read_input_tokens, int)
+    assert isinstance(response.cache_creation_input_tokens, int)
+
+
+def test_safe_int_handles_none_and_garbage():
+    from src.llm_wrapper.claude_wrapper import _safe_int
+
+    assert _safe_int(42) == 42
+    assert _safe_int(None) == 0
+    assert _safe_int("bad") == 0
+    assert _safe_int(MagicMock()) == 0
+    assert _safe_int(0) == 0
