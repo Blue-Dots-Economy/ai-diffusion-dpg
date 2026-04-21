@@ -216,17 +216,13 @@ def get_project(slug: str) -> dict:
     engine = _get_engine(slug)
     meta["config_statuses"] = {block: engine.accumulator.get_status(block).value for block in BLOCKS}
 
-    # Include azure_storage with masked key for frontend pre-fill
-    azure_storage = engine._tool_handler._state.get("azure_storage")
-    if azure_storage:
-        key = azure_storage.get("account_key", "")
-        meta["azure_storage"] = {
-            "account_name": azure_storage.get("account_name", ""),
-            "account_key": "***" + key[-4:] if key else "",
-            "container_name": azure_storage.get("container_name", ""),
-        }
-    else:
-        meta["azure_storage"] = None
+    # Azure Blob Storage — expose intent flag only; all details collected at deploy time
+    meta["azure_storage"] = {
+        "needed": engine.accumulator.is_azure_needed(),
+    }
+
+    # Required secrets — derived from tool auth configuration
+    meta["required_secrets"] = engine.accumulator.get_required_secrets()
 
     return meta
 
@@ -788,7 +784,8 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
     from dev_kit.agent.deployer.helm import build_template_command, run_helm_command
 
     _helm_base = HELM_BASE
-    secrets = body.get("secrets", {})
+    encrypted_secrets = body.get("encrypted_secrets", {})
+    secrets = decrypt_secrets_dict(encrypted_secrets) if encrypted_secrets else body.get("secrets", {})
     resources = body.get("resources", {})
     preview: dict[str, str] = {}
 
@@ -846,6 +843,12 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
             if secrets.get("redis_password"):
                 set_values["redis.url"] = f"redis://:{secrets['redis_password']}@redis:6379/0"
 
+        # Inject domain-specific tool API keys as extraSecrets for action-gateway
+        if block_name == "action_gateway":
+            for env_var, secret_value in secrets.get("tool_secrets", {}).items():
+                if secret_value:
+                    set_values[f"extraSecrets.{env_var}"] = secret_value
+
         block_res = resources.get(block_name, {})
         limits = block_res.get("limits", {})
         requests = block_res.get("requests", {})
@@ -886,7 +889,8 @@ async def execute_deploy(slug: str, body: dict) -> dict:
 
     target = body.get("target", "docker")
     state = start_deploy(slug, target)
-    secrets = body.get("secrets", {})
+    encrypted_secrets = body.get("encrypted_secrets", {})
+    secrets = decrypt_secrets_dict(encrypted_secrets) if encrypted_secrets else body.get("secrets", {})
     resources = body.get("resources", {})
 
     # Mark all services as queued initially
@@ -1034,6 +1038,12 @@ async def _run_k8s_deploy(slug: str, state, secrets: dict, resources: dict, kube
                             set_values["memgraph.password"] = secrets["memgraph_password"]
                         if secrets.get("redis_password"):
                             set_values["redis.url"] = f"redis://:{secrets['redis_password']}@redis:6379/0"
+
+                    # Inject domain-specific tool API keys as extraSecrets for action-gateway
+                    if svc_name == "action_gateway":
+                        for env_var, secret_value in secrets.get("tool_secrets", {}).items():
+                            if secret_value:
+                                set_values[f"extraSecrets.{env_var}"] = secret_value
 
                     block_res = resources.get(svc_name, {})
                     limits = block_res.get("limits", {})
