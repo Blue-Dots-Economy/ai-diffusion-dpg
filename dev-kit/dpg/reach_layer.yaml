@@ -103,7 +103,7 @@ reach_layer:
         # Broadcast via STTMetadataFrame so downstream turn strategies can time
         # interruption / end-of-turn decisions. Measure on your deployment and
         # tune — too low clips slow transcripts, too high delays turn handoff.
-        stt_ttfs_p99_latency: 0.02
+        stt_ttfs_p99_latency: 1
         # language, voice_id are per-domain → dev-kit/configs/<domain>/
       agent_core:
         base_url: "http://agent_core:8000"

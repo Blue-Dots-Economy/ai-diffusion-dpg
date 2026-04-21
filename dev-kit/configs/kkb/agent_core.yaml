@@ -5,7 +5,7 @@ agent:
   primary_model: claude-haiku-4-5-20251001
   fallback_model: claude-haiku-4-5-20251001
   ask_for_consent: true
-  consent_prompt: "Namaste! Kya main aapki trade aur location yaad rakh sakta hoon? Isse agle baar aapko dobara batana nahi padega."
+  consent_prompt: "नमस्ते! क्या मैं आपकी ट्रेड और लोकेशन याद रख सकती हूँ? इससे अगली बार आपको दोबारा बताना नहीं पड़ेगा।"
 
 channels:
   voice:
