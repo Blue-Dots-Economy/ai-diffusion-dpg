@@ -298,12 +298,19 @@ def create_orchestration_app(
             return {"status": "accepted"}
 
         @app.get("/sessions/{session_id}/events")
-        async def session_events(session_id: str, request: Request):
+        async def session_events(
+            session_id: str, request: Request, user_id: str | None = None
+        ):
             """Long-lived SSE subscription for session events.
 
             Reach layer opens this connection once at session start. Events are
             yielded as they arrive from TurnAssembler's invocation pipeline.
             Closes after DoneEvent. On client disconnect, cancels the active turn.
+
+            When ``user_id`` is supplied as a query parameter, TurnAssembler
+            proactively emits the entry subagent's opening_phrase on the first
+            connect for a brand-new session (GH-149). Omit to skip the proactive
+            emission (back-compat).
             """
             start = time.time()
 
@@ -313,13 +320,14 @@ def create_orchestration_app(
                     "operation": "orchestration_server.session_events",
                     "status": "success",
                     "session_id": session_id,
+                    "user_id": user_id or "",
                 },
             )
 
             async def sse_generator():
                 event_count = 0
                 try:
-                    async for event in _assembler.subscribe(session_id):
+                    async for event in _assembler.subscribe(session_id, user_id=user_id):
                         event_count += 1
                         yield event.to_sse()
                 except Exception as e:
