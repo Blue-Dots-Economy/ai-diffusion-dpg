@@ -24,6 +24,59 @@ from src.llm_wrapper.base import LLMWrapperBase
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# GH-151 #3: cheap script-based pre-screen
+# ---------------------------------------------------------------------------
+#
+# The expensive LLM-driven lang-norm call exists so the downstream prompt
+# receives input in a predictable script. When the caller is already speaking
+# in the configured default language's native script, normalisation is a
+# no-op — running the LLM only adds ~1.8 s of pointless latency.
+#
+# Each entry below maps a supported default_language (lowercased) to the
+# Unicode ranges that count as "in that language's primary script". If >= 60%
+# of the non-whitespace characters in the raw input fall inside those ranges,
+# we skip the LLM call entirely and return (raw, default_language).
+#
+# Ratio keeps the check robust to common code-switched tokens (digits,
+# punctuation, the occasional English word) while still catching mixed-script
+# Hinglish like "merko job chahiye" → Latin script dominated → won't bypass.
+
+_DEFAULT_SCRIPT_RANGES: dict[str, tuple[tuple[int, int], ...]] = {
+    # Hindi — Devanagari block + Devanagari Extended
+    "hindi": ((0x0900, 0x097F), (0xA8E0, 0xA8FF)),
+    # Kannada block
+    "kannada": ((0x0C80, 0x0CFF),),
+    # English is deliberately absent: Latin-script inputs could equally be
+    # English, Hinglish, code-switched, or mis-transcribed. Skipping the LLM
+    # call on a majority-Latin heuristic would mis-classify Hinglish traffic
+    # as English. The non-English default languages use their own non-Latin
+    # scripts, which is an unambiguous signal.
+}
+
+_SCRIPT_BYPASS_RATIO = 0.6
+
+
+def _is_input_in_default_script(raw: str, default_language: str) -> bool:
+    """Return True if the raw input is predominantly in the default language's script.
+
+    Non-whitespace-stripped majority check — see module docstring. Returns
+    False for unsupported default_language values so callers safely fall
+    through to the LLM path.
+    """
+    ranges = _DEFAULT_SCRIPT_RANGES.get(default_language.lower())
+    if not ranges:
+        return False
+    meaningful = [ch for ch in raw if not ch.isspace()]
+    if not meaningful:
+        return False
+    in_script = sum(
+        1 for ch in meaningful
+        if any(lo <= ord(ch) <= hi for lo, hi in ranges)
+    )
+    return (in_script / len(meaningful)) >= _SCRIPT_BYPASS_RATIO
+
 def _build_lang_norm_prompt(supported_languages: list[str], default_language: str) -> str:
     """Build the language normalisation system prompt from config values.
 
@@ -109,6 +162,31 @@ class LanguageNormaliser:
                         "status": "skipped",
                         "reason": "below_min_detection_tokens",
                         "latency_ms": 0,
+                    },
+                )
+                return raw_input, default_language
+
+            # GH-151 #3: script-based bypass. When the caller is already
+            # speaking the default language in its native script, the LLM
+            # call has nothing meaningful to normalise — skip it and save
+            # ~1.8 s per turn (Haiku). Loose ratio-based check keeps the
+            # bypass robust to mixed-in digits, punctuation, and the
+            # occasional code-switched word. Disabled by setting
+            # script_bypass=false in domain config.
+            script_bypass_enabled = bool(block_cfg.get("script_bypass", True))
+            if (
+                script_bypass_enabled
+                and default_language
+                and _is_input_in_default_script(raw_input, default_language)
+            ):
+                logger.info(
+                    "language_normalisation.script_bypass",
+                    extra={
+                        "operation": "language_normalisation.normalise",
+                        "status": "skipped",
+                        "reason": "input_already_in_default_script",
+                        "detected_language": default_language,
+                        "latency_ms": int((time.time() - start) * 1000),
                     },
                 )
                 return raw_input, default_language
