@@ -39,10 +39,14 @@ class SileroVADWrapper(VADAnalyzerBase):
         if config is None:
             raise ValueError("config must be a dict, got None")
         vad_cfg = config.get("telephony_adapter", {}).get("vad", {})
-        stop_secs = float(vad_cfg.get("stop_secs", 0.35))
-        min_volume = float(vad_cfg.get("min_volume", 0.3))
-        confidence = float(vad_cfg.get("confidence", 0.4))
-        start_secs = float(vad_cfg.get("start_secs", 0.1))
+        # Hardcoded fallbacks align with dev-kit/dpg/reach_layer.yaml defaults
+        # (GH-152 follow-up). Older, looser values caused noise-triggered VAD
+        # false positives that flushed TTS via the UserTurnProcessor →
+        # InterruptionFrame path.
+        stop_secs = float(vad_cfg.get("stop_secs", 0.4))
+        min_volume = float(vad_cfg.get("min_volume", 0.7))
+        confidence = float(vad_cfg.get("confidence", 0.75))
+        start_secs = float(vad_cfg.get("start_secs", 0.25))
         smoothing_factor = float(vad_cfg.get("smoothing_factor", 0.1))
 
         analyzer = SileroVADAnalyzer(

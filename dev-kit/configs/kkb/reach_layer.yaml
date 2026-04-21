@@ -62,3 +62,6 @@ reach_layer:
         # agent_workflow.subagents[is_start=true].opening_phrase). Do not add a
         # static `greeting` here.
         fallback_phrase: "माफ़ कीजिए, मैं इसे समझ नहीं पायी। कृपया दोबारा कहें।"
+        # GH-152: brief acknowledgement spoken when the caller interrupts the
+        # bot mid-response. TTS has already been flushed by the time this plays.
+        barge_in_acknowledgement: "ठीक है, एक सेकंड।"
