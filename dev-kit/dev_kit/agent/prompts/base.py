@@ -15,6 +15,7 @@ AGENT_TYPES: list[str] = ["transactional", "informational", "agentic", "conversa
 # Values are 'required', 'optional', or 'skip'. Consulted by set_phase and
 # skip_optional_phase to gate visits and auto-advance.
 SHEET_REQUIREMENTS: dict[str, dict[str, str]] = {
+    "tier":          {"transactional": "required", "informational": "required", "agentic": "required", "conversational": "required"},
     "overview":      {"transactional": "required", "informational": "required", "agentic": "required", "conversational": "required"},
     "language":      {"transactional": "required", "informational": "required", "agentic": "required", "conversational": "required"},
     "knowledge":     {"transactional": "skip",     "informational": "required", "agentic": "optional", "conversational": "optional"},

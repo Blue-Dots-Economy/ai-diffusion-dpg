@@ -55,9 +55,7 @@ services:
     build:
       context: ../..
       dockerfile: action_gateway/Dockerfile
-      platforms:
-        - linux/amd64
-        - linux/arm64
+
     image: sanketikahub/dpg-action-gateway:${GIT_SHA:-latest}
     container_name: action_gateway
     environment:
@@ -89,9 +87,7 @@ services:
     build:
       context: ../..
       dockerfile: agent_core/Dockerfile
-      platforms:
-        - linux/amd64
-        - linux/arm64
+
     image: sanketikahub/dpg-agent-core:${GIT_SHA:-latest}
     container_name: agent_core
     environment:
@@ -133,9 +129,7 @@ services:
     build:
       context: ../..
       dockerfile: dev-kit/Dockerfile
-      platforms:
-        - linux/amd64
-        - linux/arm64
+
     image: sanketikahub/dpg-dev-kit:${GIT_SHA:-latest}
     container_name: dev_kit
     environment:
@@ -170,9 +164,7 @@ services:
     build:
       context: ../..
       dockerfile: knowledge_engine/Dockerfile
-      platforms:
-        - linux/amd64
-        - linux/arm64
+
     image: sanketikahub/dpg-knowledge-engine:${GIT_SHA:-latest}
     container_name: knowledge_engine
     environment:
@@ -216,9 +208,7 @@ services:
     build:
       context: ../..
       dockerfile: memory_layer/Dockerfile
-      platforms:
-        - linux/amd64
-        - linux/arm64
+
     image: sanketikahub/dpg-memory-layer:${GIT_SHA:-latest}
     container_name: memory_layer
     environment:
@@ -257,9 +247,7 @@ services:
     build:
       context: ../..
       dockerfile: observability_layer/Dockerfile
-      platforms:
-        - linux/amd64
-        - linux/arm64
+
     image: sanketikahub/dpg-observability-layer:${GIT_SHA:-latest}
     container_name: observability_layer
     environment:
@@ -294,9 +282,7 @@ services:
     build:
       context: ../..
       dockerfile: reach_layer/web/Dockerfile
-      platforms:
-        - linux/amd64
-        - linux/arm64
+
     image: sanketikahub/dpg-reach-layer-web:${GIT_SHA:-latest}
     container_name: reach_layer_web
     environment:
@@ -342,9 +328,7 @@ services:
     build:
       context: ../..
       dockerfile: reach_layer/cli/Dockerfile
-      platforms:
-        - linux/amd64
-        - linux/arm64
+
     image: sanketikahub/dpg-reach-layer-cli:${GIT_SHA:-latest}
     container_name: reach_layer_cli
     volumes:
@@ -371,9 +355,7 @@ services:
     build:
       context: ../..
       dockerfile: reach_layer/voice/Dockerfile
-      platforms:
-        - linux/amd64
-        - linux/arm64
+
     image: sanketikahub/dpg-reach-layer-voice:${GIT_SHA:-latest}
     container_name: reach_layer_voice
     environment:
@@ -418,9 +400,7 @@ services:
     build:
       context: ../..
       dockerfile: trust_layer/Dockerfile
-      platforms:
-        - linux/amd64
-        - linux/arm64
+
     image: sanketikahub/dpg-trust-layer:${GIT_SHA:-latest}
     container_name: trust_layer
     environment:

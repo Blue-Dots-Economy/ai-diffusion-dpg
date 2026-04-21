@@ -1,9 +1,9 @@
 import React, { useState } from 'react'
 
-const PHASES = ['overview', 'language', 'knowledge', 'memory', 'trust', 'connectors', 'workflow', 'observability', 'reach', 'review']
+const PHASES = ['tier', 'overview', 'language', 'knowledge', 'memory', 'user_state', 'trust', 'tools', 'workflow', 'observability', 'reach', 'review']
 const PHASE_LABELS = {
-  overview: 'Overview', language: 'Language', knowledge: 'Knowledge',
-  memory: 'Memory', trust: 'Trust', connectors: 'Connectors',
+  tier: 'Agent Type', overview: 'Overview', language: 'Language', knowledge: 'Knowledge',
+  memory: 'Memory', user_state: 'User State', trust: 'Trust', tools: 'Tools',
   workflow: 'Workflow', observability: 'Observability', reach: 'Reach Layer', review: 'Review',
 }
 

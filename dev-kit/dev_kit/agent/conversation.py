@@ -55,7 +55,7 @@ class ConversationEngine:
         self._client = client
         self._history: list[dict] = []
         self._state: dict = {
-            "phase": "overview",
+            "phase": "tier",
             "phase_changed": None,
             "rollback_to": None,
             "project_meta": {},
@@ -90,7 +90,7 @@ class ConversationEngine:
             try:
                 meta = json.loads(meta_path.read_text())
                 self._state["project_meta"] = meta
-                self._state["phase"] = meta.get("current_phase", "overview")
+                self._state["phase"] = meta.get("current_phase", "tier")
             except json.JSONDecodeError as exc:
                 logger.warning(
                     "project_meta_load_failed",

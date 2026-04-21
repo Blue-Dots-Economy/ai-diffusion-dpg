@@ -643,6 +643,13 @@ class ToolHandler:
         section = inputs["section"]
         values = inputs["values"]
 
+        if not isinstance(values, dict):
+            return (
+                f"ERROR — `values` must be an object (dict), got {type(values).__name__!r}. "
+                f"Pass a JSON object with key-value pairs, e.g. {{\"key\": \"value\"}}. "
+                f"Do not pass a string, list, or other scalar."
+            )
+
         # GH-137 hard-cut: channel configuration has moved to the top-level
         # `channels` section inside each block. Reject the legacy paths with
         # explicit migration guidance so the LLM retries with the new path.

@@ -171,7 +171,7 @@ def create_project(body: CreateProjectRequest) -> dict:
         "slug": slug,
         "name": body.name,
         "description": body.description,
-        "current_phase": "overview",
+        "current_phase": "tier",
         "phases_completed": [],
         "agent_type": "",
         "phase_decisions": {},

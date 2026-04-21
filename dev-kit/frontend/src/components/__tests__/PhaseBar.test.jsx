@@ -3,8 +3,8 @@ import { describe, it, expect, vi } from 'vitest'
 import PhaseBar from '../PhaseBar'
 
 const PHASE_LABELS = {
-  overview: 'Overview', language: 'Language', knowledge: 'Knowledge',
-  memory: 'Memory', trust: 'Trust', connectors: 'Connectors',
+  tier: 'Agent Type', overview: 'Overview', language: 'Language', knowledge: 'Knowledge',
+  memory: 'Memory', user_state: 'User State', trust: 'Trust', tools: 'Tools',
   workflow: 'Workflow', observability: 'Observability', reach: 'Reach Layer', review: 'Review',
 }
 
@@ -85,8 +85,8 @@ describe('PhaseBar', () => {
   it('renders dots in collapsed mode for each phase', () => {
     render(<PhaseBar currentPhase="overview" checkpoints={[]} onRestoreCheckpoint={vi.fn()} />)
     fireEvent.click(screen.getByTitle('Collapse phases'))
-    // 10 phases = 10 dot spans; they have title attributes
-    const dots = screen.getAllByTitle(/Overview|Language|Knowledge|Memory|Trust|Connectors|Workflow|Observability|Reach Layer|Review/)
-    expect(dots).toHaveLength(10)
+    // 12 phases = 12 dot spans; they have title attributes
+    const dots = screen.getAllByTitle(/Agent Type|Overview|Language|Knowledge|Memory|User State|Trust|Tools|Workflow|Observability|Reach Layer|Review/)
+    expect(dots).toHaveLength(12)
   })
 })

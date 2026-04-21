@@ -14,7 +14,7 @@ export default function Chat({ slug, onDashboard, onBack }) {
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
-  const [phase, setPhase] = useState('overview')
+  const [phase, setPhase] = useState('tier')
   const [graph, setGraph] = useState({ nodes: [], edges: [] })
   const [checkpoints, setCheckpoints] = useState([])
   const [configs, setConfigs] = useState([])
@@ -25,6 +25,7 @@ export default function Chat({ slug, onDashboard, onBack }) {
   const textareaRef = useRef(null)
 
   useEffect(() => {
+    api.getProject(slug).then(p => setPhase(p.current_phase || 'tier')).catch(() => {})
     api.getHistory(slug).then(history => {
       setMessages(history.map(m => ({ role: m.role, text: m.content })))
     }).catch(() => {})
