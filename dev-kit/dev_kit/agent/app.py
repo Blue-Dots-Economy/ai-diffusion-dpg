@@ -34,6 +34,7 @@ from dev_kit.agent.accumulator import BLOCKS, ConfigAccumulator
 from dev_kit.agent.auth import verify_api_key as _verify_api_key
 from dev_kit.agent.checkpoints import list_checkpoints, restore_checkpoint
 from dev_kit.agent.conversation import ConversationEngine
+from dev_kit.agent.crypto import decrypt_secrets_dict, get_public_key_spki_b64
 from dev_kit.agent.errors import ConversationError
 from dev_kit.agent.renderer import load_block_from_file, render_all
 from dev_kit.config.loader import load_devkit_config as _load_devkit_config
@@ -745,6 +746,20 @@ async def update_compose_file(slug: str, body: dict) -> dict:
     """
     COMPOSE_FILE.write_text(body["content"])
     return {"status": "ok"}
+
+
+@app.get("/api/deploy/public-key")
+def get_deploy_public_key() -> dict:
+    """Return the server RSA public key for browser-side secret encryption.
+
+    The browser fetches this once and uses ``SubtleCrypto.importKey('spki', ...)``
+    to import it for RSA-OAEP encryption of each secret value before sending.
+
+    Returns:
+        Dict with ``public_key`` — base64 DER/SPKI of the server's RSA-4096
+        public key.
+    """
+    return {"public_key": get_public_key_spki_b64()}
 
 
 @app.post("/api/projects/{slug}/deploy/preview")

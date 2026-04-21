@@ -97,3 +97,19 @@ def test_key_is_reloaded_from_disk_on_reimport(tmp_path):
     importlib.reload(crypto_mod)
     key2 = crypto_mod.get_public_key_spki_b64()
     assert key1 == key2
+
+
+def test_public_key_endpoint_returns_spki_b64():
+    """GET /api/deploy/public-key returns a non-empty base64 string."""
+    import os
+    os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
+    from fastapi.testclient import TestClient
+    from dev_kit.agent.app import app
+    client = TestClient(app)
+
+    res = client.get("/api/deploy/public-key")
+    assert res.status_code == 200
+    data = res.json()
+    assert "public_key" in data
+    decoded = base64.b64decode(data["public_key"])
+    assert len(decoded) > 100
