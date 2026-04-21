@@ -30,6 +30,9 @@ healthCheck:
 dpgConfig: ""
 domainConfig: ""
 
-# Required — pass at install/upgrade time via --set onestApiKey=<key>
-# Never store the key in this file or in version control.
-onestApiKey: ""
+# Domain-specific API key secrets for Action Gateway tools.
+# Add one entry per REST tool that requires an API key.
+# Keys become environment variables inside the container.
+# Set at deploy time via --set 'extraSecrets.MY_API_KEY=value'
+# Never store actual values here or in version control.
+extraSecrets: {}
