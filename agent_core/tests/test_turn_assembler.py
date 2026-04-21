@@ -993,13 +993,16 @@ class TestEndToEnd:
         assert events[-1].turn_status == "completed"
 
     @pytest.mark.asyncio
-    async def test_barge_in_new_turn_assembles_original_plus_correction(self):
-        """After barge-in, new turn's assembled_text = interrupted segments + barge-in segment.
+    async def test_barge_in_new_turn_uses_only_correction(self):
+        """After barge-in, the new turn processes ONLY the barge-in utterance.
 
-        Scenario: user says "मुझे जॉब चाहिए" (turn starts), then before it completes
-        says "wait wait that is not correct". The new turn must assemble:
-        "मुझे जॉब चाहिए wait wait that is not correct"
-        so the LLM has full context of what the user originally said + the correction.
+        GH-152 Phase 2: the original interrupted segment is discarded. Scenario:
+        user says "मुझे जॉब चाहिए" (turn starts → LLM begins responding), then
+        barges in with "wait wait that is not correct". The LLM had already
+        started on the original, so the caller's correction is reacting to
+        that partial output; replaying the original alongside would produce
+        the noisy prompt "मुझे जॉब चाहिए wait wait that is not correct".
+        Only the correction carries forward as the next turn's input.
         """
         captured_inputs = []
 
@@ -1041,7 +1044,7 @@ class TestEndToEnd:
         # Barge-in: user corrects before first turn completes
         await ta.add_segment("s1", _make_segment("wait wait that is not correct"))
 
-        # Wait for: INTERRUPTED DoneEvent → reset → replay → silence → new invocation
+        # Wait for: INTERRUPTED DoneEvent → reset → replay pending only → silence → new invocation
         await asyncio.sleep(0.3)
 
         collect_task.cancel()
@@ -1050,9 +1053,9 @@ class TestEndToEnd:
         except asyncio.CancelledError:
             pass
 
-        # New turn should have assembled both original + correction
+        # New turn should have ONLY the correction — original is discarded.
         assert len(captured_inputs) == 1
-        assert captured_inputs[0] == "मुझे जॉब चाहिए wait wait that is not correct"
+        assert captured_inputs[0] == "wait wait that is not correct"
 
 
 # ---------------------------------------------------------------------------
