@@ -367,3 +367,107 @@ class TestRestApiAdapterOtel:
             for m in sm.metrics
         }
         assert "action.response.truncated_total" in metric_names
+
+
+# ---------------------------------------------------------------------------
+# GH-151 follow-up: path templating (get_profile stub)
+# ---------------------------------------------------------------------------
+
+
+class TestRestApiAdapterPathTemplating:
+    """execute() substitutes {user_id} / {session_id} into the endpoint path.
+
+    Introduced for the get_profile stub so the caller's user_id doesn't have
+    to be echoed by the LLM — rest_api.yaml declares path: '/profile/{user_id}'
+    and the framework fills it in.
+    """
+
+    @pytest.fixture
+    def rest_profile_config(self, monkeypatch):
+        """Adapter config that uses {user_id} path templating + no auth."""
+        # No auth env var needed — adapter accepts auth block with type="none"
+        # by leaving it off entirely.
+        return {
+            "id": "get_profile",
+            "type": "rest_api",
+            "category": "read",
+            "description": "Fetch caller's profile from Memory Layer.",
+            "base_url": "http://memory_layer:8002",
+            "endpoints": [
+                {
+                    "name": "get_profile",
+                    "method": "GET",
+                    "path": "/profile/{user_id}",
+                    "params": [],
+                }
+            ],
+            "response": {"max_size_chars": 3000},
+        }
+
+    @pytest.mark.asyncio
+    async def test_user_id_substituted_into_path(self, rest_profile_config):
+        from unittest.mock import AsyncMock, patch
+        from src.adapters.rest_api import RestApiAdapter
+
+        adapter = RestApiAdapter(rest_profile_config)
+        mock_resp = make_mock_response(200, {"trade": "electrician"})
+
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=mock_resp)
+            result = await adapter.execute(
+                "get_profile", {}, "sess-1", "+919876543210"
+            )
+
+        assert result.success is True
+        url = mock_client.request.call_args.kwargs["url"]
+        assert url == "http://memory_layer:8002/profile/+919876543210"
+
+    @pytest.mark.asyncio
+    async def test_empty_user_id_leaves_path_bare(self, rest_profile_config):
+        """Missing user_id produces /profile/ — backing endpoint handles the
+        empty case (our Memory Layer /profile/ returns {}). Adapter must not
+        crash on the format call."""
+        from unittest.mock import AsyncMock, patch
+        from src.adapters.rest_api import RestApiAdapter
+
+        adapter = RestApiAdapter(rest_profile_config)
+        mock_resp = make_mock_response(200, {})
+
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=mock_resp)
+            await adapter.execute("get_profile", {}, "sess-2")
+
+        url = mock_client.request.call_args.kwargs["url"]
+        assert url == "http://memory_layer:8002/profile/"
+
+    @pytest.mark.asyncio
+    async def test_session_id_also_substitutable(self, monkeypatch):
+        """path='/sessions/{session_id}/summary' substitutes session_id too."""
+        from unittest.mock import AsyncMock, patch
+        from src.adapters.rest_api import RestApiAdapter
+
+        cfg = {
+            "id": "session_summary",
+            "type": "rest_api",
+            "category": "read",
+            "description": "Get session summary",
+            "base_url": "http://memory_layer:8002",
+            "endpoints": [
+                {
+                    "name": "summary",
+                    "method": "GET",
+                    "path": "/sessions/{session_id}/summary",
+                    "params": [],
+                }
+            ],
+            "response": {"max_size_chars": 1000},
+        }
+        adapter = RestApiAdapter(cfg)
+        mock_resp = make_mock_response(200, {})
+
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=mock_resp)
+            await adapter.execute("session_summary", {}, "abc-123")
+
+        url = mock_client.request.call_args.kwargs["url"]
+        assert url == "http://memory_layer:8002/sessions/abc-123/summary"

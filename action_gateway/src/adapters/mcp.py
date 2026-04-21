@@ -172,7 +172,11 @@ class McpAdapter(ToolAdapter):
         return list(self._tool_definitions)
 
     async def execute(
-        self, tool_name: str, params: dict, session_id: str
+        self,
+        tool_name: str,
+        params: dict,
+        session_id: str,
+        user_id: str = "",
     ) -> ToolResult:
         """Execute a tool call on the MCP server and return a normalised result.
 
@@ -184,6 +188,9 @@ class McpAdapter(ToolAdapter):
             tool_name: Namespaced tool name (e.g. 'my_mcp.search').
             params: Parameter dict from the LLM's tool_use input block.
             session_id: Session identifier for log correlation; may be empty.
+            user_id: Stable user identifier; accepted for interface parity
+                with :class:`RestApiAdapter` but not yet consumed by the MCP
+                protocol.
 
         Returns:
             ToolResult with success=True and populated result on success,

@@ -79,6 +79,36 @@ tools:
     response:
       max_size_chars: 4000
 
+  # Stub profile fetch. The KKB system prompts instruct subagents to call
+  # ``get_profile`` when no profile data is in context; previously the LLM
+  # would announce the fetch verbally with no tool registered, so the call
+  # went nowhere. This hits Memory Layer's GET /profile/{user_id} and
+  # returns the raw profile dict so the LLM can summarise.
+  #
+  # The ``{user_id}`` placeholder in ``path`` is substituted by the rest_api
+  # adapter from the caller's session user_id — the LLM does NOT supply it.
+  - id: get_profile
+    type: rest_api
+    category: read
+    description: >
+      Fetch the caller's saved profile from Memory Layer. Call ONLY after the
+      user has explicitly agreed to let you look up their profile. Returns
+      the stored fields (trade, location, age, languages, prior outcomes,
+      etc.) when the user has been seen before; returns an empty object when
+      the user is new or the profile is unreachable. After receiving a
+      profile, briefly summarise what you found in one sentence and continue
+      with one open-ended question — do NOT immediately make another tool
+      call.
+    base_url: "http://memory_layer:8002"
+    timeout_ms: 3000
+    endpoints:
+      - name: get_profile
+        method: GET
+        path: "/profile/{user_id}"
+        params: []
+    response:
+      max_size_chars: 3000
+
   # - id: onest_apply
   #   type: rest_api
   #   category: write

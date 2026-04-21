@@ -13,10 +13,19 @@ from src.models import ToolCall, ToolResult
 class ActionGatewayBase(ABC):
 
     @abstractmethod
-    def execute(self, tool_call: ToolCall, session_id: str) -> ToolResult:
+    def execute(
+        self,
+        tool_call: ToolCall,
+        session_id: str,
+        user_id: str = "",
+    ) -> ToolResult:
         """
         Execute a single tool call against the appropriate external connector.
+
         session_id is passed so the gateway can enforce per-session constraints.
+        user_id (E.164 for voice callers) is passed so path-templated tools
+        like ``get_profile`` can substitute ``{user_id}`` in the endpoint URL
+        without the LLM having to echo it back.
 
         Always returns a ToolResult — never raises.
         Failures are expressed via ToolResult(success=False, error=...).
