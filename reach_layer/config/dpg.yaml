@@ -54,6 +54,9 @@ reach_layer:
         port: 8005
       sessions:
         limit: 25                                      # sidebar recent-sessions cap
+      # Internal KE URL used by the upload proxy (Reach → KE).
+      # Override via KE_INTERNAL_URL env var at deploy time.
+      ke_internal_url: "http://knowledge-engine.dpg.svc.cluster.local:8001"
       auth:
         # enabled, google_client_id, cookie_secure are per-domain → domain.yaml
         session_cookie_name: "reach_session"
