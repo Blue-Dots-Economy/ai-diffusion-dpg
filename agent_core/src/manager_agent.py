@@ -263,115 +263,149 @@ class ManagerAgent:
         guardrail_constraints: dict | None = None,
         user_state_guidance: str | None = None,
         session_end_eval_prompt: str | None = None,
-    ) -> str:
-        """
-        Build the system prompt for one LLM call.
+    ) -> list[dict]:
+        """Build an Anthropic system prompt as a list of content blocks.
 
-        Assembles three layers:
-        1. agent_system_prompt — use-case level purpose and hard rules (from AgentWorkflow)
-        2. Channel/language context — injected at runtime from Reach Layer / Language Normalisation
-        3. subagent_system_prompt — instructions for the active subagent (from SubAgent)
+        Assembles three cache-volatility tiers:
 
-        Also injects known profile fields as grounding context between layers.
+        Tier 1 (session-stable — cache_control: ephemeral):
+            <persona>             agent_system_prompt
+            <channel_rules>       channel_config.system_prompt_suffix
+            <session_end_policy>  session_end_eval_prompt
+
+        Tier 2 (state-stable — cache_control: ephemeral):
+            <subagent>            subagent_system_prompt
+            <user_state_guidance> user_state_guidance
+
+        Tier 3 (dynamic — no cache marker):
+            <channel_context>     channel + detected_language line
+            <resumption>          resumption note (first turn after adoption)
+            <known_profile>       profile grounding
+            <active_guardrails>   guardrail constraints + required disclosures
+
+        Empty inputs elide their section entirely; empty tiers are not
+        appended to the output list.
 
         Args:
-            agent_system_prompt:    Workflow-level system prompt.
+            agent_system_prompt:    Workflow-level persona + cross-cutting safety.
             subagent_system_prompt: Active subagent's system prompt.
             detected_language:      Language detected by Language Normaliser.
             channel:                Channel type (e.g. "cli", "whatsapp", "voip").
-            profile:                User profile dict for known field injection.
-            channel_config:         Per-channel config dict from the top-level `channels.<name>`
-                                    block in agent_core.yaml (post-GH-137). When present and
-                                    system_prompt_suffix is non-empty, the suffix is appended
-                                    as the final prompt section.
+            profile:                User profile dict for grounding injection.
+            channel_config:         Optional per-channel config. When present and
+                                    ``system_prompt_suffix`` is non-empty the suffix
+                                    joins Tier 1 as <channel_rules>.
             is_resumption:          Whether the user is resuming an ongoing session.
-            guardrail_constraints:  Optional dict with prompt_constraints and
-                                    required_disclosures from the Trust Layer.
-                                    When present, appended to the system prompt.
-            user_state_guidance:    Optional — when non-empty, rendered as a
-                                    "## Current user state guidance" section between
-                                    the subagent prompt and the guardrail constraints.
-                                    Orchestrator supplies the text from
-                                    conversation.user_state_model based on the current
-                                    user_state payload. Empty/None renders no section.
+            guardrail_constraints:  Optional dict with ``prompt_constraints`` and
+                                    ``required_disclosures`` from the Trust Layer.
+            user_state_guidance:    Optional text describing the active user state.
+            session_end_eval_prompt: Optional prompt that instructs the LLM to emit
+                                    the ``end_session`` tool when the user signals
+                                    departure.
 
         Returns:
-            Assembled system prompt string.
+            List of Anthropic content-block dicts ready to pass to
+            ``llm.call(system=...)``. Length 0–3 depending on which tiers are
+            populated.
         """
-        parts: list[str] = []
 
-        if agent_system_prompt:
-            parts.append(agent_system_prompt.strip())
+        def xml(tag: str, body: str | None) -> str:
+            body_stripped = (body or "").strip()
+            if not body_stripped:
+                return ""
+            return f"<{tag}>\n{body_stripped}\n</{tag}>"
 
-        # Channel and language context injected at runtime
-        context_parts: list[str] = []
+        def join(sections: list[str]) -> str:
+            return "\n\n".join(s for s in sections if s)
+
+        # ── Tier 1: session-stable ────────────────────────────────────
+        suffix = (channel_config or {}).get("system_prompt_suffix", "")
+        tier1 = join([
+            xml("persona", agent_system_prompt),
+            xml("channel_rules", suffix),
+            xml("session_end_policy", session_end_eval_prompt),
+        ])
+
+        # ── Tier 2: state-stable ──────────────────────────────────────
+        tier2 = join([
+            xml("subagent", subagent_system_prompt),
+            xml("user_state_guidance", user_state_guidance),
+        ])
+
+        # ── Tier 3: dynamic ───────────────────────────────────────────
+        channel_ctx_parts: list[str] = []
         if channel:
-            context_parts.append(f"Channel: {channel}")
+            channel_ctx_parts.append(f"Channel: {channel}")
         if detected_language:
-            context_parts.append(
+            channel_ctx_parts.append(
                 f"User's language: {detected_language}. Respond in {detected_language}."
             )
-        if context_parts:
-            parts.append("\n".join(context_parts))
+        channel_ctx = "\n".join(channel_ctx_parts)
 
-        if is_resumption:
-            parts.append(
-                "CONTEXT: The user has returned to an ongoing session. DO NOT provide a starting greeting "
-                "or re-introduce yourself. Resume the conversation naturally from where it left off. "
-                "Ask the next question required for the current stage."
-            )
+        resumption_note = (
+            "The user has returned to an ongoing session. Do not provide a "
+            "starting greeting or re-introduce yourself. Resume the conversation "
+            "naturally from where it left off; ask the next question required "
+            "for the current stage."
+        ) if is_resumption else ""
 
-        # Inject known profile fields as grounding context
+        profile_body = ""
         if profile:
-            profile_lines: list[str] = []
+            lines: list[str] = []
             skip_keys = {"attributes", "user_id"}
             for k, v in profile.items():
                 if k not in skip_keys and v not in (None, "", [], "[]"):
-                    profile_lines.append(f"  {k}: {v}")
-            # Also inject ad-hoc attributes
-            for attr in profile.get("attributes", []):
-                attr_key = attr.get("key")
-                attr_val = attr.get("value")
+                    lines.append(f"  {k}: {v}")
+            for attr in profile.get("attributes", []) or []:
+                attr_key = attr.get("key") if isinstance(attr, dict) else None
+                attr_val = attr.get("value") if isinstance(attr, dict) else None
                 if attr_key and attr_val:
-                    profile_lines.append(f"  {attr_key}: {attr_val}")
-            
-            if profile_lines:
-                parts.append(
-                    "Known user profile (already collected — do NOT ask for any of these fields again):\n"
-                    + "\n".join(profile_lines)
+                    lines.append(f"  {attr_key}: {attr_val}")
+            if lines:
+                profile_body = (
+                    "Already collected — do NOT ask for any of these fields again:\n"
+                    + "\n".join(lines)
                 )
 
-        if subagent_system_prompt:
-            parts.append(subagent_system_prompt.strip())
-
-        if user_state_guidance:
-            parts.append(
-                "## Current user state guidance\n" + user_state_guidance.strip()
-            )
-
-        if session_end_eval_prompt:
-            parts.append(
-                "## Session-end evaluation\n" + session_end_eval_prompt.strip()
-            )
-
+        guardrails_body = ""
         if guardrail_constraints:
-            constraints = guardrail_constraints.get("prompt_constraints", [])
-            disclosures = guardrail_constraints.get("required_disclosures", [])
-
+            constraints = guardrail_constraints.get("prompt_constraints", []) or []
+            disclosures = guardrail_constraints.get("required_disclosures", []) or []
+            parts: list[str] = []
             if constraints:
                 parts.append(
-                    "## Guardrail Constraints\n" + "\n".join(f"- {c}" for c in constraints)
+                    "Constraints:\n" + "\n".join(f"- {c}" for c in constraints)
                 )
             if disclosures:
                 parts.append(
-                    "## Required Disclosures\n" + "\n".join(f"- {d}" for d in disclosures)
+                    "Required disclosures:\n" + "\n".join(f"- {d}" for d in disclosures)
                 )
+            guardrails_body = "\n\n".join(parts)
 
-        suffix = (channel_config or {}).get("system_prompt_suffix", "")
-        if suffix:
-            parts.append(suffix.strip())
+        tier3 = join([
+            xml("channel_context", channel_ctx),
+            xml("resumption", resumption_note),
+            xml("known_profile", profile_body),
+            xml("active_guardrails", guardrails_body),
+        ])
 
-        return "\n\n".join(parts)
+        # ── Assemble blocks ───────────────────────────────────────────
+        blocks: list[dict] = []
+        if tier1:
+            blocks.append({
+                "type": "text",
+                "text": tier1,
+                "cache_control": {"type": "ephemeral"},
+            })
+        if tier2:
+            blocks.append({
+                "type": "text",
+                "text": tier2,
+                "cache_control": {"type": "ephemeral"},
+            })
+        if tier3:
+            blocks.append({"type": "text", "text": tier3})
+        return blocks
 
     def build_messages(
         self,
