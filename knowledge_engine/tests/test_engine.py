@@ -27,7 +27,6 @@ from src.models import RetrievalChunk
 CONFIG = {
     "server": {"host": "0.0.0.0", "port": 8001},
     "knowledge": {
-        "conversation": {"max_history_turns": 5},
         "blocks": {
             "glossary": {
                 "enabled": True,
@@ -57,14 +56,6 @@ CONFIG = {
                 "max_file_size_mb": 10,
             },
         },
-    },
-    "conversation": {
-        "persona": {
-            "text": "You are Kaam Ki Baat, a labour advisory helpline assistant."
-        },
-        "guardrail_reminders": [
-            "Do not discuss topics unrelated to employment or schemes."
-        ],
     },
 }
 

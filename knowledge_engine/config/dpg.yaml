@@ -5,12 +5,8 @@ server:
   port: 8001
 
 knowledge:
-  conversation:
-    max_history_turns: 10
-
   blocks:
     static_knowledge_base:
-      vector_store: chromadb
       embedding_provider: chroma_default  # options: chroma_default (free, no deps) | openai (paid, set OPENAI_API_KEY) | sentence_transformers (local, +2 GB image)
       # embedding_model: text-embedding-3-small  # only for openai provider; if changed, delete chroma volume and re-ingest
       top_k: 3
