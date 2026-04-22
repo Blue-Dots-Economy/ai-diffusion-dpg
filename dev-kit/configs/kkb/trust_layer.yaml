@@ -113,7 +113,7 @@ observability:
 
 # NEW (GH-137) — Pre-response dignity check for Conversational agents.
 # KKB is a Conversational agent; dignity_check MUST be enabled.
-# These 5 questions are evaluated by the LLM before every response via /assemble_constraints.
+# These 6 questions are evaluated by the LLM before every response via /assemble_constraints.
 dignity_check:
   enabled: true
   questions:

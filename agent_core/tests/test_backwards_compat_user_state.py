@@ -27,11 +27,11 @@ def _load_merged_domain_config(domain: str) -> dict:
     return merged
 
 
-def test_kkb_config_boots_without_user_state_model():
-    """KKB domain boots cleanly; user_state disabled by default."""
+def test_kkb_config_boots_with_user_state_model_enabled():
+    """KKB domain boots cleanly with user_state_model enabled (GH-139)."""
     cfg = _load_merged_domain_config("kkb")
     p = NLUProcessor(cfg)
-    assert p._user_state_enabled is False
+    assert p._user_state_enabled is True
 
 
 def test_farmer_friendly_boots_with_example_user_state():
