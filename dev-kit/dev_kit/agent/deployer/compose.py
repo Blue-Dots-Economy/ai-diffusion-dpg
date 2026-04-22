@@ -219,8 +219,10 @@ async def run_compose_up(
         # Internal service URLs — allow override when services run at non-default addresses
         if secrets.get("ke_internal_url"):
             env["KE_INTERNAL_URL"] = secrets["ke_internal_url"]
-        if secrets.get("ke_devkit_callback_url"):
-            env["KE_DEVKIT_CALLBACK_URL"] = secrets["ke_devkit_callback_url"]
+        # Always set KE_DEVKIT_CALLBACK_URL so the compose default (http://dev-kit:8080)
+        # is suppressed — the dev-kit service is excluded from local deploys.
+        # If empty, KE skips the callback and devkit polls for status instead.
+        env["KE_DEVKIT_CALLBACK_URL"] = secrets.get("ke_devkit_callback_url", "")
         # Azure Blob Storage — resolves ${VAR:-} placeholders in the compose file
         _azure = {
             "azure_storage_account": "AZURE_STORAGE_ACCOUNT",

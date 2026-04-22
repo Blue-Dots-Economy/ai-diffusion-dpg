@@ -718,9 +718,14 @@ def _apply_resources_to_compose(content: str, resources: dict) -> str:
         return content
 
     for block_name, res in resources.items():
-        if block_name not in compose["services"]:
+        # Presets use underscores (action_gateway); compose uses dashes (action-gateway).
+        compose_name = block_name.replace("_", "-")
+        # reach_layer maps to reach-layer-web in compose
+        if compose_name == "reach-layer":
+            compose_name = "reach-layer-web"
+        if compose_name not in compose["services"]:
             continue
-        svc = compose["services"][block_name]
+        svc = compose["services"][compose_name]
         limits = res.get("limits", {})
         if limits:
             # Convert K8s CPU (e.g. "500m") to Docker cpus (e.g. "0.5")
@@ -811,6 +816,7 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
         # Remove it if voice is not selected.
         if "voice" not in selected_channels:
             services_to_remove.add("ngrok")
+        services_to_remove.add("dev-kit")
 
         import yaml as _yaml
         compose_doc = _yaml.safe_load(content)
@@ -822,7 +828,7 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
                 continue
             svc = services[svc_name]
             svc.pop("container_name", None)
-            if svc_name == "action_gateway" and tool_secrets:
+            if svc_name == "action-gateway" and tool_secrets:
                 ag_env = svc.setdefault("environment", [])
                 for env_var in tool_secrets:
                     if tool_secrets[env_var]:
@@ -1083,6 +1089,9 @@ async def _run_docker_deploy(
         # Remove it if voice is not selected.
         if "voice" not in selected_channels:
             services_to_remove.add("ngrok")
+        # When deploying from the local dev-kit, exclude the Docker dev-kit service
+        # to avoid port 8080 conflicts. The local process handles the UI + ingest proxy.
+        services_to_remove.add("dev-kit")
 
         services = compose_doc.get("services", {})
         for svc_name in list(services.keys()):
@@ -1091,7 +1100,7 @@ async def _run_docker_deploy(
                 continue
             svc = services[svc_name]
             svc.pop("container_name", None)
-            if svc_name == "action_gateway" and tool_secrets:
+            if svc_name == "action-gateway" and tool_secrets:
                 env_list = svc.setdefault("environment", [])
                 for env_var, value in tool_secrets.items():
                     if value:
@@ -1316,28 +1325,47 @@ async def get_deploy_status(slug: str) -> dict:
     if not state:
         return {"services": [], "overall": "idle"}
 
-    # For completed/failed deployments, also try to get live status
-    if state.overall in ("complete", "failed"):
-        if state.target == "docker" and state.compose_file_path:
-            from dev_kit.agent.deployer.compose import get_compose_status
+    # For Docker deployments, always poll live container status so the UI
+    # gets real-time updates (compose up -d returns quickly but containers
+    # take time to become healthy).
+    # Compose service names use dashes; state keys use underscores.
+    _COMPOSE_TO_STATE = {
+        "action-gateway": "action_gateway",
+        "agent-core": "agent_core",
+        "knowledge-engine": "knowledge_engine",
+        "memory-layer": "memory_layer",
+        "trust-layer": "trust_layer",
+        "observability-layer": "observability_layer",
+        "reach-layer-web": "reach_layer",
+        "reach-layer-voice": "reach_layer",
+        "otelcol": "otel_collector",
+    }
+    if state.target == "docker" and state.compose_file_path:
+        from dev_kit.agent.deployer.compose import get_compose_status
 
-            containers = await get_compose_status(state.compose_file_path, project_name=f"dpg-{slug}")
-            if containers:
-                for c in containers:
-                    svc_name = c.get("Service", c.get("Name", ""))
-                    c_state = c.get("State", "")
-                    c_status = c.get("Status", "")
-                    if c_state == "running":
-                        status = "healthy" if "healthy" in c_status.lower() else "running"
-                    elif c_state == "exited":
-                        status = "failed"
-                    else:
-                        status = c_state
+        containers = await get_compose_status(state.compose_file_path, project_name=f"dpg-{slug}")
+        if containers:
+            for c in containers:
+                compose_name = c.get("Service", c.get("Name", ""))
+                svc_name = _COMPOSE_TO_STATE.get(compose_name, compose_name)
+                c_state = c.get("State", "")
+                c_status = c.get("Status", "")
+                if c_state == "running":
+                    status = "healthy" if "healthy" in c_status.lower() else "running"
+                elif c_state == "exited":
+                    status = "failed"
+                else:
+                    status = c_state
+                if svc_name in state.services:
                     state.set_service(svc_name, status)
-                statuses = {s["status"] for s in state.services.values()}
+            statuses = {s["status"] for s in state.services.values()}
+            if state.overall != "deploying":
                 state.overall = "failed" if "failed" in statuses else "complete"
+            elif all(s in ("healthy", "running") for s in statuses):
+                state.overall = "complete"
 
-        elif state.target == "kubernetes" and state.kubeconfig_path:
+    elif state.overall in ("complete", "failed"):
+        if state.target == "kubernetes" and state.kubeconfig_path:
             from dev_kit.agent.deployer.helm import get_pod_status
 
             pods = await get_pod_status(state.namespace, state.kubeconfig_path)

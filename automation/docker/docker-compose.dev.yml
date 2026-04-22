@@ -22,9 +22,8 @@
 # Paths in this file are relative to the docker-compose.yml location.
 # ../../ resolves to the repository root.
 #
-# Resource limits (local testing):
-#   All services: 0.1 CPU, 512 MB RAM
-#   Knowledge Engine (ingest + serve): 0.2 CPU, 512 MB RAM
+# No CPU/memory limits — local dev compose. Resource presets are applied at
+# deploy time by the dev-kit via _apply_resources_to_compose().
 
 services:
 
@@ -33,7 +32,7 @@ services:
   # ---------------------------------------------------------------------------
   action-gateway:
     image: sanketikahub/dpg-action-gateway:latest
-    pull_policy: always
+    pull_policy: if_not_present
     container_name: action-gateway
     environment:
       - CONFIG_FOLDER=/app/config
@@ -44,17 +43,12 @@ services:
       - ../../dev-kit/configs/${DOMAIN:-kkb}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
     networks:
       - dpg_net
-    deploy:
-      resources:
-        limits:
-          cpus: '0.1'
-          memory: 512M
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9999/health', timeout=3)"]
-      interval: 10s
-      timeout: 8s
-      retries: 3
-      start_period: 10s
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9999/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -62,7 +56,7 @@ services:
   # ---------------------------------------------------------------------------
   agent-core:
     image: sanketikahub/dpg-agent-core:latest
-    pull_policy: always
+    pull_policy: if_not_present
     container_name: agent-core
     environment:
       - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
@@ -72,28 +66,15 @@ services:
       - ../../dev-kit/configs/${DOMAIN:-kkb}/agent_core.yaml:/app/config/agent_core.yaml:ro
     networks:
       - dpg_net
-    deploy:
-      resources:
-        limits:
-          cpus: '0.1'
-          memory: 512M
     depends_on:
-      knowledge-engine:
-        condition: service_healthy
-      memory-layer:
-        condition: service_healthy
-      trust-layer:
-        condition: service_healthy
-      observability-layer:
-        condition: service_healthy
       action-gateway:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
-      interval: 10s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -101,7 +82,7 @@ services:
   # ---------------------------------------------------------------------------
   dev-kit:
     image: sanketikahub/dpg-dev-kit:latest
-    pull_policy: always
+    pull_policy: if_not_present
     container_name: dev-kit
     environment:
       - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
@@ -114,17 +95,12 @@ services:
       - "8080:8080"
     networks:
       - dpg_net
-    deploy:
-      resources:
-        limits:
-          cpus: '0.1'
-          memory: 512M
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/')\""]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -133,7 +109,7 @@ services:
   # ---------------------------------------------------------------------------
   knowledge-engine:
     image: sanketikahub/dpg-knowledge-engine:latest
-    pull_policy: always
+    pull_policy: if_not_present
     container_name: knowledge-engine
     environment:
       - CONFIG_FOLDER=/app/config
@@ -157,16 +133,11 @@ services:
       - kb_data:/data/kb                      # upload staging area for KB documents
     networks:
       - dpg_net
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 2G
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=3)"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=5)"]
       interval: 15s
-      timeout: 10s
-      retries: 5
+      timeout: 15s
+      retries: 10
       start_period: 180s
     restart: unless-stopped
 
@@ -175,7 +146,7 @@ services:
   # ---------------------------------------------------------------------------
   memory-layer:
     image: sanketikahub/dpg-memory-layer:latest
-    pull_policy: always
+    pull_policy: if_not_present
     container_name: memory-layer
     environment:
       - CONFIG_FOLDER=/app/config
@@ -193,17 +164,12 @@ services:
         condition: service_healthy
       memgraph:
         condition: service_healthy
-    deploy:
-      resources:
-        limits:
-          cpus: '0.1'
-          memory: 512M
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=3)"]
-      interval: 10s
-      timeout: 8s
-      retries: 3
-      start_period: 10s
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -211,7 +177,7 @@ services:
   # ---------------------------------------------------------------------------
   observability-layer:
     image: sanketikahub/dpg-observability-layer:latest
-    pull_policy: always
+    pull_policy: if_not_present
     container_name: observability-layer
     environment:
       - CONFIG_FOLDER=/app/config
@@ -220,17 +186,12 @@ services:
       - ../../dev-kit/configs/${DOMAIN:-kkb}/observability_layer.yaml:/app/config/observability_layer.yaml:ro
     networks:
       - dpg_net
-    deploy:
-      resources:
-        limits:
-          cpus: '0.1'
-          memory: 512M
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health', timeout=3)"]
-      interval: 10s
-      timeout: 8s
-      retries: 3
-      start_period: 10s
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -243,7 +204,7 @@ services:
   # ---------------------------------------------------------------------------
   reach-layer-web:
     image: sanketikahub/dpg-reach-layer-web:latest
-    pull_policy: always
+    pull_policy: if_not_present
     container_name: reach-layer-web
     environment:
       - CONFIG_FOLDER=/app/config
@@ -264,20 +225,15 @@ services:
       - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
     networks:
       - dpg_net
-    deploy:
-      resources:
-        limits:
-          cpus: '0.1'
-          memory: 512M
     depends_on:
       agent-core:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8005/health', timeout=3)"]
-      interval: 10s
-      timeout: 8s
-      retries: 3
-      start_period: 15s
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8005/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -288,7 +244,7 @@ services:
   # ---------------------------------------------------------------------------
   reach-layer-cli:
     image: sanketikahub/dpg-reach-layer-cli:latest
-    pull_policy: always
+    pull_policy: if_not_present
     container_name: reach-layer-cli
     volumes:
       # Unified Reach Layer config: DPG defaults + per-domain overrides.
@@ -313,7 +269,7 @@ services:
   # ---------------------------------------------------------------------------
   reach-layer-voice:
     image: sanketikahub/dpg-reach-layer-voice:latest
-    pull_policy: always
+    pull_policy: if_not_present
     container_name: reach-layer-voice
     environment:
       - DPG_CONFIG_PATH=/app/config/dpg.yaml
@@ -334,20 +290,15 @@ services:
       - "8006:8006"
     networks:
       - dpg_net
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 1G
     depends_on:
       agent-core:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8006/health')\""]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -355,7 +306,7 @@ services:
   # ---------------------------------------------------------------------------
   trust-layer:
     image: sanketikahub/dpg-trust-layer:latest
-    pull_policy: always
+    pull_policy: if_not_present
     container_name: trust-layer
     environment:
       - CONFIG_FOLDER=/app/config
@@ -364,17 +315,12 @@ services:
       - ../../dev-kit/configs/${DOMAIN:-kkb}/trust_layer.yaml:/app/config/trust_layer.yaml:ro
     networks:
       - dpg_net
-    deploy:
-      resources:
-        limits:
-          cpus: '0.1'
-          memory: 512M
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health', timeout=3)"]
-      interval: 10s
-      timeout: 8s
-      retries: 3
-      start_period: 10s
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -391,11 +337,6 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning
     networks:
       - dpg_net
-    deploy:
-      resources:
-        limits:
-          cpus: '0.1'
-          memory: 256M
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -409,11 +350,6 @@ services:
       - "14250:14250"   # gRPC from Collector
     networks:
       - dpg_net
-    deploy:
-      resources:
-        limits:
-          cpus: '0.1'
-          memory: 256M
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -426,11 +362,6 @@ services:
       - "3100:3100"
     networks:
       - dpg_net
-    deploy:
-      resources:
-        limits:
-          cpus: '0.1'
-          memory: 256M
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -450,11 +381,6 @@ services:
       - "3002:3000"
     networks:
       - dpg_net
-    deploy:
-      resources:
-        limits:
-          cpus: '0.1'
-          memory: 256M
     depends_on:
       memgraph:
         condition: service_healthy
@@ -472,11 +398,6 @@ services:
       - memgraph_data:/var/lib/memgraph
     networks:
       - dpg_net
-    deploy:
-      resources:
-        limits:
-          cpus: '0.2'
-          memory: 512M
     healthcheck:
       test: ["CMD-SHELL", "echo 'RETURN 1;' | mgconsole --host 127.0.0.1 --port 7687 2>/dev/null || exit 1"]
       interval: 15s
@@ -510,11 +431,6 @@ services:
       - "4040:4040"                          # ngrok local API / inspector UI
     networks:
       - dpg_net
-    deploy:
-      resources:
-        limits:
-          cpus: '0.1'
-          memory: 128M
     depends_on:
       reach-layer-voice:
         condition: service_healthy
@@ -535,17 +451,8 @@ services:
       - "8889:8889"   # Prometheus metrics scrape endpoint
     networks:
       - dpg_net
-    deploy:
-      resources:
-        limits:
-          cpus: '0.1'
-          memory: 256M
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133/"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 10s
+    # No healthcheck — the contrib image has no wget/curl.
+    # OTel collector is not a dependency for any DPG service.
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -562,11 +469,6 @@ services:
       - "9090:9090"
     networks:
       - dpg_net
-    deploy:
-      resources:
-        limits:
-          cpus: '0.1'
-          memory: 256M
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -577,11 +479,6 @@ services:
     container_name: redis
     networks:
       - dpg_net
-    deploy:
-      resources:
-        limits:
-          cpus: '0.1'
-          memory: 256M
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
