@@ -215,45 +215,59 @@ connectors:
   read:
     - name: onest_market_lookup
       description: >
-        Search the ONEST job network for live job listings matching the user's trade and location.
-        ALWAYS call this before presenting any job options, pay ranges, or market picture.
-        NEVER describe current job availability without calling this first — never use memory
-        or prior results as a substitute for a fresh call.
+        Search the ONEST job network for live job listings matching the user's
+        trade and location. ALWAYS call this before presenting any job options,
+        pay range, count, or market picture. NEVER describe current availability
+        from memory, prior options, summaries, or past conversations.
       input_schema:
         type: object
         properties:
           query_text:
             type: string
             description: >
-              Natural language search sentence in English describing what the user is looking for.
-              Always include location and trade. Keep to 1-2 sentences.
-              Examples: "electrician jobs in Hubballi with 15000 monthly salary",
-              "helper or warehouse jobs in Noida full-time day shift",
-              "ITI fitter mechanical jobs in Pune with immediate joining".
+              Natural English sentence paraphrasing exactly what the user is
+              looking for. ALWAYS include this parameter with a non-empty value.
+              Keep concise (1–2 sentences max). Examples:
+                "I am looking for electrician jobs in Hubballi with day shift
+                 and around 18 thousand in-hand salary."
+                "I have factory and fitting experience, please find stable
+                 day-shift jobs in Ghaziabad."
+                "Need helper or warehouse jobs in Noida, full-time, near my
+                 location."
+                "I can work as a delivery executive in Gurgaon, prefer on-site
+                 no-shift roles and salary above 20k."
+                "I am an ITI fitter, looking for mechanical or fitter jobs in
+                 Pune with immediate joining."
+                "Looking for CNC operator jobs in Bengaluru, I can work 8 hours
+                 and speak Hindi and Kannada."
+                "I need apprenticeship electrician jobs in Dharwad, fresher
+                 candidates accepted."
+                "Searching for security guard jobs in Hyderabad, night shift is
+                 okay and food/accommodation preferred."
           industry:
             type: string
             description: >
-              Broad industry category. Include only if clearly known.
-              Examples: Manufacturing, Electrical, Construction, Customer Facing, Logistics.
+              Broad industry category. Include only if clearly known, never
+              empty string. Examples: Manufacturing, Electrical, Construction,
+              Customer Facing, Logistics.
           age:
             type: integer
             description: "Candidate age in years. Include only if known from profile."
           languages:
             type: array
-            items:
-              type: string
+            items: {type: string}
             description: >
-              Languages the candidate speaks. Always capitalised. Include only if known.
-              Examples: ["Hindi"], ["Hindi", "Kannada"], ["English", "Hindi"].
+              Languages the candidate speaks. Always capitalised, never empty
+              array. Examples: ["Hindi"], ["Hindi", "Kannada"], ["English", "Hindi"].
           preferred_work_mode:
             type: array
             items:
               type: string
               enum: ["on-site-no-shift", "on-site-shifts", "remote", "hybrid"]
-            description: "Work preference. Include only if the user has stated a preference."
+            description: "Work preference. Include only if user has stated a preference."
           monthly_in_hand:
             type: integer
-            description: "Expected monthly in-hand salary in INR. Include only if stated by user."
+            description: "Expected monthly in-hand salary in INR. Number only, no ₹ symbol. Include only if stated."
           work_hours_per_day:
             type: integer
             description: "Preferred working hours per day. Include only if stated by user."
@@ -262,22 +276,48 @@ connectors:
         additionalProperties: false
       invocation_rules:
         call_when: >
-          The user is asking about current job availability, pay ranges, or specific openings
-          AND both location and trade_or_stream are known in the session profile.
+          The user is asking about current job availability, pay ranges,
+          specific openings, options, or "relevant work" in a specific
+          location + trade, AND both location and trade_or_stream are known
+          in the session profile. If both are known and the user asked about
+          actual work right now, this call is MANDATORY — no exceptions.
         required_before_calling:
           - location
           - trade_or_stream
         must_not_substitute: >
-          NEVER use session memory, prior search results, or assumed market knowledge as a
-          substitute for a fresh call. Always fetch live data when the user asks about
-          current opportunities, even if a search was already done this session.
+          NEVER use session memory, prior search results, previous
+          options_presented, last_conversation_summary, or assumed market
+          knowledge as a substitute for a fresh call. These may be used only
+          to determine likely location, likely trade, whether the user is
+          returning, and whether consent should be requested — never to
+          present jobs directly. Always fetch live data when the user asks
+          about current opportunities, even if a search was already done
+          this session.
+        exception_no_call: >
+          Do NOT call when: trade/role is not yet known, location is not yet
+          known, user is in Fog state without direction, user is asking about
+          future trends (not current jobs), or user is exploring broadly
+          without specifying work type.
         on_empty: >
           ठीक है, इस वक्त इस एरिया में verified listing नहीं मिली।
           यह market weak हो सकती है, या data अभी नहीं है।
-          कोई दूसरा angle देखें — थोड़ा wider radius, या adjacent trade?
+          चाहें तो wider radius, adjacent trade, या training path देख लेते हैं?
         on_failure: >
           अभी market data available नहीं है। थोड़ी देर में दोबारा try करते हैं।
-        bridge_line: "ठीक है, current picture देख लेती हूँ।"
+        bridge_line: "ठीक है, एक बार आपके एरिया का current picture देख लेती हूँ।"
+        ranking_order: ["match_score", "distance", "freshness", "positions"]
+        presentation_limit: 3
+        refinement_loop_max: 3
+        safety:
+          never_present:
+            - "is_active == false"
+            - "status != open"
+            - "positions == null or 0"
+          never_speak:
+            - "GPS coordinates"
+            - "hiring manager phone number"
+            - "internal IDs"
+            - "match_score"
 
   internal:
     - name: knowledge_retrieval
