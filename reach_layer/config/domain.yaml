@@ -67,5 +67,5 @@ reach_layer:
                                  # Hindi example:   "d6a002d0-230c-49b1-a137-b8a7d564b1ae" (Priyanka, hi)
       agent_core:
         timeout_ms: 15000        # Timeout for Agent Core responses during voice turns (ms).
-        greeting: ""             # Required for voice. First message spoken when voice session starts.
-        fallback_phrase: ""      # Required for voice. Spoken when STT fails or input is unintelligible.
+        fallback_phrase: ""      # Spoken when Agent Core call fails (timeout / 5xx / empty stream).
+        # Per-call welcome comes from agent_core's entry subagent opening_phrase (GH-149).
