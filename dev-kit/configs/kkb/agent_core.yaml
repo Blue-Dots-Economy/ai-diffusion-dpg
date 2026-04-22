@@ -74,27 +74,27 @@ channels:
         max_wait_ms: 5000
 
 conversation:
-  blocked_message: "Maafi kijiye, main is vishay mein madad nahi kar sakta."
-  escalation_message: "Main aapko ek counsellor se connect kar raha hoon jo aapki poori madad kar sakenge."
-  output_blocked_message: "Maafi kijiye, abhi jawab dene mein dikkat ho rahi hai. Kripya dobara poochein."
-  unknown_intent_message: "Maafi kijiye, main samajh nahi paya. Kripya dobara batayein."
+  blocked_message: "माफ़ कीजिए, मैं इस विषय में मदद नहीं कर सकती।"
+  escalation_message: "मैं आपको एक काउंसलर से कनेक्ट कर रही हूँ जो आपकी पूरी मदद कर सकेंगे।"
+  output_blocked_message: "माफ़ कीजिए, अभी जवाब देने में दिक्कत हो रही है। कृपया दोबारा पूछें।"
+  unknown_intent_message: "माफ़ कीजिए, मैं समझ नहीं पाई। कृपया दोबारा बताएँ।"
   # Termination message — the LLM translates this into the user's language automatically.
-  termination_message: "Shukriya! Aapki baat karke achha laga. Agar phir koi zaroorat ho toh zaroor aayein."
-  unsupported_language_message: "Maafi kijiye, abhi hum sirf Hindi, Kannada, English aur Hinglish mein baat kar sakte hain. Kripya Hindi ya English mein poochein."
+  termination_message: "शुक्रिया! आपसे बात करके अच्छा लगा। अगर फिर कोई ज़रूरत हो तो ज़रूर आएँ।"
+  unsupported_language_message: "माफ़ कीजिए, अभी हम सिर्फ़ हिंदी, कन्नड़, इंग्लिश और हिंग्लिश में बात कर सकते हैं। कृपया हिंदी या इंग्लिश में पूछें।"
 
   # Consent and profile flow messages — the LLM translates these into the user's language.
   consent_message: >
-    Namaskar! Kaam Ki Baat mein aapka swagat hai.
-    Hum aapki madad karne se pehle, ek baar poochhna chahte hain —
-    kya aap apni jaankari save karne ki anumati dete hain?
-    Isse agle baar aapko wahi sawaal nahi poochhe jaayenge.
-    Haan ya Nahi — dono theek hai.
+    नमस्कार! काम की बात में आपका स्वागत है।
+    हम आपकी मदद करने से पहले, एक बार पूछना चाहते हैं —
+    क्या आप अपनी जानकारी सेव करने की अनुमति देते हैं?
+    इससे अगली बार आपको वही सवाल नहीं पूछे जाएँगे।
+    हाँ या नहीं — दोनों ठीक है।
   consent_decline_ack: >
-    Theek hai, aapki privacy hum respect karte hain.
-    Aapki jaankari is session ke baad delete kar di jaayegi.
-    Ab chaliye aapki madad karte hain!
-  profile_complete_message: "Shukriya! Ab main aapke liye sahi kaam dhundh raha hoon..."
-  returning_user_greeting: "Namaskar! Aap wapas aa gaye. Chaliye dekhte hain aapke liye kya naya hai."
+    ठीक है, आपकी प्राइवेसी का हम सम्मान करते हैं।
+    आपकी जानकारी इस सेशन के बाद डिलीट कर दी जाएगी।
+    अब चलिए आपकी मदद करते हैं!
+  profile_complete_message: "शुक्रिया! अब मैं आपके लिए सही काम ढूँढ रही हूँ…"
+  returning_user_greeting: "नमस्कार! आप वापस आ गए। चलिए देखते हैं आपके लिए क्या नया है।"
 
   # NEW (GH-139) — Conversational agent user mental-state model.
   # KKB classifies callers into five states that shape tone, pacing, and detail level.
@@ -176,7 +176,7 @@ conversation:
       ## Session-end evaluation
       When the user clearly signals they want to end this conversation — by saying words like
       "shukriya", "theek hai bandh karo", "alvida", "phone rakh deti hoon", "phir milte hain",
-      "bas ho gaya", or when you have delivered a complete closing message ending with "Goodbye" —
+      "bas ho gaya", or when you have delivered a complete closing messages —
       call the `end_session` tool to cleanly close the session and save state for next time.
       Do NOT call end_session while the user still has open questions or is mid-journey.
     fail_action: "none"
@@ -427,7 +427,7 @@ entity_to_profile_field:
   distance_km: distance_km
 
 hitl:
-  response_message: "Hum ek counsellor se aapko connect karenge. Woh 24 ghante ke andar call karenge."
+  response_message: "हम एक काउंसलर से आपको कनेक्ट करेंगे। वो चौबीस घंटे के अंदर कॉल करेंगे।"
 
 agent_workflow:
   workflow_id: kkb_iti_graduate
