@@ -39,5 +39,8 @@ reach_layer:
         voice_id: ""                  # Voice ID for the TTS provider
       agent_core:
         timeout_ms: 15000
-        greeting: ""                  # first message spoken to the user when voice session starts
-        fallback_phrase: ""           # phrase spoken when STT fails or input is unintelligible
+        # The per-call welcome is emitted by Agent Core on SSE connect as the
+        # entry subagent's opening_phrase (see agent_core.yaml, GH-149). There
+        # is no static `greeting` field — do not add one here.
+        fallback_phrase: ""           # phrase spoken when the Agent Core call fails (timeout / 5xx / empty)
+        barge_in_acknowledgement: "" # brief ack spoken when the caller barges in; empty = bot falls silent

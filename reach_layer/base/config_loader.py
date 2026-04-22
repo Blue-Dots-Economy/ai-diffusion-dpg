@@ -220,6 +220,13 @@ def load_reach_config(
 
     merged = load_config(dpg_path, domain_path)
 
+    # Strict schema check on the full merged config — unknown keys, wrong
+    # types, or out-of-range values at any depth fail here at startup.
+    # Runs **before** legacy alias injection so the aliases are not
+    # subject to duplicate validation.
+    from .schema.config import MergedConfig
+    MergedConfig.validate_full(merged)
+
     reach_layer = merged.setdefault("reach_layer", {})
     channels = reach_layer.setdefault("channels", {})
     channel_cfg = channels.setdefault(channel_name, {})
