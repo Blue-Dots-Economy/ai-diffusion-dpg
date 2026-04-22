@@ -6,6 +6,10 @@
 agent:
   primary_model: ""             # required — Claude model ID for primary inference
   fallback_model: ""            # required — Claude model ID used if primary call fails
+  timeout_ms: 10000             # LLM call timeout in milliseconds
+  retry_attempts: 2             # number of retry attempts on transient failure before switching to fallback_model
+  retry_backoff_seconds: [0, 0.5, 1.0]  # per-attempt backoff
+  max_tool_rounds: 3            # max tool_use → LLM cycles per turn
   ask_for_consent: false        # true to ask new users for DPDP data-storage consent before saving anything
   consent_prompt: ""            # message shown when asking for consent (used when ask_for_consent is true)
 
@@ -53,14 +57,6 @@ channels:                         # NEW (GH-137) — per-channel LLM-facing conf
         silence_ms: 400
       max_wait_ceiling:
         max_wait_ms: 8000
-  chat:
-    system_prompt_suffix: ""
-    tts_rules: null
-    terminal_word: null
-    turn_assembler:
-      semantic_gate: {enabled: false, confidence_threshold: 0.75}
-      silence_trigger: {silence_ms: 0}
-      max_wait_ceiling: {max_wait_ms: 0}
   web:
     system_prompt_suffix: ""
     tts_rules: null
@@ -143,7 +139,6 @@ connectors:
 preprocessing:
   language_normalisation:
     model: ""                   # required — Claude model ID for language normalisation
-    provider: llm_native        # llm_native
     default_language: ""        # required — primary language e.g. english, hindi
     supported_languages: []     # required — e.g. [english, hindi, hinglish, kannada]
     min_detection_tokens: 3     # inputs with fewer tokens skip LLM detection; returns default_language
@@ -221,6 +216,10 @@ reach_layer:
     semantic_gate:
       enabled: true               # true = NLU gate active; improves VAD accuracy for voice
       confidence_threshold: 0.75  # minimum NLU confidence to accept an input segment
+    silence_trigger:
+      silence_ms: 400             # ms of silence before invoking (resets on each segment)
+    max_wait_ceiling:
+      max_wait_ms: 8000           # absolute max wait ms — never resets
 
 observability:
   domain: ""                      # required — set to project slug automatically; do not fill manually

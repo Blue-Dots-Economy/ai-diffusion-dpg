@@ -155,6 +155,11 @@ def _build_app():
     domain_config = _load_config(str(_domain_config_path("agent_core")))
     config = _deep_merge(dpg_config, domain_config)
 
+    # Strict schema check on the full merged config — unknown keys, wrong
+    # types, or out-of-range values at any depth fail here at startup.
+    from src.schema.config import MergedConfig
+    MergedConfig.validate_full(config)
+
     from dpg_telemetry import init_otel
     init_otel(service_name="agent_core", config=config)
 
