@@ -617,3 +617,111 @@ def test_run_turn_resets_session_ended_flag_each_turn():
     agent._session_ended_flag = True
     agent.run_turn(MESSAGES, SESSION_ID, initial)
     assert agent.session_ended is False
+
+
+# ── Layered tiers (GH-176) ────────────────────────────────────────────────
+# Contract:
+#   build_system_prompt returns list[dict] — Anthropic content blocks.
+#   Tier 1 (persona + channel_rules + session_end_policy) carries cache_control.
+#   Tier 2 (subagent + user_state_guidance) carries cache_control.
+#   Tier 3 (channel_context + resumption + known_profile + active_guardrails) no cache_control.
+#   Each populated section is wrapped in a single XML tag; empty inputs elide sections.
+
+
+def test_build_system_prompt_returns_list_of_dicts():
+    agent = _make_manager_for_prompt()
+    result = agent.build_system_prompt("Persona.", "Subagent.", "hindi", "cli", {})
+    assert isinstance(result, list)
+    assert all(isinstance(b, dict) and b.get("type") == "text" for b in result)
+
+
+def test_build_system_prompt_tier1_has_cache_control():
+    agent = _make_manager_for_prompt()
+    result = agent.build_system_prompt(
+        "Persona text.", "Subagent text.", "hindi", "cli", {},
+        channel_config={"system_prompt_suffix": "Voice rules."},
+        session_end_eval_prompt="End eval.",
+    )
+    tier1 = result[0]
+    assert tier1.get("cache_control") == {"type": "ephemeral"}
+    assert "<persona>" in tier1["text"]
+    assert "Persona text." in tier1["text"]
+    assert "<channel_rules>" in tier1["text"]
+    assert "Voice rules." in tier1["text"]
+    assert "<session_end_policy>" in tier1["text"]
+    assert "End eval." in tier1["text"]
+
+
+def test_build_system_prompt_tier2_has_cache_control():
+    agent = _make_manager_for_prompt()
+    result = agent.build_system_prompt(
+        "Persona.", "Subagent body.", "hindi", "cli", {},
+        user_state_guidance="User-state body.",
+    )
+    # tier 2 is second block when tier 1 is present
+    tier2 = result[1]
+    assert tier2.get("cache_control") == {"type": "ephemeral"}
+    assert "<subagent>" in tier2["text"]
+    assert "Subagent body." in tier2["text"]
+    assert "<user_state_guidance>" in tier2["text"]
+    assert "User-state body." in tier2["text"]
+
+
+def test_build_system_prompt_tier3_has_no_cache_control():
+    agent = _make_manager_for_prompt()
+    result = agent.build_system_prompt(
+        "P.", "S.", "hindi", "cli", {"name": "Rahul"},
+        guardrail_constraints={"prompt_constraints": ["Be honest."]},
+    )
+    # tier 3 is the last block; it exists because profile is non-empty
+    tier3 = result[-1]
+    assert "cache_control" not in tier3
+    assert "<known_profile>" in tier3["text"]
+    assert "Rahul" in tier3["text"]
+    assert "<active_guardrails>" in tier3["text"]
+    assert "Be honest." in tier3["text"]
+
+
+def test_build_system_prompt_elides_empty_sections():
+    agent = _make_manager_for_prompt()
+    # only persona — no channel suffix, no subagent, no profile, no guardrails
+    result = agent.build_system_prompt("Persona only.", "", "", "", {})
+    assert len(result) == 1  # only tier 1 with persona
+    assert "<channel_rules>" not in result[0]["text"]
+    assert "<session_end_policy>" not in result[0]["text"]
+
+
+def test_build_system_prompt_resumption_lives_in_tier3():
+    agent = _make_manager_for_prompt()
+    result = agent.build_system_prompt("P.", "S.", "hindi", "cli", {}, is_resumption=True)
+    tier3 = result[-1]
+    assert "cache_control" not in tier3
+    assert "<resumption>" in tier3["text"]
+
+
+def test_build_system_prompt_channel_context_lives_in_tier3():
+    agent = _make_manager_for_prompt()
+    result = agent.build_system_prompt("P.", "S.", "hindi", "cli", {})
+    tier3_text = result[-1]["text"]
+    assert "cache_control" not in result[-1]
+    assert "<channel_context>" in tier3_text
+    assert "cli" in tier3_text
+    assert "hindi" in tier3_text
+
+
+def test_build_system_prompt_xml_tags_are_balanced():
+    agent = _make_manager_for_prompt()
+    result = agent.build_system_prompt(
+        "P.", "S.", "hindi", "cli", {"name": "Rahul"},
+        channel_config={"system_prompt_suffix": "Voice."},
+        session_end_eval_prompt="End.",
+        user_state_guidance="State.",
+        is_resumption=True,
+        guardrail_constraints={"prompt_constraints": ["x"], "required_disclosures": ["y"]},
+    )
+    full_text = "\n".join(b["text"] for b in result)
+    for tag in ("persona", "channel_rules", "session_end_policy",
+                "subagent", "user_state_guidance",
+                "channel_context", "resumption", "known_profile", "active_guardrails"):
+        assert f"<{tag}>" in full_text, f"missing <{tag}>"
+        assert f"</{tag}>" in full_text, f"missing </{tag}>"
