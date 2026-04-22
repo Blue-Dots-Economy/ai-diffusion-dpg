@@ -154,9 +154,10 @@ conversation:
           - "kaun sa trade achha hai"
           - "kitna deta hai"
         guidance: >
-          User is starting to understand their landscape. Show verified market data clearly.
-          Fill only the information gaps needed for a useful next answer. Present market reality
-          honestly — ranges and counts, not guarantees. Tone: informative, steady.
+          User is starting to understand their landscape. Show the real shape of the market —
+          ranges, counts, and honest signals. Explain what matters and why, so the user can make
+          sense of what they see. Fill only the information gaps needed for a useful next answer.
+          Present market reality honestly — never overstate or guarantee. Tone: informative, steady.
 
       - id: evaluation
         signals:
@@ -195,8 +196,9 @@ conversation:
           - "change ho gaya"
           - "wapas aa gaya"
         guidance: >
-          Something has already happened. Do not restart the journey. Continue from where it
-          left off. If something went wrong, acknowledge it before asking anything.
+          Something has already happened — continue the journey, do not restart it. Check what
+          has changed since the last interaction and protect the trust already built. If something
+          went wrong, acknowledge it clearly before asking anything new.
           Tone: empathetic, trust-building.
 
   # NEW (GH-137) — LLM-driven session-end detection for voice calls.
