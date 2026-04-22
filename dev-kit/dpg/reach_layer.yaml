@@ -21,11 +21,11 @@ reach_layer:
   # Shared — inherited by all three channel services.
   # ---------------------------------------------------------------------------
   common:
-    agent-core_client:
-      endpoint: "http://agent-core:8000/process_turn"
+    agent_core_client:
+      endpoint: "http://agent_core:8000/process_turn"
       timeout_s: 30.0
-    memory-layer_client:
-      endpoint: "http://memory-layer:8002"
+    memory_layer_client:
+      endpoint: "http://memory_layer:8002"
       timeout_s: 10.0
     observability:
       otel:
@@ -105,8 +105,8 @@ reach_layer:
         # tune — too low clips slow transcripts, too high delays turn handoff.
         stt_ttfs_p99_latency: 1
         # language, voice_id are per-domain → dev-kit/configs/<domain>/
-      agent-core:
-        base_url: "http://agent-core:8000"
+      agent_core:
+        base_url: "http://agent_core:8000"
         timeout_ms: 5000
         # fallback_phrase is per-domain (spoken text) → dev-kit/configs/<domain>/
         # Spoken ONLY when the Agent Core call fails (timeout / 5xx / empty
