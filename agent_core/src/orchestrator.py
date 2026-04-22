@@ -388,6 +388,9 @@ class AgentCore(AgentCoreBase):
             if user_storage_mode is None and turn_count == 0:
                 # Turn 1: deliver consent prompt (translated to user's language),
                 # no LLM inference, no Trust Layer call.
+                # Stash the user's original message and its normalised form so the
+                # next turn can replay them after consent is evaluated — otherwise
+                # the user's first real input would be silently dropped.
                 consent_prompt_text: str = self._config.get("agent", {}).get("consent_prompt", "")
                 logger.info(
                     "orchestrator.consent_gate",
@@ -398,11 +401,31 @@ class AgentCore(AgentCoreBase):
                     },
                 )
                 self._write_memory_sync(session_id, user_id, "session", "turn_count", 1)
+                self._write_memory_sync(
+                    session_id, user_id, "session",
+                    "pending_user_message", turn_input.user_message,
+                )
+                self._write_memory_sync(
+                    session_id, user_id, "session",
+                    "pending_normalised_input", normalised_input or turn_input.user_message,
+                )
+                consent_response_text = self._translate_consent_message(consent_prompt_text, detected_language)
+                consent_latency_ms = int((time.time() - start) * 1000)
+                logger.info(
+                    "\n═══════════════════════════════════════════════════════════════\n"
+                    "  TURN COMPLETE  session=%s  intent=%s  tool_used=%s\n"
+                    "  model=%s  total_latency=%dms  next_subagent=%s\n"
+                    "  response: %r\n"
+                    "═══════════════════════════════════════════════════════════════",
+                    session_id, "consent_prompt", False,
+                    "none", consent_latency_ms, "consent_gate",
+                    consent_response_text.strip()[:200],
+                )
                 return TurnResult(
                     session_id=session_id,
                     turn_id=turn_id,
-                    response_text=self._translate_consent_message(consent_prompt_text, detected_language),
-                    latency_ms=int((time.time() - start) * 1000),
+                    response_text=consent_response_text,
+                    latency_ms=consent_latency_ms,
                 )
 
             if user_storage_mode is None and turn_count > 0:
@@ -421,6 +444,25 @@ class AgentCore(AgentCoreBase):
                 )
                 self._write_memory_sync(session_id, user_id, "session", "user_storage_mode", new_storage_mode)
                 bundle.session["user_storage_mode"] = new_storage_mode
+
+                # Replay the original first-turn message as this turn's real input
+                # so downstream NLU / routing / LLM act on the user's actual intent
+                # rather than on the word "yes"/"no".
+                pending_msg = bundle.session.get("pending_user_message") or ""
+                pending_norm = bundle.session.get("pending_normalised_input") or ""
+                if pending_msg:
+                    turn_input.user_message = pending_msg
+                    normalised_input = pending_norm or pending_msg
+                    self._write_memory_sync(session_id, user_id, "session", "pending_user_message", "")
+                    self._write_memory_sync(session_id, user_id, "session", "pending_normalised_input", "")
+                    logger.info(
+                        "orchestrator.consent_gate",
+                        extra={
+                            "operation": "orchestrator.consent_gate",
+                            "status": "pending_message_replayed",
+                            "session_id": session_id,
+                        },
+                    )
             # if user_storage_mode is set → fall through, skip consent gate entirely
 
         # ── Opening-phrase gate (Step 1c, GH-137) ────────────────────────
@@ -2228,15 +2270,38 @@ class AgentCore(AgentCoreBase):
                 if user_storage_mode is None and turn_count == 0:
                     # Turn 1: deliver consent prompt (translated to user's language),
                     # no LLM inference, no Trust Layer call.
+                    # Stash the user's original message + normalised form so the
+                    # next turn can replay them after consent is evaluated — otherwise
+                    # the user's first real input would be silently dropped.
                     consent_prompt_text: str = self._config.get("agent", {}).get("consent_prompt", "")
                     await self._async_memory.write(session_id, user_id, "session", "turn_count", 1)
+                    await self._async_memory.write(
+                        session_id, user_id, "session",
+                        "pending_user_message", turn_input.user_message,
+                    )
+                    await self._async_memory.write(
+                        session_id, user_id, "session",
+                        "pending_normalised_input", normalised_input or turn_input.user_message,
+                    )
+                    consent_response_text = self._translate_consent_message(consent_prompt_text, detected_language)
+                    consent_latency_ms = int((time.time() - start) * 1000)
+                    logger.info(
+                        "\n═══════════════════════════════════════════════════════════════\n"
+                        "  STREAM TURN COMPLETE  session=%s  intent=%s  tool_used=%s\n"
+                        "  model=%s  total_latency=%dms  next_subagent=%s\n"
+                        "  response: %r\n"
+                        "═══════════════════════════════════════════════════════════════",
+                        session_id, "consent_prompt", False,
+                        "none", consent_latency_ms, "consent_gate",
+                        consent_response_text.strip()[:200],
+                    )
                     yield SentenceEvent(
-                        text=self._translate_consent_message(consent_prompt_text, detected_language),
+                        text=consent_response_text,
                         sentence_index=0,
                     )
                     yield DoneEvent(
                         turn_id=turn_id,
-                        latency_ms=int((time.time() - start) * 1000),
+                        latency_ms=consent_latency_ms,
                     )
                     return
 
@@ -2245,6 +2310,38 @@ class AgentCore(AgentCoreBase):
                     new_storage_mode = "saved" if granted else "anonymous"
                     await self._async_memory.write(session_id, user_id, "session", "user_storage_mode", new_storage_mode)
                     bundle.session["user_storage_mode"] = new_storage_mode
+
+                    # Replay the stashed first-turn message as this turn's real
+                    # input. The parallel NLU above ran against the consent reply
+                    # ("yes"/"no"), so its result is stale — re-run NLU on the
+                    # pending message and reuse the stashed normalised form so we
+                    # don't pay a second lang-norm call.
+                    pending_msg = bundle.session.get("pending_user_message") or ""
+                    pending_norm = bundle.session.get("pending_normalised_input") or ""
+                    if pending_msg:
+                        turn_input.user_message = pending_msg
+                        normalised_input = pending_norm or pending_msg
+                        await self._async_memory.write(session_id, user_id, "session", "pending_user_message", "")
+                        await self._async_memory.write(session_id, user_id, "session", "pending_normalised_input", "")
+                        early_nlu_result = await asyncio.to_thread(
+                            self._nlu_processor.process,
+                            pending_msg,
+                            current_question,
+                            current_subagent_id,
+                            self._llm,
+                            pre_allowed_intents,
+                            pre_existing_profile_keys,
+                            pre_previous_user_state_id,
+                        )
+                        logger.info(
+                            "orchestrator.consent_gate",
+                            extra={
+                                "operation": "orchestrator.consent_gate",
+                                "status": "pending_message_replayed",
+                                "session_id": session_id,
+                                "replayed_intent": early_nlu_result.intent,
+                            },
+                        )
 
             # ── Step 2: Resolve current subagent ────────────────────────
             current_subagent: SubAgent = self._workflow.subagents[current_subagent_id]

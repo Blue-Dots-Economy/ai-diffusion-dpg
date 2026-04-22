@@ -24,7 +24,7 @@ ke_client:
   timeout_ms: 30000
 
 memory_client:
-  endpoint: "http://memory-layer:8002"
+  endpoint: "http://memory_layer:8002"
   timeout_ms: 3000
 
 trust_client:
