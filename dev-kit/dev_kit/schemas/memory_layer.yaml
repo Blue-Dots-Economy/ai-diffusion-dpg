@@ -52,6 +52,8 @@ user_data_persistence:
   default_mode: saved           # required — saved | anonymous (DPDP-compliant erasure on session end)
 
 reengagement:
+  # Scheduler is not yet implemented — tracked in GH-168. Config is validated
+  # at startup but no runtime code currently acts on these triggers.
   triggers:                     # optional — re-engagement messages after drop-off
     - event: ""                 # required — drop-off event code e.g. DOP_MT
       delay_hours: 24           # hours after event to send message (omit when using loop_threshold)
