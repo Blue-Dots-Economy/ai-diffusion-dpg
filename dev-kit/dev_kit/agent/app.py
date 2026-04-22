@@ -813,7 +813,6 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
                 continue
             svc = services[svc_name]
             svc.pop("container_name", None)
-            svc.pop("pull_policy", None)  # strip pull_policy so preview matches actual deploy
             if svc_name == "action_gateway" and tool_secrets:
                 ag_env = svc.setdefault("environment", [])
                 for env_var in tool_secrets:
@@ -1036,7 +1035,6 @@ async def _run_docker_deploy(
                 continue
             svc = services[svc_name]
             svc.pop("container_name", None)
-            svc.pop("pull_policy", None)  # use local image if present; avoid pulling stale Hub image
             if svc_name == "action_gateway" and tool_secrets:
                 env_list = svc.setdefault("environment", [])
                 for env_var, value in tool_secrets.items():
