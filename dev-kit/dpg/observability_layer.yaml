@@ -11,13 +11,17 @@ observability:
     sample_rate: 1.0
     export_interval_ms: 5000
   telemetry:
+    # pii_fields_excluded enforcement on OTel spans / logs is tracked in GH-104.
     pii_fields_excluded:
       - "user_message"
   audit:
+    # pii_fields_excluded enforcement is tracked in GH-104.
+    # retention_days sweep/cleanup is tracked in GH-161.
     pii_fields_excluded:
       - "user_message"
       - "user_id"
     retention_days: 90
   sli:
+    # SLI threshold enforcement (breach counters / alerts) is tracked in GH-160.
     turn_latency_p99_ms: 1200
     trust_block_rate_max: 0.05

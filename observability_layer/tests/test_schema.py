@@ -103,3 +103,80 @@ def test_sli_config_rejects_negative_latency():
     from schema.config import SLIConfig
     with pytest.raises(ValidationError):
         SLIConfig(turn_latency_p99_ms=-1)
+
+
+def test_merged_config_accepts_valid_full_config():
+    from schema.config import MergedConfig
+    cfg = MergedConfig.validate_full({
+        "server": {"host": "0.0.0.0", "port": 8004},
+        "observability": {"domain": "kkb"},
+    })
+    assert cfg.server.port == 8004
+    assert cfg.observability.domain == "kkb"
+
+
+def test_merged_config_rejects_unknown_top_level_key():
+    from schema.config import MergedConfig
+    with pytest.raises(ValidationError) as exc:
+        MergedConfig.validate_full({
+            "server": {"host": "0.0.0.0", "port": 8004},
+            "observability": {"domain": "kkb"},
+            "typo_section": {"foo": "bar"},
+        })
+    assert "typo_section" in str(exc.value)
+
+
+def test_merged_config_rejects_unknown_nested_key():
+    from schema.config import MergedConfig
+    with pytest.raises(ValidationError) as exc:
+        MergedConfig.validate_full({
+            "observability": {
+                "domain": "kkb",
+                "otel": {"collector_endpoint": "x", "sampl_rate": 0.5},  # typo
+            }
+        })
+    assert "sampl_rate" in str(exc.value)
+
+
+def test_merged_config_rejects_unknown_key_on_lifecycle_state():
+    from schema.config import MergedConfig
+    with pytest.raises(ValidationError) as exc:
+        MergedConfig.validate_full({
+            "observability": {
+                "outcomes": {
+                    "lifecycle": [
+                        {"state": "enquiry", "next_state": "applied"},  # extra key
+                    ],
+                }
+            }
+        })
+    assert "next_state" in str(exc.value)
+
+
+def test_merged_config_rejects_unknown_key_on_metric_definition():
+    from schema.config import MergedConfig
+    with pytest.raises(ValidationError) as exc:
+        MergedConfig.validate_full({
+            "observability": {
+                "outcomes": {
+                    "metrics": [
+                        {"name": "m", "instrument": "counter", "description": "d", "buckets": [1, 2]},
+                    ],
+                }
+            }
+        })
+    assert "buckets" in str(exc.value)
+
+
+def test_merged_config_rejects_none():
+    from schema.config import MergedConfig
+    with pytest.raises(TypeError):
+        MergedConfig.validate_full(None)
+
+
+def test_server_config_rejects_invalid_port():
+    from schema.config import ServerConfig
+    with pytest.raises(ValidationError):
+        ServerConfig(port=70000)
+    with pytest.raises(ValidationError):
+        ServerConfig(port=0)

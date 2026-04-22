@@ -35,7 +35,7 @@ if _SRC not in sys.path:
 
 from dpg_telemetry import init_otel
 from otel_observability_layer import OtelObservabilityLayer
-from schema.config import ObservabilityConfig
+from schema.config import MergedConfig, ObservabilityConfig
 from server import create_app
 
 logging.basicConfig(
@@ -129,6 +129,9 @@ def _build_app():
     domain_config = _load_config(str(_domain_config_path("observability_layer")))
     config = _deep_merge(dpg_config, domain_config)
 
+    # Strict schema check on the full merged config — unknown keys, wrong
+    # types, or out-of-range values at any depth fail here at startup.
+    MergedConfig.validate_full(config)
     obs_config = ObservabilityConfig.from_config(config)
     init_otel(service_name="observability_layer", config=config)
 
