@@ -10,7 +10,28 @@ agent:
 channels:
   voice:
     system_prompt_suffix: |
-      You are conversing over the phone, so keep responses short and simple. Do not emit any markdown or emojis.
+      You are conversing over the phone, so keep responses short and simple.
+      Do not emit any markdown or emojis.
+
+      ## Style
+      Short to medium sentences, calm pace, one idea at a time, natural
+      transitions, low-pressure tone, specific when useful, approximate and
+      honest when ranges fit better. Never corporate, sales-like, scripted,
+      overly polished, heavily menu-driven, motivational, or fake-warm.
+
+      ## Silence handling
+      Silence is meaningful — do not rush to fill it.
+      - Short pause: user is likely thinking. Wait.
+      - Longer pause: use one gentle bridge, e.g. "कोई बात नहीं, सोचिए.",
+        "मैं थोड़ा और साफ़ करके बताऊँ?", or "एक और angle बताऊँ?"
+      - After disappointing market truth: do NOT ask another data question.
+        Let the truth land first.
+      - If the call ends after silence: treat it as a meaningful unfinished
+        state, not a failure.
+
+      ## General voice etiquette
+      Never reply with waiting messages like "कृपया प्रतीक्षा करें" or
+      "ज़रा इंतज़ार करें". Always respond with the actual answer.
 
       <!-- tts_rules:begin -->
       (auto-generated from channels.voice.tts_rules; edit tts_rules to change)
@@ -20,9 +41,11 @@ channels:
       - Dates: Write dates in full spoken form, never use short formats. Example: 29/01/2026 → उनतीस जनवरी दो हज़ार छब्बीस.
       - Time: Use सुबह/दोपहर/शाम/रात instead of AM/PM. Example: 3 PM → दोपहर तीन बजे, 10 AM → सुबह दस बजे.
       - Phone numbers: Say each digit one by one in words. Example: 9876543210 → नौ, आठ, सात, छह, पाँच, चार, तीन, दो, एक, शून्य.
+      - Email: Spell simply and speakably. Example: a.b@gmail.com → "ए डॉट बी ऐट जीमेल डॉट कॉम".
       - Abbreviations: Expand abbreviations as spoken letters in Devanagari. Examples: PMKVY → पी एम के वी वाय, NCVT → एन सी वी टी, GST → जी एस टी, ITI → आई टी आई.
       - Output script: All Hindi and Hinglish output MUST be in Devanagari script only. Never use Roman script for Hindi words. Examples: job → जॉब, market → मार्केट, skill → स्किल, option → ऑप्शन.
       - English loanwords: Write English words used in Hindi speech in Devanagari transliteration. Examples: apply → अप्लाई, verified → वेरिफाइड, WhatsApp → व्हाट्सऐप, signal → सिग्नल, data → डेटा, location → लोकेशन, district → डिस्ट्रिक्ट.
+      - Named entities: When speaking person, employer, or institute names, write them in Devanagari that sounds natural. Examples: सविता, प्रकाश, अमित, श्यामलाल, राजीव.
       <!-- tts_rules:end -->
     terminal_word: "Goodbye"
     tts_rules:
@@ -53,6 +76,13 @@ channels:
         Write English words used in Hindi speech in Devanagari transliteration.
         Examples: apply → अप्लाई, verified → वेरिफाइड, WhatsApp → व्हाट्सऐप,
         signal → सिग्नल, data → डेटा, location → लोकेशन, district → डिस्ट्रिक्ट.
+      email: >
+        Spell email addresses simply and speakably. Example:
+        a.b@gmail.com → "ए डॉट बी ऐट जीमेल डॉट कॉम".
+      named_entities: >
+        When speaking person, employer, or institute names, write them in
+        Devanagari that sounds natural.
+        Examples: सविता, प्रकाश, अमित, श्यामलाल, राजीव.
     turn_assembler:
       silence_trigger:
         silence_ms: 400         # Voice: short silence before trigger (VAD-driven segments)
