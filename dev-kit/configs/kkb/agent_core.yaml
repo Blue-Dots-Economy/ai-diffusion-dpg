@@ -9,7 +9,21 @@ agent:
 
 channels:
   voice:
-    system_prompt_suffix: "1-2 chhote vakya bolein. Bullet points ya markdown mat use karein."
+    system_prompt_suffix: |
+      1-2 chhote vakya bolein. Bullet points ya markdown mat use karein.
+
+      <!-- tts_rules:begin -->
+      (auto-generated from channels.voice.tts_rules; edit tts_rules to change)
+      TTS formatting rules (voice channel):
+      - Numbers: Write all numbers in words in Devanagari. Never use digits in spoken output. Examples: 2 → दो, 350 → तीन सौ पचास, 24 → चौबीस, 48 → अड़तालीस.
+      - Money: Always speak monetary amounts in full words. Examples: ₹13,000–₹17,000 → तेरह हज़ार से सत्रह हज़ार, ₹500/day → पाँच सौ रुपये दिन का.
+      - Dates: Write dates in full spoken form, never use short formats. Example: 29/01/2026 → उनतीस जनवरी दो हज़ार छब्बीस.
+      - Time: Use सुबह/दोपहर/शाम/रात instead of AM/PM. Example: 3 PM → दोपहर तीन बजे, 10 AM → सुबह दस बजे.
+      - Phone numbers: Say each digit one by one in words. Example: 9876543210 → नौ, आठ, सात, छह, पाँच, चार, तीन, दो, एक, शून्य.
+      - Abbreviations: Expand abbreviations as spoken letters in Devanagari. Examples: PMKVY → पी एम के वी वाय, NCVT → एन सी वी टी, GST → जी एस टी, ITI → आई टी आई.
+      - Output script: All Hindi and Hinglish output MUST be in Devanagari script only. Never use Roman script for Hindi words. Examples: job → जॉब, market → मार्केट, skill → स्किल, option → ऑप्शन.
+      - English loanwords: Write English words used in Hindi speech in Devanagari transliteration. Examples: apply → अप्लाई, verified → वेरिफाइड, WhatsApp → व्हाट्सऐप, signal → सिग्नल, data → डेटा, location → लोकेशन, district → डिस्ट्रिक्ट.
+      <!-- tts_rules:end -->
     terminal_word: "Goodbye"
     tts_rules:
       numbers: >
