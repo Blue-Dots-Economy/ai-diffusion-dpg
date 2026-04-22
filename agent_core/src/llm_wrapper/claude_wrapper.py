@@ -220,7 +220,7 @@ class ClaudeLLMWrapper(LLMWrapperBase):
         self,
         messages: list[dict],
         tools: list[dict],
-        system: str,
+        system: str | list[dict],
         model_override: Optional[str] = None,
         output_format: Optional[dict] = None,
     ) -> LLMResponse:
@@ -229,7 +229,9 @@ class ClaudeLLMWrapper(LLMWrapperBase):
         Args:
             messages: List of message dicts with role and content.
             tools: List of tool definitions the LLM can call.
-            system: System prompt text.
+            system: System prompt. Accepts plain string (cached as one block if
+                ≥3000 chars) or list of Anthropic content blocks with explicit
+                `cache_control` markers.
             model_override: Optional model ID to override the active model.
             output_format: Optional structured output format dict for the response.
 
@@ -267,7 +269,7 @@ class ClaudeLLMWrapper(LLMWrapperBase):
         self,
         messages: list[dict],
         tools: list[dict] | None = None,
-        system: str | None = None,
+        system: str | list[dict] | None = None,
         model_override: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """Stream text tokens from the Anthropic API.
@@ -278,7 +280,9 @@ class ClaudeLLMWrapper(LLMWrapperBase):
         Args:
             messages: Conversation messages in Anthropic format.
             tools: Tool definitions. None or empty for no tools.
-            system: System prompt string.
+            system: System prompt. Accepts plain string (cached as one block if
+                ≥3000 chars) or list of Anthropic content blocks with explicit
+                `cache_control` markers.
             model_override: Optional model ID override.
 
         Yields:
@@ -318,7 +322,7 @@ class ClaudeLLMWrapper(LLMWrapperBase):
         model: str,
         messages: list[dict],
         tools: list[dict] | None,
-        system: str | None,
+        system: str | list[dict] | None,
     ) -> AsyncGenerator[str, None]:
         """Internal retry loop for streaming with exponential backoff.
 
@@ -326,7 +330,7 @@ class ClaudeLLMWrapper(LLMWrapperBase):
             model: Model ID to use.
             messages: Conversation messages.
             tools: Tool definitions.
-            system: System prompt.
+            system: System prompt or content blocks.
 
         Yields:
             str: Text tokens from the stream.
@@ -509,7 +513,7 @@ class ClaudeLLMWrapper(LLMWrapperBase):
         model: str,
         messages: list[dict],
         tools: list[dict],
-        system: str,
+        system: str | list[dict],
         output_format: Optional[dict] = None,
     ) -> LLMResponse:
         """Internal retry loop for a single LLM call with exponential backoff.
@@ -518,7 +522,7 @@ class ClaudeLLMWrapper(LLMWrapperBase):
             model: Model ID to use for this call.
             messages: List of message dicts with role and content.
             tools: List of tool definitions the LLM can call.
-            system: System prompt text.
+            system: System prompt or content blocks.
             output_format: Optional structured output format dict for the response.
 
         Returns:

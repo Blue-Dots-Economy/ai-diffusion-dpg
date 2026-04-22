@@ -20,7 +20,7 @@ class LLMWrapperBase(ABC):
         self,
         messages: list[dict],
         tools: list[dict],
-        system: str,
+        system: str | list[dict],
         model_override: Optional[str] = None,
     ) -> LLMResponse:
         """
@@ -29,7 +29,9 @@ class LLMWrapperBase(ABC):
         Args:
             messages:       Conversation messages in Anthropic format.
             tools:          Tool definitions to inject. Pass empty list if no tools.
-            system:         System prompt string. Currently passed as "" because Knowledge
+            system:         System prompt. Accepts plain string (cached as one block if
+                            ≥3000 chars) or list of Anthropic content blocks with explicit
+                            `cache_control` markers. Currently passed as "" because Knowledge
                             Engine embeds the system prompt inside messages. When Knowledge
                             Engine is fully implemented, pass the system prompt here instead.
             model_override: If provided, use this model instead of the active model.
@@ -45,7 +47,7 @@ class LLMWrapperBase(ABC):
         self,
         messages: list[dict],
         tools: list[dict] | None = None,
-        system: str | None = None,
+        system: str | list[dict] | None = None,
         model_override: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """Stream raw text tokens from the LLM.
@@ -60,7 +62,9 @@ class LLMWrapperBase(ABC):
         Args:
             messages:       Conversation messages in Anthropic format.
             tools:          Tool definitions to inject. None or empty for no tools.
-            system:         System prompt string.
+            system:         System prompt. Accepts plain string (cached as one block if
+                            ≥3000 chars) or list of Anthropic content blocks with explicit
+                            `cache_control` markers.
             model_override: If provided, use this model instead of the active model.
 
         Yields:
