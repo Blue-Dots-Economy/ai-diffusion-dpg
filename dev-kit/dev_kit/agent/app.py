@@ -798,8 +798,9 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
             for channel, svc_name in _CHANNEL_SERVICE.items()
             if channel not in selected_channels
         }
-        # ngrok depends_on reach_layer_web; remove it too if web is not selected.
-        if "web" not in selected_channels:
+        # ngrok depends_on reach_layer_voice (tunnels port 8006 for Vobiz webhooks).
+        # Remove it if voice is not selected.
+        if "voice" not in selected_channels:
             services_to_remove.add("ngrok")
 
         import yaml as _yaml
@@ -1023,8 +1024,9 @@ async def _run_docker_deploy(
             for channel, svc_name in _CHANNEL_SERVICE.items()
             if channel not in selected_channels
         }
-        # ngrok depends_on reach_layer_web; remove it too if web is not selected.
-        if "web" not in selected_channels:
+        # ngrok depends_on reach_layer_voice (tunnels port 8006 for Vobiz webhooks).
+        # Remove it if voice is not selected.
+        if "voice" not in selected_channels:
             services_to_remove.add("ngrok")
 
         services = compose_doc.get("services", {})
