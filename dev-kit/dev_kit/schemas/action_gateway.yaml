@@ -27,10 +27,11 @@ tools:
             required: false
             description: ""
             value: null
-            default: null
     response:
       max_size_chars: 4000
-      field_mapping:         # optional — if set, only these fields are sent to the LLM
+      # field_mapping is declared but not yet applied at runtime — entire responses
+      # are passed through today. Implementation tracked in GH-93.
+      field_mapping:         # optional — when wired, only these fields are sent to the LLM
         - source: ""         # JSONPath from response root, e.g. 'results[*].title' or 'data.name'
           target: ""         # field name the LLM sees, e.g. 'job_title'
           type: string       # string | integer | number | boolean | array | object
