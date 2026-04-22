@@ -79,7 +79,7 @@ class ManagerAgent:
         messages: list[dict],
         session_id: str,
         initial_llm_response: LLMResponse,
-        system: str = "",
+        system: str | list[dict] = "",
         active_tools: list[dict] | None = None,
         ke_context: dict | None = None,
     ) -> tuple[str, list[ToolCall], list[ToolResult]]:
