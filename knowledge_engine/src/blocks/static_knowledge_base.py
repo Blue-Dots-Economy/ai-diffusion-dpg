@@ -298,7 +298,7 @@ class StaticKnowledgeBaseBlock(KnowledgeBlock):
                 extra={
                     "operation": "static_kb.ingest_single",
                     "status": "dedup",
-                    "filename": file_path.name,
+                    "file_name": file_path.name,
                     "deleted_chunks": len(existing_ids),
                     "latency_ms": int((time.time() - start) * 1000),
                 },
@@ -316,7 +316,7 @@ class StaticKnowledgeBaseBlock(KnowledgeBlock):
             extra={
                 "operation": "static_kb.ingest_single",
                 "status": "success",
-                "filename": file_path.name,
+                "file_name": file_path.name,
                 "chunks_added": len(chunks),
                 "latency_ms": int((time.time() - start) * 1000),
             },

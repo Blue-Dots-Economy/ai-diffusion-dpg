@@ -22,8 +22,8 @@
 # Paths in this file are relative to the docker-compose.yml location.
 # ../../ resolves to the repository root.
 #
-# No CPU/memory limits — local dev compose. Resource presets are applied at
-# deploy time by the dev-kit via _apply_resources_to_compose().
+# Resource limits are minimal defaults for local dev. The dev-kit overrides
+# these at deploy time via _apply_resources_to_compose() when a preset is selected.
 
 services:
 
@@ -43,6 +43,11 @@ services:
       - ../../dev-kit/configs/${DOMAIN:-kkb}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
     networks:
       - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9999/health', timeout=5)"]
       interval: 15s
@@ -66,6 +71,11 @@ services:
       - ../../dev-kit/configs/${DOMAIN:-kkb}/agent_core.yaml:/app/config/agent_core.yaml:ro
     networks:
       - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
     depends_on:
       action-gateway:
         condition: service_healthy
@@ -95,6 +105,11 @@ services:
       - "8080:8080"
     networks:
       - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/')\""]
       interval: 15s
@@ -133,6 +148,11 @@ services:
       - kb_data:/data/kb                      # upload staging area for KB documents
     networks:
       - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=5)"]
       interval: 15s
@@ -164,6 +184,11 @@ services:
         condition: service_healthy
       memgraph:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=5)"]
       interval: 15s
@@ -186,6 +211,11 @@ services:
       - ../../dev-kit/configs/${DOMAIN:-kkb}/observability_layer.yaml:/app/config/observability_layer.yaml:ro
     networks:
       - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health', timeout=5)"]
       interval: 15s
@@ -225,6 +255,11 @@ services:
       - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
     networks:
       - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
     depends_on:
       agent-core:
         condition: service_healthy
@@ -290,6 +325,11 @@ services:
       - "8006:8006"
     networks:
       - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1G
     depends_on:
       agent-core:
         condition: service_healthy
@@ -315,6 +355,11 @@ services:
       - ../../dev-kit/configs/${DOMAIN:-kkb}/trust_layer.yaml:/app/config/trust_layer.yaml:ro
     networks:
       - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health', timeout=5)"]
       interval: 15s
@@ -337,6 +382,11 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning
     networks:
       - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -350,6 +400,11 @@ services:
       - "14250:14250"   # gRPC from Collector
     networks:
       - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -362,6 +417,11 @@ services:
       - "3100:3100"
     networks:
       - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -381,6 +441,11 @@ services:
       - "3002:3000"
     networks:
       - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
     depends_on:
       memgraph:
         condition: service_healthy
@@ -398,6 +463,11 @@ services:
       - memgraph_data:/var/lib/memgraph
     networks:
       - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
     healthcheck:
       test: ["CMD-SHELL", "echo 'RETURN 1;' | mgconsole --host 127.0.0.1 --port 7687 2>/dev/null || exit 1"]
       interval: 15s
@@ -431,6 +501,11 @@ services:
       - "4040:4040"                          # ngrok local API / inspector UI
     networks:
       - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
     depends_on:
       reach-layer-voice:
         condition: service_healthy
@@ -451,6 +526,11 @@ services:
       - "8889:8889"   # Prometheus metrics scrape endpoint
     networks:
       - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
     # No healthcheck — the contrib image has no wget/curl.
     # OTel collector is not a dependency for any DPG service.
     restart: unless-stopped
@@ -469,6 +549,11 @@ services:
       - "9090:9090"
     networks:
       - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -479,6 +564,11 @@ services:
     container_name: redis
     networks:
       - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
