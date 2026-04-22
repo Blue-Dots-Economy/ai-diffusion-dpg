@@ -32,7 +32,6 @@ from src.models import RetrievalChunk
 MINIMAL_CONFIG = {
     "server": {"host": "0.0.0.0", "port": 8001},
     "knowledge": {
-        "conversation": {"max_history_turns": 5},
         "blocks": {
             "glossary": {
                 "enabled": False,

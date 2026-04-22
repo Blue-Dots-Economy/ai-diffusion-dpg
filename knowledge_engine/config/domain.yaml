@@ -29,15 +29,9 @@ knowledge:
       enabled: false                # Set true if the agent accepts image inputs.
       image_model: ""               # Optional. Claude model ID for image understanding (when enabled).
 
-# Persona and language instructions injected into every LLM prompt by Knowledge Engine.
-conversation:
-  persona:
-    text: ""              # Required. System prompt persona text. Describes who the agent is
-                          # and how it should behave. Injected at the start of every LLM call.
-  language_instruction: ""  # Optional. Additional language/script instruction, e.g.
-                             # "Respond in Hindi using Devanagari script. Write numbers in words."
-  guardrail_reminders: []   # Optional. Safety reminders appended to the assembled prompt.
-                             # Example: ["MUST NOT guarantee job placement outcomes."]
+# NOTE: conversation.persona / language_instruction / guardrail_reminders are
+# owned by agent_core (the sole orchestrator and LLM caller). The Knowledge
+# Engine returns retrieval chunks only — do not duplicate those fields here.
 
 observability:
   domain: ""  # Required. Domain identifier (e.g. "kkb", "farmer_friendly").

@@ -16,6 +16,14 @@ knowledge:
       enabled: true
       collection_name: ""       # required — ChromaDB collection name for this domain
       chroma_persist_dir: ./data/chroma_db
+      top_k: 3                  # number of chunks to retrieve per query
+      similarity_threshold: 0.65  # minimum cosine similarity for a chunk to be returned (0.0–1.0)
+      embedding_provider: chroma_default   # chroma_default | openai | sentence_transformers
+      embedding_model: ""       # only for openai provider; if changed, delete chroma volume and re-ingest
+      default_doc_type: general # doc_type used at ingestion when a source does not declare one
+      metadata_filters:
+        use_location_filter: true   # narrow search to chunks matching the user's location entity
+        use_intent_filter: true     # narrow search to doc_types mapped to the detected intent
       sources:                  # required — one or more knowledge source files
         - path: ""              # required — relative path e.g. ./data/clinic_info.txt
           type: static          # required — static | always_include
@@ -26,14 +34,14 @@ knowledge:
           - doc_type_name       # replace with actual doc_type values
     multimodal_input_handler:
       enabled: false
+      supported_types: [pdf, image]   # input types accepted when enabled
+      audio_enabled: false            # reserved — audio input not yet wired at runtime
+      max_file_size_mb: 10            # reject uploads larger than this
       image_model: ""           # Claude model ID for image understanding (if enabled)
 
-conversation:
-  persona:
-    text: ""                    # required — system prompt persona text injected into every LLM call
-  language_instruction: ""      # optional — additional language/style instruction e.g. "Respond in Hindi"
-  guardrail_reminders:          # optional — safety reminders appended to the prompt
-    - ""
+# conversation.persona / language_instruction / guardrail_reminders are owned
+# by agent_core (the sole orchestrator and LLM caller). The Knowledge Engine
+# returns retrieval chunks only. Define those fields in agent_core.yaml, not here.
 
 observability:
   domain: ""                    # domain slug, e.g. kkb
