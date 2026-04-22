@@ -13,7 +13,12 @@ from src.models import ToolCall, ToolResult
 class AsyncActionGatewayBase(ABC):
 
     @abstractmethod
-    async def execute(self, tool_call: ToolCall, session_id: str) -> ToolResult:
+    async def execute(
+        self,
+        tool_call: ToolCall,
+        session_id: str,
+        user_id: str = "",
+    ) -> ToolResult:
         """Async version of ActionGatewayBase.execute(). See sync interface for full docs."""
 
     @abstractmethod

@@ -430,3 +430,4 @@ def test_write_emits_memory_write_span(mock_memory):
     assert write_span.attributes.get("db.system") == "redis"
 
     _reset_for_testing()
+

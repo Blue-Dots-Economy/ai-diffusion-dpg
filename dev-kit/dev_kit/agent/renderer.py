@@ -11,6 +11,7 @@ from pathlib import Path
 import yaml
 
 from dev_kit.agent.accumulator import BLOCKS, DRAFT_BLOCKS, ConfigAccumulator, ConfigStatus
+from dev_kit.agent.channel_tts import merge_voice_tts_into_suffix, strip_voice_tts_from_suffix
 from dev_kit.schema import validate_partial
 
 _DRAFT_HEADER = "# STATUS: draft — block template not yet finalized\n"
@@ -107,9 +108,11 @@ def render_block(project_path: Path, block: str, accumulator: ConfigAccumulator)
         accumulator.set_status(block, ConfigStatus.PENDING)
         return
 
-    # For agent_core, ensure NLU intents cover all workflow routing intents.
+    # For agent_core, ensure NLU intents cover all workflow routing intents
+    # and merge voice TTS rules into the system prompt suffix.
     if block == "agent_core":
         data = _sync_agent_core_intents(data)
+        data = merge_voice_tts_into_suffix(data)
 
     yaml_content = yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
@@ -147,4 +150,9 @@ def load_block_from_file(project_path: Path, block: str) -> dict:
     raw = path.read_text()
     # Strip comment lines (draft header)
     lines = [line for line in raw.splitlines() if not line.startswith("#")]
-    return yaml.safe_load("\n".join(lines)) or {}
+    parsed = yaml.safe_load("\n".join(lines)) or {}
+    # Reverse of render-time merge: keep the in-memory suffix free of the
+    # auto-generated TTS block so the author only sees prose they wrote.
+    if block == "agent_core" and isinstance(parsed, dict):
+        parsed = strip_voice_tts_from_suffix(parsed)
+    return parsed

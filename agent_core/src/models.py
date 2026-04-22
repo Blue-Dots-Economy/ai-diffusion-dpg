@@ -199,6 +199,10 @@ class LLMResponse:
     model_used: str                   = ""
     input_tokens: int                 = 0
     output_tokens: int                = 0
+    # Anthropic prompt-caching telemetry (GH-151 #1). Zero when caching is
+    # disabled or the system prompt is below Anthropic's caching threshold.
+    cache_read_input_tokens: int      = 0
+    cache_creation_input_tokens: int  = 0
 
 
 # ---------------------------------------------------------------------------

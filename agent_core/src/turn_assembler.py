@@ -52,6 +52,7 @@ from src.models import (
     ContextBundle,
     DoneEvent,
     SegmentInput,
+    SentenceEvent,
     StreamEvent,
     TurnInput,
 )
@@ -144,11 +145,17 @@ class TurnAssemblerBase(ABC):
         """
 
     @abstractmethod
-    async def subscribe(self, session_id: str) -> AsyncGenerator[StreamEvent, None]:
+    async def subscribe(
+        self, session_id: str, user_id: str | None = None
+    ) -> AsyncGenerator[StreamEvent, None]:
         """Yield StreamEvents for this session until DoneEvent is received.
 
         Args:
             session_id: Unique session identifier.
+            user_id: Optional user identifier. When provided on the first
+                connect for a new session, triggers proactive emission of
+                the entry subagent's opening_phrase (GH-149) before the
+                event-drain loop begins.
 
         Yields:
             StreamEvent instances from the invocation pipeline.
@@ -372,11 +379,19 @@ class TurnAssembler(TurnAssemblerBase):
         channel_config = self._resolve_config(buffer.channel)
         await self._evaluate_policies(session_id, buffer, channel_config)
 
-    async def subscribe(self, session_id: str) -> AsyncGenerator[StreamEvent, None]:
+    async def subscribe(
+        self, session_id: str, user_id: str | None = None
+    ) -> AsyncGenerator[StreamEvent, None]:
         """Yield StreamEvents from the session's event queue until DoneEvent.
 
         Creates a buffer if one doesn't exist yet (subscribe can be called before
         the first segment arrives — the SSE connection opens at session start).
+
+        When ``user_id`` is supplied and the session has no ``opening_phrase_emitted``
+        flag in Memory Layer, pushes the entry subagent's opening_phrase as a
+        SentenceEvent + DoneEvent pair onto the event queue before the drain loop
+        begins (GH-149). The flag is persisted before events are enqueued so the
+        orchestrator's first-turn gate won't re-emit on the next user turn.
 
         After DoneEvent is yielded, the buffer is reset to WAITING for the next
         turn in the same session. This supports multi-turn sessions over a single
@@ -384,6 +399,9 @@ class TurnAssembler(TurnAssemblerBase):
 
         Args:
             session_id: Unique session identifier.
+            user_id: Optional user identifier. Required for the proactive
+                opening_phrase emission path; when None the emission is skipped
+                (back-compat for callers that don't supply it).
 
         Yields:
             StreamEvent instances until DoneEvent is received.
@@ -396,6 +414,12 @@ class TurnAssembler(TurnAssemblerBase):
 
         buffer = self._sessions[session_id]
 
+        # GH-149: proactively emit the entry subagent's opening_phrase on the
+        # first SSE connect for a brand-new session, so voice/cli/web channels
+        # don't need their own static greeting. Idempotent across reconnects
+        # via the persisted session.opening_phrase_emitted flag.
+        await self._emit_opening_phrase_if_first(session_id, user_id, buffer)
+
         while True:
             event = await buffer.event_queue.get()
             yield event
@@ -405,31 +429,148 @@ class TurnAssembler(TurnAssemblerBase):
                 # connection per session; session_end() handles full cleanup.
                 if session_id in self._sessions:
                     pending = list(buffer.pending_segments)
-                    # Only carry forward interrupted segments on barge-in.
-                    # For COMPLETED or ABANDONED turns, segments were already
-                    # processed (or intentionally dropped) — don't replay them.
-                    # For INTERRUPTED: the LLM never saw those segments; carry
-                    # them forward so assembled_text = original + correction.
-                    # e.g. "मुझे जॉब चाहिए" + "wait wait that is not correct"
-                    interrupted_segments = []
-                    if event.turn_status == "interrupted":
-                        # buffer.segments stores plain strings; wrap back as
-                        # SegmentInput using the buffer's cached metadata.
-                        interrupted_segments = [
-                            SegmentInput(
-                                text=seg,
-                                channel=buffer.channel,
-                                user_id=buffer.user_id,
-                                timestamp_ms=buffer.first_timestamp_ms,
-                            )
-                            for seg in buffer.segments
-                        ]
+                    # GH-152 Phase 2: on INTERRUPTED, discard the original
+                    # segments. An "interrupted" status only fires when the
+                    # user barges in during INVOKED state — the LLM was
+                    # already running on the original input and has produced
+                    # (partial) output the user is now reacting to. Replaying
+                    # the original alongside the correction produces noisy
+                    # prompts like "I want electrician jobs wait that's wrong,
+                    # I said plumber" that mislead NLU / routing. The
+                    # user-visible contract is "whatever you say during bot
+                    # TTS replaces, not extends, your prior turn."
+                    #
+                    # For COMPLETED or ABANDONED turns we also don't replay —
+                    # COMPLETED processed all segments, ABANDONED dropped
+                    # them on purpose.
+                    if (
+                        event.turn_status == "interrupted"
+                        and buffer.segments
+                    ):
+                        logger.info(
+                            "turn_assembler.barge_in_discarded_segments",
+                            extra={
+                                "operation": "turn_assembler.subscribe",
+                                "status": "success",
+                                "session_id": session_id,
+                                "discarded_count": len(buffer.segments),
+                                "pending_count": len(pending),
+                            },
+                        )
                     self._reset_buffer(buffer)
-                    # Replay: original (interrupted) segments first, then
-                    # barge-in segments, so the new assembled_text preserves
-                    # the full conversational context.
-                    for seg in interrupted_segments + pending:
+                    # Replay only the barge-in (pending) segments.
+                    for seg in pending:
                         await self.add_segment(session_id, seg)
+
+    async def _emit_opening_phrase_if_first(
+        self,
+        session_id: str,
+        user_id: str | None,
+        buffer: SessionBuffer,
+    ) -> None:
+        """Push the entry subagent's opening_phrase onto the session queue once.
+
+        Runs at SSE subscribe time so session-mode channels receive the
+        welcome utterance without waiting for the user to speak first
+        (GH-149). Gated on the persisted ``session.opening_phrase_emitted``
+        flag so reconnects don't re-emit, and so the orchestrator's
+        first-turn gate (`orchestrator.py`) skips once the flag is set.
+
+        No-ops when ``user_id`` is None, when workflow/async_memory are not
+        wired, when the flag is already set, or when the start subagent's
+        opening_phrase is empty. Memory write is awaited *before* events
+        are pushed to keep the flag durable by the time the channel plays
+        the utterance.
+
+        Does not run a Trust Layer output check — the phrase is
+        config-authored text, not LLM output. This mirrors the orchestrator's
+        existing short-circuit for opening_phrase emissions.
+
+        Args:
+            session_id: Unique session identifier.
+            user_id: User identifier; required to read and write session state.
+            buffer: Session buffer whose event_queue receives the events.
+        """
+        if not user_id:
+            return
+        if self._workflow is None or self._async_memory is None:
+            return
+
+        try:
+            bundle = await self._async_memory.context_bundle(session_id, user_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "turn_assembler.opening_phrase_context_bundle_failed",
+                extra={
+                    "operation": "turn_assembler._emit_opening_phrase_if_first",
+                    "status": "skipped",
+                    "session_id": session_id,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
+            return
+
+        if bundle.session.get("opening_phrase_emitted"):
+            return
+
+        # Prefer any subagent already persisted on the session; otherwise
+        # fall back to the workflow's declared start subagent.
+        current_subagent_id = (
+            bundle.session.get("current_subagent_id")
+            or getattr(self._workflow, "start_subagent_id", "")
+        )
+        if not current_subagent_id:
+            return
+
+        subagent = getattr(self._workflow, "subagents", {}).get(current_subagent_id)
+        opening_phrase = (getattr(subagent, "opening_phrase", "") or "").strip()
+
+        # Always set the flag first so a fast user turn can't race the orchestrator
+        # gate into re-emitting the same phrase. Write completes before any events
+        # are enqueued.
+        try:
+            await self._async_memory.write(
+                session_id, user_id, "session", "opening_phrase_emitted", True
+            )
+            await self._async_memory.write(
+                session_id, user_id, "session", "current_subagent_id", current_subagent_id
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "turn_assembler.opening_phrase_flag_write_failed",
+                extra={
+                    "operation": "turn_assembler._emit_opening_phrase_if_first",
+                    "status": "skipped",
+                    "session_id": session_id,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
+            return
+
+        if not opening_phrase:
+            logger.info(
+                "turn_assembler.opening_phrase_empty",
+                extra={
+                    "operation": "turn_assembler._emit_opening_phrase_if_first",
+                    "status": "skipped",
+                    "session_id": session_id,
+                    "subagent_id": current_subagent_id,
+                },
+            )
+            return
+
+        await buffer.event_queue.put(SentenceEvent(text=opening_phrase, sentence_index=0))
+        await buffer.event_queue.put(DoneEvent(turn_status="completed"))
+
+        logger.info(
+            "turn_assembler.opening_phrase_emitted",
+            extra={
+                "operation": "turn_assembler._emit_opening_phrase_if_first",
+                "status": "emitted",
+                "session_id": session_id,
+                "subagent_id": current_subagent_id,
+            },
+        )
 
     async def cancel(self, session_id: str) -> None:
         """Interrupt the active or waiting turn for this session.

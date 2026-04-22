@@ -11,10 +11,8 @@ agent:
   retry_backoff_seconds: [0, 0.5, 1.0]
   max_tool_rounds: 3
 
-conversation:
-  max_turns: 20
-  # blocked_message, escalation_message, output_blocked_message are domain-specific
-  # persona text — they must be set in domain.yaml, not here.
+# conversation.* is domain-specific (blocked_message, escalation_message,
+# output_blocked_message, persona text). All fields must be set in domain.yaml.
 
 # Default service client endpoints (localhost for local dev).
 # Override in domain.yaml or deployment config for staging/production.
@@ -52,7 +50,7 @@ reach_layer:
       silence_ms: 400            # ms of silence before invoking (resets on each segment)
     max_wait_ceiling:
       max_wait_ms: 8000          # Absolute max wait ms — never resets
-  channels: {}                   # Per-channel overrides set in domain config
+  # Per-channel turn_assembler overrides live under top-level `channels.<name>`, not here.
 
 # Observability — OTel collector endpoint for trace/metric export.
 observability:

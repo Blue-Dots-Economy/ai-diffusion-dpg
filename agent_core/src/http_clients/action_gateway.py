@@ -83,12 +83,19 @@ class ActionGatewayHttpClient(ActionGatewayBase):
         """
         return self._tool_definitions
 
-    def execute(self, tool_call: ToolCall, session_id: str) -> ToolResult:
+    def execute(
+        self,
+        tool_call: ToolCall,
+        session_id: str,
+        user_id: str = "",
+    ) -> ToolResult:
         """Execute a single tool call via POST /execute.
 
         Args:
             tool_call: The tool call to execute.
             session_id: Current session identifier for routing context.
+            user_id: Stable user ID (E.164 for voice). Forwarded to Action
+                Gateway for path-templated tools like ``get_profile``.
 
         Returns:
             ToolResult with success/failure status and result data.
@@ -107,6 +114,7 @@ class ActionGatewayHttpClient(ActionGatewayBase):
                     "tool_use_id": tool_call.tool_use_id,
                     "input_params": tool_call.input_params,
                     "session_id": session_id,
+                    "user_id": user_id,
                 },
                 timeout=self._timeout_s,
             )

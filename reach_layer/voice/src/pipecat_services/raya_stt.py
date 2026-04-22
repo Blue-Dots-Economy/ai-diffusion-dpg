@@ -54,9 +54,12 @@ class RayaSTTService(STTServiceBase, SegmentedSTTService):
         self._stt_url = stt_url
         self._language = raya_cfg.get("stt_language") or raya_cfg.get("language", "hi")
         self._timeout = float(raya_cfg.get("stt_timeout_s", 30.0))
+        ttfs_raw = raya_cfg.get("stt_ttfs_p99_latency")
+        ttfs_p99_latency = float(ttfs_raw) if ttfs_raw is not None else None
         SegmentedSTTService.__init__(
             self,
             sample_rate=8000,
+            ttfs_p99_latency=ttfs_p99_latency,
             settings=STTSettings(model=None, language=self._language),
         )
 

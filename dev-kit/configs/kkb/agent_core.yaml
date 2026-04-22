@@ -5,11 +5,25 @@ agent:
   primary_model: claude-haiku-4-5-20251001
   fallback_model: claude-haiku-4-5-20251001
   ask_for_consent: true
-  consent_prompt: "Namaste! Kya main aapki trade aur location yaad rakh sakta hoon? Isse agle baar aapko dobara batana nahi padega."
+  consent_prompt: "नमस्ते! क्या मैं आपकी ट्रेड और लोकेशन याद रख सकती हूँ? इससे अगली बार आपको दोबारा बताना नहीं पड़ेगा।"
 
 channels:
   voice:
-    system_prompt_suffix: "1-2 chhote vakya bolein. Bullet points ya markdown mat use karein."
+    system_prompt_suffix: |
+      You are conversing over the phone, so keep responses short and simple. Do not emit any markdown or emojis.
+
+      <!-- tts_rules:begin -->
+      (auto-generated from channels.voice.tts_rules; edit tts_rules to change)
+      TTS formatting rules (voice channel):
+      - Numbers: Write all numbers in words in Devanagari. Never use digits in spoken output. Examples: 2 → दो, 350 → तीन सौ पचास, 24 → चौबीस, 48 → अड़तालीस.
+      - Money: Always speak monetary amounts in full words. Examples: ₹13,000–₹17,000 → तेरह हज़ार से सत्रह हज़ार, ₹500/day → पाँच सौ रुपये दिन का.
+      - Dates: Write dates in full spoken form, never use short formats. Example: 29/01/2026 → उनतीस जनवरी दो हज़ार छब्बीस.
+      - Time: Use सुबह/दोपहर/शाम/रात instead of AM/PM. Example: 3 PM → दोपहर तीन बजे, 10 AM → सुबह दस बजे.
+      - Phone numbers: Say each digit one by one in words. Example: 9876543210 → नौ, आठ, सात, छह, पाँच, चार, तीन, दो, एक, शून्य.
+      - Abbreviations: Expand abbreviations as spoken letters in Devanagari. Examples: PMKVY → पी एम के वी वाय, NCVT → एन सी वी टी, GST → जी एस टी, ITI → आई टी आई.
+      - Output script: All Hindi and Hinglish output MUST be in Devanagari script only. Never use Roman script for Hindi words. Examples: job → जॉब, market → मार्केट, skill → स्किल, option → ऑप्शन.
+      - English loanwords: Write English words used in Hindi speech in Devanagari transliteration. Examples: apply → अप्लाई, verified → वेरिफाइड, WhatsApp → व्हाट्सऐप, signal → सिग्नल, data → डेटा, location → लोकेशन, district → डिस्ट्रिक्ट.
+      <!-- tts_rules:end -->
     terminal_word: "Goodbye"
     tts_rules:
       numbers: >
@@ -60,27 +74,27 @@ channels:
         max_wait_ms: 5000
 
 conversation:
-  blocked_message: "Maafi kijiye, main is vishay mein madad nahi kar sakta."
-  escalation_message: "Main aapko ek counsellor se connect kar raha hoon jo aapki poori madad kar sakenge."
-  output_blocked_message: "Maafi kijiye, abhi jawab dene mein dikkat ho rahi hai. Kripya dobara poochein."
-  unknown_intent_message: "Maafi kijiye, main samajh nahi paya. Kripya dobara batayein."
+  blocked_message: "माफ़ कीजिए, मैं इस विषय में मदद नहीं कर सकती।"
+  escalation_message: "मैं आपको एक काउंसलर से कनेक्ट कर रही हूँ जो आपकी पूरी मदद कर सकेंगे।"
+  output_blocked_message: "माफ़ कीजिए, अभी जवाब देने में दिक्कत हो रही है। कृपया दोबारा पूछें।"
+  unknown_intent_message: "माफ़ कीजिए, मैं समझ नहीं पाई। कृपया दोबारा बताएँ।"
   # Termination message — the LLM translates this into the user's language automatically.
-  termination_message: "Shukriya! Aapki baat karke achha laga. Agar phir koi zaroorat ho toh zaroor aayein."
-  unsupported_language_message: "Maafi kijiye, abhi hum sirf Hindi, Kannada, English aur Hinglish mein baat kar sakte hain. Kripya Hindi ya English mein poochein."
+  termination_message: "शुक्रिया! आपसे बात करके अच्छा लगा। अगर फिर कोई ज़रूरत हो तो ज़रूर आएँ।"
+  unsupported_language_message: "माफ़ कीजिए, अभी हम सिर्फ़ हिंदी, कन्नड़, इंग्लिश और हिंग्लिश में बात कर सकते हैं। कृपया हिंदी या इंग्लिश में पूछें।"
 
   # Consent and profile flow messages — the LLM translates these into the user's language.
   consent_message: >
-    Namaskar! Kaam Ki Baat mein aapka swagat hai.
-    Hum aapki madad karne se pehle, ek baar poochhna chahte hain —
-    kya aap apni jaankari save karne ki anumati dete hain?
-    Isse agle baar aapko wahi sawaal nahi poochhe jaayenge.
-    Haan ya Nahi — dono theek hai.
+    नमस्कार! काम की बात में आपका स्वागत है।
+    हम आपकी मदद करने से पहले, एक बार पूछना चाहते हैं —
+    क्या आप अपनी जानकारी सेव करने की अनुमति देते हैं?
+    इससे अगली बार आपको वही सवाल नहीं पूछे जाएँगे।
+    हाँ या नहीं — दोनों ठीक है।
   consent_decline_ack: >
-    Theek hai, aapki privacy hum respect karte hain.
-    Aapki jaankari is session ke baad delete kar di jaayegi.
-    Ab chaliye aapki madad karte hain!
-  profile_complete_message: "Shukriya! Ab main aapke liye sahi kaam dhundh raha hoon..."
-  returning_user_greeting: "Namaskar! Aap wapas aa gaye. Chaliye dekhte hain aapke liye kya naya hai."
+    ठीक है, आपकी प्राइवेसी का हम सम्मान करते हैं।
+    आपकी जानकारी इस सेशन के बाद डिलीट कर दी जाएगी।
+    अब चलिए आपकी मदद करते हैं!
+  profile_complete_message: "शुक्रिया! अब मैं आपके लिए सही काम ढूँढ रही हूँ…"
+  returning_user_greeting: "नमस्कार! आप वापस आ गए। चलिए देखते हैं आपके लिए क्या नया है।"
 
   # NEW (GH-139) — Conversational agent user mental-state model.
   # KKB classifies callers into five states that shape tone, pacing, and detail level.
@@ -162,7 +176,7 @@ conversation:
       ## Session-end evaluation
       When the user clearly signals they want to end this conversation — by saying words like
       "shukriya", "theek hai bandh karo", "alvida", "phone rakh deti hoon", "phir milte hain",
-      "bas ho gaya", or when you have delivered a complete closing message ending with "Goodbye" —
+      "bas ho gaya", or when you have delivered a complete closing messages —
       call the `end_session` tool to cleanly close the session and save state for next time.
       Do NOT call end_session while the user still has open questions or is mid-journey.
     fail_action: "none"
@@ -275,14 +289,19 @@ connectors:
 preprocessing:
   language_normalisation:
     model: claude-haiku-4-5-20251001
-    provider: llm_native
     default_language: hindi
     supported_languages: [hindi, kannada, english, hinglish]
     transliteration: true
     code_switching: true
 
   nlu_processor:
-    model: claude-haiku-4-5-20251001
+    # GH-151 follow-up: moved from Haiku-4.5 to Sonnet-4.6 so prompt caching
+    # actually triggers. Haiku requires ~2048 cacheable tokens to start
+    # caching; the KKB NLU system prompt is ~1100 tokens, so on Haiku every
+    # call was a cold read (~1.8 s). Sonnet's 1024-token minimum means the
+    # same prompt is cached from turn 2 onward, dropping NLU latency to
+    # ~500–800 ms once warm.
+    model: claude-sonnet-4-6
     confidence_threshold: 0.5
     user_state_confidence_threshold: 0.4  # (GH-139) below this, state classification stays sticky
     domain_instruction: |
@@ -408,29 +427,11 @@ entity_to_profile_field:
   distance_km: distance_km
 
 hitl:
-  response_message: "Hum ek counsellor se aapko connect karenge. Woh 24 ghante ke andar call karenge."
+  response_message: "हम एक काउंसलर से आपको कनेक्ट करेंगे। वो चौबीस घंटे के अंदर कॉल करेंगे।"
 
 agent_workflow:
   workflow_id: kkb_iti_graduate
   version: "1.0.0"
-
-  # Maps next_subagent_id → mental_state value written to session after routing resolves.
-  # Keeps the Five Mental States aligned with conversation progression automatically.
-  subagent_mental_state_map:
-    profile_building: fog
-    profile_incomplete: fog
-    market_truth: orientation
-    pay_branch: orientation
-    distance_branch: orientation
-    normalise_branch: orientation
-    skill_check: orientation
-    evaluation: evaluation
-    commitment: commitment
-    counsellor_request: commitment
-    follow_through: follow_through
-    capture_dropoff: fog          # Drop-off resets to fog for next re-engagement
-    ended: fog
-    clarification: fog
 
   # Maps tool name → journey_event config for persisting tool outputs to Neo4j child nodes.
   # result_list_key: if the result dict contains a list under this key, one node is created per item.
@@ -698,7 +699,9 @@ agent_workflow:
         - skip_question
         - profile_complete
 
-      tools: []
+      tools:
+        - get_profile
+        - update_profile
 
       system_prompt: |
         ## INTRODUCTION PRIORITY RULE — Check FIRST before anything else
@@ -718,7 +721,7 @@ agent_workflow:
         If this is a new user with no profile in memory:
           1. Say you do not have their profile data and ask permission to fetch it:
              "मेरे पास अभी आपकी प्रोफाइल की जानकारी नहीं है। क्या मैं आपकी प्रोफाइल fetch कर सकती हूँ?"
-          2. If user agrees: call the profile fetch tool. If profile found: give a brief summary of what
+          2. If user agrees: call get_profile. If profile found: give a brief summary of what
              you found, then ask one open-ended question — do NOT immediately call another tool.
           3. If user declines or profile not found: continue naturally with one opening question.
 
@@ -1261,9 +1264,10 @@ agent_workflow:
         - connect_counsellor
         - action_declined   # User backs out at last moment
 
-      tools: []
-        # onest_apply and counsellor_schedule are commented out in action_gateway.yaml (not yet live).
-        # Add them back here once the connectors are uncommented and the env secrets are set.
+      tools:
+        - apply_job
+        # counsellor_schedule is commented out in action_gateway.yaml (not yet live).
+        # Add it back here once the connector is uncommented and the env secret is set.
 
       system_prompt: |
         The user has decided to act. This is the final commitment stage.

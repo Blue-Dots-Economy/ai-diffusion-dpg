@@ -155,6 +155,11 @@ def _build_app():
     domain_config = _load_config(str(_domain_config_path("agent_core")))
     config = _deep_merge(dpg_config, domain_config)
 
+    # Strict schema check on the full merged config — unknown keys, wrong
+    # types, or out-of-range values at any depth fail here at startup.
+    from src.schema.config import MergedConfig
+    MergedConfig.validate_full(config)
+
     from dpg_telemetry import init_otel
     init_otel(service_name="agent_core", config=config)
 
@@ -207,7 +212,14 @@ def _build_app():
     model_name = llm.get_active_model()
 
     # TurnAssembler — enables /sessions/{id}/input and /sessions/{id}/events
-    turn_assembler = TurnAssembler(agent_core=agent_core, config=config)
+    # workflow + async_memory are required for GH-149 opening_phrase emission
+    # on SSE subscribe. Without them _emit_opening_phrase_if_first silently no-ops.
+    turn_assembler = TurnAssembler(
+        agent_core=agent_core,
+        config=config,
+        workflow=workflow,
+        async_memory=async_memory,
+    )
 
     # FastAPI app
     app = create_orchestration_app(agent_core, turn_assembler=turn_assembler)

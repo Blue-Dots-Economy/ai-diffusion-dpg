@@ -241,7 +241,7 @@ def _make_channel(events):
     ch = MagicMock()
     ch.submit_input = AsyncMock(return_value=None)
 
-    async def _stream(_session_id):
+    async def _stream(_session_id, user_id=None):
         for ev in events:
             yield ev
 
@@ -471,3 +471,167 @@ async def test_done_event_session_ended_empty_terminal_word_logs_warning(config,
         "terminal_word" in rec.getMessage() or "terminal word" in rec.getMessage()
         for rec in caplog.records
     )
+
+
+# ---------------------------------------------------------------------------
+# GH-152: barge-in / InterruptionFrame handling
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_start_interruption_pushes_acknowledgement_when_bot_speaking(session_config):
+    """_start_interruption speaks the configured template when bot was mid-TTS."""
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+
+    session_config["telephony_adapter"]["agent_core"]["barge_in_acknowledgement"] = "ठीक है।"
+    proc = AgentCoreLLMProcessor(
+        session_config, call_sid="CA1", session_id="s1", channel=MagicMock()
+    )
+    proc._bot_speaking = True  # simulate: bot was playing audio when user barged in
+    pushed = []
+    proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
+
+    await proc._start_interruption()
+
+    assert proc._interrupted is True
+    assert any(
+        isinstance(f, TTSSpeakFrame) and f.text == "ठीक है।" for f in pushed
+    )
+
+
+@pytest.mark.asyncio
+async def test_start_interruption_silent_when_bot_not_speaking(session_config):
+    """No ack when user-turn-start fires outside of bot TTS (e.g. idle, post-done)."""
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+
+    session_config["telephony_adapter"]["agent_core"]["barge_in_acknowledgement"] = "ठीक है।"
+    proc = AgentCoreLLMProcessor(
+        session_config, call_sid="CA1", session_id="s1", channel=MagicMock()
+    )
+    # _bot_speaking defaults False; explicit here for clarity.
+    proc._bot_speaking = False
+    pushed = []
+    proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
+
+    await proc._start_interruption()
+
+    # Flag still flips (so in-flight SSE loop exits) but no ack spoken.
+    assert proc._interrupted is True
+    assert not any(isinstance(f, TTSSpeakFrame) for f in pushed)
+
+
+@pytest.mark.asyncio
+async def test_start_interruption_empty_ack_stays_silent(session_config):
+    """No acknowledgement configured → no TTSSpeakFrame pushed, flag still set."""
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+
+    # barge_in_acknowledgement defaults to ""
+    proc = AgentCoreLLMProcessor(
+        session_config, call_sid="CA1", session_id="s1", channel=MagicMock()
+    )
+    proc._bot_speaking = True  # even if bot was speaking, empty ack stays silent
+    pushed = []
+    proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
+
+    await proc._start_interruption()
+
+    assert proc._interrupted is True
+    assert not any(isinstance(f, TTSSpeakFrame) for f in pushed)
+
+
+@pytest.mark.asyncio
+async def test_bot_speaking_frame_tracking(session_config):
+    """BotStartedSpeakingFrame/BotStoppedSpeakingFrame toggle the _bot_speaking flag."""
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+    from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame
+
+    proc = AgentCoreLLMProcessor(
+        session_config, call_sid="CA1", session_id="s1", channel=MagicMock()
+    )
+    proc.push_frame = AsyncMock()
+
+    assert proc._bot_speaking is False
+
+    await proc.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    assert proc._bot_speaking is True
+
+    await proc.process_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    assert proc._bot_speaking is False
+
+
+@pytest.mark.asyncio
+async def test_session_loop_exits_on_mid_stream_interruption(session_config):
+    """Mid-stream flag set → no further SentenceEvents reach TTS."""
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+    from reach_layer_base import DoneEvent, SentenceEvent
+
+    # Yield 3 sentences then Done. The processor should stop pushing at the
+    # 2nd one because we flip _interrupted=True between yields.
+    proc_ref = {}
+
+    async def _stream(_session_id, user_id=None):
+        yield SentenceEvent(text="sentence one", sentence_index=0)
+        # Simulate pipecat firing InterruptionFrame after first sentence.
+        proc_ref["proc"]._interrupted = True
+        yield SentenceEvent(text="sentence two", sentence_index=1)
+        yield SentenceEvent(text="sentence three", sentence_index=2)
+        yield DoneEvent(turn_status="completed")
+
+    channel = MagicMock()
+    channel.submit_input = AsyncMock(return_value=None)
+    channel.subscribe_events = _stream
+
+    proc = AgentCoreLLMProcessor(
+        session_config, call_sid="CA1", session_id="s1", channel=channel
+    )
+    proc_ref["proc"] = proc
+    pushed = []
+    proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
+
+    await proc.process_frame(
+        TranscriptionFrame(text="hello", user_id="", timestamp=""),
+        FrameDirection.DOWNSTREAM,
+    )
+
+    texts = [f.text for f in pushed if isinstance(f, TTSSpeakFrame)]
+    assert "sentence one" in texts
+    # Only the first sentence should have reached TTS.
+    assert "sentence two" not in texts
+    assert "sentence three" not in texts
+
+
+@pytest.mark.asyncio
+async def test_new_turn_clears_stale_interrupted_flag(session_config):
+    """A fresh TranscriptionFrame resets the flag so the next turn isn't blocked."""
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+    from reach_layer_base import DoneEvent, SentenceEvent
+
+    events = [
+        SentenceEvent(text="ok", sentence_index=0),
+        DoneEvent(turn_status="completed"),
+    ]
+    channel = MagicMock()
+    channel.submit_input = AsyncMock(return_value=None)
+
+    async def _stream(_session_id, user_id=None):
+        for ev in events:
+            yield ev
+
+    channel.subscribe_events = _stream
+
+    proc = AgentCoreLLMProcessor(
+        session_config, call_sid="CA1", session_id="s1", channel=channel
+    )
+    # Simulate a prior barge-in having set the flag before the new turn starts.
+    proc._interrupted = True
+    pushed = []
+    proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
+
+    await proc.process_frame(
+        TranscriptionFrame(text="hello", user_id="", timestamp=""),
+        FrameDirection.DOWNSTREAM,
+    )
+
+    texts = [f.text for f in pushed if isinstance(f, TTSSpeakFrame)]
+    assert "ok" in texts
+    assert proc._interrupted is False

@@ -8,12 +8,6 @@ server:
 
 tools: []
 
-action_gateway:
-  timeout_ms: 5000
-
-response:
-  default_max_size_chars: 4000
-
 observability:
   otel:
     collector_endpoint: "http://otelcol:4317"

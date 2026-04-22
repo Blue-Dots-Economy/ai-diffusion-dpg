@@ -748,17 +748,6 @@ class AgentCore(AgentCoreBase):
         bundle.session["current_subagent_id"] = next_subagent_id
         self._write_memory_sync(session_id, user_id, "session", "current_subagent_id", next_subagent_id)
 
-        # Update mental_state from config mapping so session always reflects the
-        # current conversation stage without requiring domain logic in Python code.
-        mental_state_map: dict = (
-            self._config.get("agent_workflow", {})
-            .get("subagent_mental_state_map", {})
-        )
-        if next_subagent_id in mental_state_map:
-            new_mental_state = mental_state_map[next_subagent_id]
-            self._write_memory_sync(session_id, user_id, "session", "mental_state", new_mental_state)
-            bundle.session["mental_state"] = new_mental_state
-
         logger.info(
             "  [STEP 6] Routing  ✓  next_subagent_id=%s  entry_count=%d",
             next_subagent_id,
@@ -2138,20 +2127,72 @@ class AgentCore(AgentCoreBase):
                 int((time.time() - t1) * 1000),
             )
 
-            # ── Step 4: Language Normalisation ──────────────────────────
-            # Runs before the consent gate so detected_language is available
-            # to translate the consent prompt on Turn 1.
-            logger.info("  [STEP 4] Language Normalisation  →  (session=%s)", session_id)
-            t4 = time.time()
+            # ── Step 4 + Step 5 (parallel): lang-norm + NLU ─────────────
+            # GH-151 #2: language_normalisation and NLU were previously run
+            # back-to-back (~4 s of wall-clock on Haiku). They have no real
+            # data dependency — NLU's prompt just inserts the user message
+            # verbatim and Claude handles multilingual / mixed-script input
+            # directly — so we fire them concurrently and await the pair.
+            # The raw user message is used as NLU input so we don't need
+            # to wait for the lang-norm LLM to return.
+            #
+            # Small cost: on the turn that hits the consent gate (first turn
+            # of a new session when ask_for_consent=true), NLU's result is
+            # discarded. That's one wasted LLM call per session; every
+            # subsequent turn halves its lang-norm+NLU latency.
+
+            # Pre-compute NLU arguments so both coroutines can fire immediately.
+            pre_allowed_intents = self._workflow.nlu_intent_set.get(current_subagent_id, [])
+            pre_profile_data = bundle.profile or {}
+            pre_existing_profile_keys: list[str] = [k for k in pre_profile_data if k != "attributes"]
+            for _attr in pre_profile_data.get("attributes", []):
+                _attr_key = _attr.get("key", "") if isinstance(_attr, dict) else ""
+                if _attr_key:
+                    pre_existing_profile_keys.append(_attr_key)
+
+            pre_previous_user_state_payload: dict | None = None
+            pre_previous_user_state_id: str | None = None
+            if self._user_state_enabled:
+                _maybe = bundle.session.get("user_state")
+                if isinstance(_maybe, dict):
+                    pre_previous_user_state_payload = _maybe
+                    pre_previous_user_state_id = _maybe.get("id")
+                if pre_previous_user_state_id is None:
+                    pre_previous_user_state_id = self._user_state_default
+
+            logger.info(
+                "  [STEP 4+5] Language Norm + NLU  →  (session=%s, parallel)", session_id
+            )
+            t45 = time.time()
             yield SignalEvent(stage="nlu", status="start")
-            normalised_input, turn_language = self._language_normaliser.normalise(
-                raw_input=turn_input.user_message,
-                config=self._config,
-                llm=self._llm,
+
+            # asyncio.to_thread offloads each sync llm.call onto the default
+            # thread pool so the two Anthropic round-trips overlap in wall
+            # clock. They never race on shared state — each uses its own
+            # LLMResponse.
+            (normalised_input, turn_language), early_nlu_result = await asyncio.gather(
+                asyncio.to_thread(
+                    self._language_normaliser.normalise,
+                    turn_input.user_message,
+                    self._config,
+                    self._llm,
+                ),
+                asyncio.to_thread(
+                    self._nlu_processor.process,
+                    turn_input.user_message,
+                    current_question,
+                    current_subagent_id,
+                    self._llm,
+                    pre_allowed_intents,
+                    pre_existing_profile_keys,
+                    pre_previous_user_state_id,
+                ),
             )
             logger.info(
-                "  [STEP 4] Language Normalisation  ✓  detected=%s  latency=%dms",
-                turn_language or "—", int((time.time() - t4) * 1000),
+                "  [STEP 4+5] Lang-Norm + NLU (parallel)  ✓  detected=%s  intent=%s  total_latency=%dms",
+                turn_language or "—",
+                early_nlu_result.intent,
+                int((time.time() - t45) * 1000),
             )
 
             profile_data = bundle.profile if bundle.profile is not None else {}
@@ -2297,50 +2338,23 @@ class AgentCore(AgentCoreBase):
                 yield DoneEvent(turn_id=turn_id, was_escalated=True, latency_ms=int((time.time() - start) * 1000))
                 return
 
-            # Step 4 (Language Normalisation) has been moved to run before the consent
-            # gate so that detected_language is available when translating the consent
-            # prompt on Turn 1.  The variables normalised_input, turn_language,
-            # language_preference, and detected_language are already set above.
-
-            # ── Step 5: NLU Processor ──────────────────────────────────
-            allowed_intents = self._workflow.nlu_intent_set.get(current_subagent_id, [])
-            profile_data = bundle.profile or {}
-            existing_profile_keys: list[str] = [k for k in profile_data if k != "attributes"]
-            for attr in profile_data.get("attributes", []):
-                attr_key = attr.get("key", "") if isinstance(attr, dict) else ""
-                if attr_key:
-                    existing_profile_keys.append(attr_key)
-
-            stream_previous_user_state_payload: dict | None = None
-            stream_previous_user_state_id: str | None = None
-            if self._user_state_enabled:
-                stream_maybe = bundle.session.get("user_state")
-                if isinstance(stream_maybe, dict):
-                    stream_previous_user_state_payload = stream_maybe
-                    stream_previous_user_state_id = stream_maybe.get("id")
-                if stream_previous_user_state_id is None:
-                    stream_previous_user_state_id = self._user_state_default
-
-            logger.info(
-                "  [STEP 5] NLU Processor  →  (normalised=%r  subagent=%s)",
-                normalised_input[:80], current_subagent_id,
-            )
-            t5 = time.time()
-            nlu_result = self._nlu_processor.process(
-                normalised_input=normalised_input,
-                current_question=current_question,
-                current_subagent_id=current_subagent_id,
-                llm=self._llm,
-                allowed_intents=allowed_intents,
-                existing_profile_keys=existing_profile_keys,
-                previous_user_state=stream_previous_user_state_id,
-            )
+            # ── Step 5: NLU Processor (result from parallel gather) ─────
+            # GH-151 #2: NLU already ran in parallel with lang-norm above.
+            # Promote its pre-computed inputs to the names the rest of the
+            # function expects, so the downstream handlers (user-state,
+            # entity writes, language-switch routing) need no further change.
+            allowed_intents = pre_allowed_intents
+            profile_data = pre_profile_data
+            existing_profile_keys = pre_existing_profile_keys
+            stream_previous_user_state_payload = pre_previous_user_state_payload
+            stream_previous_user_state_id = pre_previous_user_state_id
+            nlu_result = early_nlu_result
             yield SignalEvent(stage="nlu", status="complete")
             logger.info(
                 "  [STEP 5] NLU Processor  ✓  intent=%s  confidence=%.2f"
-                "  entities=%s  latency=%dms",
+                "  entities=%s  (parallel — see STEP 4+5)",
                 nlu_result.intent, nlu_result.confidence,
-                list((nlu_result.entities or {}).keys()), int((time.time() - t5) * 1000),
+                list((nlu_result.entities or {}).keys()),
             )
 
             stream_user_state_guidance_text = self._handle_user_state_turn(
@@ -2429,18 +2443,40 @@ class AgentCore(AgentCoreBase):
                 session=routing_state,
             )
 
+            # GH-151 #5: collect the routing-phase state writes and flush
+            # them concurrently instead of serially. These are all session-
+            # scoped (Redis-backed) but each still carries a round-trip to
+            # Memory Layer; awaiting them sequentially added ~N × 5–100 ms
+            # per turn. They're independent and can land in any order —
+            # their in-memory shadows on ``bundle`` are updated synchronously
+            # so subsequent reads in this turn still see the new values.
+            routing_writes: list = []
             if matched_rule and matched_rule.session_writes:
                 for field_name, field_val in matched_rule.session_writes.items():
-                    await self._async_memory.write(session_id, user_id, "session", field_name, field_val)
+                    routing_writes.append(
+                        self._async_memory.write(
+                            session_id, user_id, "session", field_name, field_val
+                        )
+                    )
                     bundle.session[field_name] = field_val
 
             raw_counts = bundle.session.get("subagent_entry_count")
             subagent_entry_count = dict(raw_counts) if isinstance(raw_counts, dict) else {}
             subagent_entry_count[next_subagent_id] = int(subagent_entry_count.get(next_subagent_id, 0)) + 1
-            await self._async_memory.write(session_id, user_id, "session", "subagent_entry_count", subagent_entry_count)
             bundle.session["subagent_entry_count"] = subagent_entry_count
             bundle.session["current_subagent_id"] = next_subagent_id
-            await self._async_memory.write(session_id, user_id, "session", "current_subagent_id", next_subagent_id)
+            routing_writes.extend(
+                [
+                    self._async_memory.write(
+                        session_id, user_id, "session", "subagent_entry_count", subagent_entry_count
+                    ),
+                    self._async_memory.write(
+                        session_id, user_id, "session", "current_subagent_id", next_subagent_id
+                    ),
+                ]
+            )
+            if routing_writes:
+                await asyncio.gather(*routing_writes, return_exceptions=True)
             yield SignalEvent(stage="routing", status="complete")
             logger.info(
                 "  [STEP 6] Routing  ✓  next_subagent=%s  matched_rule_intent=%s  latency=%dms",
@@ -2577,7 +2613,7 @@ class AgentCore(AgentCoreBase):
                 tool_results_for_llm = []
                 for tc in e.tool_calls:
                     if self._async_gateway:
-                        tool_result = await self._async_gateway.execute(tc, session_id)
+                        tool_result = await self._async_gateway.execute(tc, session_id, user_id)
                     else:
                         # Fallback: no async gateway — cannot execute tools in streaming mode
                         logger.error(
@@ -2660,7 +2696,7 @@ class AgentCore(AgentCoreBase):
                         _nested_results = []
                         for tc in nested_e.tool_calls:
                             if self._async_gateway:
-                                tool_result = await self._async_gateway.execute(tc, session_id)
+                                tool_result = await self._async_gateway.execute(tc, session_id, user_id)
                                 _nested_results.append({
                                     "type": "tool_result",
                                     "tool_use_id": tc.tool_use_id,
@@ -2699,17 +2735,22 @@ class AgentCore(AgentCoreBase):
                 yield SentenceEvent(text=remaining, sentence_index=sentence_index)
 
             # ── Step 11: Write current_question ────────────────────────
+            # GH-151 #5: fire-and-forget. The next turn reads context_bundle,
+            # which includes current_question; by the time the caller finishes
+            # speaking and STT/TurnAssembler have produced a segment (hundreds
+            # of ms later at minimum), the Redis write has landed. Awaiting
+            # it synchronously here blocked the DoneEvent by ~5–100 ms on
+            # every turn with no functional benefit.
             logger.info(
                 "  [STEP 11] Delivering response  (async: memory write + learning emit follow)",
             )
             yield SignalEvent(stage="memory_write", status="start")
-            t11 = time.time()
-            await self._async_memory.write(session_id, user_id, "session", "current_question", full_response_text.strip())
-            yield SignalEvent(stage="memory_write", status="complete")
-            logger.info(
-                "  [STEP 11] Memory write  ✓  latency=%dms",
-                int((time.time() - t11) * 1000),
+            asyncio.create_task(
+                self._async_memory.write(
+                    session_id, user_id, "session", "current_question", full_response_text.strip()
+                )
             )
+            yield SignalEvent(stage="memory_write", status="complete")
 
             latency_ms = int((time.time() - start) * 1000)
             logger.info(

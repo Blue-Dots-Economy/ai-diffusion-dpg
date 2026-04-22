@@ -15,7 +15,7 @@ trust:
       - "police case"
       - "FIR"
       - "jail"
-    blocked_input_message: "Yeh baat main handle nahi kar sakta."
+    blocked_input_message: "यह बात मैं हैंडल नहीं कर सकती।"
 
   output_rules:
     blocked_phrases:
@@ -37,20 +37,14 @@ trust:
       - "सौ प्रतिशत"
       - "पक्का मिलेगा"
       - "यह miss मत कीजिए"
-    output_blocked_message: "Mujhe yeh jawab dene mein dikkat aa rahi hai."
+    output_blocked_message: "मुझे यह जवाब देने में दिक्कत आ रही है।"
 
   policy_packs:
+    # severity and failure_mode declare operator intent but are not yet acted
+    # on at runtime — differential enforcement is tracked in GH-170.
     kkb_advisory_jobs:
-      risks:
-        - false_certainty
-        - hallucinated_reality
-        - emotional_overreach
-        - dignity_harm
-        - agency_violation
-
       guardrails:
         false_certainty:
-          id: "GR-001"
           severity: "blocker"
           failure_mode: "block"
           prompt_constraints:
@@ -58,10 +52,9 @@ trust:
             - "MUST frame all opportunities as possibilities, not certainties"
           required_disclosures:
             - "Hiring decisions rest with the employer"
-          refusal_template: "Main kisi bhi naukri ki guarantee nahi de sakta."
+          refusal_template: "मैं किसी भी नौकरी की गारंटी नहीं दे सकती।"
 
         hallucinated_reality:
-          id: "GR-002"
           severity: "blocker"
           failure_mode: "block"
           prompt_constraints:
@@ -69,10 +62,9 @@ trust:
             - "MUST only reference verified signals available in context"
           required_disclosures:
             - "Information is based only on verified data"
-          refusal_template: "Is baare mein koi verified data available nahi hai."
+          refusal_template: "इस बारे में कोई वेरिफाइड डेटा उपलब्ध नहीं है।"
 
         emotional_overreach:
-          id: "GR-003"
           severity: "warning"
           failure_mode: "constrain"
           prompt_constraints:
@@ -82,7 +74,6 @@ trust:
           refusal_template: null
 
         dignity_harm:
-          id: "GR-004"
           severity: "blocker"
           failure_mode: "block"
           prompt_constraints:
@@ -91,7 +82,6 @@ trust:
           refusal_template: null
 
         agency_violation:
-          id: "GR-005"
           severity: "blocker"
           failure_mode: "block"
           prompt_constraints:
@@ -114,7 +104,8 @@ trust:
 
   hitl:
     queue_backend: "log"
-    holding_message: "Aapki baat ek advisor tak pahunch rahi hai. Thodi der mein aapse sampark hoga."
+    holding_message: "आपकी बात एक एडवाइज़र तक पहुँच रही है। थोड़ी देर में आपसे संपर्क होगा।"
+    # notification_webhook is read but not yet dispatched — webhook backend tracked in GH-36.
     notification_webhook: null
 
 observability:
@@ -131,4 +122,5 @@ dignity_check:
     - "Does it push urgency or use pressure language (e.g. 'offer sirf 2 din ke liye')?"
     - "Does it reduce the user's agency to decide their own path?"
     - "Does it sound like a scripted call rather than a genuine human conversation?"
+  # fail_action is validated but not yet dispatched at runtime — tracked in GH-171.
   fail_action: "rewrite"

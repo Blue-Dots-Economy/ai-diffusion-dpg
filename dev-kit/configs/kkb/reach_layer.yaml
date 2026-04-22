@@ -54,8 +54,14 @@ reach_layer:
       raya:
         stt_language: "hi"
         tts_language: "hi"
-        voice_id: "5e3c580f-f42b-41ea-8c8a-c681c72f849d"  # Arjun, hi
+        voice_id: "d6a002d0-230c-49b1-a137-b8a7d564b1ae"  # Priyanka, hi
       agent_core:
         timeout_ms: 15000
-        greeting: "नमस्ते! मैं Kaam Ki Baat हूँ। आज मैं आपकी कैसे मदद कर सकता हूँ?"
-        fallback_phrase: "माफ़ कीजिए, मैं इसे समझ नहीं पाया। कृपया दोबारा कहें।"
+        # GH-149: opening line on call pickup is emitted by Agent Core as the
+        # entry subagent's opening_phrase (see agent_core.yaml:
+        # agent_workflow.subagents[is_start=true].opening_phrase). Do not add a
+        # static `greeting` here.
+        fallback_phrase: "माफ़ कीजिए, मैं इसे समझ नहीं पायी। कृपया दोबारा कहें।"
+        # GH-152: brief acknowledgement spoken when the caller interrupts the
+        # bot mid-response. TTS has already been flushed by the time this plays.
+        barge_in_acknowledgement: "ठीक है, एक सेकंड।"

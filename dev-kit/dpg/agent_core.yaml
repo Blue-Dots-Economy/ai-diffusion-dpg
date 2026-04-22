@@ -13,10 +13,9 @@ agent:
   retry_backoff_seconds: [0, 0.5, 1.0]
   max_tool_rounds: 3
 
-conversation:
-  max_turns: 20
-  # blocked_message, escalation_message, output_blocked_message are domain-specific
-  # persona text — they must be set in domain.yaml, not here.
+# conversation.* is domain-specific (blocked_message, escalation_message,
+# output_blocked_message, persona text). All fields must be set in domain.yaml.
+# The block intentionally lives only in domain configs.
 
 # Default service client endpoints (localhost for local dev).
 # Override in domain.yaml or deployment config for staging/production.

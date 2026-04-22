@@ -157,19 +157,30 @@ class RestApiAdapter(ToolAdapter):
         return [tool]
 
     async def execute(
-        self, tool_name: str, params: dict, session_id: str
+        self,
+        tool_name: str,
+        params: dict,
+        session_id: str,
+        user_id: str = "",
     ) -> ToolResult:
         """Execute the configured REST endpoint and return a normalised result.
 
-        Merges agent-supplied params with static params, injects auth headers,
-        dispatches the HTTP request, and normalises the response into a
-        ToolResult. Never raises — all exceptions are caught and surfaced as
-        failed ToolResults.
+        Merges agent-supplied params with static params, substitutes
+        ``{session_id}`` / ``{user_id}`` placeholders in the endpoint path,
+        injects auth headers, dispatches the HTTP request, and normalises
+        the response into a ToolResult. Never raises — all exceptions are
+        caught and surfaced as failed ToolResults.
+
+        Path templating lets a tool like ``get_profile`` point at
+        ``/profile/{user_id}`` without asking the LLM to pass the caller's
+        ID — the framework substitutes it from session context.
 
         Args:
             tool_name: Name of the tool to execute (used in error messages).
             params: Agent-supplied parameters from the LLM tool_use block.
-            session_id: Session identifier for log correlation; may be empty.
+            session_id: Session identifier for log correlation and path
+                templating; may be empty.
+            user_id: Stable user identifier for path templating; may be empty.
 
         Returns:
             ToolResult with success=True and populated result/result_text on
@@ -179,6 +190,11 @@ class RestApiAdapter(ToolAdapter):
         endpoint = self.config.get("endpoints", [{}])[0]
         method: str = endpoint.get("method", "GET").upper()
         path: str = endpoint.get("path", "")
+        # Substitute context variables into the path. Empty strings are passed
+        # through unchanged so a path like /profile/{user_id} with no user_id
+        # produces /profile/ — which the backing endpoint can 404 or return an
+        # empty profile for, matching "no profile" semantics.
+        path = path.format(session_id=session_id or "", user_id=user_id or "")
         url = f"{self._base_url}{path}"
 
         # Merge agent params with static params
@@ -321,9 +337,20 @@ class RestApiAdapter(ToolAdapter):
         the response status is below 500. Returns False on any error or
         server-side failure.
 
+        Tools whose config sets ``health_check.enabled: false`` skip the HTTP
+        probe entirely and always return True. This is important for
+        self-referential mock connectors — an adapter configured with
+        ``base_url: http://action_gateway:9999`` would otherwise deadlock
+        the single uvicorn event loop thread (the synchronous ``httpx.head``
+        blocks while the running ``/health`` handler holds the loop), making
+        the docker healthcheck time out.
+
         Returns:
             True if the service responds with a status < 500; False otherwise.
         """
+        hc_cfg = self.config.get("health_check", {}) or {}
+        if hc_cfg.get("enabled", True) is False:
+            return True
         try:
             resp = httpx.head(self._base_url, timeout=5.0)
             return resp.status_code < 500

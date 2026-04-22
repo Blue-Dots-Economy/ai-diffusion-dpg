@@ -312,7 +312,7 @@ class TestRunLoopSession:
         layer.close = AsyncMock()
 
         # subscribe_events yields one sentence then a DoneEvent, loops idle after.
-        async def fake_subscribe(_session_id: str):
+        async def fake_subscribe(_session_id: str, user_id: str | None = None):
             yield SentenceEvent(text="Hi.", sentence_index=0)
             yield DoneEvent(turn_status="completed")
 

@@ -39,6 +39,21 @@ Stable `user_id` enables Memory Layer to associate sessions and recognise return
 ### D5 — Agent Core streaming deferred to #65
 `AgentCoreLLMProcessor` continues using synchronous `POST /process_turn`. Once #65 ships, it migrates to `/process_turn/stream`.
 
+### D6 — Barge-in is handled in two cooperating layers (GH-152)
+
+Mid-response interruption is NOT a `handle_barge_in()` RPC on the adapter. It is implemented at two levels that each own a different concern:
+
+1. **Audio-level, immediate (voice pipeline).** A `pipecat.turns.UserTurnProcessor` sits between `VADProcessor` and STT. It converts `VADUserStartedSpeakingFrame` into an `InterruptionFrame` whenever the bot is currently speaking. Pipecat flushes queued TTS audio system-wide. `AgentCoreLLMProcessor._start_interruption()` sets an internal flag that makes the in-flight SSE consumer exit on its next iteration, so further `SentenceEvent`s from Agent Core never reach TTS. Optionally pushes a single short `TTSSpeakFrame(barge_in_acknowledgement)` so the caller hears acknowledgement.
+2. **Turn-logic, deferred (Agent Core).** Once the new speech is transcribed and reaches `TurnAssembler.add_segment()`, the state machine observes the active turn is `INVOKED` and calls `cancel()` → emits `DoneEvent(turn_status="interrupted")`. The subscribe-loop's replay hook **discards the original segments** (the LLM was responding to input the caller is now rejecting) and carries only the barge-in (pending) segments into the next turn.
+
+The two layers are decoupled: (1) ends audio playback within ~200 ms of VAD onset regardless of what the Agent Core side is doing; (2) ensures the next turn's prompt is clean regardless of what the audio side did. Neither flows through `VobizAdapter.handle_barge_in()`, which remains a no-op retained only for the VoiceChannelBase contract.
+
+Config key: `reach_layer.channels.voice.agent_core.barge_in_acknowledgement` (empty default → silent barge-in).
+
+### D7 — Opening phrase is delivered via SSE on connect, not as a static TTS (GH-149)
+
+Replaces the earlier "queue a greeting TTSSpeakFrame on on_client_connected" step. On call pickup the adapter opens `GET /sessions/{id}/events?user_id=<caller_id>` eagerly; Agent Core checks `session.opening_phrase_emitted` and, if unset, emits the entry subagent's `opening_phrase` as a `SentenceEvent` + `DoneEvent` pair, persisting the flag first. The voice pipeline renders these as normal TTS frames. No per-channel greeting string needs to exist.
+
 ---
 
 ## File Structure
@@ -292,8 +307,12 @@ telephony_adapter:
   agent_core:
     base_url: "http://agent_core:8000"
     timeout_ms: 5000
-    greeting: "नमस्ते, मैं आपकी कैसे मदद कर सकता हूँ?"
+    # Transport-failure fallback only. GH-149 replaced the per-channel
+    # `greeting` with the entry subagent's opening_phrase (emitted by Agent
+    # Core on SSE connect).
     fallback_phrase: "माफ़ करें, मैं समझ नहीं पाया। कृपया दोबारा बोलें।"
+    # Optional short acknowledgement spoken on barge-in (GH-152).
+    barge_in_acknowledgement: ""
 ```
 
 ---
@@ -313,16 +332,44 @@ WebSocket accepted
 Per-turn pipeline:
   Vobiz audio (8kHz PCMU)
     → VobizFrameSerializer.deserialize → AudioRawFrame
-    → VADProcessor(SileroVADAnalyzer) — buffers until end-of-speech
+    → VADProcessor(SileroVADAnalyzer)
+        emits VADUserStartedSpeakingFrame / VADUserStoppedSpeakingFrame
+    → UserTurnProcessor (GH-152)
+        converts VAD-start → InterruptionFrame when bot is speaking;
+        SpeechTimeoutUserTurnStopStrategy closes user turn on silence
     → RayaSTTService.transcribe(wav_bytes) → TranscriptionFrame
     → AgentCoreLLMProcessor
-        POST /process_turn {session_id, user_message, channel:"telephony", user_id:caller_id}
-        → TurnResult.response_text
-    → TTSSpeakFrame(response_text)
+        (session mode, assembly_mode=session):
+          POST /sessions/{id}/input {user_message, user_id:caller_id}
+          SSE consumer: SentenceEvent → TTSSpeakFrame per sentence;
+          DoneEvent ends the turn
+        (direct mode, assembly_mode=direct):
+          POST /process_turn → TTSSpeakFrame(response_text)
     → RayaTTSService.synthesize(text)
         SSE chunks F32LE → PCM16 → TTSAudioRawFrame (8kHz)
     → VobizFrameSerializer.serialize → playAudio JSON
     → Vobiz (µ-law 8kHz audio to caller)
+
+Barge-in (GH-152):
+  VADUserStartedSpeakingFrame (user speaks during bot TTS)
+    → UserTurnProcessor broadcasts InterruptionFrame
+    → TTS service flushes queued audio (pipecat framework)
+    → AgentCoreLLMProcessor._start_interruption():
+        sets _interrupted flag, stops forwarding SentenceEvents,
+        optionally speaks barge_in_acknowledgement
+    → (STT of the new utterance completes a moment later)
+    → TurnAssembler.add_segment() while INVOKED → cancel()
+        emits DoneEvent(turn_status="interrupted"),
+        DISCARDS the original segments,
+        carries only the barge-in segments into the next turn
+
+Session opening (GH-149):
+  On WebSocket connect, vobiz_adapter opens
+    GET /sessions/{id}/events?user_id=<caller_id>
+  For a brand-new session, Agent Core emits the entry subagent's
+  opening_phrase as SentenceEvent + DoneEvent on first subscribe;
+  the flag session.opening_phrase_emitted is persisted first so
+  reconnects and subsequent turns do not replay.
 
 On was_escalated:
   → EndFrame → VobizFrameSerializer signals hang-up

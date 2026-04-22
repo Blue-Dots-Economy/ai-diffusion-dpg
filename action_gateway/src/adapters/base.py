@@ -54,7 +54,11 @@ class ToolAdapter(ABC):
 
     @abstractmethod
     async def execute(
-        self, tool_name: str, params: dict, session_id: str
+        self,
+        tool_name: str,
+        params: dict,
+        session_id: str,
+        user_id: str = "",
     ) -> ToolResult:
         """Execute a tool call and return a normalised result.
 
@@ -69,6 +73,10 @@ class ToolAdapter(ABC):
                 May be empty; the adapter must not crash on missing keys.
             session_id: Session identifier forwarded from Agent Core for
                 logging and consent tracking; may be an empty string.
+            user_id: Stable user identifier forwarded from Agent Core.
+                Used for path templating (e.g. profile lookups) so the LLM
+                doesn't have to echo the caller's ID back. Empty string
+                when the caller is anonymous.
 
         Returns:
             ToolResult with success=True and a populated result dict on

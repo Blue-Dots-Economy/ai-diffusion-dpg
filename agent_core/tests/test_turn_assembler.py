@@ -993,13 +993,16 @@ class TestEndToEnd:
         assert events[-1].turn_status == "completed"
 
     @pytest.mark.asyncio
-    async def test_barge_in_new_turn_assembles_original_plus_correction(self):
-        """After barge-in, new turn's assembled_text = interrupted segments + barge-in segment.
+    async def test_barge_in_new_turn_uses_only_correction(self):
+        """After barge-in, the new turn processes ONLY the barge-in utterance.
 
-        Scenario: user says "मुझे जॉब चाहिए" (turn starts), then before it completes
-        says "wait wait that is not correct". The new turn must assemble:
-        "मुझे जॉब चाहिए wait wait that is not correct"
-        so the LLM has full context of what the user originally said + the correction.
+        GH-152 Phase 2: the original interrupted segment is discarded. Scenario:
+        user says "मुझे जॉब चाहिए" (turn starts → LLM begins responding), then
+        barges in with "wait wait that is not correct". The LLM had already
+        started on the original, so the caller's correction is reacting to
+        that partial output; replaying the original alongside would produce
+        the noisy prompt "मुझे जॉब चाहिए wait wait that is not correct".
+        Only the correction carries forward as the next turn's input.
         """
         captured_inputs = []
 
@@ -1041,7 +1044,7 @@ class TestEndToEnd:
         # Barge-in: user corrects before first turn completes
         await ta.add_segment("s1", _make_segment("wait wait that is not correct"))
 
-        # Wait for: INTERRUPTED DoneEvent → reset → replay → silence → new invocation
+        # Wait for: INTERRUPTED DoneEvent → reset → replay pending only → silence → new invocation
         await asyncio.sleep(0.3)
 
         collect_task.cancel()
@@ -1050,9 +1053,9 @@ class TestEndToEnd:
         except asyncio.CancelledError:
             pass
 
-        # New turn should have assembled both original + correction
+        # New turn should have ONLY the correction — original is discarded.
         assert len(captured_inputs) == 1
-        assert captured_inputs[0] == "मुझे जॉब चाहिए wait wait that is not correct"
+        assert captured_inputs[0] == "wait wait that is not correct"
 
 
 # ---------------------------------------------------------------------------
@@ -1093,3 +1096,150 @@ class TestGH137ChannelsPath:
         }
         with pytest.raises(ValueError, match="reach_layer.channels"):
             _make_assembler(config=cfg)
+
+
+# ---------------------------------------------------------------------------
+# GH-149: proactive opening_phrase emission on subscribe
+# ---------------------------------------------------------------------------
+
+
+def _make_opening_phrase_workflow(start_id="greeting", opening_phrase="Hello!"):
+    """Build a minimal workflow mock with a start subagent carrying opening_phrase."""
+    subagent = MagicMock()
+    subagent.opening_phrase = opening_phrase
+    workflow = MagicMock()
+    workflow.start_subagent_id = start_id
+    workflow.subagents = {start_id: subagent}
+    return workflow
+
+
+def _make_opening_phrase_memory(session_state=None):
+    """Build an AsyncMock memory client returning a ContextBundle with the given session."""
+    mem = MagicMock()
+    mem.context_bundle = AsyncMock(
+        return_value=ContextBundle(session=dict(session_state or {}), profile={}, journey=None)
+    )
+    mem.write = AsyncMock(return_value=None)
+    return mem
+
+
+async def _drain_until_done(agen, max_events=10):
+    """Collect events from subscribe() until DoneEvent is yielded (or max_events)."""
+    events = []
+    async for ev in agen:
+        events.append(ev)
+        if isinstance(ev, DoneEvent) or len(events) >= max_events:
+            break
+    return events
+
+
+class TestOpeningPhraseOnSubscribe:
+    """GH-149: opening_phrase is emitted on first SSE connect for a new session."""
+
+    @pytest.mark.asyncio
+    async def test_emits_opening_phrase_on_new_session(self):
+        workflow = _make_opening_phrase_workflow(opening_phrase="नमस्ते।")
+        memory = _make_opening_phrase_memory(session_state={})
+        ta = _make_assembler(workflow=workflow, async_memory=memory)
+
+        events = await _drain_until_done(ta.subscribe("s1", user_id="u1"))
+
+        assert len(events) == 2
+        assert isinstance(events[0], SentenceEvent)
+        assert events[0].text == "नमस्ते।"
+        assert isinstance(events[1], DoneEvent)
+        assert events[1].turn_status == "completed"
+
+        # Flag + subagent were persisted before events were enqueued.
+        write_calls = {(c.args[2], c.args[3]): c.args[4] for c in memory.write.call_args_list}
+        assert write_calls[("session", "opening_phrase_emitted")] is True
+        assert write_calls[("session", "current_subagent_id")] == "greeting"
+
+    @pytest.mark.asyncio
+    async def test_skips_when_flag_already_set(self):
+        """Reconnect case: flag is persisted, so no events are emitted."""
+        workflow = _make_opening_phrase_workflow()
+        memory = _make_opening_phrase_memory(
+            session_state={"opening_phrase_emitted": True, "current_subagent_id": "greeting"}
+        )
+        ta = _make_assembler(workflow=workflow, async_memory=memory)
+
+        # Drain without blocking: put a sentinel DoneEvent manually and expect only it.
+        buffer = ta._sessions.setdefault("s1", SessionBuffer(session_id="s1"))
+
+        # Call the emission helper directly — if it no-ops, queue stays empty.
+        await ta._emit_opening_phrase_if_first("s1", "u1", buffer)
+
+        assert buffer.event_queue.qsize() == 0
+        memory.write.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_when_user_id_none(self):
+        """Back-compat: callers that don't pass user_id get the old behavior."""
+        workflow = _make_opening_phrase_workflow()
+        memory = _make_opening_phrase_memory(session_state={})
+        ta = _make_assembler(workflow=workflow, async_memory=memory)
+
+        buffer = ta._sessions.setdefault("s1", SessionBuffer(session_id="s1"))
+        await ta._emit_opening_phrase_if_first("s1", None, buffer)
+
+        assert buffer.event_queue.qsize() == 0
+        memory.context_bundle.assert_not_called()
+        memory.write.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_opening_phrase_still_sets_flag(self):
+        """Empty opening_phrase on start subagent → flag set, no events emitted."""
+        workflow = _make_opening_phrase_workflow(opening_phrase="")
+        memory = _make_opening_phrase_memory(session_state={})
+        ta = _make_assembler(workflow=workflow, async_memory=memory)
+
+        buffer = ta._sessions.setdefault("s1", SessionBuffer(session_id="s1"))
+        await ta._emit_opening_phrase_if_first("s1", "u1", buffer)
+
+        assert buffer.event_queue.qsize() == 0
+        # Flag write still happened so the orchestrator gate won't fire on turn 1.
+        write_keys = {(c.args[2], c.args[3]) for c in memory.write.call_args_list}
+        assert ("session", "opening_phrase_emitted") in write_keys
+
+    @pytest.mark.asyncio
+    async def test_skips_when_workflow_missing(self):
+        memory = _make_opening_phrase_memory(session_state={})
+        ta = _make_assembler(workflow=None, async_memory=memory)
+
+        buffer = ta._sessions.setdefault("s1", SessionBuffer(session_id="s1"))
+        await ta._emit_opening_phrase_if_first("s1", "u1", buffer)
+
+        assert buffer.event_queue.qsize() == 0
+        memory.context_bundle.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_context_bundle_failure_is_graceful(self):
+        """Memory read errors must not crash the SSE connection."""
+        workflow = _make_opening_phrase_workflow()
+        memory = MagicMock()
+        memory.context_bundle = AsyncMock(side_effect=RuntimeError("memory down"))
+        memory.write = AsyncMock()
+        ta = _make_assembler(workflow=workflow, async_memory=memory)
+
+        buffer = ta._sessions.setdefault("s1", SessionBuffer(session_id="s1"))
+        await ta._emit_opening_phrase_if_first("s1", "u1", buffer)
+
+        assert buffer.event_queue.qsize() == 0
+        memory.write.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_subscribe_emits_opening_phrase_end_to_end(self):
+        """subscribe() drains the emitted events via the real event loop."""
+        workflow = _make_opening_phrase_workflow(opening_phrase="नमस्ते।")
+        memory = _make_opening_phrase_memory(session_state={})
+        ta = _make_assembler(workflow=workflow, async_memory=memory)
+
+        events = []
+        async for event in ta.subscribe("s1", user_id="u1"):
+            events.append(event)
+            if isinstance(event, DoneEvent):
+                break
+
+        assert [type(e).__name__ for e in events] == ["SentenceEvent", "DoneEvent"]
+        assert events[0].text == "नमस्ते।"
