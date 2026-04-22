@@ -9,7 +9,7 @@
 #
 # Ingestion flow (Knowledge Engine):
 #   On startup, KE runs: python scripts/ingest.py && python main.py
-#   Ingest reads docs from knowledge_engine/data/ (bind-mounted as /app/data),
+#   Ingest reads docs from knowledge-engine/data/ (bind-mounted as /app/data),
 #   writes embeddings into chroma_data volume at /app/data/chroma_db (writable named
 #   volume that overrides the read-only bind mount for that subdirectory).
 #   Server starts only after ingest completes successfully.
@@ -17,7 +17,7 @@
 # Prerequisites:
 #   1. export ANTHROPIC_API_KEY=sk-ant-...
 #   2. docker compose up -d                    (runs ingest first, then starts all services)
-#   3. docker compose run --rm reach_layer_cli (interactive CLI session, opt-in via `cli` profile)
+#   3. docker compose run --rm reach-layer-cli (interactive CLI session, opt-in via `cli` profile)
 #
 # Paths in this file are relative to the docker-compose.yml location.
 # ../../ resolves to the repository root.
@@ -31,10 +31,10 @@ services:
   # ---------------------------------------------------------------------------
   # Action Gateway — external API stub / ONEST mock (port 9999)
   # ---------------------------------------------------------------------------
-  action_gateway:
+  action-gateway:
     image: sanketikahub/dpg-action-gateway:latest
     pull_policy: always
-    container_name: action_gateway
+    container_name: action-gateway
     environment:
       - CONFIG_FOLDER=/app/config
       # Connector API keys are injected here at deploy time by dev-kit (e.g. ONEST_API_KEY=...).
@@ -60,10 +60,10 @@ services:
   # ---------------------------------------------------------------------------
   # Agent Core — orchestrator and LLM caller (port 8000)
   # ---------------------------------------------------------------------------
-  agent_core:
+  agent-core:
     image: sanketikahub/dpg-agent-core:latest
     pull_policy: always
-    container_name: agent_core
+    container_name: agent-core
     environment:
       - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
       - CONFIG_FOLDER=/app/config
@@ -78,15 +78,15 @@ services:
           cpus: '0.1'
           memory: 512M
     depends_on:
-      knowledge_engine:
+      knowledge-engine:
         condition: service_healthy
-      memory_layer:
+      memory-layer:
         condition: service_healthy
-      trust_layer:
+      trust-layer:
         condition: service_healthy
-      observability_layer:
+      observability-layer:
         condition: service_healthy
-      action_gateway:
+      action-gateway:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
@@ -97,19 +97,19 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # dev_kit — Configuration Agent UI (port 8080)
+  # dev-kit — Configuration Agent UI (port 8080)
   # ---------------------------------------------------------------------------
-  dev_kit:
+  dev-kit:
     image: sanketikahub/dpg-dev-kit:latest
     pull_policy: always
-    container_name: dev_kit
+    container_name: dev-kit
     environment:
       - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
       # Upload chain auth — dev-kit acts as upload orchestrator.
       # Generate with: openssl rand -hex 32
       - DEVKIT_TO_REACH_API_KEY=${DEVKIT_TO_REACH_API_KEY:-}
       - KE_TO_DEVKIT_API_KEY=${KE_TO_DEVKIT_API_KEY:-}
-      - REACH_LAYER_URL=http://reach_layer_web:8005
+      - REACH_LAYER_URL=http://reach-layer-web:8005
     ports:
       - "8080:8080"
     networks:
@@ -131,16 +131,16 @@ services:
   # Knowledge Engine — RAG, NLU, prompt assembly (port 8001)
   # On startup: runs ingest first, then starts the server.
   # ---------------------------------------------------------------------------
-  knowledge_engine:
+  knowledge-engine:
     image: sanketikahub/dpg-knowledge-engine:latest
     pull_policy: always
-    container_name: knowledge_engine
+    container_name: knowledge-engine
     environment:
       - CONFIG_FOLDER=/app/config
       # Upload chain auth — reach-layer calls KE with this key; KE calls back dev-kit with KE_TO_DEVKIT_API_KEY.
       - REACH_TO_KE_API_KEY=${REACH_TO_KE_API_KEY:-}
       - KE_TO_DEVKIT_API_KEY=${KE_TO_DEVKIT_API_KEY:-}
-      - KE_DEVKIT_CALLBACK_URL=${KE_DEVKIT_CALLBACK_URL:-http://dev_kit:8080}
+      - KE_DEVKIT_CALLBACK_URL=${KE_DEVKIT_CALLBACK_URL:-http://dev-kit:8080}
       - KB_DATA_DIR=/data/kb
       # Azure Blob Storage — required only when the domain uses Azure for KB ingestion.
       - AZURE_STORAGE_ACCOUNT=${AZURE_STORAGE_ACCOUNT:-}
@@ -152,7 +152,7 @@ services:
     volumes:
       - ../../dev-kit/dpg/knowledge_engine.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-kkb}/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
-      - ../../knowledge_engine/data:/app/data:ro   # source docs (read-only)
+      - ../../knowledge-engine/data:/app/data:ro   # source docs (read-only)
       - chroma_data:/app/chroma_db            # embeddings (writable, overrides :ro for this subdir)
       - kb_data:/data/kb                      # upload staging area for KB documents
     networks:
@@ -173,10 +173,10 @@ services:
   # ---------------------------------------------------------------------------
   # Memory Layer — session state store (port 8002)
   # ---------------------------------------------------------------------------
-  memory_layer:
+  memory-layer:
     image: sanketikahub/dpg-memory-layer:latest
     pull_policy: always
-    container_name: memory_layer
+    container_name: memory-layer
     environment:
       - CONFIG_FOLDER=/app/config
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
@@ -209,10 +209,10 @@ services:
   # ---------------------------------------------------------------------------
   # Observability Layer — async observability (port 8004)
   # ---------------------------------------------------------------------------
-  observability_layer:
+  observability-layer:
     image: sanketikahub/dpg-observability-layer:latest
     pull_policy: always
-    container_name: observability_layer
+    container_name: observability-layer
     environment:
       - CONFIG_FOLDER=/app/config
     volumes:
@@ -241,10 +241,10 @@ services:
   # independently-deployable channel services (cli/web/voice) that share the
   # reach_layer_base HTTP helpers. Deploy only the channel(s) you need.
   # ---------------------------------------------------------------------------
-  reach_layer_web:
+  reach-layer-web:
     image: sanketikahub/dpg-reach-layer-web:latest
     pull_policy: always
-    container_name: reach_layer_web
+    container_name: reach-layer-web
     environment:
       - CONFIG_FOLDER=/app/config
       # Optional when auth.enabled: false (default). Required and validated by server.py
@@ -254,7 +254,7 @@ services:
       # Upload chain auth — dev-kit → reach-layer and reach-layer → KE keys.
       - DEVKIT_TO_REACH_API_KEY=${DEVKIT_TO_REACH_API_KEY:-}
       - REACH_TO_KE_API_KEY=${REACH_TO_KE_API_KEY:-}
-      - KE_INTERNAL_URL=${KE_INTERNAL_URL:-http://knowledge_engine:8001}
+      - KE_INTERNAL_URL=${KE_INTERNAL_URL:-http://knowledge-engine:8001}
     ports:
       - "8005:8005"
     volumes:
@@ -270,7 +270,7 @@ services:
           cpus: '0.1'
           memory: 512M
     depends_on:
-      agent_core:
+      agent-core:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8005/health', timeout=3)"]
@@ -284,12 +284,12 @@ services:
   # Reach Layer — CLI channel (on-demand REPL)
   # Session mode: POST /sessions/{id}/input + SSE event stream.
   # Launch with:
-  #   docker compose -f docker-compose.dev.yml run --rm reach_layer_cli
+  #   docker compose -f docker-compose.dev.yml run --rm reach-layer-cli
   # ---------------------------------------------------------------------------
-  reach_layer_cli:
+  reach-layer-cli:
     image: sanketikahub/dpg-reach-layer-cli:latest
     pull_policy: always
-    container_name: reach_layer_cli
+    container_name: reach-layer-cli
     volumes:
       # Unified Reach Layer config: DPG defaults + per-domain overrides.
       # Loader scopes to the cli channel via load_reach_config("cli").
@@ -300,7 +300,7 @@ services:
     stdin_open: true
     tty: true
     depends_on:
-      agent_core:
+      agent-core:
         condition: service_healthy
     profiles:
       - cli  # do not auto-start with `docker compose up`; use `run --rm`
@@ -311,10 +311,10 @@ services:
   # PUBLIC_URL must be set before starting (export PUBLIC_URL=https://...).
   # Use the ngrok service to get a public URL automatically.
   # ---------------------------------------------------------------------------
-  reach_layer_voice:
+  reach-layer-voice:
     image: sanketikahub/dpg-reach-layer-voice:latest
     pull_policy: always
-    container_name: reach_layer_voice
+    container_name: reach-layer-voice
     environment:
       - DPG_CONFIG_PATH=/app/config/dpg.yaml
       - DOMAIN_CONFIG_PATH=/app/config/domain.yaml
@@ -340,7 +340,7 @@ services:
           cpus: '0.5'
           memory: 1G
     depends_on:
-      agent_core:
+      agent-core:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8006/health')\""]
@@ -353,10 +353,10 @@ services:
   # ---------------------------------------------------------------------------
   # Trust Layer — content safety gate (port 8003)
   # ---------------------------------------------------------------------------
-  trust_layer:
+  trust-layer:
     image: sanketikahub/dpg-trust-layer:latest
     pull_policy: always
-    container_name: trust_layer
+    container_name: trust-layer
     environment:
       - CONFIG_FOLDER=/app/config
     volumes:
@@ -486,7 +486,7 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # ngrok — exposes reach_layer_voice (port 8006) to the public internet.
+  # ngrok — exposes reach-layer-voice (port 8006) to the public internet.
   # Required so Vobiz can reach /answer and /ws/{call_sid} from outside.
   #
   # Prerequisites:
@@ -498,12 +498,12 @@ services:
   #
   # Then set PUBLIC_URL and restart the voice service:
   #   export PUBLIC_URL=https://abc123.ngrok-free.app
-  #   docker compose up -d reach_layer_voice
+  #   docker compose up -d reach-layer-voice
   # ---------------------------------------------------------------------------
   ngrok:
     image: ngrok/ngrok:latest
     container_name: ngrok
-    command: http reach_layer_voice:8006 --log stdout
+    command: http reach-layer-voice:8006 --log stdout
     environment:
       - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
     ports:
@@ -516,7 +516,7 @@ services:
           cpus: '0.1'
           memory: 128M
     depends_on:
-      reach_layer_voice:
+      reach-layer-voice:
         condition: service_healthy
     restart: unless-stopped
 

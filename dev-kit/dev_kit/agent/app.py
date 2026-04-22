@@ -774,9 +774,9 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
         deployment manifests keyed by filename.
     """
     _CHANNEL_SERVICE: dict[str, str] = {
-        "web": "reach_layer_web",
-        "voice": "reach_layer_voice",
-        "cli": "reach_layer_cli",
+        "web": "reach-layer-web",
+        "voice": "reach-layer-voice",
+        "cli": "reach-layer-cli",
     }
     target = body.get("target", "docker")
     if target == "docker":
@@ -995,9 +995,9 @@ async def _run_docker_deploy(
     # compose file so it never starts with `docker compose up`; web/voice need explicit
     # removal when not selected.
     _CHANNEL_SERVICE: dict[str, str] = {
-        "web": "reach_layer_web",
-        "voice": "reach_layer_voice",
-        "cli": "reach_layer_cli",
+        "web": "reach-layer-web",
+        "voice": "reach-layer-voice",
+        "cli": "reach-layer-cli",
     }
     if selected_channels is None:
         selected_channels = ["web", "voice", "cli"]
