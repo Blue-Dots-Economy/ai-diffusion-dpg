@@ -39,6 +39,7 @@ if _SRC not in sys.path:
 
 from dpg_telemetry import init_otel
 from guardrails import BasicTrustLayer
+from schema.config import MergedConfig
 from server import create_app
 
 # ---------------------------------------------------------------------------
@@ -134,6 +135,10 @@ def _build_app():
     dpg_config = _load_config("config/dpg.yaml")
     domain_config = _load_config(str(_domain_config_path("trust_layer")))
     config = _deep_merge(dpg_config, domain_config)
+
+    # Strict schema check on the full merged config — unknown keys, wrong
+    # types, or out-of-range values at any depth fail here at startup.
+    MergedConfig.validate_full(config)
 
     init_otel(service_name="trust_layer", config=config)
 
