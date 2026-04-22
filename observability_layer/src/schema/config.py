@@ -33,8 +33,8 @@ class LifecycleState(BaseModel):
         trigger_tool: Tool name whose execution transitions into this state.
             None for the initial/entry state.
         trigger_condition: Optional condition expression. Reserved for future
-            use — currently ignored. Any invocation of ``trigger_tool`` triggers
-            the state transition regardless of result.
+            use — currently ignored (tracked in GH-115). Any invocation of
+            ``trigger_tool`` triggers the state transition regardless of result.
     """
 
     state: str
@@ -79,11 +79,16 @@ class OutcomesConfig(BaseModel):
 class SLIConfig(BaseModel):
     """Service Level Indicator thresholds used for alerting and dashboards.
 
+    NOTE: These thresholds are declared but not yet enforced at runtime.
+    Enforcement (breach counters / alerting) is tracked in GH-160.
+
     Attributes:
         turn_latency_p99_ms: P99 turn latency threshold in milliseconds.
-            Turns exceeding this value are flagged in the dashboard.
+            Turns exceeding this value will be flagged in the dashboard
+            once GH-160 is implemented.
         trust_block_rate_max: Maximum acceptable fraction of turns blocked
-            by the Trust Layer (0.0–1.0). Exceeding this triggers an alert.
+            by the Trust Layer (0.0–1.0). Will trigger an alert once
+            GH-160 is implemented.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -98,12 +103,16 @@ class AuditConfig(BaseModel):
     Fields listed in pii_fields_excluded are never written to the audit log
     (DPDP Act compliance). user_id is excluded from audit but allowed in
     telemetry for dashboarding.
+
+    NOTE: Neither field is currently enforced at runtime.
+      - pii_fields_excluded filtering is tracked in GH-104.
+      - retention_days sweep/cleanup is tracked in GH-161.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    retention_days: int = Field(default=90, gt=0)
-    pii_fields_excluded: list[str] = Field(
+    retention_days: int = Field(default=90, gt=0)  # enforcement: GH-161
+    pii_fields_excluded: list[str] = Field(  # enforcement: GH-104
         default_factory=lambda: ["user_message", "user_id"]
     )
 
@@ -112,11 +121,14 @@ class TelemetryConfig(BaseModel):
     """OTel telemetry PII configuration.
 
     user_id is allowed in traces for dashboarding but excluded from audit log.
+
+    NOTE: pii_fields_excluded filtering is not yet enforced on OTel spans
+    or structured logs. Tracked in GH-104.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    pii_fields_excluded: list[str] = Field(
+    pii_fields_excluded: list[str] = Field(  # enforcement: GH-104
         default_factory=lambda: ["user_message"]
     )
 
