@@ -17,15 +17,15 @@ trust:
 
   policy_packs:
     policy_pack_name:                 # replace with actual pack name, e.g. kkb_advisory_jobs
-      risks: []                       # list of risk identifiers active in this pack
       guardrails:
         guardrail_name:               # replace with risk name, e.g. false_certainty
-          id: ""                      # required — unique guardrail ID, e.g. GR-001
-          severity: ""                # required — blocker | warning
-          failure_mode: ""            # required — block | constrain
+          # severity and failure_mode declare intent but are not yet acted on
+          # at runtime — differential enforcement is tracked in GH-170.
+          severity: ""                # blocker | warning
+          failure_mode: ""            # block | constrain
           prompt_constraints: []      # MUST/MUST NOT instructions injected into the LLM prompt
           required_disclosures: []    # disclosure strings appended to LLM output
-          refusal_template: null      # fixed refusal text returned when failure_mode is block
+          refusal_template: null      # fixed refusal text used when the guardrail fires in block mode
 
   consent:
     consent_phrases: []               # phrases indicating user consent, e.g. [yes, haan, theek hai]
@@ -34,6 +34,8 @@ trust:
   hitl:
     queue_backend: "log"              # backend for HITL queuing: log | redis | webhook
     holding_message: ""               # message shown to user while waiting for a human agent
+    # notification_webhook is read but not yet dispatched — webhook backend
+    # (and redis backend) are tracked in GH-36.
     notification_webhook: null        # webhook URL notified when an HITL case is queued
 
 observability:
@@ -47,4 +49,6 @@ dignity_check:                        # NEW (GH-137) — auto-populated for Conv
     - "Does it push urgency?"
     - "Does it reduce their agency?"
     - "Does it sound like a script instead of a human call?"
-  fail_action: "rewrite"              # schema-accepted; runtime ignores in this PR
+  # fail_action is validated but not yet dispatched at runtime — implementation
+  # (rewrite / block / flag) is tracked in GH-171.
+  fail_action: "rewrite"              # rewrite | block | flag
