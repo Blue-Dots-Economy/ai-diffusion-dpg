@@ -179,23 +179,23 @@ export default function MandatoryInputsStep({ data, updateData, onUpdate, projec
             <legend className="text-sm font-medium text-gray-300 px-1">Azure Blob Storage</legend>
             <div className="flex flex-col gap-4 mt-2">
               <div>
-                <label htmlFor="azure_account_name" className="block text-xs text-gray-300 mb-1">Azure Account Name</label>
+                <label htmlFor="azure_storage_account" className="block text-xs text-gray-300 mb-1">Azure Account Name</label>
                 <input
-                  id="azure_account_name"
+                  id="azure_storage_account"
                   type="text"
-                  value={secrets.azure_account_name || ''}
-                  onChange={e => update('azure_account_name', e.target.value)}
+                  value={secrets.azure_storage_account || ''}
+                  onChange={e => update('azure_storage_account', e.target.value)}
                   className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
                 />
               </div>
               <div>
-                <label htmlFor="azure_account_key" className="block text-xs text-gray-300 mb-1">Azure Account Key</label>
+                <label htmlFor="azure_storage_key" className="block text-xs text-gray-300 mb-1">Azure Account Key</label>
                 <input
-                  id="azure_account_key"
+                  id="azure_storage_key"
                   type="password"
                   placeholder="Paste your Azure storage account key"
-                  value={secrets.azure_account_key || ''}
-                  onChange={e => update('azure_account_key', e.target.value)}
+                  value={secrets.azure_storage_key || ''}
+                  onChange={e => update('azure_storage_key', e.target.value)}
                   className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
                 />
               </div>

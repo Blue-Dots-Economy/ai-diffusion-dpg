@@ -34,6 +34,7 @@ export default function DeployStatusStep({ slug, data, onSuccess }) {
   const [status, setStatus] = useState({ services: [], overall: 'deploying' })
   const [deployed, setDeployed] = useState(false)
   const [error, setError] = useState(null)
+  const [readyToIngest, setReadyToIngest] = useState(false)
   const pollRef = useRef(null)
   const onSuccessRef = useRef(onSuccess)
   onSuccessRef.current = onSuccess
@@ -71,8 +72,8 @@ export default function DeployStatusStep({ slug, data, onSuccess }) {
         if (result.overall === 'complete' || result.overall === 'failed') {
           clearInterval(pollRef.current)
           pollRef.current = null
-          if (result.overall === 'complete' && onSuccessRef.current) {
-            onSuccessRef.current()
+          if (result.overall === 'complete') {
+            setReadyToIngest(true)
           }
         }
       } catch (e) {
@@ -127,11 +128,21 @@ export default function DeployStatusStep({ slug, data, onSuccess }) {
       )}
 
       {status.overall === 'complete' && (
-        <StatusBanner
-          variant="success"
-          title="Deployment Complete"
-          subtitle={`All ${status.services.length} services are running. ${data.target === 'docker' ? 'Access the Reach Layer UI at http://localhost:8005' : 'Services deployed to your Kubernetes cluster.'}`}
-        />
+        <>
+          <StatusBanner
+            variant="success"
+            title="Deployment Complete"
+            subtitle={`All ${status.services.length} services are running. ${data.target === 'docker' ? 'Access the Reach Layer UI at http://localhost:8005' : 'Services deployed to your Kubernetes cluster.'}`}
+          />
+          <div className="flex justify-end mt-4 mb-2">
+            <button
+              onClick={() => onSuccessRef.current && onSuccessRef.current()}
+              className="text-sm bg-blue-600 hover:bg-blue-500 text-white px-5 py-2 rounded-xl font-medium transition-colors"
+            >
+              Ingest Knowledge Documents →
+            </button>
+          </div>
+        </>
       )}
 
       <div className="flex flex-col gap-4">

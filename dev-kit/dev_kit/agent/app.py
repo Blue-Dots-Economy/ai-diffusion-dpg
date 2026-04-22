@@ -74,6 +74,15 @@ _KE_TO_DEVKIT_API_KEY = os.environ.get("KE_TO_DEVKIT_API_KEY", "")
 _DEVKIT_TO_REACH_API_KEY = os.environ.get("DEVKIT_TO_REACH_API_KEY", "")
 _REACH_LAYER_URL = os.environ.get("REACH_LAYER_URL", "http://localhost:8005")
 
+# Upload-chain API keys — generated once per dev-kit process if not pre-set via env.
+# Written to secrets at deploy time so all services share the same keys.
+import secrets as _secrets_module
+_UPLOAD_CHAIN_KEYS: dict[str, str] = {
+    "devkit_to_reach_api_key": _DEVKIT_TO_REACH_API_KEY or "",
+    "reach_to_ke_api_key": os.environ.get("REACH_TO_KE_API_KEY", ""),
+    "ke_to_devkit_api_key": _KE_TO_DEVKIT_API_KEY or "",
+}
+
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
@@ -959,6 +968,53 @@ async def execute_deploy(slug: str, body: dict) -> dict:
     secrets = decrypt_secrets_dict(encrypted_secrets) if encrypted_secrets else body.get("secrets", {})
     resources = body.get("resources", {})
 
+    # Auto-generate upload-chain API keys if not supplied by the caller.
+    # These are internal service-to-service credentials — never entered by the user.
+    # We generate them once per deploy and inject them into every service that needs them.
+    # We also update the in-process globals so the devkit ingest proxy uses the same keys.
+    global _DEVKIT_TO_REACH_API_KEY, _KE_TO_DEVKIT_API_KEY
+    for key_name in ("devkit_to_reach_api_key", "reach_to_ke_api_key", "ke_to_devkit_api_key"):
+        if not secrets.get(key_name):
+            # Reuse the process-level key if already generated (survives redeploy in same session)
+            existing = _UPLOAD_CHAIN_KEYS.get(key_name, "")
+            if not existing:
+                existing = _secrets_module.token_urlsafe(32)
+                _UPLOAD_CHAIN_KEYS[key_name] = existing
+            secrets[key_name] = existing
+
+    # Sync the ingest-proxy globals so POST /api/ingest/submit authenticates correctly.
+    _DEVKIT_TO_REACH_API_KEY = secrets["devkit_to_reach_api_key"]
+    _KE_TO_DEVKIT_API_KEY = secrets["ke_to_devkit_api_key"]
+
+    # For Kubernetes deployments, reach-layer is exposed as NodePort 30805 on the cluster node.
+    # Update the global so the ingest proxy routes to the right host:port after deploy.
+    global _REACH_LAYER_URL
+    if target == "kubernetes":
+        node_ip = body.get("node_ip", "")
+        if not node_ip:
+            # Default to the Colima VM address; operator can override via node_ip in request.
+            node_ip = "192.168.5.1"
+        _REACH_LAYER_URL = f"http://{node_ip}:30805"
+    elif target == "docker":
+        _REACH_LAYER_URL = "http://localhost:8005"
+
+    # Auto-fill ke_internal_url based on target if not already provided.
+    if not secrets.get("ke_internal_url"):
+        if target == "kubernetes":
+            namespace = body.get("namespace", "dpg")
+            secrets["ke_internal_url"] = f"http://knowledge-engine.{namespace}.svc.cluster.local:8001"
+        else:
+            # Docker Compose: KE is reachable on its service name within the compose network.
+            secrets["ke_internal_url"] = "http://knowledge-engine:8001"
+
+    # Auto-fill ke_devkit_callback_url from devkit external_url if not provided.
+    # KE calls this URL when an ingestion job completes (ingested or failed).
+    # If empty, KE skips the callback and the frontend polls for status instead.
+    if not secrets.get("ke_devkit_callback_url"):
+        devkit_ext = _DEVKIT_CONFIG.external_url
+        if devkit_ext:
+            secrets["ke_devkit_callback_url"] = f"{devkit_ext.rstrip('/')}/api/ingest/callback"
+
     # Mark all services as queued initially
     all_services = [
         "redis", "memgraph", "otel_collector", "jaeger", "prometheus", "loki", "grafana",
@@ -1169,7 +1225,8 @@ async def _run_k8s_deploy(slug: str, state, secrets: dict, resources: dict, kube
                         if secrets.get("ke_devkit_callback_url"):
                             set_values["uploadAuth.devkitCallbackUrl"] = secrets["ke_devkit_callback_url"]
 
-                    # Inject upload chain auth into reach-layer
+                    # Inject upload chain auth into reach-layer and expose as NodePort
+                    # so the local dev-kit can reach it directly from outside the cluster.
                     if svc_name == "reach_layer":
                         if secrets.get("devkit_to_reach_api_key"):
                             set_values["uploadAuth.devkitToReachApiKey"] = secrets["devkit_to_reach_api_key"]
@@ -1177,6 +1234,10 @@ async def _run_k8s_deploy(slug: str, state, secrets: dict, resources: dict, kube
                             set_values["uploadAuth.reachToKeApiKey"] = secrets["reach_to_ke_api_key"]
                         if secrets.get("ke_internal_url"):
                             set_values["uploadAuth.keInternalUrl"] = secrets["ke_internal_url"]
+                        # Expose reach-layer as NodePort so local dev-kit can call it for uploads.
+                        # Fixed port 30805 avoids conflicts and is predictable for the ingest proxy.
+                        set_values["service.type"] = "NodePort"
+                        set_values["service.nodePort"] = "30805"
 
                     block_res = resources.get(svc_name, {})
                     limits = block_res.get("limits", {})

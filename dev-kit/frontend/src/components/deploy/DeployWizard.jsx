@@ -28,8 +28,8 @@ export default function DeployWizard({ slug, onBack }) {
       grafana_admin_password: 'admin',
       devkit_callback_url: '',
       ke_internal_url: '',
-      azure_account_name: '',
-      azure_account_key: '',
+      azure_storage_account: '',
+      azure_storage_key: '',
       azure_container_name: '',
       tool_secrets: {},
     },
@@ -68,7 +68,7 @@ export default function DeployWizard({ slug, onBack }) {
     5: <DeployTargetStep {...stepProps} />,
     6: <PreviewStep {...stepProps} />,
     7: <DeployStatusStep {...stepProps} onSuccess={() => setStep(8)} />,
-    8: <IngestDocumentsStep slug={slug} project={project} onNext={handleNext} onBack={() => setStep(7)} />,
+    8: <IngestDocumentsStep slug={slug} project={project} onNext={onBack} onBack={() => setStep(7)} />,
   }
 
   const isLastStep = step === 8

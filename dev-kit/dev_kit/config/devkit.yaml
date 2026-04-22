@@ -7,6 +7,11 @@
 # Identity used for all upload requests until login is implemented.
 user_id: "devkit-operator"
 
+# URL at which this dev-kit instance is reachable from deployed services (KE → devkit callback).
+# Leave empty to skip callbacks (ingest still works; devkit just polls for status instead).
+# Override via DEVKIT_EXTERNAL_URL env var if running behind a tunnel or reverse proxy.
+external_url: ""
+
 upload:
   # Maximum number of files allowed per batch submission.
   max_files_per_upload: 5

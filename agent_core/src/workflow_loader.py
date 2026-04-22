@@ -575,6 +575,9 @@ class AgentWorkflowLoader:
         """
         for sa_id, subagent in subagents.items():
             for intent in subagent.valid_intents:
+                if intent == "other":
+                    # "other" is a router catch-all — not an NLU classifier label.
+                    continue
                 if intent not in all_nlu_intents:
                     raise ConfigurationError(
                         f"agent_workflow validation failed (rule 4): subagent '{sa_id}' "
@@ -597,9 +600,11 @@ class AgentWorkflowLoader:
         Raises:
             ConfigurationError: If any global intent is also claimed by a subagent.
         """
-        global_intent_set = set(global_intents)
+        # "other" is a router catch-all — it may appear in both subagent valid_intents
+        # and global_intents without conflict.
+        global_intent_set = set(global_intents) - {"other"}
         for sa_id, subagent in subagents.items():
-            overlap = global_intent_set & set(subagent.valid_intents)
+            overlap = global_intent_set & (set(subagent.valid_intents) - {"other"})
             if overlap:
                 raise ConfigurationError(
                     f"agent_workflow validation failed (rule 5): subagent '{sa_id}' "

@@ -85,6 +85,29 @@ function reducer(state, action) {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function statusBadge(row) {
+  switch (row.status) {
+    case 'queued':
+      return (
+        <span className="text-xs text-yellow-400">
+          {row.queuePosition ? `Queued (pos ${row.queuePosition})` : 'Queued'}
+        </span>
+      )
+    case 'ingesting':
+      return <span className="text-xs text-blue-400">Ingesting…</span>
+    case 'ingested':
+      return <span className="text-xs text-green-400">✓ Ingested — {row.chunksAdded} chunks</span>
+    case 'failed':
+      return <span className="text-xs text-red-400">✗ Failed: {row.error || 'unknown error'}</span>
+    default:
+      return null
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
@@ -132,7 +155,16 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
   }
 
   const handleModeChange = (id, mode) => {
-    dispatch({ type: 'UPDATE_ROW', id, patch: { mode, file: null, cloudPath: '', filename: '' } })
+    // Only clear file/filename when switching to cloud_fetch_ingest (text input, no file)
+    // or away from it. Switching between the two upload modes keeps the selected file.
+    const row = state.rows.find(r => r.id === id)
+    const wasCloudFetch = row?.mode === 'cloud_fetch_ingest'
+    const isCloudFetch = mode === 'cloud_fetch_ingest'
+    if (wasCloudFetch || isCloudFetch) {
+      dispatch({ type: 'UPDATE_ROW', id, patch: { mode, file: null, cloudPath: '', filename: '' } })
+    } else {
+      dispatch({ type: 'UPDATE_ROW', id, patch: { mode } })
+    }
   }
 
   const handleFileChange = (id, file) => {
@@ -243,101 +275,141 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
   // Render
   // ---------------------------------------------------------------------------
 
-  const _statusLabel = (row) => {
-    switch (row.status) {
-      case 'queued': return row.queuePosition ? `Queued (position ${row.queuePosition})` : 'Queued'
-      case 'ingesting': return 'Ingesting\u2026'
-      case 'ingested': return `\u2713 Ingested \u2014 ${row.chunksAdded} chunks`
-      case 'failed': return `\u2717 Failed: ${row.error || 'unknown error'}`
-      default: return ''
-    }
-  }
-
   const allTerminal = state.rows.length > 0 &&
     state.rows.every(r => r.status === 'ingested' || r.status === 'failed')
 
   if (!state.config) {
-    return <div className="ingest-documents-step"><p>Loading\u2026</p></div>
+    return (
+      <div className="flex items-center justify-center py-12 text-gray-400 text-sm">
+        Loading…
+      </div>
+    )
   }
 
   return (
-    <div className="ingest-documents-step">
-      <h2>Ingest Knowledge Documents</h2>
-      <p>Upload your documents into the Knowledge Engine vector store.</p>
-      <p className="upload-limits">Max {maxFiles} files &middot; Max {maxSizeMb} MB per file</p>
+    <div>
+      <h2 className="text-lg font-semibold mb-1">Ingest Knowledge Documents</h2>
+      <p className="text-sm text-gray-400 mb-1">
+        Upload your documents into the Knowledge Engine vector store.
+      </p>
+      <p className="text-xs text-gray-500 mb-6">
+        Max {maxFiles} files · Max {maxSizeMb} MB per file
+      </p>
 
+      {/* File rows */}
       {state.rows.length > 0 && (
-        <table className="file-rows">
-          <tbody>
-            {state.rows.map(row => (
-              <tr key={row.id} className={`row-${row.status}`}>
-                <td className="filename-cell">
-                  {row.status !== 'pending' ? (
-                    <span>{row.filename} <span className="status-label">{_statusLabel(row)}</span></span>
-                  ) : row.mode === 'cloud_fetch_ingest' ? (
-                    <input
-                      type="text"
-                      placeholder="e.g. docs/guide.pdf"
-                      value={row.cloudPath}
-                      onChange={e => handleCloudPathChange(row.id, e.target.value)}
-                    />
-                  ) : (
-                    <input
-                      type="file"
-                      accept={supportedExtensions.join(',')}
-                      onChange={e => handleFileChange(row.id, e.target.files?.[0])}
-                    />
-                  )}
-                </td>
-                <td className="mode-cell">
-                  {row.status === 'pending' ? (
-                    <select value={row.mode} onChange={e => handleModeChange(row.id, e.target.value)}>
-                      <option value="local_write_ingest">Local file</option>
-                      {hasAzure && <option value="cloud_upload_ingest">Upload + push to Azure</option>}
-                      {hasAzure && <option value="cloud_fetch_ingest">Fetch from Azure</option>}
-                    </select>
-                  ) : (
-                    <span>{row.mode === 'local_write_ingest' ? 'Local' : 'Azure'}</span>
-                  )}
-                </td>
-                <td>
-                  <button
-                    title="Remove"
-                    onClick={() => handleRemoveRow(row.id)}
-                    disabled={row.status !== 'pending'}
-                  >&times;</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="flex flex-col gap-2 mb-4">
+          {state.rows.map(row => (
+            <div
+              key={row.id}
+              className="flex items-center gap-3 bg-gray-900 border border-gray-700 rounded-xl px-4 py-3"
+            >
+              {/* File input / cloud path / status */}
+              <div className="flex-1 min-w-0">
+                {row.status !== 'pending' ? (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm text-gray-200 truncate">{row.filename}</span>
+                    {statusBadge(row)}
+                  </div>
+                ) : row.mode === 'cloud_fetch_ingest' ? (
+                  <input
+                    type="text"
+                    placeholder="e.g. docs/guide.pdf"
+                    value={row.cloudPath}
+                    onChange={e => handleCloudPathChange(row.id, e.target.value)}
+                    className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                  />
+                ) : (
+                  <input
+                    type="file"
+                    accept={supportedExtensions.join(',')}
+                    onChange={e => handleFileChange(row.id, e.target.files?.[0])}
+                    className="text-sm text-gray-300 file:mr-3 file:py-1 file:px-3 file:rounded-lg file:border-0 file:text-xs file:bg-gray-700 file:text-gray-200 hover:file:bg-gray-600 cursor-pointer"
+                  />
+                )}
+              </div>
+
+              {/* Mode selector */}
+              <div className="shrink-0">
+                {row.status === 'pending' ? (
+                  <select
+                    value={row.mode}
+                    onChange={e => handleModeChange(row.id, e.target.value)}
+                    className="bg-gray-800 border border-gray-600 rounded-lg px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-blue-500"
+                  >
+                    <option value="local_write_ingest">Local file</option>
+                    {hasAzure && <option value="cloud_upload_ingest">Upload + push to Azure</option>}
+                    {hasAzure && <option value="cloud_fetch_ingest">Fetch from Azure</option>}
+                  </select>
+                ) : (
+                  <span className="text-xs text-gray-500">
+                    {row.mode === 'local_write_ingest' ? 'Local' : 'Azure'}
+                  </span>
+                )}
+              </div>
+
+              {/* Remove button */}
+              <button
+                onClick={() => handleRemoveRow(row.id)}
+                disabled={row.status !== 'pending'}
+                title="Remove"
+                className="shrink-0 text-gray-500 hover:text-red-400 disabled:opacity-30 disabled:cursor-not-allowed text-lg leading-none transition-colors"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
       )}
 
-      <div className="row-actions">
-        <button onClick={handleAddRow} disabled={state.rows.length >= maxFiles}>
+      {/* Add file + Upload actions */}
+      <div className="flex items-center gap-3 mb-4">
+        <button
+          onClick={handleAddRow}
+          disabled={state.rows.length >= maxFiles}
+          className="text-sm bg-gray-800 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed text-gray-300 px-4 py-2 rounded-xl border border-gray-700 transition-colors"
+        >
           + Add File
         </button>
         <button
           onClick={handleSubmit}
           disabled={state.submitting || state.rows.length === 0}
-          className="primary-btn"
+          className="text-sm bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white px-5 py-2 rounded-xl font-medium transition-colors"
         >
-          {state.submitting ? 'Uploading\u2026' : 'Upload & Ingest'}
+          {state.submitting ? 'Uploading…' : 'Upload & Ingest'}
         </button>
       </div>
 
-      {state.submitError && <p className="error-msg">{state.submitError}</p>}
+      {/* Validation / submission error */}
+      {state.submitError && (
+        <div className="mb-4 px-4 py-3 bg-red-900/40 border border-red-700 rounded-xl text-sm text-red-300">
+          {state.submitError}
+        </div>
+      )}
 
-      <div className="step-footer">
-        <button onClick={onBack}>&larr; Back</button>
-        <button onClick={() => onNext({})}>Skip</button>
+      {/* Footer nav */}
+      <div className="flex items-center justify-between pt-4 border-t border-gray-800 mt-4">
         <button
-          onClick={() => onNext({})}
-          disabled={state.rows.length > 0 && !allTerminal}
-          className="primary-btn"
+          onClick={onBack}
+          className="text-sm bg-gray-800 hover:bg-gray-700 text-gray-300 px-4 py-2 rounded-xl transition-colors"
         >
-          Done &rarr;
+          ← Back
         </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => onNext({})}
+            className="text-sm text-gray-400 hover:text-gray-200 px-4 py-2 rounded-xl transition-colors"
+          >
+            Skip
+          </button>
+          <button
+            onClick={() => onNext({})}
+            disabled={state.rows.length > 0 && !allTerminal}
+            className="text-sm bg-green-700 hover:bg-green-600 disabled:opacity-40 disabled:cursor-not-allowed text-white px-5 py-2 rounded-xl font-medium transition-colors"
+          >
+            Done →
+          </button>
+        </div>
       </div>
     </div>
   )

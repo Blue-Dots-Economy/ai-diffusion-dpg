@@ -9,6 +9,10 @@ image:
 
 service:
   port: 8005
+  # Set to NodePort to allow the local dev-kit to reach this service from outside the cluster.
+  # When type is NodePort, nodePort pins the host port (must be in 30000–32767).
+  type: ClusterIP
+  nodePort: ""
 
 resources:
   requests:

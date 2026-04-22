@@ -211,4 +211,4 @@ class TestConversationEnginePersistence:
         """_load() must not crash on a corrupt project.json — falls back to default phase."""
         (project_path / "_meta" / "project.json").write_text("{broken")
         engine = ConversationEngine(project_path, mock_client)
-        assert engine._state["phase"] == "overview"
+        assert engine._state["phase"] == "tier"
