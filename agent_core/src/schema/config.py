@@ -179,8 +179,22 @@ class ConversationConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class InvocationSafety(BaseModel):
+    """Safety constraints exposed through a connector's invocation rules.
+
+    Lists entries the agent must never present from a tool result (e.g.
+    closed or inactive jobs) or speak aloud (e.g. GPS coordinates, match
+    scores). Consumed by per-subagent prompts as grounding context.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    never_present: list[str] = Field(default_factory=list)
+    never_speak: list[str] = Field(default_factory=list)
+
+
 class InvocationRules(BaseModel):
-    """LLM invocation contract for a connector (GH-137)."""
+    """LLM invocation contract for a connector (GH-137, GH-176)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -190,6 +204,15 @@ class InvocationRules(BaseModel):
     on_empty: str = ""
     on_failure: str = ""
     bridge_line: str = ""
+    # GH-176: optional per-connector presentation contract. Consumed by the
+    # subagent prompt rather than by any adapter — these fields shape how
+    # the LLM talks about the tool's results, they do not change how the
+    # tool is invoked.
+    exception_no_call: str = ""
+    ranking_order: list[str] = Field(default_factory=list)
+    presentation_limit: int | None = None
+    refinement_loop_max: int | None = None
+    safety: InvocationSafety = Field(default_factory=InvocationSafety)
 
 
 class InputSchema(BaseModel):
@@ -384,6 +407,8 @@ class TtsRulesConfig(BaseModel):
     abbreviations: str = ""
     output_script: str = ""
     english_loanwords: str = ""
+    email: str = ""
+    named_entities: str = ""
 
 
 class SemanticGateConfig(BaseModel):
