@@ -33,6 +33,7 @@ _env_local_warn = _env_local.exists() and not load_dotenv(_env_local)
 load_dotenv()  # .env in block dir or injected environment (Docker/prod)
 
 from src.registry.adapter_factory import AdapterFactory
+from src.schema.config import MergedConfig
 from src.server import create_app
 
 logging.basicConfig(
@@ -114,6 +115,9 @@ def _build_config() -> tuple[dict, str, int]:
     dpg_config = _load_config("config/dpg.yaml")
     domain_config = _load_config(str(_domain_config_path("action_gateway")))
     config = _deep_merge(dpg_config, domain_config)
+    # Strict schema check on the full merged config — unknown keys, wrong
+    # types, or out-of-range values at any depth fail here at startup.
+    MergedConfig.validate_full(config)
     server_cfg = config.get("server", {})
     host = server_cfg.get("host", "0.0.0.0")
     port = server_cfg.get("port", 9999)

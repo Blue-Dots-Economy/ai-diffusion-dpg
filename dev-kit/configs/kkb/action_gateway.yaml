@@ -266,7 +266,6 @@ tools:
   #           source: agent
   #           type: integer
   #           description: "Requested callback window in hours. Default 24."
-  #           default: 24
 
 observability:
   domain: "kkb"
