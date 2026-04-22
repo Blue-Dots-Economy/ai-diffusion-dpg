@@ -114,6 +114,8 @@ user_data_persistence:
   default_mode: saved
 
 reengagement:
+    # Trigger scheduler is not yet implemented — tracked in GH-168.
+    # Config is validated at startup, but no runtime code acts on these rules.
     triggers:
       - event: DOP_MT              # drop-off after market truth
         delay_hours: 72

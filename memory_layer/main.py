@@ -38,6 +38,7 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 from memory_layer import MemoryLayer
+from schema.config import MergedConfig
 from server import create_app
 
 # ---------------------------------------------------------------------------
@@ -133,6 +134,10 @@ def _build_app():
     dpg_config = _load_config("config/dpg.yaml")
     domain_config = _load_config(str(_domain_config_path("memory_layer")))
     config = _deep_merge(dpg_config, domain_config)
+
+    # Strict schema check on the full merged config — unknown keys, wrong
+    # types, or out-of-range values at any depth fail here at startup.
+    MergedConfig.validate_full(config)
 
     from dpg_telemetry import init_otel
     init_otel(service_name="memory_layer", config=config)
