@@ -147,7 +147,8 @@ services:
       - AZURE_STORAGE_KEY=${AZURE_STORAGE_KEY:-}
       - AZURE_CONTAINER_NAME=${AZURE_CONTAINER_NAME:-}
     user: root                               # needed to write to root-owned chroma_data named volume
-    command: ["sh", "-c", "if [ ! -f /app/chroma_db/chroma.sqlite3 ]; then echo 'ChromaDB empty — running ingest...' && python -m scripts.ingest --config config/knowledge_engine.yaml; else echo 'ChromaDB exists — skipping ingest.'; fi && python main.py"]
+    # Ingest is user-triggered via the dev-kit upload flow (step 8), not on startup.
+    # The KE server starts immediately; documents are ingested when the user uploads via /upload.
     volumes:
       - ../../dev-kit/dpg/knowledge_engine.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-kkb}/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro

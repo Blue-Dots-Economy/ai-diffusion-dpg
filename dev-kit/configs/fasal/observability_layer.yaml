@@ -1,0 +1,100 @@
+observability:
+  domain: fasal
+  sli:
+    turn_latency_p99_ms: 1200
+    trust_block_rate_max: 0.05
+  audit:
+    retention_days: 90
+  outcomes:
+    lifecycle:
+    - state: new_farmer_welcomed
+      trigger_tool: null
+      trigger_condition: null
+    - state: problem_reported
+      trigger_tool: null
+      trigger_condition: null
+    - state: problem_diagnosed
+      trigger_tool: get_advisory_crop
+      trigger_condition: null
+    - state: treatment_recommended
+      trigger_tool: null
+      trigger_condition: null
+    - state: treatment_confirmed
+      trigger_tool: null
+      trigger_condition: null
+    - state: prevention_advised
+      trigger_tool: null
+      trigger_condition: null
+    - state: scheme_offered
+      trigger_tool: null
+      trigger_condition: null
+    - state: scheme_interested
+      trigger_tool: null
+      trigger_condition: null
+    - state: callback_scheduled
+      trigger_tool: null
+      trigger_condition: null
+    metrics:
+    - name: problem_diagnosis.dropoff_rate
+      instrument: gauge
+      description: Fraction of farmers who report a problem but do not complete diagnosis
+      unit: '%'
+      attributes:
+      - subagent
+      - district
+    - name: diagnosis.confidence_low
+      instrument: counter
+      description: Count of turns where advisory confidence score < 0.7
+      unit: '1'
+      attributes:
+      - crop
+      - district
+    - name: treatment.refusal_rate
+      instrument: gauge
+      description: Fraction of farmers who decline recommended treatment
+      unit: '%'
+      attributes:
+      - crop
+      - district
+    - name: scheme.engagement_rate
+      instrument: gauge
+      description: Fraction of farmers offered schemes who express interest
+      unit: '%'
+      attributes:
+      - scheme_type
+      - district
+    - name: intent.misclassification_rate
+      instrument: gauge
+      description: Fraction of turns where LLM intent routing does not match expected
+        subagent
+      unit: '%'
+      attributes:
+      - from_subagent
+      - intent
+    - name: tool.timeout_count
+      instrument: counter
+      description: Count of tool calls that exceed timeout threshold
+      unit: '1'
+      attributes:
+      - tool_name
+      - district
+    - name: session.avg_turns
+      instrument: histogram
+      description: Distribution of conversation turns per session
+      unit: '1'
+      attributes:
+      - entry_type
+      - district
+    - name: session.completion_rate
+      instrument: gauge
+      description: Fraction of sessions that reach an outcome state (not abandoned)
+      unit: '%'
+      attributes:
+      - entry_type
+      - district
+    - name: asr.retry_rate
+      instrument: gauge
+      description: Fraction of voice turns requiring ASR retry due to low confidence
+      unit: '%'
+      attributes:
+      - district

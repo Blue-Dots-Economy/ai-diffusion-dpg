@@ -309,6 +309,15 @@ class ConfigAccumulator:
         """
         self._data["reach_layer"]["_selected_channels"] = list(channels)
 
+    def get_reach_channel_selection(self) -> list[str]:
+        """Return the selected deployment channels, or all channels if none set.
+
+        Returns:
+            List of selected channel names. Defaults to ['web', 'voice', 'cli']
+            if the user never called set_reach_channels during configuration.
+        """
+        return list(self._data["reach_layer"].get("_selected_channels", ["web", "voice", "cli"]))
+
     def set_agent_core_connector(self, category: str, connector: dict) -> None:
         """Add or replace a connector in agent_core.connectors[category].
 

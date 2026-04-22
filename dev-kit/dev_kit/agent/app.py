@@ -773,6 +773,11 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
         Dict with ``target`` and ``preview`` keys. Preview contains rendered
         deployment manifests keyed by filename.
     """
+    _CHANNEL_SERVICE: dict[str, str] = {
+        "web": "reach_layer_web",
+        "voice": "reach_layer_voice",
+        "cli": "reach_layer_cli",
+    }
     target = body.get("target", "docker")
     if target == "docker":
         # Decrypt secrets here too so preview can show what will be written to disk.
@@ -785,17 +790,35 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
         if resources:
             content = _apply_resources_to_compose(content, resources)
 
-        # Inject tool secrets into the preview the same way _run_docker_deploy does,
-        # so the user sees exactly what will be deployed (values masked).
+        # Apply channel selection: remove reach services for unselected channels so
+        # the preview matches exactly what _run_docker_deploy will deploy.
+        selected_channels = _get_engine(slug).accumulator.get_reach_channel_selection()
+        services_to_remove = {
+            svc_name
+            for channel, svc_name in _CHANNEL_SERVICE.items()
+            if channel not in selected_channels
+        }
+        # ngrok depends_on reach_layer_web; remove it too if web is not selected.
+        if "web" not in selected_channels:
+            services_to_remove.add("ngrok")
+
+        import yaml as _yaml
+        compose_doc = _yaml.safe_load(content)
         tool_secrets = secrets.get("tool_secrets", {})
-        if tool_secrets:
-            import yaml as _yaml
-            compose_doc = _yaml.safe_load(content)
-            ag_env = compose_doc.get("services", {}).get("action_gateway", {}).setdefault("environment", [])
-            for env_var in tool_secrets:
-                if tool_secrets[env_var]:
-                    ag_env.append(f"{env_var}=<set at deploy time>")
-            content = _yaml.dump(compose_doc, default_flow_style=False, sort_keys=False)
+        services = compose_doc.get("services", {})
+        for svc_name in list(services.keys()):
+            if svc_name in services_to_remove:
+                del services[svc_name]
+                continue
+            svc = services[svc_name]
+            svc.pop("container_name", None)
+            svc.pop("pull_policy", None)  # strip pull_policy so preview matches actual deploy
+            if svc_name == "action_gateway" and tool_secrets:
+                ag_env = svc.setdefault("environment", [])
+                for env_var in tool_secrets:
+                    if tool_secrets[env_var]:
+                        ag_env.append(f"{env_var}=<set at deploy time>")
+        content = _yaml.dump(compose_doc, default_flow_style=False, sort_keys=False)
 
         return {"target": target, "preview": {"docker-compose.yml": content}}
 
@@ -946,7 +969,8 @@ async def execute_deploy(slug: str, body: dict) -> dict:
         state.set_service(svc, "queued")
 
     if target == "docker":
-        asyncio.create_task(_run_docker_deploy(slug, state, secrets, resources))
+        selected_channels = _get_engine(slug).accumulator.get_reach_channel_selection()
+        asyncio.create_task(_run_docker_deploy(slug, state, secrets, resources, selected_channels))
     else:
         kubeconfig_content = body.get("kubeconfig", "")
         namespace = body.get("namespace", "dpg")
@@ -955,11 +979,28 @@ async def execute_deploy(slug: str, body: dict) -> dict:
     return {"status": "started", "target": target}
 
 
-async def _run_docker_deploy(slug: str, state, secrets: dict, resources: dict) -> None:
+async def _run_docker_deploy(
+    slug: str,
+    state,
+    secrets: dict,
+    resources: dict,
+    selected_channels: list[str] | None = None,
+) -> None:
     """Background task: apply resources, resolve domain, and run docker compose up."""
     import tempfile
     from dev_kit.agent.deployer.compose import run_compose_up
     from dev_kit.agent.deployer.helm import DEPLOY_PHASES
+
+    # Map channel name → compose service name. CLI is already profile-gated in the
+    # compose file so it never starts with `docker compose up`; web/voice need explicit
+    # removal when not selected.
+    _CHANNEL_SERVICE: dict[str, str] = {
+        "web": "reach_layer_web",
+        "voice": "reach_layer_voice",
+        "cli": "reach_layer_cli",
+    }
+    if selected_channels is None:
+        selected_channels = ["web", "voice", "cli"]
 
     try:
         # Read compose file, apply domain and resources
@@ -970,12 +1011,30 @@ async def _run_docker_deploy(slug: str, state, secrets: dict, resources: dict) -
 
         # Patch the parsed YAML in one pass:
         #   - strip container_name (avoids conflicts across deployments)
+        #   - remove reach_layer_* services for unselected channels
         #   - inject connector tool secrets directly into action_gateway environment
         import yaml as _yaml
         compose_doc = _yaml.safe_load(content)
         tool_secrets = secrets.get("tool_secrets", {})
-        for svc_name, svc in compose_doc.get("services", {}).items():
+
+        # Determine which reach_layer services to remove
+        services_to_remove = {
+            svc_name
+            for channel, svc_name in _CHANNEL_SERVICE.items()
+            if channel not in selected_channels
+        }
+        # ngrok depends_on reach_layer_web; remove it too if web is not selected.
+        if "web" not in selected_channels:
+            services_to_remove.add("ngrok")
+
+        services = compose_doc.get("services", {})
+        for svc_name in list(services.keys()):
+            if svc_name in services_to_remove:
+                del services[svc_name]
+                continue
+            svc = services[svc_name]
             svc.pop("container_name", None)
+            svc.pop("pull_policy", None)  # use local image if present; avoid pulling stale Hub image
             if svc_name == "action_gateway" and tool_secrets:
                 env_list = svc.setdefault("environment", [])
                 for env_var, value in tool_secrets.items():

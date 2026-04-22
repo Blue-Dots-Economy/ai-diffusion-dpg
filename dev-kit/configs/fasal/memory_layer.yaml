@@ -1,0 +1,50 @@
+state:
+  session:
+    ttl_minutes: 1440
+    schema:
+      crop:
+        type: string
+        default: ''
+      crop_issue:
+        type: string
+        default: ''
+      place:
+        type: string
+        default: ''
+      clarifying_questions_asked:
+        type: array
+        default: []
+  persistent:
+    backend: duckdb
+    graph:
+      user_node:
+        label: Farmer
+        key: phone_number
+      subnodes:
+        Profile:
+          rel: HAS_PROFILE
+          declared_fields:
+          - name
+          - location
+          - crops_grown
+          - farm_size_acres
+          - soil_type
+        Journey:
+          rel: HAS_JOURNEY
+          declared_fields:
+          - last_issue_reported
+          - past_issues
+          - last_call_date
+          - call_count
+          - eligibility_status
+        Attributes:
+          rel: HAS_ATTRIBUTES
+          grouping: true
+          adhoc:
+            label: Attribute
+            rel: HAS_ATTRIBUTE
+            fields:
+            - key
+            - value
+user_data_persistence:
+  default_mode: anonymous

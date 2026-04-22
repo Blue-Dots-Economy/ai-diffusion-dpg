@@ -115,7 +115,7 @@ class TestCreateProject:
         assert data["slug"] == "new-project"
         assert data["name"] == "New Project"
         assert data["description"] == "test"
-        assert data["current_phase"] == "overview"
+        assert data["current_phase"] == "tier"
 
     def test_create_writes_project_json(self, client, tmp_path):
         """Project metadata is persisted to disk."""
