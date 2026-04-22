@@ -38,10 +38,24 @@ preprocessing:
       and government schemes.
     intents:
     - greeting
-    - disease_query
-    - treatment_advice
-    - scheme_inquiry
     - provide_district
+    - report_problem
+    - describe_symptom
+    - confirm_treatment
+    - ask_prevention
+    - ask_scheme
+    - confirm_application
+    - ask_supplies
+    - ask_timing
+    - ask_about_schemes
+    - ask_scheme_details
+    - ask_eligibility
+    - ask_application
+    - interested_scheme
+    - not_interested
+    - ask_followup
+    - escalate_to_human
+    - end_session
     - consent_granted
     - consent_declined
     - unknown
