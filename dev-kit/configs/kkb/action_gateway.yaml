@@ -211,34 +211,6 @@ tools:
     response:
       max_size_chars: 1000
 
-  # - id: onest_apply
-  #   type: rest_api
-  #   category: write
-  #   description: "Submit a job application via ONEST on behalf of the user. Call only after user explicitly confirms they want to apply. Requires job_id from a previous search result and the user's profile_id. Returns order confirmation with provider details, job info, and fulfillment status."
-  #   base_url: "https://onest-lite-bap.dhiway.net/api/v2"
-  #   auth:
-  #     type: api_key
-  #     header: x-api-key
-  #     secret_env: ONEST_API_KEY
-  #   timeout_ms: 10000
-  #   endpoints:
-  #     - name: apply
-  #       method: POST
-  #       path: /apply
-  #       params:
-  #         - name: job_id
-  #           source: agent
-  #           type: string
-  #           required: true
-  #           description: "Job listing ID from a previous onest_market_lookup search result"
-  #         - name: profile_id
-  #           source: agent
-  #           type: string
-  #           required: true
-  #           description: "User's ONEST profile ID"
-  #   response:
-  #     max_size_chars: 4000
-
   # - id: counsellor_schedule
   #   type: rest_api
   #   category: write

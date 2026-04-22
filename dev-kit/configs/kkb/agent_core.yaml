@@ -176,7 +176,7 @@ conversation:
       ## Session-end evaluation
       When the user clearly signals they want to end this conversation — by saying words like
       "shukriya", "theek hai bandh karo", "alvida", "phone rakh deti hoon", "phir milte hain",
-      "bas ho gaya", or when you have delivered a complete closing message ending with "Goodbye" —
+      "bas ho gaya", or when you have delivered a complete closing messages —
       call the `end_session` tool to cleanly close the session and save state for next time.
       Do NOT call end_session while the user still has open questions or is mid-journey.
     fail_action: "none"
