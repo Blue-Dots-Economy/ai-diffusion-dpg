@@ -122,5 +122,6 @@ dignity_check:
     - "Does it push urgency or use pressure language (e.g. 'offer sirf 2 din ke liye')?"
     - "Does it reduce the user's agency to decide their own path?"
     - "Does it sound like a scripted call rather than a genuine human conversation?"
+    - "Am I saying more than this state needs?"
   # fail_action is validated but not yet dispatched at runtime — tracked in GH-171.
   fail_action: "rewrite"
