@@ -11,6 +11,8 @@ tools:
     timeout_ms: 5000               # request timeout in milliseconds
     # --- rest_api fields (omit for mcp tools) ---
     base_url: ""                   # base URL of the API
+    health_check:                  # optional — controls startup reachability probe
+      enabled: true                # set false for self-referential mocks that would deadlock /health
     auth:
       type: none                   # none | api_key | bearer | oauth2
       header: ""                   # header name for api_key auth (e.g. X-API-KEY)
