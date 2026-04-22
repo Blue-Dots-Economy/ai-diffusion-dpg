@@ -10,7 +10,7 @@ agent:
 channels:
   voice:
     system_prompt_suffix: |
-      1-2 chhote vakya bolein. Bullet points ya markdown mat use karein.
+      You are conversing over the phone, so keep responses short and simple. Do not emit any markdown or emojis.
 
       <!-- tts_rules:begin -->
       (auto-generated from channels.voice.tts_rules; edit tts_rules to change)
