@@ -24,7 +24,7 @@ metadata:
     app: {{ .Release.Name }}
 spec:
   accessModes:
-    - ReadWriteMany
+    - ReadWriteOnce
   resources:
     requests:
       storage: {{ .Values.storage.kbData.size }}
