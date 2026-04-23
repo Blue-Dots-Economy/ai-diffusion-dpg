@@ -326,3 +326,27 @@ def test_enum_exports_are_usable():
     assert RoutingOperator.eq.value == "eq"
     assert SpecialHandler.hitl.value == "hitl"
     assert AssemblyMode.streaming.value == "streaming"
+
+
+def test_agent_workflow_config_global_tools_default_empty():
+    from src.schema.config import AgentWorkflowConfig
+    cfg = AgentWorkflowConfig()
+    assert cfg.global_tools == []
+
+
+def test_agent_workflow_config_global_tools_accepts_list():
+    from src.schema.config import AgentWorkflowConfig
+    cfg = AgentWorkflowConfig(
+        workflow_id="w",
+        version="1.0.0",
+        global_tools=["get_profile", "onest_market_lookup"],
+    )
+    assert cfg.global_tools == ["get_profile", "onest_market_lookup"]
+
+
+def test_agent_workflow_config_rejects_unknown_field():
+    """extra='forbid' must still reject typos."""
+    from pydantic import ValidationError
+    from src.schema.config import AgentWorkflowConfig
+    with pytest.raises(ValidationError):
+        AgentWorkflowConfig(workflow_id="w", version="1.0.0", globall_tools=["x"])
