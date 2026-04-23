@@ -1253,3 +1253,28 @@ def test_process_turn_session_ended_default_false():
     agent._manager_agent.session_ended = False
     result = agent.process_turn(_turn_input())
     assert result.session_ended is False
+
+
+def test_active_tools_use_global_tool_defs_when_set():
+    """When workflow.global_tool_defs is non-empty, every turn injects that list."""
+    global_tools = [{"name": "shared_tool", "description": "", "input_schema": {}}]
+    workflow = _make_workflow()
+    workflow.global_tool_defs = global_tools
+    workflow.resolve_tools_for.return_value = global_tools
+    agent = _make_agent(workflow=workflow)
+    agent.process_turn(_turn_input())
+    call_kwargs = agent._llm.call.call_args.kwargs
+    tool_names = [t["name"] for t in call_kwargs["tools"]]
+    assert tool_names == ["shared_tool"]
+
+
+def test_active_tools_fall_back_to_subagent_tool_defs_when_global_empty():
+    """When workflow.global_tool_defs is empty, subagent-specific tool_defs are used."""
+    workflow = _make_workflow()
+    workflow.global_tool_defs = []
+    # Simulate resolve_tools_for falling back to per-subagent tool_defs (empty here).
+    workflow.resolve_tools_for.return_value = []
+    agent = _make_agent(workflow=workflow)
+    agent.process_turn(_turn_input())
+    call_kwargs = agent._llm.call.call_args.kwargs
+    assert call_kwargs["tools"] == []

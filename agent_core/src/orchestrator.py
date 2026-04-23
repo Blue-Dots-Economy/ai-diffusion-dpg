@@ -905,7 +905,7 @@ class AgentCore(AgentCoreBase):
             )
 
         # ── Step 8: LLM call #1 with scoped tools ────────────────────
-        active_tools = self._workflow.tool_defs.get(next_subagent_id, [])
+        active_tools = self._workflow.resolve_tools_for(next_subagent_id)
         output_format = next_subagent.output_format
         primary_model = self._config.get("agent", {}).get("primary_model", "unknown")
         logger.info(
