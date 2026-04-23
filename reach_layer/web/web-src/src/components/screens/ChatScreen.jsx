@@ -50,10 +50,8 @@ export function ChatScreen({
     <div className="flex h-full bg-[var(--bg)]">
       <Sidebar
         config={config}
-        authEnabled={authEnabled}
         collapsed={collapsed}
         onToggleCollapsed={toggle}
-        onSignOut={onSwitchUser}
         sessions={sessions}
         activeSessionId={sessionId}
         onNewChat={onNewChat}
@@ -68,6 +66,7 @@ export function ChatScreen({
           authEnabled={authEnabled}
           theme={theme}
           onToggleTheme={onToggleTheme}
+          onSignOut={onSwitchUser}
         />
         <MessageList
           messages={messages}

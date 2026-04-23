@@ -11,10 +11,8 @@ const config = {
 
 const baseProps = {
   config,
-  authEnabled: false,
   collapsed: false,
   onToggleCollapsed: vi.fn(),
-  onSignOut: vi.fn(),
 }
 
 describe('Sidebar (expanded)', () => {
@@ -36,36 +34,10 @@ describe('Sidebar (expanded)', () => {
     expect(onToggleCollapsed).toHaveBeenCalled()
   })
 
-  it('renders Switch user button when auth disabled', () => {
+  it('does not render a sign-out button (moved to app bar profile menu)', () => {
     render(<Sidebar {...baseProps} />)
-    expect(screen.getByRole('button', { name: /switch user/i })).toBeInTheDocument()
-  })
-
-  it('renders Sign out button when auth enabled', () => {
-    render(<Sidebar {...baseProps} authEnabled={true} />)
-    expect(screen.getByRole('button', { name: /sign out/i })).toBeInTheDocument()
-  })
-
-  it('opens ConfirmDialog and fires onSignOut when confirmed', () => {
-    const onSignOut = vi.fn()
-    render(<Sidebar {...baseProps} authEnabled={true} onSignOut={onSignOut} />)
-    // First click on the footer button opens the dialog (does not sign out).
-    fireEvent.click(screen.getByRole('button', { name: /^sign out$/i }))
-    expect(onSignOut).not.toHaveBeenCalled()
-    const dialog = screen.getByRole('dialog')
-    // Confirm button inside the dialog with the same label.
-    fireEvent.click(within(dialog).getByRole('button', { name: /^sign out$/i }))
-    expect(onSignOut).toHaveBeenCalled()
-  })
-
-  it('skips sign out when ConfirmDialog cancel is clicked', () => {
-    const onSignOut = vi.fn()
-    render(<Sidebar {...baseProps} authEnabled={true} onSignOut={onSignOut} />)
-    fireEvent.click(screen.getByRole('button', { name: /^sign out$/i }))
-    const dialog = screen.getByRole('dialog')
-    fireEvent.click(within(dialog).getByRole('button', { name: /cancel/i }))
-    expect(onSignOut).not.toHaveBeenCalled()
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /sign out/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /switch user/i })).not.toBeInTheDocument()
   })
 
   it('renders New chat button and triggers onNewChat', () => {
@@ -140,15 +112,6 @@ describe('Sidebar (collapsed)', () => {
   it('does not render a separate collapse button when collapsed', () => {
     render(<Sidebar {...baseProps} collapsed={true} />)
     expect(screen.queryByLabelText('Collapse sidebar')).not.toBeInTheDocument()
-  })
-
-  it('still renders sign-out button (icon-only) when collapsed', () => {
-    const onSignOut = vi.fn()
-    render(<Sidebar {...baseProps} collapsed={true} onSignOut={onSignOut} />)
-    fireEvent.click(screen.getByLabelText('Switch user'))
-    const dialog = screen.getByRole('dialog')
-    fireEvent.click(within(dialog).getByRole('button', { name: /^switch user$/i }))
-    expect(onSignOut).toHaveBeenCalled()
   })
 
   it('falls back to app_icon when agent_avatar missing', () => {

@@ -40,15 +40,6 @@ function ChevronIcon() {
   )
 }
 
-function LogoutIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-      <path d="M6 12.5a.5.5 0 0 0 .5.5h8a.5.5 0 0 0 .5-.5v-9a.5.5 0 0 0-.5-.5h-8a.5.5 0 0 0-.5.5v2a.5.5 0 0 1-1 0v-2A1.5 1.5 0 0 1 6.5 2h8A1.5 1.5 0 0 1 16 3.5v9a1.5 1.5 0 0 1-1.5 1.5h-8A1.5 1.5 0 0 1 5 12.5v-2a.5.5 0 0 1 1 0z" />
-      <path d="M.146 8.354a.5.5 0 0 1 0-.708l3-3a.5.5 0 1 1 .708.708L1.707 7.5H10.5a.5.5 0 0 1 0 1H1.707l2.147 2.146a.5.5 0 0 1-.708.708z" />
-    </svg>
-  )
-}
-
 function PlusIcon() {
   return (
     <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
@@ -74,23 +65,17 @@ function TrashIcon() {
  *      itself acts as the expand button. When expanded a chevron on the
  *      right collapses the sidebar.
  *   2. New chat button + Conversations list
- *   3. Footer (Sign out / Switch user). The theme toggle lives in the
- *      top app bar, not here.
  *
  * @param {{
  *   config: Object,
- *   authEnabled: boolean,
  *   collapsed: boolean,
  *   onToggleCollapsed: () => void,
- *   onSignOut: () => void,
  * }} props
  */
 export function Sidebar({
   config,
-  authEnabled,
   collapsed,
   onToggleCollapsed,
-  onSignOut,
   sessions = [],
   activeSessionId = null,
   onNewChat,
@@ -108,44 +93,18 @@ export function Sidebar({
   const deleteConversationTooltip = config.delete_conversation_tooltip || 'Delete conversation'
 
   const widthClass = collapsed ? 'w-14' : 'w-64'
-  const signOutLabel = authEnabled ? 'Sign out' : 'Switch user'
-  const signOutConfirm =
-    (authEnabled ? config.sign_out_confirm : config.switch_user_confirm) ||
-    (authEnabled ? 'Sign out of your account?' : 'Switch user? Your current session will be closed.')
-  const confirmLabel = config.confirm_label || 'Confirm'
   const cancelLabel = config.cancel_label || 'Cancel'
   const logoEmoji = config.agent_avatar || config.app_icon || '🤖'
 
-  // One dialog controlled by a pending-action object. null = closed.
-  //   { kind: 'signOut' } | { kind: 'delete', sessionId, label }
+  // Pending delete confirmation. null = closed.
   const [pending, setPending] = useState(null)
 
   const closeDialog = () => setPending(null)
   const confirmPending = () => {
     if (!pending) return
-    if (pending.kind === 'signOut') {
-      onSignOut && onSignOut()
-    } else if (pending.kind === 'delete') {
-      onDeleteSession && onDeleteSession(pending.sessionId)
-    }
+    onDeleteSession && onDeleteSession(pending.sessionId)
     setPending(null)
   }
-
-  const dialogProps = pending?.kind === 'signOut'
-    ? {
-        title: signOutLabel,
-        message: signOutConfirm,
-        confirmLabel: signOutLabel,
-        danger: true,
-      }
-    : pending?.kind === 'delete'
-    ? {
-        title: deleteConversationTooltip,
-        message: deleteConversationConfirm,
-        confirmLabel: deleteConversationTooltip,
-        danger: true,
-      }
-    : null
 
   return (
     <aside
@@ -248,26 +207,14 @@ export function Sidebar({
         )}
       </div>
 
-      {/* Footer */}
-      <div className="px-3 py-3 border-t border-[var(--border)] space-y-2">
-        <button
-          onClick={() => setPending({ kind: 'signOut' })}
-          title={signOutLabel}
-          aria-label={signOutLabel}
-          className={`w-full flex items-center gap-2 ${collapsed ? 'justify-center' : ''} px-2.5 py-2 rounded-lg text-[12px] font-semibold text-red-300 hover:text-red-200 hover:bg-red-500/10 border border-red-500/20 hover:border-red-500/40 transition-colors`}
-        >
-          <LogoutIcon />
-          {!collapsed && <span>{signOutLabel}</span>}
-        </button>
-      </div>
 
       <ConfirmDialog
-        open={!!dialogProps}
-        title={dialogProps?.title}
-        message={dialogProps?.message || ''}
-        confirmLabel={dialogProps?.confirmLabel || confirmLabel}
+        open={!!pending}
+        title={deleteConversationTooltip}
+        message={deleteConversationConfirm}
+        confirmLabel={deleteConversationTooltip}
         cancelLabel={cancelLabel}
-        danger={!!dialogProps?.danger}
+        danger
         onConfirm={confirmPending}
         onCancel={closeDialog}
       />
