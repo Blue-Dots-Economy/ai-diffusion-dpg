@@ -1278,3 +1278,68 @@ def test_active_tools_fall_back_to_subagent_tool_defs_when_global_empty():
     agent.process_turn(_turn_input())
     call_kwargs = agent._llm.call.call_args.kwargs
     assert call_kwargs["tools"] == []
+
+
+# ---------------------------------------------------------------------------
+# apply_job post-tool hook (GH-182)
+# ---------------------------------------------------------------------------
+
+def test_apply_job_success_moves_session_to_post_applied():
+    """When apply_job returns success, the next-turn subagent becomes post_applied."""
+    from src.models import ToolCall, ToolResult
+
+    post_applied_sa = _make_subagent("post_applied")
+    workflow = _make_workflow(extra_subagents={"post_applied": post_applied_sa})
+    agent = _make_agent(workflow=workflow)
+    agent._manager_agent.run_turn.return_value = (
+        "Applied successfully.",
+        [ToolCall(tool_name="apply_job", tool_use_id="tu_1", input_params={})],
+        [ToolResult(tool_use_id="tu_1", tool_name="apply_job", success=True, result={"applied": True})],
+    )
+
+    agent.process_turn(_turn_input("haan apply kar do"))
+
+    writes = [c.args for c in agent._memory.write.call_args_list]
+    # Find any write that sets current_subagent_id to post_applied
+    assert any(
+        len(w) >= 5 and w[3] == "current_subagent_id" and w[4] == "post_applied"
+        for w in writes
+    )
+
+
+def test_apply_job_failure_does_not_move_session():
+    """When apply_job returns failure, the session stays on the current subagent."""
+    from src.models import ToolCall, ToolResult
+
+    post_applied_sa = _make_subagent("post_applied")
+    workflow = _make_workflow(extra_subagents={"post_applied": post_applied_sa})
+    agent = _make_agent(workflow=workflow)
+    agent._manager_agent.run_turn.return_value = (
+        "Apply failed.",
+        [ToolCall(tool_name="apply_job", tool_use_id="tu_1", input_params={})],
+        [ToolResult(tool_use_id="tu_1", tool_name="apply_job", success=False, result={"error": "upstream"})],
+    )
+
+    agent.process_turn(_turn_input("haan apply kar do"))
+
+    writes = [c.args for c in agent._memory.write.call_args_list]
+    assert not any(
+        len(w) >= 5 and w[3] == "current_subagent_id" and w[4] == "post_applied"
+        for w in writes
+    )
+
+
+def test_apply_job_hook_skipped_when_post_applied_subagent_missing():
+    """Framework stays domain-agnostic — no crash when workflow has no post_applied."""
+    from src.models import ToolCall, ToolResult
+
+    workflow = _make_workflow()  # no post_applied subagent
+    agent = _make_agent(workflow=workflow)
+    agent._manager_agent.run_turn.return_value = (
+        "ok",
+        [ToolCall(tool_name="apply_job", tool_use_id="tu_1", input_params={})],
+        [ToolResult(tool_use_id="tu_1", tool_name="apply_job", success=True, result={})],
+    )
+
+    # Should not raise
+    agent.process_turn(_turn_input("apply"))

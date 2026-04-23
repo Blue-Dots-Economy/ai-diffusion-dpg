@@ -1027,6 +1027,32 @@ class AgentCore(AgentCoreBase):
                             },
                         )
 
+        # ── Post-tool hook: apply_job success → post_applied transition ──
+        # After the tool-use loop, if any ToolResult for "apply_job" succeeded,
+        # move the session to the post_applied subagent for the NEXT turn.
+        # The current turn's response was already produced under the commitment
+        # subagent's system prompt — that is intentional.
+        # Guard ensures the framework stays domain-agnostic: other domains that
+        # do not define a post_applied subagent get a no-op.
+        if tool_results and "post_applied" in self._workflow.subagents:
+            for tr in tool_results:
+                if getattr(tr, "tool_name", None) == "apply_job" and getattr(tr, "success", False):
+                    self._write_memory_sync(
+                        session_id, user_id, "session",
+                        "current_subagent_id", "post_applied",
+                    )
+                    bundle.session["current_subagent_id"] = "post_applied"
+                    logger.info(
+                        "orchestrator.post_applied_transition",
+                        extra={
+                            "operation": "orchestrator.post_tool_hook",
+                            "status": "success",
+                            "session_id": session_id,
+                            "trigger_tool": "apply_job",
+                        },
+                    )
+                    break
+
         # ── Step 10: Trust check on output ────────────────────────────
         logger.info(
             "  [STEP 10] Trust Output Check  →  POST %s/check/output  (session=%s)",
@@ -2708,6 +2734,7 @@ class AgentCore(AgentCoreBase):
 
                 yield SignalEvent(stage="tool_start", status="start")
                 tool_results_for_llm = []
+                _stream_tool_results = []  # Collect ToolResult objects for post-tool hook
                 for tc in e.tool_calls:
                     if self._async_gateway:
                         tool_result = await self._async_gateway.execute(tc, session_id, user_id)
@@ -2718,6 +2745,7 @@ class AgentCore(AgentCoreBase):
                             extra={"session_id": session_id, "tool_name": tc.tool_name},
                         )
                         break
+                    _stream_tool_results.append(tool_result)
                     tool_results_for_llm.append({
                         "type": "tool_result",
                         "tool_use_id": tc.tool_use_id,
@@ -2812,6 +2840,28 @@ class AgentCore(AgentCoreBase):
                     "  [STEP 8] LLM Stream Call #2  ✓  model_used=%s  latency=%dms",
                     model_used, int((time.time() - t8b) * 1000),
                 )
+
+                # Post-tool hook: apply_job success → post_applied transition
+                # Mirror of the sync path hook. Guard ensures domain-agnosticism:
+                # workflows without a post_applied subagent get a no-op.
+                if _stream_tool_results and "post_applied" in self._workflow.subagents:
+                    for _str in _stream_tool_results:
+                        if getattr(_str, "tool_name", None) == "apply_job" and getattr(_str, "success", False):
+                            await self._async_memory.write(
+                                session_id, user_id, "session",
+                                "current_subagent_id", "post_applied",
+                            )
+                            bundle.session["current_subagent_id"] = "post_applied"
+                            logger.info(
+                                "orchestrator.post_applied_transition",
+                                extra={
+                                    "operation": "orchestrator.post_tool_hook",
+                                    "status": "success",
+                                    "session_id": session_id,
+                                    "trigger_tool": "apply_job",
+                                },
+                            )
+                            break
 
             # Flush remaining buffer as final sentence
             remaining = token_buffer.strip()
