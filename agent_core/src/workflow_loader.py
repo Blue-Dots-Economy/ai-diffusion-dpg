@@ -793,7 +793,7 @@ class AgentWorkflowLoader:
         if unknown:
             raise ConfigurationError(
                 "agent_workflow.global_tools references unregistered tools: "
-                f"{sorted(unknown)}"
+                f"{sorted(unknown)}. Registered tools: {sorted(known)}"
             )
 
     def _build_global_tool_defs(
