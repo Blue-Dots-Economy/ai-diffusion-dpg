@@ -2827,6 +2827,7 @@ class AgentCore(AgentCoreBase):
                                     "tool_use_id": tc.tool_use_id,
                                     "content": tool_result.result_text or str(tool_result.result),
                                 })
+                                _stream_tool_results.append(tool_result)
                         yield SignalEvent(stage="tool_end", status="complete")
                         logger.info(
                             "  [STEP 9] Tool-Use Loop (round %d)  ✓  tools=%s",
@@ -2845,8 +2846,8 @@ class AgentCore(AgentCoreBase):
                 # Mirror of the sync path hook. Guard ensures domain-agnosticism:
                 # workflows without a post_applied subagent get a no-op.
                 if _stream_tool_results and "post_applied" in self._workflow.subagents:
-                    for _str in _stream_tool_results:
-                        if getattr(_str, "tool_name", None) == "apply_job" and getattr(_str, "success", False):
+                    for tr in _stream_tool_results:
+                        if getattr(tr, "tool_name", None) == "apply_job" and getattr(tr, "success", False):
                             await self._async_memory.write(
                                 session_id, user_id, "session",
                                 "current_subagent_id", "post_applied",
