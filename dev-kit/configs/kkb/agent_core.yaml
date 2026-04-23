@@ -471,13 +471,14 @@ agent_workflow:
 
   # Shared across every turn — tool invocation_rules (in connectors.*) enforce
   # preconditions, so tool access is no longer scoped per-subagent.
+  # `end_session` is auto-injected by Agent Core when
+  # conversation.session_end_eval.enabled is true — do not list it here.
   global_tools:
     - get_profile
     - update_profile
     - onest_market_lookup
     - knowledge_retrieval
     - apply_job
-    - end_session
     # - counsellor_schedule   # enable once action_gateway connector is live
 
   tool_result_mappings:

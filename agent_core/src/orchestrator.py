@@ -163,7 +163,8 @@ class AgentCore(AgentCoreBase):
             except AttributeError:
                 # Tolerate mock registries in tests that don't implement the method.
                 pass
-            # Ensure every subagent's scoped tool list includes end_session.
+            # Ensure every subagent's scoped tool list includes end_session,
+            # plus the shared global_tool_defs list if the domain uses it.
             try:
                 tool_defs = getattr(self._workflow, "tool_defs", None)
                 if isinstance(tool_defs, dict):
@@ -172,6 +173,10 @@ class AgentCore(AgentCoreBase):
                             continue
                         if not any(t.get("name") == "end_session" for t in _tools):
                             _tools.append(end_session_def)
+                global_defs = getattr(self._workflow, "global_tool_defs", None)
+                if isinstance(global_defs, list) and global_defs:
+                    if not any(t.get("name") == "end_session" for t in global_defs):
+                        global_defs.append(end_session_def)
             except Exception as _err:  # defensive — never break init
                 logger.warning(
                     "orchestrator.end_session_tool_defs_extension_failed",

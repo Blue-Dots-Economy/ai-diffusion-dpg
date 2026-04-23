@@ -1219,6 +1219,25 @@ def test_session_end_eval_enabled_extends_subagent_tool_defs():
     assert "existing_tool" in names
 
 
+def test_session_end_eval_enabled_extends_global_tool_defs():
+    """When enabled AND workflow uses global_tool_defs, end_session is appended there too."""
+    cfg = _config_with_session_end_eval(enabled=True, prompt="p")
+    wf = _make_workflow()
+    wf.global_tool_defs = [{"name": "shared_tool"}]
+    _ = _make_agent_with_config(cfg, workflow=wf)
+    names = {t["name"] for t in wf.global_tool_defs}
+    assert names == {"shared_tool", "end_session"}
+
+
+def test_session_end_eval_enabled_skips_global_tool_defs_when_empty():
+    """Empty global_tool_defs means the domain does not use the shared list — leave untouched."""
+    cfg = _config_with_session_end_eval(enabled=True, prompt="p")
+    wf = _make_workflow()
+    wf.global_tool_defs = []
+    _ = _make_agent_with_config(cfg, workflow=wf)
+    assert wf.global_tool_defs == []
+
+
 def test_session_end_eval_prompt_passed_into_build_system_prompt():
     """process_turn passes session_end_eval_prompt to build_system_prompt when enabled."""
     cfg = _config_with_session_end_eval(enabled=True, prompt="Call end_session at goodbye.")
