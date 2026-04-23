@@ -688,7 +688,7 @@ agent_workflow:
         old commitment.
       is_start: false
       is_terminal: false
-      opening_phrase: "नमस्ते। काम की बात में आपका स्वागत है। पिछली बार options compare कर रहे थे — आगे बढ़ें?"
+      opening_phrase: "नमस्ते। काम की बात में आपका स्वागत है। पिछली बार ऑप्शन्स कम्पेयर कर रहे थे — आगे बढ़ें?"
 
       valid_intents:
         - any_input
@@ -760,7 +760,7 @@ agent_workflow:
         user to post-apply follow-up for the next turn.
 
         ## If the user changes their mind
-        Acknowledge calmly. Use `explore_more` signal by rejoining enquiry for alternatives.
+        Acknowledge calmly. Use the explore_more signal by rejoining enquiry for alternatives.
 
       routing:
         - intent: explore_more
