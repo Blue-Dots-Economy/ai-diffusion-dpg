@@ -102,8 +102,24 @@ class ConversationEngine:
                     },
                 )
 
-        # Restore conversation history from checkpoints
-        self._history = self._load_history_from_checkpoints()
+        # Restore conversation history — prefer the persisted history file over
+        # checkpoint reconstruction, since checkpoints only capture phase boundaries.
+        history_path = self._project_path / "_meta" / "history.json"
+        if history_path.exists():
+            try:
+                self._history = json.loads(history_path.read_text())
+            except (json.JSONDecodeError, ValueError) as exc:
+                logger.warning(
+                    "history_load_failed",
+                    extra={
+                        "operation": "conversation._load",
+                        "status": "failure",
+                        "error": str(exc),
+                    },
+                )
+                self._history = self._load_history_from_checkpoints()
+        else:
+            self._history = self._load_history_from_checkpoints()
 
     def _load_history_from_checkpoints(self) -> list[dict]:
         """Load and concatenate conversation history from all checkpoint history.json files.
@@ -152,6 +168,23 @@ class ConversationEngine:
                 },
             )
         return history
+
+    def _save_history(self) -> None:
+        """Persist the full conversation history to disk.
+
+        Saves every turn (user + assistant + tool exchanges) so the UI
+        can restore the complete conversation after a devkit restart.
+        Non-serializable entries are silently skipped.
+        """
+        history_path = self._project_path / "_meta" / "history.json"
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            history_path.write_text(json.dumps(self._history, ensure_ascii=False, indent=2, default=str))
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "history_save_failed",
+                extra={"operation": "conversation._save_history", "status": "failure", "error": str(exc)},
+            )
 
     def _save_accumulator(self) -> None:
         """Persist the current accumulator state to disk."""
@@ -330,6 +363,7 @@ class ConversationEngine:
         # Persist state and re-render configs
         self._save_accumulator()
         self._save_project_meta()
+        self._save_history()
         render_all(self._project_path, self.accumulator)
 
         return {

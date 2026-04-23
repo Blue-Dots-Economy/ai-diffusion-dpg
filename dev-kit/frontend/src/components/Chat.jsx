@@ -212,7 +212,12 @@ export default function Chat({ slug, onDashboard, onBack }) {
                 Describe your AI agent use case to get started.
               </p>
             )}
-            {messages.map((m, i) => (
+            {messages.map((m, i) => {
+              // Detect file attachments and show filename badge instead of raw content
+              const isAttachment = m.role === 'user' && m.text.startsWith('[Attached: ')
+              const attachedName = isAttachment ? m.text.match(/^\[Attached: (.+?)\]/)?.[1] : null
+
+              return (
               <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                 <div className={[
                   'max-w-xl rounded-2xl px-4 py-2.5 text-sm leading-relaxed',
@@ -220,7 +225,9 @@ export default function Chat({ slug, onDashboard, onBack }) {
                   m.role === 'assistant' ? 'bg-gray-800 text-gray-100' : '',
                   m.role === 'error' ? 'bg-red-900/60 text-red-200 border border-red-700 whitespace-pre-wrap' : '',
                 ].filter(Boolean).join(' ')}>
-                  {m.role === 'assistant' ? (
+                  {isAttachment ? (
+                    <span className="flex items-center gap-2">📎 {attachedName}</span>
+                  ) : m.role === 'assistant' ? (
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
                       components={{
@@ -249,7 +256,8 @@ export default function Chat({ slug, onDashboard, onBack }) {
                   ) : m.text}
                 </div>
               </div>
-            ))}
+              )
+            })}
             {loading && (
               <div className="flex justify-start">
                 <div className="bg-gray-800 rounded-2xl px-4 py-2.5 text-sm text-gray-400">
@@ -264,25 +272,36 @@ export default function Chat({ slug, onDashboard, onBack }) {
             <div ref={bottomRef} />
           </div>
 
+          {/* Completion banner */}
+          {phase === 'review' && messages.length > 0 && (
+            <div className="px-4 py-2.5 bg-green-950/40 border-t border-green-800 text-sm text-green-300 text-center shrink-0">
+              All config YAMLs have been generated. Head to the Dashboard to deploy.
+            </div>
+          )}
+
           <form onSubmit={send} className="flex gap-2 px-4 py-3 border-t border-gray-800 bg-gray-900 shrink-0">
-            {/* Hidden file input for spec upload */}
-            <input
-              type="file"
-              accept=".yaml,.yml,.json"
-              className="hidden"
-              id="spec-file-input"
-              onChange={attachFile}
-              disabled={loading}
-            />
-            <label
-              htmlFor="spec-file-input"
-              title="Attach spec file (.yaml, .yml, .json)"
-              className={`flex items-center justify-center w-9 h-9 rounded-xl cursor-pointer transition-colors self-end shrink-0 ${
-                loading ? 'text-gray-600 cursor-not-allowed' : 'text-gray-400 hover:text-gray-200 hover:bg-gray-700'
-              }`}
-            >
-              📎
-            </label>
+            {/* File input — only shown during tools phase */}
+            {phase === 'tools' && (
+              <>
+                <input
+                  type="file"
+                  accept=".yaml,.yml,.json"
+                  className="hidden"
+                  id="spec-file-input"
+                  onChange={attachFile}
+                  disabled={loading}
+                />
+                <label
+                  htmlFor="spec-file-input"
+                  title="Attach spec file (.yaml, .yml, .json)"
+                  className={`flex items-center justify-center w-9 h-9 rounded-xl cursor-pointer transition-colors self-end shrink-0 ${
+                    loading ? 'text-gray-600 cursor-not-allowed' : 'text-gray-400 hover:text-gray-200 hover:bg-gray-700'
+                  }`}
+                >
+                  📎
+                </label>
+              </>
+            )}
             <textarea
               ref={textareaRef}
               rows={1}

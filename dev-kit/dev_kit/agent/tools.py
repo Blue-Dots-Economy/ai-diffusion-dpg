@@ -121,6 +121,7 @@ TOOL_DEFINITIONS: list[dict] = [
                 "is_terminal": {"type": "boolean", "default": False},
                 "valid_intents": {"type": "array", "items": {"type": "string"}, "default": []},
                 "tools": {"type": "array", "items": {"type": "string"}, "default": []},
+                "opening_phrase": {"type": "string", "description": "Phrase emitted on the first turn only (after consent). Empty string means none.", "default": ""},
             },
             "required": ["id", "name", "description", "system_prompt"],
         },
@@ -788,6 +789,7 @@ class ToolHandler:
             "valid_intents": inputs.get("valid_intents", []),
             "tools": inputs.get("tools", []),
             "system_prompt": inputs["system_prompt"],
+            "opening_phrase": inputs.get("opening_phrase", ""),
             "routing": [],
         }
         self._acc.set_subagent(sa)

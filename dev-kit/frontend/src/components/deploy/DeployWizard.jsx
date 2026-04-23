@@ -46,9 +46,39 @@ export default function DeployWizard({ slug, onBack }) {
 
   const updateData = useCallback((key, value) => {
     setData(prev => ({ ...prev, [key]: value }))
+    setValidationError('')
   }, [])
 
+  const [validationError, setValidationError] = useState('')
+
   function handleNext() {
+    setValidationError('')
+
+    // Step 3: Resource preset must be selected
+    if (step === 3 && !data.preset) {
+      setValidationError('Please select a resource preset before proceeding.')
+      return
+    }
+    // Step 4: Required secrets must be filled
+    if (step === 4) {
+      if (!data.secrets?.anthropic_api_key?.trim()) {
+        setValidationError('Anthropic API Key is required.')
+        return
+      }
+      const requiredSecrets = project?.required_secrets || []
+      for (const { env_var } of requiredSecrets) {
+        if (!data.secrets?.tool_secrets?.[env_var]?.trim()) {
+          setValidationError(`Tool API key ${env_var} is required.`)
+          return
+        }
+      }
+    }
+    // Step 5: Deploy target must be selected
+    if (step === 5 && !data.target) {
+      setValidationError('Please select a deploy target.')
+      return
+    }
+
     if (!completed.includes(step)) {
       setCompleted(prev => [...prev, step])
     }
@@ -94,28 +124,33 @@ export default function DeployWizard({ slug, onBack }) {
 
       {/* Footer nav */}
       {step !== 7 && !isLastStep && (
-        <div className="flex items-center justify-between px-6 py-4 border-t border-gray-800">
-          <button
-            onClick={step === 1 ? onBack : handleBack}
-            className="text-sm bg-gray-800 hover:bg-gray-700 text-gray-300 px-4 py-2 rounded-xl transition-colors"
-          >
-            ← {step === 1 ? 'Dashboard' : 'Back'}
-          </button>
-          {step === 6 ? (
-            <button
-              onClick={handleNext}
-              className="text-sm bg-green-700 hover:bg-green-600 text-white px-5 py-2 rounded-xl font-medium transition-colors"
-            >
-              Deploy
-            </button>
-          ) : (
-            <button
-              onClick={handleNext}
-              className="text-sm bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl transition-colors"
-            >
-              Next →
-            </button>
+        <div className="px-6 py-4 border-t border-gray-800">
+          {validationError && (
+            <p className="text-sm text-red-400 mb-3 text-center">{validationError}</p>
           )}
+          <div className="flex items-center justify-between">
+            <button
+              onClick={step === 1 ? onBack : handleBack}
+              className="text-sm bg-gray-800 hover:bg-gray-700 text-gray-300 px-4 py-2 rounded-xl transition-colors"
+            >
+              ← {step === 1 ? 'Dashboard' : 'Back'}
+            </button>
+            {step === 6 ? (
+              <button
+                onClick={handleNext}
+                className="text-sm bg-green-700 hover:bg-green-600 text-white px-5 py-2 rounded-xl font-medium transition-colors"
+              >
+                Deploy
+              </button>
+            ) : (
+              <button
+                onClick={handleNext}
+                className="text-sm bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl transition-colors"
+              >
+                Next →
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>

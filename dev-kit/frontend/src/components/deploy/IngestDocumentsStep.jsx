@@ -190,11 +190,16 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
   // Submission
   // ---------------------------------------------------------------------------
 
+  const handleRetry = (id) => {
+    dispatch({ type: 'UPDATE_ROW', id, patch: { status: 'pending', jobId: null, error: null, chunksAdded: null } })
+  }
+
   const validateBatch = () => {
-    if (state.rows.length === 0) return 'Add at least one file.'
-    const names = state.rows.map(r => r.filename).filter(Boolean)
+    const pending = state.rows.filter(r => r.status === 'pending')
+    if (pending.length === 0) return 'No pending files to upload.'
+    const names = pending.map(r => r.filename).filter(Boolean)
     if (new Set(names).size !== names.length) return 'Duplicate filenames in batch.'
-    for (const row of state.rows) {
+    for (const row of pending) {
       if (!row.filename) return 'All rows must have a filename or cloud path.'
       if (row.mode !== 'cloud_fetch_ingest' && !row.file) return `Select a file for: ${row.filename}`
       if (row.mode === 'cloud_fetch_ingest' && !row.cloudPath) return 'Enter a cloud path for Azure fetch rows.'
@@ -210,15 +215,17 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
     }
     dispatch({ type: 'SET_SUBMITTING', value: true })
 
+    // Only submit pending rows — skip already ingested/failed rows
+    const pending = state.rows.filter(r => r.status === 'pending')
     const formData = new FormData()
     formData.append('metadata', JSON.stringify(
-      state.rows.map(row => ({
+      pending.map(row => ({
         filename: row.filename,
         mode: row.mode,
         ...(row.cloudPath ? { cloud_path: row.cloudPath } : {}),
       }))
     ))
-    for (const row of state.rows) {
+    for (const row of pending) {
       if (row.file) formData.append('files', row.file, row.filename)
     }
 
@@ -275,6 +282,8 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
   // Render
   // ---------------------------------------------------------------------------
 
+  const pendingRows = state.rows.filter(r => r.status === 'pending')
+  const hasPending = pendingRows.length > 0
   const allTerminal = state.rows.length > 0 &&
     state.rows.every(r => r.status === 'ingested' || r.status === 'failed')
 
@@ -348,15 +357,28 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
                 )}
               </div>
 
-              {/* Remove button */}
-              <button
-                onClick={() => handleRemoveRow(row.id)}
-                disabled={row.status !== 'pending'}
-                title="Remove"
-                className="shrink-0 text-gray-500 hover:text-red-400 disabled:opacity-30 disabled:cursor-not-allowed text-lg leading-none transition-colors"
-              >
-                ×
-              </button>
+              {/* Retry button for failed rows */}
+              {row.status === 'failed' && (
+                <button
+                  onClick={() => handleRetry(row.id)}
+                  title="Retry"
+                  className="shrink-0 text-xs text-yellow-400 hover:text-yellow-300 px-2 py-1 rounded-lg border border-yellow-700 hover:border-yellow-600 transition-colors"
+                >
+                  Retry
+                </button>
+              )}
+
+              {/* Remove button — hidden for successfully ingested rows */}
+              {row.status !== 'ingested' && (
+                <button
+                  onClick={() => handleRemoveRow(row.id)}
+                  disabled={row.status !== 'pending' && row.status !== 'failed'}
+                  title="Remove"
+                  className="shrink-0 text-gray-500 hover:text-red-400 disabled:opacity-30 disabled:cursor-not-allowed text-lg leading-none transition-colors"
+                >
+                  ×
+                </button>
+              )}
             </div>
           ))}
         </div>
@@ -373,10 +395,10 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
         </button>
         <button
           onClick={handleSubmit}
-          disabled={state.submitting || state.rows.length === 0}
+          disabled={state.submitting || !hasPending}
           className="text-sm bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white px-5 py-2 rounded-xl font-medium transition-colors"
         >
-          {state.submitting ? 'Uploading…' : 'Upload & Ingest'}
+          {state.submitting ? 'Uploading…' : hasPending ? `Upload & Ingest (${pendingRows.length})` : 'Upload & Ingest'}
         </button>
       </div>
 

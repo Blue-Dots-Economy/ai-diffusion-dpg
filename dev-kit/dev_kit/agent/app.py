@@ -718,11 +718,9 @@ def _apply_resources_to_compose(content: str, resources: dict) -> str:
         return content
 
     for block_name, res in resources.items():
-        # Presets use underscores (action_gateway); compose uses dashes (action-gateway).
-        compose_name = block_name.replace("_", "-")
-        # reach_layer maps to reach-layer-web in compose
-        if compose_name == "reach-layer":
-            compose_name = "reach-layer-web"
+        compose_name = block_name
+        if block_name == "reach_layer":
+            compose_name = "reach_layer_web"
         if compose_name not in compose["services"]:
             continue
         svc = compose["services"][compose_name]
@@ -788,9 +786,9 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
         deployment manifests keyed by filename.
     """
     _CHANNEL_SERVICE: dict[str, str] = {
-        "web": "reach-layer-web",
-        "voice": "reach-layer-voice",
-        "cli": "reach-layer-cli",
+        "web": "reach_layer_web",
+        "voice": "reach_layer_voice",
+        "cli": "reach_layer_cli",
     }
     target = body.get("target", "docker")
     if target == "docker":
@@ -816,7 +814,7 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
         # Remove it if voice is not selected.
         if "voice" not in selected_channels:
             services_to_remove.add("ngrok")
-        services_to_remove.add("dev-kit")
+        services_to_remove.add("dev_kit")
 
         import yaml as _yaml
         compose_doc = _yaml.safe_load(content)
@@ -828,7 +826,7 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
                 continue
             svc = services[svc_name]
             svc.pop("container_name", None)
-            if svc_name == "action-gateway" and tool_secrets:
+            if svc_name == "action_gateway" and tool_secrets:
                 ag_env = svc.setdefault("environment", [])
                 for env_var in tool_secrets:
                     if tool_secrets[env_var]:
@@ -1011,7 +1009,7 @@ async def execute_deploy(slug: str, body: dict) -> dict:
             secrets["ke_internal_url"] = f"http://knowledge-engine.{namespace}.svc.cluster.local:8001"
         else:
             # Docker Compose: KE is reachable on its service name within the compose network.
-            secrets["ke_internal_url"] = "http://knowledge-engine:8001"
+            secrets["ke_internal_url"] = "http://knowledge_engine:8001"
 
     # Auto-fill ke_devkit_callback_url from devkit external_url if not provided.
     # KE calls this URL when an ingestion job completes (ingested or failed).
@@ -1057,9 +1055,9 @@ async def _run_docker_deploy(
     # compose file so it never starts with `docker compose up`; web/voice need explicit
     # removal when not selected.
     _CHANNEL_SERVICE: dict[str, str] = {
-        "web": "reach-layer-web",
-        "voice": "reach-layer-voice",
-        "cli": "reach-layer-cli",
+        "web": "reach_layer_web",
+        "voice": "reach_layer_voice",
+        "cli": "reach_layer_cli",
     }
     if selected_channels is None:
         selected_channels = ["web", "voice", "cli"]
@@ -1091,7 +1089,7 @@ async def _run_docker_deploy(
             services_to_remove.add("ngrok")
         # When deploying from the local dev-kit, exclude the Docker dev-kit service
         # to avoid port 8080 conflicts. The local process handles the UI + ingest proxy.
-        services_to_remove.add("dev-kit")
+        services_to_remove.add("dev_kit")
 
         services = compose_doc.get("services", {})
         for svc_name in list(services.keys()):
@@ -1100,7 +1098,7 @@ async def _run_docker_deploy(
                 continue
             svc = services[svc_name]
             svc.pop("container_name", None)
-            if svc_name == "action-gateway" and tool_secrets:
+            if svc_name == "action_gateway" and tool_secrets:
                 env_list = svc.setdefault("environment", [])
                 for env_var, value in tool_secrets.items():
                     if value:
@@ -1330,14 +1328,8 @@ async def get_deploy_status(slug: str) -> dict:
     # take time to become healthy).
     # Compose service names use dashes; state keys use underscores.
     _COMPOSE_TO_STATE = {
-        "action-gateway": "action_gateway",
-        "agent-core": "agent_core",
-        "knowledge-engine": "knowledge_engine",
-        "memory-layer": "memory_layer",
-        "trust-layer": "trust_layer",
-        "observability-layer": "observability_layer",
-        "reach-layer-web": "reach_layer",
-        "reach-layer-voice": "reach_layer",
+        "reach_layer_web": "reach_layer",
+        "reach_layer_voice": "reach_layer",
         "otelcol": "otel_collector",
     }
     if state.target == "docker" and state.compose_file_path:

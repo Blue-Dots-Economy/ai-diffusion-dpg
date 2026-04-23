@@ -423,6 +423,11 @@ class ConfigAccumulator:
                 lines.append(f"  {block} ({status}): {detail}")
             else:
                 lines.append(f"  {block} ({status}): empty")
+        if self.is_azure_needed():
+            lines.append("  azure_storage: declared (user confirmed Azure Blob Storage)")
+        selected_channels = self.get_reach_channel_selection()
+        if selected_channels:
+            lines.append(f"  selected_channels: {', '.join(selected_channels)}")
         return "\n".join(lines)
 
     def to_dict(self) -> dict:

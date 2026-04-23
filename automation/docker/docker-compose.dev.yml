@@ -60,7 +60,7 @@ services:
   # Agent Core — orchestrator and LLM caller (port 8000)
   # ---------------------------------------------------------------------------
   agent_core:
-    image: sanketikahub/dpg-agent-core:latest
+    image: srivatsak2002/dpg-agent-core:latest
     pull_policy: always
     container_name: agent_core
     environment:
@@ -123,7 +123,7 @@ services:
   # On startup: runs ingest first, then starts the server.
   # ---------------------------------------------------------------------------
   knowledge_engine:
-    image: sanketikahub/dpg-knowledge-engine:latest
+    image: srivatsak2002/dpg-knowledge-engine:latest
     pull_policy: always
     container_name: knowledge_engine
     environment:
@@ -133,6 +133,7 @@ services:
       - KE_TO_DEVKIT_API_KEY=${KE_TO_DEVKIT_API_KEY:-}
       - KE_DEVKIT_CALLBACK_URL=${KE_DEVKIT_CALLBACK_URL:-http://dev_kit:8080}
       - KB_DATA_DIR=/data/kb
+      - CHROMA_PERSIST_DIR=/app/chroma_db
       # Azure Blob Storage — required only when the domain uses Azure for KB ingestion.
       - AZURE_STORAGE_ACCOUNT=${AZURE_STORAGE_ACCOUNT:-}
       - AZURE_STORAGE_KEY=${AZURE_STORAGE_KEY:-}
@@ -144,7 +145,7 @@ services:
       - ../../dev-kit/dpg/knowledge_engine.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-kkb}/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
       - ../../knowledge-engine/data:/app/data:ro   # source docs (read-only)
-      - chroma_data:/app/chroma_db            # embeddings (writable, overrides :ro for this subdir)
+      - chroma_data:/app/chroma_db            # writable ChromaDB volume (CHROMA_PERSIST_DIR points here)
       - kb_data:/data/kb                      # upload staging area for KB documents
     networks:
       - dpg_net
