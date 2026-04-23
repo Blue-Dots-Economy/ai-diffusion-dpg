@@ -60,7 +60,7 @@ services:
   # Agent Core — orchestrator and LLM caller (port 8000)
   # ---------------------------------------------------------------------------
   agent_core:
-    image: srivatsak2002/dpg-agent-core:latest
+    image: sanketikahub/dpg-agent-core:latest
     pull_policy: always
     container_name: agent_core
     environment:
@@ -123,7 +123,7 @@ services:
   # On startup: runs ingest first, then starts the server.
   # ---------------------------------------------------------------------------
   knowledge_engine:
-    image: srivatsak2002/dpg-knowledge-engine:latest
+    image: sanketikahub/dpg-knowledge-engine:latest
     pull_policy: always
     container_name: knowledge_engine
     environment:

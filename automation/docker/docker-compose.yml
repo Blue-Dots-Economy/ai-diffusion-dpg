@@ -182,6 +182,7 @@ services:
       - KE_TO_DEVKIT_API_KEY=${KE_TO_DEVKIT_API_KEY:-}
       - KE_DEVKIT_CALLBACK_URL=${KE_DEVKIT_CALLBACK_URL:-http://dev_kit:8080}
       - KB_DATA_DIR=/data/kb
+      - CHROMA_PERSIST_DIR=/app/chroma_db
       # Azure Blob Storage — required only when the domain uses Azure for KB ingestion.
       - AZURE_STORAGE_ACCOUNT=${AZURE_STORAGE_ACCOUNT:-}
       - AZURE_STORAGE_KEY=${AZURE_STORAGE_KEY:-}
