@@ -109,18 +109,22 @@ class ConfigAccumulator:
     def get_block(self, block: str) -> dict:
         """Return a deep copy of the full config dict for a block.
 
+        Internal keys (prefixed with ``_``) are stripped so callers see only
+        domain config — matching what the renderer writes to YAML.
+
         Args:
             block: One of the 7 DPG block names.
 
         Returns:
-            Deep copy of the block's accumulated config.
+            Deep copy of the block's accumulated config without internal keys.
 
         Raises:
             ValueError: If block is not a valid DPG block name.
         """
         if block not in BLOCKS:
             raise ValueError(f"Unknown block: {block!r}")
-        return deepcopy(self._data[block])
+        return {k: deepcopy(v) for k, v in self._data[block].items()
+                if not k.startswith("_")}
 
     # ------------------------------------------------------------------
     # Status
@@ -310,13 +314,23 @@ class ConfigAccumulator:
         self._data["reach_layer"]["_selected_channels"] = list(channels)
 
     def get_reach_channel_selection(self) -> list[str]:
-        """Return the selected deployment channels, or all channels if none set.
+        """Return the selected deployment channels, or empty list if not yet set.
+
+        Returns:
+            List of selected channel names, or empty list if the user has not
+            called set_reach_channels yet.
+        """
+        return list(self._data["reach_layer"].get("_selected_channels", []))
+
+    def get_reach_channel_selection_or_default(self) -> list[str]:
+        """Return selected channels with a fallback for deploy.
 
         Returns:
             List of selected channel names. Defaults to ['web', 'voice', 'cli']
-            if the user never called set_reach_channels during configuration.
+            if no selection was made during configuration.
         """
-        return list(self._data["reach_layer"].get("_selected_channels", ["web", "voice", "cli"]))
+        selection = self.get_reach_channel_selection()
+        return selection if selection else ["web", "voice", "cli"]
 
     def set_agent_core_connector(self, category: str, connector: dict) -> None:
         """Add or replace a connector in agent_core.connectors[category].
@@ -418,7 +432,7 @@ class ConfigAccumulator:
                     tool_ids = [t.get("id", "?") for t in data.get("tools", [])]
                     detail = f"tools: [{', '.join(tool_ids)}]" if tool_ids else "tools: []"
                 else:
-                    keys = list(data.keys())[:4]
+                    keys = [k for k in data.keys() if not k.startswith("_")][:4]
                     detail = ", ".join(keys)
                 lines.append(f"  {block} ({status}): {detail}")
             else:
@@ -428,6 +442,8 @@ class ConfigAccumulator:
         selected_channels = self.get_reach_channel_selection()
         if selected_channels:
             lines.append(f"  selected_channels: {', '.join(selected_channels)}")
+        else:
+            lines.append("  selected_channels: not yet set")
         return "\n".join(lines)
 
     def to_dict(self) -> dict:

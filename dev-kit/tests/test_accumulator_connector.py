@@ -10,14 +10,14 @@ from dev_kit.agent.accumulator import ConfigAccumulator
 def test_set_reach_channel_selection():
     acc = ConfigAccumulator()
     acc.set_reach_channel_selection(["web", "cli"])
-    assert acc._data["reach_layer"]["_selected_channels"] == ["web", "cli"]
+    assert acc.get_reach_channel_selection() == ["web", "cli"]
 
 
 def test_set_reach_channel_selection_replaces_previous():
     acc = ConfigAccumulator()
     acc.set_reach_channel_selection(["web"])
     acc.set_reach_channel_selection(["cli", "voice"])
-    assert acc._data["reach_layer"]["_selected_channels"] == ["cli", "voice"]
+    assert acc.get_reach_channel_selection() == ["cli", "voice"]
 
 
 def test_set_agent_core_connector_adds_new():

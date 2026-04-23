@@ -413,8 +413,8 @@ TOOL_DEFINITIONS: list[dict] = [
         "name": "set_reach_channels",
         "description": (
             "Record which deployment channels the user wants (web, cli, voice). "
-            "Call this at the start of the reach phase, before collecting per-channel config. "
-            "Only the selected channels will be configured."
+            "Call this in the overview phase after understanding the use case. "
+            "Later phases (language, reach) use the selection to skip irrelevant config."
         ),
         "input_schema": {
             "type": "object",

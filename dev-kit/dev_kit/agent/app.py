@@ -804,7 +804,7 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
 
         # Apply channel selection: remove reach services for unselected channels so
         # the preview matches exactly what _run_docker_deploy will deploy.
-        selected_channels = _get_engine(slug).accumulator.get_reach_channel_selection()
+        selected_channels = _get_engine(slug).accumulator.get_reach_channel_selection_or_default()
         services_to_remove = {
             svc_name
             for channel, svc_name in _CHANNEL_SERVICE.items()
@@ -1029,7 +1029,7 @@ async def execute_deploy(slug: str, body: dict) -> dict:
         state.set_service(svc, "queued")
 
     if target == "docker":
-        selected_channels = _get_engine(slug).accumulator.get_reach_channel_selection()
+        selected_channels = _get_engine(slug).accumulator.get_reach_channel_selection_or_default()
         asyncio.create_task(_run_docker_deploy(slug, state, secrets, resources, selected_channels))
     else:
         kubeconfig_content = body.get("kubeconfig", "")

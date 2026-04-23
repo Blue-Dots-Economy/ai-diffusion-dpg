@@ -192,8 +192,7 @@ def test_set_reach_channels_stores_selection(handler, acc):
     """set_reach_channels should store selected channels in reach_layer config."""
     result = handler.dispatch("set_reach_channels", {"channels": ["web", "cli"]})
     assert "web" in result or "cli" in result
-    rl = acc.get_block("reach_layer")
-    assert rl.get("_selected_channels") == ["web", "cli"]
+    assert acc.get_reach_channel_selection() == ["web", "cli"]
 
 
 def test_set_reach_channels_rejects_unknown(handler):

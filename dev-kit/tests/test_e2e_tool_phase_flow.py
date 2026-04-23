@@ -142,7 +142,7 @@ class TestReachChannelPhaseFlow:
         acc, state, handler = self._make_handler()
         result = handler.dispatch("set_reach_channels", {"channels": ["web", "cli"]})
         assert "web" in result and "cli" in result
-        assert acc._data["reach_layer"]["_selected_channels"] == ["web", "cli"]
+        assert acc.get_reach_channel_selection() == ["web", "cli"]
 
     def test_reach_phase_prompt_mentions_channel_adapters(self):
         """GH-137: Reach phase prompt frames channel adapters at pedagogy level."""
