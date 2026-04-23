@@ -346,7 +346,6 @@ def test_agent_workflow_config_global_tools_accepts_list():
 
 def test_agent_workflow_config_rejects_unknown_field():
     """extra='forbid' must still reject typos."""
-    from pydantic import ValidationError
     from src.schema.config import AgentWorkflowConfig
     with pytest.raises(ValidationError):
         AgentWorkflowConfig(workflow_id="w", version="1.0.0", globall_tools=["x"])
