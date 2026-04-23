@@ -377,67 +377,29 @@ preprocessing:
     confidence_threshold: 0.5
     user_state_confidence_threshold: 0.4  # (GH-139) below this, state classification stays sticky
     domain_instruction: |
-      You are an NLU (Natural Language Understanding) classifier for Kaam Ki Baat (KKB), 
-      an employment assistance chatbot.
+      You are an NLU (Natural Language Understanding) classifier for Kaam Ki Baat (KKB),
+      an employment assistance chatbot. Classify user turns into one of three classes:
+      (1) routing intents that move the user between enquiry / commitment / ended stages;
+      (2) signal intents that record objections, constraints, emotions, or outcomes for
+          longitudinal analysis but do not change stage;
+      (3) infrastructure intents (any_input, unknown) for generic forward progress.
     intents:
-      # Greeting / session start
-      - greeting
-      - any_input
-      - returning_user
-      - new_user
-      # Profile collection
-      - profile_answer
-      - skip_question
-      - profile_complete
-      # Market truth reactions
-      - interested_engaged
+      # Routing intents
+      - evaluate_option
+      - apply_now
+      - explore_more
+      - termination_intent
+      - language_switch_request
+      # Signal intents (no routing; emit to Neo4j Signal node)
       - pay_disappointment
       - distance_issue
       - overwhelmed_silent
-      - hang_up
-      - market_truth_query
-      # Skill assessment
-      - skill_direct_match
-      - skill_partial_match
-      - skill_significant_gap
-      # Evaluation
-      - ready_to_apply
-      - wants_to_think
-      - wants_counsellor
-      - not_ready_yet
-      - evaluation_question
-      # Pay branch
-      - expectation_adjusted
-      - expectation_firm
-      # Distance branch
-      - constraint_hard
-      - constraint_flexible
-      # Normalise / WhatsApp
-      - whatsapp_accepted
-      - whatsapp_declined
-      - re_engaged
-      # Commitment
-      - apply_now
-      - enrol_course
-      - connect_counsellor
-      - action_declined
-      # Follow-through outcomes
-      - outcome_positive
-      - outcome_employer_ghost
-      - outcome_job_mismatch
-      - outcome_no_response
-      # Drop-off
-      - drop_off_acknowledged
-      # Global intents
       - counsellor_request
-      - termination_intent
-      - whatsapp_handoff_request
-      # New subagent routing intents (Task 6 — additive; Task 7 will prune old entries)
-      - evaluate_option
-      - explore_more
+      # Post-apply intents
+      - outcome_positive
       - outcome_negative
-      - language_switch_request
-      # Catch-all
+      # Infrastructure
+      - any_input
       - unknown
     entities:
       - name
@@ -471,12 +433,9 @@ preprocessing:
       pay_disappointment: objection
       distance_issue: constraint
       overwhelmed_silent: emotion
-      hang_up: dropoff_signal
-      not_ready_yet: dropoff_signal
-      expectation_firm: objection
-      constraint_hard: constraint
-      outcome_employer_ghost: outcome_signal
-      outcome_job_mismatch: outcome_signal
+      counsellor_request: escalation_signal
+      outcome_positive: outcome_signal
+      outcome_negative: outcome_signal
 
 entity_to_profile_field:
   name: name

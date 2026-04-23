@@ -276,12 +276,12 @@ def test_signal_intents_accepts_domain_keys():
             "nlu_processor": {
                 "signal_intents": {
                     "pay_disappointment": "objection",
-                    "hang_up": "end_session",
+                    "counsellor_request": "escalation_signal",
                 }
             }
         }
     })
-    assert cfg.preprocessing.nlu_processor.signal_intents["hang_up"] == "end_session"
+    assert cfg.preprocessing.nlu_processor.signal_intents["counsellor_request"] == "escalation_signal"
 
 
 def test_tool_result_mappings_accepts_domain_tool_names():
