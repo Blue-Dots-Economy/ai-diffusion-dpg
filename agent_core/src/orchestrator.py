@@ -2644,7 +2644,7 @@ class AgentCore(AgentCoreBase):
                 return
 
             # ── Step 8: LLM streaming ──────────────────────────────────
-            active_tools = self._workflow.tool_defs.get(next_subagent_id, [])
+            active_tools = self._workflow.resolve_tools_for(next_subagent_id)
             sentence_index = 0
             token_buffer = ""
             primary_model = self._config.get("agent", {}).get("primary_model", "unknown")
