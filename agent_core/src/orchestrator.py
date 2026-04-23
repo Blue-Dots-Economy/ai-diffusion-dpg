@@ -641,8 +641,20 @@ class AgentCore(AgentCoreBase):
         # the Memory Layer DETACH DELETEs the user graph when the session ends.
         entity_scope: str = self._config.get("entity_persistence", {}).get("scope", "persistent")
         entity_map: dict = self._config.get("entity_to_profile_field", {})
+        supported_langs: set[str] = {
+            l.lower() for l in self._config.get("preprocessing", {})
+            .get("language_normalisation", {})
+            .get("supported_languages", [])
+        }
         for entity_key, entity_val in (nlu_result.entities or {}).items():
             profile_field = entity_map.get(entity_key, entity_key)
+            # Guard: never persist language_preference with a value outside the
+            # configured supported_languages list. The language_switch_request
+            # branch below (or the unsupported-language response) handles the
+            # user-facing case; skipping here prevents profile pollution.
+            if profile_field == "language_preference" and supported_langs:
+                if str(entity_val).lower().strip() not in supported_langs:
+                    continue
             self._write_memory_sync(session_id, user_id, entity_scope, profile_field, entity_val)
             bundle.session[profile_field] = entity_val
 
@@ -689,12 +701,13 @@ class AgentCore(AgentCoreBase):
                 l.lower() for l in lang_cfg.get("supported_languages", [])
             ]
             requested_lang = (
-                (nlu_result.entities or {}).get("requested_language") or ""
+                (nlu_result.entities or {}).get("language_preference") or ""
             ).lower().strip()
 
             if requested_lang and requested_lang in supported:
-                pref_scope = self._config.get("entity_persistence", {}).get("scope", "persistent")
-                self._write_memory_sync(session_id, user_id, pref_scope, "language_preference", requested_lang)
+                # Profile write already happened in the entity loop above for
+                # supported values; mirror into bundle.session and flip the
+                # active detected_language for this turn's prompt.
                 bundle.session["language_preference"] = requested_lang
                 detected_language = requested_lang
                 logger.info(
@@ -703,7 +716,7 @@ class AgentCore(AgentCoreBase):
                         "operation": "orchestrator.language_switch",
                         "status": "success",
                         "session_id": session_id,
-                        "requested_language": requested_lang,
+                        "language_preference": requested_lang,
                     },
                 )
             else:
@@ -721,7 +734,7 @@ class AgentCore(AgentCoreBase):
                         "operation": "orchestrator.language_switch",
                         "status": "skipped",
                         "session_id": session_id,
-                        "requested_language": requested_lang,
+                        "language_preference": requested_lang,
                         "reason": "not_in_supported_languages",
                     },
                 )
@@ -2499,8 +2512,18 @@ class AgentCore(AgentCoreBase):
             # Write entities
             entity_scope: str = self._config.get("entity_persistence", {}).get("scope", "persistent")
             entity_map: dict = self._config.get("entity_to_profile_field", {})
+            supported_langs: set[str] = {
+                l.lower() for l in self._config.get("preprocessing", {})
+                .get("language_normalisation", {})
+                .get("supported_languages", [])
+            }
             for entity_key, entity_val in (nlu_result.entities or {}).items():
                 profile_field = entity_map.get(entity_key, entity_key)
+                # Guard: never persist language_preference with a value outside
+                # the configured supported_languages list (mirrors sync path).
+                if profile_field == "language_preference" and supported_langs:
+                    if str(entity_val).lower().strip() not in supported_langs:
+                        continue
                 await self._async_memory.write(session_id, user_id, entity_scope, profile_field, entity_val)
                 bundle.session[profile_field] = entity_val
 
@@ -2514,12 +2537,13 @@ class AgentCore(AgentCoreBase):
                     l.lower() for l in lang_cfg.get("supported_languages", [])
                 ]
                 requested_lang = (
-                    (nlu_result.entities or {}).get("requested_language") or ""
+                    (nlu_result.entities or {}).get("language_preference") or ""
                 ).lower().strip()
 
                 if requested_lang and requested_lang in supported:
-                    pref_scope = self._config.get("entity_persistence", {}).get("scope", "persistent")
-                    await self._async_memory.write(session_id, user_id, pref_scope, "language_preference", requested_lang)
+                    # Profile write already happened in the entity loop above
+                    # for supported values; mirror into bundle.session and flip
+                    # the active detected_language for this turn's prompt.
                     bundle.session["language_preference"] = requested_lang
                     detected_language = requested_lang
                     logger.info(
@@ -2528,7 +2552,7 @@ class AgentCore(AgentCoreBase):
                             "operation": "orchestrator.language_switch",
                             "status": "success",
                             "session_id": session_id,
-                            "requested_language": requested_lang,
+                            "language_preference": requested_lang,
                         },
                     )
                 else:
@@ -2546,7 +2570,7 @@ class AgentCore(AgentCoreBase):
                             "operation": "orchestrator.language_switch",
                             "status": "skipped",
                             "session_id": session_id,
-                            "requested_language": requested_lang,
+                            "language_preference": requested_lang,
                             "reason": "not_in_supported_languages",
                         },
                     )

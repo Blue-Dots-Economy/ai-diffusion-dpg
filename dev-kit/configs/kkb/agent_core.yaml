@@ -384,13 +384,14 @@ preprocessing:
           longitudinal analysis but do not change stage;
       (3) infrastructure intents (any_input, unknown) for generic forward progress.
 
-      ## language_switch_request special handling
+      ## language_switch_request handling
       When the user asks to switch language (e.g. "talk in english", "kannada me baat karo",
       "can you switch to hindi"), classify as language_switch_request AND emit the entity
-      `requested_language` with the normalised lowercase value — one of: hindi, kannada,
+      `language_preference` with the normalised lowercase value — one of: hindi, kannada,
       english, hinglish. Example: "please speak in English" → intent=language_switch_request,
-      entities={"requested_language": "english"}. Do NOT use language_preference for this
-      intent — the orchestrator reads requested_language specifically.
+      entities={"language_preference": "english"}. If the user asks for a language NOT in
+      that set, still emit the raw lowercase name (e.g. "french"); the orchestrator will
+      reject it and respond with the unsupported-language message.
     intents:
       # Routing intents
       - evaluate_option
@@ -433,7 +434,6 @@ preprocessing:
       - open_to_training
       - growth_horizon
       - distance_km
-      - requested_language   # emitted with language_switch_request intent
     sentiment_classes: [neutral, positive, distressed, frustrated]
 
     # Intents that generate a context graph Signal node for longitudinal analysis.

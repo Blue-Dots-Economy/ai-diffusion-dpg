@@ -899,14 +899,14 @@ def test_language_preference_set_from_detection_on_first_turn():
 
 _SWITCH_NLU = NLUResult(
     intent="language_switch_request",
-    entities={"requested_language": "kannada"},
+    entities={"language_preference": "kannada"},
     sentiment="neutral",
     confidence=0.95,
 )
 
 _SWITCH_UNSUPPORTED_NLU = NLUResult(
     intent="language_switch_request",
-    entities={"requested_language": "french"},
+    entities={"language_preference": "french"},
     sentiment="neutral",
     confidence=0.95,
 )
