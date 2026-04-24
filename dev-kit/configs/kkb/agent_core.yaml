@@ -9,9 +9,15 @@ agent:
 
 channels:
   voice:
+    # GH-194: hard cap on voice response length (token cap below + prompt rule).
+    max_tokens: 200
     system_prompt_suffix: |
       You are conversing over the phone, so keep responses short and simple.
       Do not emit any markdown or emojis.
+
+      ## Response length (hard rule)
+      Reply in at most 2 short sentences. The only exception is presenting a
+      market listing, where you may use at most 3 items, one short line each.
 
       ## Style
       Short to medium sentences, calm pace, one idea at a time, natural
