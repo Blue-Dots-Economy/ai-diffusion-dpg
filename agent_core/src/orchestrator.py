@@ -2665,11 +2665,15 @@ class AgentCore(AgentCoreBase):
             )
             t8 = time.time()
 
+            # GH-194: per-channel response-length cap (None → wrapper default).
+            channel_max_tokens = channel_config.get("max_tokens")
+
             try:
                 async for token in self._llm.stream_call(
                     messages=messages,
                     tools=active_tools if active_tools else None,
                     system=system,
+                    max_tokens=channel_max_tokens,
                 ):
                     token_buffer += token
                     sentences, token_buffer = _split_sentences(token_buffer)
@@ -2809,6 +2813,7 @@ class AgentCore(AgentCoreBase):
                             messages=messages,
                             tools=active_tools if active_tools else None,
                             system=system,
+                            max_tokens=channel_max_tokens,
                         ):
                             token_buffer += token
                             sentences, token_buffer = _split_sentences(token_buffer)

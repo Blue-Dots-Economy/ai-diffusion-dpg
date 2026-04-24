@@ -49,6 +49,7 @@ class LLMWrapperBase(ABC):
         tools: list[dict] | None = None,
         system: str | list[dict] | None = None,
         model_override: str | None = None,
+        max_tokens: int | None = None,
     ) -> AsyncGenerator[str, None]:
         """Stream raw text tokens from the LLM.
 
@@ -66,6 +67,10 @@ class LLMWrapperBase(ABC):
                             ≥3000 chars) or list of Anthropic content blocks with explicit
                             `cache_control` markers.
             model_override: If provided, use this model instead of the active model.
+            max_tokens:     Optional cap on response tokens. When ``None`` the
+                            wrapper uses its built-in default (4096). Voice
+                            channels typically pass a tight cap (~200) to keep
+                            spoken responses short (GH-194).
 
         Yields:
             str: Individual text tokens from the LLM stream.

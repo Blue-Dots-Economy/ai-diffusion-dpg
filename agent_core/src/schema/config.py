@@ -429,13 +429,20 @@ class TurnAssemblerConfig(BaseModel):
 
 
 class ChannelConfig(BaseModel):
-    """Per-channel LLM-facing configuration (GH-137)."""
+    """Per-channel LLM-facing configuration (GH-137).
+
+    ``max_tokens`` (GH-194) caps the LLM response length on this channel.
+    When ``None`` the wrapper falls back to its built-in default (4096).
+    Voice channels typically set a tight cap (~200) so the user never
+    waits through long monologues.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     system_prompt_suffix: str = ""
     tts_rules: Optional[TtsRulesConfig] = None
     terminal_word: Optional[str] = None
+    max_tokens: Optional[int] = Field(default=None, gt=0)
     turn_assembler: TurnAssemblerConfig = Field(default_factory=TurnAssemblerConfig)
 
 

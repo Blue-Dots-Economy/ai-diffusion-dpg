@@ -112,6 +112,11 @@ def _get_metrics() -> dict:
 # denser so the real threshold is easily met by NLU and subagent prompts.
 _CACHE_MIN_CHARS = 3000
 
+# Default response-token ceiling when the caller does not pass max_tokens.
+# Per-channel overrides (e.g. voice = 200) flow in via stream_call(max_tokens=...)
+# (GH-194).
+_DEFAULT_MAX_TOKENS = 4096
+
 
 def _safe_int(value) -> int:
     """Return value as int, defaulting to 0 on non-numeric (e.g. None, Mock).
@@ -271,6 +276,7 @@ class ClaudeLLMWrapper(LLMWrapperBase):
         tools: list[dict] | None = None,
         system: str | list[dict] | None = None,
         model_override: str | None = None,
+        max_tokens: int | None = None,
     ) -> AsyncGenerator[str, None]:
         """Stream text tokens from the Anthropic API.
 
@@ -284,6 +290,9 @@ class ClaudeLLMWrapper(LLMWrapperBase):
                 ≥3000 chars) or list of Anthropic content blocks with explicit
                 `cache_control` markers.
             model_override: Optional model ID override.
+            max_tokens: Optional cap on response tokens. When ``None`` the
+                wrapper uses :data:`_DEFAULT_MAX_TOKENS` (4096). Voice channels
+                pass a tight cap (~200) to keep spoken responses short (GH-194).
 
         Yields:
             str: Individual text tokens.
@@ -295,9 +304,12 @@ class ClaudeLLMWrapper(LLMWrapperBase):
             raise ValueError("messages must not be empty")
 
         model = model_override or self._active_model
+        effective_max_tokens = max_tokens if max_tokens is not None else _DEFAULT_MAX_TOKENS
 
         try:
-            async for token in self._stream_with_retry(model, messages, tools, system):
+            async for token in self._stream_with_retry(
+                model, messages, tools, system, effective_max_tokens
+            ):
                 yield token
         except _RetryableExhausted:
             if model != self._primary_model:
@@ -308,7 +320,9 @@ class ClaudeLLMWrapper(LLMWrapperBase):
             )
             self._switch_to_fallback()
             try:
-                async for token in self._stream_with_retry(self._fallback_model, messages, tools, system):
+                async for token in self._stream_with_retry(
+                    self._fallback_model, messages, tools, system, effective_max_tokens
+                ):
                     yield token
             except _RetryableExhausted:
                 return
@@ -323,6 +337,7 @@ class ClaudeLLMWrapper(LLMWrapperBase):
         messages: list[dict],
         tools: list[dict] | None,
         system: str | list[dict] | None,
+        max_tokens: int,
     ) -> AsyncGenerator[str, None]:
         """Internal retry loop for streaming with exponential backoff.
 
@@ -331,6 +346,7 @@ class ClaudeLLMWrapper(LLMWrapperBase):
             messages: Conversation messages.
             tools: Tool definitions.
             system: System prompt or content blocks.
+            max_tokens: Hard cap on response tokens for this call.
 
         Yields:
             str: Text tokens from the stream.
@@ -351,7 +367,7 @@ class ClaudeLLMWrapper(LLMWrapperBase):
             try:
                 kwargs: dict = {
                     "model": model,
-                    "max_tokens": 4096,
+                    "max_tokens": max_tokens,
                     "messages": messages,
                 }
                 if system:
