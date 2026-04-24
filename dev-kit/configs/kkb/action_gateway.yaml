@@ -80,9 +80,9 @@ tools:
             value: 1
     response:
       max_size_chars: 4000
-      # Slim LLM-visible projection. Raw response is kept for journey-graph
-      # writes (see agent_workflow.tool_result_mappings); this only shapes what
-      # flows back into the second LLM call as result_text.
+      # Slim LLM-visible projection — shapes what flows back into the second
+      # LLM call as result_text. The raw response is still retained on
+      # ToolResult.result for observability.
       projection:
         list_key: data.items
         fields:

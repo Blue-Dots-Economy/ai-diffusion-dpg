@@ -93,13 +93,6 @@ def _minimal_valid_config() -> dict:
                 },
                 {"id": "end", "is_terminal": True, "routing": []},
             ],
-            "tool_result_mappings": {
-                "onest_market_lookup": {
-                    "journey_event_label": "Role",
-                    "result_list_key": "data.items",
-                    "field_map": {"role_id": "job.job_id"},
-                }
-            },
         },
         "channels": {
             "voice": {
@@ -138,7 +131,6 @@ def test_accepts_valid_full_config():
     assert cfg.hitl.response_message == "connecting you"
     assert len(cfg.agent_workflow.subagents) == 2
     assert cfg.agent_workflow.subagents[0].is_start is True
-    assert "onest_market_lookup" in cfg.agent_workflow.tool_result_mappings
     assert cfg.channels.voice.terminal_word == "Goodbye"
 
 
@@ -282,23 +274,6 @@ def test_signal_intents_accepts_domain_keys():
         }
     })
     assert cfg.preprocessing.nlu_processor.signal_intents["counsellor_request"] == "escalation_signal"
-
-
-def test_tool_result_mappings_accepts_domain_tool_names():
-    """Open-map: domain-defined tool names with per-tool field maps."""
-    cfg = MergedConfig.validate_full({
-        "agent_workflow": {
-            "tool_result_mappings": {
-                "my_tool": {
-                    "journey_event_label": "MyNode",
-                    "result_list_key": "items",
-                    "field_map": {"id_field": "x.y"},
-                }
-            }
-        }
-    })
-    mapping = cfg.agent_workflow.tool_result_mappings["my_tool"]
-    assert mapping.field_map["id_field"] == "x.y"
 
 
 def test_routing_condition_all_operators_accepted():

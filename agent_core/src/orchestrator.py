@@ -986,65 +986,6 @@ class AgentCore(AgentCoreBase):
                 int((time.time() - t9) * 1000),
             )
 
-        # Write journey_event nodes for tool results configured in tool_result_mappings.
-        # Allows domain config to persist structured tool outputs (e.g. ONEST roles)
-        # to the Neo4j journey graph without any domain logic in Python code.
-        tool_result_mappings: dict = (
-            self._config.get("agent_workflow", {})
-            .get("tool_result_mappings", {})
-        )
-        if tool_result_mappings and tool_results:
-            for tr in tool_results:
-                mapping = tool_result_mappings.get(tr.tool_name)
-                if not mapping or not tr.success:
-                    continue
-                label = mapping.get("journey_event_label", tr.tool_name)
-                field_map: dict = mapping.get("field_map", {})
-                result_list_key: str = mapping.get("result_list_key", "")
-                raw_result = tr.result if isinstance(tr.result, dict) else {}
-
-                def _get_nested(d: dict, path: str):
-                    """Resolve a dot-notation path against a nested dict."""
-                    current = d
-                    for key in path.split("."):
-                        if not isinstance(current, dict):
-                            return None
-                        current = current.get(key)
-                    return current
-
-                items: list[dict] = []
-                if result_list_key:
-                    extracted = _get_nested(raw_result, result_list_key)
-                    if isinstance(extracted, list):
-                        items = extracted
-                else:
-                    items = [raw_result]
-                for item in items:
-                    if not isinstance(item, dict):
-                        continue
-                    props: dict = {
-                        dest: _get_nested(item, src)
-                        for dest, src in field_map.items()
-                        if _get_nested(item, src) is not None
-                            and isinstance(_get_nested(item, src), (str, int, float, bool))
-                    }
-                    if not props:
-                        props = {k: v for k, v in item.items() if isinstance(v, (str, int, float, bool))}
-                    props["label"] = label
-                    try:
-                        self._write_memory_sync(session_id, user_id, "journey_event", label, props)
-                    except Exception as _je_err:
-                        logger.warning(
-                            "orchestrator.journey_event_write_failed",
-                            extra={
-                                "operation": "orchestrator.tool_result_to_journey_event",
-                                "status": "failure",
-                                "session_id": session_id,
-                                "tool_name": tr.tool_name,
-                                "error": str(_je_err),
-                            },
-                        )
-
         # ── Post-tool hook: apply_job success → post_applied transition ──
         # After the tool-use loop, if any ToolResult for "apply_job" succeeded,
         # move the session to the post_applied subagent for the NEXT turn.

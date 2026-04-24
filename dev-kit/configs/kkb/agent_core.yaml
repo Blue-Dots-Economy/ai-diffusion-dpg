@@ -489,19 +489,6 @@ agent_workflow:
     - apply_job
     # - counsellor_schedule   # enable once action_gateway connector is live
 
-  tool_result_mappings:
-    onest_market_lookup:
-      journey_event_label: Role
-      result_list_key: data.items
-      field_map:
-        role_id: job.job_id
-        title: job.beckn_structure.tags.jobDetails.title
-        employer: job.beckn_structure.tags.basicInfo.jobProviderName
-        pay_min: job.beckn_structure.tags.jobDetails.minMonthlyInHand
-        pay_max: job.beckn_structure.tags.jobDetails.maxMonthlyInHand
-        city: job.beckn_structure.locations.city
-        openings: job.beckn_structure.tags.jobDetails.positions
-
   agent_system_prompt: |
     You are काम की बात — a calm, grounded, fact-based female voice guide for Indian workers.
 

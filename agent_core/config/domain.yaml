@@ -133,17 +133,6 @@ agent_workflow:
   global_routing: []                   # Required. Routing rules for global intents. Each: intent, next_subagent_id.
   default_fallback_subagent_id: ""     # Required. Subagent to route to when no routing rule matches.
 
-  subagent_mental_state_map: {}        # (GH-140) Optional. Maps subagent id → mental_state value written
-                                       # to session after routing. Example: { profile_building: fog }
-
-  tool_result_mappings: {}             # (GH-140) Optional. Maps tool name → journey event config for
-                                       # persisting tool outputs to Neo4j child nodes.
-                                       # Example:
-                                       # tool_name:
-                                       #   journey_event_label: Role
-                                       #   result_list_key: data.items
-                                       #   field_map: { role_id: job.job_id, title: job.title }
-
   subagents: []  # Required. List of subagent definitions. Each entry:
                  #   id, name, description, is_start, is_terminal,
                  #   opening_phrase (GH-137),  ← emitted on first session turn only (after consent)

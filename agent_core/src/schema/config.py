@@ -11,8 +11,6 @@ fail at startup with a pydantic ValidationError, not at first request.
 Open-map sub-sections are modelled as ``dict[str, <inner>]``:
 
 - ``entity_to_profile_field`` — entity_name → profile_field_name
-- ``agent_workflow.tool_result_mappings`` — tool_name → mapping
-- ``agent_workflow.tool_result_mappings.*.field_map`` — graph_field → result_field
 - ``preprocessing.nlu_processor.signal_intents`` — intent → signal_type
 - ``connectors.*.[].input_schema.properties`` — JSON Schema property map
 
@@ -364,16 +362,6 @@ class SubAgent(BaseModel):
     routing: list[RoutingRule] = Field(default_factory=list)
 
 
-class ToolResultMapping(BaseModel):
-    """How to persist one tool's results to the Journey graph."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    journey_event_label: str
-    result_list_key: str
-    field_map: dict[str, str] = Field(default_factory=dict)
-
-
 class AgentWorkflowConfig(BaseModel):
     """Multi-subagent workflow graph."""
 
@@ -385,7 +373,6 @@ class AgentWorkflowConfig(BaseModel):
     global_intents: list[str] = Field(default_factory=list)
     global_routing: list[RoutingRule] = Field(default_factory=list)
     default_fallback_subagent_id: str = ""
-    tool_result_mappings: dict[str, ToolResultMapping] = Field(default_factory=dict)
     global_tools: list[str] = Field(default_factory=list)
     subagents: list[SubAgent] = Field(default_factory=list)
 
