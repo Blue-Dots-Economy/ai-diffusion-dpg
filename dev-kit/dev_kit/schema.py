@@ -190,7 +190,10 @@ class SessionEndEvalConfig(BaseModel):
 
 
 class LanguageNormalisationConfig(BaseModel):
-    model: str = Field(..., description="Claude model ID for language normalisation")
+    model: str = Field(
+        default="",
+        description="Optional Claude model ID override for language normalisation; falls back to agent.primary_model when empty",
+    )
     provider: str = Field(default="llm_native", description="Normalisation provider (llm_native)")
     default_language: str = Field(
         default="",
