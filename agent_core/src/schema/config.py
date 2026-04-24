@@ -76,6 +76,40 @@ class ClientConfig(BaseModel):
     timeout_ms: int = Field(default=5000, gt=0)
 
 
+class CheckOutputBatchConfig(BaseModel):
+    """Trust Layer ``/check/output`` batching policy for streaming turns.
+
+    During SSE streaming, sentences are buffered and submitted to Trust Layer
+    as a single concatenated check whenever the buffer reaches ``max_sentences``
+    or ``max_interval_ms`` has elapsed since the first buffered sentence —
+    whichever happens first. On ``block`` / ``escalate`` verdicts the entire
+    pending batch is replaced with the configured fallback message; sentences
+    already emitted in earlier batches are not retracted.
+
+    Attributes:
+        enabled: When False, every sentence is checked individually
+            (legacy behaviour).
+        max_sentences: Flush trigger by buffer size (>=1).
+        max_interval_ms: Flush trigger by elapsed wall-clock ms (>=1).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = True
+    max_sentences: int = Field(default=3, ge=1)
+    max_interval_ms: int = Field(default=500, ge=1)
+
+
+class TrustClientConfig(ClientConfig):
+    """HTTP client config for the Trust Layer plus output-check batching policy."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    check_output_batch: CheckOutputBatchConfig = Field(
+        default_factory=CheckOutputBatchConfig
+    )
+
+
 class OtelConfig(BaseModel):
     """OTel SDK exporter and sampling configuration."""
 
@@ -498,8 +532,8 @@ class MergedConfig(BaseModel):
     memory_client: ClientConfig = Field(
         default_factory=lambda: ClientConfig(endpoint="http://memory_layer:8002")
     )
-    trust_client: ClientConfig = Field(
-        default_factory=lambda: ClientConfig(endpoint="http://trust_layer:8003")
+    trust_client: TrustClientConfig = Field(
+        default_factory=lambda: TrustClientConfig(endpoint="http://trust_layer:8003")
     )
     learning_client: ClientConfig = Field(
         default_factory=lambda: ClientConfig(endpoint="http://observability_layer:8004")

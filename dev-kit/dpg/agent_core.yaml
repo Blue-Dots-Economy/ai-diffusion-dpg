@@ -30,6 +30,16 @@ memory_client:
 trust_client:
   endpoint: "http://trust_layer:8003"
   timeout_ms: 2000
+  # GH-196 — Batch per-sentence Trust Layer /check/output calls during streaming.
+  # Sentences are buffered and submitted as a single concatenated check whenever
+  # the buffer reaches max_sentences or max_interval_ms has elapsed since the
+  # first buffered sentence — whichever fires first. On block / escalate, the
+  # pending batch is replaced with conversation.output_blocked_message; earlier
+  # batches that already streamed to the user are NOT retracted.
+  check_output_batch:
+    enabled: true
+    max_sentences: 3
+    max_interval_ms: 500
 
 learning_client:
   endpoint: "http://observability_layer:8004"
