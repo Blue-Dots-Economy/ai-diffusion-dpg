@@ -17,6 +17,8 @@ import { api } from '../../api'
 
 const INITIAL_STATE = {
   config: null,
+  docTypes: [],
+  defaultDocType: '',
   rows: [],
   submitting: false,
   submitError: null,
@@ -26,13 +28,14 @@ function _rowId() {
   return Math.random().toString(36).slice(2)
 }
 
-function _makeRow() {
+function _makeRow(defaultDocType = '') {
   return {
     id: _rowId(),
     mode: 'local_write_ingest',
     file: null,
     cloudPath: '',
     filename: '',
+    docType: defaultDocType,
     jobId: null,
     status: 'pending',
     queuePosition: null,
@@ -45,6 +48,12 @@ function reducer(state, action) {
   switch (action.type) {
     case 'SET_CONFIG':
       return { ...state, config: action.config }
+    case 'SET_DOC_TYPES':
+      return {
+        ...state,
+        docTypes: action.docTypes || [],
+        defaultDocType: action.defaultDocType || '',
+      }
     case 'ADD_ROW':
       return { ...state, rows: [...state.rows, action.row] }
     case 'REMOVE_ROW':
@@ -135,11 +144,22 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
         },
       })
     })
+    if (slug) {
+      api.getProjectDocTypes(slug).then(payload => {
+        dispatch({
+          type: 'SET_DOC_TYPES',
+          docTypes: payload.doc_types || [],
+          defaultDocType: payload.default_doc_type || '',
+        })
+      }).catch(() => {
+        // Non-fatal — operator can still type a doc_type manually.
+      })
+    }
     return () => {
       Object.values(pollingRef.current).forEach(clearInterval)
       Object.values(timeoutRef.current).forEach(clearTimeout)
     }
-  }, [])
+  }, [slug])
 
   // ---------------------------------------------------------------------------
   // Row management
@@ -147,7 +167,11 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
 
   const handleAddRow = () => {
     if (state.rows.length >= maxFiles) return
-    dispatch({ type: 'ADD_ROW', row: _makeRow() })
+    dispatch({ type: 'ADD_ROW', row: _makeRow(state.defaultDocType) })
+  }
+
+  const handleDocTypeChange = (id, docType) => {
+    dispatch({ type: 'UPDATE_ROW', id, patch: { docType } })
   }
 
   const handleRemoveRow = (id) => {
@@ -223,6 +247,7 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
         filename: row.filename,
         mode: row.mode,
         ...(row.cloudPath ? { cloud_path: row.cloudPath } : {}),
+        ...(row.docType ? { doc_type: row.docType } : {}),
       }))
     ))
     for (const row of pending) {
@@ -355,6 +380,36 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
                     {row.mode === 'local_write_ingest' ? 'Local' : 'Azure'}
                   </span>
                 )}
+              </div>
+
+              {/* Doc type selector */}
+              <div className="shrink-0">
+                {row.status === 'pending' ? (
+                  state.docTypes.length > 0 ? (
+                    <select
+                      value={row.docType}
+                      onChange={e => handleDocTypeChange(row.id, e.target.value)}
+                      title="doc_type (matched against intent_filters)"
+                      className="bg-gray-800 border border-gray-600 rounded-lg px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="">doc_type…</option>
+                      {state.docTypes.map(dt => (
+                        <option key={dt} value={dt}>{dt}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      placeholder="doc_type"
+                      value={row.docType}
+                      onChange={e => handleDocTypeChange(row.id, e.target.value)}
+                      title="Optional doc_type tag (matches intent_filters)"
+                      className="bg-gray-800 border border-gray-600 rounded-lg px-2 py-1.5 text-xs text-gray-200 w-32 focus:outline-none focus:border-blue-500"
+                    />
+                  )
+                ) : row.docType ? (
+                  <span className="text-xs text-gray-500">{row.docType}</span>
+                ) : null}
               </div>
 
               {/* Retry button for failed rows */}

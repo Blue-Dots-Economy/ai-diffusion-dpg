@@ -41,7 +41,7 @@ SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md", ".csv", ".docx", ".html"}
 class _IngestJob:
     """In-memory job passed through the asyncio queue."""
 
-    __slots__ = ("job_id", "batch_id", "filename", "mode", "cloud_path", "file_bytes")
+    __slots__ = ("job_id", "batch_id", "filename", "mode", "cloud_path", "file_bytes", "doc_type")
 
     def __init__(
         self,
@@ -51,6 +51,7 @@ class _IngestJob:
         mode: str,
         cloud_path: Optional[str],
         file_bytes: Optional[bytes],
+        doc_type: Optional[str] = None,
     ) -> None:
         """Initialise an in-memory ingest job descriptor.
 
@@ -61,6 +62,10 @@ class _IngestJob:
             mode: Ingest mode ('local_write_ingest', 'cloud_upload_ingest', 'cloud_fetch_ingest').
             cloud_path: Azure Blob path (cloud_fetch_ingest only).
             file_bytes: Raw file bytes (None for cloud_fetch_ingest).
+            doc_type: Optional per-file doc_type tag (e.g. 'data_protection_law').
+                If None, worker falls back to sources[] lookup by filename, then
+                block_cfg['default_doc_type']. Lets callers label uploads to match
+                the domain's intent_filters.
         """
         self.job_id = job_id
         self.batch_id = batch_id
@@ -68,6 +73,7 @@ class _IngestJob:
         self.mode = mode
         self.cloud_path = cloud_path
         self.file_bytes = file_bytes
+        self.doc_type = doc_type
 
 
 def create_upload_router(
@@ -134,11 +140,13 @@ def create_upload_router(
                 file_parts[value.filename] = content
 
         # Validate all entries
-        validated: list[tuple[str, str, Optional[str], Optional[bytes]]] = []
+        validated: list[tuple[str, str, Optional[str], Optional[bytes], Optional[str]]] = []
         for entry in metadata_entries:
             filename = entry.get("filename", "")
             mode = entry.get("mode", "")
             cloud_path = entry.get("cloud_path")
+            raw_doc_type = entry.get("doc_type")
+            doc_type = raw_doc_type.strip() if isinstance(raw_doc_type, str) and raw_doc_type.strip() else None
 
             # Path traversal check
             safe_name = Path(filename).name
@@ -160,7 +168,7 @@ def create_upload_router(
                 raise HTTPException(422, f"cloud_path required for: {filename}")
 
             file_bytes = file_parts.get(safe_name)
-            validated.append((safe_name, mode, cloud_path, file_bytes))
+            validated.append((safe_name, mode, cloud_path, file_bytes, doc_type))
 
         # Queue capacity check
         if ingest_queue.qsize() + len(validated) > max_queue_size:
@@ -178,7 +186,7 @@ def create_upload_router(
         db_rows: list[IngestionRecord] = []
         jobs: list[_IngestJob] = []
 
-        for safe_name, mode, cloud_path, file_bytes in validated:
+        for safe_name, mode, cloud_path, file_bytes, doc_type in validated:
             job_id = str(uuid.uuid4())
             db_rows.append(IngestionRecord(
                 job_id=job_id,
@@ -192,7 +200,7 @@ def create_upload_router(
                 user_id=user_id,
                 uploaded_at=now_utc,
             ))
-            jobs.append(_IngestJob(job_id, batch_id, safe_name, mode, cloud_path, file_bytes))
+            jobs.append(_IngestJob(job_id, batch_id, safe_name, mode, cloud_path, file_bytes, doc_type))
 
         try:
             db.insert_batch(db_rows)
@@ -299,7 +307,7 @@ async def run_queue_worker(
 
         try:
             staged_path = await _stage_file(job, kb_data_dir, azure_acct, azure_key, azure_cont)
-            chunks = static_kb_block.ingest_single(ke_config, staged_path)
+            chunks = static_kb_block.ingest_single(ke_config, staged_path, doc_type=job.doc_type)
             ingested_at = datetime.now(timezone.utc).isoformat()
             db.update_status(job.job_id, "ingested", chunks_added=chunks, ingested_at=ingested_at)
             await _send_callback(
