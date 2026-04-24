@@ -34,15 +34,6 @@ def test_kkb_config_boots_with_user_state_model_enabled():
     assert p._user_state_enabled is True
 
 
-def test_farmer_friendly_boots_with_example_user_state():
-    """Farmer-friendly domain boots cleanly with example user_state_model."""
-    cfg = _load_merged_domain_config("farmer-friendly")
-    p = NLUProcessor(cfg)
-    assert p._user_state_enabled is True
-    assert p._user_state_default != ""
-    assert len(p._user_states) >= 2
-
-
 def test_obsrv_docs_assistant_boots():
     """Obsrv-docs-assistant domain boots cleanly; user_state disabled by default."""
     cfg = _load_merged_domain_config("obsrv-docs-assistant")

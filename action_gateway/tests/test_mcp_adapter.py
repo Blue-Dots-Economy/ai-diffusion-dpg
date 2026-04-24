@@ -89,8 +89,8 @@ class TestMcpAdapterInit:
             await adapter.initialize()
 
         names = [d.name for d in adapter.get_tool_definitions()]
-        assert "test_mcp.search" in names
-        assert "test_mcp.get_item" in names
+        assert "test_mcp__search" in names
+        assert "test_mcp__get_item" in names
 
     @pytest.mark.asyncio
     async def test_category_from_config(self, mcp_tool_config, mock_tools):
@@ -169,11 +169,11 @@ class TestMcpAdapterExecute:
         with patch.object(
             adapter, "_call_tool", new_callable=AsyncMock, return_value=mock_call_result
         ) as mock_call:
-            result = await adapter.execute("test_mcp.search", {"query": "hello"}, "session-1")
+            result = await adapter.execute("test_mcp__search", {"query": "hello"}, "session-1")
 
         mock_call.assert_called_once_with("search", {"query": "hello"})
         assert result.success is True
-        assert result.tool_name == "test_mcp.search"
+        assert result.tool_name == "test_mcp__search"
 
     @pytest.mark.asyncio
     async def test_mcp_error_returns_failure(self, mcp_tool_config, mock_tools):
@@ -190,7 +190,7 @@ class TestMcpAdapterExecute:
             new_callable=AsyncMock,
             side_effect=RuntimeError("connection lost"),
         ):
-            result = await adapter.execute("test_mcp.search", {}, "session-1")
+            result = await adapter.execute("test_mcp__search", {}, "session-1")
 
         assert result.success is False
         assert "mcp_error" in result.error
@@ -205,11 +205,11 @@ class TestMcpAdapterExecute:
         ):
             await adapter.initialize()
 
-        result = await adapter.execute("test_mcp.nonexistent", {}, "session-1")
+        result = await adapter.execute("test_mcp__nonexistent", {}, "session-1")
 
         assert result.success is False
         assert "unknown_tool" in result.error
-        assert "test_mcp.nonexistent" in result.error
+        assert "test_mcp__nonexistent" in result.error
 
     @pytest.mark.asyncio
     async def test_execute_parses_json_result(self, mcp_tool_config, mock_tools):
@@ -225,7 +225,7 @@ class TestMcpAdapterExecute:
         mock_call_result.isError = False
 
         with patch.object(adapter, "_call_tool", new_callable=AsyncMock, return_value=mock_call_result):
-            result = await adapter.execute("test_mcp.search", {"query": "test"}, "s1")
+            result = await adapter.execute("test_mcp__search", {"query": "test"}, "s1")
 
         assert result.success is True
         assert result.result == {"key": "value"}
@@ -244,7 +244,7 @@ class TestMcpAdapterExecute:
         mock_call_result.isError = False
 
         with patch.object(adapter, "_call_tool", new_callable=AsyncMock, return_value=mock_call_result):
-            result = await adapter.execute("test_mcp.search", {}, "s1")
+            result = await adapter.execute("test_mcp__search", {}, "s1")
 
         assert result.success is True
         assert result.result == {"text": "plain text response"}
@@ -266,7 +266,7 @@ class TestMcpAdapterExecute:
             new_callable=AsyncMock,
             side_effect=ConnectionError("lost"),
         ):
-            await adapter.execute("test_mcp.search", {}, "s1")
+            await adapter.execute("test_mcp__search", {}, "s1")
 
         assert adapter.health_check() is False
 
@@ -326,7 +326,7 @@ class TestMcpAdapterOtel:
         mock_result.content = [MagicMock(text='{"answer": 1}')]
 
         with patch.object(adapter, "_call_tool", new_callable=AsyncMock, return_value=mock_result):
-            await adapter.execute("test_mcp.search", {"query": "hello"}, "sess-otel-mcp-1")
+            await adapter.execute("test_mcp__search", {"query": "hello"}, "sess-otel-mcp-1")
 
         spans = exporter.get_finished_spans()
         span_names = [s.name for s in spans]
@@ -345,7 +345,7 @@ class TestMcpAdapterOtel:
             await adapter.initialize()
 
         with patch.object(adapter, "_call_tool", new_callable=AsyncMock, side_effect=RuntimeError("lost")):
-            result = await adapter.execute("test_mcp.search", {}, "sess-otel-mcp-2")
+            result = await adapter.execute("test_mcp__search", {}, "sess-otel-mcp-2")
 
         assert result.success is False
         spans = exporter.get_finished_spans()
@@ -365,7 +365,7 @@ class TestMcpAdapterOtel:
         mock_result.content = [MagicMock(text='{"data": "value"}')]
 
         with patch.object(adapter, "_call_tool", new_callable=AsyncMock, return_value=mock_result):
-            await adapter.execute("test_mcp.search", {}, "sess-otel-mcp-3")
+            await adapter.execute("test_mcp__search", {}, "sess-otel-mcp-3")
 
         metrics_data = reader.get_metrics_data()
         metric_names = {
