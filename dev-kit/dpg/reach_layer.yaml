@@ -52,7 +52,7 @@ reach_layer:
     # ─── Web ─────────────────────────────────────────────────────────────────
     web:
       enabled: true
-      assembly_mode: session
+      assembly_mode: direct
       server:
         host: 0.0.0.0
         port: 8005
