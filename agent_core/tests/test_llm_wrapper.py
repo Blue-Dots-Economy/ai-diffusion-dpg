@@ -667,6 +667,57 @@ def test_safe_int_handles_none_and_garbage():
 
 
 # ---------------------------------------------------------------------------
+# GH-219 — cache-diagnostic DEBUG logger
+# ---------------------------------------------------------------------------
+
+
+@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+def test_cache_diagnostic_fires_when_env_var_set(mock_anthropic_cls, monkeypatch, caplog):
+    """With DPG_LOG_CACHE_DIAGNOSTIC=1, a single DEBUG diagnostic log is emitted.
+
+    The log must include system_shape / system_text_len / system_has_cache_control
+    so operators can verify the shape of the payload that reaches the SDK.
+    """
+    import logging
+    mock_client = MagicMock()
+    mock_anthropic_cls.return_value = mock_client
+    mock_client.messages.create.return_value = _mock_text_response()
+
+    monkeypatch.setenv("DPG_LOG_CACHE_DIAGNOSTIC", "1")
+
+    wrapper = ClaudeLLMWrapper(VALID_CONFIG)
+    long_system = "You are a helpful assistant. " * 200  # >3000 chars
+    with caplog.at_level(logging.DEBUG, logger="src.llm_wrapper.claude_wrapper"):
+        wrapper.call(messages=MESSAGES, tools=[], system=long_system)
+
+    diag = [r for r in caplog.records if r.message == "llm_wrapper.cache_diagnostic"]
+    assert len(diag) == 1, "diagnostic log should fire exactly once"
+    rec = diag[0]
+    assert rec.system_shape == "list"
+    assert rec.system_text_len == len(long_system)
+    assert rec.system_has_cache_control is True
+    assert rec.tools_count == 0
+
+
+@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+def test_cache_diagnostic_silent_when_env_var_unset(mock_anthropic_cls, monkeypatch, caplog):
+    """Without the env var, no diagnostic log is emitted — production must not pay this cost."""
+    import logging
+    mock_client = MagicMock()
+    mock_anthropic_cls.return_value = mock_client
+    mock_client.messages.create.return_value = _mock_text_response()
+
+    monkeypatch.delenv("DPG_LOG_CACHE_DIAGNOSTIC", raising=False)
+
+    wrapper = ClaudeLLMWrapper(VALID_CONFIG)
+    with caplog.at_level(logging.DEBUG, logger="src.llm_wrapper.claude_wrapper"):
+        wrapper.call(messages=MESSAGES, tools=[], system=SYSTEM)
+
+    diag = [r for r in caplog.records if r.message == "llm_wrapper.cache_diagnostic"]
+    assert diag == []
+
+
+# ---------------------------------------------------------------------------
 # stream_call() — max_tokens plumbing (GH-194)
 # ---------------------------------------------------------------------------
 

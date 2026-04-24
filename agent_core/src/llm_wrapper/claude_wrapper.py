@@ -15,7 +15,9 @@ Responsibilities:
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import logging
+import os
 import time
 from collections.abc import AsyncGenerator
 from typing import Optional
@@ -111,6 +113,105 @@ def _get_metrics() -> dict:
 # ~4 chars/token is a conservative English estimate; KKB Hindi/Devanagari is
 # denser so the real threshold is easily met by NLU and subagent prompts.
 _CACHE_MIN_CHARS = 3000
+
+
+# ---------------------------------------------------------------------------
+# GH-219 — cache-diagnostic DEBUG logger.
+#
+# Set env var ``DPG_LOG_CACHE_DIAGNOSTIC=1`` to emit a one-line DEBUG record
+# immediately before every Anthropic request showing the exact shape of the
+# ``kwargs`` we hand to the SDK (system-block type, char length, whether
+# cache_control is attached, message/tool sizes). This is a diagnostic aid
+# for investigating cache-miss bugs (GH-219) — OFF by default because it
+# runs on every request.
+# ---------------------------------------------------------------------------
+def _log_cache_diagnostic(kwargs: dict, call_kind: str) -> None:
+    """Emit a DEBUG log describing the cache-relevant shape of kwargs.
+
+    Runs only when ``DPG_LOG_CACHE_DIAGNOSTIC=1`` is set in the environment.
+    Never raises — all introspection is defensive so a malformed payload
+    cannot break the LLM call.
+
+    Args:
+        kwargs: The argument dict passed to ``messages.create``/``.stream``.
+        call_kind: ``"sync"`` or ``"stream"`` — tags the log line.
+    """
+    if os.environ.get("DPG_LOG_CACHE_DIAGNOSTIC") != "1":
+        return
+    try:
+        system = kwargs.get("system")
+        if system is None:
+            system_shape = "none"
+            system_text_len = 0
+            system_has_cc = False
+        elif isinstance(system, str):
+            system_shape = "str"
+            system_text_len = len(system)
+            system_has_cc = False
+        elif isinstance(system, list):
+            system_shape = "list"
+            system_text_len = (
+                len(system[0].get("text", ""))
+                if system and isinstance(system[0], dict)
+                else 0
+            )
+            system_has_cc = any(
+                isinstance(b, dict) and "cache_control" in b for b in system
+            )
+        else:
+            system_shape = type(system).__name__
+            system_text_len = 0
+            system_has_cc = False
+
+        messages = kwargs.get("messages") or []
+        messages_total_chars = 0
+        messages_has_cc = False
+        for msg in messages:
+            content = msg.get("content") if isinstance(msg, dict) else None
+            if isinstance(content, str):
+                messages_total_chars += len(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        if "cache_control" in block:
+                            messages_has_cc = True
+                        for k in ("text", "content"):
+                            v = block.get(k)
+                            if isinstance(v, str):
+                                messages_total_chars += len(v)
+
+        tools = kwargs.get("tools") or []
+        try:
+            tools_total_chars = len(_json.dumps(tools, default=str))
+        except Exception:  # noqa: BLE001
+            tools_total_chars = -1
+
+        logger.debug(
+            "llm_wrapper.cache_diagnostic",
+            extra={
+                "operation": f"llm_wrapper.{call_kind}_call",
+                "status": "success",
+                "call_kind": call_kind,
+                "model": kwargs.get("model"),
+                "system_shape": system_shape,
+                "system_text_len": system_text_len,
+                "system_has_cache_control": system_has_cc,
+                "messages_total_chars": messages_total_chars,
+                "messages_has_cache_control": messages_has_cc,
+                "tools_count": len(tools),
+                "tools_total_chars": tools_total_chars,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Diagnostic must never break an LLM call.
+        logger.debug(
+            "llm_wrapper.cache_diagnostic_error",
+            extra={
+                "operation": f"llm_wrapper.{call_kind}_call",
+                "status": "failure",
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+        )
 
 # Default response-token ceiling when the caller does not pass max_tokens.
 # Per-channel overrides (e.g. voice = 200) flow in via stream_call(max_tokens=...)
@@ -391,6 +492,7 @@ class ClaudeLLMWrapper(LLMWrapperBase):
                     span.set_attribute("llm.attempt", attempt + 1)
                     span.set_attribute("llm.call_kind", "stream")
 
+                    _log_cache_diagnostic(kwargs, call_kind="stream")
                     async with self._async_client.messages.stream(
                         **kwargs, timeout=self._timeout_s
                     ) as stream:
@@ -573,6 +675,7 @@ class ClaudeLLMWrapper(LLMWrapperBase):
                     span.set_attribute("gen_ai.model", model)
                     span.set_attribute("llm.attempt", attempt + 1)
                     span.set_attribute("llm.call_kind", "sync")
+                    _log_cache_diagnostic(kwargs, call_kind="sync")
                     raw = self._client.messages.create(**kwargs)
                     response = self._parse_response(raw, model)
                     latency_ms = int((time.time() - start) * 1000)
