@@ -899,14 +899,14 @@ def test_language_preference_set_from_detection_on_first_turn():
 
 _SWITCH_NLU = NLUResult(
     intent="language_switch_request",
-    entities={"requested_language": "kannada"},
+    entities={"language_preference": "kannada"},
     sentiment="neutral",
     confidence=0.95,
 )
 
 _SWITCH_UNSUPPORTED_NLU = NLUResult(
     intent="language_switch_request",
-    entities={"requested_language": "french"},
+    entities={"language_preference": "french"},
     sentiment="neutral",
     confidence=0.95,
 )
@@ -1219,6 +1219,25 @@ def test_session_end_eval_enabled_extends_subagent_tool_defs():
     assert "existing_tool" in names
 
 
+def test_session_end_eval_enabled_extends_global_tool_defs():
+    """When enabled AND workflow uses global_tool_defs, end_session is appended there too."""
+    cfg = _config_with_session_end_eval(enabled=True, prompt="p")
+    wf = _make_workflow()
+    wf.global_tool_defs = [{"name": "shared_tool"}]
+    _ = _make_agent_with_config(cfg, workflow=wf)
+    names = {t["name"] for t in wf.global_tool_defs}
+    assert names == {"shared_tool", "end_session"}
+
+
+def test_session_end_eval_enabled_skips_global_tool_defs_when_empty():
+    """Empty global_tool_defs means the domain does not use the shared list — leave untouched."""
+    cfg = _config_with_session_end_eval(enabled=True, prompt="p")
+    wf = _make_workflow()
+    wf.global_tool_defs = []
+    _ = _make_agent_with_config(cfg, workflow=wf)
+    assert wf.global_tool_defs == []
+
+
 def test_session_end_eval_prompt_passed_into_build_system_prompt():
     """process_turn passes session_end_eval_prompt to build_system_prompt when enabled."""
     cfg = _config_with_session_end_eval(enabled=True, prompt="Call end_session at goodbye.")
@@ -1253,3 +1272,93 @@ def test_process_turn_session_ended_default_false():
     agent._manager_agent.session_ended = False
     result = agent.process_turn(_turn_input())
     assert result.session_ended is False
+
+
+def test_active_tools_use_global_tool_defs_when_set():
+    """When workflow.global_tool_defs is non-empty, every turn injects that list."""
+    global_tools = [{"name": "shared_tool", "description": "", "input_schema": {}}]
+    workflow = _make_workflow()
+    workflow.global_tool_defs = global_tools
+    workflow.resolve_tools_for.return_value = global_tools
+    agent = _make_agent(workflow=workflow)
+    agent.process_turn(_turn_input())
+    call_kwargs = agent._llm.call.call_args.kwargs
+    tool_names = [t["name"] for t in call_kwargs["tools"]]
+    assert tool_names == ["shared_tool"]
+
+
+def test_active_tools_fall_back_to_subagent_tool_defs_when_global_empty():
+    """When workflow.global_tool_defs is empty, subagent-specific tool_defs are used."""
+    workflow = _make_workflow()
+    workflow.global_tool_defs = []
+    # Simulate resolve_tools_for falling back to per-subagent tool_defs (empty here).
+    workflow.resolve_tools_for.return_value = []
+    agent = _make_agent(workflow=workflow)
+    agent.process_turn(_turn_input())
+    call_kwargs = agent._llm.call.call_args.kwargs
+    assert call_kwargs["tools"] == []
+
+
+# ---------------------------------------------------------------------------
+# apply_job post-tool hook (GH-182)
+# ---------------------------------------------------------------------------
+
+def test_apply_job_success_moves_session_to_post_applied():
+    """When apply_job returns success, the next-turn subagent becomes post_applied."""
+    from src.models import ToolCall, ToolResult
+
+    post_applied_sa = _make_subagent("post_applied")
+    workflow = _make_workflow(extra_subagents={"post_applied": post_applied_sa})
+    agent = _make_agent(workflow=workflow)
+    agent._manager_agent.run_turn.return_value = (
+        "Applied successfully.",
+        [ToolCall(tool_name="apply_job", tool_use_id="tu_1", input_params={})],
+        [ToolResult(tool_use_id="tu_1", tool_name="apply_job", success=True, result={"applied": True})],
+    )
+
+    agent.process_turn(_turn_input("haan apply kar do"))
+
+    writes = [c.args for c in agent._memory.write.call_args_list]
+    # Find any write that sets current_subagent_id to post_applied
+    assert any(
+        len(w) >= 5 and w[3] == "current_subagent_id" and w[4] == "post_applied"
+        for w in writes
+    )
+
+
+def test_apply_job_failure_does_not_move_session():
+    """When apply_job returns failure, the session stays on the current subagent."""
+    from src.models import ToolCall, ToolResult
+
+    post_applied_sa = _make_subagent("post_applied")
+    workflow = _make_workflow(extra_subagents={"post_applied": post_applied_sa})
+    agent = _make_agent(workflow=workflow)
+    agent._manager_agent.run_turn.return_value = (
+        "Apply failed.",
+        [ToolCall(tool_name="apply_job", tool_use_id="tu_1", input_params={})],
+        [ToolResult(tool_use_id="tu_1", tool_name="apply_job", success=False, result={"error": "upstream"})],
+    )
+
+    agent.process_turn(_turn_input("haan apply kar do"))
+
+    writes = [c.args for c in agent._memory.write.call_args_list]
+    assert not any(
+        len(w) >= 5 and w[3] == "current_subagent_id" and w[4] == "post_applied"
+        for w in writes
+    )
+
+
+def test_apply_job_hook_skipped_when_post_applied_subagent_missing():
+    """Framework stays domain-agnostic — no crash when workflow has no post_applied."""
+    from src.models import ToolCall, ToolResult
+
+    workflow = _make_workflow()  # no post_applied subagent
+    agent = _make_agent(workflow=workflow)
+    agent._manager_agent.run_turn.return_value = (
+        "ok",
+        [ToolCall(tool_name="apply_job", tool_use_id="tu_1", input_params={})],
+        [ToolResult(tool_use_id="tu_1", tool_name="apply_job", success=True, result={})],
+    )
+
+    # Should not raise
+    agent.process_turn(_turn_input("apply"))

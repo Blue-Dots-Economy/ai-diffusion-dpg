@@ -844,3 +844,52 @@ def test_loader_opening_phrase_defaults_empty_when_missing():
     registry = _make_tool_registry()
     workflow = loader.load(config, registry)
     assert workflow.subagents["greeting"].opening_phrase == ""
+
+
+# ---------------------------------------------------------------------------
+# Task 2 — global_tool_defs + resolve_tools_for
+# ---------------------------------------------------------------------------
+
+
+def test_global_tools_resolved_to_definitions(loader):
+    registry = _make_tool_registry(["get_profile", "onest_market_lookup"])
+    config = _minimal_config(tools=[])
+    config["agent_workflow"]["global_tools"] = ["get_profile", "onest_market_lookup"]
+    workflow = loader.load(config, registry)
+    assert [d["name"] for d in workflow.global_tool_defs] == [
+        "get_profile",
+        "onest_market_lookup",
+    ]
+
+
+def test_resolve_tools_for_prefers_global_tool_defs(loader):
+    registry = _make_tool_registry(["get_profile", "local_only"])
+    config = _minimal_config(tools=["local_only"])
+    config["agent_workflow"]["global_tools"] = ["get_profile"]
+    workflow = loader.load(config, registry)
+    names = [d["name"] for d in workflow.resolve_tools_for("start")]
+    assert names == ["get_profile"]
+
+
+def test_resolve_tools_for_falls_back_to_subagent_tools_when_global_empty(loader):
+    registry = _make_tool_registry(["local_only"])
+    config = _minimal_config(tools=["local_only"])
+    workflow = loader.load(config, registry)
+    names = [d["name"] for d in workflow.resolve_tools_for("start")]
+    assert names == ["local_only"]
+
+
+def test_resolve_tools_for_unknown_subagent_returns_empty_when_global_empty(loader):
+    registry = _make_tool_registry(["local_only"])
+    config = _minimal_config(tools=["local_only"])
+    workflow = loader.load(config, registry)
+    assert workflow.resolve_tools_for("nope") == []
+
+
+def test_global_tools_validated_against_registry(loader):
+    """Unregistered global tool name must fail validation rule 3."""
+    registry = _make_tool_registry(["get_profile"])  # no 'ghost_tool'
+    config = _minimal_config()
+    config["agent_workflow"]["global_tools"] = ["ghost_tool"]
+    with pytest.raises(ConfigurationError, match="ghost_tool"):
+        loader.load(config, registry)

@@ -114,15 +114,16 @@ class SubAgent:
 @dataclass
 class AgentWorkflow:
     """
-    Fully parsed and validated workflow, ready for turn-time use.
+    Immutable, fully parsed and pre-computed representation of the multi-subagent
+    workflow graph for a single deployment.
 
-    Pre-computed fields (``nlu_intent_set``, ``tool_defs``) are populated by
-    ``AgentWorkflowLoader.load()`` and must not be mutated after that point.
+    Pre-computed fields (``nlu_intent_set``, ``tool_defs``, ``global_tool_defs``)
+    are populated by :class:`AgentWorkflowLoader` at startup.
 
     Attributes:
-        workflow_id:                Unique workflow identifier from config.
-        version:                    Semantic version string from config.
-        agent_system_prompt:        Top-level system prompt for the orchestrating agent.
+        workflow_id:                Unique identifier for this workflow.
+        version:                    SemVer string for this workflow.
+        agent_system_prompt:        Top-level system prompt shared across subagents.
         global_intents:             Intents handled globally before subagent routing.
         global_routing:             Routing rules applied globally after intent classification.
         default_fallback_subagent_id: Subagent to route to when no routing rule matches.
@@ -130,7 +131,10 @@ class AgentWorkflow:
         start_subagent_id:          ID of the subagent with ``is_start=True``.
         nlu_intent_set:             Per-subagent scoped intent list (subagent + global intents).
         tool_defs:                  Per-subagent tool definition slices (excludes
-                                    ``knowledge_retrieval``).
+                                    built-in ``knowledge_retrieval``).
+        global_tool_defs:           Shared tool-def list applied to every subagent when
+                                    non-empty. Empty means fall back to per-subagent
+                                    ``tool_defs``. Validated against the registry.
     """
 
     workflow_id: str
@@ -143,6 +147,24 @@ class AgentWorkflow:
     start_subagent_id: str
     nlu_intent_set: dict[str, list[str]] = field(default_factory=dict)
     tool_defs: dict[str, list[dict]] = field(default_factory=dict)
+    global_tool_defs: list[dict] = field(default_factory=list)
+
+    def resolve_tools_for(self, subagent_id: str) -> list[dict]:
+        """Return the tool definitions to inject into the LLM call for a subagent.
+
+        When ``global_tool_defs`` is non-empty, it takes precedence and every
+        subagent sees the same tool set (KKB behaviour). Otherwise the per-subagent
+        ``tool_defs`` slice is returned, or an empty list if the subagent is unknown.
+
+        Args:
+            subagent_id: Subagent id whose tool set is being assembled.
+
+        Returns:
+            List of Anthropic-shaped tool definition dicts.
+        """
+        if self.global_tool_defs:
+            return self.global_tool_defs
+        return self.tool_defs.get(subagent_id, [])
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +233,12 @@ class AgentWorkflowLoader:
         global_intents: list[str] = workflow_cfg.get("global_intents") or []
         default_fallback_subagent_id = workflow_cfg.get("default_fallback_subagent_id", "")
 
+        global_tools_raw: list[str] = workflow_cfg.get("global_tools") or []
+        if not isinstance(global_tools_raw, list) or not all(isinstance(t, str) for t in global_tools_raw):
+            raise ConfigurationError(
+                "agent_workflow.global_tools must be a list of tool name strings"
+            )
+
         # ------------------------------------------------------------------
         # Parse global routing rules
         # ------------------------------------------------------------------
@@ -249,6 +277,7 @@ class AgentWorkflowLoader:
         start_subagent_id = self._validate_exactly_one_start(subagents)
         self._validate_routing_references(subagents, global_routing)
         self._validate_tool_names(subagents, tool_registry)
+        self._validate_global_tool_names(global_tools_raw, tool_registry)
         self._validate_subagent_intents(subagents, all_nlu_intents)
         self._validate_global_intents_not_in_subagents(subagents, global_intents)
         self._validate_terminal_routing(subagents)
@@ -262,6 +291,9 @@ class AgentWorkflowLoader:
         )
         tool_defs: dict[str, list[dict]] = self._build_tool_defs(
             subagents, tool_registry
+        )
+        global_tool_defs: list[dict] = self._build_global_tool_defs(
+            global_tools_raw, tool_registry
         )
 
         # ------------------------------------------------------------------
@@ -278,6 +310,7 @@ class AgentWorkflowLoader:
             start_subagent_id=start_subagent_id,
             nlu_intent_set=nlu_intent_set,
             tool_defs=tool_defs,
+            global_tool_defs=global_tool_defs,
         )
 
         logger.info(
@@ -738,3 +771,45 @@ class AgentWorkflowLoader:
             # This now includes internal tools like knowledge_retrieval.
             result[sa_id] = tool_registry.get_definitions_for(subagent.tools or [])
         return result
+
+    def _validate_global_tool_names(
+        self,
+        global_tools: list[str],
+        tool_registry: ToolRegistry,
+    ) -> None:
+        """Fail fast if any name in agent_workflow.global_tools is not registered.
+
+        Args:
+            global_tools:   Names declared under ``agent_workflow.global_tools``.
+            tool_registry:  Registry whose :meth:`get_tool_names` lists all known tools.
+
+        Raises:
+            ConfigurationError: If any name is not registered.
+        """
+        if not global_tools:
+            return
+        known = tool_registry.get_tool_names()
+        unknown = [t for t in global_tools if t not in known]
+        if unknown:
+            raise ConfigurationError(
+                "agent_workflow.global_tools references unregistered tools: "
+                f"{sorted(unknown)}. Registered tools: {sorted(known)}"
+            )
+
+    def _build_global_tool_defs(
+        self,
+        global_tools: list[str],
+        tool_registry: ToolRegistry,
+    ) -> list[dict]:
+        """Resolve ``global_tools`` names to Anthropic-shaped definitions.
+
+        Args:
+            global_tools:   Validated list of tool names.
+            tool_registry:  Registry that produces definition dicts.
+
+        Returns:
+            List of tool definitions — empty list when ``global_tools`` is empty.
+        """
+        if not global_tools:
+            return []
+        return tool_registry.get_definitions_for(global_tools)

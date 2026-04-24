@@ -386,6 +386,7 @@ class AgentWorkflowConfig(BaseModel):
     global_routing: list[RoutingRule] = Field(default_factory=list)
     default_fallback_subagent_id: str = ""
     tool_result_mappings: dict[str, ToolResultMapping] = Field(default_factory=dict)
+    global_tools: list[str] = Field(default_factory=list)
     subagents: list[SubAgent] = Field(default_factory=list)
 
 

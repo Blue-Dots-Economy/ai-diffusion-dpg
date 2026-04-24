@@ -253,7 +253,12 @@ class StaticKnowledgeBaseBlock(KnowledgeBlock):
             },
         )
 
-    def ingest_single(self, config: dict, file_path: Path) -> int:
+    def ingest_single(
+        self,
+        config: dict,
+        file_path: Path,
+        doc_type: Optional[str] = None,
+    ) -> int:
         """Ingest a single document into the existing ChromaDB collection.
 
         Deletes all existing chunks for this filename before re-ingesting,
@@ -262,9 +267,17 @@ class StaticKnowledgeBaseBlock(KnowledgeBlock):
 
         Serialization is guaranteed by the queue worker (one job at a time).
 
+        The effective doc_type for every chunk is resolved with a 3-tier
+        fallback so domain intent_filters can narrow retrieval correctly:
+
+            1. Caller-supplied ``doc_type`` argument (from upload metadata).
+            2. Lookup of ``file_path.name`` in ``block_cfg['sources']``.
+            3. ``block_cfg['default_doc_type']`` (or literal ``'general'``).
+
         Args:
             config: Full KE YAML config dict.
             file_path: Absolute path to the document on /data/kb PVC (must exist).
+            doc_type: Optional explicit doc_type override from the upload call.
 
         Returns:
             Number of chunks added.
@@ -304,19 +317,30 @@ class StaticKnowledgeBaseBlock(KnowledgeBlock):
                 },
             )
 
+        # Resolve effective doc_type (3-tier fallback).
+        effective_doc_type = doc_type
+        if not effective_doc_type:
+            for src in block_cfg.get("sources", []) or []:
+                src_path = src.get("path", "") if isinstance(src, dict) else ""
+                if src_path and Path(src_path).name == file_path.name:
+                    effective_doc_type = src.get("doc_type")
+                    break
+        if not effective_doc_type:
+            effective_doc_type = block_cfg.get("default_doc_type", "general")
+
         # Load, chunk, and embed
-        doc_type = block_cfg.get("default_doc_type", "general")
-        chunks = self._load_and_chunk(str(file_path), doc_type)
+        chunks = self._load_and_chunk(str(file_path), effective_doc_type)
         if not chunks:
             return 0
 
-        self._add_chunks_to_collection(collection, chunks, doc_type)
+        self._add_chunks_to_collection(collection, chunks, effective_doc_type)
         logger.info(
             "static_kb.ingest_single",
             extra={
                 "operation": "static_kb.ingest_single",
                 "status": "success",
                 "file_name": file_path.name,
+                "doc_type": effective_doc_type,
                 "chunks_added": len(chunks),
                 "latency_ms": int((time.time() - start) * 1000),
             },

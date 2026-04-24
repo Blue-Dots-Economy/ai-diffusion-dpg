@@ -1672,6 +1672,57 @@ def _append_callback_to_ingest_log(
 # ---------------------------------------------------------------------------
 
 
+@app.get("/api/projects/{slug}/ingest/doc-types")
+def get_project_doc_types(slug: str) -> dict:
+    """Return the union of doc_types declared in the project's KE config.
+
+    Scans ``knowledge.blocks.static_knowledge_base.sources[].doc_type`` and
+    every value under ``knowledge.blocks.static_knowledge_base.intent_filters``
+    so the frontend can render a doc_type dropdown that matches exactly
+    what the domain's retrieval filters expect.
+
+    Args:
+        slug: Project slug.
+
+    Returns:
+        Dict with ``doc_types`` (sorted unique list) and ``default_doc_type``.
+    """
+    project_path = _get_project_path(slug)
+    ke_file = project_path / "knowledge_engine.yaml"
+    doc_types: set[str] = set()
+    default_doc_type = "general"
+
+    if ke_file.exists():
+        try:
+            data = yaml.safe_load(ke_file.read_text()) or {}
+        except yaml.YAMLError:
+            data = {}
+        block = (
+            data.get("knowledge", {})
+            .get("blocks", {})
+            .get("static_knowledge_base", {})
+        )
+        if isinstance(block, dict):
+            default_doc_type = block.get("default_doc_type") or default_doc_type
+            for src in block.get("sources", []) or []:
+                if isinstance(src, dict):
+                    dt = src.get("doc_type")
+                    if isinstance(dt, str) and dt.strip():
+                        doc_types.add(dt.strip())
+            filters = block.get("intent_filters") or {}
+            if isinstance(filters, dict):
+                for values in filters.values():
+                    if isinstance(values, list):
+                        for v in values:
+                            if isinstance(v, str) and v.strip():
+                                doc_types.add(v.strip())
+
+    return {
+        "doc_types": sorted(doc_types),
+        "default_doc_type": default_doc_type,
+    }
+
+
 @app.get("/api/devkit-config")
 async def get_devkit_config():
     """Return dev-kit operational config values for the frontend.

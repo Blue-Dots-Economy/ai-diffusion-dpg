@@ -60,6 +60,9 @@ export const api = {
   getDevKitConfig: () =>
     request('GET', '/devkit-config'),
 
+  getProjectDocTypes: (slug) =>
+    request('GET', `/projects/${slug}/ingest/doc-types`),
+
   submitIngestBatch: (slug, formData) =>
     // formData is a FormData object containing metadata + file parts
     // Must use raw fetch (not request()) so the browser sets the multipart boundary

@@ -163,7 +163,8 @@ class AgentCore(AgentCoreBase):
             except AttributeError:
                 # Tolerate mock registries in tests that don't implement the method.
                 pass
-            # Ensure every subagent's scoped tool list includes end_session.
+            # Ensure every subagent's scoped tool list includes end_session,
+            # plus the shared global_tool_defs list if the domain uses it.
             try:
                 tool_defs = getattr(self._workflow, "tool_defs", None)
                 if isinstance(tool_defs, dict):
@@ -172,6 +173,10 @@ class AgentCore(AgentCoreBase):
                             continue
                         if not any(t.get("name") == "end_session" for t in _tools):
                             _tools.append(end_session_def)
+                global_defs = getattr(self._workflow, "global_tool_defs", None)
+                if isinstance(global_defs, list) and global_defs:
+                    if not any(t.get("name") == "end_session" for t in global_defs):
+                        global_defs.append(end_session_def)
             except Exception as _err:  # defensive — never break init
                 logger.warning(
                     "orchestrator.end_session_tool_defs_extension_failed",
@@ -636,8 +641,20 @@ class AgentCore(AgentCoreBase):
         # the Memory Layer DETACH DELETEs the user graph when the session ends.
         entity_scope: str = self._config.get("entity_persistence", {}).get("scope", "persistent")
         entity_map: dict = self._config.get("entity_to_profile_field", {})
+        supported_langs: set[str] = {
+            l.lower() for l in self._config.get("preprocessing", {})
+            .get("language_normalisation", {})
+            .get("supported_languages", [])
+        }
         for entity_key, entity_val in (nlu_result.entities or {}).items():
             profile_field = entity_map.get(entity_key, entity_key)
+            # Guard: never persist language_preference with a value outside the
+            # configured supported_languages list. The language_switch_request
+            # branch below (or the unsupported-language response) handles the
+            # user-facing case; skipping here prevents profile pollution.
+            if profile_field == "language_preference" and supported_langs:
+                if str(entity_val).lower().strip() not in supported_langs:
+                    continue
             self._write_memory_sync(session_id, user_id, entity_scope, profile_field, entity_val)
             bundle.session[profile_field] = entity_val
 
@@ -684,12 +701,13 @@ class AgentCore(AgentCoreBase):
                 l.lower() for l in lang_cfg.get("supported_languages", [])
             ]
             requested_lang = (
-                (nlu_result.entities or {}).get("requested_language") or ""
+                (nlu_result.entities or {}).get("language_preference") or ""
             ).lower().strip()
 
             if requested_lang and requested_lang in supported:
-                pref_scope = self._config.get("entity_persistence", {}).get("scope", "persistent")
-                self._write_memory_sync(session_id, user_id, pref_scope, "language_preference", requested_lang)
+                # Profile write already happened in the entity loop above for
+                # supported values; mirror into bundle.session and flip the
+                # active detected_language for this turn's prompt.
                 bundle.session["language_preference"] = requested_lang
                 detected_language = requested_lang
                 logger.info(
@@ -698,7 +716,7 @@ class AgentCore(AgentCoreBase):
                         "operation": "orchestrator.language_switch",
                         "status": "success",
                         "session_id": session_id,
-                        "requested_language": requested_lang,
+                        "language_preference": requested_lang,
                     },
                 )
             else:
@@ -716,7 +734,7 @@ class AgentCore(AgentCoreBase):
                         "operation": "orchestrator.language_switch",
                         "status": "skipped",
                         "session_id": session_id,
-                        "requested_language": requested_lang,
+                        "language_preference": requested_lang,
                         "reason": "not_in_supported_languages",
                     },
                 )
@@ -905,7 +923,7 @@ class AgentCore(AgentCoreBase):
             )
 
         # ── Step 8: LLM call #1 with scoped tools ────────────────────
-        active_tools = self._workflow.tool_defs.get(next_subagent_id, [])
+        active_tools = self._workflow.resolve_tools_for(next_subagent_id)
         output_format = next_subagent.output_format
         primary_model = self._config.get("agent", {}).get("primary_model", "unknown")
         logger.info(
@@ -1026,6 +1044,32 @@ class AgentCore(AgentCoreBase):
                                 "error": str(_je_err),
                             },
                         )
+
+        # ── Post-tool hook: apply_job success → post_applied transition ──
+        # After the tool-use loop, if any ToolResult for "apply_job" succeeded,
+        # move the session to the post_applied subagent for the NEXT turn.
+        # The current turn's response was already produced under the commitment
+        # subagent's system prompt — that is intentional.
+        # Guard ensures the framework stays domain-agnostic: other domains that
+        # do not define a post_applied subagent get a no-op.
+        if tool_results and "post_applied" in self._workflow.subagents:
+            for tr in tool_results:
+                if getattr(tr, "tool_name", None) == "apply_job" and getattr(tr, "success", False):
+                    self._write_memory_sync(
+                        session_id, user_id, "session",
+                        "current_subagent_id", "post_applied",
+                    )
+                    bundle.session["current_subagent_id"] = "post_applied"
+                    logger.info(
+                        "orchestrator.post_applied_transition",
+                        extra={
+                            "operation": "orchestrator.post_tool_hook",
+                            "status": "success",
+                            "session_id": session_id,
+                            "trigger_tool": "apply_job",
+                        },
+                    )
+                    break
 
         # ── Step 10: Trust check on output ────────────────────────────
         logger.info(
@@ -2468,8 +2512,18 @@ class AgentCore(AgentCoreBase):
             # Write entities
             entity_scope: str = self._config.get("entity_persistence", {}).get("scope", "persistent")
             entity_map: dict = self._config.get("entity_to_profile_field", {})
+            supported_langs: set[str] = {
+                l.lower() for l in self._config.get("preprocessing", {})
+                .get("language_normalisation", {})
+                .get("supported_languages", [])
+            }
             for entity_key, entity_val in (nlu_result.entities or {}).items():
                 profile_field = entity_map.get(entity_key, entity_key)
+                # Guard: never persist language_preference with a value outside
+                # the configured supported_languages list (mirrors sync path).
+                if profile_field == "language_preference" and supported_langs:
+                    if str(entity_val).lower().strip() not in supported_langs:
+                        continue
                 await self._async_memory.write(session_id, user_id, entity_scope, profile_field, entity_val)
                 bundle.session[profile_field] = entity_val
 
@@ -2483,12 +2537,13 @@ class AgentCore(AgentCoreBase):
                     l.lower() for l in lang_cfg.get("supported_languages", [])
                 ]
                 requested_lang = (
-                    (nlu_result.entities or {}).get("requested_language") or ""
+                    (nlu_result.entities or {}).get("language_preference") or ""
                 ).lower().strip()
 
                 if requested_lang and requested_lang in supported:
-                    pref_scope = self._config.get("entity_persistence", {}).get("scope", "persistent")
-                    await self._async_memory.write(session_id, user_id, pref_scope, "language_preference", requested_lang)
+                    # Profile write already happened in the entity loop above
+                    # for supported values; mirror into bundle.session and flip
+                    # the active detected_language for this turn's prompt.
                     bundle.session["language_preference"] = requested_lang
                     detected_language = requested_lang
                     logger.info(
@@ -2497,7 +2552,7 @@ class AgentCore(AgentCoreBase):
                             "operation": "orchestrator.language_switch",
                             "status": "success",
                             "session_id": session_id,
-                            "requested_language": requested_lang,
+                            "language_preference": requested_lang,
                         },
                     )
                 else:
@@ -2515,7 +2570,7 @@ class AgentCore(AgentCoreBase):
                             "operation": "orchestrator.language_switch",
                             "status": "skipped",
                             "session_id": session_id,
-                            "requested_language": requested_lang,
+                            "language_preference": requested_lang,
                             "reason": "not_in_supported_languages",
                         },
                     )
@@ -2644,7 +2699,7 @@ class AgentCore(AgentCoreBase):
                 return
 
             # ── Step 8: LLM streaming ──────────────────────────────────
-            active_tools = self._workflow.tool_defs.get(next_subagent_id, [])
+            active_tools = self._workflow.resolve_tools_for(next_subagent_id)
             sentence_index = 0
             token_buffer = ""
             primary_model = self._config.get("agent", {}).get("primary_model", "unknown")
@@ -2708,6 +2763,7 @@ class AgentCore(AgentCoreBase):
 
                 yield SignalEvent(stage="tool_start", status="start")
                 tool_results_for_llm = []
+                _stream_tool_results = []  # Collect ToolResult objects for post-tool hook
                 for tc in e.tool_calls:
                     if self._async_gateway:
                         tool_result = await self._async_gateway.execute(tc, session_id, user_id)
@@ -2718,6 +2774,7 @@ class AgentCore(AgentCoreBase):
                             extra={"session_id": session_id, "tool_name": tc.tool_name},
                         )
                         break
+                    _stream_tool_results.append(tool_result)
                     tool_results_for_llm.append({
                         "type": "tool_result",
                         "tool_use_id": tc.tool_use_id,
@@ -2799,6 +2856,7 @@ class AgentCore(AgentCoreBase):
                                     "tool_use_id": tc.tool_use_id,
                                     "content": tool_result.result_text or str(tool_result.result),
                                 })
+                                _stream_tool_results.append(tool_result)
                         yield SignalEvent(stage="tool_end", status="complete")
                         logger.info(
                             "  [STEP 9] Tool-Use Loop (round %d)  ✓  tools=%s",
@@ -2812,6 +2870,28 @@ class AgentCore(AgentCoreBase):
                     "  [STEP 8] LLM Stream Call #2  ✓  model_used=%s  latency=%dms",
                     model_used, int((time.time() - t8b) * 1000),
                 )
+
+                # Post-tool hook: apply_job success → post_applied transition
+                # Mirror of the sync path hook. Guard ensures domain-agnosticism:
+                # workflows without a post_applied subagent get a no-op.
+                if _stream_tool_results and "post_applied" in self._workflow.subagents:
+                    for tr in _stream_tool_results:
+                        if getattr(tr, "tool_name", None) == "apply_job" and getattr(tr, "success", False):
+                            await self._async_memory.write(
+                                session_id, user_id, "session",
+                                "current_subagent_id", "post_applied",
+                            )
+                            bundle.session["current_subagent_id"] = "post_applied"
+                            logger.info(
+                                "orchestrator.post_applied_transition",
+                                extra={
+                                    "operation": "orchestrator.post_tool_hook",
+                                    "status": "success",
+                                    "session_id": session_id,
+                                    "trigger_tool": "apply_job",
+                                },
+                            )
+                            break
 
             # Flush remaining buffer as final sentence
             remaining = token_buffer.strip()

@@ -42,7 +42,7 @@ CONFIG = {
             "model": "claude-haiku-4-5-20251001",
             "confidence_threshold": 0.5,
             "intents": [
-                "greeting_intent", "profile_answer",
+                "greeting_intent", "evaluate_option",
                 "market_truth_query", "scheme_query", "training_query",
                 "apply_now", "counsellor_request", "pay_range_query",
                 "termination_intent", "unknown",
@@ -148,7 +148,7 @@ def test_model_override_passed_from_config(processor):
 
 def test_current_question_injected_into_llm_message(processor):
     """NLU injects current_question so follow-up answers are resolved correctly."""
-    llm = make_llm_returning(intent="profile_answer")
+    llm = make_llm_returning(intent="evaluate_option")
     processor.process("welder", "Aap kaun sa kaam karte hain?", "profile_collection", llm)
     call_kwargs = llm.call.call_args[1]
     messages_sent = call_kwargs.get("messages", [])
@@ -160,7 +160,7 @@ def test_current_question_injected_into_llm_message(processor):
 
 def test_workflow_step_injected_into_llm_message(processor):
     """NLU injects workflow_step for context-aware classification."""
-    llm = make_llm_returning(intent="profile_answer")
+    llm = make_llm_returning(intent="evaluate_option")
     processor.process("electrician", "", "profile_collection", llm)
     call_kwargs = llm.call.call_args[1]
     messages_sent = call_kwargs.get("messages", [])
@@ -292,7 +292,7 @@ def test_nlu_result_active_risks_set():
 
 def test_existing_profile_keys_injected_into_system_prompt(processor):
     """When existing_profile_keys is provided, the NLU system prompt includes them."""
-    llm = make_llm_returning(intent="profile_answer", entities={"location": "Mumbai"})
+    llm = make_llm_returning(intent="evaluate_option", entities={"location": "Mumbai"})
     processor.process(
         "Mumbai mein kaam chahiye", "", "", llm,
         existing_profile_keys=["name", "location", "trade_or_stream"],
@@ -305,7 +305,7 @@ def test_existing_profile_keys_injected_into_system_prompt(processor):
 
 def test_no_profile_keys_uses_fallback_rule(processor):
     """When existing_profile_keys is None, the prompt uses the fallback rule."""
-    llm = make_llm_returning(intent="profile_answer")
+    llm = make_llm_returning(intent="evaluate_option")
     processor.process("kaam chahiye", "", "", llm, existing_profile_keys=None)
     call_kwargs = llm.call.call_args[1]
     system_prompt = call_kwargs.get("system", "")
@@ -314,7 +314,7 @@ def test_no_profile_keys_uses_fallback_rule(processor):
 
 def test_empty_profile_keys_list_uses_fallback_rule(processor):
     """An empty list is treated the same as None — fallback rule."""
-    llm = make_llm_returning(intent="profile_answer")
+    llm = make_llm_returning(intent="evaluate_option")
     processor.process("kaam chahiye", "", "", llm, existing_profile_keys=[])
     call_kwargs = llm.call.call_args[1]
     system_prompt = call_kwargs.get("system", "")
@@ -323,7 +323,7 @@ def test_empty_profile_keys_list_uses_fallback_rule(processor):
 
 def test_adhoc_keys_included_in_profile_keys_prompt(processor):
     """Ad-hoc attribute keys from previous sessions appear in the prompt."""
-    llm = make_llm_returning(intent="profile_answer", entities={"employer_name": "Reliance"})
+    llm = make_llm_returning(intent="evaluate_option", entities={"employer_name": "Reliance"})
     processor.process(
         "I work at Reliance", "", "", llm,
         existing_profile_keys=["name", "location", "employer_name"],
