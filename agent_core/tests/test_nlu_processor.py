@@ -290,47 +290,69 @@ def test_nlu_result_active_risks_set():
 # ---------------------------------------------------------------------------
 
 
-def test_existing_profile_keys_injected_into_system_prompt(processor):
-    """When existing_profile_keys is provided, the NLU system prompt includes them."""
+def _system_text(call_kwargs) -> str:
+    """Extract the system prompt text whether it's a string or a list of blocks."""
+    sys_payload = call_kwargs.get("system", "")
+    if isinstance(sys_payload, list):
+        return "\n".join(b.get("text", "") for b in sys_payload)
+    return sys_payload
+
+
+def _user_message_text(call_kwargs) -> str:
+    """Extract the first user message content (GH-195 — dynamic context lives here)."""
+    msgs = call_kwargs.get("messages", [])
+    if not msgs:
+        return ""
+    return msgs[0].get("content", "")
+
+
+def test_existing_profile_keys_injected_into_user_message(processor):
+    """GH-195 — existing_profile_keys is per-turn dynamic; it must live in the
+    USER message, not in the (cached) system prompt."""
     llm = make_llm_returning(intent="evaluate_option", entities={"location": "Mumbai"})
     processor.process(
         "Mumbai mein kaam chahiye", "", "", llm,
         existing_profile_keys=["name", "location", "trade_or_stream"],
     )
     call_kwargs = llm.call.call_args[1]
-    system_prompt = call_kwargs.get("system", "")
-    assert "name, location, trade_or_stream" in system_prompt
-    assert "reuse that exact field name" in system_prompt
+    user_msg = _user_message_text(call_kwargs)
+    system_text = _system_text(call_kwargs)
+    assert "name, location, trade_or_stream" in user_msg
+    # Static dedup rule lives in the cached system prompt.
+    assert "reuse that exact field name" in system_text
+    # The actual dynamic list must NOT appear in the cached portion.
+    assert "name, location, trade_or_stream" not in system_text
 
 
-def test_no_profile_keys_uses_fallback_rule(processor):
-    """When existing_profile_keys is None, the prompt uses the fallback rule."""
+def test_no_profile_keys_omits_user_line(processor):
+    """When no profile keys are available, no dedicated line is added to the user message."""
     llm = make_llm_returning(intent="evaluate_option")
     processor.process("kaam chahiye", "", "", llm, existing_profile_keys=None)
     call_kwargs = llm.call.call_args[1]
-    system_prompt = call_kwargs.get("system", "")
-    assert "No existing profile fields" in system_prompt
+    user_msg = _user_message_text(call_kwargs)
+    system_text = _system_text(call_kwargs)
+    assert "Existing profile fields" not in user_msg
+    # The static rule still describes what to do when no keys are present.
+    assert "no existing fields are listed" in system_text.lower()
 
 
-def test_empty_profile_keys_list_uses_fallback_rule(processor):
-    """An empty list is treated the same as None — fallback rule."""
+def test_empty_profile_keys_list_omits_user_line(processor):
+    """An empty list is treated the same as None — no Existing profile line."""
     llm = make_llm_returning(intent="evaluate_option")
     processor.process("kaam chahiye", "", "", llm, existing_profile_keys=[])
     call_kwargs = llm.call.call_args[1]
-    system_prompt = call_kwargs.get("system", "")
-    assert "No existing profile fields" in system_prompt
+    assert "Existing profile fields" not in _user_message_text(call_kwargs)
 
 
-def test_adhoc_keys_included_in_profile_keys_prompt(processor):
-    """Ad-hoc attribute keys from previous sessions appear in the prompt."""
+def test_adhoc_keys_included_in_user_message(processor):
+    """Ad-hoc attribute keys from previous sessions appear in the user message."""
     llm = make_llm_returning(intent="evaluate_option", entities={"employer_name": "Reliance"})
     processor.process(
         "I work at Reliance", "", "", llm,
         existing_profile_keys=["name", "location", "employer_name"],
     )
     call_kwargs = llm.call.call_args[1]
-    system_prompt = call_kwargs.get("system", "")
-    assert "employer_name" in system_prompt
+    assert "employer_name" in _user_message_text(call_kwargs)
 
 
 def test_process_without_profile_keys_backward_compatible(processor):
@@ -576,11 +598,17 @@ def test_process_prompt_includes_state_section_when_enabled():
         llm=llm,
         previous_user_state="fog",
     )
-    system_prompt = llm.call.call_args.kwargs["system"]
+    call_kwargs = llm.call.call_args.kwargs
+    system_prompt = _system_text(call_kwargs)
+    user_msg = _user_message_text(call_kwargs)
     assert "User mental state classification" in system_prompt
+    # State IDs are part of the static prompt (cacheable)...
     assert "fog" in system_prompt
     assert "orientation" in system_prompt
-    assert "Previous state: fog" in system_prompt
+    # ...but the per-turn previous state is dynamic and lives in the user
+    # message, not in the cached system prefix (GH-195).
+    assert "Previous mental state: fog" in user_msg
+    assert "Previous state: fog" not in system_prompt
 
 
 def test_process_prompt_excludes_state_section_when_disabled():
@@ -593,5 +621,137 @@ def test_process_prompt_excludes_state_section_when_disabled():
         llm=llm,
         previous_user_state=None,
     )
-    system_prompt = llm.call.call_args.kwargs["system"]
+    call_kwargs = llm.call.call_args.kwargs
+    system_prompt = _system_text(call_kwargs)
     assert "User mental state classification" not in system_prompt
+
+
+# ---------------------------------------------------------------------------
+# GH-195 — prompt-cache fix
+# ---------------------------------------------------------------------------
+
+
+def test_system_prompt_sent_as_cache_controlled_list(processor):
+    """The NLU system prompt must be a list with a cache_control marker so
+    Anthropic's prompt cache activates from turn 2."""
+    llm = make_llm_returning(intent="evaluate_option")
+    processor.process("some input", "", "", llm)
+    call_kwargs = llm.call.call_args.kwargs
+    sys_payload = call_kwargs["system"]
+    assert isinstance(sys_payload, list), (
+        "system must be a list of content blocks for prompt caching"
+    )
+    assert len(sys_payload) >= 1
+    first = sys_payload[0]
+    assert first.get("type") == "text"
+    assert first.get("cache_control") == {"type": "ephemeral"}
+    assert first.get("text")  # non-empty
+
+
+def test_cached_system_prompt_has_no_per_turn_dynamic_values(processor):
+    """Guardrail: values that change per turn must not leak into the cached
+    system prefix, or the cache key changes every turn (GH-195 root cause)."""
+    llm = make_llm_returning(intent="evaluate_option")
+    processor.process(
+        "some input",
+        current_question="",
+        current_subagent_id="",
+        llm=llm,
+        existing_profile_keys=["name", "trade_or_stream", "dynamic_hobby_xyz"],
+    )
+    call_kwargs = llm.call.call_args.kwargs
+    system_text = _system_text(call_kwargs)
+    # Dynamic profile-key list must NOT appear in the cached block.
+    assert "dynamic_hobby_xyz" not in system_text
+    assert "trade_or_stream" not in system_text
+    # ...it must appear in the user message.
+    assert "dynamic_hobby_xyz" in _user_message_text(call_kwargs)
+
+
+def test_user_state_previous_state_not_in_cached_prompt():
+    """`previous_user_state` changes turn-to-turn and must live in the user message."""
+    p = NLUProcessor(_base_config({
+        "enabled": True,
+        "default_state": "fog",
+        "states": [
+            {"id": "fog", "signals": [], "guidance": "g1"},
+            {"id": "orientation", "signals": [], "guidance": "g2"},
+        ],
+    }))
+    llm = _mock_llm(
+        '{"intent":"unknown","entities":{},"sentiment":"neutral","confidence":0.9,'
+        '"user_state":{"id":"orientation","confidence":0.9}}'
+    )
+    p.process(
+        normalised_input="x",
+        current_question="",
+        current_subagent_id="main",
+        llm=llm,
+        previous_user_state="orientation",
+    )
+    call_kwargs = llm.call.call_args.kwargs
+    system_text = _system_text(call_kwargs)
+    user_msg = _user_message_text(call_kwargs)
+    assert "Previous mental state: orientation" in user_msg
+    assert "Previous state: orientation" not in system_text
+    assert "Previous mental state: orientation" not in system_text
+
+
+def test_prompt_cache_disabled_sends_plain_string():
+    """When prompt_cache_enabled=false, the system prompt is a plain string —
+    allows debugging / opt-out without editing code."""
+    cfg = _base_config()
+    cfg["preprocessing"]["nlu_processor"]["prompt_cache_enabled"] = False
+    p = NLUProcessor(cfg)
+    llm = _mock_llm('{"intent":"unknown","entities":{},"sentiment":"neutral","confidence":0.9}')
+    p.process("x", "", "", llm)
+    sys_payload = llm.call.call_args.kwargs["system"]
+    assert isinstance(sys_payload, str)
+
+
+def test_cache_usage_tokens_logged_on_success(processor, caplog):
+    """GH-195 — cache_read_input_tokens and cache_creation_input_tokens must
+    appear as structured log fields so ops can verify the cache is hitting."""
+    llm = MagicMock()
+    llm.call.return_value = LLMResponse(
+        content=json.dumps({
+            "intent": "market_truth_query",
+            "entities": {},
+            "sentiment": "neutral",
+            "confidence": 0.9,
+        }),
+        stop_reason="end_turn",
+        model_used="claude-haiku-4-5-20251001",
+        input_tokens=100,
+        output_tokens=20,
+        cache_read_input_tokens=1500,
+        cache_creation_input_tokens=0,
+    )
+    import logging as _logging
+    with caplog.at_level(_logging.INFO, logger="src.preprocessing.nlu_processor"):
+        processor.process("kaam chahiye", "", "", llm)
+    matches = [r for r in caplog.records if r.message == "nlu_processor.process"]
+    assert matches, "no nlu_processor.process log record found"
+    rec = matches[-1]
+    assert getattr(rec, "cache_read_input_tokens", None) == 1500
+    assert getattr(rec, "cache_creation_input_tokens", None) == 0
+    assert getattr(rec, "prompt_cache_enabled", None) is True
+
+
+def test_cache_marker_is_stable_across_turns(processor):
+    """Cache key = static text before the cache_control marker. Two calls with
+    different per-turn inputs must produce the EXACT same cached block text."""
+    llm1 = make_llm_returning(intent="evaluate_option")
+    processor.process(
+        "turn 1 input", current_question="q1", current_subagent_id="sub_a",
+        llm=llm1, existing_profile_keys=["a"], previous_user_state="fog",
+    )
+    llm2 = make_llm_returning(intent="evaluate_option")
+    processor.process(
+        "turn 2 input", current_question="q2", current_subagent_id="sub_a",
+        llm=llm2, existing_profile_keys=["a", "b", "c"], previous_user_state="orientation",
+    )
+    sys1 = llm1.call.call_args.kwargs["system"]
+    sys2 = llm2.call.call_args.kwargs["system"]
+    # Same subagent → same allowed_intents → cached block must be byte-identical.
+    assert sys1 == sys2
