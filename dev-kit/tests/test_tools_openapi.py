@@ -141,51 +141,59 @@ class TestSetResponseTransformation:
     def test_sets_field_mapping_on_tool(self, handler):
         self._add_sample_tool(handler)
         fields = [
-            {"source": "results[*].title", "target": "job_title", "type": "string", "description": "Job title"},
-            {"source": "results[*].employer_name", "target": "company", "type": "string"},
+            {"source": "job.title", "target": "job_title"},
+            {"source": "job.employer_name", "target": "company"},
         ]
-        result = handler.dispatch("set_response_transformation", {"tool_id": "job_search", "fields": fields})
+        result = handler.dispatch("set_response_transformation", {
+            "tool_id": "job_search",
+            "list_key": "data.items",
+            "fields": fields,
+        })
         assert "job_search" in result
-        # Verify it was written to accumulator
+        # Verify it was written to accumulator as a projection
         tools = handler._acc.get_action_gateway_tools()
         job_tool = next(t for t in tools if t["id"] == "job_search")
-        mapping = job_tool["response"]["field_mapping"]
-        assert len(mapping) == 2
-        assert mapping[0]["source"] == "results[*].title"
-        assert mapping[0]["target"] == "job_title"
-        assert mapping[1]["target"] == "company"
+        projection = job_tool["response"]["projection"]
+        assert projection["list_key"] == "data.items"
+        assert projection["fields"] == {
+            "job_title": "job.title",
+            "company": "job.employer_name",
+        }
+        assert "field_mapping" not in job_tool["response"]
         assert job_tool["response"]["max_size_chars"] == 4000
 
     def test_returns_error_for_nonexistent_tool(self, handler):
         result = handler.dispatch("set_response_transformation", {
             "tool_id": "nonexistent",
-            "fields": [{"source": "data.id", "target": "id", "type": "string"}],
+            "fields": [{"source": "data.id", "target": "id"}],
         })
         assert result.startswith("ERROR")
         assert "nonexistent" in result
 
     def test_replaces_existing_mapping(self, handler):
-        """Calling set_response_transformation twice replaces the previous mapping."""
+        """Calling set_response_transformation twice replaces the previous projection."""
         self._add_sample_tool(handler)
         handler.dispatch("set_response_transformation", {
             "tool_id": "job_search",
-            "fields": [{"source": "old.path", "target": "old_field", "type": "string"}],
+            "fields": [{"source": "old.path", "target": "old_field"}],
         })
         handler.dispatch("set_response_transformation", {
             "tool_id": "job_search",
-            "fields": [{"source": "new.path", "target": "new_field", "type": "string"}],
+            "fields": [{"source": "new.path", "target": "new_field"}],
         })
         tools = handler._acc.get_action_gateway_tools()
         job_tool = next(t for t in tools if t["id"] == "job_search")
-        mapping = job_tool["response"]["field_mapping"]
-        assert len(mapping) == 1
-        assert mapping[0]["target"] == "new_field"
+        projection = job_tool["response"]["projection"]
+        assert projection["fields"] == {"new_field": "new.path"}
 
     def test_empty_fields_list_is_accepted(self, handler):
-        """Empty field list clears the mapping without error."""
+        """Empty field list clears the projection without error."""
         self._add_sample_tool(handler)
         result = handler.dispatch("set_response_transformation", {
             "tool_id": "job_search",
             "fields": [],
         })
         assert "job_search" in result
+        tools = handler._acc.get_action_gateway_tools()
+        job_tool = next(t for t in tools if t["id"] == "job_search")
+        assert "projection" not in job_tool.get("response", {})

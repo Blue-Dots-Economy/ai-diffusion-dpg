@@ -306,10 +306,11 @@ TOOL_DEFINITIONS: list[dict] = [
     {
         "name": "set_response_transformation",
         "description": (
-            "Set the response field mapping for a REST API tool. "
+            "Set the response projection for a REST API tool. "
             "Call this after add_rest_api_tool, once the user tells you which fields from the API response the LLM should see. "
-            "Each field maps a JSONPath in the raw response (e.g. 'results[*].title') to a clean target name the LLM works with. "
-            "Calling this again for the same tool replaces the previous mapping."
+            "If the response wraps a list of items (e.g. search results), set list_key to the dot-path of that list "
+            "and each field's source is a dot-path into one item. Without list_key, sources are dot-paths into the response root. "
+            "Calling this again for the same tool replaces the previous projection."
         ),
         "input_schema": {
             "type": "object",
@@ -317,6 +318,14 @@ TOOL_DEFINITIONS: list[dict] = [
                 "tool_id": {
                     "type": "string",
                     "description": "ID of the REST API tool to configure (must already exist via add_rest_api_tool)",
+                },
+                "list_key": {
+                    "type": "string",
+                    "description": (
+                        "Optional dot-path to a list in the response (e.g. 'data.items'). "
+                        "When set, each list element is projected; when empty, the response root is projected."
+                    ),
+                    "default": "",
                 },
                 "fields": {
                     "type": "array",
@@ -326,20 +335,11 @@ TOOL_DEFINITIONS: list[dict] = [
                         "properties": {
                             "source": {
                                 "type": "string",
-                                "description": "JSONPath from the response root, e.g. 'results[*].title' or 'data.employer_name'",
+                                "description": "Dot-path into each item (or response root if no list_key), e.g. 'job.title' or 'employer.name'",
                             },
                             "target": {
                                 "type": "string",
-                                "description": "Field name the LLM sees in the extracted result, e.g. 'job_title'",
-                            },
-                            "type": {
-                                "type": "string",
-                                "enum": ["string", "integer", "number", "boolean", "array", "object"],
-                                "default": "string",
-                            },
-                            "description": {
-                                "type": "string",
-                                "description": "Optional human-readable description of this field",
+                                "description": "Field name the LLM sees in the projected result, e.g. 'job_title'",
                             },
                         },
                         "required": ["source", "target"],
@@ -1055,24 +1055,25 @@ class ToolHandler:
         return f"Tool '{inputs['id']}' added to Action Gateway config."
 
     def _handle_set_response_transformation(self, inputs: dict) -> str:
-        """Write response field_mapping for a REST API tool into the accumulator.
+        """Write response projection for a REST API tool into the accumulator.
 
         Args:
-            inputs: Dict with 'tool_id' (str) and 'fields' (list of dicts with
-                    'source', 'target', optional 'type' and 'description').
+            inputs: Dict with 'tool_id' (str), 'fields' (list of dicts with
+                    'source' and 'target'), and optional 'list_key' (str).
 
         Returns:
-            Confirmation string with the number and names of mapped fields,
+            Confirmation string with the number and names of projected fields,
             or an ERROR string if the tool does not exist.
         """
         import time
 
         tool_id = inputs.get("tool_id", "")
         fields = inputs.get("fields", [])
+        list_key = inputs.get("list_key", "") or ""
 
         start = time.time()
         try:
-            self._acc.update_tool_response_mapping(tool_id, fields)
+            self._acc.update_tool_response_mapping(tool_id, fields, list_key=list_key)
         except ValueError as exc:
             logger.warning(
                 "set_response_transformation.failure",

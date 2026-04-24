@@ -240,16 +240,24 @@ class ConfigAccumulator:
         """
         return deepcopy(self._data["action_gateway"].get("tools", []))
 
-    def update_tool_response_mapping(self, tool_id: str, fields: list[dict]) -> None:
-        """Set the response field_mapping for an existing action_gateway tool.
+    def update_tool_response_mapping(
+        self,
+        tool_id: str,
+        fields: list[dict],
+        list_key: str = "",
+    ) -> None:
+        """Set the response projection for an existing action_gateway tool.
 
-        Replaces any existing field_mapping with the provided list. An empty
-        list clears the mapping.
+        Writes ``response.projection`` with ``list_key`` and a ``fields`` dict
+        mapping target name → dot-path. Replaces any existing projection. An
+        empty ``fields`` list removes the projection entirely.
 
         Args:
             tool_id: ID of the REST API tool to update.
-            fields: List of field mapping dicts, each with at minimum
-                    'source' (JSONPath) and 'target' (name for the LLM).
+            fields: List of dicts with at minimum 'source' (dot-path into each
+                    item, or root if no list_key) and 'target' (name the LLM sees).
+            list_key: Optional dot-path to a list in the response. When set,
+                      each element is projected; when empty, the root is projected.
 
         Raises:
             ValueError: If no tool with the given id exists in action_gateway.
@@ -257,7 +265,15 @@ class ConfigAccumulator:
         tools: list[dict] = self._data["action_gateway"].get("tools", [])
         for tool in tools:
             if tool.get("id") == tool_id:
-                tool.setdefault("response", {})["field_mapping"] = deepcopy(fields)
+                response = tool.setdefault("response", {})
+                response.pop("field_mapping", None)
+                if not fields:
+                    response.pop("projection", None)
+                    return
+                response["projection"] = {
+                    "list_key": list_key,
+                    "fields": {f["target"]: f["source"] for f in fields},
+                }
                 return
         raise ValueError(f"Tool {tool_id!r} not found in action_gateway — call add_rest_api_tool first")
 
