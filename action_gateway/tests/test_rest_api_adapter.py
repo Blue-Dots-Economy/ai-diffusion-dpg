@@ -241,6 +241,192 @@ class TestRestApiAdapterExecute:
 
 
 # ---------------------------------------------------------------------------
+# TestRestApiAdapterProjectionInvariant (GH #198 — P5-C regression guard)
+# ---------------------------------------------------------------------------
+
+
+class TestRestApiAdapterProjectionInvariant:
+    """Regression guard for the projection-on-raw-dict invariant (GH #198).
+
+    Mirrors the KKB ``onest_market_lookup`` shape: a payload whose serialised
+    size exceeds ``max_size_chars`` and whose projected fields live deep
+    inside list items pulled via a ``list_key``. Pins the contract that
+    ``_apply_projection`` always sees the full raw dict and that truncation
+    only ever clips ``result_text`` — never the projection input nor the
+    raw dict retained on ``ToolResult.result``.
+    """
+
+    @pytest.fixture
+    def rest_projection_config(self):
+        """REST adapter config with list_key projection + small max_size_chars.
+
+        ``max_size_chars`` is intentionally far smaller than the synthetic
+        payload below so truncation is guaranteed and the invariant is
+        exercised on every run.
+        """
+        return {
+            "id": "test_market_lookup",
+            "type": "rest_api",
+            "category": "read",
+            "description": "Search market listings",
+            "base_url": "https://api.market.test/v1",
+            "auth": {"type": "none"},
+            "endpoints": [
+                {
+                    "name": "search",
+                    "method": "GET",
+                    "path": "/search",
+                    "params": [
+                        {
+                            "name": "q",
+                            "source": "agent",
+                            "type": "string",
+                            "required": True,
+                            "description": "Search term",
+                        },
+                    ],
+                }
+            ],
+            "response": {
+                "max_size_chars": 4000,
+                "projection": {
+                    "list_key": "data.items",
+                    "fields": {
+                        "role_id": "job.job_id",
+                        "title": "job.beckn_structure.tags.title",
+                        "city": "job.beckn_structure.locations.city",
+                    },
+                },
+            },
+        }
+
+    @staticmethod
+    def _build_oversized_payload(num_items: int = 50) -> dict:
+        """Build a deeply-nested KKB-shaped payload that exceeds 4000 chars.
+
+        Each item carries a ``noise`` blob to bloat the serialised form well
+        past ``max_size_chars`` so the deepest fields fall beyond the
+        truncation boundary.
+        """
+        items = []
+        for i in range(num_items):
+            items.append(
+                {
+                    "job": {
+                        "job_id": f"role-{i:04d}",
+                        "is_active": True,
+                        "beckn_structure": {
+                            "locations": {"city": f"city-{i:04d}", "state": "ST"},
+                            "tags": {
+                                "title": f"Title {i:04d}",
+                                "noise": "x" * 200,
+                            },
+                        },
+                    }
+                }
+            )
+        return {"data": {"items": items}}
+
+    @pytest.mark.asyncio
+    async def test_projection_runs_on_full_raw_dict_when_response_exceeds_max_size_chars(
+        self, rest_projection_config
+    ):
+        """Projection sees deep fields from items beyond the truncation boundary.
+
+        Pins the invariant from rest_api.py:381-394 — ``_apply_projection``
+        is called against the raw response dict before any size clipping
+        happens. If a regression ever truncates the input to projection,
+        the deep-tail items would silently disappear and this test would
+        catch it.
+        """
+        import json
+
+        adapter = RestApiAdapter(rest_projection_config)
+        payload = self._build_oversized_payload(num_items=50)
+
+        # Sanity: the unprojected serialised payload must exceed max_size_chars,
+        # otherwise the test is not actually exercising the invariant.
+        assert len(json.dumps(payload)) > rest_projection_config["response"]["max_size_chars"]
+
+        mock_resp = make_mock_response(200, payload)
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=mock_resp)
+            result = await adapter.execute(
+                "test_market_lookup", {"q": "electrician"}, "sess-proj-1"
+            )
+
+        assert result.success is True
+
+        # ToolResult.result is the raw dict — never truncated.
+        assert result.result == payload
+        assert len(result.result["data"]["items"]) == 50
+
+        # The projection input was the full raw dict, so the LAST item
+        # (which lives well past character offset 4000 in the serialised
+        # form) must still be present and faithfully projected. Pull it
+        # from result_text rather than asserting the raw payload, so we
+        # can only succeed if both (a) projection saw it AND (b) it fit
+        # under max_size_chars after the slim transform.
+        projected = json.loads(result.result_text)
+        assert isinstance(projected, list)
+        # Last surviving item must be one of the deep-tail entries —
+        # i.e. projection did not stop at the early items.
+        ids = [item["role_id"] for item in projected]
+        assert "role-0000" in ids
+        assert any(rid >= "role-0020" for rid in ids), (
+            "Projection must process items past the raw truncation boundary; "
+            f"saw only {ids}"
+        )
+        # Every surviving projected item carries the deep nested fields,
+        # proving _apply_projection traversed the full nested structure.
+        for item in projected:
+            assert set(item.keys()) == {"role_id", "title", "city"}
+            assert item["title"].startswith("Title ")
+            assert item["city"].startswith("city-")
+
+    @pytest.mark.asyncio
+    async def test_result_text_is_capped_but_raw_result_is_not(
+        self, rest_projection_config
+    ):
+        """``result_text`` is bounded by ``max_size_chars``; ``result`` is not.
+
+        Pins rest_api.py:388-394 (list payload trimmed item-by-item to fit)
+        and rest_api.py:413 (``ToolResult.result = result_dict`` — the raw,
+        unprojected, untruncated dict). Observability and downstream
+        consumers depend on ``result`` carrying the full payload.
+        """
+        import json
+
+        adapter = RestApiAdapter(rest_projection_config)
+        payload = self._build_oversized_payload(num_items=50)
+        mock_resp = make_mock_response(200, payload)
+
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=mock_resp)
+            result = await adapter.execute(
+                "test_market_lookup", {"q": "plumber"}, "sess-proj-2"
+            )
+
+        max_size = rest_projection_config["response"]["max_size_chars"]
+
+        # result_text is clipped to max_size_chars (list payload: trimmed
+        # by dropping items from the tail; remains valid JSON).
+        assert len(result.result_text) <= max_size
+        json.loads(result.result_text)  # must still parse
+
+        # ToolResult.result holds the FULL raw dict — no key, item, or
+        # nested field is dropped, even though the serialised form is
+        # larger than max_size_chars.
+        assert result.result == payload
+        assert len(json.dumps(result.result)) > max_size
+        assert len(result.result["data"]["items"]) == 50
+        # Spot-check a deep field on the last item survived intact.
+        last = result.result["data"]["items"][-1]
+        assert last["job"]["job_id"] == "role-0049"
+        assert last["job"]["beckn_structure"]["tags"]["title"] == "Title 0049"
+
+
+# ---------------------------------------------------------------------------
 # TestRestApiAdapterHealthCheck
 # ---------------------------------------------------------------------------
 
