@@ -47,7 +47,9 @@ channels:
       - English loanwords: Write English words used in Hindi speech in Devanagari transliteration. Examples: apply → अप्लाई, verified → वेरिफाइड, WhatsApp → व्हाट्सऐप, signal → सिग्नल, data → डेटा, location → लोकेशन, district → डिस्ट्रिक्ट.
       - Named entities: When speaking person, employer, or institute names, write them in Devanagari that sounds natural. Examples: सविता, प्रकाश, अमित, श्यामलाल, राजीव.
       <!-- tts_rules:end -->
-    terminal_word: "Goodbye"
+    # Final word spoken before the call is closed. Must match the domain's
+    # primary language; KKB is Hindi-first (see language_normalisation below).
+    terminal_word: "धन्यवाद"
     tts_rules:
       numbers: >
         Write all numbers in words in Devanagari. Never use digits in spoken output.
