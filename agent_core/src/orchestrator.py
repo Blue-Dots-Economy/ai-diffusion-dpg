@@ -2780,20 +2780,12 @@ class AgentCore(AgentCoreBase):
                 for tc in e.tool_calls:
                     # Route internal tools (e.g. knowledge_retrieval) to KE,
                     # not through Action Gateway.
-                    if self._registry.get_route(tc.tool_name) == "knowledge_engine":
+                    if self._tool_registry.get_route(tc.tool_name) == "knowledge_engine":
                         tool_result = await asyncio.to_thread(
                             self._manager_agent._execute_knowledge_retrieval,
                             tc, _ke_context,
                         )
                     elif self._async_gateway:
-                        # Resolve sanitized name back to original for Action Gateway
-                        original_name = self._registry.resolve_original_name(tc.tool_name)
-                        if original_name != tc.tool_name:
-                            tc = ToolCall(
-                                tool_name=original_name,
-                                tool_use_id=tc.tool_use_id,
-                                input_params=tc.input_params,
-                            )
                         tool_result = await self._async_gateway.execute(tc, session_id, user_id)
                     else:
                         # Fallback: no async gateway — cannot execute tools in streaming mode
@@ -2877,19 +2869,12 @@ class AgentCore(AgentCoreBase):
                         yield SignalEvent(stage="tool_start", status="start")
                         _nested_results = []
                         for tc in nested_e.tool_calls:
-                            if self._registry.get_route(tc.tool_name) == "knowledge_engine":
+                            if self._tool_registry.get_route(tc.tool_name) == "knowledge_engine":
                                 tool_result = await asyncio.to_thread(
                                     self._manager_agent._execute_knowledge_retrieval,
                                     tc, _ke_context,
                                 )
                             elif self._async_gateway:
-                                original_name = self._registry.resolve_original_name(tc.tool_name)
-                                if original_name != tc.tool_name:
-                                    tc = ToolCall(
-                                        tool_name=original_name,
-                                        tool_use_id=tc.tool_use_id,
-                                        input_params=tc.input_params,
-                                    )
                                 tool_result = await self._async_gateway.execute(tc, session_id, user_id)
                             else:
                                 break

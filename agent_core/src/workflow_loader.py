@@ -591,13 +591,7 @@ class AgentWorkflowLoader:
         """
         registered_tools: set[str] = tool_registry.get_tool_names()
         exempt: set[str] = internal_tool_names or set()
-        # Build set of original (pre-sanitization) names so config tool references
-        # with dots (e.g. "obsrv_docs.searchDocumentation") match the sanitized
-        # registry names (e.g. "obsrv_docs__searchDocumentation").
-        original_names: set[str] = {
-            tool_registry.resolve_original_name(n) for n in registered_tools
-        }
-        all_valid = registered_tools | original_names | exempt
+        all_valid = registered_tools | exempt
 
         for sa_id, subagent in subagents.items():
             for tool_name in subagent.tools:

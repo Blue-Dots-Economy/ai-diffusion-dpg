@@ -567,7 +567,7 @@ def get_phase_addition(phase: str, available_tools: list[str] | None = None) -> 
             "  2. Call `discover_mcp_tools` to fetch available tools and present the list.\n"
             "  3. Call `add_mcp_tool` ONCE for the server — NOT once per tool.\n"
             "     Choose a short snake_case namespace id (e.g. 'obsrv_docs') that will prefix\n"
-            "     all discovered tool names (e.g. 'obsrv_docs.searchDocumentation').\n"
+            "     all discovered tool names (e.g. 'obsrv_docs__searchDocumentation').\n"
             "  4. Note the namespaced tool names — they are used in subagent tools lists.\n"
             "  5. After adding, go to **After each path** below.\n\n"
             "**Path C — Manual REST API (no spec, no MCP):**\n"
@@ -596,7 +596,7 @@ def get_phase_addition(phase: str, available_tools: list[str] | None = None) -> 
             "in agent_core.connectors — subagents reference these by their bare id.\n"
             "MCP tools (`add_mcp_tool`) do NOT create connectors — tool schemas come from\n"
             "the server at runtime. Subagents reference MCP tools by their namespaced names\n"
-            "(e.g. 'obsrv_docs.searchDocumentation'), not the bare adapter id.\n\n"
+            "(e.g. 'obsrv_docs__searchDocumentation'), not the bare adapter id.\n\n"
             "Use EXACTLY the key names shown in the template below:\n\n"
             "```yaml\n"
             + _extract_template_sections("agent_core", ["connectors"])
@@ -613,9 +613,9 @@ def get_phase_addition(phase: str, available_tools: list[str] | None = None) -> 
                 + ", ".join(available_tools)
                 + "\n\nIMPORTANT — tool name format per type:\n"
                 "- REST API tools: use the bare id (e.g. 'onest_market_lookup') — a connector entry exists in agent_core.\n"
-                "- MCP tools: use '{adapter_id}.{mcp_tool_name}' (e.g. 'obsrv_docs.searchDocumentation') — "
+                "- MCP tools: use '{adapter_id}__{mcp_tool_name}' (e.g. 'obsrv_docs__searchDocumentation') — "
                 "no connector entry exists; the MCP adapter discovers tool names at startup. "
-                "Use the exact tool names returned by `discover_mcp_tools` prefixed with the adapter id."
+                "Use the exact tool names returned by `discover_mcp_tools` prefixed with the adapter id and double underscore."
             )
         return (
             "## Workflow phase\n\n"

@@ -209,7 +209,7 @@ class McpAdapter(ToolAdapter):
 
         # Strip namespace prefix to get the raw MCP tool name
         mcp_tool_name = tool_name
-        prefix = f"{self._namespace}."
+        prefix = f"{self._namespace}__"
         if tool_name.startswith(prefix):
             mcp_tool_name = tool_name[len(prefix):]
 
@@ -395,7 +395,7 @@ class McpAdapter(ToolAdapter):
             input_schema = {"type": "object", "properties": {}}
 
         return ToolDefinition(
-            name=f"{self._namespace}.{mcp_tool.name}",
+            name=f"{self._namespace}__{mcp_tool.name}",
             description=mcp_tool.description or f"Tool {mcp_tool.name}",
             input_schema=input_schema,
             category=self._category,

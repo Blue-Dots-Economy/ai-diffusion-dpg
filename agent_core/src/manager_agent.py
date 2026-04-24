@@ -533,17 +533,6 @@ class ManagerAgent:
                     error="consent_required",
                 )
 
-        # Resolve sanitized LLM name back to original Action Gateway name.
-        # MCP tools like "obsrv_docs__searchDocumentation" map back to
-        # "obsrv_docs.searchDocumentation" for the gateway.
-        original_name = self._registry.resolve_original_name(tool_call.tool_name)
-        if original_name != tool_call.tool_name:
-            tool_call = ToolCall(
-                tool_name=original_name,
-                tool_use_id=tool_call.tool_use_id,
-                input_params=tool_call.input_params,
-            )
-
         start = time.time()
         result = self._gateway.execute(tool_call, session_id)
         logger.info(
