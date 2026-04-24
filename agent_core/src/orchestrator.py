@@ -52,6 +52,7 @@ from src.models import (
     SignalEvent,
     StreamEvent,
     ToolCall,
+    ToolResult,
     TrustCheckResult,
     TurnEvent,
     TurnInput,
@@ -2104,6 +2105,19 @@ class AgentCore(AgentCoreBase):
         nlu_result = NLUResult(intent="unknown", entities={}, sentiment="neutral", confidence=0.0)
         all_tool_calls: list[ToolCall] = []
         full_response_text = ""
+        # GH-191: Track end_session locally for the streaming path. The sync
+        # path mutates ``manager_agent._session_ended_flag`` inside ``run_turn``;
+        # the streaming tool loop bypasses that method, so we must compute the
+        # signal here. Reset the manager flag too in case a prior sync turn left
+        # it set on this AgentCore instance.
+        session_ended = False
+        try:
+            self._manager_agent._reset_turn_flags()
+        except AttributeError:
+            # Test doubles or alternative manager implementations may omit this
+            # helper; default to clearing the attribute when present.
+            if hasattr(self._manager_agent, "_session_ended_flag"):
+                self._manager_agent._session_ended_flag = False
 
         logger.info(
             "orchestrator.stream_turn_start",
@@ -2719,9 +2733,33 @@ class AgentCore(AgentCoreBase):
                     "detected_language": detected_language,
                 }
                 for tc in e.tool_calls:
+                    # GH-191: ``end_session`` is an internal signal. Mirror the
+                    # sync path (manager_agent.run_turn): never dispatch it to
+                    # Action Gateway; just flip the flag so the DoneEvent below
+                    # carries ``session_ended=True`` and the voice adapter can
+                    # close the call.
+                    if tc.tool_name == "end_session":
+                        session_ended = True
+                        self._manager_agent._session_ended_flag = True
+                        logger.info(
+                            "orchestrator.stream_end_session",
+                            extra={
+                                "operation": "orchestrator.stream_turn",
+                                "status": "success",
+                                "tool_name": "end_session",
+                                "session_id": session_id,
+                            },
+                        )
+                        tool_result = ToolResult(
+                            tool_use_id=tc.tool_use_id,
+                            tool_name="end_session",
+                            result={"acknowledged": True},
+                            success=True,
+                            result_text="Session end acknowledged.",
+                        )
                     # Route internal tools (e.g. knowledge_retrieval) to KE,
                     # not through Action Gateway.
-                    if self._tool_registry.get_route(tc.tool_name) == "knowledge_engine":
+                    elif self._tool_registry.get_route(tc.tool_name) == "knowledge_engine":
                         tool_result = await asyncio.to_thread(
                             self._manager_agent._execute_knowledge_retrieval,
                             tc, _ke_context,
@@ -2810,7 +2848,28 @@ class AgentCore(AgentCoreBase):
                         yield SignalEvent(stage="tool_start", status="start")
                         _nested_results = []
                         for tc in nested_e.tool_calls:
-                            if self._tool_registry.get_route(tc.tool_name) == "knowledge_engine":
+                            # GH-191: intercept end_session in nested rounds too.
+                            if tc.tool_name == "end_session":
+                                session_ended = True
+                                self._manager_agent._session_ended_flag = True
+                                logger.info(
+                                    "orchestrator.stream_end_session",
+                                    extra={
+                                        "operation": "orchestrator.stream_turn",
+                                        "status": "success",
+                                        "tool_name": "end_session",
+                                        "session_id": session_id,
+                                        "tool_round": _tool_round,
+                                    },
+                                )
+                                tool_result = ToolResult(
+                                    tool_use_id=tc.tool_use_id,
+                                    tool_name="end_session",
+                                    result={"acknowledged": True},
+                                    success=True,
+                                    result_text="Session end acknowledged.",
+                                )
+                            elif self._tool_registry.get_route(tc.tool_name) == "knowledge_engine":
                                 tool_result = await asyncio.to_thread(
                                     self._manager_agent._execute_knowledge_retrieval,
                                     tc, _ke_context,
@@ -2929,7 +2988,10 @@ class AgentCore(AgentCoreBase):
                 model_used=model_used,
                 latency_ms=latency_ms,
                 turn_id=turn_id,
-                session_ended=bool(getattr(self._manager_agent, "session_ended", False)),
+                # GH-191: prefer the locally-tracked flag (streaming tool loop
+                # sets it directly when end_session is invoked); fall back to
+                # the manager_agent flag for parity with the sync path.
+                session_ended=session_ended or bool(getattr(self._manager_agent, "session_ended", False)),
             )
 
             # ── Steps 12-13: Async post-turn ───────────────────────────

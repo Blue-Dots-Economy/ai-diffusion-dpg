@@ -455,3 +455,117 @@ class TestStreamTurnChannelValidation:
 
         done_events = [e for e in events if isinstance(e, DoneEvent)]
         assert len(done_events) == 1
+
+
+class TestStreamTurnEndSession:
+    """GH-191: end_session must set DoneEvent.session_ended=True in streaming."""
+
+    def _make_end_session_agent(self):
+        agent = _make_agent_core()
+        # Manager agent must expose the same attributes the orchestrator
+        # touches in the sync path (so the streaming path has parity).
+        agent._manager_agent._session_ended_flag = False
+
+        def _reset_flags():
+            agent._manager_agent._session_ended_flag = False
+
+        agent._manager_agent._reset_turn_flags = MagicMock(side_effect=_reset_flags)
+        # session_ended is read via getattr on the manager — make it reflect
+        # the underlying flag.
+        type(agent._manager_agent).session_ended = property(
+            lambda self: self._session_ended_flag
+        )
+
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("bye", "english")
+        agent._nlu_processor = MagicMock()
+        agent._nlu_processor.process.return_value = NLUResult(
+            intent="termination_intent", entities={}, sentiment="neutral", confidence=0.95
+        )
+        return agent
+
+    @pytest.mark.asyncio
+    async def test_end_session_tool_sets_session_ended_true(self):
+        """A streaming turn whose tool loop contains end_session emits
+        DoneEvent(session_ended=True)."""
+        agent = self._make_end_session_agent()
+
+        call_count = 0
+
+        async def mock_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                yield "Goodbye"
+                raise ToolUseRequested([
+                    ToolCall(
+                        tool_name="end_session",
+                        tool_use_id="tu_end",
+                        input_params={"reason": "user_said_bye"},
+                    )
+                ])
+            else:
+                yield "Take care. "
+
+        agent._llm.stream_call = mock_stream
+
+        # Action Gateway must NOT be invoked for end_session — fail loud if it is.
+        agent._async_gateway.execute = AsyncMock(
+            side_effect=AssertionError("end_session must not be routed to Action Gateway")
+        )
+
+        events = await _collect_events(agent, _make_turn_input())
+
+        done_events = [e for e in events if isinstance(e, DoneEvent)]
+        assert len(done_events) == 1
+        assert done_events[0].session_ended is True
+        assert done_events[0].was_tool_used is True
+
+    @pytest.mark.asyncio
+    async def test_session_ended_flag_cleared_between_turns(self):
+        """The end_session flag must not leak from one turn into the next."""
+        agent = self._make_end_session_agent()
+
+        async def first_stream(*args, **kwargs):
+            yield "Bye"
+            raise ToolUseRequested([
+                ToolCall(
+                    tool_name="end_session", tool_use_id="tu_end", input_params={}
+                )
+            ])
+
+        # Second turn: simple greeting, no tool calls.
+        async def second_stream(*args, **kwargs):
+            yield "Hello again. "
+
+        # First turn — sets the flag.
+        async def first_then_resume(*args, **kwargs):
+            yield "Take care. "
+
+        # Use an iterator over per-call generators.
+        streams = iter([first_stream, first_then_resume, second_stream])
+
+        async def dispatch(*args, **kwargs):
+            gen = next(streams)(*args, **kwargs)
+            async for tok in gen:
+                yield tok
+
+        agent._llm.stream_call = dispatch
+        agent._async_gateway.execute = AsyncMock(
+            side_effect=AssertionError("end_session must not be routed to Action Gateway")
+        )
+
+        # Turn 1 — terminates.
+        events1 = await _collect_events(agent, _make_turn_input())
+        done1 = [e for e in events1 if isinstance(e, DoneEvent)][0]
+        assert done1.session_ended is True
+        assert agent._manager_agent._session_ended_flag is True
+
+        # Turn 2 — must NOT inherit the previous flag.
+        agent._nlu_processor.process.return_value = NLUResult(
+            intent="greeting", entities={}, sentiment="neutral", confidence=0.9
+        )
+        events2 = await _collect_events(agent, _make_turn_input())
+        done2 = [e for e in events2 if isinstance(e, DoneEvent)][0]
+        assert done2.session_ended is False
+        assert agent._manager_agent._session_ended_flag is False
