@@ -30,6 +30,19 @@ COPY knowledge_engine/pyproject.toml knowledge_engine/uv.lock* ./
 # variant (~2.5 GB saved). All other deps are synced in the same pass.
 RUN uv sync --no-dev --no-cache --no-install-project
 
+# Pre-fetch the Chroma default ONNX embedding model so the runtime container
+# does not download it on first use. Chroma expects both the archive and the
+# extracted files under ~/.cache/chroma/onnx_models/all-MiniLM-L6-v2/.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && mkdir -p /opt/chroma-cache/onnx_models/all-MiniLM-L6-v2 \
+    && curl -fsSL https://chroma-onnx-models.s3.amazonaws.com/all-MiniLM-L6-v2/onnx.tar.gz \
+         -o /opt/chroma-cache/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz \
+    && tar -xzf /opt/chroma-cache/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz \
+         -C /opt/chroma-cache/onnx_models/all-MiniLM-L6-v2/ \
+    && apt-get purge -y --auto-remove curl \
+    && rm -rf /var/lib/apt/lists/*
+
 # -----------------------------------------------------------------------------
 # Stage 2: runtime
 # -----------------------------------------------------------------------------
@@ -45,6 +58,10 @@ WORKDIR /app
 # Copy the venv from builder (includes observability-layer and all deps)
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /observability_layer /observability_layer
+
+# Pre-populated Chroma ONNX model cache (skips download on first embed call).
+COPY --from=builder --chown=knowledgeengine:knowledgeengine \
+     /opt/chroma-cache /home/knowledgeengine/.cache/chroma
 
 # Copy application source, entrypoint, config, and scripts
 COPY knowledge_engine/src/ ./src/
