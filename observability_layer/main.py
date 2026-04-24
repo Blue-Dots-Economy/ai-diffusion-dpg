@@ -39,7 +39,7 @@ from schema.config import MergedConfig, ObservabilityConfig
 from server import create_app
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=os.getenv("LOG_LEVEL", logging.INFO),
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
     stream=sys.stdout,
 )
@@ -158,4 +158,4 @@ def _build_app():
 app, _host, _port = _build_app()
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host=_host, port=_port, log_level="info")
+    uvicorn.run("main:app", host=_host, port=_port, log_level=os.getenv("LOG_LEVEL", "info").lower())

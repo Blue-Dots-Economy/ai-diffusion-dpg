@@ -37,7 +37,7 @@ from src.schema.config import MergedConfig
 from src.server import create_app
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=os.getenv("LOG_LEVEL", logging.INFO),
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 
@@ -203,5 +203,5 @@ if __name__ == "__main__":
         host=host,
         port=port,
         reload=False,
-        log_level="info",
+        log_level=os.getenv("LOG_LEVEL", "info").lower(),
     )

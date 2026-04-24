@@ -5,6 +5,7 @@ Belongs to the Observability Layer DPG block.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 
 from opentelemetry import metrics, trace
@@ -91,7 +92,7 @@ def init_otel(service_name: str, config: dict) -> None:
                 # Attach OTel handler to Python root logger so all structured
                 # logs are forwarded to the Collector's logs pipeline.
                 otel_handler = LoggingHandler(
-                    level=logging.INFO,
+                    level=logging.getLevelName(os.getenv("LOG_LEVEL", "INFO").upper()),
                     logger_provider=logger_provider,
                 )
                 logging.getLogger().addHandler(otel_handler)

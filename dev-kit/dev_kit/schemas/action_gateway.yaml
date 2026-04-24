@@ -31,13 +31,14 @@ tools:
             value: null
     response:
       max_size_chars: 4000
-      # field_mapping is declared but not yet applied at runtime — entire responses
-      # are passed through today. Implementation tracked in GH-93.
-      field_mapping:         # optional — when wired, only these fields are sent to the LLM
-        - source: ""         # JSONPath from response root, e.g. 'results[*].title' or 'data.name'
-          target: ""         # field name the LLM sees, e.g. 'job_title'
-          type: string       # string | integer | number | boolean | array | object
-          description: ""    # optional human-readable description
+      # Optional projection — when present, only these fields are sent to the LLM
+      # (result_text). The raw response is still kept in ToolResult.result for
+      # journey-graph writes and observability.
+      projection:
+        list_key: ""         # optional dot-path to a list in the response; when set,
+                             # each element is projected; when empty, the root is projected.
+        fields:              # target_name → dot-path into each item (or root)
+          example_target: "path.into.item"
     # --- mcp fields (omit for rest_api tools) ---
     # McpAdapter connects to the server at startup and auto-discovers all tools.
     # tool_name and input_schema are NOT needed here — they are discovered at runtime.

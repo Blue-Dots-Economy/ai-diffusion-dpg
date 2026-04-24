@@ -66,7 +66,7 @@ from src.http_clients.async_.action_gateway import AsyncActionGatewayHttpClient
 # Logging -- structured output, INFO level default
 # ---------------------------------------------------------------------------
 logging.basicConfig(
-    level=logging.INFO,
+    level=os.getenv("LOG_LEVEL", logging.INFO),
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
     stream=sys.stdout,
 )
@@ -256,5 +256,5 @@ if __name__ == "__main__":
         "main:app",
         host=_host,
         port=_port,
-        log_level="info",
+        log_level=os.getenv("LOG_LEVEL", "info").lower(),
     )

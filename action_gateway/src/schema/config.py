@@ -171,6 +171,21 @@ class FieldMapping(BaseModel):
     description: str = ""
 
 
+class ProjectionConfig(BaseModel):
+    """Slim response projection applied before result_text is built.
+
+    Attributes:
+        list_key: Optional dot-path to a list in the raw response. When set,
+            each element is projected; when empty, the root is projected.
+        fields: Mapping of target field name → dot-path into each item.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    list_key: str = ""
+    fields: dict[str, str] = Field(default_factory=dict)
+
+
 class ResponseConfig(BaseModel):
     """How a tool's response is shaped before it reaches the LLM.
 
@@ -178,12 +193,14 @@ class ResponseConfig(BaseModel):
         max_size_chars: Truncation threshold; responses larger than this
             are cut with a ``...[truncated]`` suffix.
         field_mapping: Reserved — see GH-93.
+        projection: Optional slim projection applied to build result_text.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     max_size_chars: int = Field(default=4000, gt=0)
     field_mapping: Optional[list[FieldMapping]] = None
+    projection: Optional[ProjectionConfig] = None
 
 
 class ToolDefinition(BaseModel):

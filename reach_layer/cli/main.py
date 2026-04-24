@@ -46,7 +46,7 @@ if _env_local.exists():
 load_dotenv()
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=os.getenv("LOG_LEVEL", logging.INFO),
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
     stream=sys.stderr,  # keep stdout clean for the REPL
 )

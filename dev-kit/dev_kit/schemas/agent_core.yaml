@@ -138,7 +138,6 @@ connectors:
 
 preprocessing:
   language_normalisation:
-    model: ""                   # required — Claude model ID for language normalisation
     default_language: ""        # required — primary language e.g. english, hindi
     supported_languages: []     # required — e.g. [english, hindi, hinglish, kannada]
     min_detection_tokens: 3     # inputs with fewer tokens skip LLM detection; returns default_language

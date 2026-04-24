@@ -48,6 +48,51 @@ _DEFAULT_TIMEOUT_MS = 5000
 _DEFAULT_MAX_SIZE_CHARS = 4000
 
 
+def _get_nested(d, path: str):
+    """Resolve a dot-notation path (e.g. 'a.b.c') against a nested dict."""
+    current = d
+    for key in path.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _apply_projection(result_dict: dict, projection: Optional[dict]):
+    """Project a raw response dict into a slim LLM-visible shape.
+
+    When ``projection`` is None or empty, returns None so the caller falls
+    back to the raw dict. When ``list_key`` is set, projects each list element
+    into a flat dict of {target_name: scalar}; otherwise projects the root.
+
+    Args:
+        result_dict: Raw parsed JSON response body.
+        projection: Optional config with keys ``list_key`` (str) and
+            ``fields`` (dict of target_name → dot-path into each item).
+
+    Returns:
+        A list (if list_key set), a dict (if not), or None if no projection.
+    """
+    if not projection or not isinstance(projection, dict):
+        return None
+    fields: dict = projection.get("fields") or {}
+    if not fields:
+        return None
+    list_key: str = projection.get("list_key", "") or ""
+
+    def _project_item(item):
+        if not isinstance(item, dict):
+            return None
+        return {target: _get_nested(item, src) for target, src in fields.items()}
+
+    if list_key:
+        items = _get_nested(result_dict, list_key)
+        if not isinstance(items, list):
+            return []
+        return [p for p in (_project_item(it) for it in items) if p is not None]
+    return _project_item(result_dict)
+
+
 class RestApiAdapter(ToolAdapter):
     """Adapter that executes tool calls against a single REST API endpoint.
 
@@ -212,6 +257,20 @@ class RestApiAdapter(ToolAdapter):
 
         timeout_s = self._timeout_ms / 1000.0
 
+        logger.debug(
+            "rest_api_request tool=%s method=%s url=%s params=%s",
+            tool_name, method, url, all_params,
+            extra={
+                "operation": "RestApiAdapter.execute",
+                "status": "pending",
+                "tool_name": tool_name,
+                "session_id": session_id,
+                "method": method,
+                "url": url,
+                "params": all_params,
+            },
+        )
+
         http_start = time.time()
         try:
             with _get_tracer().start_as_current_span("action.rest_api.http_call") as http_span:
@@ -235,6 +294,20 @@ class RestApiAdapter(ToolAdapter):
                     )
                 http_span.set_attribute("http.status_code", response.status_code)
                 http_span.set_attribute("latency_ms", int((time.time() - http_start) * 1000))
+
+            logger.debug(
+                "rest_api_response tool=%s status=%s body=%s",
+                tool_name, response.status_code, response.text[:2000],
+                extra={
+                    "operation": "RestApiAdapter.execute",
+                    "status": "received",
+                    "tool_name": tool_name,
+                    "session_id": session_id,
+                    "status_code": response.status_code,
+                    "body": response.text[:2000],
+                    "latency_ms": int((time.time() - http_start) * 1000),
+                },
+            )
         except httpx.TimeoutException as exc:
             latency_ms = int((time.time() - start) * 1000)
             logger.warning(
@@ -305,8 +378,20 @@ class RestApiAdapter(ToolAdapter):
         except Exception:
             result_dict = {}
 
-        full_text = json.dumps(result_dict)
-        result_text = full_text[: self._max_size_chars]
+        projected = _apply_projection(result_dict, self.config.get("response", {}).get("projection"))
+        payload = projected if projected is not None else result_dict
+        full_text = json.dumps(payload)
+
+        # When the payload is a list (projected with list_key), drop items from
+        # the end until the serialised form fits under max_size_chars. Keeps the
+        # LLM input as valid JSON instead of a mid-object character chop.
+        if isinstance(payload, list) and len(full_text) > self._max_size_chars:
+            trimmed = list(payload)
+            while trimmed and len(json.dumps(trimmed)) > self._max_size_chars:
+                trimmed.pop()
+            result_text = json.dumps(trimmed)
+        else:
+            result_text = full_text[: self._max_size_chars]
 
         self._response_size_hist.record(len(full_text.encode()), {"tool_name": tool_name})
         if len(full_text) > self._max_size_chars:

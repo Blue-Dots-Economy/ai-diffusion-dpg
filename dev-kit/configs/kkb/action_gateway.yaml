@@ -17,6 +17,8 @@ tools:
       header: X-API-KEY
       secret_env: ONEST_API_KEY
     timeout_ms: 5000
+    health_check:
+      enabled: false
     endpoints:
       - name: search
         method: POST
@@ -78,6 +80,25 @@ tools:
             value: 1
     response:
       max_size_chars: 4000
+      # Slim LLM-visible projection. Raw response is kept for journey-graph
+      # writes (see agent_workflow.tool_result_mappings); this only shapes what
+      # flows back into the second LLM call as result_text.
+      projection:
+        list_key: data.items
+        fields:
+          role_id: job.job_id
+          title: job.beckn_structure.tags.jobDetails.title
+          employer: job.beckn_structure.tags.basicInfo.jobProviderName
+          city: job.beckn_structure.locations.city
+          state: job.beckn_structure.locations.state
+          pay_min: job.beckn_structure.tags.jobDetails.minMonthlyInHand
+          pay_max: job.beckn_structure.tags.jobDetails.maxMonthlyInHand
+          positions: job.beckn_structure.tags.jobDetails.positions
+          mode_of_work: job.beckn_structure.tags.jobDetails.modeOfWork
+          working_hours: job.beckn_structure.tags.jobDetails.workingHoursPerDay
+          industry: job.beckn_structure.tags.industry
+          status: job.beckn_structure.tags.status
+          is_active: job.is_active
 
   # ────────────────────────────────────────────────────────────────────
   # Mocked profile / apply flow (demo fixtures).
