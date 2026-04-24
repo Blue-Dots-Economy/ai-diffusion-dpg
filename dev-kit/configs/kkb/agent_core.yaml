@@ -386,7 +386,7 @@ preprocessing:
     # call was a cold read (~1.8 s). Sonnet's 1024-token minimum means the
     # same prompt is cached from turn 2 onward, dropping NLU latency to
     # ~500–800 ms once warm.
-    model: claude-sonnet-4-6
+    model: claude-sonnet-4-5-20250929
     confidence_threshold: 0.5
     user_state_confidence_threshold: 0.4  # (GH-139) below this, state classification stays sticky
     domain_instruction: |
