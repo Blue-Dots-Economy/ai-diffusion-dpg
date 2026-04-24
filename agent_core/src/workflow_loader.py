@@ -276,7 +276,12 @@ class AgentWorkflowLoader:
         # ------------------------------------------------------------------
         start_subagent_id = self._validate_exactly_one_start(subagents)
         self._validate_routing_references(subagents, global_routing)
-        self._validate_tool_names(subagents, tool_registry)
+        internal_tool_names = {
+            c.get("name") for c in
+            config.get("connectors", {}).get("internal", [])
+            if c.get("name")
+        }
+        self._validate_tool_names(subagents, tool_registry, internal_tool_names)
         self._validate_global_tool_names(global_tools_raw, tool_registry)
         self._validate_subagent_intents(subagents, all_nlu_intents)
         self._validate_global_intents_not_in_subagents(subagents, global_intents)
@@ -567,24 +572,29 @@ class AgentWorkflowLoader:
         self,
         subagents: dict[str, SubAgent],
         tool_registry: ToolRegistry,
+        internal_tool_names: set[str] | None = None,
     ) -> None:
         """
         Validate that every tool in subagent.tools exists in the registry (rule 3).
 
-        The built-in ``knowledge_retrieval`` tool is exempt from this check.
+        Internal connector tools (e.g. ``knowledge_retrieval``) are exempt — they
+        are routed by Agent Core directly and do not appear in the Action Gateway
+        ToolRegistry.
 
         Args:
-            subagents:      All subagents keyed by id.
-            tool_registry:  Initialised registry to compare against.
+            subagents:            All subagents keyed by id.
+            tool_registry:        Initialised registry to compare against.
+            internal_tool_names:  Tool names from connectors.internal (exempt from check).
 
         Raises:
-            ConfigurationError: If any tool name is not in the registry.
+            ConfigurationError: If any tool name is not in the registry or internal list.
         """
         registered_tools: set[str] = tool_registry.get_tool_names()
+        exempt: set[str] = internal_tool_names or set()
 
         for sa_id, subagent in subagents.items():
             for tool_name in subagent.tools:
-                if tool_name not in registered_tools:
+                if tool_name not in registered_tools and tool_name not in exempt:
                     raise ConfigurationError(
                         f"agent_workflow validation failed (rule 3): subagent '{sa_id}' "
                         f"lists tool '{tool_name}' which is not registered in the "
