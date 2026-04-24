@@ -664,3 +664,67 @@ def test_safe_int_handles_none_and_garbage():
     assert _safe_int("bad") == 0
     assert _safe_int(MagicMock()) == 0
     assert _safe_int(0) == 0
+
+
+# ---------------------------------------------------------------------------
+# stream_call() — max_tokens plumbing (GH-194)
+# ---------------------------------------------------------------------------
+
+
+@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
+@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+async def test_stream_call_uses_default_max_tokens_when_unset(mock_anthropic_cls, mock_async_cls):
+    """stream_call() falls back to the wrapper default (4096) when max_tokens is not provided."""
+    mock_anthropic_cls.return_value = MagicMock()
+    mock_async_client = MagicMock()
+    mock_async_cls.return_value = mock_async_client
+    mock_async_client.messages.stream = MagicMock(
+        return_value=_make_stream_context(["hi"])
+    )
+
+    wrapper = ClaudeLLMWrapper(VALID_CONFIG)
+    await _collect_stream(wrapper.stream_call(messages=MESSAGES, system=SYSTEM))
+
+    # Inspect kwargs passed to the underlying Anthropic streaming call.
+    call_kwargs = mock_async_client.messages.stream.call_args.kwargs
+    assert call_kwargs["max_tokens"] == 4096
+
+
+@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
+@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+async def test_stream_call_forwards_max_tokens_override(mock_anthropic_cls, mock_async_cls):
+    """stream_call() forwards an explicit max_tokens value to the Anthropic client."""
+    mock_anthropic_cls.return_value = MagicMock()
+    mock_async_client = MagicMock()
+    mock_async_cls.return_value = mock_async_client
+    mock_async_client.messages.stream = MagicMock(
+        return_value=_make_stream_context(["hi"])
+    )
+
+    wrapper = ClaudeLLMWrapper(VALID_CONFIG)
+    await _collect_stream(
+        wrapper.stream_call(messages=MESSAGES, system=SYSTEM, max_tokens=200)
+    )
+
+    call_kwargs = mock_async_client.messages.stream.call_args.kwargs
+    assert call_kwargs["max_tokens"] == 200
+
+
+@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
+@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+async def test_stream_call_treats_none_max_tokens_as_default(mock_anthropic_cls, mock_async_cls):
+    """Passing max_tokens=None explicitly yields the default 4096 cap."""
+    mock_anthropic_cls.return_value = MagicMock()
+    mock_async_client = MagicMock()
+    mock_async_cls.return_value = mock_async_client
+    mock_async_client.messages.stream = MagicMock(
+        return_value=_make_stream_context(["hi"])
+    )
+
+    wrapper = ClaudeLLMWrapper(VALID_CONFIG)
+    await _collect_stream(
+        wrapper.stream_call(messages=MESSAGES, system=SYSTEM, max_tokens=None)
+    )
+
+    call_kwargs = mock_async_client.messages.stream.call_args.kwargs
+    assert call_kwargs["max_tokens"] == 4096
