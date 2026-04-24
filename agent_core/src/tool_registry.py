@@ -8,6 +8,7 @@ Centralizes the merged list of tools (Internal + External Action Gateway).
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from src.interfaces.action_gateway import ActionGatewayBase
@@ -16,6 +17,27 @@ logger = logging.getLogger(__name__)
 
 # Connector types that require explicit user consent before execution
 _CONSENT_REQUIRED_TYPES = {"write", "identity"}
+
+# Anthropic tool name pattern: ^[a-zA-Z0-9_-]{1,128}$
+_VALID_TOOL_NAME = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
+
+
+def _sanitize_tool_name(name: str) -> str:
+    """Replace characters invalid in Anthropic tool names with double underscore.
+
+    MCP tools use dotted names (e.g. ``obsrv_docs.searchDocumentation``) which
+    the Anthropic API rejects. This replaces dots (and any other invalid chars)
+    with ``__`` so the name passes validation while remaining reversible.
+
+    Args:
+        name: Original tool name.
+
+    Returns:
+        Sanitized name safe for the Anthropic API.
+    """
+    if _VALID_TOOL_NAME.match(name):
+        return name
+    return re.sub(r"[^a-zA-Z0-9_-]", "__", name)[:128]
 
 
 class ToolRegistry:
@@ -27,7 +49,12 @@ class ToolRegistry:
     def __init__(self, config: dict, gateway: ActionGatewayBase) -> None:
         if config is None:
             raise ValueError("config must not be None")
-        
+
+        # Reverse mapping: sanitized LLM name → original Action Gateway name.
+        # Populated during name sanitization so manager_agent can route tool
+        # calls back to the correct Action Gateway tool.
+        self._name_map: dict[str, str] = {}
+
         # 2. Extract tools from Gateway (fetched from /tools at startup)
         self._tool_definitions = gateway.list_available_tools()
 
@@ -38,6 +65,7 @@ class ToolRegistry:
         # The Anthropic API only accepts name, description, and input_schema.
         # Also strip "$schema" from input_schema — MCP tools (e.g. GitBook) include
         # JSON Schema draft references that the Anthropic API rejects with 400.
+        # Sanitize tool names — replace dots and other invalid chars for Anthropic API.
         _ANTHROPIC_TOOL_KEYS = {"name", "description", "input_schema"}
         cleaned: list[dict] = []
         for t in self._tool_definitions:
@@ -45,6 +73,11 @@ class ToolRegistry:
             schema = tool.get("input_schema")
             if isinstance(schema, dict):
                 schema.pop("$schema", None)
+            original_name = tool.get("name", "")
+            sanitized_name = _sanitize_tool_name(original_name)
+            if sanitized_name != original_name:
+                self._name_map[sanitized_name] = original_name
+                tool["name"] = sanitized_name
             cleaned.append(tool)
         self._tool_definitions = cleaned
 
@@ -60,7 +93,8 @@ class ToolRegistry:
             extra={
                 "total_tools": len(self._tool_definitions),
                 "consent_tools": list(self._consent_tools),
-                "internal_tools": [t["name"] for t in internal_tools]
+                "internal_tools": [t["name"] for t in internal_tools],
+                "sanitized_names": dict(self._name_map) if self._name_map else {},
             },
         )
 
@@ -112,6 +146,22 @@ class ToolRegistry:
     def requires_consent(self, tool_name: str) -> bool:
         """Check if a tool requires user consent."""
         return tool_name in self._consent_tools
+
+    def resolve_original_name(self, sanitized_name: str) -> str:
+        """Map a sanitized LLM tool name back to the original Action Gateway name.
+
+        MCP tool names with dots (e.g. ``obsrv_docs.searchDocumentation``) are
+        sanitized for the Anthropic API (``obsrv_docs__searchDocumentation``).
+        This method returns the original name for routing to Action Gateway.
+        Returns the input unchanged if no mapping exists.
+
+        Args:
+            sanitized_name: Tool name as returned by the LLM.
+
+        Returns:
+            Original tool name for Action Gateway routing.
+        """
+        return self._name_map.get(sanitized_name, sanitized_name)
 
     def get_route(self, tool_name: str) -> str | None:
         """Return the route target for a tool, or None if not declared.

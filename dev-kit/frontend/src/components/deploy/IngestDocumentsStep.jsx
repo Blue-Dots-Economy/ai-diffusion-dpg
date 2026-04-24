@@ -22,6 +22,7 @@ const INITIAL_STATE = {
   rows: [],
   submitting: false,
   submitError: null,
+  servicesReady: false,
 }
 
 function _rowId() {
@@ -54,6 +55,8 @@ function reducer(state, action) {
         docTypes: action.docTypes || [],
         defaultDocType: action.defaultDocType || '',
       }
+    case 'SET_SERVICES_READY':
+      return { ...state, servicesReady: action.value }
     case 'ADD_ROW':
       return { ...state, rows: [...state.rows, action.row] }
     case 'REMOVE_ROW':
@@ -154,9 +157,31 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
       }).catch(() => {
         // Non-fatal — operator can still type a doc_type manually.
       })
+
+      // Poll deploy status until reach_layer is healthy
+      const checkServices = async () => {
+        try {
+          const status = await api.getDeployStatus(slug)
+          const reachSvc = (status.services || []).find(
+            s => s.name === 'reach_layer' || s.name === 'reach_layer_web'
+          )
+          const keSvc = (status.services || []).find(s => s.name === 'knowledge_engine')
+          if (
+            (reachSvc && reachSvc.status === 'healthy') &&
+            (keSvc && keSvc.status === 'healthy')
+          ) {
+            dispatch({ type: 'SET_SERVICES_READY', value: true })
+            clearInterval(svcPollId)
+          }
+        } catch (_err) { /* retry on next interval */ }
+      }
+      checkServices() // immediate check
+      const svcPollId = setInterval(checkServices, 5000)
+      // Store for cleanup
+      pollingRef.current._svcPoll = svcPollId
     }
     return () => {
-      Object.values(pollingRef.current).forEach(clearInterval)
+      Object.values(pollingRef.current).forEach(id => clearInterval(id))
       Object.values(timeoutRef.current).forEach(clearTimeout)
     }
   }, [slug])
@@ -330,6 +355,13 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
         Max {maxFiles} files · Max {maxSizeMb} MB per file
       </p>
 
+      {!state.servicesReady && (
+        <div className="mb-4 px-4 py-3 bg-yellow-900/30 border border-yellow-700 rounded-xl text-sm text-yellow-300 flex items-center gap-2">
+          <span className="animate-spin text-xs">⏳</span>
+          Waiting for services to become healthy (Knowledge Engine + Reach Layer)…
+        </div>
+      )}
+
       {/* File rows */}
       {state.rows.length > 0 && (
         <div className="flex flex-col gap-2 mb-4">
@@ -450,10 +482,10 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
         </button>
         <button
           onClick={handleSubmit}
-          disabled={state.submitting || !hasPending}
+          disabled={state.submitting || !hasPending || !state.servicesReady}
           className="text-sm bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white px-5 py-2 rounded-xl font-medium transition-colors"
         >
-          {state.submitting ? 'Uploading…' : hasPending ? `Upload & Ingest (${pendingRows.length})` : 'Upload & Ingest'}
+          {!state.servicesReady ? 'Waiting for services…' : state.submitting ? 'Uploading…' : hasPending ? `Upload & Ingest (${pendingRows.length})` : 'Upload & Ingest'}
         </button>
       </div>
 
@@ -479,6 +511,16 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
           >
             Skip
           </button>
+          {allTerminal && (
+            <a
+              href={`http://${window.location.hostname}:8005`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm bg-blue-600 hover:bg-blue-500 text-white px-5 py-2 rounded-xl font-medium transition-colors inline-flex items-center gap-1"
+            >
+              Open Agent Chat ↗
+            </a>
+          )}
           <button
             onClick={() => onNext({})}
             disabled={state.rows.length > 0 && !allTerminal}
