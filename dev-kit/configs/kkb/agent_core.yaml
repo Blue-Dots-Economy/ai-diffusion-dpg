@@ -33,6 +33,12 @@ channels:
       Never reply with waiting messages like "कृपया प्रतीक्षा करें" or
       "ज़रा इंतज़ार करें". Always respond with the actual answer.
 
+      ## Prior tool results
+      Prior tool results in this conversation are visible to you as real
+      tool_result messages earlier in the message history. Do not re-invoke
+      a tool unless the relevant parameters have changed; reuse the
+      already-returned data when answering follow-up questions.
+
       <!-- tts_rules:begin -->
       (auto-generated from channels.voice.tts_rules; edit tts_rules to change)
       TTS formatting rules (voice channel):
