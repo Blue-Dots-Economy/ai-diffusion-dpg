@@ -1079,6 +1079,57 @@ _BLOCK_MODEL_MAP: dict[str, type] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Raya TTS voices — first voice per language from https://hub.getraya.app/v1/voices
+# Used by validate_partial to reject hallucinated voice IDs.
+# ---------------------------------------------------------------------------
+RAYA_VOICES: dict[str, dict[str, str]] = {
+    "c849b31b-b0ba-488f-b97d-3fd12f2656f4": {"name": "Sneha", "language": "mr"},
+    "d6a002d0-230c-49b1-a137-b8a7d564b1ae": {"name": "Priyanka", "language": "hi"},
+    "25a7c7d9-57b3-488a-a880-33edf6642902": {"name": "Tanvi", "language": "te"},
+    "6a897d02-83ab-43ea-b17f-a8cc2d96a279": {"name": "Meera", "language": "kn"},
+    "a1b2c3d4-e5f6-4789-a012-b3c4d5e6f789": {"name": "Aishwarya", "language": "bn"},
+    "d4e5f6a7-b8c9-4a01-d345-e6f7a8b9c012": {"name": "Priti", "language": "as"},
+    "9a01bcde-2345-6789-abc1-123456abcdef": {"name": "Jignesh", "language": "gu"},
+    "0f24fb66-e495-4781-9e84-1224aa7dacde": {"name": "Nayra", "language": "en-in"},
+    "90534e23-8bcb-4b1c-a16b-b9a4be646321": {"name": "Solene", "language": "en-us"},
+    "57a1e849-8e0f-43ee-adab-b4b74a9d79e1": {"name": "Devika", "language": "ml"},
+    "5d6c7ee4-2563-4dab-9c8a-c3269e22cba9": {"name": "Ritu", "language": "ne"},
+    "fed6231c-7e35-4fbe-bbca-254f566e5dd5": {"name": "Abirami", "language": "ta"},
+}
+
+VALID_RAYA_VOICE_IDS: frozenset[str] = frozenset(RAYA_VOICES.keys())
+
+
+def _validate_raya_voice_id(data: dict) -> list[str]:
+    """Check that voice_id in reach_layer config is a known Raya voice UUID.
+
+    Args:
+        data: The reach_layer config dict.
+
+    Returns:
+        List of error strings. Empty if valid or voice not configured.
+    """
+    voice_cfg = (
+        data.get("reach_layer", {})
+        .get("channels", {})
+        .get("voice", {})
+        .get("raya", {})
+    )
+    voice_id = voice_cfg.get("voice_id")
+    if not voice_id:
+        return []
+    if voice_id not in VALID_RAYA_VOICE_IDS:
+        available = ", ".join(
+            f"{v['name']} ({v['language']})" for v in RAYA_VOICES.values()
+        )
+        return [
+            f"reach_layer.channels.voice.raya.voice_id: '{voice_id}' is not a valid "
+            f"Raya voice ID. Available voices: {available}"
+        ]
+    return []
+
+
 def validate_partial(block: str, data: dict) -> list[str]:
     """Validate partial config data for a block without requiring completeness.
 
@@ -1088,6 +1139,7 @@ def validate_partial(block: str, data: dict) -> list[str]:
        ``blocked_message``) at every nesting level.
     2. Pydantic type check — validates value types; filters out missing-field
        errors so partial data is accepted.
+    3. Domain-specific checks (e.g. Raya voice ID validation for reach_layer).
 
     Args:
         block: Block name, e.g. "agent_core" or "trust_layer".
@@ -1119,18 +1171,24 @@ def validate_partial(block: str, data: dict) -> list[str]:
         )
 
     # --- 2. Pydantic type/value check (filters out missing-field errors) ---
+    pydantic_errors: list[str] = []
     model_cls = _BLOCK_MODEL_MAP.get(block)
-    if model_cls is None:
-        return []
-    try:
-        model_cls.model_validate(data)
-        return []
-    except ValidationError as exc:
-        return [
-            f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}"
-            for err in exc.errors()
-            if err["type"] != "missing"
-        ]
+    if model_cls is not None:
+        try:
+            model_cls.model_validate(data)
+        except ValidationError as exc:
+            pydantic_errors = [
+                f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}"
+                for err in exc.errors()
+                if err["type"] != "missing"
+            ]
+
+    # --- 3. Domain-specific value checks ---
+    domain_errors: list[str] = []
+    if block == "reach_layer":
+        domain_errors.extend(_validate_raya_voice_id(data))
+
+    return pydantic_errors + domain_errors
 
 
 # Open-map sentinel: template value is a dict/list whose keys are examples,
