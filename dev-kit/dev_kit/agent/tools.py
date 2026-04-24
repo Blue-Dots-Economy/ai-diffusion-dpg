@@ -1169,10 +1169,10 @@ class ToolHandler:
         """Register an MCP server with the Action Gateway.
 
         One entry per MCP server. McpAdapter connects at startup, discovers all
-        tools via tools/list, and registers them as '{id}.{tool_name}'. No
+        tools via tools/list, and registers them as '{id}__{tool_name}'. No
         agent_core connector is written — MCP tool schemas come from the server
         at runtime. Subagents reference tools by their namespaced names directly
-        (e.g. 'obsrv_docs.searchDocumentation').
+        (e.g. 'obsrv_docs__searchDocumentation').
 
         Args:
             inputs: Dict containing id, category, description, mcp_server_url.
@@ -1197,7 +1197,7 @@ class ToolHandler:
             return f"ERROR: {exc}"
         return (
             f"MCP server '{inputs['id']}' registered with Action Gateway (transport: {tool['transport']}). "
-            f"Tools discovered at startup will be available as '{inputs['id']}.<tool_name>'. "
+            f"Tools discovered at startup will be available as '{inputs['id']}__<tool_name>'. "
             f"Assign tools to subagents using these namespaced names."
         )
 
