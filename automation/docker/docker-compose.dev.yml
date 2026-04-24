@@ -60,7 +60,7 @@ services:
   # Agent Core — orchestrator and LLM caller (port 8000)
   # ---------------------------------------------------------------------------
   agent_core:
-    image: sanketikahub/dpg-agent-core:latest
+    image: srivatsak2002/dpg-agent-core:latest
     pull_policy: always
     container_name: agent_core
     environment:
@@ -83,8 +83,8 @@ services:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
       interval: 15s
       timeout: 15s
-      retries: 5
-      start_period: 90s
+      retries: 10
+      start_period: 120s
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -123,7 +123,7 @@ services:
   # On startup: runs ingest first, then starts the server.
   # ---------------------------------------------------------------------------
   knowledge_engine:
-    image: sanketikahub/dpg-knowledge-engine:latest
+    image: srivatsak2002/dpg-knowledge-engine:latest
     pull_policy: always
     container_name: knowledge_engine
     environment:

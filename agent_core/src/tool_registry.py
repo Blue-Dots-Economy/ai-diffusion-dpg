@@ -36,11 +36,17 @@ class ToolRegistry:
 
         # Strip non-Anthropic fields (e.g. "category") from gateway tool definitions.
         # The Anthropic API only accepts name, description, and input_schema.
+        # Also strip "$schema" from input_schema — MCP tools (e.g. GitBook) include
+        # JSON Schema draft references that the Anthropic API rejects with 400.
         _ANTHROPIC_TOOL_KEYS = {"name", "description", "input_schema"}
-        self._tool_definitions = [
-            {k: v for k, v in t.items() if k in _ANTHROPIC_TOOL_KEYS}
-            for t in self._tool_definitions
-        ]
+        cleaned: list[dict] = []
+        for t in self._tool_definitions:
+            tool = {k: v for k, v in t.items() if k in _ANTHROPIC_TOOL_KEYS}
+            schema = tool.get("input_schema")
+            if isinstance(schema, dict):
+                schema.pop("$schema", None)
+            cleaned.append(tool)
+        self._tool_definitions = cleaned
 
         # 3. Add internal tools from config (not handled by AG client)
         internal_tools, tool_routes = self._load_internal_tools(config)
