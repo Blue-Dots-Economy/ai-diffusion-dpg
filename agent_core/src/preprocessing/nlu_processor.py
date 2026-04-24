@@ -28,15 +28,28 @@ from src.exceptions import ConfigurationError
 
 logger = logging.getLogger(__name__)
 
+# GH-195 — prompt-cache fix:
+# The NLU system prompt must be FULLY STATIC across turns so that Anthropic's
+# prompt cache can be reused from turn 2 onward. Any value that varies
+# per-turn (existing profile keys, previous user-state id) is moved into the
+# user message (which is the natural, uncached, per-turn input).
+#
+# Anything inside `_NLU_SYSTEM_PROMPT_TEMPLATE` below is emitted as the
+# cacheable system block and therefore MUST NOT interpolate per-turn data.
+#
+# `allowed_intents` is semi-static — it changes with the current subagent, not
+# per turn. One cache entry per subagent is acceptable (and is the whole
+# point of caching the system prompt).
+
 _USER_STATE_SECTION_TEMPLATE = """
 
 ## User mental state classification
 The user may be in one of these mental states. Classify which one best fits
 their latest message, using the signals as hints (not strict rules).
 
-Previous state: {previous_state}
-If the message is ambiguous or does not clearly shift the state, return the
-previous state with lower confidence.
+If the message is ambiguous or does not clearly shift the state, keep the
+user's previous state (supplied in the user message under "Previous mental
+state") with a lower confidence.
 
 States:
 {states_block}
@@ -65,23 +78,15 @@ Rules:
 - Use "unknown" intent if no intent matches or confidence is below 0.5.
 - Only include entity types that are clearly present in the message.
 - **Ad-hoc extraction**: If the user provides interesting personal details or preferences NOT in the primary list (e.g. hobbies, specific equipment owned, preferred brand), extract them with **dynamic keys** in the "entities" object. Choose descriptive key names on the fly.
-- **Key deduplication**: {existing_profile_keys_rule}
+- **Key deduplication**: If the user message lists "Existing profile fields", and your extracted entity is semantically equivalent to one of them, you MUST reuse that exact field name instead of inventing a new key. Only create a new dynamic key if no existing field covers the same concept. If no existing fields are listed, use descriptive key names for ad-hoc entities.
 - Return an empty dict {{}} for entities if none are found.
 - Use the current subagent and the last question asked (if provided) to resolve
   follow-up or ambiguous messages (e.g. a one-word answer like "welder" after "what trade
   do you work in?" should be classified as a profile answer, not an unknown intent).
 - Never include keys outside the four specified (intent, entities, sentiment, confidence).{user_state_section}"""
 
-# Injected when the orchestrator passes existing profile keys.
-_PROFILE_KEYS_RULE = (
-    "The user's profile already contains these fields: [{keys}]. "
-    "If your extracted entity is semantically equivalent to an existing field, "
-    "you MUST reuse that exact field name instead of inventing a new key. "
-    "Only create a new dynamic key if no existing field covers the same concept."
-)
-_PROFILE_KEYS_RULE_NONE = (
-    "No existing profile fields are available. Use descriptive key names for ad-hoc entities."
-)
+# Per-turn dynamic snippet emitted in the user message, NOT the cached system prompt.
+_PROFILE_KEYS_USER_LINE = "Existing profile fields: [{keys}]"
 
 
 class NLUProcessor:
@@ -126,6 +131,12 @@ class NLUProcessor:
         self._user_state_enabled: bool = bool(usm.get("enabled", False))
         self._user_states: list[dict] = []
         self._user_state_default: str = ""
+
+        # GH-195 — prompt caching. Enabled by default; can be disabled per-domain
+        # (e.g. for debugging or for models that don't benefit from caching).
+        self._prompt_cache_enabled: bool = bool(
+            nlu_config.get("prompt_cache_enabled", True)
+        )
 
         raw_threshold = nlu_config.get("user_state_confidence_threshold", 0.4)
         try:
@@ -231,12 +242,14 @@ class NLUProcessor:
         )
 
         try:
-            if existing_profile_keys:
-                keys_rule = _PROFILE_KEYS_RULE.format(keys=", ".join(existing_profile_keys))
-            else:
-                keys_rule = _PROFILE_KEYS_RULE_NONE
-
-            # User-state classification section (GH-139) — empty string when disabled
+            # ------------------------------------------------------------------
+            # Build the STATIC system prompt (GH-195 — prompt-cache fix).
+            # Everything below this comment must be derived from values fixed
+            # at startup (config + allowed_intents from the current subagent).
+            # Per-turn dynamic values (existing_profile_keys, previous_user_state)
+            # are intentionally NOT interpolated here; they're emitted in the
+            # user message so the cache prefix remains stable across turns.
+            # ------------------------------------------------------------------
             if self._user_state_enabled:
                 state_lines: list[str] = []
                 for s in self._user_states:
@@ -253,27 +266,53 @@ class NLUProcessor:
                         f"- {sid}:\n    signals: {signals_str}\n    meaning: {guidance_first}"
                     )
                 user_state_section = _USER_STATE_SECTION_TEMPLATE.format(
-                    previous_state=previous_user_state or self._user_state_default,
                     states_block="\n".join(state_lines),
                 )
             else:
                 user_state_section = ""
 
-            system_prompt = _NLU_SYSTEM_PROMPT_TEMPLATE.format(
+            system_prompt_text = _NLU_SYSTEM_PROMPT_TEMPLATE.format(
                 domain_instruction=self._domain_instruction,
                 intents=", ".join(intents),
                 entities=", ".join(self._global_entities),
                 sentiment_classes=", ".join(self._sentiment_classes),
-                existing_profile_keys_rule=keys_rule,
                 user_state_section=user_state_section,
             )
 
-            # Build NLU context message with workflow and last-question grounding
+            # Wrap the static prompt as an Anthropic cache-control block.
+            # Passing a list with an explicit cache_control marker avoids
+            # depending on the wrapper's implicit size-threshold behaviour
+            # and makes the intent visible at the call site.
+            if self._prompt_cache_enabled:
+                system_payload: str | list[dict] = [
+                    {
+                        "type": "text",
+                        "text": system_prompt_text,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
+            else:
+                system_payload = system_prompt_text
+
+            # Build NLU context message with workflow, last-question grounding,
+            # and the per-turn dynamic values that previously lived in the
+            # system prompt (GH-195).
             context_parts: list[str] = []
             if current_subagent_id:
                 context_parts.append(f"Current workflow step: {current_subagent_id}")
             if current_question:
                 context_parts.append(f"Last question asked: {current_question}")
+            if existing_profile_keys:
+                context_parts.append(
+                    _PROFILE_KEYS_USER_LINE.format(
+                        keys=", ".join(existing_profile_keys)
+                    )
+                )
+            if self._user_state_enabled:
+                context_parts.append(
+                    "Previous mental state: "
+                    f"{previous_user_state or self._user_state_default}"
+                )
             context_parts.append(f"User message: {normalised_input}")
 
             messages: list[dict] = [
@@ -283,7 +322,7 @@ class NLUProcessor:
             llm_response = llm.call(
                 messages=messages,
                 tools=[],
-                system=system_prompt,
+                system=system_payload,
                 model_override=self._model,
             )
 
@@ -377,6 +416,15 @@ class NLUProcessor:
                     "sentiment": result.sentiment,
                     "confidence": result.confidence,
                     "latency_ms": int((time.time() - start) * 1000),
+                    # GH-195 — surface prompt-cache usage so ops can verify the
+                    # fix is effective (cache_read_input_tokens > 0 from turn 2).
+                    "cache_read_input_tokens": getattr(
+                        llm_response, "cache_read_input_tokens", 0
+                    ),
+                    "cache_creation_input_tokens": getattr(
+                        llm_response, "cache_creation_input_tokens", 0
+                    ),
+                    "prompt_cache_enabled": self._prompt_cache_enabled,
                 },
             )
             return result
