@@ -105,6 +105,8 @@ services:
       - "8080:8080"
     networks:
       - dpg_net
+    volumes:
+    - ../../dev-kit/configs:/app/data
     deploy:
       resources:
         limits:
