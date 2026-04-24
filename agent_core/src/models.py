@@ -59,7 +59,7 @@ class SegmentInput:
 
     text: str
     user_id: Optional[str] = None
-    channel: str = "cli"
+    channel: Optional[str] = None
     timestamp_ms: int = 0
 
 

@@ -39,7 +39,10 @@ logger = logging.getLogger(__name__)
 class ProcessTurnRequest(BaseModel):
     session_id: str
     user_message: str
-    channel: str = "cli"
+    # Channel is Optional — caller must send one of the configured channel
+    # names (voice/web/cli). None is preserved as missing; the orchestrator
+    # raises Unsupported channel rather than silently falling back to cli.
+    channel: str | None = None
     timestamp_ms: int = Field(default_factory=lambda: int(time.time() * 1000))
     user_id: str | None = None
     fresh: bool = False
@@ -58,7 +61,10 @@ class SegmentInputRequest(BaseModel):
     """Request body for POST /sessions/{session_id}/input."""
     text: str
     user_id: str | None = None
-    channel: str = "cli"
+    # Channel is Optional — reach-layer adapters must send their configured
+    # channel_name (voice/web/cli). None is preserved through the buffer so
+    # per-channel config resolves explicitly; defaulting would mask misconfig.
+    channel: str | None = None
     timestamp_ms: int = Field(default_factory=lambda: int(time.time() * 1000))
 
 
@@ -298,9 +304,7 @@ def create_orchestration_app(
             return {"status": "accepted"}
 
         @app.get("/sessions/{session_id}/events")
-        async def session_events(
-            session_id: str, request: Request, user_id: str | None = None
-        ):
+        async def session_events( session_id: str, request: Request, user_id: str | None = None, channel: str | None = None,):
             """Long-lived SSE subscription for session events.
 
             Reach layer opens this connection once at session start. Events are
@@ -311,6 +315,12 @@ def create_orchestration_app(
             proactively emits the entry subagent's opening_phrase on the first
             connect for a brand-new session (GH-149). Omit to skip the proactive
             emission (back-compat).
+
+            When ``channel`` is supplied, the session buffer is created with
+            the correct channel identity so per-channel config (prompt suffix,
+            tts_rules, turn_assembler timing) resolves correctly from the very
+            first turn. Omit on clients that don't know channel yet — buffer
+            falls back to cli default (legacy behaviour).
             """
             start = time.time()
 
@@ -321,13 +331,14 @@ def create_orchestration_app(
                     "status": "success",
                     "session_id": session_id,
                     "user_id": user_id or "",
+                    "channel": channel or "",
                 },
             )
 
             async def sse_generator():
                 event_count = 0
                 try:
-                    async for event in _assembler.subscribe(session_id, user_id=user_id):
+                    async for event in _assembler.subscribe(session_id, user_id=user_id, channel=channel):
                         event_count += 1
                         yield event.to_sse()
                 except Exception as e:

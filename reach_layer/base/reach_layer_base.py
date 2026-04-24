@@ -274,8 +274,16 @@ class ReachLayerBase(ABC):
 
         client = await self._get_client()
         url = f"{self._agent_core_base}/sessions/{session_id}/events"
+        params = []
         if user_id:
-            url = f"{url}?user_id={quote(user_id, safe='')}"
+            params.append(f"user_id={quote(user_id, safe='')}")
+        # Include channel so Agent Core creates the session buffer with the
+        # correct channel identity from the first turn (per-channel
+        # system_prompt_suffix / tts_rules / turn_assembler timing).
+        if self._channel_name:
+            params.append(f"channel={quote(self._channel_name, safe='')}")
+        if params:
+            url = f"{url}?{'&'.join(params)}"
 
         try:
             async with client.stream("GET", url) as response:

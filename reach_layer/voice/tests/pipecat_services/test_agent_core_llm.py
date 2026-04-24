@@ -80,7 +80,7 @@ async def test_sends_correct_payload_to_agent_core(config):
     body = json.loads(route.calls[0].request.content)
     assert body["session_id"] == "ses1"
     assert body["user_message"] == "मुझे मदद चाहिए"
-    assert body["channel"] == "telephony"
+    assert body["channel"] == "voice"
     assert body["user_id"] == "+911234567890"
 
 

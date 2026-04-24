@@ -227,10 +227,17 @@ class AgentCoreLLMProcessor(FrameProcessor):
         """Direct mode: synchronous POST /process_turn → single TTSSpeakFrame."""
         start = time.time()
         url = f"{self._base_url}/process_turn"
+        # Channel must match a key under agent_core.channels.* so the
+        # orchestrator can resolve the channel-specific system_prompt_suffix
+        # and tts_rules. Pull from the ReachLayer adapter (VobizAdapter sets
+        # channel_name="voice") rather than hardcoding a string that drifts
+        # from config.
+        channel_name = (getattr(self._channel, "channel_name", None)
+            if self._channel is not None else None) or "voice"
         payload = {
             "session_id": self._session_id,
             "user_message": frame.text,
-            "channel": "telephony",
+            "channel": channel_name,
             "user_id": self._user_id,
             "timestamp_ms": int(start * 1000),
         }

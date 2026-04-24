@@ -149,7 +149,7 @@ class TestSessionEvents:
         assembler = _make_mock_assembler()
 
         # Mock subscribe to yield one DoneEvent
-        async def mock_subscribe(session_id, user_id=None):
+        async def mock_subscribe(session_id, user_id=None, channel=None):
             yield DoneEvent(turn_status="completed")
 
         assembler.subscribe = mock_subscribe
@@ -164,7 +164,7 @@ class TestSessionEvents:
         agent = _make_mock_agent_core()
         assembler = _make_mock_assembler()
 
-        async def mock_subscribe(session_id, user_id=None):
+        async def mock_subscribe(session_id, user_id=None, channel=None):
             yield SignalEvent(stage="memory_read", status="start")
             yield SentenceEvent(text="Hello!", sentence_index=0)
             yield DoneEvent(turn_status="completed")
@@ -186,7 +186,7 @@ class TestSessionEvents:
         agent = _make_mock_agent_core()
         assembler = _make_mock_assembler()
 
-        async def mock_subscribe(session_id, user_id=None):
+        async def mock_subscribe(session_id, user_id=None, channel=None):
             yield SentenceEvent(text="Hi.", sentence_index=0)
             yield DoneEvent(turn_status="completed")
 

@@ -16,13 +16,13 @@ def test_telephony_turn_input_fields():
         call_sid="c1",
         caller_id="+911234567890",
         user_message="hello",
-        channel="telephony",
+        channel="voice",
         timestamp_ms=1000,
     )
     assert t.session_id == "s1"
     assert t.call_sid == "c1"
     assert t.caller_id == "+911234567890"
-    assert t.channel == "telephony"
+    assert t.channel == "voice"
 
 
 def test_telephony_turn_result_fields():

@@ -106,8 +106,11 @@ class SessionBuffer:
     created_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
-    # Metadata from first segment — cached so subsequent segments don't need it
-    channel: str = "cli"
+    # Metadata from first segment / SSE subscribe — cached so subsequent
+    # segments don't need it. channel is Optional so missing-channel stays
+    # None all the way through the orchestrator (which raises a clear
+    # Unsupported channel error) rather than silently defaulting to cli.
+    channel: Optional[str] = None
     user_id: Optional[str] = None
     first_timestamp_ms: int = 0
 
@@ -379,9 +382,7 @@ class TurnAssembler(TurnAssemblerBase):
         channel_config = self._resolve_config(buffer.channel)
         await self._evaluate_policies(session_id, buffer, channel_config)
 
-    async def subscribe(
-        self, session_id: str, user_id: str | None = None
-    ) -> AsyncGenerator[StreamEvent, None]:
+    async def subscribe(self, session_id: str, user_id: str | None = None, channel: str | None = None,) -> AsyncGenerator[StreamEvent, None]:
         """Yield StreamEvents from the session's event queue until DoneEvent.
 
         Creates a buffer if one doesn't exist yet (subscribe can be called before
@@ -402,6 +403,12 @@ class TurnAssembler(TurnAssemblerBase):
             user_id: Optional user identifier. Required for the proactive
                 opening_phrase emission path; when None the emission is skipped
                 (back-compat for callers that don't supply it).
+            channel: Optional channel identifier ("voice", "web", "cli").
+                When the reach-layer adapter supplies it at SSE subscribe
+                time, the session buffer is created with the correct channel
+                from birth so per-channel config (system_prompt_suffix,
+                tts_rules, turn_assembler timing) resolves correctly even
+                when subscribe() runs before the first add_segment().
 
         Yields:
             StreamEvent instances until DoneEvent is received.
@@ -410,7 +417,7 @@ class TurnAssembler(TurnAssemblerBase):
             return
 
         if session_id not in self._sessions:
-            self._sessions[session_id] = SessionBuffer(session_id=session_id)
+            self._sessions[session_id] = SessionBuffer( session_id=session_id, channel=channel, user_id=user_id,)
 
         buffer = self._sessions[session_id]
 
