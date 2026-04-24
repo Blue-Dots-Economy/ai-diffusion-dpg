@@ -199,6 +199,7 @@ def create_upload_router(
                 status="queued",
                 user_id=user_id,
                 uploaded_at=now_utc,
+                doc_type=doc_type,
             ))
             jobs.append(_IngestJob(job_id, batch_id, safe_name, mode, cloud_path, file_bytes, doc_type))
 

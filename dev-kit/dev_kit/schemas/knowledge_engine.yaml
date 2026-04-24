@@ -24,11 +24,7 @@ knowledge:
       metadata_filters:
         use_location_filter: true   # narrow search to chunks matching the user's location entity
         use_intent_filter: true     # narrow search to doc_types mapped to the detected intent
-      sources:                  # required — one or more knowledge source files
-        - path: ""              # required — relative path e.g. ./data/clinic_info.txt
-          type: static          # required — static | always_include
-          doc_type: ""          # required — domain tag e.g. faq, scheme, doctor, role
-          refresh: manual       # required — manual | annual | monthly
+      sources: []               # DEPRECATED — documents are uploaded post-deploy, not pre-configured here
       intent_filters:           # map of intent → list of doc_types to retrieve
         intent_name:            # replace with actual intent name
           - doc_type_name       # replace with actual doc_type values

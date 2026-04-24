@@ -495,9 +495,10 @@ class StaticKBConfig(BaseModel):
     embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2"
     top_k: int = 3
     similarity_threshold: float = 0.65
+    default_doc_type: str = "general"
     sources: list[KnowledgeSource] = Field(
         default=[],
-        description="Knowledge sources to ingest. Each: {path, type, doc_type, refresh}",
+        description="Deprecated — documents are uploaded post-deploy. Kept for backward compatibility.",
     )
     metadata_filters: MetadataFiltersConfig = MetadataFiltersConfig()
     intent_filters: dict[str, list[str]] = Field(

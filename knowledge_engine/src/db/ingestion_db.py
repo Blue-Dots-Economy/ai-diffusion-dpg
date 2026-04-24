@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS ingestion_records (
     uploaded_at     TEXT NOT NULL,
     ingested_at     TEXT,
     expires_at      TEXT,
+    doc_type        TEXT,
     enabled         INTEGER NOT NULL DEFAULT 1
 );
 
@@ -65,6 +66,7 @@ class IngestionRecord:
     error: Optional[str] = None
     ingested_at: Optional[str] = None
     expires_at: Optional[str] = None
+    doc_type: Optional[str] = None
     enabled: int = 1
     # Computed at read time — not a DB column
     queue_position: Optional[int] = field(default=None, compare=False)
@@ -88,6 +90,12 @@ class IngestionDB:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(_CREATE_TABLE)
+            # Migration: add doc_type column for existing databases.
+            try:
+                conn.execute("ALTER TABLE ingestion_records ADD COLUMN doc_type TEXT")
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
     @contextmanager
     def _connect(self):
@@ -116,14 +124,14 @@ class IngestionDB:
                 """
                 INSERT INTO ingestion_records
                     (job_id, batch_id, filename, file_size_bytes, source_type,
-                     cloud_path, mode, status, user_id, uploaded_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     cloud_path, mode, status, user_id, uploaded_at, doc_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
                         r.job_id, r.batch_id, r.filename, r.file_size_bytes,
                         r.source_type, r.cloud_path, r.mode, r.status,
-                        r.user_id, r.uploaded_at,
+                        r.user_id, r.uploaded_at, r.doc_type,
                     )
                     for r in records
                 ],
@@ -228,6 +236,7 @@ class IngestionDB:
             uploaded_at=row["uploaded_at"],
             ingested_at=row["ingested_at"],
             expires_at=row["expires_at"],
+            doc_type=row["doc_type"] if "doc_type" in row.keys() else None,
             enabled=row["enabled"],
             queue_position=queue_position,
         )
