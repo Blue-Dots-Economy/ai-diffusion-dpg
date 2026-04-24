@@ -100,6 +100,23 @@ class ObservabilityConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class RecentToolExchangesConfig(BaseModel):
+    """Caps for cross-turn tool_use/tool_result replay (issue #193).
+
+    Controls how many prior tool exchanges are persisted into Memory Layer
+    under the session-scoped ``recent_tool_exchanges`` key and replayed as
+    real ``tool_use``/``tool_result`` message pairs at the start of the
+    next turn's streaming LLM call. Keeping the LLM aware of prior tool
+    results avoids redundant re-invocation of the same tool with identical
+    parameters across turns.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    max_items: int = Field(default=3, ge=0)
+    max_chars: int = Field(default=4000, ge=0)
+
+
 class AgentConfig(BaseModel):
     """Top-level LLM wrapper settings."""
 
@@ -113,6 +130,9 @@ class AgentConfig(BaseModel):
     max_tool_rounds: int = Field(default=3, ge=1)
     ask_for_consent: bool = False
     consent_prompt: str = ""
+    recent_tool_exchanges: RecentToolExchangesConfig = Field(
+        default_factory=RecentToolExchangesConfig
+    )
 
 
 # ---------------------------------------------------------------------------

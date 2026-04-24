@@ -457,6 +457,7 @@ class TestStreamTurnChannelValidation:
         assert len(done_events) == 1
 
 
+
 class TestStreamTurnEndSession:
     """GH-191: end_session must set DoneEvent.session_ended=True in streaming."""
 
@@ -569,3 +570,278 @@ class TestStreamTurnEndSession:
         done2 = [e for e in events2 if isinstance(e, DoneEvent)][0]
         assert done2.session_ended is False
         assert agent._manager_agent._session_ended_flag is False
+
+# ---------------------------------------------------------------------------
+# #193: cross-turn tool_use/tool_result replay
+# ---------------------------------------------------------------------------
+
+
+class TestStreamTurnRecentToolExchanges:
+    """Cover persist + replay of prior tool_use/tool_result pairs across turns."""
+
+    @pytest.mark.asyncio
+    async def test_tool_round_persisted_to_memory(self):
+        """After a tool turn, ``recent_tool_exchanges`` is written to Memory Layer."""
+        agent = _make_agent_core()
+
+        call_count = 0
+
+        async def mock_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                yield "Looking that up"
+                raise ToolUseRequested([
+                    ToolCall(
+                        tool_name="onest_market_lookup",
+                        tool_use_id="tu_t1",
+                        input_params={"trade": "welder"},
+                    )
+                ])
+            else:
+                yield "Here are the results. "
+
+        agent._llm.stream_call = mock_stream
+        agent._async_gateway.execute.return_value = ToolResult(
+            tool_use_id="tu_t1",
+            tool_name="onest_market_lookup",
+            result={"jobs": []},
+            success=True,
+            result_text='{"jobs":[{"title":"Welder","wage":500}]}',
+        )
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("msg", "english")
+        agent._nlu_processor = MagicMock()
+        agent._nlu_processor.process.return_value = NLUResult(
+            intent="search", entities={}, sentiment="neutral", confidence=0.9
+        )
+
+        await _collect_events(agent, _make_turn_input())
+
+        # Wait for fire-and-forget memory writes spawned via create_task
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        write_calls = agent._async_memory.write.await_args_list
+        rte_calls = [c for c in write_calls if c.args[3] == "recent_tool_exchanges"]
+        assert rte_calls, "Expected a write to recent_tool_exchanges"
+        stored = rte_calls[-1].args[4]
+        assert isinstance(stored, list) and len(stored) == 1
+        ex = stored[0]
+        assert ex["tool_uses"][0]["name"] == "onest_market_lookup"
+        assert ex["tool_uses"][0]["input"] == {"trade": "welder"}
+        assert ex["tool_results"][0]["tool_use_id"] == "tu_t1"
+        assert "Welder" in ex["tool_results"][0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_prior_exchanges_replayed_into_messages(self):
+        """T2's stream_call receives prior tool_use/tool_result pairs in messages."""
+        agent = _make_agent_core()
+        prior_exchange = {
+            "tool_uses": [
+                {
+                    "type": "tool_use",
+                    "id": "tu_prev",
+                    "name": "onest_market_lookup",
+                    "input": {"trade": "welder"},
+                }
+            ],
+            "tool_results": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tu_prev",
+                    "content": '{"jobs":[{"title":"Welder"}]}',
+                }
+            ],
+        }
+        agent._async_memory.context_bundle.return_value = ContextBundle(
+            session={
+                "current_subagent_id": "start",
+                "recent_tool_exchanges": [prior_exchange],
+            },
+            profile={},
+        )
+
+        captured_messages: list = []
+
+        async def mock_stream(*args, **kwargs):
+            captured_messages.append(kwargs.get("messages") or args[0])
+            yield "Reusing prior data. "
+
+        agent._llm.stream_call = mock_stream
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("msg", "english")
+        agent._nlu_processor = MagicMock()
+        agent._nlu_processor.process.return_value = NLUResult(
+            intent="follow_up", entities={}, sentiment="neutral", confidence=0.9
+        )
+
+        await _collect_events(agent, _make_turn_input(user_message="What was the wage?"))
+
+        assert captured_messages, "stream_call should have been invoked"
+        msgs = captured_messages[0]
+        # First two messages should be the replayed assistant tool_use + user tool_result.
+        assert msgs[0]["role"] == "assistant"
+        assert msgs[0]["content"][0]["type"] == "tool_use"
+        assert msgs[0]["content"][0]["name"] == "onest_market_lookup"
+        assert msgs[1]["role"] == "user"
+        assert msgs[1]["content"][0]["type"] == "tool_result"
+        assert msgs[1]["content"][0]["tool_use_id"] == "tu_prev"
+        # Tool gateway must NOT have been invoked again for the same params.
+        assert agent._async_gateway.execute.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_max_items_cap_drops_oldest(self):
+        """When more than max_items exchanges accumulate, the oldest is dropped."""
+        agent = _make_agent_core()
+        # Configure cap of 3 (default) and seed 3 prior exchanges.
+        prior = [
+            {
+                "tool_uses": [
+                    {"type": "tool_use", "id": f"tu_{i}", "name": "lookup", "input": {"i": i}}
+                ],
+                "tool_results": [
+                    {"type": "tool_result", "tool_use_id": f"tu_{i}", "content": f"r{i}"}
+                ],
+            }
+            for i in range(3)
+        ]
+        agent._async_memory.context_bundle.return_value = ContextBundle(
+            session={
+                "current_subagent_id": "start",
+                "recent_tool_exchanges": list(prior),
+            },
+            profile={},
+        )
+
+        call_count = 0
+
+        async def mock_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                yield "ok"
+                raise ToolUseRequested([
+                    ToolCall(tool_name="lookup", tool_use_id="tu_new", input_params={"i": 99})
+                ])
+            else:
+                yield "Done. "
+
+        agent._llm.stream_call = mock_stream
+        agent._async_gateway.execute.return_value = ToolResult(
+            tool_use_id="tu_new",
+            tool_name="lookup",
+            result={"x": 1},
+            success=True,
+            result_text="r99",
+        )
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("msg", "english")
+        agent._nlu_processor = MagicMock()
+        agent._nlu_processor.process.return_value = NLUResult(
+            intent="search", entities={}, sentiment="neutral", confidence=0.9
+        )
+
+        await _collect_events(agent, _make_turn_input())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        rte_calls = [
+            c for c in agent._async_memory.write.await_args_list
+            if c.args[3] == "recent_tool_exchanges"
+        ]
+        assert rte_calls, "Expected a write to recent_tool_exchanges"
+        stored = rte_calls[-1].args[4]
+        # Cap is 3 → oldest (i=0) must be dropped, newest (tu_new) must be present.
+        assert len(stored) == 3
+        ids = [ex["tool_uses"][0]["id"] for ex in stored]
+        assert "tu_0" not in ids
+        assert ids[-1] == "tu_new"
+
+    @pytest.mark.asyncio
+    async def test_max_items_zero_disables_replay_and_persist(self):
+        """When max_items=0, no replay and no persist happens."""
+        agent = _make_agent_core()
+        agent._config["agent"]["recent_tool_exchanges"] = {"max_items": 0, "max_chars": 4000}
+
+        prior = [
+            {
+                "tool_uses": [
+                    {"type": "tool_use", "id": "tu_x", "name": "lookup", "input": {}}
+                ],
+                "tool_results": [
+                    {"type": "tool_result", "tool_use_id": "tu_x", "content": "r"}
+                ],
+            }
+        ]
+        agent._async_memory.context_bundle.return_value = ContextBundle(
+            session={
+                "current_subagent_id": "start",
+                "recent_tool_exchanges": list(prior),
+            },
+            profile={},
+        )
+
+        captured_messages: list = []
+
+        async def mock_stream(*args, **kwargs):
+            captured_messages.append(kwargs.get("messages") or args[0])
+            yield "Hi. "
+
+        agent._llm.stream_call = mock_stream
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("msg", "english")
+        agent._nlu_processor = MagicMock()
+        agent._nlu_processor.process.return_value = NLUResult(
+            intent="greeting", entities={}, sentiment="neutral", confidence=0.9
+        )
+
+        await _collect_events(agent, _make_turn_input())
+
+        assert captured_messages
+        # No replayed messages — first message should be the user turn directly.
+        assert captured_messages[0][0]["role"] == "user"
+        assert all(
+            isinstance(c, str) or c.get("type") != "tool_use"
+            for c in (captured_messages[0][0].get("content") or [])
+            if isinstance(c, dict)
+        )
+
+
+class TestRecentToolExchangesHelpers:
+    """Pure-function tests for the cross-turn replay helpers."""
+
+    def test_build_messages_skips_malformed(self):
+        agent = _make_agent_core()
+        msgs = agent._build_tool_exchange_messages([
+            {},
+            {"tool_uses": [], "tool_results": []},
+            None,  # type: ignore[list-item]
+            {
+                "tool_uses": [{"type": "tool_use", "id": "a", "name": "t", "input": {}}],
+                "tool_results": [{"type": "tool_result", "tool_use_id": "a", "content": "x"}],
+            },
+        ])
+        assert len(msgs) == 2
+        assert msgs[0]["role"] == "assistant"
+        assert msgs[1]["role"] == "user"
+
+    def test_truncate_tool_result_content(self):
+        agent = _make_agent_core()
+        assert agent._truncate_tool_result_content("hello", 0) == "hello"
+        assert agent._truncate_tool_result_content("hello", 100) == "hello"
+        assert agent._truncate_tool_result_content("abcdef", 3) == "abc"
+        assert agent._truncate_tool_result_content("", 10) == ""
+
+    def test_capture_tool_exchange_truncates(self):
+        agent = _make_agent_core()
+        tc = ToolCall(tool_name="lookup", tool_use_id="tu_1", input_params={"q": "x"})
+        results = [{"type": "tool_result", "tool_use_id": "tu_1", "content": "abcdefghij"}]
+        ex = agent._capture_tool_exchange([tc], results, max_chars=4)
+        assert ex is not None
+        assert ex["tool_results"][0]["content"] == "abcd"
+        assert ex["tool_uses"][0]["name"] == "lookup"
+
+    def test_capture_tool_exchange_empty_returns_none(self):
+        agent = _make_agent_core()
+        assert agent._capture_tool_exchange([], [], 100) is None

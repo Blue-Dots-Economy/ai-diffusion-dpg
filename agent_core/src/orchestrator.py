@@ -1550,6 +1550,125 @@ class AgentCore(AgentCoreBase):
         )
 
     # ------------------------------------------------------------------
+    # Private: cross-turn tool_use/tool_result replay (issue #193)
+    # ------------------------------------------------------------------
+
+    def _recent_tool_exchanges_caps(self) -> tuple[int, int]:
+        """Return ``(max_items, max_chars)`` for cross-turn tool replay.
+
+        Reads ``agent.recent_tool_exchanges.max_items`` and
+        ``agent.recent_tool_exchanges.max_chars`` from config, falling back
+        to (3, 4000) which mirrors the action_gateway default
+        ``max_size_chars``.
+
+        Returns:
+            Tuple of (max_items, max_chars). Either may be 0 to disable.
+        """
+        cfg = self._config.get("agent", {}).get("recent_tool_exchanges", {}) or {}
+        max_items = int(cfg.get("max_items", 3))
+        max_chars = int(cfg.get("max_chars", 4000))
+        return max_items, max_chars
+
+    @staticmethod
+    def _build_tool_exchange_messages(
+        exchanges: list[dict],
+    ) -> list[dict]:
+        """Convert persisted tool exchange records into Anthropic messages.
+
+        Each exchange is rendered as one ``assistant`` message containing
+        all of its ``tool_use`` blocks followed by one ``user`` message
+        containing the matching ``tool_result`` blocks, exactly as the
+        Anthropic tool-use protocol requires.
+
+        Args:
+            exchanges: Ordered list of exchange dicts as persisted by
+                ``_capture_tool_exchange``. Malformed entries are skipped.
+
+        Returns:
+            Flat list of ``messages`` dicts ready to prepend to a turn's
+            ``messages`` array.
+        """
+        out: list[dict] = []
+        if not exchanges:
+            return out
+        for ex in exchanges:
+            if not isinstance(ex, dict):
+                continue
+            uses = ex.get("tool_uses") or []
+            results = ex.get("tool_results") or []
+            if not uses or not results:
+                continue
+            out.append({"role": "assistant", "content": list(uses)})
+            out.append({"role": "user", "content": list(results)})
+        return out
+
+    @staticmethod
+    def _truncate_tool_result_content(content: str, max_chars: int) -> str:
+        """Truncate a tool_result payload to ``max_chars`` characters.
+
+        Args:
+            content: Raw text payload (already string-form).
+            max_chars: Hard cap; values <= 0 disable truncation.
+
+        Returns:
+            The original string if within the cap, otherwise a clipped
+            string.
+        """
+        if max_chars <= 0 or not content:
+            return content
+        if len(content) <= max_chars:
+            return content
+        return content[:max_chars]
+
+    def _capture_tool_exchange(
+        self,
+        tool_calls: list,
+        tool_results: list,
+        max_chars: int,
+    ) -> dict | None:
+        """Build a single persistable exchange from one tool round.
+
+        Args:
+            tool_calls: ``ToolCall`` objects executed in this round.
+            tool_results: Anthropic-schema tool_result content dicts that
+                were appended to ``messages`` after the round.
+            max_chars: Per-result content cap.
+
+        Returns:
+            A dict with ``tool_uses`` and ``tool_results`` keys, or
+            ``None`` if either side is empty.
+        """
+        if not tool_calls or not tool_results:
+            return None
+        uses: list[dict] = []
+        for tc in tool_calls:
+            uses.append(
+                {
+                    "type": "tool_use",
+                    "id": tc.tool_use_id,
+                    "name": tc.tool_name,
+                    "input": tc.input_params or {},
+                }
+            )
+        results: list[dict] = []
+        for tr in tool_results:
+            if not isinstance(tr, dict):
+                continue
+            content = tr.get("content", "")
+            if not isinstance(content, str):
+                content = str(content)
+            results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tr.get("tool_use_id", ""),
+                    "content": self._truncate_tool_result_content(content, max_chars),
+                }
+            )
+        if not uses or not results:
+            return None
+        return {"tool_uses": uses, "tool_results": results}
+
+    # ------------------------------------------------------------------
     # Private: schedule async flush for early exit paths
     # ------------------------------------------------------------------
 
@@ -2649,6 +2768,37 @@ class AgentCore(AgentCoreBase):
                 current_question=current_question,
             )
 
+            # ── #193: prepend prior tool_use/tool_result exchanges ──────
+            # Persisted by this same path on the previous turn under the
+            # session-scoped ``recent_tool_exchanges`` key. Replaying them
+            # as real Anthropic tool-use messages keeps the LLM aware of
+            # results it has already seen, so it does not re-invoke the
+            # same tool with identical params on every follow-up turn.
+            _max_items, _max_chars = self._recent_tool_exchanges_caps()
+            _prior_exchanges_raw = bundle.session.get("recent_tool_exchanges") or []
+            if not isinstance(_prior_exchanges_raw, list):
+                _prior_exchanges_raw = []
+            _prior_exchanges: list[dict] = list(_prior_exchanges_raw)
+            if _max_items > 0 and _prior_exchanges:
+                _replay_msgs = self._build_tool_exchange_messages(
+                    _prior_exchanges[-_max_items:]
+                )
+                if _replay_msgs:
+                    messages = _replay_msgs + messages
+                    logger.info(
+                        "orchestrator.stream_turn_tool_replay",
+                        extra={
+                            "operation": "orchestrator.stream_turn",
+                            "status": "success",
+                            "session_id": session_id,
+                            "replayed_exchanges": len(_replay_msgs) // 2,
+                        },
+                    )
+
+            # Tool exchanges captured during *this* turn's tool rounds; persisted
+            # at the end of the turn so the next turn can replay them.
+            _captured_exchanges_this_turn: list[dict] = []
+
             if not messages:
                 yield DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000))
                 return
@@ -2808,6 +2958,13 @@ class AgentCore(AgentCoreBase):
                     ]})
                     messages.append({"role": "user", "content": _current_tool_results})
 
+                    # #193: snapshot this round so it can be replayed next turn.
+                    _ex = self._capture_tool_exchange(
+                        _current_tool_calls, _current_tool_results, _max_chars,
+                    )
+                    if _ex is not None:
+                        _captured_exchanges_this_turn.append(_ex)
+
                     try:
                         async for token in self._llm.stream_call(
                             messages=messages,
@@ -2959,6 +3116,29 @@ class AgentCore(AgentCoreBase):
                     session_id, user_id, "session", "current_question", full_response_text.strip()
                 )
             )
+
+            # #193: persist captured tool exchanges (capped) so the next
+            # turn can replay them as real tool_use/tool_result messages.
+            if _captured_exchanges_this_turn and _max_items > 0:
+                _merged = list(_prior_exchanges) + _captured_exchanges_this_turn
+                _capped = _merged[-_max_items:]
+                bundle.session["recent_tool_exchanges"] = _capped
+                asyncio.create_task(
+                    self._async_memory.write(
+                        session_id, user_id, "session",
+                        "recent_tool_exchanges", _capped,
+                    )
+                )
+                logger.info(
+                    "orchestrator.stream_turn_tool_persist",
+                    extra={
+                        "operation": "orchestrator.stream_turn",
+                        "status": "success",
+                        "session_id": session_id,
+                        "captured": len(_captured_exchanges_this_turn),
+                        "stored": len(_capped),
+                    },
+                )
             yield SignalEvent(stage="memory_write", status="complete")
 
             latency_ms = int((time.time() - start) * 1000)
