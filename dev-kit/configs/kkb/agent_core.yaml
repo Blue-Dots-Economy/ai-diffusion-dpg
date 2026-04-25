@@ -411,6 +411,18 @@ preprocessing:
           longitudinal analysis but do not change stage;
       (3) infrastructure intents (any_input, unknown) for generic forward progress.
 
+      ## profile_answer (#217)
+      When the user supplies substantive profile information in response to (or
+      independent of) a question — e.g. trade, location, age, ITI status, monthly
+      income, certifications, mobility/commute constraints — classify the turn
+      as `profile_answer` and emit the relevant entities (trade_or_stream,
+      location, age_bracket, monthly_income, etc.). This intent does not change
+      the routing stage; the orchestrator persists the entities and the same
+      subagent handles the next response. Prefer `profile_answer` over
+      `any_input` whenever the message carries usable profile data — even if
+      it is also a question or hesitation, the entity extraction is what makes
+      this turn worth classifying distinctly.
+
       ## language_switch_request handling
       When the user asks to switch language (e.g. "talk in english", "kannada me baat karo",
       "can you switch to hindi"), classify as language_switch_request AND emit the entity
@@ -431,6 +443,12 @@ preprocessing:
       - distance_issue
       - overwhelmed_silent
       - counsellor_request
+      # Profile-data intent (#217) — substantive profile answers (income,
+      # ITI status, certifications, trade, location, etc.). Same routing
+      # behaviour as any_input — entities are what matter — but classified
+      # distinctly so observability can separate "user shared profile data"
+      # from "user said something we couldn't parse".
+      - profile_answer
       # Post-apply intents
       - outcome_positive
       - outcome_negative
@@ -577,6 +595,7 @@ agent_workflow:
 
       valid_intents:
         - any_input
+        - profile_answer
         - evaluate_option
         - apply_now
         - pay_disappointment
@@ -675,6 +694,7 @@ agent_workflow:
 
       valid_intents:
         - any_input
+        - profile_answer
         - apply_now
         - explore_more
         - pay_disappointment
@@ -855,6 +875,7 @@ agent_workflow:
 
       valid_intents:
         - any_input
+        - profile_answer
 
       tools: []
 
