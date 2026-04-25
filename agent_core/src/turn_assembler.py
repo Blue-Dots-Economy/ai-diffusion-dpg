@@ -6,7 +6,7 @@ Sits between the HTTP server and AgentCore.stream_turn() for session-based chann
 
 Spec: docs/superpowers/specs/2026-04-14-agent-core-turn-assembler-spec.md
 Issue: #72  Sub-tasks: #79, #80, #81, #82, #83
-Refactor: #224 — TurnAssembler now uses Session/Turn instead of SessionBuffer.
+Refactor: #224 — TurnAssembler now uses Session/Turn for all per-session state.
 
 Design decisions NOT in the original spec (documented here for traceability):
 
