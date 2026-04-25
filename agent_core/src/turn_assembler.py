@@ -450,6 +450,7 @@ class TurnAssembler(TurnAssemblerBase):
             return
 
         try:
+            t_bundle_start = time.time()
             bundle = await self._async_memory.context_bundle(session_id, user_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -459,6 +460,7 @@ class TurnAssembler(TurnAssemblerBase):
                     "status": "skipped",
                     "session_id": session_id,
                     "error": f"{type(exc).__name__}: {exc}",
+                    "latency_ms": int((time.time() - t_bundle_start) * 1000),
                 },
             )
             return
@@ -1004,6 +1006,7 @@ class TurnAssembler(TurnAssemblerBase):
                     "status": "failure",
                     "session_id": turn.session_id,
                     "error": f"{type(e).__name__}: {e}",
+                    "latency_ms": int((time.time() - start) * 1000),
                 },
             )
 
