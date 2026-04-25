@@ -339,7 +339,6 @@ class TurnAssembler(TurnAssemblerBase):
                 )
                 # Install a fresh turn with the barge-in segment pre-loaded.
                 new_turn = await session.replace_turn(seed_segments=[segment])
-                new_turn.segments[0] = segment  # ensure it's the SegmentInput object
                 turn = new_turn
 
             elif turn is None or turn.status in (
@@ -414,9 +413,9 @@ class TurnAssembler(TurnAssemblerBase):
 
         seen: Optional[Turn] = None
         while not session.ended:
+            session.turn_changed.clear()
             turn = session.current_turn
             if turn is None or turn is seen:
-                session.turn_changed.clear()
                 await session.turn_changed.wait()
                 continue
             async for event in turn.iter_events():
@@ -531,9 +530,9 @@ class TurnAssembler(TurnAssemblerBase):
         async with session._lock:
             op_turn = await session.replace_turn(seed_segments=[])
             op_turn.status = TurnStatus.INVOKED
-        await op_turn.event_queue.put(SentenceEvent(text=opening_phrase, sentence_index=0))
-        await op_turn.event_queue.put(DoneEvent(turn_status="completed"))
-        op_turn.status = TurnStatus.COMPLETED
+            await op_turn.event_queue.put(SentenceEvent(text=opening_phrase, sentence_index=0))
+            await op_turn.event_queue.put(DoneEvent(turn_status="completed"))
+            op_turn.status = TurnStatus.COMPLETED
 
         logger.info(
             "turn_assembler.opening_phrase_emitted",
