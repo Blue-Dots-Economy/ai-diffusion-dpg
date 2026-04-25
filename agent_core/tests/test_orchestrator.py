@@ -821,8 +821,14 @@ def test_consent_gate_turn2_declined_writes_anonymous():
 
 
 @pytest.mark.asyncio
-async def test_stream_turn_emits_opening_phrase_after_consent_granted():
-    """GH-201: with ask_for_consent=true, opening_phrase fires from stream_turn on T2 (post-consent)."""
+async def test_stream_turn_suppresses_opening_phrase_after_consent_granted():
+    """GH-239: post-consent turn must NOT emit the canned opening_phrase.
+
+    The LLM's first post-consent reply already opens with greeting language,
+    so emitting both produced a double-greeting to the caller. The
+    opening_phrase_emitted flag must still be latched so reconnects don't
+    trip the TurnAssembler emit path.
+    """
     agent = _make_stream_agent(
         session_data={
             "current_subagent_id": "market_truth",
@@ -843,14 +849,14 @@ async def test_stream_turn_emits_opening_phrase_after_consent_granted():
     async for ev in agent.stream_turn(_turn_input("haan"), turn_id="t-consent"):
         events.append(ev)
 
-    # First SentenceEvent should be the opening_phrase
-    sentence_events = [e for e in events if isinstance(e, SentenceEvent)]
-    assert sentence_events, "Expected at least one SentenceEvent"
-    assert sentence_events[0].text == "नमस्ते।", (
-        f"Expected first sentence to be opening_phrase, got {sentence_events[0].text!r}"
+    # The canned opening_phrase must NOT appear in any SentenceEvent.
+    sentence_texts = [e.text for e in events if isinstance(e, SentenceEvent)]
+    assert "नमस्ते।" not in sentence_texts, (
+        f"Canned opening_phrase should be suppressed post-consent; got: {sentence_texts!r}"
     )
 
-    # opening_phrase_emitted=True must be persisted
+    # opening_phrase_emitted=True must still be persisted so future
+    # reconnects/turns don't try to re-emit.
     write_calls = [c.args for c in agent._async_memory.write.call_args_list]
     assert any(
         c[2] == "session" and c[3] == "opening_phrase_emitted" and c[4] is True
