@@ -398,7 +398,13 @@ def _make_fake_telephony():
 
 @pytest.mark.asyncio
 async def test_done_event_session_ended_appends_terminal_word(config):
-    """On DoneEvent.session_ended=True, terminal word is pushed and telephony close is invoked."""
+    """On DoneEvent.session_ended=True, terminal word is pushed.
+
+    GH-199: telephony.close_call is NOT invoked here — the EndFrame pushed
+    immediately after drives Vobiz's REST DELETE hangup via the serializer
+    and the natural pipeline shutdown closes the WebSocket. Calling
+    close_call eagerly races the EndFrame and was the bug.
+    """
     from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
     from reach_layer_base import DoneEvent
 
@@ -416,8 +422,10 @@ async def test_done_event_session_ended_appends_terminal_word(config):
     await proc._handle_done_event(DoneEvent(session_ended=True, turn_status="completed"))
 
     assert any(getattr(f, "text", "") == "Goodbye" for f in pushed)
-    assert telephony.closed is True
-    assert telephony.close_reason == "session_end"
+    assert telephony.closed is False, (
+        "close_call must not run on the happy path — it races the EndFrame "
+        "and prevents the Vobiz REST DELETE hangup (GH-199)."
+    )
 
 
 @pytest.mark.asyncio
@@ -445,7 +453,11 @@ async def test_done_event_session_ended_false_does_not_append_or_close(config):
 
 @pytest.mark.asyncio
 async def test_done_event_session_ended_empty_terminal_word_logs_warning(config, caplog):
-    """Empty terminal_word still triggers close but logs a warning and appends nothing."""
+    """Empty terminal_word logs a warning and appends nothing.
+
+    GH-199: close_call is not invoked here either — EndFrame still drives
+    the teardown via the pipeline + serializer.
+    """
     import logging as _logging
     from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
     from reach_layer_base import DoneEvent
@@ -464,7 +476,7 @@ async def test_done_event_session_ended_empty_terminal_word_logs_warning(config,
     with caplog.at_level(_logging.WARNING, logger="src.pipecat_services.agent_core_llm"):
         await proc._handle_done_event(DoneEvent(session_ended=True, turn_status="completed"))
 
-    assert telephony.closed is True
+    assert telephony.closed is False
     # Nothing text-bearing was pushed.
     assert all(getattr(f, "text", "") == "" for f in pushed)
     assert any(

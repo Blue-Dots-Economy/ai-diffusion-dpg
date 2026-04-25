@@ -451,12 +451,16 @@ class AgentCoreLLMProcessor(FrameProcessor):
             await self.push_frame(EndFrame())
 
     async def _handle_done_event(self, event: DoneEvent) -> None:
-        """Handle session-ending semantics on a DoneEvent (GH-137).
+        """Handle session-ending semantics on a DoneEvent (GH-137, GH-199).
 
         When ``event.session_ended`` is True, push the configured terminal word
         as a final utterance frame (so TTS speaks it before the call drops) and
-        request the telephony adapter to close the call. If the configured
-        terminal word is empty, log a warning and still close the call.
+        push an ``EndFrame`` so the pipeline drains and the Vobiz serializer
+        issues its REST DELETE hangup. We do NOT call ``telephony.close_call``
+        here — closing the WebSocket eagerly races the EndFrame and prevents
+        it from reaching the serializer, leaving Vobiz holding the call leg
+        alive (observed under #199). ``close_call`` remains as a defensive
+        fallback for paths that bypass this flow.
 
         Args:
             event: The DoneEvent emitted by Agent Core at end of turn.
@@ -480,22 +484,9 @@ class AgentCoreLLMProcessor(FrameProcessor):
 
         # GH-199: push EndFrame so the Vobiz serializer can issue its REST
         # DELETE hangup. This is the load-bearing step — ws.close() alone is
-        # not enough to drop the telephony leg.
+        # not enough to drop the telephony leg, and calling close_call() here
+        # races the EndFrame and prevents the REST hangup from firing.
         await self.push_frame(EndFrame())
-
-        if self._telephony is not None:
-            try:
-                await self._telephony.close_call(reason="session_end")
-            except Exception as exc:
-                logger.error(
-                    "agent_core_llm.close_call_error",
-                    extra={
-                        "operation": "agent_core_llm.done",
-                        "status": "failure",
-                        "error": f"{type(exc).__name__}: {exc}",
-                        "call_sid": self._call_sid,
-                    },
-                )
 
         logger.info(
             "agent_core_llm.session_ended",
