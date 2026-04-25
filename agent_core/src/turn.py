@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import AsyncIterator, Optional
 
-from .models import DoneEvent, SegmentInput, StreamEvent
+from .models import ContextBundle, DoneEvent, SegmentInput, StreamEvent
 
 
 class TurnStatus(str, Enum):
@@ -53,6 +53,12 @@ class Turn:
     invocation_task: Optional[asyncio.Task] = None
     silence_task: Optional[asyncio.Task] = None
     ceiling_task: Optional[asyncio.Task] = None
+
+    # Context cache — fetched once on first add_segment() so the semantic gate
+    # has NLU context (current_question, current_subagent_id) without re-reading
+    # Memory Layer on every segment.
+    _context_fetched: bool = False
+    context_bundle: Optional[ContextBundle] = None
 
     async def iter_events(self) -> AsyncIterator[StreamEvent]:
         """Drain the event queue until DoneEvent is yielded, then exit.

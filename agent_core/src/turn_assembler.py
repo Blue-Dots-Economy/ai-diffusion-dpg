@@ -6,28 +6,29 @@ Sits between the HTTP server and AgentCore.stream_turn() for session-based chann
 
 Spec: docs/superpowers/specs/2026-04-14-agent-core-turn-assembler-spec.md
 Issue: #72  Sub-tasks: #79, #80, #81, #82, #83
+Refactor: #224 — TurnAssembler now uses Session/Turn instead of SessionBuffer.
 
 Design decisions NOT in the original spec (documented here for traceability):
 
 1. SegmentInput dataclass: The spec defines add_segment(session_id, text) but
    stream_turn() needs channel, user_id, timestamp to build TurnInput. SegmentInput
    carries this metadata so TurnAssembler can construct TurnInput without a second
-   HTTP call. First segment's metadata is cached on the buffer for subsequent segments.
+   HTTP call. First segment's metadata is cached on the Session for subsequent segments.
 
 2. context_bundle() on first segment: The semantic completeness gate needs NLU context
    (current_question, current_subagent_id) which comes from Memory Layer session state.
    We call async_memory.context_bundle() once on the first segment and cache it on
-   SessionBuffer. This is a lightweight read that would happen anyway at stream_turn()
+   the Turn. This is a lightweight read that would happen anyway at stream_turn()
    start — we just pull it earlier to enable smarter assembly decisions.
 
 3. Constructor dependencies: TurnAssembler takes nlu_processor, llm_wrapper, workflow,
    async_memory, and config alongside agent_core. These are needed for the semantic
    completeness gate which runs NLU classification before the full pipeline starts.
 
-4. subscribe() resets buffer: After DoneEvent, subscribe() resets the buffer to WAITING
-   instead of calling session_end(). This supports multi-turn sessions where the same
-   SSE connection handles multiple turns. session_end() is only called on explicit
-   disconnect or session cleanup.
+4. subscribe() rolls over across turns: After DoneEvent, subscribe() waits for
+   session.turn_changed to learn when a new Turn becomes current. This supports
+   multi-turn sessions where the same SSE connection handles multiple turns.
+   session_end() is only called on explicit disconnect or session cleanup.
 
 5. Config placement: Turn assembler config lives in agent_core.yaml under
    reach_layer.turn_assembler (defaults) and reach_layer.channels.<name>.turn_assembler
@@ -62,17 +63,18 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# SessionBuffer
+# SessionBuffer — kept for backward-compat with existing tests that import it.
+# No longer used internally by TurnAssembler. Will be removed after all
+# callers migrate (#224 follow-up).
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class SessionBuffer:
-    """Per-session state held in memory by TurnAssembler.
+    """Per-session state (legacy). Replaced by Session/Turn in #224.
 
-    Each active session has exactly one SessionBuffer. The buffer accumulates
-    text segments, manages timer tasks, and holds the asyncio.Queue that bridges
-    the invocation path to the SSE subscription.
+    Kept so external test code that imports SessionBuffer does not break
+    during the migration. TurnAssembler no longer creates or reads these.
     """
 
     session_id: str
@@ -85,23 +87,14 @@ class SessionBuffer:
     created_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
-    # Metadata from first segment / SSE subscribe — cached so subsequent
-    # segments don't need it. channel is Optional so missing-channel stays
-    # None all the way through the orchestrator (which raises a clear
-    # Unsupported channel error) rather than silently defaulting to cli.
+    # Metadata from first segment / SSE subscribe
     channel: Optional[str] = None
     user_id: Optional[str] = None
     first_timestamp_ms: int = 0
 
-    # Cached context_bundle from Memory Layer — fetched once on first add_segment()
-    # so the semantic gate has NLU context (current_question, current_subagent_id).
-    # Design decision #2: not in spec, but necessary for semantic gate to work.
     context_bundle: Optional[ContextBundle] = None
     _context_fetched: bool = False
 
-    # Segments that arrived while this turn was INVOKED (barge-in).
-    # After the current turn is cancelled and subscribe() resets the buffer,
-    # these are replayed via add_segment() so the new turn starts automatically.
     pending_segments: list = field(default_factory=list)
 
 
@@ -169,8 +162,8 @@ class TurnAssemblerBase(ABC):
 class TurnAssembler(TurnAssemblerBase):
     """In-memory turn assembler with configurable policy stack.
 
-    Holds SessionBuffer instances keyed by session_id. Constructed with
-    references to AgentCore and supporting components — injected at server startup.
+    Holds Session instances keyed by session_id. Constructed with references
+    to AgentCore and supporting components — injected at server startup.
 
     The policy stack is evaluated on each add_segment() call:
         1. Semantic completeness gate (NLU confidence check)
@@ -245,7 +238,7 @@ class TurnAssembler(TurnAssemblerBase):
         # Per-channel overrides now come from top-level channels.<name>.turn_assembler
         self._channels_config: dict = (config or {}).get("channels", {})
 
-        self._sessions: dict[str, SessionBuffer] = {}
+        self._sessions: dict[str, Session] = {}
 
     # ------------------------------------------------------------------
     # Config resolution
@@ -271,11 +264,42 @@ class TurnAssembler(TurnAssemblerBase):
             "max_wait_ceiling": dict(self._default_config["max_wait_ceiling"]),
         }
         # Per-channel overrides: reach_layer.channels.<channel>.turn_assembler
-        channel_ta = self._channels_config.get(channel, {}).get("turn_assembler", {})
+        channel_ta = self._channels_config.get(channel or "", {}).get("turn_assembler", {})
         for section in ("semantic_gate", "silence_trigger", "max_wait_ceiling"):
             if section in channel_ta:
                 base[section].update(channel_ta[section])
         return base
+
+    # ------------------------------------------------------------------
+    # Session management helpers
+    # ------------------------------------------------------------------
+
+    def _get_or_create_session(
+        self,
+        session_id: str,
+        *,
+        user_id: str | None = None,
+        channel: str | None = None,
+    ) -> Session:
+        """Look up the Session for session_id, creating it on first access.
+
+        Args:
+            session_id: Unique session identifier.
+            user_id: User identifier (cached on first access; ignored thereafter).
+            channel: Channel name (cached on first access; ignored thereafter).
+
+        Returns:
+            The Session — existing or newly created.
+        """
+        session = self._sessions.get(session_id)
+        if session is None:
+            session = Session(
+                session_id=session_id,
+                user_id=user_id,
+                channel=channel or "",
+            )
+            self._sessions[session_id] = session
+        return session
 
     # ------------------------------------------------------------------
     # Public interface
@@ -284,9 +308,12 @@ class TurnAssembler(TurnAssemblerBase):
     async def add_segment(self, session_id: str, segment: SegmentInput) -> None:
         """Accept a text segment and evaluate the policy stack.
 
-        Creates a new SessionBuffer if this is the first segment for the session.
-        On first segment, also fetches context_bundle from Memory Layer for the
-        semantic completeness gate.
+        Creates a new Session (and first Turn) if this is the first segment for
+        the session. On first segment, also fetches context_bundle from Memory
+        Layer for the semantic completeness gate.
+
+        If the current turn is already invoked (barge-in), sets the abort signal
+        on the current turn and installs a new Turn with the barge-in segment.
 
         Args:
             session_id: Unique session identifier.
@@ -309,73 +336,88 @@ class TurnAssembler(TurnAssemblerBase):
             )
             return
 
-        buffer = self._get_or_create_buffer(session_id, segment)
+        session = self._get_or_create_session(
+            session_id,
+            user_id=getattr(segment, "user_id", None),
+            channel=getattr(segment, "channel", None),
+        )
 
-        # Barge-in: new segment arrived while a turn is in flight.
-        # Cancel the current turn and queue this segment to be processed after reset.
-        if buffer.status == TurnStatus.INVOKED:
-            buffer.pending_segments.append(segment)
+        async with session._lock:
+            turn = session.current_turn
+
+            # Barge-in: new segment arrived while a turn is in flight.
+            if turn is not None and turn.status == TurnStatus.INVOKED:
+                logger.info(
+                    "turn_assembler.barge_in",
+                    extra={
+                        "operation": "turn_assembler.add_segment",
+                        "status": "success",
+                        "session_id": session_id,
+                        "turn_id": turn.turn_id,
+                        "reason": "new segment arrived while INVOKED — aborting current turn",
+                    },
+                )
+                # Signal the producer and mark INTERRUPTED before installing new turn.
+                turn.status = TurnStatus.INTERRUPTED
+                turn.abort_event.set()
+                for task in (turn.invocation_task, turn.silence_task, turn.ceiling_task):
+                    if task is not None and not task.done():
+                        task.cancel()
+                await turn.event_queue.put(
+                    DoneEvent(turn_status="interrupted", turn_id=turn.turn_id)
+                )
+                # Install a fresh turn with the barge-in segment pre-loaded.
+                new_turn = await session.replace_turn(seed_segments=[segment])
+                new_turn.segments[0] = segment  # ensure it's the SegmentInput object
+                turn = new_turn
+
+            elif turn is None or turn.status in (
+                TurnStatus.COMPLETED,
+                TurnStatus.INTERRUPTED,
+                TurnStatus.ABANDONED,
+            ):
+                # First segment or post-terminal: install a fresh Turn.
+                turn = await session.replace_turn(seed_segments=[])
+                turn.segments.append(segment)
+            else:
+                # Still WAITING — just append.
+                turn.segments.append(segment)
+
             logger.info(
-                "turn_assembler.barge_in",
+                "turn_assembler.segment_added",
                 extra={
                     "operation": "turn_assembler.add_segment",
                     "status": "success",
                     "session_id": session_id,
-                    "reason": "new segment arrived while INVOKED — cancelling current turn",
+                    "turn_id": turn.turn_id,
+                    "segment_count": len(turn.segments),
                 },
             )
-            await self.cancel(session_id)
-            return
 
-        # Ignore segments when not in WAITING state (COMPLETED, INTERRUPTED, ABANDONED).
-        if buffer.status != TurnStatus.WAITING:
-            logger.info(
-                "turn_assembler.segment_ignored",
-                extra={
-                    "operation": "turn_assembler.add_segment",
-                    "status": "skipped",
-                    "session_id": session_id,
-                    "turn_status": buffer.status.value,
-                    "reason": "buffer not in WAITING state",
-                },
-            )
-            return
+        # Outside the lock: cache context on first segment for the semantic gate.
+        if not turn._context_fetched and self._async_memory:
+            await self._fetch_context(turn, segment)
 
-        buffer.segments.append(segment.text.strip())
+        # Evaluate policy stack.
+        channel_config = self._resolve_config(turn.channel)
+        await self._evaluate_policies(session_id, turn, channel_config)
 
-        logger.info(
-            "turn_assembler.segment_added",
-            extra={
-                "operation": "turn_assembler.add_segment",
-                "status": "success",
-                "session_id": session_id,
-                "segment_count": len(buffer.segments),
-            },
-        )
+    async def subscribe(
+        self,
+        session_id: str,
+        user_id: str | None = None,
+        channel: str | None = None,
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """Yield StreamEvents for this session across multiple turns.
 
-        # Fetch context_bundle on first segment for semantic gate context
-        if not buffer._context_fetched and self._async_memory:
-            await self._fetch_context(buffer, segment)
+        Holds a long-lived connection: drains the current Turn's queue until
+        DoneEvent, then awaits session.turn_changed for the next Turn to become
+        current. Exits when session.ended is True.
 
-        # Evaluate policy stack
-        channel_config = self._resolve_config(buffer.channel)
-        await self._evaluate_policies(session_id, buffer, channel_config)
-
-    async def subscribe(self, session_id: str, user_id: str | None = None, channel: str | None = None,) -> AsyncGenerator[StreamEvent, None]:
-        """Yield StreamEvents from the session's event queue until DoneEvent.
-
-        Creates a buffer if one doesn't exist yet (subscribe can be called before
-        the first segment arrives — the SSE connection opens at session start).
-
-        When ``user_id`` is supplied and the session has no ``opening_phrase_emitted``
-        flag in Memory Layer, pushes the entry subagent's opening_phrase as a
-        SentenceEvent + DoneEvent pair onto the event queue before the drain loop
-        begins (GH-149). The flag is persisted before events are enqueued so the
-        orchestrator's first-turn gate won't re-emit on the next user turn.
-
-        After DoneEvent is yielded, the buffer is reset to WAITING for the next
-        turn in the same session. This supports multi-turn sessions over a single
-        SSE connection (design decision #4).
+        When ``user_id`` is supplied and the session has no
+        ``opening_phrase_emitted`` flag in Memory Layer, pushes the entry
+        subagent's opening_phrase as a SentenceEvent + DoneEvent pair before
+        the drain loop begins (GH-149).
 
         Args:
             session_id: Unique session identifier.
@@ -384,98 +426,54 @@ class TurnAssembler(TurnAssemblerBase):
                 (back-compat for callers that don't supply it).
             channel: Optional channel identifier ("voice", "web", "cli").
                 When the reach-layer adapter supplies it at SSE subscribe
-                time, the session buffer is created with the correct channel
-                from birth so per-channel config (system_prompt_suffix,
-                tts_rules, turn_assembler timing) resolves correctly even
-                when subscribe() runs before the first add_segment().
+                time, the session is created with the correct channel from
+                birth so per-channel config resolves correctly even when
+                subscribe() runs before the first add_segment().
 
         Yields:
-            StreamEvent instances until DoneEvent is received.
+            StreamEvent instances from each turn in turn order.
         """
         if not session_id:
             return
 
-        if session_id not in self._sessions:
-            self._sessions[session_id] = SessionBuffer( session_id=session_id, channel=channel, user_id=user_id,)
+        session = self._get_or_create_session(session_id, user_id=user_id, channel=channel)
 
-        buffer = self._sessions[session_id]
+        # GH-149: proactively emit the entry subagent's opening_phrase.
+        await self._emit_opening_phrase_if_first(session_id, user_id, session)
 
-        # GH-149: proactively emit the entry subagent's opening_phrase on the
-        # first SSE connect for a brand-new session, so voice/cli/web channels
-        # don't need their own static greeting. Idempotent across reconnects
-        # via the persisted session.opening_phrase_emitted flag.
-        await self._emit_opening_phrase_if_first(session_id, user_id, buffer)
-
-        while True:
-            event = await buffer.event_queue.get()
-            yield event
-            if isinstance(event, DoneEvent):
-                # Reset buffer in-place for the next turn so the same SSE
-                # connection stays open. Design decision #4: single persistent
-                # connection per session; session_end() handles full cleanup.
-                if session_id in self._sessions:
-                    pending = list(buffer.pending_segments)
-                    # GH-152 Phase 2: on INTERRUPTED, discard the original
-                    # segments. An "interrupted" status only fires when the
-                    # user barges in during INVOKED state — the LLM was
-                    # already running on the original input and has produced
-                    # (partial) output the user is now reacting to. Replaying
-                    # the original alongside the correction produces noisy
-                    # prompts like "I want electrician jobs wait that's wrong,
-                    # I said plumber" that mislead NLU / routing. The
-                    # user-visible contract is "whatever you say during bot
-                    # TTS replaces, not extends, your prior turn."
-                    #
-                    # For COMPLETED or ABANDONED turns we also don't replay —
-                    # COMPLETED processed all segments, ABANDONED dropped
-                    # them on purpose.
-                    if (
-                        event.turn_status == "interrupted"
-                        and buffer.segments
-                    ):
-                        logger.info(
-                            "turn_assembler.barge_in_discarded_segments",
-                            extra={
-                                "operation": "turn_assembler.subscribe",
-                                "status": "success",
-                                "session_id": session_id,
-                                "discarded_count": len(buffer.segments),
-                                "pending_count": len(pending),
-                            },
-                        )
-                    self._reset_buffer(buffer)
-                    # Replay only the barge-in (pending) segments.
-                    for seg in pending:
-                        await self.add_segment(session_id, seg)
+        seen: Optional[Turn] = None
+        while not session.ended:
+            turn = session.current_turn
+            if turn is None or turn is seen:
+                session.turn_changed.clear()
+                await session.turn_changed.wait()
+                continue
+            async for event in turn.iter_events():
+                yield event
+            seen = turn
 
     async def _emit_opening_phrase_if_first(
         self,
         session_id: str,
         user_id: str | None,
-        buffer: SessionBuffer,
+        session_or_buffer: Any,
     ) -> None:
         """Push the entry subagent's opening_phrase onto the session queue once.
 
         Runs at SSE subscribe time so session-mode channels receive the
         welcome utterance without waiting for the user to speak first
         (GH-149). Gated on the persisted ``session.opening_phrase_emitted``
-        flag so reconnects don't re-emit, and so the orchestrator's
-        first-turn gate (`orchestrator.py`) skips once the flag is set.
+        flag so reconnects don't re-emit.
 
         No-ops when ``user_id`` is None, when workflow/async_memory are not
         wired, when the flag is already set, or when the start subagent's
-        opening_phrase is empty. Memory write is awaited *before* events
-        are pushed to keep the flag durable by the time the channel plays
-        the utterance.
-
-        Does not run a Trust Layer output check — the phrase is
-        config-authored text, not LLM output. This mirrors the orchestrator's
-        existing short-circuit for opening_phrase emissions.
+        opening_phrase is empty.
 
         Args:
             session_id: Unique session identifier.
             user_id: User identifier; required to read and write session state.
-            buffer: Session buffer whose event_queue receives the events.
+            session_or_buffer: Either a Session or a legacy SessionBuffer whose
+                event_queue receives the events.
         """
         if not user_id:
             return
@@ -508,8 +506,6 @@ class TurnAssembler(TurnAssemblerBase):
             )
             return
 
-        # Prefer any subagent already persisted on the session; otherwise
-        # fall back to the workflow's declared start subagent.
         current_subagent_id = (
             bundle.session.get("current_subagent_id")
             or getattr(self._workflow, "start_subagent_id", "")
@@ -530,9 +526,6 @@ class TurnAssembler(TurnAssemblerBase):
         subagent = getattr(self._workflow, "subagents", {}).get(current_subagent_id)
         opening_phrase = (getattr(subagent, "opening_phrase", "") or "").strip()
 
-        # Always set the flag first so a fast user turn can't race the orchestrator
-        # gate into re-emitting the same phrase. Write completes before any events
-        # are enqueued.
         try:
             await self._async_memory.write(
                 session_id, user_id, "session", "opening_phrase_emitted", True
@@ -564,8 +557,22 @@ class TurnAssembler(TurnAssemblerBase):
             )
             return
 
-        await buffer.event_queue.put(SentenceEvent(text=opening_phrase, sentence_index=0))
-        await buffer.event_queue.put(DoneEvent(turn_status="completed"))
+        # Deliver events: if session_or_buffer is a Session, install a dedicated
+        # opening-phrase turn; if it's the legacy SessionBuffer, use its queue directly.
+        if isinstance(session_or_buffer, Session):
+            session = session_or_buffer
+            async with session._lock:
+                op_turn = await session.replace_turn(seed_segments=[])
+                op_turn.status = TurnStatus.INVOKED
+            await op_turn.event_queue.put(SentenceEvent(text=opening_phrase, sentence_index=0))
+            await op_turn.event_queue.put(DoneEvent(turn_status="completed"))
+            op_turn.status = TurnStatus.COMPLETED
+        else:
+            # Legacy SessionBuffer path (GH-149 tests that call the helper directly).
+            await session_or_buffer.event_queue.put(
+                SentenceEvent(text=opening_phrase, sentence_index=0)
+            )
+            await session_or_buffer.event_queue.put(DoneEvent(turn_status="completed"))
 
         logger.info(
             "turn_assembler.opening_phrase_emitted",
@@ -580,69 +587,66 @@ class TurnAssembler(TurnAssemblerBase):
     async def cancel(self, session_id: str) -> None:
         """Interrupt the active or waiting turn for this session.
 
-        If INVOKED: cancels the invocation task, transitions to INTERRUPTED,
-        pushes DoneEvent with turn_status="interrupted".
-        If WAITING: transitions to ABANDONED, pushes DoneEvent with turn_status="abandoned".
-        Other states: no-op.
-
-        Memory consistency (#83): If stream_turn() is in flight, the async memory
-        write task (_schedule_flush) is cancelled when stream_turn() is interrupted.
-        No partial writes occur. The next turn re-reads the same state.
+        Idempotent: if the current turn is already terminal, no-op.
+        Sets abort_event, cancels the invocation/timer tasks, and seals the
+        turn's queue with a terminal DoneEvent. The producer (_invoke /
+        stream_turn / claude_wrapper) sees abort_event before every
+        yield/put and exits without enqueuing further events.
 
         Args:
             session_id: Unique session identifier.
         """
-        if session_id not in self._sessions:
+        session = self._sessions.get(session_id)
+        if session is None:
             return
-
-        buffer = self._sessions[session_id]
-
-        async with buffer._lock:
-            if buffer.status == TurnStatus.INVOKED:
-                buffer.status = TurnStatus.INTERRUPTED
-                self._cancel_all_tasks(buffer)
-                await buffer.event_queue.put(
-                    DoneEvent(turn_status="interrupted")
+        async with session._lock:
+            turn = session.current_turn
+            if turn is None or turn.status not in (TurnStatus.WAITING, TurnStatus.INVOKED):
+                return
+            new_status = (
+                TurnStatus.INTERRUPTED
+                if turn.status == TurnStatus.INVOKED
+                else TurnStatus.ABANDONED
+            )
+            turn.status = new_status
+            turn.abort_event.set()
+            for task in (turn.invocation_task, turn.silence_task, turn.ceiling_task):
+                if task is not None and not task.done():
+                    task.cancel()
+            await turn.event_queue.put(
+                DoneEvent(
+                    turn_status=new_status.value,
+                    turn_id=turn.turn_id,
                 )
-                logger.info(
-                    "turn_assembler.cancel_interrupted",
-                    extra={
-                        "operation": "turn_assembler.cancel",
-                        "status": "success",
-                        "session_id": session_id,
-                        "turn_status": "interrupted",
-                    },
-                )
-
-            elif buffer.status == TurnStatus.WAITING:
-                buffer.status = TurnStatus.ABANDONED
-                self._cancel_all_tasks(buffer)
-                await buffer.event_queue.put(
-                    DoneEvent(turn_status="abandoned")
-                )
-                logger.info(
-                    "turn_assembler.cancel_abandoned",
-                    extra={
-                        "operation": "turn_assembler.cancel",
-                        "status": "success",
-                        "session_id": session_id,
-                        "turn_status": "abandoned",
-                    },
-                )
+            )
+            logger.info(
+                "turn_assembler.cancel",
+                extra={
+                    "operation": "turn_assembler.cancel",
+                    "status": "success",
+                    "session_id": session_id,
+                    "turn_id": turn.turn_id,
+                    "epoch": turn.epoch,
+                    "turn_status": new_status.value,
+                },
+            )
 
     async def session_end(self, session_id: str) -> None:
         """Clean up all resources for a completed session.
 
-        Cancels all pending tasks and removes the buffer from memory.
+        Cancels the active turn (if any), marks the session ended, and
+        signals subscribers to exit their iteration loop.
 
         Args:
             session_id: Unique session identifier.
         """
-        if session_id not in self._sessions:
+        session = self._sessions.get(session_id)
+        if session is None:
             return
-
-        buffer = self._sessions.pop(session_id)
-        self._cancel_all_tasks(buffer)
+        await self.cancel(session_id)  # idempotent
+        session.ended = True
+        session.turn_changed.set()  # wake any blocked subscriber
+        self._sessions.pop(session_id, None)
         logger.info(
             "turn_assembler.session_end",
             extra={
@@ -657,7 +661,7 @@ class TurnAssembler(TurnAssemblerBase):
     # ------------------------------------------------------------------
 
     async def _evaluate_policies(
-        self, session_id: str, buffer: SessionBuffer, config: dict
+        self, session_id: str, turn: Turn, config: dict
     ) -> None:
         """Evaluate the policy stack in order after each add_segment().
 
@@ -671,13 +675,13 @@ class TurnAssembler(TurnAssemblerBase):
 
         Args:
             session_id: Session identifier.
-            buffer: The session's buffer.
+            turn: The current Turn.
             config: Resolved per-channel config.
         """
         # Policy 1: Semantic completeness gate
         gate_config = config.get("semantic_gate", {})
         if gate_config.get("enabled", False):
-            triggered = await self._semantic_gate(session_id, buffer, gate_config)
+            triggered = await self._semantic_gate(session_id, turn, gate_config)
             if triggered:
                 return  # Invoked — skip timers
 
@@ -686,10 +690,10 @@ class TurnAssembler(TurnAssemblerBase):
         silence_ms = silence_config.get("silence_ms", 400)
 
         # Cancel existing silence timer and restart
-        if buffer.silence_task and not buffer.silence_task.done():
-            buffer.silence_task.cancel()
+        if turn.silence_task and not turn.silence_task.done():
+            turn.silence_task.cancel()
 
-        buffer.silence_task = asyncio.create_task(
+        turn.silence_task = asyncio.create_task(
             self._silence_timer(session_id, silence_ms)
         )
 
@@ -697,13 +701,13 @@ class TurnAssembler(TurnAssemblerBase):
         ceiling_config = config.get("max_wait_ceiling", {})
         max_wait_ms = ceiling_config.get("max_wait_ms", 8000)
 
-        if buffer.ceiling_task is None:
-            buffer.ceiling_task = asyncio.create_task(
+        if turn.ceiling_task is None:
+            turn.ceiling_task = asyncio.create_task(
                 self._ceiling_timer(session_id, max_wait_ms)
             )
 
     async def _semantic_gate(
-        self, session_id: str, buffer: SessionBuffer, gate_config: dict
+        self, session_id: str, turn: Turn, gate_config: dict
     ) -> bool:
         """Evaluate semantic completeness using NLU classification.
 
@@ -714,7 +718,7 @@ class TurnAssembler(TurnAssemblerBase):
 
         Args:
             session_id: Session identifier.
-            buffer: The session's buffer.
+            turn: The current Turn.
             gate_config: Semantic gate config with confidence_threshold.
 
         Returns:
@@ -724,7 +728,7 @@ class TurnAssembler(TurnAssemblerBase):
             return False
 
         threshold = gate_config.get("confidence_threshold", 0.75)
-        assembled_text = " ".join(buffer.segments)
+        assembled_text = " ".join(s.text.strip() for s in turn.segments)
 
         try:
             # Get NLU context from cached context_bundle
@@ -732,8 +736,8 @@ class TurnAssembler(TurnAssemblerBase):
             current_subagent_id = ""
             allowed_intents = None
 
-            if buffer.context_bundle:
-                session_data = buffer.context_bundle.session or {}
+            if turn.context_bundle:
+                session_data = turn.context_bundle.session or {}
                 current_question = session_data.get("current_question", "")
                 current_subagent_id = session_data.get(
                     "current_subagent_id",
@@ -770,13 +774,16 @@ class TurnAssembler(TurnAssemblerBase):
             )
 
             if nlu_result.confidence >= threshold and nlu_result.intent != "unknown":
-                async with buffer._lock:
-                    if buffer.status != TurnStatus.WAITING:
+                session = self._sessions.get(session_id)
+                if session is None:
+                    return False
+                async with session._lock:
+                    if turn.status != TurnStatus.WAITING:
                         return False
-                    buffer.status = TurnStatus.INVOKED
-                    self._cancel_timer_tasks(buffer)
-                    buffer.invocation_task = asyncio.create_task(
-                        self._invoke(session_id)
+                    turn.status = TurnStatus.INVOKED
+                    self._cancel_timer_tasks(turn)
+                    turn.invocation_task = asyncio.create_task(
+                        self._invoke(turn)
                     )
                 return True
 
@@ -810,20 +817,24 @@ class TurnAssembler(TurnAssemblerBase):
         except asyncio.CancelledError:
             return
 
-        if session_id not in self._sessions:
+        session = self._sessions.get(session_id)
+        if session is None:
             return
 
-        buffer = self._sessions[session_id]
-        async with buffer._lock:
-            if buffer.status != TurnStatus.WAITING:
+        turn = session.current_turn
+        if turn is None:
+            return
+
+        async with session._lock:
+            if turn.status != TurnStatus.WAITING:
                 return
-            if not buffer.segments:
+            if not turn.segments:
                 return  # No segments accumulated — nothing to invoke
 
-            buffer.status = TurnStatus.INVOKED
-            self._cancel_timer_tasks(buffer)
-            buffer.invocation_task = asyncio.create_task(
-                self._invoke(session_id)
+            turn.status = TurnStatus.INVOKED
+            self._cancel_timer_tasks(turn)
+            turn.invocation_task = asyncio.create_task(
+                self._invoke(turn)
             )
 
             logger.info(
@@ -832,7 +843,8 @@ class TurnAssembler(TurnAssemblerBase):
                     "operation": "turn_assembler.silence_trigger",
                     "status": "success",
                     "session_id": session_id,
-                    "segment_count": len(buffer.segments),
+                    "turn_id": turn.turn_id,
+                    "segment_count": len(turn.segments),
                     "silence_ms": silence_ms,
                 },
             )
@@ -852,19 +864,24 @@ class TurnAssembler(TurnAssemblerBase):
         except asyncio.CancelledError:
             return
 
-        if session_id not in self._sessions:
+        session = self._sessions.get(session_id)
+        if session is None:
             return
 
-        buffer = self._sessions[session_id]
-        async with buffer._lock:
-            if buffer.status != TurnStatus.WAITING:
+        turn = session.current_turn
+        if turn is None:
+            return
+
+        async with session._lock:
+            if turn.status != TurnStatus.WAITING:
                 return  # Already invoked or cancelled — no-op
 
-            if not buffer.segments:
+            if not turn.segments:
                 # Max wait ceiling fired with no segments → ABANDONED (spec)
-                buffer.status = TurnStatus.ABANDONED
-                await buffer.event_queue.put(
-                    DoneEvent(turn_status="abandoned")
+                turn.status = TurnStatus.ABANDONED
+                turn.abort_event.set()
+                await turn.event_queue.put(
+                    DoneEvent(turn_status="abandoned", turn_id=turn.turn_id)
                 )
                 logger.info(
                     "turn_assembler.ceiling_abandoned",
@@ -872,16 +889,17 @@ class TurnAssembler(TurnAssemblerBase):
                         "operation": "turn_assembler.ceiling_timer",
                         "status": "success",
                         "session_id": session_id,
+                        "turn_id": turn.turn_id,
                         "turn_status": "abandoned",
                         "max_wait_ms": max_wait_ms,
                     },
                 )
                 return
 
-            buffer.status = TurnStatus.INVOKED
-            self._cancel_timer_tasks(buffer)
-            buffer.invocation_task = asyncio.create_task(
-                self._invoke(session_id)
+            turn.status = TurnStatus.INVOKED
+            self._cancel_timer_tasks(turn)
+            turn.invocation_task = asyncio.create_task(
+                self._invoke(turn)
             )
 
             logger.info(
@@ -890,7 +908,8 @@ class TurnAssembler(TurnAssemblerBase):
                     "operation": "turn_assembler.ceiling_timer",
                     "status": "success",
                     "session_id": session_id,
-                    "segment_count": len(buffer.segments),
+                    "turn_id": turn.turn_id,
+                    "segment_count": len(turn.segments),
                     "max_wait_ms": max_wait_ms,
                 },
             )
@@ -899,28 +918,27 @@ class TurnAssembler(TurnAssemblerBase):
     # Invocation path (no HTTP hop — spec requirement)
     # ------------------------------------------------------------------
 
-    async def _invoke(self, session_id: str) -> None:
-        """Assemble segments and call agent_core.stream_turn() directly.
+    async def _invoke(self, turn: Turn) -> None:
+        """Assemble segments and call agent_core.stream_turn() with abort signal.
 
         Per spec: TurnAssembler calls stream_turn() as a Python method — in-process,
-        no HTTP, no serialisation. StreamEvents are pushed into the SessionBuffer's
-        event_queue. The open GET /sessions/{id}/events connection drains the queue.
+        no HTTP, no serialisation. StreamEvents are pushed into the Turn's event_queue.
+        The open GET /sessions/{id}/events connection drains the queue via subscribe().
+
+        On abort, cancel() has already enqueued the terminal DoneEvent — this method
+        simply exits without enqueuing further events once abort_event is set.
 
         Args:
-            session_id: Session identifier.
+            turn: The Turn whose invocation this manages.
         """
-        if session_id not in self._sessions:
-            return
-
-        buffer = self._sessions[session_id]
-        assembled_text = " ".join(buffer.segments)
+        assembled_text = " ".join(s.text.strip() for s in turn.segments)
 
         turn_input = TurnInput(
-            session_id=session_id,
+            session_id=turn.session_id,
             user_message=assembled_text,
-            channel=buffer.channel,
-            timestamp_ms=buffer.first_timestamp_ms or int(time.time() * 1000),
-            user_id=buffer.user_id,
+            channel=turn.channel,
+            timestamp_ms=turn.started_at_ms,
+            user_id=turn.user_id,
         )
 
         logger.info(
@@ -928,48 +946,57 @@ class TurnAssembler(TurnAssemblerBase):
             extra={
                 "operation": "turn_assembler.invoke",
                 "status": "success",
-                "session_id": session_id,
-                "segment_count": len(buffer.segments),
+                "session_id": turn.session_id,
+                "turn_id": turn.turn_id,
+                "epoch": turn.epoch,
+                "segment_count": len(turn.segments),
                 "assembled_length": len(assembled_text),
             },
         )
 
         start = time.time()
         try:
-            async for event in self._agent_core.stream_turn(turn_input):
-                await buffer.event_queue.put(event)
+            async for event in self._agent_core.stream_turn(
+                turn_input,
+                abort_event=turn.abort_event,
+                turn_id=turn.turn_id,
+            ):
+                if turn.abort_event.is_set():
+                    return
+                await turn.event_queue.put(event)
                 if isinstance(event, DoneEvent):
-                    buffer.status = TurnStatus.COMPLETED
-                    break
+                    turn.status = TurnStatus.COMPLETED
+                    return
         except asyncio.CancelledError:
-            # Invocation was cancelled (barge-in / cancel()) — status already set
-            # by cancel(). Memory consistency (#83): async memory write task in
-            # stream_turn() is cancelled automatically when the task is cancelled.
             logger.info(
                 "turn_assembler.invoke_cancelled",
                 extra={
                     "operation": "turn_assembler.invoke",
                     "status": "failure",
-                    "session_id": session_id,
+                    "session_id": turn.session_id,
+                    "turn_id": turn.turn_id,
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
+            return
         except Exception as e:
             logger.error(
                 "turn_assembler.invoke_error",
                 extra={
                     "operation": "turn_assembler.invoke",
                     "status": "failure",
-                    "session_id": session_id,
+                    "session_id": turn.session_id,
+                    "turn_id": turn.turn_id,
                     "error": f"{type(e).__name__}: {e}",
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
             # Push a DoneEvent so the subscriber doesn't hang
-            buffer.status = TurnStatus.COMPLETED
-            await buffer.event_queue.put(
+            turn.status = TurnStatus.COMPLETED
+            await turn.event_queue.put(
                 DoneEvent(
                     turn_status="abandoned",
+                    turn_id=turn.turn_id,
                     latency_ms=int((time.time() - start) * 1000),
                 )
             )
@@ -978,31 +1005,32 @@ class TurnAssembler(TurnAssemblerBase):
     # Context fetching
     # ------------------------------------------------------------------
 
-    async def _fetch_context(self, buffer: SessionBuffer, segment: SegmentInput) -> None:
+    async def _fetch_context(self, turn: Turn, segment: SegmentInput) -> None:
         """Fetch context_bundle from Memory Layer on first segment.
 
         Design decision #2: The semantic gate needs current_question and
-        current_subagent_id from session state. We fetch this once and cache it.
-        If the fetch fails, the semantic gate falls through to timers gracefully.
+        current_subagent_id from session state. We fetch this once and cache it
+        on the Turn. If the fetch fails, the semantic gate falls through to timers.
 
         Args:
-            buffer: The session's buffer.
+            turn: The current Turn (cache target).
             segment: The current segment (for user_id).
         """
-        buffer._context_fetched = True
+        turn._context_fetched = True
         try:
-            user_id = segment.user_id or buffer.session_id
+            user_id = getattr(segment, "user_id", None) or turn.session_id
             start = time.time()
             bundle = await self._async_memory.context_bundle(
-                buffer.session_id, user_id
+                turn.session_id, user_id
             )
-            buffer.context_bundle = bundle
+            turn.context_bundle = bundle
             logger.info(
                 "turn_assembler.context_fetched",
                 extra={
                     "operation": "turn_assembler.fetch_context",
                     "status": "success",
-                    "session_id": buffer.session_id,
+                    "session_id": turn.session_id,
+                    "turn_id": turn.turn_id,
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
@@ -1014,78 +1042,24 @@ class TurnAssembler(TurnAssemblerBase):
                 extra={
                     "operation": "turn_assembler.fetch_context",
                     "status": "failure",
-                    "session_id": buffer.session_id,
+                    "session_id": turn.session_id,
                     "error": f"{type(e).__name__}: {e}",
                 },
             )
 
     # ------------------------------------------------------------------
-    # Buffer management helpers
+    # Timer task helpers
     # ------------------------------------------------------------------
 
-    def _get_or_create_buffer(
-        self, session_id: str, segment: SegmentInput
-    ) -> SessionBuffer:
-        """Get existing buffer or create a new one for this session.
-
-        On creation, caches metadata from the first segment (channel, user_id,
-        timestamp) so subsequent segments don't need to carry it.
-
-        Args:
-            session_id: Session identifier.
-            segment: Current segment with metadata.
-
-        Returns:
-            The session's buffer.
-        """
-        if session_id not in self._sessions:
-            buffer = SessionBuffer(
-                session_id=session_id,
-                channel=segment.channel,
-                user_id=segment.user_id,
-                first_timestamp_ms=segment.timestamp_ms or int(time.time() * 1000),
-            )
-            self._sessions[session_id] = buffer
-            return buffer
-
-        return self._sessions[session_id]
-
-    def _reset_buffer(self, buffer: SessionBuffer) -> None:
-        """Reset a buffer to WAITING state for the next turn.
-
-        Preserves session_id, channel, user_id, and context_bundle.
-        Clears segments, resets status, creates a new event queue.
-
-        Args:
-            buffer: The buffer to reset.
-        """
-        self._cancel_all_tasks(buffer)
-        buffer.segments = []
-        buffer.pending_segments = []
-        buffer.status = TurnStatus.WAITING
-        buffer.event_queue = asyncio.Queue()
-        buffer.created_at_ms = int(time.time() * 1000)
-
-    def _cancel_all_tasks(self, buffer: SessionBuffer) -> None:
-        """Cancel all asyncio tasks on a buffer.
-
-        Args:
-            buffer: The buffer whose tasks to cancel.
-        """
-        self._cancel_timer_tasks(buffer)
-        if buffer.invocation_task and not buffer.invocation_task.done():
-            buffer.invocation_task.cancel()
-            buffer.invocation_task = None
-
-    def _cancel_timer_tasks(self, buffer: SessionBuffer) -> None:
+    def _cancel_timer_tasks(self, turn: Turn) -> None:
         """Cancel only timer tasks (silence + ceiling), not the invocation task.
 
         Args:
-            buffer: The buffer whose timers to cancel.
+            turn: The Turn whose timers to cancel.
         """
-        if buffer.silence_task and not buffer.silence_task.done():
-            buffer.silence_task.cancel()
-            buffer.silence_task = None
-        if buffer.ceiling_task and not buffer.ceiling_task.done():
-            buffer.ceiling_task.cancel()
-            buffer.ceiling_task = None
+        if turn.silence_task and not turn.silence_task.done():
+            turn.silence_task.cancel()
+            turn.silence_task = None
+        if turn.ceiling_task and not turn.ceiling_task.done():
+            turn.ceiling_task.cancel()
+            turn.ceiling_task = None

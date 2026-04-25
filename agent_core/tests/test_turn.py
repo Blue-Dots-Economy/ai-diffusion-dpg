@@ -15,6 +15,8 @@ async def test_turn_default_status_is_waiting():
     assert t.segments == []
     assert not t.abort_event.is_set()
     assert t.invocation_task is None
+    assert t._context_fetched is False
+    assert t.context_bundle is None
 
 
 @pytest.mark.asyncio
