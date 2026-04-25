@@ -45,7 +45,6 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any, Optional
 
 from src.models import (
@@ -56,30 +55,10 @@ from src.models import (
     StreamEvent,
     TurnInput,
 )
+from .turn import Turn, TurnStatus
+from .session import Session
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# TurnStatus state machine
-# ---------------------------------------------------------------------------
-
-
-class TurnStatus(str, Enum):
-    """State machine for a single turn's lifecycle within a session buffer.
-
-    Transitions:
-        WAITING → INVOKED      (policy triggered, lock acquired)
-        WAITING → ABANDONED    (cancel() while waiting, or max_wait with no segments)
-        INVOKED → COMPLETED    (DoneEvent emitted successfully)
-        INVOKED → INTERRUPTED  (cancel() while LLM call in flight)
-    """
-
-    WAITING = "waiting"
-    INVOKED = "invoked"
-    COMPLETED = "completed"
-    INTERRUPTED = "interrupted"
-    ABANDONED = "abandoned"
 
 
 # ---------------------------------------------------------------------------
