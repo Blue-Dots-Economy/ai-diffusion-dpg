@@ -58,3 +58,14 @@ reach_layer:
         # is no static `greeting` field — do not add one here.
         fallback_phrase: ""           # phrase spoken when the Agent Core call fails (timeout / 5xx / empty)
         barge_in_acknowledgement: "" # brief ack spoken when the caller barges in; empty = bot falls silent
+      # GH-247: voice-runtime knobs (read by reach_layer voice service).
+      # terminal_word — required when voice deployed. Spoken just before the
+      # WebSocket close on bot-initiated hangup (DoneEvent.session_ended=true).
+      terminal_word: ""
+      # GH-242: short filler ("एक सेकंड", "हाँ जी") played if the first
+      # SentenceEvent hasn't reached TTS within filler_threshold_ms of
+      # submit_input completing. Tool-chained turns can take 5–17 s before
+      # the first sentence; without this the caller hears a dead line.
+      # null / empty disables.
+      filler_threshold_ms: 1500
+      filler_phrase: ""

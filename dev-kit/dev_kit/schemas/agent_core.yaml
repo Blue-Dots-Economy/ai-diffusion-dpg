@@ -47,7 +47,9 @@ channels:                         # NEW (GH-137) — per-channel LLM-facing conf
       abbreviations: ""
       output_script: ""
       english_loanwords: ""
-    terminal_word: ""             # required when voice channel declared
+    # GH-247: terminal_word lives in reach_layer.channels.voice (read by the
+    # reach_layer voice service, not agent_core). filler_threshold_ms /
+    # filler_phrase are there too. See dev-kit/dev_kit/schemas/reach_layer.yaml.
     turn_assembler:               # migrated from reach_layer.channels.voice.turn_assembler
       semantic_gate:
         enabled: false
@@ -59,7 +61,6 @@ channels:                         # NEW (GH-137) — per-channel LLM-facing conf
   web:
     system_prompt_suffix: ""
     tts_rules: null
-    terminal_word: null
     turn_assembler:
       semantic_gate: {enabled: false, confidence_threshold: 0.75}
       silence_trigger: {silence_ms: 0}
@@ -67,7 +68,6 @@ channels:                         # NEW (GH-137) — per-channel LLM-facing conf
   cli:
     system_prompt_suffix: ""
     tts_rules: null
-    terminal_word: null
     turn_assembler:
       semantic_gate: {enabled: false, confidence_threshold: 0.75}
       silence_trigger: {silence_ms: 0}

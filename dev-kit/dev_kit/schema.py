@@ -388,7 +388,14 @@ class ChannelTurnAssemblerConfig(BaseModel):
 
 
 class ChannelConfig(BaseModel):
-    """Per-channel LLM-facing configuration (GH-137)."""
+    """Per-channel LLM-facing configuration (GH-137).
+
+    GH-247: ``terminal_word`` was moved to
+    ``reach_layer.channels.voice.terminal_word`` because it is read by the
+    reach_layer voice service, not by agent_core. Co-locating with
+    ``filler_threshold_ms`` / ``filler_phrase`` (also voice-runtime concerns)
+    keeps voice delivery configuration in one block.
+    """
 
     system_prompt_suffix: str = Field(
         default="",
@@ -397,10 +404,6 @@ class ChannelConfig(BaseModel):
     tts_rules: TtsRulesConfig | None = Field(
         default=None,
         description="TTS formatting rules; non-null for voice channels only",
-    )
-    terminal_word: str | None = Field(
-        default=None,
-        description="Required when voice channel is declared; signals end of spoken turn",
     )
     turn_assembler: ChannelTurnAssemblerConfig = Field(
         default_factory=ChannelTurnAssemblerConfig,
@@ -1014,12 +1017,42 @@ class VoiceAgentCoreConfig(BaseModel):
 
 
 class VoiceChannelConfig(BaseModel):
-    """Configuration for the voice (VOIP/Raya) channel adapter."""
+    """Configuration for the voice (VOIP/Raya) channel adapter.
+
+    GH-247: ``terminal_word``, ``filler_threshold_ms``, and ``filler_phrase``
+    moved here from ``agent_core.channels.voice`` — they are read by the
+    reach_layer voice service, not agent_core, so co-locating them with the
+    other voice-runtime knobs (raya, agent_core client) keeps the source of
+    truth where the consumer is.
+    """
 
     raya: RayaSTTTTSConfig = Field(..., description="Raya STT/TTS language and voice settings")
     agent_core: VoiceAgentCoreConfig = Field(
         default_factory=VoiceAgentCoreConfig,
         description="Agent Core connection settings for voice",
+    )
+    terminal_word: str | None = Field(
+        default=None,
+        description=(
+            "Required when voice is deployed. Word spoken just before the "
+            "WebSocket close on bot-initiated hangup (DoneEvent.session_ended=true)."
+        ),
+    )
+    filler_threshold_ms: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Push the filler utterance if no SentenceEvent has reached TTS "
+            "within this many ms of submit_input completing. Cancelled the "
+            "moment a real sentence arrives. Set to null to disable."
+        ),
+    )
+    filler_phrase: str | None = Field(
+        default=None,
+        description=(
+            "Short phrase spoken when filler_threshold_ms elapses without a "
+            "real sentence (e.g. 'एक सेकंड'). Empty string also disables."
+        ),
     )
 
 
