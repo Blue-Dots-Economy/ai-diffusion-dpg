@@ -1,5 +1,5 @@
 """
-telephony_adapter/src/operators/operator_base.py
+reach_layer/voice/src/operators/operator_base.py
 
 TelephonyOperatorBase — DPG abstract interface for telephony operator adapters.
 

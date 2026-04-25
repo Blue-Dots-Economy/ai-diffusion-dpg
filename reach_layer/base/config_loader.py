@@ -22,11 +22,13 @@ schema::
         voice: { enabled, assembly_mode, port, vobiz, vad, raya, ... }
 
 Each service calls ``load_reach_config("<channel_name>")`` and receives the
-fully merged config. To keep the blast radius of the PR small, the loader also
-injects a handful of legacy top-level aliases (``agent_core_client``, ``ui``,
-``telephony_adapter``, …) so existing service code does not have to be rewritten
-to read from the new nested paths. Over time the aliases can be removed as
-call-sites migrate to the nested shape.
+fully merged config. The loader injects a small set of legacy top-level
+aliases (``agent_core_client``, ``ui``, …) for service code that still reads
+from those paths. The voice service used to share this treatment via a
+``telephony_adapter`` alias; that alias was removed in GH-248 once all voice
+source files migrated to the canonical
+``config["reach_layer"]["channels"]["voice"]`` path. Future channel readers
+should prefer the nested shape directly.
 
 Design decisions not in the spec:
 
@@ -34,9 +36,11 @@ Design decisions not in the spec:
    voice channel's previous loader. Needed for deploy-time injection of
    secrets like ``RAYA_API_KEY`` and ``PUBLIC_URL``.
 
-2. Legacy aliases — keeps existing in-service config lookups (e.g. voice's
-   28-file use of ``config["telephony_adapter"][...]``) working without a
-   rename cascade. New code should prefer the nested paths.
+2. Legacy aliases — keep existing in-service config lookups working
+   (e.g. ``config["agent_core_client"]``) without a rename cascade. The
+   voice service's ``telephony_adapter`` alias was removed in GH-248 once
+   the voice source migrated to the canonical nested path. Other aliases
+   may follow on a per-service basis.
 
 3. ``enabled: false`` raises ``ChannelDisabledError`` — each service refuses to
    start when its own section is disabled, providing a single switch for
@@ -154,7 +158,7 @@ def _inject_legacy_aliases(merged: dict, channel_name: str) -> None:
     """Inject backward-compatibility aliases at the top level.
 
     Existing service code reads from the legacy top-level keys
-    (``agent_core_client``, ``ui``, ``telephony_adapter``, …). The new config
+    (``agent_core_client``, ``ui``, …). The new config
     file stores these under ``reach_layer.common`` or ``reach_layer.channels.<name>``
     for a cleaner schema. To avoid a large rename cascade, copy references
     into the legacy positions. ``setdefault`` is used so explicit top-level
@@ -181,10 +185,10 @@ def _inject_legacy_aliases(merged: dict, channel_name: str) -> None:
         if isinstance(channel_cfg.get("ke_internal_url"), str):
             merged.setdefault("ke_internal_url", channel_cfg["ke_internal_url"])
 
-    if channel_name == "voice":
-        # Voice's 28-file codebase reads from config["telephony_adapter"][...];
-        # alias the voice channel section there for compatibility.
-        merged.setdefault("telephony_adapter", channel_cfg)
+    # GH-248: the voice service used to read config["telephony_adapter"][...]
+    # via a legacy alias. The 28+ source files have been rewritten to read
+    # the canonical ``config["reach_layer"]["channels"]["voice"]`` path
+    # directly, so the alias is no longer injected.
 
 
 def load_reach_config(

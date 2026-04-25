@@ -1,5 +1,5 @@
 """
-telephony_adapter/src/pipecat_services/tts_base.py
+reach_layer/voice/src/pipecat_services/tts_base.py
 
 TTSServiceBase — DPG abstract interface for text-to-speech services.
 

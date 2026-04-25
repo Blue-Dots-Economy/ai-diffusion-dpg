@@ -1,5 +1,5 @@
 """
-telephony_adapter/src/vad/vad_base.py
+reach_layer/voice/src/vad/vad_base.py
 
 VADAnalyzerBase — DPG abstract interface for voice activity detection.
 
@@ -27,7 +27,7 @@ class VADAnalyzerBase(ABC):
         """Instantiate and return a configured Pipecat VADAnalyzer.
 
         Args:
-            config: Full merged config dict. Reads telephony_adapter.vad section.
+            config: Full merged config dict. Reads reach_layer.channels.voice.vad section.
                 Must not be None.
 
         Returns:

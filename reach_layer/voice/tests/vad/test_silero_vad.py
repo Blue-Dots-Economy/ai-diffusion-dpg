@@ -8,7 +8,7 @@ from src.vad.vad_base import VADAnalyzerBase
 @pytest.fixture
 def full_config():
     return {
-        "telephony_adapter": {
+        "reach_layer": {"channels": {"voice": {
             "vad": {
                 "stop_secs": 0.5,
                 "min_volume": 0.4,
@@ -16,7 +16,7 @@ def full_config():
                 "start_secs": 0.2,
                 "smoothing_factor": 0.2,
             }
-        }
+        }}}
     }
 
 

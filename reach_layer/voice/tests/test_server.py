@@ -11,7 +11,7 @@ def client():
     with patch("src.bot.run_bot", new_callable=AsyncMock) as mock_bot, \
          patch("server.CampaignManager"), \
          patch("server.load_reach_config", return_value={
-             "telephony_adapter": {
+             "reach_layer": {"channels": {"voice": {
                  "port": 8006,
                  "public_url": "https://example.app",
                  "vobiz": {
@@ -30,7 +30,7 @@ def client():
                      "fallback_phrase": "sorry",
                      "greeting": "Hello!",
                  },
-             },
+             }}},
              "observability": {"otel": {"collector_endpoint": "http://localhost:4317"}},
          }), \
          patch("server.init_otel"):
@@ -87,13 +87,13 @@ async def test_websocket_passes_caller_id_from_stored_form():
     from starlette.testclient import TestClient
 
     config = {
-        "telephony_adapter": {
+        "reach_layer": {"channels": {"voice": {
             "public_url": "https://example.com",
             "vobiz": {"auth_id": "aid", "auth_token": "tok", "sample_rate": 8000},
             "vad": {},
             "raya": {"api_key": "k", "tts_base_url": "https://hub.getraya.app/v1", "language": "hi", "voice_id": "v"},
             "agent_core": {"base_url": "http://ac:8000", "timeout_ms": 5000, "greeting": "hi", "fallback_phrase": "sorry"},
-        },
+        }}},
         "observability": {"otel": {"collector_endpoint": "http://otelcol:4317", "sample_rate": 1.0, "export_interval_ms": 5000}},
     }
 
@@ -128,13 +128,13 @@ async def test_websocket_caller_id_empty_when_from_missing():
     from starlette.testclient import TestClient
 
     config = {
-        "telephony_adapter": {
+        "reach_layer": {"channels": {"voice": {
             "public_url": "https://example.com",
             "vobiz": {"auth_id": "aid", "auth_token": "tok", "sample_rate": 8000},
             "vad": {},
             "raya": {"api_key": "k", "tts_base_url": "https://hub.getraya.app/v1", "language": "hi", "voice_id": "v"},
             "agent_core": {"base_url": "http://ac:8000", "timeout_ms": 5000, "greeting": "hi", "fallback_phrase": "sorry"},
-        },
+        }}},
         "observability": {"otel": {"collector_endpoint": "http://otelcol:4317", "sample_rate": 1.0, "export_interval_ms": 5000}},
     }
 
@@ -164,7 +164,7 @@ async def test_websocket_caller_id_empty_when_from_missing():
 # ---------------------------------------------------------------------------
 
 _MINIMAL_CONFIG = {
-    "telephony_adapter": {
+    "reach_layer": {"channels": {"voice": {
         "public_url": "https://example.com",
         "vobiz": {"auth_id": "aid", "auth_token": "tok", "sample_rate": 8000,
                   "api_base": "https://api.vobiz.ai/api/v1", "from_number": "+91"},
@@ -173,7 +173,7 @@ _MINIMAL_CONFIG = {
                  "language": "hi", "voice_id": "v", "tts_speed": 1.0},
         "agent_core": {"base_url": "http://ac:8000", "timeout_ms": 5000,
                        "greeting": "hi", "fallback_phrase": "sorry"},
-    },
+    }}},
     "observability": {"otel": {"collector_endpoint": "http://otelcol:4317",
                                "sample_rate": 1.0, "export_interval_ms": 5000}},
 }

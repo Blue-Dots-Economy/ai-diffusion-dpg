@@ -1,5 +1,5 @@
 """
-telephony_adapter/src/pipecat_services/raya_stt.py
+reach_layer/voice/src/pipecat_services/raya_stt.py
 
 RayaSTTService — Pipecat SegmentedSTTService backed by the Raya HTTP STT API.
 
@@ -34,7 +34,7 @@ class RayaSTTService(STTServiceBase, SegmentedSTTService):
     lives in transcribe(); run_stt() delegates to it.
 
     Args:
-        config: Full merged config dict. Reads telephony_adapter.raya section.
+        config: Full merged config dict. Reads reach_layer.channels.voice.raya section.
 
     Raises:
         ValueError: If api_key or stt_url is missing from config.
@@ -43,13 +43,13 @@ class RayaSTTService(STTServiceBase, SegmentedSTTService):
     def __init__(self, config: dict) -> None:
         if config is None:
             raise ValueError("config must not be None")
-        raya_cfg = config.get("telephony_adapter", {}).get("raya", {})
+        raya_cfg = config.get("reach_layer", {}).get("channels", {}).get("voice", {}).get("raya", {})
         api_key = raya_cfg.get("api_key", "")
         if not api_key:
-            raise ValueError("telephony_adapter.raya.api_key is required")
+            raise ValueError("reach_layer.channels.voice.raya.api_key is required")
         stt_url = raya_cfg.get("stt_wss_url") or raya_cfg.get("stt_url", "")
         if not stt_url:
-            raise ValueError("telephony_adapter.raya.stt_wss_url is required")
+            raise ValueError("reach_layer.channels.voice.raya.stt_wss_url is required")
         self._api_key = api_key
         self._stt_url = stt_url
         self._language = raya_cfg.get("stt_language") or raya_cfg.get("language", "hi")

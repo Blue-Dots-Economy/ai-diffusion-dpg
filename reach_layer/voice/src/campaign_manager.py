@@ -1,5 +1,5 @@
 """
-telephony_adapter/src/campaign_manager.py
+reach_layer/voice/src/campaign_manager.py
 
 CampaignManager — triggers outbound calls via the Vobiz REST API.
 
@@ -25,7 +25,7 @@ class CampaignManager:
     """Triggers outbound PSTN calls via the Vobiz REST API.
 
     Args:
-        config: Full merged config dict. Reads telephony_adapter.vobiz section.
+        config: Full merged config dict. Reads reach_layer.channels.voice.vobiz section.
 
     Raises:
         ValueError: If auth_id is missing from config.
@@ -34,22 +34,22 @@ class CampaignManager:
     def __init__(self, config: dict) -> None:
         if config is None:
             raise ValueError("config must not be None")
-        vobiz_cfg = config.get("telephony_adapter", {}).get("vobiz", {})
+        vobiz_cfg = config.get("reach_layer", {}).get("channels", {}).get("voice", {}).get("vobiz", {})
         auth_id = vobiz_cfg.get("auth_id", "")
         if not auth_id:
-            raise ValueError("telephony_adapter.vobiz.auth_id is required")
+            raise ValueError("reach_layer.channels.voice.vobiz.auth_id is required")
         self._auth_id = auth_id
         auth_token = vobiz_cfg.get("auth_token", "")
         api_base = vobiz_cfg.get("api_base", "").rstrip("/")
         from_number = vobiz_cfg.get("from_number", "")
         if not api_base:
-            raise ValueError("telephony_adapter.vobiz.api_base is required")
+            raise ValueError("reach_layer.channels.voice.vobiz.api_base is required")
         if not from_number:
-            raise ValueError("telephony_adapter.vobiz.from_number is required")
+            raise ValueError("reach_layer.channels.voice.vobiz.from_number is required")
         self._auth_token = auth_token
         self._api_base = api_base
         self._from_number = from_number
-        self._public_url = config.get("telephony_adapter", {}).get("public_url", "").rstrip("/")
+        self._public_url = config.get("reach_layer", {}).get("channels", {}).get("voice", {}).get("public_url", "").rstrip("/")
         self._max_retries = int(vobiz_cfg.get("max_retries", 3))
 
     async def initiate_call(self, to_number: str) -> dict:

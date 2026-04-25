@@ -1,5 +1,5 @@
 """
-telephony_adapter/server.py
+reach_layer/voice/server.py
 
 FastAPI application for the Telephony Adapter DPG service.
 
@@ -120,9 +120,9 @@ def create_app(config: dict | None = None) -> FastAPI:
         pass  # Observability must not prevent startup
     _campaign_manager = CampaignManager(config)
 
-    public_url: str = config.get("telephony_adapter", {}).get("public_url", "").rstrip("/")
+    public_url: str = config.get("reach_layer", {}).get("channels", {}).get("voice", {}).get("public_url", "").rstrip("/")
     if not public_url:
-        raise ValueError("telephony_adapter.public_url is required in config")
+        raise ValueError("reach_layer.channels.voice.public_url is required in config")
     ws_url = public_url.replace("https://", "wss://").replace("http://", "ws://")
 
     # Maps call_sid → caller_id (E.164) so the WebSocket endpoint can retrieve it.

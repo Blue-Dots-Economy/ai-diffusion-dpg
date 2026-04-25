@@ -34,7 +34,7 @@ def _f32le_from_samples(samples: list[float]) -> bytes:
 @pytest.fixture
 def config():
     return {
-        "telephony_adapter": {
+        "reach_layer": {"channels": {"voice": {
             "raya": {
                 "api_key": "test-key",
                 "tts_base_url": "https://hub.getraya.app/v1",
@@ -42,7 +42,7 @@ def config():
                 "language": "hi",
                 "tts_speed": 1.0,
             }
-        }
+        }}}
     }
 
 

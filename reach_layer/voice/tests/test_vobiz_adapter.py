@@ -9,7 +9,7 @@ from src.base import TelephonyAdapterBase
 @pytest.fixture
 def config():
     return {
-        "telephony_adapter": {
+        "reach_layer": {"channels": {"voice": {
             "vobiz": {"auth_id": "aid", "auth_token": "tok", "sample_rate": 8000},
             "vad": {},
             "raya": {
@@ -24,7 +24,7 @@ def config():
                 "greeting": "नमस्ते",
                 "fallback_phrase": "माफ़ करें",
             },
-        }
+        }}}
     }
 
 

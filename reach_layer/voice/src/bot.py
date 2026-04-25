@@ -1,5 +1,5 @@
 """
-telephony_adapter/src/bot.py
+reach_layer/voice/src/bot.py
 
 run_bot — per-call entry point for the Telephony Adapter.
 

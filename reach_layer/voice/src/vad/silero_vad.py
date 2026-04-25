@@ -1,10 +1,10 @@
 """
-telephony_adapter/src/vad/silero_vad.py
+reach_layer/voice/src/vad/silero_vad.py
 
 SileroVADWrapper — config-driven factory for Pipecat's SileroVADAnalyzer.
 
 All VAD parameters (stop_secs, min_volume, confidence, start_secs,
-smoothing_factor) are read from telephony_adapter.vad config. None are
+smoothing_factor) are read from reach_layer.channels.voice.vad config. None are
 hardcoded. Defaults match values tuned for 8 kHz telephony audio.
 Belongs to the Reach Layer / Telephony Adapter block in the DPG framework.
 """
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class SileroVADWrapper(VADAnalyzerBase):
     """Creates a SileroVADAnalyzer configured from the domain YAML.
 
-    Reads all parameters from telephony_adapter.vad in the config dict.
+    Reads all parameters from reach_layer.channels.voice.vad in the config dict.
     Falls back to telephony-tuned defaults if keys are absent.
     """
 
@@ -31,14 +31,14 @@ class SileroVADWrapper(VADAnalyzerBase):
         """Instantiate SileroVADAnalyzer with config-driven parameters.
 
         Args:
-            config: Full merged config dict. Reads telephony_adapter.vad section.
+            config: Full merged config dict. Reads reach_layer.channels.voice.vad section.
 
         Returns:
             Configured SileroVADAnalyzer instance.
         """
         if config is None:
             raise ValueError("config must be a dict, got None")
-        vad_cfg = config.get("telephony_adapter", {}).get("vad", {})
+        vad_cfg = config.get("reach_layer", {}).get("channels", {}).get("voice", {}).get("vad", {})
         # Hardcoded fallbacks align with dev-kit/dpg/reach_layer.yaml defaults
         # (GH-152 follow-up). Older, looser values caused noise-triggered VAD
         # false positives that flushed TTS via the UserTurnProcessor →

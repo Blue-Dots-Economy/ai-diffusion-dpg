@@ -1,5 +1,5 @@
 """
-telephony_adapter/src/pipecat_services/stt_base.py
+reach_layer/voice/src/pipecat_services/stt_base.py
 
 STTServiceBase — DPG abstract interface for speech-to-text services.
 

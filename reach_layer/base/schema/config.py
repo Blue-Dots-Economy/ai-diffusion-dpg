@@ -10,8 +10,8 @@ Every model sets ``extra="forbid"``: unknown keys at any nesting level
 fail at startup with a pydantic ValidationError, not at first request.
 
 Validation is called from ``load_reach_config`` **before** the legacy
-top-level aliases (``agent_core_client``, ``telephony_adapter``, ``ui``,
-``server``, ``auth``, ``sessions``) are injected — the aliases are
+top-level aliases (``agent_core_client``, ``ui``, ``server``, ``auth``,
+``sessions``) are injected — the aliases are
 duplication for in-service code, not a second schema surface.
 
 Belongs to the Reach Layer DPG block.
@@ -315,9 +315,9 @@ class MergedConfig(BaseModel):
 
     Validated **before** legacy top-level aliases are injected by
     ``load_reach_config``. The alias top-level keys
-    (``agent_core_client``, ``telephony_adapter``, ``ui``, ``server``,
-    ``auth``, ``sessions``, ``memory_layer_client``, ``observability``)
-    are not part of this schema.
+    (``agent_core_client``, ``ui``, ``server``, ``auth``, ``sessions``,
+    ``memory_layer_client``, ``observability``) are not part of this
+    schema. The voice ``telephony_adapter`` alias was removed in GH-248.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")

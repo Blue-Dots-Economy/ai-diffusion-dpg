@@ -1,5 +1,5 @@
 """
-telephony_adapter/src/operators/vobiz_operator.py
+reach_layer/voice/src/operators/vobiz_operator.py
 
 VobizOperator — concrete TelephonyOperatorBase for the Vobiz telephony platform.
 
@@ -92,7 +92,7 @@ class VobizOperator(TelephonyOperatorBase):
     response for the /answer webhook.
 
     Args:
-        config: Full merged config dict. Reads telephony_adapter.vobiz section.
+        config: Full merged config dict. Reads reach_layer.channels.voice.vobiz section.
 
     Raises:
         ValueError: If auth_id or auth_token is missing from config.
@@ -101,13 +101,13 @@ class VobizOperator(TelephonyOperatorBase):
     def __init__(self, config: dict) -> None:
         if config is None:
             raise ValueError("config must not be None")
-        vobiz_cfg = config.get("telephony_adapter", {}).get("vobiz", {})
+        vobiz_cfg = config.get("reach_layer", {}).get("channels", {}).get("voice", {}).get("vobiz", {})
         auth_id = vobiz_cfg.get("auth_id", "")
         if not auth_id:
-            raise ValueError("telephony_adapter.vobiz.auth_id is required")
+            raise ValueError("reach_layer.channels.voice.vobiz.auth_id is required")
         auth_token = vobiz_cfg.get("auth_token", "")
         if not auth_token:
-            raise ValueError("telephony_adapter.vobiz.auth_token is required")
+            raise ValueError("reach_layer.channels.voice.vobiz.auth_token is required")
         self._auth_id = auth_id
         self._auth_token = auth_token
         self._sample_rate = int(vobiz_cfg.get("sample_rate", 8000))

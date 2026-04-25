@@ -28,13 +28,13 @@ def _make_ac_response(response_text: str, was_escalated: bool = False) -> dict:
 @pytest.fixture
 def config():
     return {
-        "telephony_adapter": {
+        "reach_layer": {"channels": {"voice": {
             "agent_core": {
                 "base_url": "http://agent_core:8000",
                 "timeout_ms": 5000,
                 "fallback_phrase": "Sorry, I could not process that.",
             }
-        }
+        }}}
     }
 
 
@@ -189,14 +189,14 @@ async def test_process_turn_payload_includes_user_id():
     respx.post("http://agent_core:8000/process_turn").mock(side_effect=capture)
 
     config = {
-        "telephony_adapter": {
+        "reach_layer": {"channels": {"voice": {
             "agent_core": {
                 "base_url": "http://agent_core:8000",
                 "timeout_ms": 5000,
                 "fallback_phrase": "sorry",
                 "greeting": "hello",
             }
-        }
+        }}}
     }
     processor = AgentCoreLLMProcessor(
         config,
@@ -213,7 +213,7 @@ async def test_process_turn_payload_includes_user_id():
 
 def test_missing_base_url_raises(config):
     from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
-    bad_config = {"telephony_adapter": {"agent_core": {"base_url": ""}}}
+    bad_config = {"reach_layer": {"channels": {"voice": {"agent_core": {"base_url": ""}}}}}
     with pytest.raises(ValueError, match="base_url"):
         AgentCoreLLMProcessor(bad_config, call_sid="CA1", session_id="s1")
 
@@ -226,14 +226,14 @@ def test_missing_base_url_raises(config):
 @pytest.fixture
 def session_config():
     return {
-        "telephony_adapter": {
+        "reach_layer": {"channels": {"voice": {
+            "assembly_mode": "session",
             "agent_core": {
                 "base_url": "http://agent_core:8000",
                 "timeout_ms": 5000,
                 "fallback_phrase": "Sorry, I could not process that.",
-            }
-        },
-        "reach_layer": {"channels": {"voice": {"assembly_mode": "session"}}},
+            },
+        }}},
     }
 
 
@@ -497,7 +497,7 @@ async def test_start_interruption_pushes_ack_when_recently_speaking(session_conf
     import time as _time
     from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
 
-    session_config["telephony_adapter"]["agent_core"]["barge_in_acknowledgement"] = "ठीक है।"
+    session_config["reach_layer"]["channels"]["voice"]["agent_core"]["barge_in_acknowledgement"] = "ठीक है।"
     proc = AgentCoreLLMProcessor(
         session_config, call_sid="CA1", session_id="s1", channel=MagicMock()
     )
@@ -518,7 +518,7 @@ async def test_start_interruption_pushes_ack_when_sse_turn_active(session_config
     """GH-203: ack fires when an SSE turn is in flight, even with no recent TTS push."""
     from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
 
-    session_config["telephony_adapter"]["agent_core"]["barge_in_acknowledgement"] = "ठीक है।"
+    session_config["reach_layer"]["channels"]["voice"]["agent_core"]["barge_in_acknowledgement"] = "ठीक है।"
     proc = AgentCoreLLMProcessor(
         session_config, call_sid="CA1", session_id="s1", channel=MagicMock()
     )
@@ -539,7 +539,7 @@ async def test_start_interruption_silent_when_bot_idle(session_config):
     """GH-203: idle (no recent TTS push, no SSE turn) → no ack on user-turn-start."""
     from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
 
-    session_config["telephony_adapter"]["agent_core"]["barge_in_acknowledgement"] = "ठीक है।"
+    session_config["reach_layer"]["channels"]["voice"]["agent_core"]["barge_in_acknowledgement"] = "ठीक है।"
     proc = AgentCoreLLMProcessor(
         session_config, call_sid="CA1", session_id="s1", channel=MagicMock()
     )
@@ -563,7 +563,7 @@ async def test_start_interruption_silent_when_recency_expired(session_config):
 
     cfg = {**session_config}
     cfg["channels"] = {"voice": {"barge_in_recency_ms": 100}}
-    cfg["telephony_adapter"]["agent_core"]["barge_in_acknowledgement"] = "ठीक है।"
+    cfg["reach_layer"]["channels"]["voice"]["agent_core"]["barge_in_acknowledgement"] = "ठीक है।"
     proc = AgentCoreLLMProcessor(
         cfg, call_sid="CA1", session_id="s1", channel=MagicMock()
     )
@@ -1003,22 +1003,16 @@ def _filler_config(threshold_ms: int = 50, phrase: str = "एक सेकंड
     # GH-242: filler_* live under reach_layer.channels.voice — the canonical
     # location read by the processor's no-channel_config fallback.
     return {
-        "telephony_adapter": {
+        "reach_layer": {"channels": {"voice": {
+            "assembly_mode": "session",
+            "filler_threshold_ms": threshold_ms,
+            "filler_phrase": phrase,
             "agent_core": {
                 "base_url": "http://agent_core:8000",
                 "timeout_ms": 5000,
                 "fallback_phrase": "Sorry.",
-            }
-        },
-        "reach_layer": {
-            "channels": {
-                "voice": {
-                    "assembly_mode": "session",
-                    "filler_threshold_ms": threshold_ms,
-                    "filler_phrase": phrase,
-                }
-            }
-        },
+            },
+        }}},
     }
 
 

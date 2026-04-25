@@ -1,5 +1,5 @@
 """
-telephony_adapter/src/pipecat_services/raya_tts.py
+reach_layer/voice/src/pipecat_services/raya_tts.py
 
 RayaTTSService — Pipecat TTSService backed by the Raya SSE streaming TTS API.
 
@@ -40,7 +40,7 @@ class RayaTTSService(TTSServiceBase, TTSService):
     synthesize(); run_tts() delegates to it and wraps results in Pipecat frames.
 
     Args:
-        config: Full merged config dict. Reads telephony_adapter.raya section.
+        config: Full merged config dict. Reads reach_layer.channels.voice.raya section.
 
     Raises:
         ValueError: If required config keys (api_key, tts_base_url) are missing.
@@ -49,13 +49,13 @@ class RayaTTSService(TTSServiceBase, TTSService):
     def __init__(self, config: dict) -> None:
         if config is None:
             raise ValueError("config must not be None")
-        raya_cfg = config.get("telephony_adapter", {}).get("raya", {})
+        raya_cfg = config.get("reach_layer", {}).get("channels", {}).get("voice", {}).get("raya", {})
         api_key = raya_cfg.get("api_key", "")
         if not api_key:
-            raise ValueError("telephony_adapter.raya.api_key is required")
+            raise ValueError("reach_layer.channels.voice.raya.api_key is required")
         tts_base_url = raya_cfg.get("tts_base_url", "")
         if not tts_base_url:
-            raise ValueError("telephony_adapter.raya.tts_base_url is required")
+            raise ValueError("reach_layer.channels.voice.raya.tts_base_url is required")
         self._api_key = api_key
         self._base_url = tts_base_url.rstrip("/")
         self._voice_id = raya_cfg.get("voice_id", "voice_001")

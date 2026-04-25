@@ -1,5 +1,5 @@
 """
-telephony_adapter/src/pipecat_services/agent_core_llm.py
+reach_layer/voice/src/pipecat_services/agent_core_llm.py
 
 AgentCoreLLMProcessor — Pipecat FrameProcessor that bridges TranscriptionFrames
 to Agent Core.
@@ -53,7 +53,7 @@ class AgentCoreLLMProcessor(FrameProcessor):
     """Posts each transcribed utterance to Agent Core and pushes TTS response downstream.
 
     Args:
-        config: Full merged config dict. Reads telephony_adapter.agent_core for
+        config: Full merged config dict. Reads reach_layer.channels.voice.agent_core for
             direct-mode HTTP target, and reach_layer.channels.voice.assembly_mode
             to choose between direct and session routing.
         call_sid: Opaque Vobiz call identifier.
@@ -84,11 +84,11 @@ class AgentCoreLLMProcessor(FrameProcessor):
         super().__init__()
         if config is None:
             raise ValueError("config must not be None")
-        ac_cfg = config.get("telephony_adapter", {}).get("agent_core", {})
+        ac_cfg = config.get("reach_layer", {}).get("channels", {}).get("voice", {}).get("agent_core", {})
         base_url = ac_cfg.get("base_url", "").rstrip("/")
         if not base_url:
             raise ValueError(
-                "telephony_adapter.agent_core.base_url is required. "
+                "reach_layer.channels.voice.agent_core.base_url is required. "
                 "If running in Docker, use the service name (e.g. http://agent_core:8000). "
                 "Outside Docker, use the container's published port (e.g. http://localhost:8000)."
             )

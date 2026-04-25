@@ -8,13 +8,13 @@ from src.operators.operator_base import TelephonyOperatorBase
 @pytest.fixture
 def config():
     return {
-        "telephony_adapter": {
+        "reach_layer": {"channels": {"voice": {
             "vobiz": {
                 "auth_id": "test-auth-id",
                 "auth_token": "test-auth-token",
                 "sample_rate": 8000,
             }
-        }
+        }}}
     }
 
 
@@ -29,7 +29,7 @@ def test_vobiz_operator_raises_on_missing_auth_id():
 
 def test_vobiz_operator_raises_on_missing_auth_token():
     with pytest.raises(ValueError, match="auth_token"):
-        VobizOperator({"telephony_adapter": {"vobiz": {"auth_id": "x"}}})
+        VobizOperator({"reach_layer": {"channels": {"voice": {"vobiz": {"auth_id": "x"}}}}})
 
 
 @pytest.mark.asyncio

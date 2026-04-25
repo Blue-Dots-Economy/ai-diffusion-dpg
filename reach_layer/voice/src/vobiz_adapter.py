@@ -72,7 +72,7 @@ class VobizAdapter(TelephonyAdapterBase):
         self._operator = VobizOperator(config)
         self._vad_wrapper = SileroVADWrapper()
         self._sample_rate = int(
-            config.get("telephony_adapter", {}).get("vobiz", {}).get("sample_rate", 8000)
+            config.get("reach_layer", {}).get("channels", {}).get("voice", {}).get("vobiz", {}).get("sample_rate", 8000)
         )
         # GH-137: reference to the active call's WebSocket, populated inside
         # handle_call(). Used by close_call() to terminate the call when Agent
@@ -164,7 +164,7 @@ class VobizAdapter(TelephonyAdapterBase):
         # VADUserStartedSpeakingFrame during bot TTS emits an InterruptionFrame
         # which flushes the TTS queue. VAD-based stop strategy avoids the
         # default LocalSmartTurn ML model download.
-        vad_cfg = self._config.get("telephony_adapter", {}).get("vad", {})
+        vad_cfg = self._config.get("reach_layer", {}).get("channels", {}).get("voice", {}).get("vad", {})
         user_speech_timeout = float(vad_cfg.get("stop_secs", 0.6))
         user_turn_processor = UserTurnProcessor(
             user_turn_strategies=UserTurnStrategies(
@@ -210,7 +210,7 @@ class VobizAdapter(TelephonyAdapterBase):
         # negative number. Defaults to 10 s so a multi-second VAD/STT stall is
         # visible in logs without spamming on healthy calls.
         heartbeat_cfg = (
-            self._config.get("telephony_adapter", {})
+            self._config.get("reach_layer", {}).get("channels", {}).get("voice", {})
             .get("observability", {})
         )
         heartbeat_interval_s = float(heartbeat_cfg.get("heartbeat_interval_s", 10.0))

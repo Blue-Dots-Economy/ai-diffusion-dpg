@@ -1,4 +1,4 @@
-# telephony_adapter/tests/test_campaign_manager.py
+# reach_layer/voice/tests/test_campaign_manager.py
 import pytest
 import respx
 import httpx
@@ -8,7 +8,7 @@ from src.campaign_manager import CampaignManager
 @pytest.fixture
 def config():
     return {
-        "telephony_adapter": {
+        "reach_layer": {"channels": {"voice": {
             "vobiz": {
                 "auth_id": "MA_TEST123",
                 "auth_token": "token123",
@@ -16,7 +16,7 @@ def config():
                 "from_number": "+918011223344",
             },
             "public_url": "https://example.ngrok.app",
-        }
+        }}}
     }
 
 

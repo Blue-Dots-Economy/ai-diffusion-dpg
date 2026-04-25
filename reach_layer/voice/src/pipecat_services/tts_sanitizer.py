@@ -1,5 +1,5 @@
 """
-telephony_adapter/src/pipecat_services/tts_sanitizer.py
+reach_layer/voice/src/pipecat_services/tts_sanitizer.py
 
 TTSTextSanitizerProcessor — Pipecat FrameProcessor that transforms markdown
 and emoji in TTSSpeakFrame text into spoken-language-appropriate plain text.

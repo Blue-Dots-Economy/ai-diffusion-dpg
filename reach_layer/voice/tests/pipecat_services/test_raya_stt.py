@@ -26,13 +26,13 @@ def _make_wav(pcm_bytes: bytes = b"\x00\x01" * 800, sample_rate: int = 8000) -> 
 @pytest.fixture
 def config():
     return {
-        "telephony_adapter": {
+        "reach_layer": {"channels": {"voice": {
             "raya": {
                 "api_key": "test-key",
                 "stt_wss_url": "https://hub.getraya.app/transcribe",
                 "language": "hi",
             }
-        }
+        }}}
     }
 
 
