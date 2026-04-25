@@ -246,6 +246,16 @@ class VoiceAgentCoreConfig(BaseModel):
     barge_in_acknowledgement: str = ""
 
 
+class VoiceObservabilityConfig(BaseModel):
+    """Voice channel observability knobs (GH-238)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    # Seconds between `voice.heartbeat` log entries during a call. Set to 0
+    # (or negative) to disable.
+    heartbeat_interval_s: float = Field(default=10.0)
+
+
 class VoiceChannelConfig(BaseModel):
     """Voice channel service config (pipecat + Raya + Vobiz)."""
 
@@ -259,6 +269,9 @@ class VoiceChannelConfig(BaseModel):
     vad: VadConfig = Field(default_factory=VadConfig)
     raya: RayaConfig = Field(default_factory=RayaConfig)
     agent_core: VoiceAgentCoreConfig = Field(default_factory=VoiceAgentCoreConfig)
+    observability: VoiceObservabilityConfig = Field(
+        default_factory=VoiceObservabilityConfig
+    )
 
 
 # ---------------------------------------------------------------------------
