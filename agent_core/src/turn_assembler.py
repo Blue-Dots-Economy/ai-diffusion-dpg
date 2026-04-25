@@ -319,12 +319,13 @@ class TurnAssembler(TurnAssemblerBase):
             # Barge-in: new segment arrived while a turn is in flight.
             if turn is not None and turn.status == TurnStatus.INVOKED:
                 logger.info(
-                    "turn_assembler.barge_in",
+                    "turn_assembler.cancel_and_fold",
                     extra={
-                        "operation": "turn_assembler.add_segment",
+                        "operation": "turn_assembler.cancel_and_fold",
                         "status": "success",
                         "session_id": session_id,
-                        "turn_id": turn.turn_id,
+                        "cancelled_turn_id": turn.turn_id,
+                        "folded_segment_count": 1,
                         "reason": "new segment arrived while INVOKED — aborting current turn",
                     },
                 )

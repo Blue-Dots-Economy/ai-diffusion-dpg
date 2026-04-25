@@ -13,6 +13,7 @@ Covers:
 """
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -313,6 +314,41 @@ class TestAddSegment:
         new_turn = session.current_turn
         assert new_turn is not first_turn
         assert any(s.text.strip() == "new message" for s in new_turn.segments)
+
+    @pytest.mark.asyncio
+    async def test_cancel_and_fold_log_has_required_structured_fields(self, caplog):
+        """When a new segment arrives during INVOKED, the cancel-and-fold log
+        entry uses operation=turn_assembler.cancel_and_fold and carries
+        cancelled_turn_id + folded_segment_count fields per #200."""
+        ta = _make_assembler(config=_make_config(silence_ms=5000, max_wait_ms=5000))
+        await ta.add_segment("s1", _make_segment("first"))
+        session = ta._sessions["s1"]
+        first_turn = session.current_turn
+        cancelled_turn_id = first_turn.turn_id
+        # Simulate the prior turn being in flight.
+        first_turn.status = TurnStatus.INVOKED
+        first_turn.invocation_task = asyncio.create_task(asyncio.sleep(10))
+
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            await ta.add_segment("s1", _make_segment("second"))
+
+        # Find the cancel-and-fold log record.
+        fold_records = [
+            r for r in caplog.records
+            if getattr(r, "operation", None) == "turn_assembler.cancel_and_fold"
+        ]
+        assert len(fold_records) == 1, (
+            f"expected exactly one cancel_and_fold log record; "
+            f"got {len(fold_records)}"
+        )
+        rec = fold_records[0]
+        assert rec.msg == "turn_assembler.cancel_and_fold"
+        assert rec.status == "success"
+        assert rec.session_id == "s1"
+        assert rec.cancelled_turn_id == cancelled_turn_id
+        # Folded segment count: only the triggering segment seeds today.
+        assert rec.folded_segment_count == 1
 
     @pytest.mark.asyncio
     async def test_segment_ignored_when_completed(self):
