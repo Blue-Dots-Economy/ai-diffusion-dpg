@@ -72,3 +72,13 @@ reach_layer:
         # GH-152: brief acknowledgement spoken when the caller interrupts the
         # bot mid-response. TTS has already been flushed by the time this plays.
         barge_in_acknowledgement: "ठीक है, एक सेकंड।"
+      # GH-242: short filler ("एक सेकंड") played if the first SentenceEvent
+      # hasn't reached TTS within filler_threshold_ms of submit_input
+      # completing. Cancelled the moment a real sentence arrives. Tool-chained
+      # turns can take 5–17 s before the first sentence; without this the
+      # caller hears a dead line. Empty string disables.
+      filler_threshold_ms: 1500
+      filler_phrase: "एक सेकंड"
+      # GH-137: spoken just before WebSocket close on bot-initiated hangup
+      # (DoneEvent.session_ended=true).
+      terminal_word: "धन्यवाद"

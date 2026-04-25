@@ -272,6 +272,18 @@ class VoiceChannelConfig(BaseModel):
     observability: VoiceObservabilityConfig = Field(
         default_factory=VoiceObservabilityConfig
     )
+    # GH-242: filler utterance and end-of-call terminal word are read by the
+    # voice processor (reach_layer/voice/.../agent_core_llm.py). They were
+    # previously declared only in agent_core.yaml so the voice service never
+    # received them at runtime — the filler timer never fired.
+    filler_threshold_ms: Optional[int] = Field(default=None, gt=0)
+    filler_phrase: Optional[str] = None
+    terminal_word: Optional[str] = None
+    # GH-203: window after the last TTSSpeakFrame during which a barge-in still
+    # counts as "interrupting the bot". Read by the compound barge-in gate.
+    barge_in_recency_ms: Optional[int] = Field(default=None, gt=0)
+    # GH-202: max seconds to wait for the opening-phrase task to unwind.
+    opening_phrase_join_timeout_ms: Optional[int] = Field(default=None, gt=0)
 
 
 # ---------------------------------------------------------------------------

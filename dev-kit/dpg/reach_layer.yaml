@@ -123,3 +123,12 @@ reach_layer:
         # stalled VAD/STT/turn-assembler chain is visible as a steadily rising
         # `seconds_since_*` field. Set to 0 (or negative) to disable.
         heartbeat_interval_s: 10.0
+      # GH-242: filler utterance played if no SentenceEvent has reached TTS
+      # within the threshold. Capped to one filler per turn. Tool-chained
+      # turns can take 5–17 s before the first sentence — without this the
+      # caller hears a dead line. Override per-domain.
+      filler_threshold_ms: null    # null disables the filler entirely
+      filler_phrase: ""
+      # GH-137: spoken just before the WebSocket close on bot-initiated
+      # hangup (DoneEvent.session_ended=true). Override per-domain.
+      terminal_word: null

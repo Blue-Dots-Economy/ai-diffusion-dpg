@@ -25,12 +25,11 @@ channels:
   voice:
     # GH-194: hard cap on voice response length (token cap below + prompt rule).
     max_tokens: 200
-    # GH-205: filler utterance played if no SentenceEvent has reached TTS
-    # within the threshold. Capped to one filler per turn. Tool-chained
-    # turns can take 5–17 s before the first sentence — without this the
-    # caller hears a dead line. Set ``filler_phrase: ""`` to disable.
-    filler_threshold_ms: 1500
-    filler_phrase: "एक सेकंड"
+    # GH-242: filler utterance config moved to reach_layer.yaml — the voice
+    # service is the actual reader of these keys, and declaring them only
+    # under agent_core.channels.voice meant they never reached the voice
+    # service at runtime. See dev-kit/configs/kkb/reach_layer.yaml:
+    # channels.voice.filler_threshold_ms / filler_phrase.
     system_prompt_suffix: |
       You are conversing over the phone, so keep responses short and simple.
       Do not emit any markdown or emojis.

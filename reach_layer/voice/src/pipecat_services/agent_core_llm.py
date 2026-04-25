@@ -109,12 +109,19 @@ class AgentCoreLLMProcessor(FrameProcessor):
         self._session_id = session_id
         self._user_id = user_id
         self._channel = channel
-        # Per-channel runtime config (GH-137). Falls back to the top-level
-        # ``channels.voice`` block in the merged config so callers that only
-        # pass ``config`` keep working without plumbing changes.
+        # Per-channel runtime config (GH-137). Falls back to the canonical
+        # ``reach_layer.channels.voice`` block in the merged config so
+        # callers that only pass ``config`` keep working. GH-242: the prior
+        # fallback read top-level ``channels.voice`` which is never
+        # populated by the reach config loader, so terminal_word / filler
+        # silently disabled themselves in production.
         if channel_config is None:
             channel_config = (
-                config.get("channels", {}).get("voice", {}) if isinstance(config, dict) else {}
+                config.get("reach_layer", {})
+                .get("channels", {})
+                .get("voice", {})
+                if isinstance(config, dict)
+                else {}
             )
         self._channel_config = channel_config or {}
         self._telephony = telephony
@@ -547,10 +554,38 @@ class AgentCoreLLMProcessor(FrameProcessor):
 
         # GH-205: schedule the optional filler utterance. Cancelled as soon
         # as the first SentenceEvent reaches TTS so fast turns stay quiet.
+        # GH-242: log every state transition so a missing filler is visible
+        # in production (the previous build silently no-op'd because the
+        # config never reached the voice service).
         filler_task: Optional[asyncio.Task] = None
         if self._filler_threshold_s is not None and self._filler_phrase:
             filler_task = asyncio.create_task(
                 self._push_filler_after_delay(self._filler_threshold_s)
+            )
+            logger.info(
+                "agent_core_llm.filler_armed",
+                extra={
+                    "operation": "agent_core_llm._handle_transcription_session",
+                    "status": "success",
+                    "delay_ms": int(self._filler_threshold_s * 1000),
+                    "call_sid": self._call_sid,
+                    "session_id": self._session_id,
+                },
+            )
+        else:
+            logger.info(
+                "agent_core_llm.filler_skipped",
+                extra={
+                    "operation": "agent_core_llm._handle_transcription_session",
+                    "status": "skipped",
+                    "reason": (
+                        "filler_threshold_ms unset"
+                        if self._filler_threshold_s is None
+                        else "filler_phrase empty"
+                    ),
+                    "call_sid": self._call_sid,
+                    "session_id": self._session_id,
+                },
             )
 
         try:
@@ -579,6 +614,16 @@ class AgentCoreLLMProcessor(FrameProcessor):
                         # filler so we don't speak both back-to-back.
                         if filler_task is not None and not filler_task.done():
                             filler_task.cancel()
+                            logger.info(
+                                "agent_core_llm.filler_cancelled",
+                                extra={
+                                    "operation": "agent_core_llm._handle_transcription_session",
+                                    "status": "skipped",
+                                    "reason": "first_sentence_arrived",
+                                    "call_sid": self._call_sid,
+                                    "session_id": self._session_id,
+                                },
+                            )
                         await self.push_frame(TTSSpeakFrame(text=event.text))
                         sentences_pushed += 1
                 elif isinstance(event, SignalEvent):

@@ -133,11 +133,17 @@ class VobizAdapter(TelephonyAdapterBase):
         session_id = str(uuid.uuid4())
 
         stt = RayaSTTService(self._config)
-        # GH-137: pass the top-level channels.voice block and the adapter itself
-        # so the processor can append the terminal word and request a call close
-        # when Agent Core signals DoneEvent.session_ended=True.
+        # GH-137 / GH-242: pass the voice channel config (terminal_word,
+        # filler_phrase, filler_threshold_ms, …) so the processor can act on
+        # them. The reach_layer config loader stores the canonical voice
+        # block under ``reach_layer.channels.voice``; the legacy
+        # ``channels.voice`` top-level path was never populated by
+        # ``_inject_legacy_aliases``, so reading from it returned ``{}``
+        # and the filler timer / terminal_word were silently disabled.
         channel_config = (
-            self._config.get("channels", {}).get("voice", {})
+            self._config.get("reach_layer", {})
+            .get("channels", {})
+            .get("voice", {})
             if isinstance(self._config, dict)
             else {}
         )

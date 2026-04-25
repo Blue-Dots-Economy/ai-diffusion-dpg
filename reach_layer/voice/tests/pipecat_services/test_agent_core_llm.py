@@ -1000,6 +1000,8 @@ async def test_opening_phrase_join_timeout_does_not_block_turn(session_config):
 
 
 def _filler_config(threshold_ms: int = 50, phrase: str = "एक सेकंड") -> dict:
+    # GH-242: filler_* live under reach_layer.channels.voice — the canonical
+    # location read by the processor's no-channel_config fallback.
     return {
         "telephony_adapter": {
             "agent_core": {
@@ -1008,11 +1010,13 @@ def _filler_config(threshold_ms: int = 50, phrase: str = "एक सेकंड
                 "fallback_phrase": "Sorry.",
             }
         },
-        "reach_layer": {"channels": {"voice": {"assembly_mode": "session"}}},
-        "channels": {
-            "voice": {
-                "filler_threshold_ms": threshold_ms,
-                "filler_phrase": phrase,
+        "reach_layer": {
+            "channels": {
+                "voice": {
+                    "assembly_mode": "session",
+                    "filler_threshold_ms": threshold_ms,
+                    "filler_phrase": phrase,
+                }
             }
         },
     }
@@ -1079,6 +1083,69 @@ async def test_filler_pushed_when_threshold_exceeded():
     )
     # Filler arrives before the real sentence.
     assert speak_texts.index("एक सेकंड") < speak_texts.index("Hello.")
+
+
+@pytest.mark.asyncio
+async def test_filler_armed_log_emitted_when_scheduled(caplog):
+    """GH-242: arming the filler timer must emit ``filler_armed``, and the
+    cancellation path must emit ``filler_cancelled`` when the first real
+    sentence arrives. These breadcrumbs make a missing or misfiring filler
+    visible in production logs.
+    """
+    import logging
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+    from reach_layer_base import DoneEvent, SentenceEvent
+
+    # Threshold well above the SentenceEvent arrival time so the timer is
+    # cancelled by the sentence (not fired).
+    cfg = _filler_config(threshold_ms=10000, phrase="एक सेकंड")
+    events = [
+        SentenceEvent(text="Hello.", sentence_index=0),
+        DoneEvent(turn_status="completed"),
+    ]
+    channel = _make_channel(events)
+    proc = AgentCoreLLMProcessor(cfg, call_sid="CA1", session_id="s1", channel=channel)
+    proc.push_frame = AsyncMock()
+
+    with caplog.at_level(logging.INFO, logger="src.pipecat_services.agent_core_llm"):
+        await proc.process_frame(
+            TranscriptionFrame(text="hi", user_id="", timestamp=""),
+            FrameDirection.DOWNSTREAM,
+        )
+
+    armed = [r for r in caplog.records if r.message == "agent_core_llm.filler_armed"]
+    cancelled = [r for r in caplog.records if r.message == "agent_core_llm.filler_cancelled"]
+    assert len(armed) == 1, f"expected one filler_armed log; got {[r.message for r in caplog.records]}"
+    assert len(cancelled) == 1
+    assert getattr(cancelled[0], "reason") == "first_sentence_arrived"
+
+
+@pytest.mark.asyncio
+async def test_filler_skipped_log_emitted_when_unconfigured(caplog):
+    """GH-242: when filler is unconfigured we must log the reason, otherwise a
+    silently-disabled filler is invisible in production."""
+    import logging
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+    from reach_layer_base import DoneEvent, SentenceEvent
+
+    cfg = _filler_config(threshold_ms=20, phrase="")  # empty phrase
+    events = [
+        SentenceEvent(text="Hello.", sentence_index=0),
+        DoneEvent(turn_status="completed"),
+    ]
+    channel = _make_channel(events)
+    proc = AgentCoreLLMProcessor(cfg, call_sid="CA1", session_id="s1", channel=channel)
+    proc.push_frame = AsyncMock()
+
+    with caplog.at_level(logging.INFO, logger="src.pipecat_services.agent_core_llm"):
+        await proc.process_frame(
+            TranscriptionFrame(text="hi", user_id="", timestamp=""),
+            FrameDirection.DOWNSTREAM,
+        )
+
+    skipped = [r for r in caplog.records if r.message == "agent_core_llm.filler_skipped"]
+    assert len(skipped) == 1
+    assert getattr(skipped[0], "reason") == "filler_phrase empty"
 
 
 @pytest.mark.asyncio

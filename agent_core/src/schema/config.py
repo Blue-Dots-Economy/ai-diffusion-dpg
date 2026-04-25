@@ -544,13 +544,11 @@ class ChannelConfig(BaseModel):
     terminal_word: Optional[str] = None
     max_tokens: Optional[int] = Field(default=None, gt=0)
     turn_assembler: TurnAssemblerConfig = Field(default_factory=TurnAssemblerConfig)
-    # GH-205: optional filler utterance pushed during slow turns so the caller
-    # doesn't sit through 5–17 s of silence on tool-chained turns. When
-    # ``filler_threshold_ms`` is set and ``filler_phrase`` is non-empty, the
-    # voice processor pushes the phrase if no SentenceEvent has reached TTS
-    # within the threshold. Capped to one filler per turn.
-    filler_threshold_ms: Optional[int] = Field(default=None, gt=0)
-    filler_phrase: Optional[str] = None
+    # GH-242: filler_threshold_ms and filler_phrase used to live here, but
+    # they are read by the reach_layer voice service (not agent_core), so
+    # declaring them in agent_core's config block meant they never reached
+    # the voice service at runtime. Moved to
+    # reach_layer/base/schema/config.py: VoiceChannelConfig.
 
 
 class ChannelsConfig(BaseModel):
