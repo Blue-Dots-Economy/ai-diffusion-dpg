@@ -207,9 +207,15 @@ class VobizAdapter(TelephonyAdapterBase):
             # consumes SentenceEvents as TTSSpeakFrames and exits on DoneEvent,
             # closing the HTTP stream so the per-turn subscribe in
             # AgentCoreLLMProcessor owns the session queue from then on.
-            asyncio.create_task(
+            #
+            # GH-202: register the task on the processor so it can cancel and
+            # join it at the start of the first transcription turn — preventing
+            # the opening-phrase subscribe and the per-turn subscribe from
+            # racing on the session's shared event queue.
+            opening_phrase_task = asyncio.create_task(
                 self._play_opening_phrase(task, session_id, caller_id, call_sid)
             )
+            agent.set_opening_phrase_task(opening_phrase_task)
 
         @transport.event_handler("on_client_disconnected")
         async def _on_disconnected(transport, client):

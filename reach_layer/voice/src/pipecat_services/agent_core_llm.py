@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import time
+import asyncio
 from typing import Optional
 
 import httpx
@@ -120,6 +121,20 @@ class AgentCoreLLMProcessor(FrameProcessor):
             )
         self._channel_config = channel_config or {}
         self._telephony = telephony
+        # GH-202: Optional handle to the opening-phrase SSE consumer task
+        # spawned by the adapter on client-connect. The processor cancels
+        # it (and waits briefly for it to unwind) at the start of every
+        # transcription turn so the per-turn SSE subscribe doesn't share
+        # the session's event queue with a still-open opening-phrase
+        # subscribe — preventing the frame-interleave race when a caller
+        # speaks immediately after connect.
+        self._opening_phrase_task: Optional[asyncio.Task] = None
+        # Configurable upper bound on how long we wait for the opening-phrase
+        # task to unwind after cancellation. Voice-startup latency budget is
+        # 1.2s so this stays well under it.
+        self._opening_phrase_join_timeout_s: float = float(
+            self._channel_config.get("opening_phrase_join_timeout_ms", 500)
+        ) / 1000.0
 
         # Read assembly_mode from reach_layer.channels.voice. Defaults to "direct"
         # so existing tests and pre-config installs keep their current behaviour.
@@ -145,6 +160,68 @@ class AgentCoreLLMProcessor(FrameProcessor):
                 "session_id": session_id,
             },
         )
+
+    def set_opening_phrase_task(self, task: Optional[asyncio.Task]) -> None:
+        """Register the opening-phrase SSE consumer task for serialisation (GH-202).
+
+        The adapter calls this once after spawning ``_play_opening_phrase``
+        from the on-client-connected handler. The processor cancels and
+        joins the task before submitting the first user turn so the
+        per-turn SSE subscribe doesn't race with the opening-phrase
+        subscribe on the same session's shared event queue.
+
+        Args:
+            task: The opening-phrase consumer task, or None to clear.
+        """
+        self._opening_phrase_task = task
+
+    async def _join_opening_phrase_task(self) -> None:
+        """Cancel and await the opening-phrase task before opening a new SSE.
+
+        No-op if no task is registered or it is already done. On normal
+        completion (DoneEvent path) the task finishes naturally and cancel
+        is a no-op. On the suppressed path (consent gate, P2-B) the
+        server never emits DoneEvent for the opening-phrase subscribe, so
+        we cancel and let the cancellation close the HTTP stream.
+
+        Bounded by ``opening_phrase_join_timeout_ms`` so a misbehaving
+        task can't stall the user's first turn indefinitely.
+        """
+        task = self._opening_phrase_task
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(task), timeout=self._opening_phrase_join_timeout_s
+            )
+        except asyncio.CancelledError:
+            # Expected — the task we cancelled raised it on the way out.
+            pass
+        except asyncio.TimeoutError:
+            logger.warning(
+                "agent_core_llm.opening_phrase_join_timeout",
+                extra={
+                    "operation": "agent_core_llm._join_opening_phrase_task",
+                    "status": "failure",
+                    "call_sid": self._call_sid,
+                    "session_id": self._session_id,
+                    "timeout_ms": int(self._opening_phrase_join_timeout_s * 1000),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "agent_core_llm.opening_phrase_join_error",
+                extra={
+                    "operation": "agent_core_llm._join_opening_phrase_task",
+                    "status": "failure",
+                    "call_sid": self._call_sid,
+                    "session_id": self._session_id,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
+        finally:
+            self._opening_phrase_task = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         """Route frames to Agent Core; pass all other frames through.
@@ -342,6 +419,11 @@ class AgentCoreLLMProcessor(FrameProcessor):
         was_interrupted = False
         # GH-152: a fresh user turn means any prior barge-in is resolved.
         self._interrupted = False
+
+        # GH-202: serialise the opening-phrase SSE consumer with the first
+        # user turn so they don't both pull from the session's shared event
+        # queue concurrently. No-op on subsequent turns (task already done).
+        await self._join_opening_phrase_task()
 
         try:
             await self._channel.submit_input(

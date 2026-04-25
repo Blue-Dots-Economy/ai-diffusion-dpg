@@ -1,4 +1,5 @@
 """Tests for AgentCoreLLMProcessor — FrameProcessor bridging STT to Agent Core HTTP."""
+import asyncio
 import pytest
 import respx
 import httpx
@@ -785,3 +786,164 @@ async def test_session_mode_stale_sentences_appear_before_done_interrupted(sessi
     assert "stale-2" not in speak_texts, (
         f"stale-2 unexpectedly reached TTS; processor should break on Done(interrupted)"
     )
+
+
+# ---------------------------------------------------------------------------
+# GH-202: serialise opening_phrase consumer with first user turn
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_opening_phrase_task_cancelled_before_first_turn(session_config):
+    """The first user turn cancels and joins a still-running opening-phrase task
+    before opening its own SSE subscribe — preventing concurrent consumers
+    of the session's shared event queue."""
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+    from reach_layer_base import DoneEvent, SentenceEvent
+
+    events = [
+        SentenceEvent(text="hi", sentence_index=0),
+        DoneEvent(turn_status="completed"),
+    ]
+    channel = _make_channel(events)
+
+    proc = AgentCoreLLMProcessor(
+        session_config, call_sid="CA1", session_id="s1", channel=channel
+    )
+    proc.push_frame = AsyncMock()
+
+    # Simulate a still-running opening-phrase consumer that would otherwise
+    # race with the per-turn subscribe.
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def _hanging_opening_phrase():
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    op_task = asyncio.create_task(_hanging_opening_phrase())
+    await started.wait()
+    proc.set_opening_phrase_task(op_task)
+
+    await proc.process_frame(
+        TranscriptionFrame(text="hello", user_id="", timestamp=""),
+        FrameDirection.DOWNSTREAM,
+    )
+
+    assert op_task.done(), "opening-phrase task should be cancelled by first turn"
+    assert cancelled.is_set(), "cancellation should reach the running task"
+    # submit_input ran, processor took over the session.
+    channel.submit_input.assert_awaited_once_with("s1", "hello", None)
+
+
+@pytest.mark.asyncio
+async def test_already_completed_opening_phrase_task_is_noop(session_config):
+    """If the opening-phrase task already finished, joining is a fast no-op."""
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+    from reach_layer_base import DoneEvent, SentenceEvent
+
+    events = [
+        SentenceEvent(text="hi", sentence_index=0),
+        DoneEvent(turn_status="completed"),
+    ]
+    channel = _make_channel(events)
+
+    proc = AgentCoreLLMProcessor(
+        session_config, call_sid="CA1", session_id="s1", channel=channel
+    )
+    proc.push_frame = AsyncMock()
+
+    async def _already_done():
+        return None
+
+    op_task = asyncio.create_task(_already_done())
+    await op_task  # ensure it finished before we register
+    proc.set_opening_phrase_task(op_task)
+
+    await proc.process_frame(
+        TranscriptionFrame(text="hello", user_id="", timestamp=""),
+        FrameDirection.DOWNSTREAM,
+    )
+
+    channel.submit_input.assert_awaited_once_with("s1", "hello", None)
+
+
+@pytest.mark.asyncio
+async def test_no_opening_phrase_task_is_noop(session_config):
+    """Without a registered task, _handle_transcription_session runs unchanged."""
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+    from reach_layer_base import DoneEvent, SentenceEvent
+
+    events = [
+        SentenceEvent(text="hi", sentence_index=0),
+        DoneEvent(turn_status="completed"),
+    ]
+    channel = _make_channel(events)
+
+    proc = AgentCoreLLMProcessor(
+        session_config, call_sid="CA1", session_id="s1", channel=channel
+    )
+    proc.push_frame = AsyncMock()
+
+    await proc.process_frame(
+        TranscriptionFrame(text="hello", user_id="", timestamp=""),
+        FrameDirection.DOWNSTREAM,
+    )
+
+    channel.submit_input.assert_awaited_once_with("s1", "hello", None)
+
+
+@pytest.mark.asyncio
+async def test_opening_phrase_join_timeout_does_not_block_turn(session_config):
+    """If a misbehaving opening-phrase task ignores cancellation, the join
+    times out and the user's first turn proceeds anyway."""
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+    from reach_layer_base import DoneEvent, SentenceEvent
+
+    cfg = {**session_config}
+    cfg["channels"] = {"voice": {"opening_phrase_join_timeout_ms": 50}}
+
+    events = [
+        SentenceEvent(text="hi", sentence_index=0),
+        DoneEvent(turn_status="completed"),
+    ]
+    channel = _make_channel(events)
+
+    proc = AgentCoreLLMProcessor(
+        cfg, call_sid="CA1", session_id="s1", channel=channel
+    )
+    proc.push_frame = AsyncMock()
+
+    async def _ignores_cancel():
+        # Suppress CancelledError to simulate misbehaviour.
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            await asyncio.sleep(60)
+
+    op_task = asyncio.create_task(_ignores_cancel())
+    await asyncio.sleep(0)  # let it start
+    proc.set_opening_phrase_task(op_task)
+
+    t0 = asyncio.get_event_loop().time()
+    await proc.process_frame(
+        TranscriptionFrame(text="hello", user_id="", timestamp=""),
+        FrameDirection.DOWNSTREAM,
+    )
+    elapsed = asyncio.get_event_loop().time() - t0
+
+    assert elapsed < 1.0, (
+        f"first turn was blocked by misbehaving opening-phrase task: {elapsed}s"
+    )
+    channel.submit_input.assert_awaited_once_with("s1", "hello", None)
+
+    # Cleanup the still-running task so pytest doesn't warn.
+    op_task.cancel()
+    try:
+        await op_task
+    except (asyncio.CancelledError, Exception):
+        pass
