@@ -6,6 +6,7 @@ process_turn() is the sync entry point exposed to the Reach Layer.
 stream_turn() is the async streaming entry point for SSE delivery.
 """
 
+import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 
@@ -39,16 +40,34 @@ class AgentCoreBase(ABC):
         """
 
     @abstractmethod
-    async def stream_turn(self, turn_input: TurnInput) -> AsyncGenerator[StreamEvent, None]:
+    async def stream_turn(
+        self,
+        turn_input: TurnInput,
+        *,
+        abort_event: "asyncio.Event | None" = None,
+        turn_id: str = "",
+    ) -> AsyncGenerator[StreamEvent, None]:
         """Execute one conversation turn with streaming SSE output.
 
         Runs the same 13-step pipeline as process_turn() but uses async
         HTTP clients and yields StreamEvents as the pipeline progresses.
 
+        Args:
+            turn_input: Normalised inbound message from the Reach Layer.
+            abort_event: Optional asyncio.Event. When set, stream_turn exits
+                cleanly at the next stage boundary without yielding further
+                events. Tool calls and trust checks that are already in-flight
+                run to completion to preserve external-side-effect safety.
+            turn_id: Optional caller-supplied identifier for this turn. When
+                non-empty, it is stamped on every emitted StreamEvent. When
+                empty (the default), an internal uuid4 is generated and used.
+
         Yields:
-            SignalEvent for pipeline stage notifications.
-            SentenceEvent for each trust-checked LLM output sentence.
-            DoneEvent as the terminal event (always last).
+            SignalEvent, SentenceEvent, or DoneEvent. DoneEvent is the
+            terminal event when stream_turn runs to completion. When
+            abort_event fires, the generator exits without emitting DoneEvent
+            — the caller is responsible for emitting the terminal
+            Done(interrupted).
 
         The caller must consume the generator to completion. Post-turn
         memory writes and observability emits fire via asyncio.create_task()
