@@ -41,6 +41,7 @@ from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
 from src.pipecat_services.raya_stt import RayaSTTService
 from src.pipecat_services.raya_tts import RayaTTSService
 from src.pipecat_services.tts_sanitizer import TTSTextSanitizerProcessor
+from src.pipecat_services.vad_observer import VADObserverProcessor, run_voice_heartbeat
 from src.vad.silero_vad import SileroVADWrapper
 
 logger = logging.getLogger(__name__)
@@ -168,12 +169,22 @@ class VobizAdapter(TelephonyAdapterBase):
             ),
         )
 
+        # GH-238: passive observer between STT and the LLM processor — sees VAD
+        # speech start/stop, user-turn start/stop, transcripts, and barge-in
+        # frames. Pairs with a heartbeat task to surface pipeline stalls (case
+        # in point: caller's follow-up never producing a 7th transcript after a
+        # tool-using turn).
+        vad_observer = VADObserverProcessor(
+            session_id=session_id, call_sid=call_sid
+        )
+
         pipeline = Pipeline(
             [
                 transport.input(),
                 VADProcessor(vad_analyzer=vad_analyzer),
                 user_turn_processor,
                 stt,
+                vad_observer,
                 agent,
                 sanitizer,
                 tts,
@@ -188,6 +199,16 @@ class VobizAdapter(TelephonyAdapterBase):
                 audio_out_sample_rate=self._sample_rate,
             ),
         )
+
+        # GH-238: heartbeat interval (seconds) — disable by setting to 0 or a
+        # negative number. Defaults to 10 s so a multi-second VAD/STT stall is
+        # visible in logs without spamming on healthy calls.
+        heartbeat_cfg = (
+            self._config.get("telephony_adapter", {})
+            .get("observability", {})
+        )
+        heartbeat_interval_s = float(heartbeat_cfg.get("heartbeat_interval_s", 10.0))
+        heartbeat_task: asyncio.Task | None = None
 
         @transport.event_handler("on_client_connected")
         async def _on_connected(transport, client):
@@ -240,8 +261,26 @@ class VobizAdapter(TelephonyAdapterBase):
                     },
                 )
 
+        if heartbeat_interval_s > 0:
+            heartbeat_task = asyncio.create_task(
+                run_voice_heartbeat(
+                    vad_observer,
+                    session_id=session_id,
+                    call_sid=call_sid,
+                    interval_s=heartbeat_interval_s,
+                )
+            )
+
         runner = PipelineRunner(handle_sigint=False)
-        await runner.run(task)
+        try:
+            await runner.run(task)
+        finally:
+            if heartbeat_task is not None:
+                heartbeat_task.cancel()
+                try:
+                    await heartbeat_task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
     async def _play_opening_phrase(
         self,

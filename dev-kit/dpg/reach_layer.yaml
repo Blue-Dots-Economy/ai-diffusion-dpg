@@ -118,3 +118,8 @@ reach_layer:
         # GH-152: spoken briefly when the caller barges in while the bot is
         # speaking. Empty string → bot simply goes silent. Override per-domain.
         barge_in_acknowledgement: ""
+      observability:
+        # GH-238: emit `voice.heartbeat` every N seconds during a call so a
+        # stalled VAD/STT/turn-assembler chain is visible as a steadily rising
+        # `seconds_since_*` field. Set to 0 (or negative) to disable.
+        heartbeat_interval_s: 10.0
