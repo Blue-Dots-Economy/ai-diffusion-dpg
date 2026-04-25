@@ -133,6 +133,21 @@ class AgentCoreLLMProcessor(FrameProcessor):
             self._channel_config.get("opening_phrase_join_timeout_ms", 500)
         ) / 1000.0
 
+        # GH-205: optional filler utterance for slow turns. When the threshold
+        # is set and the phrase is non-empty, the processor pushes a single
+        # TTSSpeakFrame if no SentenceEvent has reached TTS within
+        # ``filler_threshold_ms`` of submit_input completing. Capped to one
+        # filler per turn — we never want to talk over the actual response.
+        _filler_threshold = self._channel_config.get("filler_threshold_ms")
+        self._filler_threshold_s: Optional[float] = (
+            float(_filler_threshold) / 1000.0
+            if _filler_threshold is not None and _filler_threshold > 0
+            else None
+        )
+        self._filler_phrase: str = (
+            self._channel_config.get("filler_phrase", "") or ""
+        )
+
         # GH-203: compound gate for the barge-in acknowledgement. The original
         # ``_bot_speaking`` flag (driven by BotStartedSpeakingFrame /
         # BotStoppedSpeakingFrame) was unreliable on the Vobiz pipeline — the
@@ -452,6 +467,38 @@ class AgentCoreLLMProcessor(FrameProcessor):
             )
             await self.push_frame(EndFrame())
 
+    async def _push_filler_after_delay(self, delay_s: float) -> None:
+        """Push the configured filler phrase after ``delay_s`` (GH-205).
+
+        Sleeps first; on cancellation (real sentence arrived, barge-in,
+        end of turn) exits without pushing anything. Capped to one filler
+        per turn by virtue of being scheduled exactly once per
+        ``_handle_transcription_session`` invocation.
+
+        Args:
+            delay_s: Seconds to wait before pushing the filler.
+        """
+        try:
+            await asyncio.sleep(delay_s)
+        except asyncio.CancelledError:
+            return
+        # Re-check the gate at fire time — barge-in or a sentence that
+        # arrived between the sleep wake-up and this point should still
+        # suppress the filler.
+        if self._interrupted:
+            return
+        await self.push_frame(TTSSpeakFrame(text=self._filler_phrase))
+        logger.info(
+            "agent_core_llm.filler_pushed",
+            extra={
+                "operation": "agent_core_llm._push_filler_after_delay",
+                "status": "success",
+                "call_sid": self._call_sid,
+                "session_id": self._session_id,
+                "delay_ms": int(delay_s * 1000),
+            },
+        )
+
     async def _handle_transcription_session(self, frame: TranscriptionFrame) -> None:
         """Session mode: submit_input + SSE stream → one TTSSpeakFrame per sentence.
 
@@ -498,6 +545,14 @@ class AgentCoreLLMProcessor(FrameProcessor):
             await self.push_frame(TTSSpeakFrame(text=self._fallback_phrase))
             return
 
+        # GH-205: schedule the optional filler utterance. Cancelled as soon
+        # as the first SentenceEvent reaches TTS so fast turns stay quiet.
+        filler_task: Optional[asyncio.Task] = None
+        if self._filler_threshold_s is not None and self._filler_phrase:
+            filler_task = asyncio.create_task(
+                self._push_filler_after_delay(self._filler_threshold_s)
+            )
+
         try:
             async for event in self._channel.subscribe_events(
                 self._session_id, user_id=self._user_id or None
@@ -520,6 +575,10 @@ class AgentCoreLLMProcessor(FrameProcessor):
                     break
                 if isinstance(event, SentenceEvent):
                     if event.text:
+                        # GH-205: real sentence is here — cancel any pending
+                        # filler so we don't speak both back-to-back.
+                        if filler_task is not None and not filler_task.done():
+                            filler_task.cancel()
                         await self.push_frame(TTSSpeakFrame(text=event.text))
                         sentences_pushed += 1
                 elif isinstance(event, SignalEvent):
@@ -575,6 +634,14 @@ class AgentCoreLLMProcessor(FrameProcessor):
             # count as "speaking" for any user interruption that lands during
             # that drain.
             self._sse_turn_active = False
+            # GH-205: turn is over — cancel any still-pending filler and
+            # absorb the resulting CancelledError so we don't leak a warning.
+            if filler_task is not None and not filler_task.done():
+                filler_task.cancel()
+                try:
+                    await filler_task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
         # Nothing came through (no sentences, no done) → speak fallback so the
         # caller doesn't sit in silence. Skip on barge-in (interrupted/abandoned)

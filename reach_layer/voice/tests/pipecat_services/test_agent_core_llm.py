@@ -992,3 +992,161 @@ async def test_opening_phrase_join_timeout_does_not_block_turn(session_config):
         await op_task
     except (asyncio.CancelledError, Exception):
         pass
+
+
+# ---------------------------------------------------------------------------
+# GH-205: filler utterance on long turns
+# ---------------------------------------------------------------------------
+
+
+def _filler_config(threshold_ms: int = 50, phrase: str = "एक सेकंड") -> dict:
+    return {
+        "telephony_adapter": {
+            "agent_core": {
+                "base_url": "http://agent_core:8000",
+                "timeout_ms": 5000,
+                "fallback_phrase": "Sorry.",
+            }
+        },
+        "reach_layer": {"channels": {"voice": {"assembly_mode": "session"}}},
+        "channels": {
+            "voice": {
+                "filler_threshold_ms": threshold_ms,
+                "filler_phrase": phrase,
+            }
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_filler_not_pushed_on_fast_turn():
+    """Sentences arrive before the threshold → no filler frame pushed."""
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+    from reach_layer_base import DoneEvent, SentenceEvent
+
+    cfg = _filler_config(threshold_ms=10000, phrase="एक सेकंड")
+    events = [
+        SentenceEvent(text="Hello.", sentence_index=0),
+        DoneEvent(turn_status="completed"),
+    ]
+    channel = _make_channel(events)
+    proc = AgentCoreLLMProcessor(cfg, call_sid="CA1", session_id="s1", channel=channel)
+    pushed = []
+    proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
+
+    await proc.process_frame(
+        TranscriptionFrame(text="hi", user_id="", timestamp=""),
+        FrameDirection.DOWNSTREAM,
+    )
+
+    speak_texts = [f.text for f in pushed if isinstance(f, TTSSpeakFrame)]
+    assert "एक सेकंड" not in speak_texts, (
+        f"filler must not be pushed on a fast turn; got {speak_texts!r}"
+    )
+    assert "Hello." in speak_texts
+
+
+@pytest.mark.asyncio
+async def test_filler_pushed_when_threshold_exceeded():
+    """No SentenceEvent within threshold → exactly one filler frame pushed before the real sentence."""
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+    from reach_layer_base import DoneEvent, SentenceEvent
+
+    cfg = _filler_config(threshold_ms=20, phrase="एक सेकंड")
+
+    async def _slow_stream(_session_id, user_id=None):
+        # Sleep longer than the filler threshold before yielding the first sentence.
+        await asyncio.sleep(0.1)
+        yield SentenceEvent(text="Hello.", sentence_index=0)
+        yield DoneEvent(turn_status="completed")
+
+    channel = MagicMock()
+    channel.submit_input = AsyncMock(return_value=None)
+    channel.subscribe_events = _slow_stream
+
+    proc = AgentCoreLLMProcessor(cfg, call_sid="CA1", session_id="s1", channel=channel)
+    pushed_order = []
+    proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed_order.append(f))
+
+    await proc.process_frame(
+        TranscriptionFrame(text="hi", user_id="", timestamp=""),
+        FrameDirection.DOWNSTREAM,
+    )
+
+    speak_texts = [f.text for f in pushed_order if isinstance(f, TTSSpeakFrame)]
+    assert speak_texts.count("एक सेकंड") == 1, (
+        f"expected exactly one filler frame; got {speak_texts!r}"
+    )
+    # Filler arrives before the real sentence.
+    assert speak_texts.index("एक सेकंड") < speak_texts.index("Hello.")
+
+
+@pytest.mark.asyncio
+async def test_filler_disabled_when_threshold_unset():
+    """No filler config → behave exactly like before (no filler pushed)."""
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+    from reach_layer_base import DoneEvent, SentenceEvent
+
+    cfg = _filler_config(threshold_ms=20, phrase="")  # phrase empty → disabled
+
+    async def _slow_stream(_session_id, user_id=None):
+        await asyncio.sleep(0.1)
+        yield SentenceEvent(text="Hello.", sentence_index=0)
+        yield DoneEvent(turn_status="completed")
+
+    channel = MagicMock()
+    channel.submit_input = AsyncMock(return_value=None)
+    channel.subscribe_events = _slow_stream
+
+    proc = AgentCoreLLMProcessor(cfg, call_sid="CA1", session_id="s1", channel=channel)
+    pushed = []
+    proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
+
+    await proc.process_frame(
+        TranscriptionFrame(text="hi", user_id="", timestamp=""),
+        FrameDirection.DOWNSTREAM,
+    )
+
+    speak_texts = [f.text for f in pushed if isinstance(f, TTSSpeakFrame)]
+    # Only the real sentence reaches TTS; no filler.
+    assert speak_texts == ["Hello."]
+
+
+@pytest.mark.asyncio
+async def test_filler_suppressed_after_barge_in():
+    """A barge-in flag set before the timer fires must suppress the filler."""
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+    from reach_layer_base import DoneEvent, SentenceEvent
+
+    cfg = _filler_config(threshold_ms=20, phrase="एक सेकंड")
+
+    bargein_started = asyncio.Event()
+
+    async def _slow_stream(_session_id, user_id=None):
+        bargein_started.set()
+        await asyncio.sleep(0.2)  # gives the test time to flip _interrupted
+        yield DoneEvent(turn_status="interrupted")
+
+    channel = MagicMock()
+    channel.submit_input = AsyncMock(return_value=None)
+    channel.subscribe_events = _slow_stream
+
+    proc = AgentCoreLLMProcessor(cfg, call_sid="CA1", session_id="s1", channel=channel)
+    pushed = []
+    proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
+
+    async def _flip_interrupt():
+        await bargein_started.wait()
+        proc._interrupted = True
+
+    flipper = asyncio.create_task(_flip_interrupt())
+    await proc.process_frame(
+        TranscriptionFrame(text="hi", user_id="", timestamp=""),
+        FrameDirection.DOWNSTREAM,
+    )
+    await flipper
+
+    speak_texts = [f.text for f in pushed if isinstance(f, TTSSpeakFrame)]
+    assert "एक सेकंड" not in speak_texts, (
+        f"filler must not push after a barge-in; got {speak_texts!r}"
+    )
