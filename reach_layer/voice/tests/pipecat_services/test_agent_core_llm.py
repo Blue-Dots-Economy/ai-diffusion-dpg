@@ -492,15 +492,16 @@ async def test_done_event_session_ended_empty_terminal_word_logs_warning(config,
 
 
 @pytest.mark.asyncio
-async def test_start_interruption_pushes_acknowledgement_when_bot_speaking(session_config):
-    """_start_interruption speaks the configured template when bot was mid-TTS."""
+async def test_start_interruption_pushes_ack_when_recently_speaking(session_config):
+    """GH-203: ack fires when last TTSSpeakFrame is within the recency window."""
+    import time as _time
     from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
 
     session_config["telephony_adapter"]["agent_core"]["barge_in_acknowledgement"] = "ठीक है।"
     proc = AgentCoreLLMProcessor(
         session_config, call_sid="CA1", session_id="s1", channel=MagicMock()
     )
-    proc._bot_speaking = True  # simulate: bot was playing audio when user barged in
+    proc._last_tts_push_ts = _time.monotonic()  # very recent push
     pushed = []
     proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
 
@@ -513,22 +514,65 @@ async def test_start_interruption_pushes_acknowledgement_when_bot_speaking(sessi
 
 
 @pytest.mark.asyncio
-async def test_start_interruption_silent_when_bot_not_speaking(session_config):
-    """No ack when user-turn-start fires outside of bot TTS (e.g. idle, post-done)."""
+async def test_start_interruption_pushes_ack_when_sse_turn_active(session_config):
+    """GH-203: ack fires when an SSE turn is in flight, even with no recent TTS push."""
     from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
 
     session_config["telephony_adapter"]["agent_core"]["barge_in_acknowledgement"] = "ठीक है।"
     proc = AgentCoreLLMProcessor(
         session_config, call_sid="CA1", session_id="s1", channel=MagicMock()
     )
-    # _bot_speaking defaults False; explicit here for clarity.
-    proc._bot_speaking = False
+    proc._sse_turn_active = True  # mid-SSE turn — bot is producing the response
     pushed = []
     proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
 
     await proc._start_interruption()
 
-    # Flag still flips (so in-flight SSE loop exits) but no ack spoken.
+    assert proc._interrupted is True
+    assert any(
+        isinstance(f, TTSSpeakFrame) and f.text == "ठीक है।" for f in pushed
+    )
+
+
+@pytest.mark.asyncio
+async def test_start_interruption_silent_when_bot_idle(session_config):
+    """GH-203: idle (no recent TTS push, no SSE turn) → no ack on user-turn-start."""
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+
+    session_config["telephony_adapter"]["agent_core"]["barge_in_acknowledgement"] = "ठीक है।"
+    proc = AgentCoreLLMProcessor(
+        session_config, call_sid="CA1", session_id="s1", channel=MagicMock()
+    )
+    # Both legs closed: no TTS pushed, SSE not active. (_bot_speaking stale True
+    # would have falsely fired the old gate — verify the new gate ignores it.)
+    proc._bot_speaking = True
+    pushed = []
+    proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
+
+    await proc._start_interruption()
+
+    assert proc._interrupted is True
+    assert not any(isinstance(f, TTSSpeakFrame) for f in pushed)
+
+
+@pytest.mark.asyncio
+async def test_start_interruption_silent_when_recency_expired(session_config):
+    """GH-203: if last TTS push was longer ago than barge_in_recency_ms → no ack."""
+    import time as _time
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+
+    cfg = {**session_config}
+    cfg["channels"] = {"voice": {"barge_in_recency_ms": 100}}
+    cfg["telephony_adapter"]["agent_core"]["barge_in_acknowledgement"] = "ठीक है।"
+    proc = AgentCoreLLMProcessor(
+        cfg, call_sid="CA1", session_id="s1", channel=MagicMock()
+    )
+    proc._last_tts_push_ts = _time.monotonic() - 5.0  # 5 s ago, well past 100 ms
+    pushed = []
+    proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
+
+    await proc._start_interruption()
+
     assert proc._interrupted is True
     assert not any(isinstance(f, TTSSpeakFrame) for f in pushed)
 
@@ -536,13 +580,14 @@ async def test_start_interruption_silent_when_bot_not_speaking(session_config):
 @pytest.mark.asyncio
 async def test_start_interruption_empty_ack_stays_silent(session_config):
     """No acknowledgement configured → no TTSSpeakFrame pushed, flag still set."""
+    import time as _time
     from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
 
     # barge_in_acknowledgement defaults to ""
     proc = AgentCoreLLMProcessor(
         session_config, call_sid="CA1", session_id="s1", channel=MagicMock()
     )
-    proc._bot_speaking = True  # even if bot was speaking, empty ack stays silent
+    proc._last_tts_push_ts = _time.monotonic()  # gate would be open, ack still empty
     pushed = []
     proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
 

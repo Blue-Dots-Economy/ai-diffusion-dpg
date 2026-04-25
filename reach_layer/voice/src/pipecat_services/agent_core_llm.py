@@ -101,12 +101,9 @@ class AgentCoreLLMProcessor(FrameProcessor):
         # Empty string → go silent on barge-in (pipecat still flushes TTS).
         self._barge_in_acknowledgement: str = ac_cfg.get("barge_in_acknowledgement", "") or ""
         self._interrupted: bool = False
-        # Tracks whether the bot is currently playing TTS. Set when the output
-        # transport emits BotStartedSpeakingFrame; cleared on
-        # BotStoppedSpeakingFrame. Used to gate the barge-in acknowledgement
-        # so it only plays when the caller actually cut the bot off, not on
-        # every user-turn-start (pipecat's UserTurnProcessor emits
-        # InterruptionFrame on every VAD-start regardless of bot state).
+        # Retained for log compatibility only; the gate now uses the compound
+        # signal below (GH-203). BotStartedSpeakingFrame / BotStoppedSpeakingFrame
+        # still flip this for traceability in turn lifecycle logs.
         self._bot_speaking: bool = False
         self._call_sid = call_sid
         self._session_id = session_id
@@ -136,6 +133,26 @@ class AgentCoreLLMProcessor(FrameProcessor):
             self._channel_config.get("opening_phrase_join_timeout_ms", 500)
         ) / 1000.0
 
+        # GH-203: compound gate for the barge-in acknowledgement. The original
+        # ``_bot_speaking`` flag (driven by BotStartedSpeakingFrame /
+        # BotStoppedSpeakingFrame) was unreliable on the Vobiz pipeline — the
+        # stop-frame fired before audio finished draining, leaving the flag
+        # stale so the ack played on every user-turn-start. We now gate on:
+        #   leg "recency"    — last TTSSpeakFrame pushed within
+        #                      ``barge_in_recency_ms`` (default 1500 ms);
+        #   leg "sse_active" — an SSE turn is currently in flight (between
+        #                      submit_input and DoneEvent / break).
+        # Ack fires when at least one leg says the bot is actively speaking;
+        # gate_leg is logged so this stays debuggable from production logs.
+        self._last_tts_push_ts: float = 0.0
+        self._sse_turn_active: bool = False
+        self._barge_in_recency_ms: int = int(
+            self._channel_config.get(
+                "barge_in_recency_ms",
+                ac_cfg.get("barge_in_recency_ms", 1500),
+            )
+        )
+
         # Read assembly_mode from reach_layer.channels.voice. Defaults to "direct"
         # so existing tests and pre-config installs keep their current behaviour.
         self._assembly_mode = (
@@ -160,6 +177,38 @@ class AgentCoreLLMProcessor(FrameProcessor):
                 "session_id": session_id,
             },
         )
+
+    async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
+        """Forward to the base implementation; record TTS push timestamps (GH-203).
+
+        Records the monotonic time of every outbound TTSSpeakFrame so the
+        barge-in gate's recency leg can detect whether the bot was actively
+        speaking at the moment the InterruptionFrame arrived.
+        """
+        if isinstance(frame, TTSSpeakFrame):
+            self._last_tts_push_ts = time.monotonic()
+        return await super().push_frame(frame, direction)
+
+    def _bot_actively_speaking(self) -> tuple[bool, str]:
+        """Compound gate result for the barge-in acknowledgement (GH-203).
+
+        Returns:
+            (active, gate_leg) where ``active`` is True when at least one
+            leg says the bot is actively speaking. ``gate_leg`` is one of
+            "recency", "sse_active", "both", or "none" for log readability.
+        """
+        recency_open = False
+        if self._last_tts_push_ts > 0.0 and self._barge_in_recency_ms > 0:
+            elapsed_ms = (time.monotonic() - self._last_tts_push_ts) * 1000.0
+            recency_open = elapsed_ms < self._barge_in_recency_ms
+        sse_open = self._sse_turn_active
+        if recency_open and sse_open:
+            return True, "both"
+        if recency_open:
+            return True, "recency"
+        if sse_open:
+            return True, "sse_active"
+        return False, "none"
 
     def set_opening_phrase_task(self, task: Optional[asyncio.Task]) -> None:
         """Register the opening-phrase SSE consumer task for serialisation (GH-202).
@@ -260,16 +309,18 @@ class AgentCoreLLMProcessor(FrameProcessor):
         flushing the already-queued TTS audio — see
         FrameProcessor._start_interruption.
 
-        The acknowledgement is gated on ``_bot_speaking`` because pipecat's
-        UserTurnProcessor fires InterruptionFrame on every user-turn-start
-        (not only when the bot is mid-response); without the gate the
-        phrase would play before every user turn, not just on real
-        interruptions.
+        The acknowledgement is gated on a compound "bot actively speaking"
+        signal (GH-203) — recency of the last TTS push *or* an in-flight SSE
+        turn. This is more reliable than the original BotStartedSpeakingFrame /
+        BotStoppedSpeakingFrame flag, which goes stale on the Vobiz pipeline
+        because the stop-frame fires before audio finishes draining. Pipecat's
+        UserTurnProcessor fires InterruptionFrame on every user-turn-start, so
+        without the gate the phrase would play before every user turn.
 
         Called by the pipecat framework, not by user code.
         """
         await super()._start_interruption()
-        was_speaking = self._bot_speaking
+        active, gate_leg = self._bot_actively_speaking()
         self._interrupted = True
         logger.info(
             "agent_core_llm.interruption",
@@ -278,11 +329,12 @@ class AgentCoreLLMProcessor(FrameProcessor):
                 "status": "success",
                 "call_sid": self._call_sid,
                 "session_id": self._session_id,
-                "bot_was_speaking": was_speaking,
+                "bot_actively_speaking": active,
+                "gate_leg": gate_leg,
                 "has_acknowledgement": bool(self._barge_in_acknowledgement),
             },
         )
-        if was_speaking and self._barge_in_acknowledgement:
+        if active and self._barge_in_acknowledgement:
             await self.push_frame(
                 TTSSpeakFrame(text=self._barge_in_acknowledgement)
             )
@@ -429,6 +481,8 @@ class AgentCoreLLMProcessor(FrameProcessor):
             await self._channel.submit_input(
                 self._session_id, frame.text, self._user_id or None
             )
+            # GH-203: opening the SSE turn — barge-in gate's sse_active leg.
+            self._sse_turn_active = True
         except Exception as exc:
             latency_ms = int((time.time() - start) * 1000)
             logger.error(
@@ -514,6 +568,13 @@ class AgentCoreLLMProcessor(FrameProcessor):
             if sentences_pushed == 0:
                 await self.push_frame(TTSSpeakFrame(text=self._fallback_phrase))
             return
+        finally:
+            # GH-203: SSE turn is no longer in flight — close the sse_active
+            # leg of the barge-in gate. Recency leg keeps the gate open for a
+            # short window so audio still draining out of TTS continues to
+            # count as "speaking" for any user interruption that lands during
+            # that drain.
+            self._sse_turn_active = False
 
         # Nothing came through (no sentences, no done) → speak fallback so the
         # caller doesn't sit in silence. Skip on barge-in (interrupted/abandoned)
