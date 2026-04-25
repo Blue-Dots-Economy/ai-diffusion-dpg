@@ -84,7 +84,10 @@ class TurnAssemblerBase(ABC):
 
     @abstractmethod
     async def subscribe(
-        self, session_id: str, user_id: str | None = None
+        self,
+        session_id: str,
+        user_id: str | None = None,
+        channel: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Yield StreamEvents for this session until DoneEvent is received.
 
@@ -94,6 +97,11 @@ class TurnAssemblerBase(ABC):
                 connect for a new session, triggers proactive emission of
                 the entry subagent's opening_phrase (GH-149) before the
                 event-drain loop begins.
+            channel: Optional channel identifier ("voice", "web", "cli").
+                When the reach-layer adapter supplies it at SSE subscribe
+                time, the session is created with the correct channel from
+                birth so per-channel config resolves correctly even when
+                subscribe() runs before the first add_segment().
 
         Yields:
             StreamEvent instances from the invocation pipeline.
