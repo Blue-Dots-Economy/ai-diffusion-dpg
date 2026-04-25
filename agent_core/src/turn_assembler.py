@@ -478,18 +478,77 @@ class TurnAssembler(TurnAssemblerBase):
             )
             return
 
-        # GH-201: when consent is required and not yet granted, suppress the
-        # opening phrase. The orchestrator emits it on the first post-consent
-        # turn so the caller doesn't hear two utterances back-to-back at session
-        # start. Flag is intentionally left unset here.
+        # GH-239: if consent is required and not yet granted, emit the
+        # configured ``agent.consent_prompt`` as the session's first
+        # utterance instead of staying silent. Bumping ``turn_count`` to 1
+        # tells the orchestrator's consent gate to skip the prompt-on-T1
+        # branch and run ``verify_consent`` against the user's first
+        # transcribed reply. Idempotent via ``consent_prompt_emitted`` so
+        # an SSE reconnect mid-consent doesn't double-prompt.
         ask_for_consent: bool = self._config.get("agent", {}).get("ask_for_consent", False)
         if ask_for_consent and bundle.session.get("user_storage_mode") is None:
+            if bundle.session.get("consent_prompt_emitted"):
+                logger.info(
+                    "turn_assembler.consent_prompt_already_emitted",
+                    extra={
+                        "operation": "turn_assembler._emit_opening_phrase_if_first",
+                        "status": "skipped",
+                        "reason": "consent_prompt_emitted flag already set",
+                        "session_id": session_id,
+                    },
+                )
+                return
+
+            consent_prompt_text: str = (
+                self._config.get("agent", {}).get("consent_prompt", "") or ""
+            ).strip()
+            if not consent_prompt_text:
+                # Misconfiguration — preserve previous suppress-and-stay-silent
+                # behaviour rather than emitting an empty utterance.
+                logger.warning(
+                    "turn_assembler.consent_prompt_missing_pending_consent",
+                    extra={
+                        "operation": "turn_assembler._emit_opening_phrase_if_first",
+                        "status": "skipped",
+                        "reason": "ask_for_consent=true but agent.consent_prompt is empty",
+                        "session_id": session_id,
+                    },
+                )
+                return
+
+            try:
+                await self._async_memory.write(
+                    session_id, user_id, "session", "consent_prompt_emitted", True
+                )
+                await self._async_memory.write(
+                    session_id, user_id, "session", "turn_count", 1
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "turn_assembler.consent_prompt_flag_write_failed",
+                    extra={
+                        "operation": "turn_assembler._emit_opening_phrase_if_first",
+                        "status": "skipped",
+                        "session_id": session_id,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                )
+                return
+
+            async with session._lock:
+                op_turn = await session.replace_turn(seed_segments=[])
+                op_turn.status = TurnStatus.INVOKED
+                await op_turn.event_queue.put(
+                    SentenceEvent(text=consent_prompt_text, sentence_index=0)
+                )
+                await op_turn.event_queue.put(DoneEvent(turn_status="completed"))
+                op_turn.status = TurnStatus.COMPLETED
+
             logger.info(
-                "turn_assembler.opening_phrase_suppressed_pending_consent",
+                "turn_assembler.consent_prompt_emitted",
                 extra={
                     "operation": "turn_assembler._emit_opening_phrase_if_first",
-                    "status": "skipped",
-                    "reason": "ask_for_consent=true and consent not yet granted",
+                    "status": "emitted",
                     "session_id": session_id,
                 },
             )

@@ -1320,19 +1320,75 @@ class TestOpeningPhraseOnSubscribe:
         memory.write.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_suppressed_when_consent_pending(self):
-        """GH-201: ask_for_consent=true + user_storage_mode unset → no emission, flag stays unset."""
+    async def test_emits_consent_prompt_when_consent_pending(self):
+        """GH-239: ask_for_consent=true + user_storage_mode unset → emit consent_prompt
+        instead of staying silent. Bumps turn_count to 1 so the orchestrator's
+        consent gate runs verify_consent against the user's first reply.
+        """
         workflow = _make_opening_phrase_workflow(opening_phrase="नमस्ते।")
         memory = _make_opening_phrase_memory(session_state={})  # no user_storage_mode
         cfg = _make_config()
-        cfg["agent"] = {"ask_for_consent": True}
+        cfg["agent"] = {
+            "ask_for_consent": True,
+            "consent_prompt": "क्या मैं याद रख सकती हूँ?",
+        }
         ta = _make_assembler(workflow=workflow, async_memory=memory, config=cfg)
 
         session = ta._get_or_create_session("s1")
         await ta._emit_opening_phrase_if_first("s1", "u1", session)
 
-        assert session.current_turn is None  # no events emitted
-        memory.write.assert_not_called()  # flag deliberately left unset
+        # A consent-prompt turn was installed.
+        assert session.current_turn is not None
+        events = []
+        async for ev in session.current_turn.iter_events():
+            events.append(ev)
+            if isinstance(ev, DoneEvent):
+                break
+        assert isinstance(events[0], SentenceEvent)
+        assert events[0].text == "क्या मैं याद रख सकती हूँ?"
+        # Flag latched + turn_count bumped; opening_phrase_emitted left untouched
+        # so the post-consent flow can still set it later if needed.
+        write_calls = {(c.args[2], c.args[3]): c.args[4] for c in memory.write.call_args_list}
+        assert write_calls[("session", "consent_prompt_emitted")] is True
+        assert write_calls[("session", "turn_count")] == 1
+        assert ("session", "opening_phrase_emitted") not in write_calls
+
+    @pytest.mark.asyncio
+    async def test_consent_pending_skips_when_already_emitted(self):
+        """GH-239: consent_prompt_emitted flag prevents re-emission on reconnect."""
+        workflow = _make_opening_phrase_workflow(opening_phrase="नमस्ते।")
+        memory = _make_opening_phrase_memory(
+            session_state={"consent_prompt_emitted": True}
+        )
+        cfg = _make_config()
+        cfg["agent"] = {
+            "ask_for_consent": True,
+            "consent_prompt": "क्या मैं याद रख सकती हूँ?",
+        }
+        ta = _make_assembler(workflow=workflow, async_memory=memory, config=cfg)
+
+        session = ta._get_or_create_session("s1")
+        await ta._emit_opening_phrase_if_first("s1", "u1", session)
+
+        assert session.current_turn is None
+        memory.write.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_consent_pending_with_empty_prompt_stays_silent(self):
+        """GH-239: misconfigured ask_for_consent=true + empty consent_prompt
+        falls back to suppress-and-stay-silent so we don't emit empty audio.
+        """
+        workflow = _make_opening_phrase_workflow(opening_phrase="नमस्ते।")
+        memory = _make_opening_phrase_memory(session_state={})
+        cfg = _make_config()
+        cfg["agent"] = {"ask_for_consent": True, "consent_prompt": ""}
+        ta = _make_assembler(workflow=workflow, async_memory=memory, config=cfg)
+
+        session = ta._get_or_create_session("s1")
+        await ta._emit_opening_phrase_if_first("s1", "u1", session)
+
+        assert session.current_turn is None
+        memory.write.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_emits_when_consent_required_but_already_granted(self):
