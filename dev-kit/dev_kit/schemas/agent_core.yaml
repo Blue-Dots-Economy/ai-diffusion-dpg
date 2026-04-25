@@ -19,7 +19,6 @@ conversation:
   output_blocked_message: ""    # shown when LLM output is blocked by Trust Layer
   unknown_intent_message: ""    # shown when intent cannot be classified
   termination_message: ""       # shown on session end (LLM translates to user language)
-  consent_message: ""           # ask user for data storage consent
   consent_decline_ack: ""       # acknowledge when user declines consent
   unsupported_language_message: ""  # shown when user requests a language not in supported_languages
   profile_complete_message: ""  # confirm profile collection is complete

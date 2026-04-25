@@ -5,7 +5,7 @@ agent:
   primary_model: claude-haiku-4-5-20251001
   fallback_model: claude-haiku-4-5-20251001
   ask_for_consent: true
-  consent_prompt: "नमस्ते! क्या मैं आपकी ट्रेड और लोकेशन याद रख सकती हूँ? इससे अगली बार आपको दोबारा बताना नहीं पड़ेगा।"
+  consent_prompt: "नमस्ते! काम की बात में आपका स्वागत है। क्या मैं आपकी ट्रेड और लोकेशन याद रख सकती हूँ? इससे अगली बार आपको दोबारा बताना नहीं पड़ेगा।"
 
   # GH-206: cap tool chains at 2 rounds. T9-style runs (get_profile →
   # market_lookup → apply_job) chained 3 serial tool calls into a ~18 s
@@ -150,13 +150,6 @@ conversation:
   termination_message: "शुक्रिया! आपसे बात करके अच्छा लगा। अगर फिर कोई ज़रूरत हो तो ज़रूर आएँ।"
   unsupported_language_message: "माफ़ कीजिए, अभी हम सिर्फ़ हिंदी, कन्नड़, इंग्लिश और हिंग्लिश में बात कर सकते हैं। कृपया हिंदी या इंग्लिश में पूछें।"
 
-  # Consent and profile flow messages — the LLM translates these into the user's language.
-  consent_message: >
-    नमस्कार! काम की बात में आपका स्वागत है।
-    हम आपकी मदद करने से पहले, एक बार पूछना चाहते हैं —
-    क्या आप अपनी जानकारी सेव करने की अनुमति देते हैं?
-    इससे अगली बार आपको वही सवाल नहीं पूछे जाएँगे।
-    हाँ या नहीं — दोनों ठीक है।
   consent_decline_ack: >
     ठीक है, आपकी प्राइवेसी का हम सम्मान करते हैं।
     आपकी जानकारी इस सेशन के बाद डिलीट कर दी जाएगी।
