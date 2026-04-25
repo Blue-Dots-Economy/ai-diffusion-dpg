@@ -10,9 +10,11 @@ Coverage:
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from src.models import NLUResult, TurnEvent, TrustCheckResult, UserStateClassification
+from src.models import DoneEvent, NLUResult, SentenceEvent, SignalEvent, TurnEvent, TrustCheckResult, UserStateClassification
 
 
 def test_turn_event_has_trace_id_field():
@@ -106,12 +108,7 @@ def test_done_event_session_ended_accepts_true():
     assert evt.session_ended is True
 
 
-"""Tests for StreamEvent classes after adding turn_id field (#224)."""
-import json
-
-from src.models import DoneEvent, SentenceEvent, SignalEvent
-
-
+# Tests for StreamEvent classes after adding turn_id field (#224)
 def test_signal_event_has_turn_id_default_empty():
     ev = SignalEvent(stage="memory_read", status="start")
     assert ev.turn_id == ""
