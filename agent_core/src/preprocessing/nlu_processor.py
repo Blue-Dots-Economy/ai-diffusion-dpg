@@ -16,6 +16,7 @@ Config section read: preprocessing.nlu_processor
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -136,6 +137,14 @@ class NLUProcessor:
         # (e.g. for debugging or for models that don't benefit from caching).
         self._prompt_cache_enabled: bool = bool(
             nlu_config.get("prompt_cache_enabled", True)
+        )
+
+        # GH-218 — opt-in INFO log with the parsed NLU response JSON and the
+        # final composed user message. Off by default because the values can
+        # carry PII; turn on per-domain for triage windows.
+        self._log_raw_response: bool = bool(nlu_config.get("log_raw_response", False))
+        self._log_raw_response_max_chars: int = int(
+            nlu_config.get("log_raw_response_max_chars", 2000)
         )
 
         raw_threshold = nlu_config.get("user_state_confidence_threshold", 0.4)
@@ -315,8 +324,9 @@ class NLUProcessor:
                 )
             context_parts.append(f"User message: {normalised_input}")
 
+            user_message_text: str = "\n".join(context_parts)
             messages: list[dict] = [
-                {"role": "user", "content": "\n".join(context_parts)}
+                {"role": "user", "content": user_message_text}
             ]
 
             llm_response = llm.call(
@@ -406,6 +416,46 @@ class NLUProcessor:
                 confidence=float(parsed.get("confidence", 0.0)),
                 user_state=user_state_obj,
             )
+
+            # GH-218: emit a structured triage log alongside the existing
+            # success log. PII-safe by default — entity keys only, message
+            # length + hash. The full parsed response and user message are
+            # included only when ``log_raw_response`` is True (opt-in).
+            user_msg_bytes = user_message_text.encode("utf-8")
+            user_msg_sha12 = hashlib.sha256(user_msg_bytes).hexdigest()[:12]
+            user_state_id = (
+                user_state_obj.id if user_state_obj is not None else None
+            )
+            user_state_conf = (
+                user_state_obj.confidence if user_state_obj is not None else None
+            )
+            triage_extra: dict[str, Any] = {
+                "operation": "nlu_processor.process",
+                "status": "success",
+                "intent": result.intent,
+                "sentiment": result.sentiment,
+                "confidence": result.confidence,
+                "entity_keys": sorted(result.entities.keys()),
+                "user_state_id": user_state_id,
+                "user_state_confidence": user_state_conf,
+                "user_message_chars": len(user_message_text),
+                "user_message_sha256_prefix": user_msg_sha12,
+                "raw_response_chars": len(llm_response.content or ""),
+                "current_subagent_id": current_subagent_id or None,
+            }
+            if self._log_raw_response:
+                cap = self._log_raw_response_max_chars
+                try:
+                    parsed_json = json.dumps(parsed, ensure_ascii=False)
+                except Exception:  # noqa: BLE001
+                    parsed_json = repr(parsed)
+                triage_extra["parsed_response"] = (
+                    parsed_json if cap == 0 else parsed_json[:cap]
+                )
+                triage_extra["user_message"] = (
+                    user_message_text if cap == 0 else user_message_text[:cap]
+                )
+            logger.info("nlu_processor.triage", extra=triage_extra)
 
             logger.info(
                 "nlu_processor.process",

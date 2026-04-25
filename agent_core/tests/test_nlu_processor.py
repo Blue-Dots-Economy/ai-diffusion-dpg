@@ -755,3 +755,102 @@ def test_cache_marker_is_stable_across_turns(processor):
     sys2 = llm2.call.call_args.kwargs["system"]
     # Same subagent → same allowed_intents → cached block must be byte-identical.
     assert sys1 == sys2
+
+
+# ---------------------------------------------------------------------------
+# GH-218: triage log
+# ---------------------------------------------------------------------------
+
+
+def test_triage_log_emits_safe_summary_by_default(processor, caplog):
+    """Default (log_raw_response=False) → triage log present, no raw fields."""
+    llm = make_llm_returning(
+        intent="market_truth_query",
+        entities={"location": "Hubli", "trade": "electrician"},
+    )
+    with caplog.at_level("INFO"):
+        processor.process("kaam chahiye Hubli", "what trade?", "enquiry", llm)
+    triage = [r for r in caplog.records if r.message == "nlu_processor.triage"]
+    assert len(triage) == 1, "expected exactly one triage log line"
+    extra = triage[0].__dict__
+    # Safe fields are always present.
+    assert extra["intent"] == "market_truth_query"
+    assert extra["entity_keys"] == ["location", "trade"]
+    assert extra["user_message_chars"] > 0
+    assert len(extra["user_message_sha256_prefix"]) == 12
+    assert extra["raw_response_chars"] > 0
+    # Raw fields opt-in only.
+    assert "parsed_response" not in extra
+    assert "user_message" not in extra
+
+
+def test_triage_log_emits_raw_when_enabled(caplog):
+    """log_raw_response=True → parsed_response and user_message appear in the log."""
+    cfg = {
+        "preprocessing": {
+            "nlu_processor": {
+                **CONFIG["preprocessing"]["nlu_processor"],
+                "log_raw_response": True,
+            }
+        }
+    }
+    proc = NLUProcessor(cfg)
+    llm = make_llm_returning(
+        intent="market_truth_query", entities={"location": "Hubli"}
+    )
+    with caplog.at_level("INFO"):
+        proc.process("kaam chahiye Hubli", "what trade?", "enquiry", llm)
+    triage = [r for r in caplog.records if r.message == "nlu_processor.triage"]
+    assert len(triage) == 1
+    extra = triage[0].__dict__
+    assert "parsed_response" in extra
+    assert "market_truth_query" in extra["parsed_response"]
+    assert "user_message" in extra
+    assert "kaam chahiye Hubli" in extra["user_message"]
+
+
+def test_triage_log_user_message_hash_is_stable(processor, caplog):
+    """Same user message text → same sha256 prefix across runs."""
+    with caplog.at_level("INFO"):
+        processor.process(
+            "इलेक्ट्रिशियन का काम है",
+            current_question="trade?",
+            current_subagent_id="enquiry",
+            llm=make_llm_returning(intent="market_truth_query"),
+        )
+        first = next(r.__dict__["user_message_sha256_prefix"]
+                     for r in caplog.records if r.message == "nlu_processor.triage")
+    caplog.clear()
+    with caplog.at_level("INFO"):
+        processor.process(
+            "इलेक्ट्रिशियन का काम है",
+            current_question="trade?",
+            current_subagent_id="enquiry",
+            llm=make_llm_returning(intent="market_truth_query"),
+        )
+        second = next(r.__dict__["user_message_sha256_prefix"]
+                      for r in caplog.records if r.message == "nlu_processor.triage")
+    assert first == second, "hash should be stable for identical user_message_text"
+
+
+def test_triage_log_truncates_to_max_chars(caplog):
+    """log_raw_response_max_chars caps the parsed_response and user_message fields."""
+    cfg = {
+        "preprocessing": {
+            "nlu_processor": {
+                **CONFIG["preprocessing"]["nlu_processor"],
+                "log_raw_response": True,
+                "log_raw_response_max_chars": 50,
+            }
+        }
+    }
+    proc = NLUProcessor(cfg)
+    llm = make_llm_returning(
+        intent="market_truth_query",
+        entities={"location": "x" * 500},  # forces a long parsed payload
+    )
+    with caplog.at_level("INFO"):
+        proc.process("a very long user message " * 10, "q", "enquiry", llm)
+    triage = next(r.__dict__ for r in caplog.records if r.message == "nlu_processor.triage")
+    assert len(triage["parsed_response"]) <= 50
+    assert len(triage["user_message"]) <= 50

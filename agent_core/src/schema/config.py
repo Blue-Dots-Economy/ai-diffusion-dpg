@@ -389,6 +389,11 @@ class NLUProcessorConfig(BaseModel):
         default_factory=lambda: ["neutral", "positive", "distressed", "frustrated"]
     )
     signal_intents: dict[str, str] = Field(default_factory=dict)
+    # GH-218: opt-in INFO log with the full parsed NLU response JSON and the
+    # final composed user message. Off by default because the values can
+    # carry PII (entity values, message text). Turn on for triage windows.
+    log_raw_response: bool = False
+    log_raw_response_max_chars: int = Field(default=2000, ge=0)
 
 
 class PreprocessingConfig(BaseModel):
