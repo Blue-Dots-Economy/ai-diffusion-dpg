@@ -151,6 +151,25 @@ class RecentToolExchangesConfig(BaseModel):
     max_chars: int = Field(default=4000, ge=0)
 
 
+class CurrentQuestionConfig(BaseModel):
+    """Guardrails on the per-session ``current_question`` memory field (#207).
+
+    The orchestrator persists every turn's bot response under ``current_question``
+    so the next turn can show the LLM the previous prompt context. Pre-#200
+    turn pile-ups occasionally fed concatenated multi-turn responses into this
+    field, which then poisoned the next turn's prompt as
+    ``[Last question asked: <bot_response_1> ... <bot_response_2> ...]``.
+
+    The cap and the concat detector are defense-in-depth: #200's cancel-and-fold
+    removes the source of the concatenation, but if it ever reappears upstream
+    we want to detect and trim it rather than silently let it through.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    max_chars: int = Field(default=500, ge=1)
+
+
 class TerminationShortCircuitConfig(BaseModel):
     """Skip the LLM round trip for high-confidence termination_intent (#204).
 
@@ -182,6 +201,9 @@ class AgentConfig(BaseModel):
     consent_prompt: str = ""
     termination_short_circuit: TerminationShortCircuitConfig = Field(
         default_factory=TerminationShortCircuitConfig
+    )
+    current_question: CurrentQuestionConfig = Field(
+        default_factory=CurrentQuestionConfig
     )
     recent_tool_exchanges: RecentToolExchangesConfig = Field(
         default_factory=RecentToolExchangesConfig

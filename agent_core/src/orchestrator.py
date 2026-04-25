@@ -1036,8 +1036,15 @@ class AgentCore(AgentCoreBase):
 
         # ── Step 11: Write current_question synchronously ─────────────
         # Persisted before returning so the next turn has the correct context.
-        self._write_memory_sync(session_id, user_id, "session", "current_question", final_text)
-        bundle.session["current_question"] = final_text
+        # #207: sanitize defends against accidental concatenation upstream and
+        # caps the value to a sane ceiling.
+        cq_value = self._sanitize_current_question(
+            prev=bundle.session.get("current_question", ""),
+            new=final_text,
+            session_id=session_id,
+        )
+        self._write_memory_sync(session_id, user_id, "session", "current_question", cq_value)
+        bundle.session["current_question"] = cq_value
 
         latency_ms = int((time.time() - start) * 1000)
         logger.info(
@@ -2066,6 +2073,68 @@ class AgentCore(AgentCoreBase):
                 timestamp_ms=turn_input.timestamp_ms,
             )
         )
+
+    def _sanitize_current_question(
+        self, *, prev: str, new: str, session_id: str
+    ) -> str:
+        """Apply the #207 guardrails to the value about to be written.
+
+        Memory Layer's ``write`` overwrites (Redis HSET), so this helper does
+        not protect against an appending store — it protects against an
+        upstream caller handing us a string that already contains the prior
+        ``current_question`` as a prefix (the symptom seen pre-#200 when
+        cancelled and successor turn responses got glued together by the
+        old pile-up path).
+
+        Behaviour:
+          * Empty ``new`` → empty result.
+          * ``new`` starts with ``prev`` and is strictly longer (and ``prev``
+            is long enough to be a meaningful prefix, > 8 chars) → log
+            ``orchestrator.current_question_accumulation_detected`` at
+            WARNING and strip the prefix so we store only the latest
+            response.
+          * Always cap the final value at ``agent.current_question.max_chars``.
+
+        Args:
+            prev: The value currently in memory for this session (may be "").
+            new: The value the caller wants to persist.
+            session_id: For log correlation only.
+
+        Returns:
+            The sanitized value to write.
+        """
+        max_chars: int = int(
+            self._config.get("agent", {}).get("current_question", {}).get("max_chars", 500)
+        )
+        new = (new or "").strip()
+        prev = (prev or "").strip()
+        if not new:
+            return ""
+        # Concat detector: prev is meaningfully long, new starts with prev,
+        # new is strictly longer than prev. > 8-char threshold avoids
+        # warnings on trivial overlaps like "Hi." or single-word prefixes.
+        if (
+            prev
+            and len(prev) > 8
+            and new != prev
+            and new.startswith(prev)
+        ):
+            stripped = new[len(prev):].lstrip(" \n\t।.!?")
+            logger.warning(
+                "orchestrator.current_question_accumulation_detected",
+                extra={
+                    "operation": "orchestrator._sanitize_current_question",
+                    "status": "skipped",
+                    "session_id": session_id,
+                    "prev_len": len(prev),
+                    "new_len": len(new),
+                    "stored_len": len(stripped),
+                },
+            )
+            new = stripped or prev  # if stripping leaves nothing, fall back to prev
+        if len(new) > max_chars:
+            new = new[:max_chars].rstrip()
+        return new
 
     def _translate_consent_message(self, message: str, target_language: str) -> str:
         """Translate the consent prompt to the user's detected language.
@@ -3366,9 +3435,16 @@ class AgentCore(AgentCoreBase):
             if _aborted():
                 return
             yield _stamp(SignalEvent(stage="memory_write", status="start"))
+            # #207: sanitize defends against accidental concatenation upstream
+            # and caps the value to a sane ceiling.
+            stream_cq_value = self._sanitize_current_question(
+                prev=bundle.session.get("current_question", ""),
+                new=full_response_text,
+                session_id=session_id,
+            )
             asyncio.create_task(
                 self._async_memory.write(
-                    session_id, user_id, "session", "current_question", full_response_text.strip()
+                    session_id, user_id, "session", "current_question", stream_cq_value
                 )
             )
 

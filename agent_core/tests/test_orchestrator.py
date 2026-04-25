@@ -1673,3 +1673,82 @@ async def test_stream_turn_falls_back_to_internal_turn_id_when_unset():
     assert uuid_pattern.match(internal_id), (
         f"Generated turn_id does not look like a uuid4: {internal_id!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# GH-207: current_question accumulation guardrail
+# ---------------------------------------------------------------------------
+
+
+def test_sanitize_current_question_overwrites_normally():
+    """Plain new value, no accumulation → returned as-is (within cap)."""
+    agent = _make_agent(session_data={"current_question": "Old Q?"})
+    out = agent._sanitize_current_question(
+        prev="Old Q?", new="Brand new question?", session_id="s1"
+    )
+    assert out == "Brand new question?"
+
+
+def test_sanitize_current_question_strips_concatenated_prefix(caplog):
+    """new starts with prev (and is strictly longer) → strip + warn."""
+    agent = _make_agent()
+    prev = "बिल्कुल। आपका अप्लीकेशन सबमिट हो गया है।"
+    glued = prev + " ठीक है। आपका एप्लीकेशन सबमिट हो चुका है।"
+    with caplog.at_level("WARNING"):
+        out = agent._sanitize_current_question(prev=prev, new=glued, session_id="s1")
+    assert prev not in out, "prev should be stripped from accumulated value"
+    assert "ठीक है" in out
+    assert any(
+        "current_question_accumulation_detected" in r.message for r in caplog.records
+    ), "expected accumulation warning to be logged"
+
+
+def test_sanitize_current_question_caps_long_values():
+    """Values longer than max_chars are truncated."""
+    agent = _make_agent()
+    long_text = "क" * 1200  # well past the 500-char default
+    out = agent._sanitize_current_question(prev="", new=long_text, session_id="s1")
+    assert len(out) == 500
+
+
+def test_sanitize_current_question_no_warning_on_short_prev():
+    """Short prev (≤ 8 chars) → not treated as a meaningful prefix even if new starts with it."""
+    agent = _make_agent()
+    out = agent._sanitize_current_question(
+        prev="Hi.", new="Hi. How are you doing?", session_id="s1"
+    )
+    # New text retained verbatim — no prefix-strip on a trivial prev.
+    assert out == "Hi. How are you doing?"
+
+
+def test_sanitize_current_question_empty_new_returns_empty():
+    """Empty new string → empty result, no error."""
+    agent = _make_agent()
+    assert agent._sanitize_current_question(prev="prev", new="", session_id="s1") == ""
+
+
+def test_process_turn_writes_sanitized_current_question(caplog):
+    """End-to-end: a turn whose final_text re-contains prev triggers the warning
+    and writes only the new portion."""
+    prev = "बिल्कुल। आपका अप्लीकेशन सबमिट हो गया है।"
+    glued = prev + " ठीक है। आपका एप्लीकेशन सबमिट हो चुका है।"
+    agent = _make_agent(
+        session_data={"current_subagent_id": "market_truth", "current_question": prev},
+        manager_text=glued,
+    )
+    with caplog.at_level("WARNING"):
+        agent.process_turn(_turn_input("hi"))
+
+    # Find the current_question write call.
+    cq_writes = [
+        c for c in agent._memory.write.call_args_list
+        if c.args[3] == "current_question"
+    ]
+    assert cq_writes, "expected at least one current_question write"
+    written_value = cq_writes[-1].args[4]
+    assert prev not in written_value, (
+        f"sanitized write should not still contain the prior current_question: {written_value!r}"
+    )
+    assert any(
+        "current_question_accumulation_detected" in r.message for r in caplog.records
+    )
