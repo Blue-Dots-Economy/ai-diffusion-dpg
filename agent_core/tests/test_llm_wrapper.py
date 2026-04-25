@@ -565,6 +565,59 @@ async def test_stream_non_retryable_api_error_yields_nothing(mock_anthropic_cls,
 
 
 # ---------------------------------------------------------------------------
+# stream_call() — abort_event support (#224)
+# ---------------------------------------------------------------------------
+
+
+@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
+@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+async def test_stream_call_accepts_abort_event_kwarg(mock_anthropic_cls, mock_async_cls):
+    """stream_call() accepts abort_event=None and behaves identically to no kwarg."""
+    mock_client = MagicMock()
+    mock_anthropic_cls.return_value = mock_client
+    mock_async_client = MagicMock()
+    mock_async_cls.return_value = mock_async_client
+    mock_async_client.messages.stream = MagicMock(
+        return_value=_make_stream_context(["a", "b", "c"])
+    )
+
+    wrapper = ClaudeLLMWrapper(VALID_CONFIG)
+    tokens = await _collect_stream(
+        wrapper.stream_call(messages=MESSAGES, system=SYSTEM, abort_event=None)
+    )
+    assert tokens == ["a", "b", "c"]
+
+
+@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
+@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+async def test_stream_call_aborts_between_chunks_when_event_set(
+    mock_anthropic_cls, mock_async_cls,
+):
+    """When abort_event is set after a token yields, no further tokens emit."""
+    mock_client = MagicMock()
+    mock_anthropic_cls.return_value = mock_client
+    mock_async_client = MagicMock()
+    mock_async_cls.return_value = mock_async_client
+    mock_async_client.messages.stream = MagicMock(
+        return_value=_make_stream_context(["t0", "t1", "t2", "t3", "t4"])
+    )
+
+    wrapper = ClaudeLLMWrapper(VALID_CONFIG)
+    abort_event = asyncio.Event()
+    collected = []
+    async for tok in wrapper.stream_call(
+        messages=MESSAGES, system=SYSTEM, abort_event=abort_event
+    ):
+        collected.append(tok)
+        if len(collected) == 2:
+            abort_event.set()
+
+    # After abort fires, the next iteration check exits — no further tokens.
+    assert collected == ["t0", "t1"]
+    assert "t4" not in collected
+
+
+# ---------------------------------------------------------------------------
 # GH-151: prompt caching, cache tokens, stream span instrumentation
 # ---------------------------------------------------------------------------
 

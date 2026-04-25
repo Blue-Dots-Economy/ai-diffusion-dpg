@@ -277,6 +277,8 @@ class ClaudeLLMWrapper(LLMWrapperBase):
         system: str | list[dict] | None = None,
         model_override: str | None = None,
         max_tokens: int | None = None,
+        *,
+        abort_event: "asyncio.Event | None" = None,
     ) -> AsyncGenerator[str, None]:
         """Stream text tokens from the Anthropic API.
 
@@ -293,6 +295,10 @@ class ClaudeLLMWrapper(LLMWrapperBase):
             max_tokens: Optional cap on response tokens. When ``None`` the
                 wrapper uses :data:`_DEFAULT_MAX_TOKENS` (4096). Voice channels
                 pass a tight cap (~200) to keep spoken responses short (GH-194).
+            abort_event: Optional asyncio.Event. When set during streaming,
+                the chunk loop exits cleanly between chunks. Used by
+                TurnAssembler to honour upstream cancel without relying
+                solely on cooperative task cancellation.
 
         Yields:
             str: Individual text tokens.
@@ -310,6 +316,8 @@ class ClaudeLLMWrapper(LLMWrapperBase):
             async for token in self._stream_with_retry(
                 model, messages, tools, system, effective_max_tokens
             ):
+                if abort_event is not None and abort_event.is_set():
+                    return
                 yield token
         except _RetryableExhausted:
             if model != self._primary_model:
@@ -323,6 +331,8 @@ class ClaudeLLMWrapper(LLMWrapperBase):
                 async for token in self._stream_with_retry(
                     self._fallback_model, messages, tools, system, effective_max_tokens
                 ):
+                    if abort_event is not None and abort_event.is_set():
+                        return
                     yield token
             except _RetryableExhausted:
                 return
