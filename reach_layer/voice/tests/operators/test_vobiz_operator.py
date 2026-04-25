@@ -212,3 +212,14 @@ async def test_logging_serializer_5xx_outcome_failure(caplog):
     rec = next(r for r in caplog.records if r.message == "vobiz_serializer.hangup")
     assert rec.outcome == "failure"
     assert rec.status == "failure"
+
+
+def test_create_transport_uses_logging_serializer(config):
+    op = VobizOperator(config)
+    mock_ws = MagicMock()
+    with patch("src.operators.vobiz_operator.FastAPIWebsocketTransport") as mock_transport_cls:
+        op.create_transport(mock_ws, "stream-x", "call-y")
+    kwargs = mock_transport_cls.call_args.kwargs
+    serializer = kwargs["params"].serializer
+    assert isinstance(serializer, LoggingVobizFrameSerializer)
+    assert serializer._params.auto_hang_up is True

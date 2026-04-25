@@ -149,7 +149,7 @@ class VobizOperator(TelephonyOperatorBase):
     def create_transport(
         self, websocket, stream_id: str, call_id: str
     ) -> FastAPIWebsocketTransport:
-        """Build FastAPIWebsocketTransport with VobizFrameSerializer.
+        """Build FastAPIWebsocketTransport with LoggingVobizFrameSerializer.
 
         Args:
             websocket: Active WebSocket connection.
@@ -160,7 +160,7 @@ class VobizOperator(TelephonyOperatorBase):
             Configured FastAPIWebsocketTransport.
         """
         start = time.time()
-        serializer = VobizFrameSerializer(
+        serializer = LoggingVobizFrameSerializer(
             stream_id=stream_id,
             call_id=call_id,
             auth_id=self._auth_id,
