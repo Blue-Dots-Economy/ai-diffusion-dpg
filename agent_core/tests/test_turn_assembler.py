@@ -3,11 +3,11 @@ Tests for TurnAssembler (#72): core classes, policy stack, buffer management.
 
 Covers:
   - TurnStatus state machine
-  - SessionBuffer creation and reset
+  - Session and Turn lifecycle
   - TurnAssemblerBase ABC enforcement
   - TurnAssembler: add_segment, subscribe, cancel, session_end
   - Policy stack: silence trigger, max wait ceiling, semantic gate
-  - Invocation path: stream_turn() called directly
+  - Invocation path: stream_turn() called directly with abort_event/turn_id
   - Memory consistency on cancellation (#83)
   - Edge cases: empty text, missing session, concurrent timers
 """
@@ -26,7 +26,6 @@ from src.models import (
     SignalEvent,
 )
 from src.turn_assembler import (
-    SessionBuffer,
     TurnAssembler,
     TurnAssemblerBase,
     TurnStatus,
@@ -124,26 +123,39 @@ class TestTurnStatus:
 
 
 # ---------------------------------------------------------------------------
-# SessionBuffer
+# Session and Turn lifecycle defaults
 # ---------------------------------------------------------------------------
 
 
-class TestSessionBuffer:
+class TestSessionAndTurnDefaults:
 
-    def test_default_creation(self):
-        buf = SessionBuffer(session_id="s1")
-        assert buf.session_id == "s1"
-        assert buf.segments == []
-        assert buf.status == TurnStatus.WAITING
-        assert buf.silence_task is None
-        assert buf.ceiling_task is None
-        assert buf.invocation_task is None
-        assert buf.context_bundle is None
-        assert buf._context_fetched is False
+    @pytest.mark.asyncio
+    async def test_session_default_creation(self):
+        from src.session import Session as SessionClass
+        session = SessionClass(session_id="s1", user_id=None, channel="cli")
+        assert session.session_id == "s1"
+        assert session.current_turn is None
+        assert session.ended is False
 
-    def test_created_at_ms_is_set(self):
-        buf = SessionBuffer(session_id="s1")
-        assert buf.created_at_ms > 0
+    @pytest.mark.asyncio
+    async def test_turn_default_creation(self):
+        from src.session import Session as SessionClass
+        session = SessionClass(session_id="s1", user_id=None, channel="cli")
+        turn = await session.replace_turn(seed_segments=[])
+        assert turn.status == TurnStatus.WAITING
+        assert turn.segments == []
+        assert turn.silence_task is None
+        assert turn.ceiling_task is None
+        assert turn.invocation_task is None
+        assert turn.context_bundle is None
+        assert turn._context_fetched is False
+
+    @pytest.mark.asyncio
+    async def test_turn_started_at_ms_is_set(self):
+        from src.session import Session as SessionClass
+        session = SessionClass(session_id="s1", user_id=None, channel="cli")
+        turn = await session.replace_turn(seed_segments=[])
+        assert turn.started_at_ms > 0
 
 
 # ---------------------------------------------------------------------------
@@ -1207,13 +1219,12 @@ class TestOpeningPhraseOnSubscribe:
         )
         ta = _make_assembler(workflow=workflow, async_memory=memory)
 
-        # Drain without blocking: put a sentinel DoneEvent manually and expect only it.
-        buffer = ta._sessions.setdefault("s1", SessionBuffer(session_id="s1"))
+        session = ta._get_or_create_session("s1")
 
-        # Call the emission helper directly — if it no-ops, queue stays empty.
-        await ta._emit_opening_phrase_if_first("s1", "u1", buffer)
+        # Call the emission helper directly — if it no-ops, no turn is installed.
+        await ta._emit_opening_phrase_if_first("s1", "u1", session)
 
-        assert buffer.event_queue.qsize() == 0
+        assert session.current_turn is None  # No turn was installed
         memory.write.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1223,10 +1234,10 @@ class TestOpeningPhraseOnSubscribe:
         memory = _make_opening_phrase_memory(session_state={})
         ta = _make_assembler(workflow=workflow, async_memory=memory)
 
-        buffer = ta._sessions.setdefault("s1", SessionBuffer(session_id="s1"))
-        await ta._emit_opening_phrase_if_first("s1", None, buffer)
+        session = ta._get_or_create_session("s1")
+        await ta._emit_opening_phrase_if_first("s1", None, session)
 
-        assert buffer.event_queue.qsize() == 0
+        assert session.current_turn is None  # No events emitted
         memory.context_bundle.assert_not_called()
         memory.write.assert_not_called()
 
@@ -1237,23 +1248,24 @@ class TestOpeningPhraseOnSubscribe:
         memory = _make_opening_phrase_memory(session_state={})
         ta = _make_assembler(workflow=workflow, async_memory=memory)
 
-        buffer = ta._sessions.setdefault("s1", SessionBuffer(session_id="s1"))
-        await ta._emit_opening_phrase_if_first("s1", "u1", buffer)
+        session = ta._get_or_create_session("s1")
+        await ta._emit_opening_phrase_if_first("s1", "u1", session)
 
-        assert buffer.event_queue.qsize() == 0
         # Flag write still happened so the orchestrator gate won't fire on turn 1.
         write_keys = {(c.args[2], c.args[3]) for c in memory.write.call_args_list}
         assert ("session", "opening_phrase_emitted") in write_keys
+        # No turn installed since phrase was empty
+        assert session.current_turn is None
 
     @pytest.mark.asyncio
     async def test_skips_when_workflow_missing(self):
         memory = _make_opening_phrase_memory(session_state={})
         ta = _make_assembler(workflow=None, async_memory=memory)
 
-        buffer = ta._sessions.setdefault("s1", SessionBuffer(session_id="s1"))
-        await ta._emit_opening_phrase_if_first("s1", "u1", buffer)
+        session = ta._get_or_create_session("s1")
+        await ta._emit_opening_phrase_if_first("s1", "u1", session)
 
-        assert buffer.event_queue.qsize() == 0
+        assert session.current_turn is None
         memory.context_bundle.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1265,10 +1277,10 @@ class TestOpeningPhraseOnSubscribe:
         memory.write = AsyncMock()
         ta = _make_assembler(workflow=workflow, async_memory=memory)
 
-        buffer = ta._sessions.setdefault("s1", SessionBuffer(session_id="s1"))
-        await ta._emit_opening_phrase_if_first("s1", "u1", buffer)
+        session = ta._get_or_create_session("s1")
+        await ta._emit_opening_phrase_if_first("s1", "u1", session)
 
-        assert buffer.event_queue.qsize() == 0
+        assert session.current_turn is None
         memory.write.assert_not_called()
 
     @pytest.mark.asyncio

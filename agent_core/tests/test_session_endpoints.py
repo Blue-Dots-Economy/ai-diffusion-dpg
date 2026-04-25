@@ -16,7 +16,8 @@ from fastapi.testclient import TestClient
 
 from src.models import DoneEvent, SegmentInput, SentenceEvent, SignalEvent, TurnResult
 from src.servers.orchestration_server import create_orchestration_app
-from src.turn_assembler import SessionBuffer, TurnAssembler, TurnStatus
+from src.session import Session
+from src.turn_assembler import TurnAssembler, TurnStatus
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +212,7 @@ class TestSessionCancel:
     def test_returns_200_for_existing_session(self):
         agent = _make_mock_agent_core()
         assembler = _make_mock_assembler()
-        assembler._sessions["s1"] = SessionBuffer(session_id="s1")
+        assembler._sessions["s1"] = Session(session_id="s1", user_id=None, channel="cli")
         app = create_orchestration_app(agent, turn_assembler=assembler)
         client = TestClient(app)
 
@@ -231,7 +232,7 @@ class TestSessionCancel:
     def test_cancel_response_body(self):
         agent = _make_mock_agent_core()
         assembler = _make_mock_assembler()
-        assembler._sessions["s1"] = SessionBuffer(session_id="s1")
+        assembler._sessions["s1"] = Session(session_id="s1", user_id=None, channel="cli")
         app = create_orchestration_app(agent, turn_assembler=assembler)
         client = TestClient(app)
 

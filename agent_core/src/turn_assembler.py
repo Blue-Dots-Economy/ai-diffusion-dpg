@@ -45,7 +45,6 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from src.models import (
@@ -60,42 +59,6 @@ from .turn import Turn, TurnStatus
 from .session import Session
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# SessionBuffer — kept for backward-compat with existing tests that import it.
-# No longer used internally by TurnAssembler. Will be removed after all
-# callers migrate (#224 follow-up).
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class SessionBuffer:
-    """Per-session state (legacy). Replaced by Session/Turn in #224.
-
-    Kept so external test code that imports SessionBuffer does not break
-    during the migration. TurnAssembler no longer creates or reads these.
-    """
-
-    session_id: str
-    segments: list[str] = field(default_factory=list)
-    status: TurnStatus = TurnStatus.WAITING
-    event_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
-    silence_task: Optional[asyncio.Task] = None
-    ceiling_task: Optional[asyncio.Task] = None
-    invocation_task: Optional[asyncio.Task] = None
-    created_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
-    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-
-    # Metadata from first segment / SSE subscribe
-    channel: Optional[str] = None
-    user_id: Optional[str] = None
-    first_timestamp_ms: int = 0
-
-    context_bundle: Optional[ContextBundle] = None
-    _context_fetched: bool = False
-
-    pending_segments: list = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -456,7 +419,7 @@ class TurnAssembler(TurnAssemblerBase):
         self,
         session_id: str,
         user_id: str | None,
-        session_or_buffer: Any,
+        session: Session,
     ) -> None:
         """Push the entry subagent's opening_phrase onto the session queue once.
 
@@ -472,8 +435,7 @@ class TurnAssembler(TurnAssemblerBase):
         Args:
             session_id: Unique session identifier.
             user_id: User identifier; required to read and write session state.
-            session_or_buffer: Either a Session or a legacy SessionBuffer whose
-                event_queue receives the events.
+            session: The Session whose current_turn receives the events.
         """
         if not user_id:
             return
@@ -557,22 +519,13 @@ class TurnAssembler(TurnAssemblerBase):
             )
             return
 
-        # Deliver events: if session_or_buffer is a Session, install a dedicated
-        # opening-phrase turn; if it's the legacy SessionBuffer, use its queue directly.
-        if isinstance(session_or_buffer, Session):
-            session = session_or_buffer
-            async with session._lock:
-                op_turn = await session.replace_turn(seed_segments=[])
-                op_turn.status = TurnStatus.INVOKED
-            await op_turn.event_queue.put(SentenceEvent(text=opening_phrase, sentence_index=0))
-            await op_turn.event_queue.put(DoneEvent(turn_status="completed"))
-            op_turn.status = TurnStatus.COMPLETED
-        else:
-            # Legacy SessionBuffer path (GH-149 tests that call the helper directly).
-            await session_or_buffer.event_queue.put(
-                SentenceEvent(text=opening_phrase, sentence_index=0)
-            )
-            await session_or_buffer.event_queue.put(DoneEvent(turn_status="completed"))
+        # Install a dedicated opening-phrase turn and seal it immediately.
+        async with session._lock:
+            op_turn = await session.replace_turn(seed_segments=[])
+            op_turn.status = TurnStatus.INVOKED
+        await op_turn.event_queue.put(SentenceEvent(text=opening_phrase, sentence_index=0))
+        await op_turn.event_queue.put(DoneEvent(turn_status="completed"))
+        op_turn.status = TurnStatus.COMPLETED
 
         logger.info(
             "turn_assembler.opening_phrase_emitted",
