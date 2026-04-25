@@ -478,6 +478,23 @@ class TurnAssembler(TurnAssemblerBase):
             )
             return
 
+        # GH-201: when consent is required and not yet granted, suppress the
+        # opening phrase. The orchestrator emits it on the first post-consent
+        # turn so the caller doesn't hear two utterances back-to-back at session
+        # start. Flag is intentionally left unset here.
+        ask_for_consent: bool = self._config.get("agent", {}).get("ask_for_consent", False)
+        if ask_for_consent and bundle.session.get("user_storage_mode") is None:
+            logger.info(
+                "turn_assembler.opening_phrase_suppressed_pending_consent",
+                extra={
+                    "operation": "turn_assembler._emit_opening_phrase_if_first",
+                    "status": "skipped",
+                    "reason": "ask_for_consent=true and consent not yet granted",
+                    "session_id": session_id,
+                },
+            )
+            return
+
         current_subagent_id = (
             bundle.session.get("current_subagent_id")
             or getattr(self._workflow, "start_subagent_id", "")

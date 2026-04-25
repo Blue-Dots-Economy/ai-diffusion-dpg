@@ -2487,6 +2487,39 @@ class AgentCore(AgentCoreBase):
                             },
                         )
 
+                    # GH-201: emit opening_phrase on the first post-consent
+                    # turn. TurnAssembler suppressed it at SSE connect when
+                    # ask_for_consent was on; this is the catch-up emission so
+                    # the caller still gets the welcome utterance.
+                    if not bundle.session.get("opening_phrase_emitted", False):
+                        post_consent_sa = self._workflow.subagents.get(current_subagent_id)
+                        post_consent_phrase = (
+                            getattr(post_consent_sa, "opening_phrase", "") or ""
+                        ).strip()
+                        await self._async_memory.write(
+                            session_id, user_id, "session", "opening_phrase_emitted", True
+                        )
+                        bundle.session["opening_phrase_emitted"] = True
+                        if post_consent_phrase:
+                            await self._async_memory.write(
+                                session_id, user_id, "session",
+                                "current_subagent_id", current_subagent_id,
+                            )
+                            logger.info(
+                                "orchestrator.opening_phrase_emitted",
+                                extra={
+                                    "operation": "orchestrator.opening_phrase_gate",
+                                    "status": "emitted",
+                                    "session_id": session_id,
+                                    "subagent_id": current_subagent_id,
+                                    "trigger": "post_consent",
+                                },
+                            )
+                            yield _stamp(SentenceEvent(
+                                text=post_consent_phrase,
+                                sentence_index=0,
+                            ))
+
             # ── Step 2: Resolve current subagent ────────────────────────
             current_subagent: SubAgent = self._workflow.subagents[current_subagent_id]
             logger.info(

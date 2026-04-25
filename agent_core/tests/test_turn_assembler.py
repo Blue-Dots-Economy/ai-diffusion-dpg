@@ -1320,6 +1320,53 @@ class TestOpeningPhraseOnSubscribe:
         memory.write.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_suppressed_when_consent_pending(self):
+        """GH-201: ask_for_consent=true + user_storage_mode unset → no emission, flag stays unset."""
+        workflow = _make_opening_phrase_workflow(opening_phrase="नमस्ते।")
+        memory = _make_opening_phrase_memory(session_state={})  # no user_storage_mode
+        cfg = _make_config()
+        cfg["agent"] = {"ask_for_consent": True}
+        ta = _make_assembler(workflow=workflow, async_memory=memory, config=cfg)
+
+        session = ta._get_or_create_session("s1")
+        await ta._emit_opening_phrase_if_first("s1", "u1", session)
+
+        assert session.current_turn is None  # no events emitted
+        memory.write.assert_not_called()  # flag deliberately left unset
+
+    @pytest.mark.asyncio
+    async def test_emits_when_consent_required_but_already_granted(self):
+        """ask_for_consent=true but user_storage_mode set → emit normally (reconnect after consent)."""
+        workflow = _make_opening_phrase_workflow(opening_phrase="नमस्ते।")
+        memory = _make_opening_phrase_memory(session_state={"user_storage_mode": "saved"})
+        cfg = _make_config()
+        cfg["agent"] = {"ask_for_consent": True}
+        ta = _make_assembler(workflow=workflow, async_memory=memory, config=cfg)
+
+        session = ta._get_or_create_session("s1")
+        await ta._emit_opening_phrase_if_first("s1", "u1", session)
+
+        assert session.current_turn is not None
+        write_keys = {(c.args[2], c.args[3]) for c in memory.write.call_args_list}
+        assert ("session", "opening_phrase_emitted") in write_keys
+
+    @pytest.mark.asyncio
+    async def test_consent_disabled_emits_on_connect(self):
+        """ask_for_consent=false → preserve GH-149 behaviour (emit at SSE connect)."""
+        workflow = _make_opening_phrase_workflow(opening_phrase="नमस्ते।")
+        memory = _make_opening_phrase_memory(session_state={})
+        cfg = _make_config()
+        cfg["agent"] = {"ask_for_consent": False}
+        ta = _make_assembler(workflow=workflow, async_memory=memory, config=cfg)
+
+        session = ta._get_or_create_session("s1")
+        await ta._emit_opening_phrase_if_first("s1", "u1", session)
+
+        assert session.current_turn is not None
+        write_keys = {(c.args[2], c.args[3]) for c in memory.write.call_args_list}
+        assert ("session", "opening_phrase_emitted") in write_keys
+
+    @pytest.mark.asyncio
     async def test_subscribe_emits_opening_phrase_end_to_end(self):
         """subscribe() drains the emitted events via the real event loop."""
         workflow = _make_opening_phrase_workflow(opening_phrase="नमस्ते।")

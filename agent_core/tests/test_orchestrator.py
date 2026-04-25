@@ -820,6 +820,73 @@ def test_consent_gate_turn2_declined_writes_anonymous():
         "Expected user_storage_mode='anonymous' to be written to memory"
 
 
+@pytest.mark.asyncio
+async def test_stream_turn_emits_opening_phrase_after_consent_granted():
+    """GH-201: with ask_for_consent=true, opening_phrase fires from stream_turn on T2 (post-consent)."""
+    agent = _make_stream_agent(
+        session_data={
+            "current_subagent_id": "market_truth",
+            "turn_count": 1,
+            "user_storage_mode": None,
+            "pending_user_message": "electrician kaam chahiye",
+            "pending_normalised_input": "I need electrician work",
+        },
+    )
+    # Enable consent + set start subagent's opening_phrase
+    agent._config = {
+        **VALID_CONFIG,
+        "agent": {"ask_for_consent": True, "consent_prompt": "Agree?"},
+    }
+    agent._workflow.subagents["market_truth"].opening_phrase = "नमस्ते।"
+
+    events = []
+    async for ev in agent.stream_turn(_turn_input("haan"), turn_id="t-consent"):
+        events.append(ev)
+
+    # First SentenceEvent should be the opening_phrase
+    sentence_events = [e for e in events if isinstance(e, SentenceEvent)]
+    assert sentence_events, "Expected at least one SentenceEvent"
+    assert sentence_events[0].text == "नमस्ते।", (
+        f"Expected first sentence to be opening_phrase, got {sentence_events[0].text!r}"
+    )
+
+    # opening_phrase_emitted=True must be persisted
+    write_calls = [c.args for c in agent._async_memory.write.call_args_list]
+    assert any(
+        c[2] == "session" and c[3] == "opening_phrase_emitted" and c[4] is True
+        for c in write_calls
+    ), "Expected opening_phrase_emitted=True to be written"
+
+
+@pytest.mark.asyncio
+async def test_stream_turn_skips_opening_phrase_when_already_emitted_post_consent():
+    """If opening_phrase_emitted already True (e.g. retry), don't re-emit on T2."""
+    agent = _make_stream_agent(
+        session_data={
+            "current_subagent_id": "market_truth",
+            "turn_count": 1,
+            "user_storage_mode": None,
+            "opening_phrase_emitted": True,
+            "pending_user_message": "electrician kaam chahiye",
+            "pending_normalised_input": "I need electrician work",
+        },
+    )
+    agent._config = {
+        **VALID_CONFIG,
+        "agent": {"ask_for_consent": True, "consent_prompt": "Agree?"},
+    }
+    agent._workflow.subagents["market_truth"].opening_phrase = "नमस्ते।"
+
+    events = []
+    async for ev in agent.stream_turn(_turn_input("haan"), turn_id="t-consent2"):
+        events.append(ev)
+
+    sentence_texts = [e.text for e in events if isinstance(e, SentenceEvent)]
+    assert "नमस्ते।" not in sentence_texts, (
+        f"opening_phrase should not be re-emitted; got sentences: {sentence_texts!r}"
+    )
+
+
 def test_consent_gate_skipped_when_storage_mode_set():
     """user_storage_mode already set → skip consent gate."""
     agent, memory, trust = _make_agent_with_consent(
