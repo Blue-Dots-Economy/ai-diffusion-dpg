@@ -2190,7 +2190,13 @@ class AgentCore(AgentCoreBase):
     # Streaming: stream_turn() — async SSE pipeline
     # ------------------------------------------------------------------
 
-    async def stream_turn(self, turn_input: TurnInput) -> AsyncGenerator[StreamEvent, None]:
+    async def stream_turn(
+        self,
+        turn_input: TurnInput,
+        *,
+        abort_event: "asyncio.Event | None" = None,
+        turn_id: str = "",
+    ) -> AsyncGenerator[StreamEvent, None]:
         """Execute one conversation turn with streaming SSE output.
 
         Runs the same 13-step pipeline as process_turn() but uses async
@@ -2198,6 +2204,13 @@ class AgentCore(AgentCoreBase):
 
         Args:
             turn_input: Normalised inbound message from the Reach Layer.
+            abort_event: Optional asyncio.Event. When set, stream_turn exits
+                cleanly at the next stage boundary without yielding further
+                events. Tool calls and trust checks that are already in-flight
+                run to completion to preserve external-side-effect safety.
+            turn_id: Optional caller-supplied identifier for this turn. When
+                non-empty, it is stamped on every emitted StreamEvent. When
+                empty (the default), an internal uuid4 is generated and used.
 
         Yields:
             SignalEvent, SentenceEvent, or DoneEvent.
@@ -2214,7 +2227,16 @@ class AgentCore(AgentCoreBase):
         start = time.time()
         session_id = turn_input.session_id
         user_id: str = turn_input.user_id or session_id
-        turn_id = str(uuid.uuid4())
+        turn_id = turn_id or str(uuid.uuid4())
+
+        def _aborted() -> bool:
+            return abort_event is not None and abort_event.is_set()
+
+        def _stamp(ev):
+            """Set turn_id on the event in place and return it."""
+            if hasattr(ev, "turn_id"):
+                ev.turn_id = turn_id
+            return ev
 
         was_escalated = False
         was_tool_used = False
@@ -2265,20 +2287,24 @@ class AgentCore(AgentCoreBase):
         )
 
         try:
+            if _aborted():
+                return
             # ── Step 1: Read session state ──────────────────────────────
             logger.info(
                 "  [STEP 1] Memory context_bundle  →  POST %s/context_bundle  (session=%s)",
                 memory_endpoint, session_id,
             )
             t1 = time.time()
-            yield SignalEvent(stage="memory_read", status="start")
+            yield _stamp(SignalEvent(stage="memory_read", status="start"))
             bundle = await self._async_memory.context_bundle(session_id, user_id, adopt=not turn_input.fresh)
             current_subagent_id: str = (
                 bundle.session.get("current_subagent_id")
                 or self._workflow.start_subagent_id
             )
             current_question: str = bundle.session.get("current_question", "")
-            yield SignalEvent(stage="memory_read", status="complete")
+            yield _stamp(SignalEvent(stage="memory_read", status="complete"))
+            if _aborted():
+                return
             logger.info(
                 "  [STEP 1] Memory context_bundle  ✓  current_subagent_id=%s"
                 "  is_returning=%s  latency=%dms",
@@ -2324,7 +2350,7 @@ class AgentCore(AgentCoreBase):
                 "  [STEP 4+5] Language Norm + NLU  →  (session=%s, parallel)", session_id
             )
             t45 = time.time()
-            yield SignalEvent(stage="nlu", status="start")
+            yield _stamp(SignalEvent(stage="nlu", status="start"))
 
             # asyncio.to_thread offloads each sync llm.call onto the default
             # thread pool so the two Anthropic round-trips overlap in wall
@@ -2413,14 +2439,14 @@ class AgentCore(AgentCoreBase):
                         "none", consent_latency_ms, "consent_gate",
                         consent_response_text.strip()[:200],
                     )
-                    yield SentenceEvent(
+                    yield _stamp(SentenceEvent(
                         text=consent_response_text,
                         sentence_index=0,
-                    )
-                    yield DoneEvent(
+                    ))
+                    yield _stamp(DoneEvent(
                         turn_id=turn_id,
                         latency_ms=consent_latency_ms,
-                    )
+                    ))
                     return
 
                 if user_storage_mode is None and turn_count > 0:
@@ -2475,9 +2501,9 @@ class AgentCore(AgentCoreBase):
                     trust_endpoint, session_id,
                 )
                 t3 = time.time()
-                yield SignalEvent(stage="trust_input", status="start")
+                yield _stamp(SignalEvent(stage="trust_input", status="start"))
                 trust_input = await self._async_trust.check_input(session_id, turn_input.user_message)
-                yield SignalEvent(stage="trust_input", status="complete")
+                yield _stamp(SignalEvent(stage="trust_input", status="complete"))
                 logger.info(
                     "  [STEP 3] Trust Input Check  ✓  action=%s  passed=%s  reason=%s  latency=%dms",
                     trust_input.action, trust_input.passed,
@@ -2488,15 +2514,15 @@ class AgentCore(AgentCoreBase):
                     blocked_text = self._config.get("conversation", {}).get(
                         "blocked_message", "I'm unable to help with that request."
                     )
-                    yield SentenceEvent(text=blocked_text, sentence_index=0)
-                    yield DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000))
+                    yield _stamp(SentenceEvent(text=blocked_text, sentence_index=0))
+                    yield _stamp(DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000)))
                     return
                 if trust_input.action == "escalate":
                     escalation_text = self._config.get("conversation", {}).get(
                         "escalation_message", "I'm connecting you to a human agent who can better assist you."
                     )
-                    yield SentenceEvent(text=escalation_text, sentence_index=0)
-                    yield DoneEvent(turn_id=turn_id, was_escalated=True, latency_ms=int((time.time() - start) * 1000))
+                    yield _stamp(SentenceEvent(text=escalation_text, sentence_index=0))
+                    yield _stamp(DoneEvent(turn_id=turn_id, was_escalated=True, latency_ms=int((time.time() - start) * 1000)))
                     return
 
                 # Execute special handler inline for streaming
@@ -2504,22 +2530,22 @@ class AgentCore(AgentCoreBase):
                     hitl_msg = self._config.get("hitl", {}).get(
                         "response_message", "I'm connecting you with a counsellor who can better assist you."
                     )
-                    yield SentenceEvent(text=hitl_msg, sentence_index=0)
-                    yield DoneEvent(turn_id=turn_id, was_escalated=True, latency_ms=int((time.time() - start) * 1000))
+                    yield _stamp(SentenceEvent(text=hitl_msg, sentence_index=0))
+                    yield _stamp(DoneEvent(turn_id=turn_id, was_escalated=True, latency_ms=int((time.time() - start) * 1000)))
                     return
                 elif current_subagent.special_handler == "whatsapp_handoff":
                     handoff_msg = self._config.get("messages", {}).get(
                         "whatsapp_handoff", "We're sending you a WhatsApp message with all the details."
                     )
-                    yield SentenceEvent(text=handoff_msg, sentence_index=0)
-                    yield DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000))
+                    yield _stamp(SentenceEvent(text=handoff_msg, sentence_index=0))
+                    yield _stamp(DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000)))
                     return
                 else:
                     fallback_msg = self._config.get("conversation", {}).get(
                         "unknown_intent_message", "I didn't quite understand that. Could you tell me more?"
                     )
-                    yield SentenceEvent(text=fallback_msg, sentence_index=0)
-                    yield DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000))
+                    yield _stamp(SentenceEvent(text=fallback_msg, sentence_index=0))
+                    yield _stamp(DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000)))
                     return
 
             # ── Step 3: Trust check on input ────────────────────────────
@@ -2528,9 +2554,9 @@ class AgentCore(AgentCoreBase):
                 trust_endpoint, session_id,
             )
             t3 = time.time()
-            yield SignalEvent(stage="trust_input", status="start")
+            yield _stamp(SignalEvent(stage="trust_input", status="start"))
             trust_input = await self._async_trust.check_input(session_id, turn_input.user_message)
-            yield SignalEvent(stage="trust_input", status="complete")
+            yield _stamp(SignalEvent(stage="trust_input", status="complete"))
             logger.info(
                 "  [STEP 3] Trust Input Check  ✓  action=%s  passed=%s  reason=%s  latency=%dms",
                 trust_input.action, trust_input.passed,
@@ -2541,16 +2567,16 @@ class AgentCore(AgentCoreBase):
                 blocked_text = self._config.get("conversation", {}).get(
                     "blocked_message", "I'm unable to help with that request."
                 )
-                yield SentenceEvent(text=blocked_text, sentence_index=0)
-                yield DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000))
+                yield _stamp(SentenceEvent(text=blocked_text, sentence_index=0))
+                yield _stamp(DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000)))
                 return
 
             if trust_input.action == "escalate":
                 escalation_text = self._config.get("conversation", {}).get(
                     "escalation_message", "I'm connecting you to a human agent who can better assist you."
                 )
-                yield SentenceEvent(text=escalation_text, sentence_index=0)
-                yield DoneEvent(turn_id=turn_id, was_escalated=True, latency_ms=int((time.time() - start) * 1000))
+                yield _stamp(SentenceEvent(text=escalation_text, sentence_index=0))
+                yield _stamp(DoneEvent(turn_id=turn_id, was_escalated=True, latency_ms=int((time.time() - start) * 1000)))
                 return
 
             # ── Step 5: NLU Processor (result from parallel gather) ─────
@@ -2564,7 +2590,7 @@ class AgentCore(AgentCoreBase):
             stream_previous_user_state_payload = pre_previous_user_state_payload
             stream_previous_user_state_id = pre_previous_user_state_id
             nlu_result = early_nlu_result
-            yield SignalEvent(stage="nlu", status="complete")
+            yield _stamp(SignalEvent(stage="nlu", status="complete"))
             logger.info(
                 "  [STEP 5] NLU Processor  ✓  intent=%s  confidence=%.2f"
                 "  entities=%s  (parallel — see STEP 4+5)",
@@ -2648,8 +2674,8 @@ class AgentCore(AgentCoreBase):
                             "reason": "not_in_supported_languages",
                         },
                     )
-                    yield SentenceEvent(text=msg, sentence_index=0)
-                    yield DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000))
+                    yield _stamp(SentenceEvent(text=msg, sentence_index=0))
+                    yield _stamp(DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000)))
                     return
 
             # ── Step 6: Routing ────────────────────────────────────────
@@ -2658,7 +2684,7 @@ class AgentCore(AgentCoreBase):
                 nlu_result.intent, current_subagent_id,
             )
             t6 = time.time()
-            yield SignalEvent(stage="routing", status="start")
+            yield _stamp(SignalEvent(stage="routing", status="start"))
             routing_state = dict(bundle.session)
             if bundle.profile:
                 routing_state.update(bundle.profile)
@@ -2703,7 +2729,7 @@ class AgentCore(AgentCoreBase):
             )
             if routing_writes:
                 await asyncio.gather(*routing_writes, return_exceptions=True)
-            yield SignalEvent(stage="routing", status="complete")
+            yield _stamp(SignalEvent(stage="routing", status="complete"))
             logger.info(
                 "  [STEP 6] Routing  ✓  next_subagent=%s  matched_rule_intent=%s  latency=%dms",
                 next_subagent_id,
@@ -2740,8 +2766,8 @@ class AgentCore(AgentCoreBase):
                     blocked_text = self._config.get("conversation", {}).get(
                         "blocked_message", "I'm unable to help with that request."
                     )
-                    yield SentenceEvent(text=blocked_text, sentence_index=0)
-                    yield DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000))
+                    yield _stamp(SentenceEvent(text=blocked_text, sentence_index=0))
+                    yield _stamp(DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000)))
                     return
 
             system = self._manager_agent.build_system_prompt(
@@ -2800,7 +2826,10 @@ class AgentCore(AgentCoreBase):
             _captured_exchanges_this_turn: list[dict] = []
 
             if not messages:
-                yield DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000))
+                yield _stamp(DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000)))
+                return
+
+            if _aborted():
                 return
 
             # ── Step 8: LLM streaming ──────────────────────────────────
@@ -2838,7 +2867,10 @@ class AgentCore(AgentCoreBase):
                     tools=active_tools if active_tools else None,
                     system=system,
                     max_tokens=channel_max_tokens,
+                    abort_event=abort_event,
                 ):
+                    if _aborted():
+                        return
                     token_buffer += token
                     sentences, token_buffer = _split_sentences(token_buffer)
                     # Stop accepting new sentences once a batch was blocked —
@@ -2851,8 +2883,8 @@ class AgentCore(AgentCoreBase):
                         released = await _trust_batcher.add(sentence)
                         if released:
                             pending_emit.extend(released)
-                            yield SignalEvent(stage="trust_output", status="complete")
-                            yield SignalEvent(stage="trust_output", status="start")
+                            yield _stamp(SignalEvent(stage="trust_output", status="complete"))
+                            yield _stamp(SignalEvent(stage="trust_output", status="start"))
                     # Time-based flush even if no new sentence triggered size.
                     timed = await _trust_batcher.maybe_flush_on_tick()
                     if timed:
@@ -2860,8 +2892,10 @@ class AgentCore(AgentCoreBase):
                     if _trust_batcher.was_escalated:
                         was_escalated = True
                     for emit in pending_emit:
+                        if _aborted():
+                            return
                         full_response_text += emit + " "
-                        yield SentenceEvent(text=emit, sentence_index=sentence_index)
+                        yield _stamp(SentenceEvent(text=emit, sentence_index=sentence_index))
                         sentence_index += 1
                         if _trust_batcher.was_escalated:
                             # Drop everything queued after the blocked batch.
@@ -2886,7 +2920,7 @@ class AgentCore(AgentCoreBase):
                 logger.info("  [STEP 9] Tool-Use Loop  →  executing tools=%s", tool_names)
                 t9 = time.time()
 
-                yield SignalEvent(stage="tool_start", status="start")
+                yield _stamp(SignalEvent(stage="tool_start", status="start"))
                 tool_results_for_llm = []
                 _stream_tool_results = []  # Collect ToolResult objects for post-tool hook
                 # Build ke_context for knowledge_retrieval tool (same as sync path)
@@ -2949,7 +2983,9 @@ class AgentCore(AgentCoreBase):
                         "tool_use_id": tc.tool_use_id,
                         "content": tool_result.result_text or str(tool_result.result),
                     })
-                yield SignalEvent(stage="tool_end", status="complete")
+                yield _stamp(SignalEvent(stage="tool_end", status="complete"))
+                if _aborted():
+                    return
                 logger.info(
                     "  [STEP 9] Tool-Use Loop  ✓  tools_called=%s  latency=%dms",
                     tool_names, int((time.time() - t9) * 1000),
@@ -2981,13 +3017,18 @@ class AgentCore(AgentCoreBase):
                     if _ex is not None:
                         _captured_exchanges_this_turn.append(_ex)
 
+                    if _aborted():
+                        return
                     try:
                         async for token in self._llm.stream_call(
                             messages=messages,
                             tools=active_tools if active_tools else None,
                             system=system,
                             max_tokens=channel_max_tokens,
+                            abort_event=abort_event,
                         ):
+                            if _aborted():
+                                return
                             token_buffer += token
                             sentences, token_buffer = _split_sentences(token_buffer)
                             if _trust_batcher.was_escalated:
@@ -2998,16 +3039,18 @@ class AgentCore(AgentCoreBase):
                                 released = await _trust_batcher.add(sentence)
                                 if released:
                                     pending_emit.extend(released)
-                                    yield SignalEvent(stage="trust_output", status="complete")
-                                    yield SignalEvent(stage="trust_output", status="start")
+                                    yield _stamp(SignalEvent(stage="trust_output", status="complete"))
+                                    yield _stamp(SignalEvent(stage="trust_output", status="start"))
                             timed = await _trust_batcher.maybe_flush_on_tick()
                             if timed:
                                 pending_emit.extend(timed)
                             if _trust_batcher.was_escalated:
                                 was_escalated = True
                             for emit in pending_emit:
+                                if _aborted():
+                                    return
                                 full_response_text += emit + " "
-                                yield SentenceEvent(text=emit, sentence_index=sentence_index)
+                                yield _stamp(SentenceEvent(text=emit, sentence_index=sentence_index))
                                 sentence_index += 1
                                 if _trust_batcher.was_escalated:
                                     break
@@ -3027,7 +3070,7 @@ class AgentCore(AgentCoreBase):
                             "  [STEP 9] Tool-Use Loop (round %d)  →  executing tools=%s",
                             _tool_round, _nested_tool_names,
                         )
-                        yield SignalEvent(stage="tool_start", status="start")
+                        yield _stamp(SignalEvent(stage="tool_start", status="start"))
                         _nested_results = []
                         for tc in nested_e.tool_calls:
                             # GH-191: intercept end_session in nested rounds too.
@@ -3066,7 +3109,9 @@ class AgentCore(AgentCoreBase):
                                 "content": tool_result.result_text or str(tool_result.result),
                             })
                             _stream_tool_results.append(tool_result)
-                        yield SignalEvent(stage="tool_end", status="complete")
+                        yield _stamp(SignalEvent(stage="tool_end", status="complete"))
+                        if _aborted():
+                            return
                         logger.info(
                             "  [STEP 9] Tool-Use Loop (round %d)  ✓  tools=%s",
                             _tool_round, _nested_tool_names,
@@ -3107,14 +3152,16 @@ class AgentCore(AgentCoreBase):
             remaining = token_buffer.strip()
             if remaining and not _trust_batcher.was_escalated:
                 await _trust_batcher.add(remaining)
-            yield SignalEvent(stage="trust_output", status="start")
+            yield _stamp(SignalEvent(stage="trust_output", status="start"))
             final_release = await _trust_batcher.flush()
-            yield SignalEvent(stage="trust_output", status="complete")
+            yield _stamp(SignalEvent(stage="trust_output", status="complete"))
             if _trust_batcher.was_escalated:
                 was_escalated = True
+            if _aborted():
+                return
             for emit in final_release:
                 full_response_text += emit + " "
-                yield SentenceEvent(text=emit, sentence_index=sentence_index)
+                yield _stamp(SentenceEvent(text=emit, sentence_index=sentence_index))
                 sentence_index += 1
                 if _trust_batcher.was_escalated:
                     break
@@ -3130,7 +3177,9 @@ class AgentCore(AgentCoreBase):
             logger.info(
                 "  [STEP 11] Delivering response  (async: memory write + learning emit follow)",
             )
-            yield SignalEvent(stage="memory_write", status="start")
+            if _aborted():
+                return
+            yield _stamp(SignalEvent(stage="memory_write", status="start"))
             asyncio.create_task(
                 self._async_memory.write(
                     session_id, user_id, "session", "current_question", full_response_text.strip()
@@ -3159,7 +3208,7 @@ class AgentCore(AgentCoreBase):
                         "stored": len(_capped),
                     },
                 )
-            yield SignalEvent(stage="memory_write", status="complete")
+            yield _stamp(SignalEvent(stage="memory_write", status="complete"))
 
             latency_ms = int((time.time() - start) * 1000)
             logger.info(
@@ -3187,7 +3236,7 @@ class AgentCore(AgentCoreBase):
             )
 
             # ── Yield DoneEvent (terminal) ─────────────────────────────
-            yield DoneEvent(
+            yield _stamp(DoneEvent(
                 was_escalated=was_escalated,
                 was_tool_used=was_tool_used,
                 model_used=model_used,
@@ -3197,7 +3246,7 @@ class AgentCore(AgentCoreBase):
                 # sets it directly when end_session is invoked); fall back to
                 # the manager_agent flag for parity with the sync path.
                 session_ended=session_ended or bool(getattr(self._manager_agent, "session_ended", False)),
-            )
+            ))
 
             # ── Steps 12-13: Async post-turn ───────────────────────────
             asyncio.create_task(
@@ -3227,11 +3276,11 @@ class AgentCore(AgentCoreBase):
                     "error": f"{type(e).__name__}: {e}",
                 },
             )
-            yield DoneEvent(
+            yield _stamp(DoneEvent(
                 turn_id=turn_id,
                 turn_status="abandoned",
                 latency_ms=int((time.time() - start) * 1000),
-            )
+            ))
 
     async def _async_post_turn(
         self,

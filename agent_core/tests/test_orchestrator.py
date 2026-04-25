@@ -30,9 +30,10 @@ Coverage:
 
 from __future__ import annotations
 
+import asyncio
 import time
 import pytest
-from unittest.mock import MagicMock, ANY
+from unittest.mock import MagicMock, AsyncMock, ANY
 
 from src.orchestrator import AgentCore
 from src.models import (
@@ -42,6 +43,9 @@ from src.models import (
     TrustCheckResult,
     TurnInput,
     TurnResult,
+    SignalEvent,
+    SentenceEvent,
+    DoneEvent,
 )
 
 
@@ -1362,3 +1366,159 @@ def test_apply_job_hook_skipped_when_post_applied_subagent_missing():
 
     # Should not raise
     agent.process_turn(_turn_input("apply"))
+
+
+# ---------------------------------------------------------------------------
+# stream_turn — abort_event + turn_id tests
+# ---------------------------------------------------------------------------
+
+def _make_stream_agent(
+    stream_tokens: list[str] | None = None,
+    nlu_result: NLUResult | None = None,
+    session_data: dict | None = None,
+) -> AgentCore:
+    """Build an AgentCore with async clients suitable for stream_turn testing.
+
+    The LLM wrapper's stream_call is an async generator that yields the provided
+    tokens one by one, simulating a short happy-path response.
+    """
+    session = session_data if session_data is not None else {"current_subagent_id": "market_truth"}
+    tokens = stream_tokens if stream_tokens is not None else ["Hello", " world", "."]
+
+    # Async memory mock
+    async_memory = MagicMock()
+    async_memory.context_bundle = AsyncMock(
+        return_value=ContextBundle(session=session, profile={}, journey=None)
+    )
+    async_memory.write = AsyncMock(return_value=None)
+    async_memory.record_audit_turn = AsyncMock(return_value=None)
+
+    # Async trust mock — allow everything
+    async_trust = MagicMock()
+    async_trust.check_input = AsyncMock(return_value=TrustCheckResult(passed=True, action="allow"))
+    async_trust.check_output = AsyncMock(return_value=TrustCheckResult(passed=True, action="allow"))
+    async_trust.assemble_constraints = AsyncMock(return_value=None)
+    async_trust.verify_consent = AsyncMock(return_value=True)
+
+    # Synchronous LLM for NLU / lang-norm (runs in asyncio.to_thread)
+    llm = MagicMock()
+    llm.call.return_value = LLMResponse(
+        content="",
+        tool_calls=[],
+        stop_reason="end_turn",
+        model_used="claude-test",
+    )
+    llm.get_active_model.return_value = "claude-test"
+
+    # async generator for stream_call
+    async def _stream_gen(*args, **kwargs):
+        for tok in tokens:
+            yield tok
+
+    llm.stream_call = MagicMock(side_effect=_stream_gen)
+
+    trust = MagicMock()
+    trust.check_input.return_value = TrustCheckResult(passed=True, action="allow")
+    trust.check_output.return_value = TrustCheckResult(passed=True, action="allow")
+
+    memory = MagicMock()
+    memory.context_bundle.return_value = ContextBundle(
+        session=session, profile={}, journey=None
+    )
+
+    tool_registry = MagicMock()
+    tool_registry.get_tool_definitions.return_value = []
+
+    manager = MagicMock()
+    manager.build_system_prompt.return_value = ""
+    manager.build_messages.return_value = [{"role": "user", "content": "Hello"}]
+    manager.run_turn.return_value = ("Hello world.", [], [])
+
+    learning = MagicMock()
+    knowledge_engine = MagicMock()
+    workflow = _make_workflow()
+
+    agent = AgentCore(
+        config=VALID_CONFIG,
+        llm_wrapper=llm,
+        memory=memory,
+        trust=trust,
+        knowledge_engine=knowledge_engine,
+        tool_registry=tool_registry,
+        manager_agent=manager,
+        learning=learning,
+        workflow=workflow,
+        async_memory=async_memory,
+        async_trust=async_trust,
+    )
+
+    agent._language_normaliser = MagicMock()
+    agent._language_normaliser.normalise.return_value = ("Hello", "english")
+
+    agent._nlu_processor = MagicMock()
+    agent._nlu_processor.process.return_value = nlu_result or _DEFAULT_NLU
+
+    return agent
+
+
+@pytest.mark.asyncio
+async def test_stream_turn_stamps_turn_id_on_emitted_events():
+    """When turn_id is supplied, every emitted event carries it."""
+    agent = _make_stream_agent()
+    events = []
+    async for ev in agent.stream_turn(_turn_input(), turn_id="t-fixed-123"):
+        events.append(ev)
+
+    assert events, "Expected at least one event"
+    for ev in events:
+        assert hasattr(ev, "turn_id"), f"Event {ev!r} has no turn_id field"
+        assert ev.turn_id == "t-fixed-123", (
+            f"Expected turn_id='t-fixed-123' but got {ev.turn_id!r} on {ev!r}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_stream_turn_aborts_before_llm_call_when_event_preset():
+    """If abort_event is already set, stream_turn returns without calling stream_call."""
+    agent = _make_stream_agent()
+
+    abort_event = asyncio.Event()
+    abort_event.set()
+
+    events = []
+    async for ev in agent.stream_turn(_turn_input(), abort_event=abort_event, turn_id="t-1"):
+        events.append(ev)
+
+    # No SentenceEvent should appear because the LLM was never run
+    assert not any(isinstance(ev, SentenceEvent) for ev in events), (
+        "SentenceEvent yielded despite abort_event being set before stream_turn ran"
+    )
+    # The wrapper's stream_call must not have been called
+    agent._llm.stream_call.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_stream_turn_falls_back_to_internal_turn_id_when_unset():
+    """When turn_id is omitted (default ''), an internal uuid is generated and stamped."""
+    import re
+    agent = _make_stream_agent()
+
+    events = []
+    async for ev in agent.stream_turn(_turn_input()):
+        events.append(ev)
+
+    assert events, "Expected at least one event"
+    turn_ids = {getattr(ev, "turn_id", "") for ev in events}
+    turn_ids.discard("")
+
+    assert len(turn_ids) == 1, (
+        f"Expected exactly one internal turn_id stamped on all events, got: {turn_ids}"
+    )
+    # The id should look like a uuid4
+    (internal_id,) = turn_ids
+    uuid_pattern = re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    )
+    assert uuid_pattern.match(internal_id), (
+        f"Generated turn_id does not look like a uuid4: {internal_id!r}"
+    )
