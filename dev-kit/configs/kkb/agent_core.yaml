@@ -7,6 +7,14 @@ agent:
   ask_for_consent: true
   consent_prompt: "नमस्ते! क्या मैं आपकी ट्रेड और लोकेशन याद रख सकती हूँ? इससे अगली बार आपको दोबारा बताना नहीं पड़ेगा।"
 
+  # GH-204: skip the LLM round trip when NLU is confident the user wants to end
+  # the call. Saves ~9 s on the goodbye turn — the bot speaks
+  # ``conversation.termination_message`` directly, translated to the caller's
+  # language. Set ``enabled: false`` to fall back to the LLM tool path.
+  termination_short_circuit:
+    enabled: true
+    confidence_threshold: 0.7
+
 channels:
   voice:
     # GH-194: hard cap on voice response length (token cap below + prompt rule).

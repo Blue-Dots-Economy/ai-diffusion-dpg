@@ -151,6 +151,22 @@ class RecentToolExchangesConfig(BaseModel):
     max_chars: int = Field(default=4000, ge=0)
 
 
+class TerminationShortCircuitConfig(BaseModel):
+    """Skip the LLM round trip for high-confidence termination_intent (#204).
+
+    When the user's intent is unambiguously to end the session, calling the
+    LLM only to have it speak the configured ``conversation.termination_message``
+    adds ~9 s of latency for no semantic benefit. Enabling this lets the
+    orchestrator emit the canned termination message directly when NLU is
+    confident enough, cutting the goodbye turn down to NLU + translation.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = True
+    confidence_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+
+
 class AgentConfig(BaseModel):
     """Top-level LLM wrapper settings."""
 
@@ -164,6 +180,9 @@ class AgentConfig(BaseModel):
     max_tool_rounds: int = Field(default=3, ge=1)
     ask_for_consent: bool = False
     consent_prompt: str = ""
+    termination_short_circuit: TerminationShortCircuitConfig = Field(
+        default_factory=TerminationShortCircuitConfig
+    )
     recent_tool_exchanges: RecentToolExchangesConfig = Field(
         default_factory=RecentToolExchangesConfig
     )

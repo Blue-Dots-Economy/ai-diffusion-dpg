@@ -12,6 +12,11 @@ agent:
   retry_attempts: 2
   retry_backoff_seconds: [0, 0.5, 1.0]
   max_tool_rounds: 3
+  # GH-204: when NLU is confident the user wants to end the session, skip
+  # the LLM round trip and speak ``conversation.termination_message`` directly.
+  termination_short_circuit:
+    enabled: true
+    confidence_threshold: 0.7
   recent_tool_exchanges:
     max_items: 3            # Cap on prior tool_use/tool_result pairs replayed across turns (#193).
     max_chars: 4000         # Per-result content cap; mirrors action_gateway max_size_chars default.

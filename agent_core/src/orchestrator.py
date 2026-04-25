@@ -1943,6 +1943,130 @@ class AgentCore(AgentCoreBase):
     # Private: consent translation helper
     # ------------------------------------------------------------------
 
+    async def _stream_termination_short_circuit(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        turn_id: str,
+        turn_input: TurnInput,
+        detected_language: str,
+        nlu_result: NLUResult,
+        bundle: ContextBundle,
+        trust_input: TrustCheckResult,
+        trust_output: TrustCheckResult,
+        start: float,
+        stamp,
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """Skip the LLM and emit the canned termination_message (#204).
+
+        Pulls ``conversation.termination_message`` from config, translates it
+        to the user's detected language using the same helper as the consent
+        flow, and yields a single ``SentenceEvent`` followed by a terminal
+        ``DoneEvent`` with ``session_ended=True``. State updates (session_id,
+        ended_at, audit, observability) still fire via ``_async_post_turn``.
+
+        Args:
+            session_id: Active session identifier.
+            user_id: Caller identity for memory writes.
+            turn_id: Stable id stamped on every emitted event.
+            turn_input: The current turn's input — only ``user_message`` /
+                ``timestamp_ms`` are read; nothing is mutated.
+            detected_language: Language inferred earlier in the turn.
+            nlu_result: Used for the audit-event ``intent``.
+            bundle: Current memory snapshot; used to resolve the routing
+                target (``ended`` subagent if present).
+            trust_input: Earlier trust verdict — passed through to
+                ``_async_post_turn`` for observability.
+            trust_output: No second Trust call is made here; the message is
+                config-controlled. The earlier verdict is reused for the audit.
+            start: Wall-clock start of the turn for latency reporting.
+            stamp: Helper that decorates events with ``turn_id``.
+
+        Yields:
+            Exactly one SentenceEvent followed by a terminal DoneEvent.
+        """
+        termination_message: str = self._config.get("conversation", {}).get(
+            "termination_message", ""
+        ) or ""
+
+        # Route to the "ended" subagent if the workflow defines one. This
+        # keeps reconnect / observability semantics consistent with the
+        # full LLM path (where global_routing on termination_intent moves
+        # the session into the terminal subagent).
+        ended_subagent_id = "ended" if "ended" in self._workflow.subagents else (
+            bundle.session.get("current_subagent_id") or self._workflow.start_subagent_id
+        )
+        bundle.session["current_subagent_id"] = ended_subagent_id
+
+        write_tasks: list = [
+            self._async_memory.write(
+                session_id, user_id, "session", "current_subagent_id", ended_subagent_id
+            ),
+        ]
+
+        translated = self._translate_consent_message(termination_message, detected_language)
+
+        # Best-effort fan-out of routing writes; parallel with the SentenceEvent
+        # so the caller hears the goodbye even if Memory Layer is slow.
+        await asyncio.gather(*write_tasks, return_exceptions=True)
+
+        latency_ms = int((time.time() - start) * 1000)
+
+        logger.info(
+            "orchestrator.stream_turn_termination_short_circuit",
+            extra={
+                "operation": "orchestrator.stream_turn",
+                "status": "success",
+                "session_id": session_id,
+                "intent": nlu_result.intent,
+                "confidence": nlu_result.confidence,
+                "latency_ms": latency_ms,
+                "language": detected_language,
+            },
+        )
+        logger.info(
+            "\n═══════════════════════════════════════════════════════════════\n"
+            "  STREAM TURN COMPLETE  session=%s  intent=%s  tool_used=%s\n"
+            "  model=%s  total_latency=%dms  next_subagent=%s\n"
+            "  response: %r\n"
+            "═══════════════════════════════════════════════════════════════",
+            session_id, nlu_result.intent, False,
+            "none", latency_ms, ended_subagent_id,
+            (translated or "").strip()[:200],
+        )
+
+        if translated:
+            yield stamp(SentenceEvent(text=translated, sentence_index=0))
+
+        yield stamp(DoneEvent(
+            turn_id=turn_id,
+            turn_status="completed",
+            session_ended=True,
+            was_escalated=False,
+            was_tool_used=False,
+            model_used="none",
+            latency_ms=latency_ms,
+        ))
+
+        # Async post-turn (audit log, last_response, observability emit).
+        asyncio.create_task(
+            self._async_post_turn(
+                session_id=session_id,
+                user_id=user_id,
+                turn_id=turn_id,
+                response_text=(translated or "").strip(),
+                user_message=turn_input.user_message,
+                trust_input=trust_input,
+                trust_output=trust_output,
+                model_used="none",
+                intent=nlu_result.intent,
+                tool_calls=[],
+                latency_ms=latency_ms,
+                timestamp_ms=turn_input.timestamp_ms,
+            )
+        )
+
     def _translate_consent_message(self, message: str, target_language: str) -> str:
         """Translate the consent prompt to the user's detected language.
 
@@ -2630,6 +2754,35 @@ class AgentCore(AgentCoreBase):
                 nlu_result.intent, nlu_result.confidence,
                 list((nlu_result.entities or {}).keys()),
             )
+
+            # ── #204: termination_intent short-circuit ──────────────────
+            # When NLU is confident the user wants to end the session,
+            # skip the LLM round trip entirely and speak the configured
+            # termination message directly. Saves ~9 s on the goodbye
+            # turn (NLU + LLM#1 + end_session tool + LLM#2 → NLU only).
+            term_cfg = self._config.get("agent", {}).get("termination_short_circuit", {}) or {}
+            term_enabled: bool = bool(term_cfg.get("enabled", True))
+            term_threshold: float = float(term_cfg.get("confidence_threshold", 0.7))
+            if (
+                term_enabled
+                and nlu_result.intent == "termination_intent"
+                and nlu_result.confidence >= term_threshold
+            ):
+                async for ev in self._stream_termination_short_circuit(
+                    session_id=session_id,
+                    user_id=user_id,
+                    turn_id=turn_id,
+                    turn_input=turn_input,
+                    detected_language=detected_language,
+                    nlu_result=nlu_result,
+                    bundle=bundle,
+                    trust_input=trust_input,
+                    trust_output=trust_output,
+                    start=start,
+                    stamp=_stamp,
+                ):
+                    yield ev
+                return
 
             stream_user_state_guidance_text = self._handle_user_state_turn(
                 session_id=session_id,

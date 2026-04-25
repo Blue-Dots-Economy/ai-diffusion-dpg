@@ -463,6 +463,10 @@ class TestStreamTurnEndSession:
 
     def _make_end_session_agent(self):
         agent = _make_agent_core()
+        # GH-204: these tests exercise the LLM tool-loop end_session path —
+        # disable the termination short-circuit so the high-confidence NLU
+        # below doesn't bypass the path under test.
+        agent._config["agent"]["termination_short_circuit"] = {"enabled": False}
         # Manager agent must expose the same attributes the orchestrator
         # touches in the sync path (so the streaming path has parity).
         agent._manager_agent._session_ended_flag = False

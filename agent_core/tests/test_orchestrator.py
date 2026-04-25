@@ -887,6 +887,90 @@ async def test_stream_turn_skips_opening_phrase_when_already_emitted_post_consen
     )
 
 
+@pytest.mark.asyncio
+async def test_termination_short_circuit_skips_llm_when_confident():
+    """GH-204: termination_intent at confidence >= threshold → no LLM call,
+    DoneEvent(session_ended=True), single SentenceEvent with the configured
+    termination_message."""
+    agent = _make_stream_agent(
+        nlu_result=_TERMINATION_NLU,
+        session_data={"current_subagent_id": "market_truth"},
+    )
+    agent._config = {
+        **VALID_CONFIG,
+        "agent": {"termination_short_circuit": {"enabled": True, "confidence_threshold": 0.7}},
+        "conversation": {
+            **VALID_CONFIG["conversation"],
+            "termination_message": "Goodbye!",
+        },
+    }
+    agent._workflow.subagents["ended"] = _make_subagent("ended")
+    # Default-language path → translation skipped (no LLM hit).
+    agent._language_normaliser.normalise.return_value = ("bye", "hindi")
+
+    events = []
+    async for ev in agent.stream_turn(_turn_input("bye"), turn_id="t-term"):
+        events.append(ev)
+
+    sentences = [e for e in events if isinstance(e, SentenceEvent)]
+    dones = [e for e in events if isinstance(e, DoneEvent)]
+    assert len(sentences) == 1, f"expected one SentenceEvent, got {sentences}"
+    assert sentences[0].text == "Goodbye!"
+    assert len(dones) == 1
+    assert dones[0].session_ended is True
+    assert dones[0].was_tool_used is False
+
+    agent._llm.stream_call.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_termination_short_circuit_below_threshold_falls_through():
+    """termination_intent below threshold → normal LLM path (existing behaviour)."""
+    low_conf = NLUResult(
+        intent="termination_intent",
+        entities={},
+        sentiment="neutral",
+        confidence=0.4,
+    )
+    agent = _make_stream_agent(
+        nlu_result=low_conf,
+        session_data={"current_subagent_id": "market_truth"},
+    )
+    agent._config = {
+        **VALID_CONFIG,
+        "agent": {"termination_short_circuit": {"enabled": True, "confidence_threshold": 0.7}},
+        "conversation": {**VALID_CONFIG["conversation"], "termination_message": "Goodbye!"},
+    }
+    agent._workflow.subagents["ended"] = _make_subagent("ended")
+
+    events = []
+    async for ev in agent.stream_turn(_turn_input("maybe bye"), turn_id="t-low"):
+        events.append(ev)
+
+    agent._llm.stream_call.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_termination_short_circuit_disabled_falls_through():
+    """enabled=false → no short-circuit on high-confidence termination_intent."""
+    agent = _make_stream_agent(
+        nlu_result=_TERMINATION_NLU,
+        session_data={"current_subagent_id": "market_truth"},
+    )
+    agent._config = {
+        **VALID_CONFIG,
+        "agent": {"termination_short_circuit": {"enabled": False, "confidence_threshold": 0.7}},
+        "conversation": {**VALID_CONFIG["conversation"], "termination_message": "Goodbye!"},
+    }
+    agent._workflow.subagents["ended"] = _make_subagent("ended")
+
+    events = []
+    async for ev in agent.stream_turn(_turn_input("bye"), turn_id="t-disabled"):
+        events.append(ev)
+
+    agent._llm.stream_call.assert_called()
+
+
 def test_consent_gate_skipped_when_storage_mode_set():
     """user_storage_mode already set → skip consent gate."""
     agent, memory, trust = _make_agent_with_consent(
