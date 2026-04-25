@@ -478,6 +478,11 @@ class AgentCoreLLMProcessor(FrameProcessor):
                 },
             )
 
+        # GH-199: push EndFrame so the Vobiz serializer can issue its REST
+        # DELETE hangup. This is the load-bearing step — ws.close() alone is
+        # not enough to drop the telephony leg.
+        await self.push_frame(EndFrame())
+
         if self._telephony is not None:
             try:
                 await self._telephony.close_call(reason="session_end")

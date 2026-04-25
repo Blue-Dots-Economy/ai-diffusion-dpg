@@ -634,4 +634,80 @@ async def test_new_turn_clears_stale_interrupted_flag(session_config):
 
     texts = [f.text for f in pushed if isinstance(f, TTSSpeakFrame)]
     assert "ok" in texts
+
+
+@pytest.mark.asyncio
+async def test_done_event_session_ended_pushes_endframe_after_terminal_word(config):
+    """GH-199: pipeline must see EndFrame downstream so the Vobiz serializer
+    can issue its REST DELETE hangup. EndFrame must come after the terminal
+    word so TTS can finish speaking."""
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+    from reach_layer_base import DoneEvent
+    from pipecat.frames.frames import EndFrame, TextFrame
+
+    pushed = []
+    telephony = _make_fake_telephony()
+    proc = AgentCoreLLMProcessor(
+        config,
+        call_sid="CA1",
+        session_id="s1",
+        channel_config={"terminal_word": "धन्यवाद"},
+        telephony=telephony,
+    )
+    proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
+
+    await proc._handle_done_event(DoneEvent(session_ended=True, turn_status="completed"))
+
+    text_idx = next(
+        i for i, f in enumerate(pushed)
+        if isinstance(f, TextFrame) and getattr(f, "text", "") == "धन्यवाद"
+    )
+    end_idx = next(i for i, f in enumerate(pushed) if isinstance(f, EndFrame))
+    assert end_idx > text_idx, "EndFrame must be pushed after the terminal-word TextFrame"
+
+
+@pytest.mark.asyncio
+async def test_done_event_session_ended_empty_terminal_word_still_pushes_endframe(config):
+    """GH-199: empty terminal_word still triggers EndFrame so the leg drops."""
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+    from reach_layer_base import DoneEvent
+    from pipecat.frames.frames import EndFrame
+
+    pushed = []
+    telephony = _make_fake_telephony()
+    proc = AgentCoreLLMProcessor(
+        config,
+        call_sid="CA1",
+        session_id="s1",
+        channel_config={"terminal_word": ""},
+        telephony=telephony,
+    )
+    proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
+
+    await proc._handle_done_event(DoneEvent(session_ended=True, turn_status="completed"))
+
+    assert any(isinstance(f, EndFrame) for f in pushed)
+
+
+@pytest.mark.asyncio
+async def test_done_event_session_ended_false_does_not_push_endframe(config):
+    """GH-199: non-terminal turn must not push EndFrame (would tear down pipeline)."""
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+    from reach_layer_base import DoneEvent
+    from pipecat.frames.frames import EndFrame
+
+    pushed = []
+    telephony = _make_fake_telephony()
+    proc = AgentCoreLLMProcessor(
+        config,
+        call_sid="CA1",
+        session_id="s1",
+        channel_config={"terminal_word": "धन्यवाद"},
+        telephony=telephony,
+    )
+    proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
+
+    await proc._handle_done_event(DoneEvent(session_ended=False, turn_status="completed"))
+
+    assert not any(isinstance(f, EndFrame) for f in pushed)
     assert proc._interrupted is False
