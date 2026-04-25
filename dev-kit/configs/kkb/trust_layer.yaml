@@ -92,15 +92,42 @@ trust:
           refusal_template: null
 
   consent:
+    # GH-239: Devanagari STT output is the common case on Hindi voice calls;
+    # romanised forms are kept for typed/English channels and STT fallbacks.
+    # Substring match is naive — any longer phrase containing one of these
+    # will count as consent, so order matters less than coverage.
     consent_phrases:
+      # Romanised
       - "haan"
       - "yes"
       - "theek hai"
       - "manzoor hai"
+      - "ok"
+      - "okay"
+      - "sahi hai"
+      # Devanagari
+      - "हाँ"
+      - "हा"
+      - "जी हाँ"
+      - "जी"
+      - "ठीक है"
+      - "ठीक"
+      - "सही है"
+      - "सही"
+      - "मंज़ूर"
+      - "मंजूर"
+      - "ओके"
     decline_phrases:
+      # Romanised
       - "nahi"
       - "no"
       - "nahi chahiye"
+      - "mat"
+      # Devanagari
+      - "नहीं"
+      - "नही"
+      - "नहीं चाहिए"
+      - "मना"
 
   hitl:
     queue_backend: "log"
