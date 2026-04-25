@@ -2035,11 +2035,12 @@ class AgentCore(AgentCoreBase):
         logger.info(
             "\n═══════════════════════════════════════════════════════════════\n"
             "  STREAM TURN COMPLETE  session=%s  intent=%s  tool_used=%s\n"
-            "  model=%s  total_latency=%dms  next_subagent=%s\n"
+            "  model=%s  total_latency=%dms  next_subagent=%s  sentences=%d\n"
             "  response: %r\n"
             "═══════════════════════════════════════════════════════════════",
             session_id, nlu_result.intent, False,
             "none", latency_ms, ended_subagent_id,
+            1 if translated else 0,
             (translated or "").strip()[:200],
         )
 
@@ -2625,11 +2626,12 @@ class AgentCore(AgentCoreBase):
                     logger.info(
                         "\n═══════════════════════════════════════════════════════════════\n"
                         "  STREAM TURN COMPLETE  session=%s  intent=%s  tool_used=%s\n"
-                        "  model=%s  total_latency=%dms  next_subagent=%s\n"
+                        "  model=%s  total_latency=%dms  next_subagent=%s  sentences=%d\n"
                         "  response: %r\n"
                         "═══════════════════════════════════════════════════════════════",
                         session_id, "consent_prompt", False,
                         "none", consent_latency_ms, "consent_gate",
+                        1 if consent_response_text else 0,
                         consent_response_text.strip()[:200],
                     )
                     yield _stamp(SentenceEvent(
@@ -3468,6 +3470,14 @@ class AgentCore(AgentCoreBase):
             yield _stamp(SignalEvent(stage="memory_write", status="complete"))
 
             latency_ms = int((time.time() - start) * 1000)
+            # GH-240 / GH-243: turn-level canonical sentence count. The
+            # per-call "[STEP 8] LLM Stream Call #1 sentences=N" log fires
+            # before the turn-end trust-batcher flush at line ~3402-3417,
+            # so it under-counts when the final flush emits anything (and
+            # on tool turns it omits Call #2 entirely). ``sentence_index``
+            # at this point equals the total number of SentenceEvents
+            # actually yielded for this turn — matches what the Reach
+            # Layer counts as ``sentences_pushed``.
             logger.info(
                 "orchestrator.stream_turn_complete",
                 extra={
@@ -3479,16 +3489,17 @@ class AgentCore(AgentCoreBase):
                     "tool_used": was_tool_used,
                     "intent": nlu_result.intent,
                     "next_subagent_id": next_subagent_id,
+                    "sentences_emitted": sentence_index,
                 },
             )
             logger.info(
                 "\n═══════════════════════════════════════════════════════════════\n"
                 "  STREAM TURN COMPLETE  session=%s  intent=%s  tool_used=%s\n"
-                "  model=%s  total_latency=%dms  next_subagent=%s\n"
+                "  model=%s  total_latency=%dms  next_subagent=%s  sentences=%d\n"
                 "  response: %r\n"
                 "═══════════════════════════════════════════════════════════════",
                 session_id, nlu_result.intent, was_tool_used,
-                model_used, latency_ms, next_subagent_id,
+                model_used, latency_ms, next_subagent_id, sentence_index,
                 full_response_text.strip()[:200],
             )
 

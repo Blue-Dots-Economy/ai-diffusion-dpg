@@ -1619,6 +1619,38 @@ def _make_stream_agent(
 
 
 @pytest.mark.asyncio
+async def test_stream_turn_complete_logs_turn_level_sentences_emitted(caplog):
+    """GH-240 / GH-243: ``orchestrator.stream_turn_complete`` must report the
+    total number of SentenceEvents yielded for the turn, including those
+    flushed by the trust-batcher's turn-end flush. The legacy
+    ``[STEP 8] sentences=N`` log fires before the final flush and so
+    under-counted on turns where final_release was non-empty.
+    """
+    agent = _make_stream_agent(
+        stream_tokens=["Hello.", " There.", " More."],
+    )
+
+    sentence_count = 0
+    with caplog.at_level("INFO"):
+        async for ev in agent.stream_turn(_turn_input(), turn_id="t-cnt"):
+            if isinstance(ev, SentenceEvent):
+                sentence_count += 1
+
+    rec = next(
+        (r for r in caplog.records if r.message == "orchestrator.stream_turn_complete"),
+        None,
+    )
+    assert rec is not None, "stream_turn_complete log entry not emitted"
+    assert hasattr(rec, "sentences_emitted"), (
+        "stream_turn_complete must include the sentences_emitted field"
+    )
+    assert rec.sentences_emitted == sentence_count, (
+        f"sentences_emitted={rec.sentences_emitted} does not match yielded "
+        f"count {sentence_count}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_stream_turn_stamps_turn_id_on_emitted_events():
     """When turn_id is supplied, every emitted event carries it."""
     agent = _make_stream_agent()
