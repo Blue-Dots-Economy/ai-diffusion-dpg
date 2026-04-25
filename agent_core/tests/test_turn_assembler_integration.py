@@ -79,7 +79,7 @@ async def test_t4_t7_replay_yields_exactly_one_completed_done():
       2. Exactly three DoneEvent(turn_status='interrupted') are emitted.
       3. No SentenceEvent from a cancelled turn appears after its DoneEvent.
     """
-    agent = _make_slow_streaming_agent_core(per_chunk_delay_s=0.005)
+    agent = _make_slow_streaming_agent_core(per_chunk_delay_s=0.050)
     ta = TurnAssembler(
         agent_core=agent,
         config=_make_config_for_integration(silence_ms=20, max_wait_ms=500),
