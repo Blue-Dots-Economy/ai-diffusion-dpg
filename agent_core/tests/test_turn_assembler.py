@@ -1503,3 +1503,124 @@ class TestSessionTurnRefactor:
         )
         assert dones[0].turn_status == "interrupted"
         assert turn.status == TS.INTERRUPTED
+
+    @pytest.mark.asyncio
+    async def test_invoke_does_not_push_completed_done_after_cancel(self):
+        """Status guard in _invoke prevents Done(completed) from reaching the
+        queue after cancel() has already pushed Done(interrupted).
+
+        The race: cancel() sets turn.status=INTERRUPTED and pushes
+        Done(interrupted) to the queue BEFORE _invoke's loop processes the
+        final Done(completed) event from the generator. Without the
+        ``turn.status != INVOKED`` guard, _invoke sees abort_event unset at
+        its check (generator already yielded Done synchronously), then
+        cancel fires between the check and the put, resulting in both
+        Done(completed) and Done(interrupted) in the queue.
+
+        To make the race deterministic in a single-threaded event loop, we
+        drive _invoke directly without task.cancel() involvement: we use a
+        synchronous-yield generator so no CancelledError interrupts the flow,
+        manually transition the turn state as cancel() would, and verify that
+        _invoke's status guard catches the stale Done.
+        """
+        # --- Build a Turn manually and drive _invoke directly ----------------
+        # We bypass the silence-trigger machinery so we can control timing.
+        # The generator yields Done(completed) synchronously (no internal await
+        # after the sentence), so _invoke processes it without a task-cancel
+        # interruption — reproducing the race where abort_event.is_set() was
+        # False when checked but cancel has since transitioned the turn.
+
+        # Shared state: we'll inject the race by patching the abort_event
+        # check window. We do this by replacing abort_event.is_set with a
+        # version that, on first call, simulates cancel() firing: it sets
+        # status=INTERRUPTED, pushes Done(interrupted), THEN returns False
+        # (the pre-cancel snapshot). On second call it returns True.
+        agent = MagicMock()
+
+        async def sync_done_stream(turn_input, *, abort_event=None, turn_id=""):
+            """Generator that yields Done(completed) without any internal await
+            — simulating a fast, synchronous completion path where the task
+            cancel has no await to land on between the abort check and the put.
+            """
+            yield SentenceEvent(text="hello", sentence_index=0, turn_id=turn_id)
+            yield DoneEvent(turn_status="completed", turn_id=turn_id)
+
+        agent.stream_turn = sync_done_stream
+        ta = _make_assembler(agent_core=agent)
+
+        # Create a session and its initial turn via add_segment.
+        # Use a very long silence_ms so the timer doesn't auto-invoke.
+        ta._config["reach_layer"]["turn_assembler"]["silence_ms"] = 30_000
+        ta._config["reach_layer"]["turn_assembler"]["max_wait_ms"] = 30_000
+        await ta.add_segment("s1", _make_segment(text="hi"))
+
+        session = ta._sessions["s1"]
+        turn = session.current_turn
+
+        # Manually put the turn in INVOKED state (skip the silence trigger).
+        turn.status = TurnStatus.INVOKED
+
+        # Intercept abort_event.is_set() so that on the SECOND call (when
+        # _invoke is checking after receiving Done(completed)), we simulate
+        # cancel() having already fired: set status=INTERRUPTED and put
+        # Done(interrupted) in the queue, then return False (the snapshot
+        # value _invoke would have seen had the race not been guarded).
+        # This faithfully represents: "cancel ran between the is_set() check
+        # and the queue.put(), but _invoke already read is_set()=False."
+        call_count = 0
+        original_is_set = turn.abort_event.is_set
+
+        async def inject_cancel_and_put_interrupted():
+            """Simulate cancel() mid-flight: mutate state as cancel() does."""
+            turn.status = TurnStatus.INTERRUPTED
+            turn.abort_event.set()
+            await turn.event_queue.put(
+                DoneEvent(turn_status="interrupted", turn_id=turn.turn_id)
+            )
+
+        def patched_is_set():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                # This is the check inside the _invoke loop for Done(completed).
+                # Simulate the race: cancel just ran. We mutate synchronously
+                # (event.set() is synchronous) to mimic the state _invoke would
+                # see on the next check — but return False as the pre-cancel
+                # snapshot (the value _invoke already read before cancel ran).
+                turn.status = TurnStatus.INTERRUPTED
+                # NOTE: we do NOT set abort_event here — we return False to
+                # represent the race window where abort_event.is_set() returned
+                # False but cancel then ran. The status guard is what we test.
+                return False
+            return original_is_set()
+
+        turn.abort_event.is_set = patched_is_set
+
+        # Also push Done(interrupted) as cancel() would have done.
+        await turn.event_queue.put(
+            DoneEvent(turn_status="interrupted", turn_id=turn.turn_id)
+        )
+
+        # Drive _invoke directly (no task wrapping, no CancelledError).
+        await ta._invoke(turn)
+
+        # Drain the queue and inspect DoneEvents.
+        drained = []
+        while not turn.event_queue.empty():
+            drained.append(turn.event_queue.get_nowait())
+
+        dones = [e for e in drained if isinstance(e, DoneEvent)]
+        # With the status guard: _invoke sees turn.status == INTERRUPTED on the
+        # second iteration and returns WITHOUT putting Done(completed). Only
+        # Done(interrupted) (pre-injected above) remains.
+        # Without the guard: _invoke would put Done(completed) after the
+        # interrupted Done, giving 2 DoneEvents with Done(completed) first
+        # (since queue ordering: interrupted was put first, then completed).
+        assert len(dones) == 1, (
+            f"expected exactly 1 DoneEvent (interrupted, pre-queued by cancel); "
+            f"got {len(dones)}: {[d.turn_status for d in dones]}"
+        )
+        assert dones[0].turn_status == "interrupted", (
+            f"expected interrupted, got {dones[0].turn_status}"
+        )
+        assert turn.status == TurnStatus.INTERRUPTED

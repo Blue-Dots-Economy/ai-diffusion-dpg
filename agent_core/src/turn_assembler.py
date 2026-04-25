@@ -925,6 +925,8 @@ class TurnAssembler(TurnAssemblerBase):
             ):
                 if turn.abort_event.is_set():
                     return
+                if turn.status != TurnStatus.INVOKED:
+                    return
                 await turn.event_queue.put(event)
                 if isinstance(event, DoneEvent):
                     turn.status = TurnStatus.COMPLETED
