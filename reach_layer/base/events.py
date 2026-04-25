@@ -22,6 +22,7 @@ class SignalEvent:
     stage: str
     status: str
     type: str = "signal"
+    turn_id: str = ""
 
 
 @dataclass
@@ -31,6 +32,7 @@ class SentenceEvent:
     text: str
     sentence_index: int = 0
     type: str = "sentence"
+    turn_id: str = ""
 
 
 @dataclass

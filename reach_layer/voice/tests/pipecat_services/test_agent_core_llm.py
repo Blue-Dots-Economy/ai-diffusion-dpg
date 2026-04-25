@@ -723,3 +723,65 @@ async def test_done_event_session_ended_false_does_not_push_endframe(config):
 
     assert not any(isinstance(f, EndFrame) for f in pushed)
     assert proc._interrupted is False
+
+
+@pytest.mark.asyncio
+async def test_session_mode_stale_sentences_appear_before_done_interrupted(session_config):
+    """After Done(turn_status='interrupted'), no further SentenceEvents from
+    the cancelled turn appear in the TTS frame stream — guaranteed structurally
+    by per-turn queues in TurnAssembler (#224 acceptance #5 regression).
+
+    Sentences emitted BEFORE the Done(interrupted) are allowed to reach TTS
+    (the interrupt happened mid-generation); the new lifecycle simply guarantees
+    that no SentenceEvent with the cancelled turn_id can appear AFTER the
+    Done(interrupted) marker on the SSE stream (per-turn queue cutoff).
+
+    This test verifies the processor correctly stops consuming SSE when it sees
+    Done(interrupted), and that if a sentence were to somehow arrive after
+    Done (which TurnAssembler's per-turn queues prevent), it would not reach TTS.
+    """
+    from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
+    from reach_layer_base import DoneEvent, SentenceEvent
+
+    # Event stream: sentences from interrupted turn, then Done, then stale
+    # sentences (which should not reach TTS due to the break on Done).
+    events = [
+        SentenceEvent(text="sentence-1", sentence_index=0, turn_id="t-old"),
+        SentenceEvent(text="sentence-2", sentence_index=1, turn_id="t-old"),
+        DoneEvent(turn_status="interrupted", turn_id="t-old"),
+        # Per-turn queue guarantee: these never appear on the SSE stream in
+        # practice, but test that processor correctly ignores them if they do.
+        SentenceEvent(text="stale-1", sentence_index=2, turn_id="t-old"),
+        SentenceEvent(text="stale-2", sentence_index=3, turn_id="t-old"),
+    ]
+    channel = _make_channel(events)
+
+    pushed = []
+    proc = AgentCoreLLMProcessor(
+        session_config, call_sid="CA1", session_id="s1", channel=channel
+    )
+    proc.push_frame = AsyncMock(side_effect=lambda f, d=None: pushed.append(f))
+
+    await proc.process_frame(
+        TranscriptionFrame(text="hello", user_id="", timestamp=""),
+        FrameDirection.DOWNSTREAM,
+    )
+
+    speak_texts = [f.text for f in pushed if isinstance(f, TTSSpeakFrame)]
+
+    # Pre-Done sentences reach TTS (they were emitted during the interrupted turn).
+    assert "sentence-1" in speak_texts, (
+        "pre-Done sentence missing from TTS frames"
+    )
+    assert "sentence-2" in speak_texts, (
+        "pre-Done sentence missing from TTS frames"
+    )
+
+    # Stale sentences that arrive after Done(interrupted) must NOT reach TTS.
+    # The processor's break on DoneEvent guarantees this.
+    assert "stale-1" not in speak_texts, (
+        f"stale-1 unexpectedly reached TTS; processor should break on Done(interrupted)"
+    )
+    assert "stale-2" not in speak_texts, (
+        f"stale-2 unexpectedly reached TTS; processor should break on Done(interrupted)"
+    )

@@ -394,11 +394,13 @@ class ReachLayerBase(ABC):
             return SignalEvent(
                 stage=payload.get("stage", ""),
                 status=payload.get("status", ""),
+                turn_id=payload.get("turn_id", ""),
             )
         elif event_type == "sentence":
             return SentenceEvent(
                 text=payload.get("text", ""),
                 sentence_index=payload.get("sentence_index", 0),
+                turn_id=payload.get("turn_id", ""),
             )
         elif event_type == "done":
             return DoneEvent(
