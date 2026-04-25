@@ -1,4 +1,5 @@
 """Tests for VobizAdapter — concrete TelephonyAdapterBase implementation."""
+import logging
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from src.vobiz_adapter import VobizAdapter
@@ -102,3 +103,43 @@ async def test_handle_call_raises_telephony_error_on_handshake_failure(config):
             await adapter.handle_call("call-123", "+91999", mock_ws)
 
     assert isinstance(exc_info.value.__cause__, RuntimeError)
+
+
+@pytest.mark.asyncio
+async def test_close_call_logs_vendor_signal_and_outcome_no_active_ws(config, caplog):
+    adapter = VobizAdapter(config)
+    with caplog.at_level(logging.INFO, logger="src.vobiz_adapter"):
+        await adapter.close_call(reason="session_end")
+    invoked = next(r for r in caplog.records if r.message == "vobiz_adapter.close_call")
+    assert invoked.reason == "session_end"
+    assert invoked.vendor_signal == "vobiz_rest_delete"
+    skipped = next(r for r in caplog.records if r.message == "vobiz_adapter.close_call_no_active_ws")
+    assert skipped.outcome == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_close_call_with_active_ws_logs_success(config, caplog):
+    adapter = VobizAdapter(config)
+    fake_ws = MagicMock()
+    fake_ws.close = AsyncMock()
+    adapter._active_websocket = fake_ws
+    with caplog.at_level(logging.INFO, logger="src.vobiz_adapter"):
+        await adapter.close_call(reason="session_end")
+    fake_ws.close.assert_awaited_once()
+    rec = next(r for r in caplog.records if r.message == "vobiz_adapter.close_call_complete")
+    assert rec.outcome == "ws_closed"
+    assert rec.vendor_signal == "vobiz_rest_delete"
+    assert isinstance(rec.latency_ms, int)
+
+
+@pytest.mark.asyncio
+async def test_close_call_with_active_ws_close_raises_logs_failure(config, caplog):
+    adapter = VobizAdapter(config)
+    fake_ws = MagicMock()
+    fake_ws.close = AsyncMock(side_effect=RuntimeError("ws boom"))
+    adapter._active_websocket = fake_ws
+    with caplog.at_level(logging.ERROR, logger="src.vobiz_adapter"):
+        await adapter.close_call(reason="session_end")
+    rec = next(r for r in caplog.records if r.message == "vobiz_adapter.close_call_failed")
+    assert rec.outcome == "failure"
+    assert "RuntimeError" in rec.error

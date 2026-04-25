@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 
 from fastapi import WebSocket
@@ -310,21 +311,31 @@ class VobizAdapter(TelephonyAdapterBase):
     # ------------------------------------------------------------------
 
     async def close_call(self, *, reason: str = "normal") -> None:
-        """Close the active call (GH-137).
+        """Defensive fallback close for the active Vobiz call (GH-137, GH-199).
 
-        Invoked by AgentCoreLLMProcessor when Agent Core signals
-        DoneEvent.session_ended=True so the telephony leg is released after the
-        terminal word is spoken.
+        On the happy path the bot-initiated end-of-session is driven by an
+        ``EndFrame`` pushed through the pipecat pipeline from
+        ``AgentCoreLLMProcessor._handle_done_event``; the
+        ``LoggingVobizFrameSerializer`` then issues the Vobiz REST DELETE
+        and the underlying WebSocket is closed by pipecat's pipeline
+        shutdown. This method remains as a defensive fallback for paths
+        that bypass that flow (e.g. errors raised before the EndFrame is
+        pushed, or non-pipeline-mediated session terminations).
+        ``LoggingVobizFrameSerializer`` is idempotent thanks to its
+        ``_hangup_attempted`` guard, so calling this method after a clean
+        EndFrame shutdown is safe.
 
         Args:
             reason: Free-form reason string recorded in structured logs.
         """
+        start = time.time()
         logger.info(
             "vobiz_adapter.close_call",
             extra={
                 "operation": "vobiz_adapter.close_call",
                 "status": "invoked",
                 "reason": reason,
+                "vendor_signal": "vobiz_rest_delete",
             },
         )
         ws = self._active_websocket
@@ -334,7 +345,9 @@ class VobizAdapter(TelephonyAdapterBase):
                 extra={
                     "operation": "vobiz_adapter.close_call",
                     "status": "skipped",
+                    "outcome": "skipped",
                     "reason": "no active websocket",
+                    "vendor_signal": "vobiz_rest_delete",
                 },
             )
             return
@@ -346,9 +359,23 @@ class VobizAdapter(TelephonyAdapterBase):
                 extra={
                     "operation": "vobiz_adapter.close_call",
                     "status": "failure",
+                    "outcome": "failure",
                     "error": f"{type(exc).__name__}: {exc}",
+                    "vendor_signal": "vobiz_rest_delete",
+                    "latency_ms": int((time.time() - start) * 1000),
                 },
             )
+            return
+        logger.info(
+            "vobiz_adapter.close_call_complete",
+            extra={
+                "operation": "vobiz_adapter.close_call",
+                "status": "success",
+                "outcome": "ws_closed",
+                "vendor_signal": "vobiz_rest_delete",
+                "latency_ms": int((time.time() - start) * 1000),
+            },
+        )
 
     async def on_session_start(self, session_id: str, user_id: str) -> None:
         """No-op. Voice sessions are established inside handle_call()."""
