@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import time
 
-from pipecat.frames.frames import CancelFrame, EndFrame, Frame
+from pipecat.frames.frames import CancelFrame, EndFrame
 from pipecat.runner.utils import parse_telephony_websocket
 from pipecat.serializers.vobiz import VobizFrameSerializer
 from pipecat.transports.websocket.fastapi import (
@@ -41,7 +41,6 @@ class LoggingVobizFrameSerializer(VobizFrameSerializer):
         outcome = "failure"
         if not self._call_id or not self._auth_id or not self._auth_token:
             outcome = "skipped_missing_credentials"
-            await super()._hang_up_call()
         else:
             import aiohttp
             try:
@@ -53,7 +52,8 @@ class LoggingVobizFrameSerializer(VobizFrameSerializer):
                     "X-Auth-ID": self._auth_id,
                     "X-Auth-Token": self._auth_token,
                 }
-                async with aiohttp.ClientSession() as session:
+                timeout = aiohttp.ClientTimeout(total=5)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
                     async with session.delete(endpoint, headers=headers) as response:
                         if response.status == 204:
                             outcome = "success"
