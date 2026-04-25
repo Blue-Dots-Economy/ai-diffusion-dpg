@@ -95,3 +95,120 @@ def test_webhook_response_xml_embeds_sample_rate(config):
     op = VobizOperator(config)
     xml = op.webhook_response_xml("wss://example.com/ws/abc")
     assert "rate=8000" in xml
+
+
+import logging
+from pipecat.frames.frames import EndFrame, CancelFrame
+from src.operators.vobiz_operator import LoggingVobizFrameSerializer
+
+
+def _make_serializer(call_id: str = "call-456"):
+    return LoggingVobizFrameSerializer(
+        stream_id="stream-123",
+        call_id=call_id,
+        auth_id="aid",
+        auth_token="tok",
+    )
+
+
+class _FakeResponse:
+    def __init__(self, status: int, text: str = ""):
+        self.status = status
+        self._text = text
+
+    async def text(self):
+        return self._text
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+
+class _FakeSession:
+    def __init__(self, response: _FakeResponse):
+        self._response = response
+        self.delete_calls = []
+
+    def delete(self, url, headers=None):
+        self.delete_calls.append({"url": url, "headers": headers})
+        return self._response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+
+def _patch_aiohttp(response: _FakeResponse):
+    fake = _FakeSession(response)
+    return patch("aiohttp.ClientSession", return_value=fake), fake
+
+
+@pytest.mark.asyncio
+async def test_logging_serializer_success_outcome(caplog):
+    serializer = _make_serializer()
+    cm, fake = _patch_aiohttp(_FakeResponse(204))
+    with cm, caplog.at_level(logging.INFO, logger="src.operators.vobiz_operator"):
+        await serializer.serialize(EndFrame())
+    assert len(fake.delete_calls) == 1
+    call = fake.delete_calls[0]
+    assert call["url"] == "https://api.vobiz.ai/api/v1/Account/aid/Call/call-456/"
+    assert call["headers"] == {"X-Auth-ID": "aid", "X-Auth-Token": "tok"}
+    rec = next(r for r in caplog.records if r.message == "vobiz_serializer.hangup")
+    assert rec.outcome == "success"
+    assert rec.call_id == "call-456"
+    assert isinstance(rec.latency_ms, int)
+
+
+@pytest.mark.asyncio
+async def test_logging_serializer_already_terminated_404(caplog):
+    serializer = _make_serializer()
+    cm, fake = _patch_aiohttp(_FakeResponse(404))
+    with cm, caplog.at_level(logging.INFO, logger="src.operators.vobiz_operator"):
+        await serializer.serialize(EndFrame())
+    rec = next(r for r in caplog.records if r.message == "vobiz_serializer.hangup")
+    assert rec.outcome == "already_terminated"
+    assert rec.status == "success"
+
+
+@pytest.mark.asyncio
+async def test_logging_serializer_missing_call_id(caplog):
+    serializer = _make_serializer(call_id=None)
+    with caplog.at_level(logging.INFO, logger="src.operators.vobiz_operator"):
+        await serializer.serialize(EndFrame())
+    rec = next(r for r in caplog.records if r.message == "vobiz_serializer.hangup")
+    assert rec.outcome == "skipped_missing_credentials"
+    assert rec.status == "failure"
+
+
+@pytest.mark.asyncio
+async def test_logging_serializer_cancel_frame_triggers_hangup():
+    serializer = _make_serializer()
+    cm, fake = _patch_aiohttp(_FakeResponse(204))
+    with cm:
+        await serializer.serialize(CancelFrame())
+    assert len(fake.delete_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_logging_serializer_idempotent_on_double_end_frame():
+    serializer = _make_serializer()
+    cm, fake = _patch_aiohttp(_FakeResponse(204))
+    with cm:
+        await serializer.serialize(EndFrame())
+        await serializer.serialize(EndFrame())
+    assert len(fake.delete_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_logging_serializer_5xx_outcome_failure(caplog):
+    serializer = _make_serializer()
+    cm, fake = _patch_aiohttp(_FakeResponse(500, text="boom"))
+    with cm, caplog.at_level(logging.INFO, logger="src.operators.vobiz_operator"):
+        await serializer.serialize(EndFrame())
+    rec = next(r for r in caplog.records if r.message == "vobiz_serializer.hangup")
+    assert rec.outcome == "failure"
+    assert rec.status == "failure"

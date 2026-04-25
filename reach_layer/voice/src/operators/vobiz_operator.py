@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import time
 
+from pipecat.frames.frames import CancelFrame, EndFrame, Frame
 from pipecat.runner.utils import parse_telephony_websocket
 from pipecat.serializers.vobiz import VobizFrameSerializer
 from pipecat.transports.websocket.fastapi import (
@@ -23,6 +24,64 @@ from pipecat.transports.websocket.fastapi import (
 from src.operators.operator_base import TelephonyOperatorBase
 
 logger = logging.getLogger(__name__)
+
+
+class LoggingVobizFrameSerializer(VobizFrameSerializer):
+    """VobizFrameSerializer that surfaces hangup outcome to structured logs.
+
+    Wraps the upstream serializer's ``_hang_up_call`` so the adapter-side
+    log stream records the Vobiz REST DELETE outcome consistently with the
+    rest of the framework's ``operation`` / ``status`` / ``latency_ms``
+    convention. No behavioural divergence from the upstream serializer.
+    """
+
+    async def _hang_up_call(self):
+        """Call upstream hangup and emit a single structured log entry."""
+        start = time.time()
+        outcome = "failure"
+        if not self._call_id or not self._auth_id or not self._auth_token:
+            outcome = "skipped_missing_credentials"
+            await super()._hang_up_call()
+        else:
+            import aiohttp
+            try:
+                endpoint = (
+                    f"https://api.vobiz.ai/api/v1/Account/{self._auth_id}"
+                    f"/Call/{self._call_id}/"
+                )
+                headers = {
+                    "X-Auth-ID": self._auth_id,
+                    "X-Auth-Token": self._auth_token,
+                }
+                async with aiohttp.ClientSession() as session:
+                    async with session.delete(endpoint, headers=headers) as response:
+                        if response.status == 204:
+                            outcome = "success"
+                        elif response.status == 404:
+                            outcome = "already_terminated"
+                        else:
+                            outcome = "failure"
+            except Exception as exc:
+                logger.error(
+                    "vobiz_serializer.hangup_exception",
+                    extra={
+                        "operation": "vobiz_serializer.hangup",
+                        "status": "failure",
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "call_id": self._call_id,
+                    },
+                )
+                outcome = "failure"
+        logger.info(
+            "vobiz_serializer.hangup",
+            extra={
+                "operation": "vobiz_serializer.hangup",
+                "status": "success" if outcome in ("success", "already_terminated") else "failure",
+                "outcome": outcome,
+                "latency_ms": int((time.time() - start) * 1000),
+                "call_id": self._call_id,
+            },
+        )
 
 
 class VobizOperator(TelephonyOperatorBase):
