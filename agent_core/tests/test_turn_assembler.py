@@ -1449,3 +1449,57 @@ class TestSessionTurnRefactor:
         await asyncio.sleep(0.01)
         await ta.session_end("s1")
         await asyncio.wait_for(finished.wait(), timeout=2.0)
+
+    @pytest.mark.asyncio
+    async def test_subscribe_blocks_until_first_add_segment_with_no_opening_phrase(self):
+        """Subscribe connected before any add_segment, with no opening phrase, blocks
+        on session.turn_changed until the first segment installs a Turn."""
+        ta = _make_assembler()  # default mock has no opening_phrase
+        received = []
+        started = asyncio.Event()
+
+        async def consume():
+            started.set()
+            async for ev in ta.subscribe("s1"):
+                received.append(ev)
+                if isinstance(ev, DoneEvent):
+                    break
+
+        consumer = asyncio.create_task(consume())
+        await started.wait()
+        # Brief yield: subscribe should now be inside turn_changed.wait()
+        await asyncio.sleep(0.02)
+        assert received == [], (
+            f"subscribe should block when no Turn exists; received: {received}"
+        )
+        # Now produce a segment — silence_trigger fires and installs a Turn
+        await ta.add_segment("s1", _make_segment(text="hi"))
+        await asyncio.wait_for(consumer, timeout=2.0)
+        assert any(isinstance(ev, DoneEvent) for ev in received)
+
+    @pytest.mark.asyncio
+    async def test_concurrent_cancels_produce_exactly_one_terminal_done(self):
+        """Two simultaneous cancel() calls on the same session must produce
+        exactly one terminal DoneEvent (idempotency under concurrency)."""
+        ta = _make_assembler()
+        await ta.add_segment("s1", _make_segment(text="hi"))
+        # Force INVOKED so cancel takes the interrupted-path
+        from src.session import Session as SessionClass
+        from src.turn import Turn as TurnClass, TurnStatus as TS
+
+        session = ta._sessions["s1"]
+        session.current_turn.status = TS.INVOKED
+        # Fire two cancels concurrently
+        await asyncio.gather(ta.cancel("s1"), ta.cancel("s1"))
+        turn = session.current_turn
+        # Drain the queue and count DoneEvents
+        dones = []
+        while not turn.event_queue.empty():
+            ev = turn.event_queue.get_nowait()
+            if isinstance(ev, DoneEvent):
+                dones.append(ev)
+        assert len(dones) == 1, (
+            f"concurrent cancel should produce exactly 1 DoneEvent; got {len(dones)}: {dones}"
+        )
+        assert dones[0].turn_status == "interrupted"
+        assert turn.status == TS.INTERRUPTED
