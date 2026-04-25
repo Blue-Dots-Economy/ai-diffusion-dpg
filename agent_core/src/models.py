@@ -273,6 +273,7 @@ class SignalEvent:
     stage: str = ""     # memory_read | trust_input | nlu | routing | ke_retrieval | tool_start | tool_end | trust_output | memory_write
     status: str = ""    # "start" | "complete" | "skipped"
     detail: str = ""    # optional human-readable info
+    turn_id: str = ""
 
     def to_sse(self) -> str:
         """Serialise to SSE data line."""
@@ -290,6 +291,7 @@ class SentenceEvent:
     type: str = "sentence"
     text: str = ""
     sentence_index: int = 0
+    turn_id: str = ""
 
     def to_sse(self) -> str:
         """Serialise to SSE data line."""
