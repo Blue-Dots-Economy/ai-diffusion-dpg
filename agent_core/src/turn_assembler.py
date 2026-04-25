@@ -518,6 +518,15 @@ class TurnAssembler(TurnAssemblerBase):
             return
 
         if bundle.session.get("opening_phrase_emitted"):
+            logger.info(
+                "turn_assembler.opening_phrase_already_emitted",
+                extra={
+                    "operation": "turn_assembler._emit_opening_phrase_if_first",
+                    "status": "skipped",
+                    "reason": "opening_phrase_emitted flag already set",
+                    "session_id": session_id,
+                },
+            )
             return
 
         # Prefer any subagent already persisted on the session; otherwise
@@ -527,6 +536,16 @@ class TurnAssembler(TurnAssemblerBase):
             or getattr(self._workflow, "start_subagent_id", "")
         )
         if not current_subagent_id:
+            logger.warning(
+                "turn_assembler.opening_phrase_no_subagent",
+                extra={
+                    "operation": "turn_assembler._emit_opening_phrase_if_first",
+                    "status": "skipped",
+                    "reason": "no current_subagent_id resolved",
+                    "session_id": session_id,
+                    "workflow_loaded": self._workflow is not None,
+                },
+            )
             return
 
         subagent = getattr(self._workflow, "subagents", {}).get(current_subagent_id)
