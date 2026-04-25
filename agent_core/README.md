@@ -39,9 +39,9 @@ agent_core/
 │   │                                    #   ToolExecutionError, ConsentRequiredError,
 │   │                                    #   ConfigurationError, ToolUseRequested
 │   ├── orchestrator.py                  # AgentCore — process_turn() + stream_turn()
-│   ├── turn_assembler.py                # TurnStatus, SessionBuffer, TurnAssemblerBase,
-│   │                                    #   TurnAssembler (policy stack: silence trigger,
-│   │                                    #   semantic gate, max-wait ceiling)
+│   ├── turn_assembler.py                # TurnAssemblerBase, TurnAssembler
+│   ├── session.py                       # Session per-session lifecycle object
+│   ├── turn.py                          # Turn per-turn lifecycle object, TurnStatus enum
 │   ├── manager_agent.py                 # ManagerAgent — LLM → tool → LLM loop
 │   ├── tool_registry.py                 # ToolRegistry — loads and routes tools at startup
 │   ├── workflow_loader.py               # AgentWorkflowLoader — parses subagent graph
@@ -162,7 +162,7 @@ For channels that deliver input as multiple partial segments (voice VAD, rapid c
 POST /sessions/{id}/input  ─►  TurnAssembler.add_segment()
                                     │
                                     ▼
-                            SessionBuffer (segments, timers, state)
+                            Session.current_turn: Turn (segments, timers, queue, abort)
                                     │
                      ┌──────────────┼──────────────┐
                      │              │              │
@@ -171,7 +171,7 @@ POST /sessions/{id}/input  ─►  TurnAssembler.add_segment()
                                  new segment)     never resets)
                                     │
                                     ▼
-                           agent_core.stream_turn()  ──►  SessionBuffer.event_queue
+                           agent_core.stream_turn()  ──►  Turn.event_queue
                                                                   │
                                                                   ▼
                                                     GET /sessions/{id}/events (SSE)
@@ -189,7 +189,7 @@ If both the silence timer and the ceiling fire simultaneously, only the first to
 
 **Barge-in / cancellation** — `DELETE /sessions/{id}/active_turn` cancels the in-flight `stream_turn()` task. The async memory-write task is also cancelled, so no partial writes land in the Memory Layer. `DoneEvent.turn_status` carries `"interrupted"` or `"abandoned"` for observability.
 
-**Invocation path is in-process** — `TurnAssembler._invoke()` calls `agent_core.stream_turn()` directly as a Python method (no HTTP hop, no serialisation). `StreamEvent`s flow into `SessionBuffer.event_queue`; the open `GET /sessions/{id}/events` connection drains the queue.
+**Invocation path is in-process** — `TurnAssembler._invoke()` calls `agent_core.stream_turn()` directly as a Python method (no HTTP hop, no serialisation). `StreamEvent`s flow into `Turn.event_queue` (one queue per Turn; a cancelled Turn's queue is sealed and the subscriber rebinds to the new Turn's queue).
 
 ---
 
@@ -280,7 +280,7 @@ LLM proxy endpoint (implemented, not yet wired).
 Implements both `process_turn()` (sync) and `stream_turn()` (async generator). Runs the 13-step sequence. Holds no session state. All dependencies are injected at construction, including the async HTTP clients used by `stream_turn()`. `_split_sentences()` is a small utility that splits LLM tokens into sentence boundaries (supports Devanagari and fullwidth punctuation).
 
 **`turn_assembler.py` — TurnAssembler**
-Buffers multi-segment input and decides when to invoke `stream_turn()`. Holds `_sessions: dict[str, SessionBuffer]` in memory. Constructor takes optional `nlu_processor`, `llm_wrapper`, `workflow`, `async_memory` — if absent, the semantic gate is effectively disabled.
+Buffers multi-segment input and decides when to invoke `stream_turn()`. Holds `_sessions: dict[str, Session]` in memory; each Session owns the current Turn. Constructor takes optional `nlu_processor`, `llm_wrapper`, `workflow`, `async_memory` — if absent, the semantic gate is effectively disabled.
 
 **`manager_agent.py` — ManagerAgent**
 LLM → tool → LLM loop. Both sync and async variants. Used by `process_turn()` for synchronous tool rounds; `stream_turn()` handles tool use via the `ToolUseRequested` exception raised from `stream_call()`.

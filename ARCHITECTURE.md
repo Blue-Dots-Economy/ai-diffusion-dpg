@@ -156,11 +156,13 @@ not declare the block are unaffected.
 
 **Streaming path (`POST /stream_turn`):** Agent Core also exposes an async SSE endpoint. `stream_turn()` uses async HTTP clients (`interfaces/async_/`) for all external calls, yields `SignalEvent`s at each pipeline stage, streams LLM tokens split into sentences, runs a per-sentence Trust output check, and emits a final `DoneEvent`. Steps 12–13 (memory write + observability emit) fire via `asyncio.create_task` after `DoneEvent` — never in the response path.
 
-**TurnAssembler:** For channels that deliver multi-segment input (voice VAD, rapid corrections), `TurnAssembler` sits between the server and `stream_turn()`. Buffers segments in a `SessionBuffer` and invokes the pipeline via a three-policy stack: semantic completeness gate (NLU confidence), silence trigger (reset on every segment), and max-wait ceiling (absolute). Exposes `POST /sessions/{id}/input`, `GET /sessions/{id}/events` (SSE), and `DELETE /sessions/{id}/active_turn` (barge-in).
+**TurnAssembler:** For channels that deliver multi-segment input (voice VAD, rapid corrections), `TurnAssembler` sits between the server and `stream_turn()`. Holds `Session` objects keyed by `session_id`; each `Session` owns the current `Turn` (per-turn segments, event queue, abort signal, state). The pipeline invokes via a three-policy stack: semantic completeness gate (NLU confidence), silence trigger (reset on every segment), and max-wait ceiling (absolute). Exposes `POST /sessions/{id}/input`, `GET /sessions/{id}/events` (SSE), and `DELETE /sessions/{id}/active_turn` (barge-in). Cancel is structural — a cancelled `Turn` is dead, its queue sealed, and a successor `Turn` gets a fresh queue (#224).
 
 **Key files:**
 - `agent_core/src/orchestrator.py` — `process_turn()` (sync) and `stream_turn()` (async generator)
-- `agent_core/src/turn_assembler.py` — `TurnAssembler`, `SessionBuffer`, `TurnStatus` state machine
+- `agent_core/src/turn_assembler.py` — `TurnAssemblerBase`, `TurnAssembler`
+- `agent_core/src/session.py` — `Session` per-session lifecycle object
+- `agent_core/src/turn.py` — `Turn` per-turn lifecycle object, `TurnStatus` state machine
 - `agent_core/src/manager_agent.py` — system prompt assembly, tool-use loop (sync + async)
 - `agent_core/src/llm_wrapper/claude_wrapper.py` — only file that imports `anthropic`; exposes `call()` and `stream_call()`
 - `agent_core/src/preprocessing/language_normaliser.py`
