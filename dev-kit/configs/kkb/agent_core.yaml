@@ -7,6 +7,12 @@ agent:
   ask_for_consent: true
   consent_prompt: "नमस्ते! क्या मैं आपकी ट्रेड और लोकेशन याद रख सकती हूँ? इससे अगली बार आपको दोबारा बताना नहीं पड़ेगा।"
 
+  # GH-206: cap tool chains at 2 rounds. T9-style runs (get_profile →
+  # market_lookup → apply_job) chained 3 serial tool calls into a ~18 s
+  # turn under the framework default of 3. Two rounds covers every
+  # legitimate KKB flow we have today; the third gets a graceful fallback.
+  max_tool_rounds: 2
+
   # GH-204: skip the LLM round trip when NLU is confident the user wants to end
   # the call. Saves ~9 s on the goodbye turn — the bot speaks
   # ``conversation.termination_message`` directly, translated to the caller's
@@ -113,7 +119,11 @@ channels:
         Examples: सविता, प्रकाश, अमित, श्यामलाल, राजीव.
     turn_assembler:
       silence_trigger:
-        silence_ms: 400         # Voice: short silence before trigger (VAD-driven segments)
+        # GH-206: 400 ms is shorter than a typical Hindi inter-word pause for
+        # older/rural speakers, which split single sentences into 3-4 segments
+        # and drove the cancel-and-fold pile-up before #200. 600 ms gives
+        # natural Hindi cadence room without making the bot feel sluggish.
+        silence_ms: 600
       max_wait_ceiling:
         max_wait_ms: 8000
   web:

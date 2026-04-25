@@ -51,6 +51,13 @@ reach_layer:
         delete_conversation_confirm: "क्या यह बातचीत डिलीट करें? यह वापस नहीं आएगी। · Delete this conversation? This cannot be undone."
 
     voice:
+      # GH-206: tighten the VAD silence window for Hindi speakers. The
+      # framework default (0.4 s) trips mid-utterance on older/rural callers
+      # whose inter-word pauses run 0.6–1.0 s, which the UserTurnProcessor
+      # then turns into spurious turn boundaries. 1.0 s leaves room for
+      # natural Hindi cadence without delaying the bot's first reply.
+      vad:
+        stop_secs: 1.0
       raya:
         stt_language: "hi"
         tts_language: "hi"
