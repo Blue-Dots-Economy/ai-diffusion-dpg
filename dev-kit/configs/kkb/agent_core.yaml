@@ -443,7 +443,6 @@ preprocessing:
       # Signal intents (no routing; emit to Neo4j Signal node)
       - pay_disappointment
       - distance_issue
-      - overwhelmed_silent
       - counsellor_request
       # Profile-data intent (#217) — substantive profile answers (income,
       # ITI status, certifications, trade, location, etc.). Same routing
@@ -488,7 +487,6 @@ preprocessing:
     signal_intents:
       pay_disappointment: objection
       distance_issue: constraint
-      overwhelmed_silent: emotion
       counsellor_request: escalation_signal
       outcome_positive: outcome_signal
       outcome_negative: outcome_signal
@@ -602,7 +600,6 @@ agent_workflow:
         - apply_now
         - pay_disappointment
         - distance_issue
-        - overwhelmed_silent
         - counsellor_request
         - language_switch_request
 
@@ -701,7 +698,6 @@ agent_workflow:
         - explore_more
         - pay_disappointment
         - distance_issue
-        - overwhelmed_silent
         - counsellor_request
         - language_switch_request
 

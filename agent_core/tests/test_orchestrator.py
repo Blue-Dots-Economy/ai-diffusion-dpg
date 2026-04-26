@@ -128,6 +128,7 @@ def _make_subagent(subagent_id: str = "market_truth", special_handler=None) -> M
     sa.output_format = None
     sa.routing = []  # empty — falls through to global_routing, then default_fallback
     sa.opening_phrase = ""  # GH-137: default to empty so opening-phrase gate no-ops in tests
+    sa.is_terminal = False  # default; tests that want a terminal subagent override
     return sa
 
 
@@ -900,7 +901,7 @@ async def test_termination_short_circuit_skips_llm_when_confident():
     termination_message."""
     agent = _make_stream_agent(
         nlu_result=_TERMINATION_NLU,
-        session_data={"current_subagent_id": "market_truth"},
+        session_data={"current_subagent_id": "market_truth", "turn_count": 3},
     )
     agent._config = {
         **VALID_CONFIG,
@@ -940,7 +941,7 @@ async def test_termination_short_circuit_below_threshold_falls_through():
     )
     agent = _make_stream_agent(
         nlu_result=low_conf,
-        session_data={"current_subagent_id": "market_truth"},
+        session_data={"current_subagent_id": "market_truth", "turn_count": 3},
     )
     agent._config = {
         **VALID_CONFIG,
@@ -951,6 +952,29 @@ async def test_termination_short_circuit_below_threshold_falls_through():
 
     events = []
     async for ev in agent.stream_turn(_turn_input("maybe bye"), turn_id="t-low"):
+        events.append(ev)
+
+    agent._llm.stream_call.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_termination_short_circuit_skipped_on_first_turn():
+    """First-turn guard: turn_count==0 (e.g. callback resume) must reach the LLM
+    even on a high-confidence termination_intent, so the model can weigh
+    resume context before deciding to end the call."""
+    agent = _make_stream_agent(
+        nlu_result=_TERMINATION_NLU,
+        session_data={"current_subagent_id": "market_truth", "turn_count": 0},
+    )
+    agent._config = {
+        **VALID_CONFIG,
+        "agent": {"termination_short_circuit": {"enabled": True, "confidence_threshold": 0.7}},
+        "conversation": {**VALID_CONFIG["conversation"], "termination_message": "Goodbye!"},
+    }
+    agent._workflow.subagents["ended"] = _make_subagent("ended")
+
+    events = []
+    async for ev in agent.stream_turn(_turn_input("bye"), turn_id="t-first"):
         events.append(ev)
 
     agent._llm.stream_call.assert_called()

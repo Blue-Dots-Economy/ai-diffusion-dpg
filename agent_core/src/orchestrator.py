@@ -807,7 +807,12 @@ class AgentCore(AgentCoreBase):
         )
         bundle.session["subagent_entry_count"] = subagent_entry_count
         bundle.session["current_subagent_id"] = next_subagent_id
-        self._write_memory_sync(session_id, user_id, "session", "current_subagent_id", next_subagent_id)
+        # Don't persist routing into a terminal subagent. The next session
+        # adopts the last persisted current_subagent_id; if that's "ended",
+        # callbacks immediately re-route to goodbye instead of resuming the
+        # last meaningful stage.
+        if not self._workflow.subagents[next_subagent_id].is_terminal:
+            self._write_memory_sync(session_id, user_id, "session", "current_subagent_id", next_subagent_id)
 
         logger.info(
             "  [STEP 6] Routing  ✓  next_subagent_id=%s  entry_count=%d",
@@ -2006,11 +2011,17 @@ class AgentCore(AgentCoreBase):
         )
         bundle.session["current_subagent_id"] = ended_subagent_id
 
-        write_tasks: list = [
-            self._async_memory.write(
-                session_id, user_id, "session", "current_subagent_id", ended_subagent_id
-            ),
-        ]
+        # In-process bundle reflects the terminal routing for this turn's
+        # observability/audit, but we don't persist a terminal subagent —
+        # adopting "ended" on the next session would route callbacks straight
+        # to goodbye instead of resuming the last meaningful stage.
+        write_tasks: list = []
+        if not self._workflow.subagents[ended_subagent_id].is_terminal:
+            write_tasks.append(
+                self._async_memory.write(
+                    session_id, user_id, "session", "current_subagent_id", ended_subagent_id
+                )
+            )
 
         translated = self._translate_consent_message(termination_message, detected_language)
 
@@ -2829,8 +2840,16 @@ class AgentCore(AgentCoreBase):
             term_cfg = self._config.get("agent", {}).get("termination_short_circuit", {}) or {}
             term_enabled: bool = bool(term_cfg.get("enabled", True))
             term_threshold: float = float(term_cfg.get("confidence_threshold", 0.7))
+            # First-turn guard: a callback that adopted prior state will produce
+            # turn_count==0 on the user's first utterance. Routing straight to
+            # goodbye there means the LLM never sees the resume context — the
+            # caller hangs up thinking the bot decided to end the call. Force
+            # the LLM path on turn 0 so resume utterances get weighed against
+            # session history before any termination decision.
+            term_turn_count: int = int(bundle.session.get("turn_count", 0) or 0)
             if (
                 term_enabled
+                and term_turn_count > 0
                 and nlu_result.intent == "termination_intent"
                 and nlu_result.confidence >= term_threshold
             ):
@@ -2969,16 +2988,21 @@ class AgentCore(AgentCoreBase):
             subagent_entry_count[next_subagent_id] = int(subagent_entry_count.get(next_subagent_id, 0)) + 1
             bundle.session["subagent_entry_count"] = subagent_entry_count
             bundle.session["current_subagent_id"] = next_subagent_id
-            routing_writes.extend(
-                [
-                    self._async_memory.write(
-                        session_id, user_id, "session", "subagent_entry_count", subagent_entry_count
-                    ),
+            routing_writes.append(
+                self._async_memory.write(
+                    session_id, user_id, "session", "subagent_entry_count", subagent_entry_count
+                )
+            )
+            # Don't persist routing into a terminal subagent. The next session
+            # adopts the last persisted current_subagent_id; if that's "ended",
+            # callbacks immediately re-route to goodbye instead of resuming the
+            # last meaningful stage.
+            if not self._workflow.subagents[next_subagent_id].is_terminal:
+                routing_writes.append(
                     self._async_memory.write(
                         session_id, user_id, "session", "current_subagent_id", next_subagent_id
-                    ),
-                ]
-            )
+                    )
+                )
             if routing_writes:
                 await asyncio.gather(*routing_writes, return_exceptions=True)
             yield _stamp(SignalEvent(stage="routing", status="complete"))

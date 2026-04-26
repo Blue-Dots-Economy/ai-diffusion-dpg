@@ -33,6 +33,14 @@ from audit_store import SQLiteAuditStore
 logger = logging.getLogger(__name__)
 
 
+# Fields that latch state for the duration of a single session and must NOT
+# be carried over when a new session adopts a prior session's state. Adopting
+# these would (e.g.) suppress the greeting on every callback for the same user.
+_SESSION_LIFECYCLE_FIELDS: frozenset[str] = frozenset({
+    "opening_phrase_emitted",
+})
+
+
 class MemoryLayer:
     """
     Orchestrates Redis + Neo4j for all Memory Layer operations.
@@ -205,8 +213,14 @@ class MemoryLayer:
                     if last_session_id and last_session_id != session_id:
                         last_state = self._redis.get_session(last_session_id)
                         if last_state:
-                            # Merge last session state into our defaults
+                            # Merge last session state into our defaults, skipping
+                            # session-lifecycle flags that must reset on a new
+                            # session (e.g. opening_phrase_emitted — a per-session
+                            # latch that, if carried over, suppresses the greeting
+                            # on every callback for the same user).
                             for k, v in last_state.items():
+                                if k in _SESSION_LIFECYCLE_FIELDS:
+                                    continue
                                 initial_state[k] = v
                             initial_state = self._coerce_session_types(initial_state)
                             initial_state["was_adopted"] = True
