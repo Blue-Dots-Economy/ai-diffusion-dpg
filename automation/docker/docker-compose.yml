@@ -153,6 +153,13 @@ services:
       # Default: ${PWD}/../.. assumes `docker compose -f .../docker-compose.yml`
       # is launched from the automation/docker directory (per CLAUDE.md).
       - HOST_REPO_ROOT=${HOST_REPO_ROOT:-${PWD}/../..}
+      # Forwarded so dev_kit's `docker compose up` subprocess (which inherits
+      # os.environ via run_compose_up) can substitute ${NGROK_AUTHTOKEN:-} in
+      # the deployed ngrok service. Without this the deployed ngrok starts
+      # with an empty authtoken and crashes with ERR_NGROK_4018.
+      # Set on the host before bringing dev_kit up:
+      #   export NGROK_AUTHTOKEN=<token from https://dashboard.ngrok.com/authtokens>
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
     ports:
       - "8080:8080"
     networks:
