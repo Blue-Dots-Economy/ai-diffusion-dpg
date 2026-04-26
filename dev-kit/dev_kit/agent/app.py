@@ -1042,7 +1042,19 @@ async def execute_deploy(slug: str, body: dict) -> dict:
             node_ip = "192.168.5.1"
         _REACH_LAYER_URL = f"http://{node_ip}:30805"
     elif target == "docker":
-        _REACH_LAYER_URL = "http://localhost:8005"
+        # When dev_kit runs in its own container against the host docker
+        # daemon, the deployed reach_layer_web lives in a different compose
+        # project / network — `localhost:8005` from inside dev_kit hits its
+        # own loopback, not the host's published 8005. Resolve to
+        # host.docker.internal (mapped via extra_hosts: host-gateway on the
+        # dev_kit service in compose) so the ingest proxy reaches the
+        # published port on the host. When dev_kit runs directly on the
+        # host (no /.dockerenv), localhost is correct.
+        _in_container = os.path.exists("/.dockerenv")
+        _REACH_LAYER_URL = (
+            "http://host.docker.internal:8005" if _in_container
+            else "http://localhost:8005"
+        )
 
     # Auto-fill ke_internal_url based on target if not already provided.
     if not secrets.get("ke_internal_url"):

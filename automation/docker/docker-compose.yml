@@ -189,6 +189,14 @@ services:
     # all shell out to `docker`). Without this the CLI errors with
     # "failed to connect to the docker API at unix:///var/run/docker.sock".
     - /var/run/docker.sock:/var/run/docker.sock
+    # On Linux dev_kit's container can't reach the host's published ports
+    # via `localhost` (its loopback is its own). The ingest proxy forwards
+    # uploads to reach_layer_web, which lives in a different compose
+    # project / network and is only reachable via the host's published
+    # 8005. host-gateway adds an /etc/hosts entry that points
+    # host.docker.internal at the host so the proxy resolves correctly.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     deploy:
       resources:
         limits:
