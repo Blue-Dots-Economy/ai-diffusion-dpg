@@ -184,7 +184,7 @@ agent_workflow:
       description: ""           # required — what this subagent does
       is_start: false           # required — exactly ONE subagent must have is_start: true
       is_terminal: false        # required — terminal subagents must have routing: []
-      opening_phrase: ""             # NEW (GH-137) — emitted on first turn only (after consent)
+      opening_phrase: ""             # required — non-empty phrase emitted on entry (greets caller on every session, including callbacks that adopt this subagent)
       special_handler: null     # null | hitl | whatsapp_handoff
       valid_intents: []         # intents this subagent handles (exclude global_intents)
       tools: []                 # connector names available e.g. [knowledge_retrieval]

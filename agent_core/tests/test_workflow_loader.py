@@ -97,6 +97,7 @@ def _minimal_config(
         "valid_intents": [],
         "tools": [],
         "system_prompt": "You are done.",
+        "opening_phrase": "Goodbye.",
         "routing": [],
     }
 
@@ -109,6 +110,7 @@ def _minimal_config(
         "valid_intents": valid_intents if valid_intents is not None else ["greeting"],
         "tools": tools or [],
         "system_prompt": "You are a helpful agent.",
+        "opening_phrase": "Hello.",
         "routing": routing if routing is not None else [
             {"intent": "*", "next_subagent_id": "end"}
         ],
@@ -297,6 +299,7 @@ def test_special_handler_hitl_accepted(loader, registry):
         "valid_intents": [],
         "tools": [],
         "system_prompt": "",
+        "opening_phrase": "Connecting you to a counsellor.",
         "routing": [],
     })
     workflow = loader.load(config, registry)
@@ -315,6 +318,7 @@ def test_special_handler_whatsapp_handoff_accepted(loader, registry):
         "valid_intents": [],
         "tools": [],
         "system_prompt": "",
+        "opening_phrase": "Continuing on WhatsApp.",
         "routing": [],
     })
     workflow = loader.load(config, registry)
@@ -681,6 +685,7 @@ def test_invalid_special_handler_raises(loader, registry):
         "valid_intents": [],
         "tools": [],
         "system_prompt": "",
+        "opening_phrase": "x",
         "routing": [],
     })
     with pytest.raises(ConfigurationError, match="special_handler"):
@@ -781,6 +786,7 @@ def test_loader_extracts_opening_phrase_from_yaml():
                     "valid_intents": [],
                     "tools": [],
                     "system_prompt": "Done.",
+                    "opening_phrase": "Goodbye.",
                     "routing": [],
                 }
             ],
@@ -797,7 +803,7 @@ def test_loader_extracts_opening_phrase_from_yaml():
     assert workflow.subagents["greeting"].opening_phrase == "नमस्ते।"
 
 
-def test_loader_opening_phrase_defaults_empty_when_missing():
+def test_loader_missing_opening_phrase_raises():
     from src.workflow_loader import AgentWorkflowLoader
     config = {
         "agent_workflow": {
@@ -842,8 +848,8 @@ def test_loader_opening_phrase_defaults_empty_when_missing():
     }
     loader = AgentWorkflowLoader()
     registry = _make_tool_registry()
-    workflow = loader.load(config, registry)
-    assert workflow.subagents["greeting"].opening_phrase == ""
+    with pytest.raises(ConfigurationError, match="opening_phrase"):
+        loader.load(config, registry)
 
 
 # ---------------------------------------------------------------------------

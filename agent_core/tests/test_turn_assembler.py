@@ -1278,8 +1278,16 @@ class TestOpeningPhraseOnSubscribe:
         memory.write.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_empty_opening_phrase_still_sets_flag(self):
-        """Empty opening_phrase on start subagent → flag set, no events emitted."""
+    async def test_empty_opening_phrase_does_not_latch_flag(self):
+        """Empty opening_phrase → no events, and flag must NOT be latched.
+
+        Latching opening_phrase_emitted when no phrase was emitted suppresses
+        the greeting for the rest of the session. Concretely, on a callback
+        that adopts a fallback subagent (e.g. ``clarification``) whose
+        opening_phrase is empty, this would silently start the call. The
+        orchestrator's first-turn gate latches the flag on the first user
+        turn — that is the right moment for empty-phrase subagents.
+        """
         workflow = _make_opening_phrase_workflow(opening_phrase="")
         memory = _make_opening_phrase_memory(session_state={})
         ta = _make_assembler(workflow=workflow, async_memory=memory)
@@ -1287,9 +1295,8 @@ class TestOpeningPhraseOnSubscribe:
         session = ta._get_or_create_session("s1")
         await ta._emit_opening_phrase_if_first("s1", "u1", session)
 
-        # Flag write still happened so the orchestrator gate won't fire on turn 1.
         write_keys = {(c.args[2], c.args[3]) for c in memory.write.call_args_list}
-        assert ("session", "opening_phrase_emitted") in write_keys
+        assert ("session", "opening_phrase_emitted") not in write_keys
         # No turn installed since phrase was empty
         assert session.current_turn is None
 

@@ -479,7 +479,13 @@ class AgentWorkflowLoader:
         tools: list[str] = raw.get("tools") or []
         system_prompt: str = raw.get("system_prompt", "")
         output_format: dict | None = raw.get("output_format") or None
-        opening_phrase: str = str(raw.get("opening_phrase", "") or "")
+        opening_phrase: str = str(raw.get("opening_phrase", "") or "").strip()
+        if not opening_phrase:
+            raise ConfigurationError(
+                f"subagent '{subagent_id}': 'opening_phrase' is required and must be "
+                f"non-empty. Every subagent must have a phrase to emit on entry so "
+                f"adopted-state callbacks always greet the caller."
+            )
 
         routing_raw: list[dict] = raw.get("routing") or []
         routing: list[RoutingRule] = [

@@ -574,6 +574,25 @@ class TurnAssembler(TurnAssemblerBase):
         subagent = getattr(self._workflow, "subagents", {}).get(current_subagent_id)
         opening_phrase = (getattr(subagent, "opening_phrase", "") or "").strip()
 
+        if not opening_phrase:
+            # No phrase to emit — do NOT latch opening_phrase_emitted yet.
+            # Latching here would burn the greeting flag for the rest of the
+            # session (e.g. a callback that adopts a fallback subagent like
+            # ``clarification`` with an empty phrase would silently start
+            # and never greet again). The orchestrator's first-turn gate
+            # latches the flag on the first user turn, which is the right
+            # moment for empty-phrase subagents.
+            logger.info(
+                "turn_assembler.opening_phrase_empty",
+                extra={
+                    "operation": "turn_assembler._emit_opening_phrase_if_first",
+                    "status": "skipped",
+                    "session_id": session_id,
+                    "subagent_id": current_subagent_id,
+                },
+            )
+            return
+
         try:
             await self._async_memory.write(
                 session_id, user_id, "session", "opening_phrase_emitted", True
@@ -589,18 +608,6 @@ class TurnAssembler(TurnAssemblerBase):
                     "status": "skipped",
                     "session_id": session_id,
                     "error": f"{type(exc).__name__}: {exc}",
-                },
-            )
-            return
-
-        if not opening_phrase:
-            logger.info(
-                "turn_assembler.opening_phrase_empty",
-                extra={
-                    "operation": "turn_assembler._emit_opening_phrase_if_first",
-                    "status": "skipped",
-                    "session_id": session_id,
-                    "subagent_id": current_subagent_id,
                 },
             )
             return

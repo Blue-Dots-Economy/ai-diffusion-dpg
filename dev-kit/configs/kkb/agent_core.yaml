@@ -825,7 +825,7 @@ agent_workflow:
         Offers a human counsellor and ends the session.
       is_start: false
       is_terminal: true
-      opening_phrase: ""
+      opening_phrase: "हम एक काउंसलर से आपको कनेक्ट करेंगे। वो चौबीस घंटे के अंदर कॉल करेंगे।"
 
       valid_intents: []
       tools: []
@@ -846,7 +846,7 @@ agent_workflow:
       description: Graceful session termination triggered by user.
       is_start: false
       is_terminal: true
-      opening_phrase: ""
+      opening_phrase: "धन्यवाद। आप कभी भी वापस कॉल कर सकते हैं — हम मदद के लिए यहीं हैं।"
       special_handler: null
 
       valid_intents: []
@@ -868,7 +868,7 @@ agent_workflow:
         Fallback subagent for unknown or unclassifiable intent.
       is_start: false
       is_terminal: false
-      opening_phrase: ""
+      opening_phrase: "नमस्ते। काम की बात में आपका स्वागत है। पिछली बातचीत से जारी रखें — आप क्या जानना चाहते हैं?"
       special_handler: null
 
       valid_intents:
