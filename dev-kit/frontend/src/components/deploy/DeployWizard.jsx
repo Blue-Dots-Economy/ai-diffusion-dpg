@@ -11,10 +11,13 @@ import PreviewStep from './PreviewStep'
 import DeployStatusStep from './DeployStatusStep'
 import IngestDocumentsStep from './IngestDocumentsStep'
 
+const ALL_STEPS_BEFORE_INGEST = [1, 2, 3, 4, 5, 6, 7]
+
 export default function DeployWizard({ slug, onBack }) {
   const [step, setStep] = useState(1)
   const [completed, setCompleted] = useState([])
   const [project, setProject] = useState(null)
+  const [deployedSkip, setDeployedSkip] = useState(false)
   const [data, setData] = useState({
     dpgValues: {},
     dependencies: {},
@@ -44,6 +47,25 @@ export default function DeployWizard({ slug, onBack }) {
       .catch(() => setProject({}))
   }, [slug])
 
+  // On mount, probe deploy status. If the stack is already up (e.g. a
+  // teammate opens the wizard after someone else deployed), unlock every
+  // step and jump to Ingest — they shouldn't have to re-enter API keys
+  // just to upload documents.
+  useEffect(() => {
+    let cancelled = false
+    api.getDeployStatus(slug)
+      .then(res => {
+        if (cancelled) return
+        if (res?.overall === 'complete' && Array.isArray(res.services) && res.services.length > 0) {
+          setCompleted(ALL_STEPS_BEFORE_INGEST)
+          setStep(8)
+          setDeployedSkip(true)
+        }
+      })
+      .catch(() => { /* idle — leave wizard at step 1 */ })
+    return () => { cancelled = true }
+  }, [slug])
+
   const updateData = useCallback((key, value) => {
     setData(prev => ({ ...prev, [key]: value }))
     setValidationError('')
@@ -54,13 +76,20 @@ export default function DeployWizard({ slug, onBack }) {
   function handleNext() {
     setValidationError('')
 
+    // Skip per-step validation when this step has already been completed
+    // (either by walking forward earlier in this session, or because the
+    // stack was already deployed and the wizard auto-unlocked everything).
+    // Without this, navigating back-then-forward through Inputs would
+    // re-prompt for API keys the current user may not have.
+    const alreadyCompleted = completed.includes(step)
+
     // Step 3: Resource preset must be selected
-    if (step === 3 && !data.preset) {
+    if (!alreadyCompleted && step === 3 && !data.preset) {
       setValidationError('Please select a resource preset before proceeding.')
       return
     }
     // Step 4: Required secrets must be filled
-    if (step === 4) {
+    if (!alreadyCompleted && step === 4) {
       if (!data.secrets?.anthropic_api_key?.trim()) {
         setValidationError('Anthropic API Key is required.')
         return
@@ -74,7 +103,7 @@ export default function DeployWizard({ slug, onBack }) {
       }
     }
     // Step 5: Deploy target must be selected
-    if (step === 5 && !data.target) {
+    if (!alreadyCompleted && step === 5 && !data.target) {
       setValidationError('Please select a deploy target.')
       return
     }
@@ -83,6 +112,17 @@ export default function DeployWizard({ slug, onBack }) {
       setCompleted(prev => [...prev, step])
     }
     setStep(prev => Math.min(prev + 1, 8))
+  }
+
+  // Allow jumping to any step that's already been completed (or the next
+  // pending one). Prevents users from skipping ahead through unfinished
+  // configuration but lets them freely navigate among unlocked stages.
+  function handleStepClick(target) {
+    setValidationError('')
+    if (target === step) return
+    if (target <= step || completed.includes(target) || completed.includes(target - 1)) {
+      setStep(target)
+    }
   }
 
   function handleBack() {
@@ -115,7 +155,16 @@ export default function DeployWizard({ slug, onBack }) {
         </div>
       </div>
 
-      <StepIndicator currentStep={step} completedSteps={completed} />
+      <StepIndicator currentStep={step} completedSteps={completed} onStepClick={handleStepClick} />
+
+      {deployedSkip && step === 8 && (
+        <div className="px-6 pt-4 max-w-5xl mx-auto w-full">
+          <p className="text-xs text-gray-400">
+            This stack is already deployed — earlier steps are unlocked for review.
+            Click a step in the indicator to revisit configuration without re-entering keys.
+          </p>
+        </div>
+      )}
 
       {/* Step content */}
       <div className="flex-1 overflow-y-auto px-6 py-6 max-w-5xl mx-auto w-full">

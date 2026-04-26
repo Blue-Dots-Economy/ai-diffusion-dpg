@@ -1346,7 +1346,43 @@ async def get_deploy_status(slug: str) -> dict:
 
     state = get_state(slug)
     if not state:
-        return {"services": [], "overall": "idle"}
+        # No in-memory state (dev_kit restarted, or a teammate just opened
+        # the wizard from a fresh session). Probe the docker daemon by the
+        # compose project label so an already-deployed stack still surfaces
+        # as ``complete`` and the wizard can skip straight to Ingest without
+        # re-collecting secrets.
+        from dev_kit.agent.deployer.compose import list_project_containers
+
+        containers = await list_project_containers(f"dpg-{slug}")
+        if not containers:
+            return {"services": [], "overall": "idle"}
+
+        _PROBE_COMPOSE_TO_STATE = {
+            "reach_layer_web": "reach_layer",
+            "reach_layer_voice": "reach_layer",
+            "otelcol": "otel_collector",
+        }
+        services_out: list[dict] = []
+        all_ok = True
+        for c in containers:
+            compose_name = c.get("Service") or c.get("Name", "")
+            svc_name = _PROBE_COMPOSE_TO_STATE.get(compose_name, compose_name)
+            c_state = c.get("State", "")
+            c_status = c.get("Status", "")
+            if c_state == "running":
+                status = "healthy" if "healthy" in c_status.lower() else "running"
+            elif c_state == "exited":
+                status = "failed"
+                all_ok = False
+            else:
+                status = c_state or "unknown"
+                all_ok = False
+            services_out.append({"name": svc_name, "status": status, "error": ""})
+        return {
+            "services": services_out,
+            "overall": "complete" if all_ok else "failed",
+            "target": "docker",
+        }
 
     # For Docker deployments, always poll live container status so the UI
     # gets real-time updates (compose up -d returns quickly but containers

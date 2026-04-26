@@ -260,6 +260,77 @@ async def run_compose_up(
         return {"success": False, "stdout": "", "stderr": str(exc)}
 
 
+async def list_project_containers(project_name: str) -> List[Dict]:
+    """List containers belonging to a docker compose project by label.
+
+    Unlike :func:`get_compose_status`, this does not require a compose file
+    or in-memory state — it queries the daemon directly by the standard
+    ``com.docker.compose.project`` label, so it can detect a running
+    deployment after dev_kit restarts (when the in-memory state is lost).
+
+    Args:
+        project_name: Compose project name (e.g. ``dpg-<slug>``).
+
+    Returns:
+        List of dicts with keys ``Service`` (compose service name),
+        ``State`` (running/exited/...), and ``Status`` (full status line
+        including health). Empty list when no containers match or on error.
+    """
+    cmd = [
+        "docker", "ps", "-a",
+        "--filter", f"label=com.docker.compose.project={project_name}",
+        "--format", "{{json .}}",
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            logger.error(
+                "list_project_containers",
+                extra={
+                    "operation": "list_project_containers",
+                    "status": "failure",
+                    "error": stderr.decode(),
+                },
+            )
+            return []
+        results: List[Dict] = []
+        for line in stdout.decode().strip().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                raw = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            # Normalise to the same shape get_compose_status returns so
+            # callers can treat both sources interchangeably. `docker ps`
+            # exposes the compose service name via the Labels field.
+            labels = raw.get("Labels", "")
+            service = ""
+            for kv in labels.split(","):
+                if kv.startswith("com.docker.compose.service="):
+                    service = kv.split("=", 1)[1]
+                    break
+            results.append({
+                "Service": service or raw.get("Names", ""),
+                "Name": raw.get("Names", ""),
+                "State": raw.get("State", ""),
+                "Status": raw.get("Status", ""),
+            })
+        return results
+    except Exception as exc:
+        logger.error(
+            "list_project_containers_exception",
+            extra={"operation": "list_project_containers", "status": "failure", "error": str(exc)},
+        )
+        return []
+
+
 async def get_compose_status(
     compose_file_path: str,
     project_name: Optional[str] = None,
