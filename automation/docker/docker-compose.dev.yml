@@ -100,7 +100,16 @@ services:
       # Generate with: openssl rand -hex 32
       - DEVKIT_TO_REACH_API_KEY=${DEVKIT_TO_REACH_API_KEY:-}
       - KE_TO_DEVKIT_API_KEY=${KE_TO_DEVKIT_API_KEY:-}
-      - REACH_LAYER_URL=http://reach_layer_web:8005
+      # Ingest proxy target. dev_kit and the deployed reach_layer_web run
+      # in different compose projects (different networks), so using the
+      # service name `reach_layer_web` from inside dev_kit either fails to
+      # resolve or resolves to a non-routable IP — POST /api/ingest/submit
+      # then returns 504. Default to host.docker.internal:8005 (mapped via
+      # extra_hosts: host-gateway below) which lands on the host's
+      # published 8005 port from any compose project. Override via the
+      # shell only if you've manually wired both projects to a shared
+      # network.
+      - REACH_LAYER_URL=${REACH_LAYER_URL:-http://host.docker.internal:8005}
       # Absolute host path of the repo. dev_kit rewrites the relative
       # bind sources in the deployed compose file to host-absolute
       # paths so the host docker daemon can resolve them when starting
