@@ -101,6 +101,14 @@ services:
       - DEVKIT_TO_REACH_API_KEY=${DEVKIT_TO_REACH_API_KEY:-}
       - KE_TO_DEVKIT_API_KEY=${KE_TO_DEVKIT_API_KEY:-}
       - REACH_LAYER_URL=http://reach_layer_web:8005
+      # Absolute host path of the repo. dev_kit rewrites the relative
+      # bind sources in the deployed compose file to host-absolute
+      # paths so the host docker daemon can resolve them when starting
+      # services. Required when dev_kit runs in a container and drives
+      # the host daemon via /var/run/docker.sock.
+      # Default: ${PWD}/../.. assumes `docker compose -f .../docker-compose.dev.yml`
+      # is launched from the automation/docker directory (per CLAUDE.md).
+      - HOST_REPO_ROOT=${HOST_REPO_ROOT:-${PWD}/../..}
     ports:
       - "8080:8080"
     networks:

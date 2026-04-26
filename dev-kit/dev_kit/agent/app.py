@@ -1103,6 +1103,31 @@ async def _run_docker_deploy(
                 for env_var, value in tool_secrets.items():
                     if value:
                         env_list.append(f"{env_var}={value}")
+
+        # Rewrite relative bind-mount sources to absolute host paths.
+        # When dev_kit runs inside a container and drives `docker compose`
+        # against the host daemon, the daemon resolves bind sources against
+        # the host filesystem — not the container. Compose paths like
+        # ../../dev-kit/dpg/foo.yaml resolve to /app/dev-kit/dpg/foo.yaml
+        # from inside the container, which doesn't exist on the host.
+        # HOST_REPO_ROOT (set on the dev_kit service env) tells us where
+        # the repo lives on the host so we can rewrite to absolute paths.
+        host_repo_root = os.environ.get("HOST_REPO_ROOT")
+        if host_repo_root:
+            project_dir_host = os.path.join(host_repo_root.rstrip("/"), "automation", "docker")
+            for svc in services.values():
+                vols = svc.get("volumes")
+                if not vols:
+                    continue
+                rewritten = []
+                for vol in vols:
+                    if isinstance(vol, str) and ":" in vol and (vol.startswith("./") or vol.startswith("../")):
+                        source, sep, rest = vol.partition(":")
+                        absolute = os.path.normpath(os.path.join(project_dir_host, source))
+                        rewritten.append(f"{absolute}{sep}{rest}")
+                    else:
+                        rewritten.append(vol)
+                svc["volumes"] = rewritten
         content = _yaml.dump(compose_doc, default_flow_style=False, sort_keys=False)
 
         # Write to a temp file next to the original so relative paths resolve
