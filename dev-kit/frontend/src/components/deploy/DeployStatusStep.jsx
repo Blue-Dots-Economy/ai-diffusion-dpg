@@ -40,9 +40,38 @@ export default function DeployStatusStep({ slug, data, onSuccess }) {
   onSuccessRef.current = onSuccess
 
   useEffect(() => {
-    // Start deployment on mount
-    async function startDeploy() {
+    // Probe before deploying. Mounting this step (e.g. via the step
+    // indicator after the wizard auto-unlocked, or just clicking back to
+    // Status while a deploy is already in flight) must not trigger a
+    // fresh `docker compose up`. Only kick a deploy when no deployment
+    // exists for this slug (`overall === 'idle'`).
+    let cancelled = false
+    async function init() {
       try {
+        const initial = await api.getDeployStatus(slug)
+        if (cancelled) return
+        setStatus(initial)
+
+        if (initial.overall === 'complete') {
+          setDeployed(true)
+          setReadyToIngest(true)
+          return
+        }
+        if (initial.overall === 'deploying') {
+          setDeployed(true)
+          startPolling()
+          return
+        }
+        if (initial.overall === 'failed') {
+          // Surface the existing failure; user can hit Retry. Don't
+          // silently redeploy here — they may want to fix config first.
+          setDeployed(true)
+          setError('Previous deployment failed. Click Retry to redeploy.')
+          return
+        }
+
+        // overall === 'idle' (or unknown) — this is the first time we
+        // hit Status for this slug, kick the actual deploy now.
         const options = {
           target: data.target,
           ...(await buildSecretsPayload(data.secrets)),
@@ -51,15 +80,17 @@ export default function DeployStatusStep({ slug, data, onSuccess }) {
           kubeconfig: data.target === 'kubernetes' ? data.kubeconfig : undefined,
         }
         await api.executeDeploy(slug, options)
+        if (cancelled) return
         setDeployed(true)
         startPolling()
       } catch (e) {
-        setError(e.message || 'Deployment failed to start')
+        if (!cancelled) setError(e.message || 'Deployment failed to start')
       }
     }
-    startDeploy()
+    init()
 
     return () => {
+      cancelled = true
       if (pollRef.current) clearInterval(pollRef.current)
     }
   }, [])
