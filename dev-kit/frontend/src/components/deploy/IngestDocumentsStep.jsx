@@ -127,7 +127,10 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
   const [state, dispatch] = useReducer(reducer, INITIAL_STATE)
   const pollingRef = useRef({})
   const timeoutRef = useRef({})
-  const hasAzure = Boolean(project?.azure_storage)
+  // Backend always returns azure_storage as `{ needed: bool }`, so we have to
+  // check the flag — `Boolean(project?.azure_storage)` would be true even when
+  // Azure isn't configured.
+  const hasAzure = Boolean(project?.azure_storage?.needed)
 
   const maxFiles = state.config?.upload?.max_files_per_upload ?? 5
   const maxSizeMb = state.config?.upload?.max_file_size_mb ?? 30
@@ -192,7 +195,10 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
 
   const handleAddRow = () => {
     if (state.rows.length >= maxFiles) return
-    dispatch({ type: 'ADD_ROW', row: _makeRow(state.defaultDocType) })
+    // Pre-select the first doc type when no explicit default is configured,
+    // so the dropdown never needs an empty placeholder option.
+    const fallbackDocType = state.defaultDocType || state.docTypes[0] || ''
+    dispatch({ type: 'ADD_ROW', row: _makeRow(fallbackDocType) })
   }
 
   const handleDocTypeChange = (id, docType) => {
@@ -395,36 +401,39 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
                 )}
               </div>
 
-              {/* Mode selector */}
-              <div className="shrink-0">
-                {row.status === 'pending' ? (
-                  <select
-                    value={row.mode}
-                    onChange={e => handleModeChange(row.id, e.target.value)}
-                    className="bg-gray-800 border border-gray-600 rounded-lg px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-blue-500"
-                  >
-                    <option value="local_write_ingest">Local file</option>
-                    {hasAzure && <option value="cloud_upload_ingest">Upload + push to Azure</option>}
-                    {hasAzure && <option value="cloud_fetch_ingest">Fetch from Azure</option>}
-                  </select>
-                ) : (
-                  <span className="text-xs text-gray-500">
-                    {row.mode === 'local_write_ingest' ? 'Local' : 'Azure'}
-                  </span>
-                )}
-              </div>
+              {/* Mode selector — only rendered when Azure is configured.
+                  Without Azure the only valid mode is local_write_ingest, so
+                  showing a single-option dropdown is just visual noise. */}
+              {hasAzure && (
+                <div className="shrink-0">
+                  {row.status === 'pending' ? (
+                    <select
+                      value={row.mode}
+                      onChange={e => handleModeChange(row.id, e.target.value)}
+                      className="bg-gray-800 border border-gray-600 rounded-lg px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="local_write_ingest">Local file</option>
+                      <option value="cloud_upload_ingest">Upload + push to Azure</option>
+                      <option value="cloud_fetch_ingest">Fetch from Azure</option>
+                    </select>
+                  ) : (
+                    <span className="text-xs text-gray-500">
+                      {row.mode === 'local_write_ingest' ? 'Local' : 'Azure'}
+                    </span>
+                  )}
+                </div>
+              )}
 
               {/* Doc type selector */}
               <div className="shrink-0">
                 {row.status === 'pending' ? (
                   state.docTypes.length > 0 ? (
                     <select
-                      value={row.docType}
+                      value={row.docType || state.docTypes[0]}
                       onChange={e => handleDocTypeChange(row.id, e.target.value)}
                       title="doc_type (matched against intent_filters)"
                       className="bg-gray-800 border border-gray-600 rounded-lg px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-blue-500"
                     >
-                      <option value="">doc_type…</option>
                       {state.docTypes.map(dt => (
                         <option key={dt} value={dt}>{dt}</option>
                       ))}
