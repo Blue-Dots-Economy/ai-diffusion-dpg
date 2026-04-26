@@ -116,6 +116,24 @@ services:
       # Set on the host before bringing dev_kit up:
       #   export NGROK_AUTHTOKEN=<token from https://dashboard.ngrok.com/authtokens>
       - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
+      # Voice channel credentials. The deployed reach_layer_voice service
+      # references ${VOBIZ_AUTH_ID:-} / ${VOBIZ_AUTH_TOKEN:-} / etc., and
+      # CampaignManager hard-fails on startup with
+      #   ValueError: reach_layer.channels.voice.vobiz.auth_id is required
+      # when those env vars are empty. Forward them through dev_kit so the
+      # `docker compose up` subprocess can substitute them.
+      # Set on the host before bringing dev_kit up (only required when the
+      # voice channel is selected at deploy time):
+      #   export VOBIZ_AUTH_ID=...
+      #   export VOBIZ_AUTH_TOKEN=...
+      #   export VOBIZ_FROM_NUMBER=+...
+      #   export RAYA_API_KEY=...
+      #   export PUBLIC_URL=https://<your-ngrok-host>   # optional override
+      - VOBIZ_AUTH_ID=${VOBIZ_AUTH_ID:-}
+      - VOBIZ_AUTH_TOKEN=${VOBIZ_AUTH_TOKEN:-}
+      - VOBIZ_FROM_NUMBER=${VOBIZ_FROM_NUMBER:-}
+      - RAYA_API_KEY=${RAYA_API_KEY:-}
+      - PUBLIC_URL=${PUBLIC_URL:-}
     ports:
       - "8080:8080"
     networks:
