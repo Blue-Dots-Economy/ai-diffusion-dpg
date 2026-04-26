@@ -1314,19 +1314,26 @@ async def execute_deploy(slug: str, body: dict) -> dict:
 
     # Auto-fill ke_devkit_callback_url so KE can hit dev_kit when an ingestion
     # job completes (ingested or failed). If left empty, KE skips the callback
-    # and the frontend polls for status instead. Resolution order:
+    # and the frontend polls for status instead.
+    #
+    # IMPORTANT: pass only the base URL — KE appends `/api/ingest/callback`
+    # itself. Including the path here causes KE to POST to
+    # `/api/ingest/callback/api/ingest/callback`, which dev_kit answers
+    # with 405 Method Not Allowed.
+    #
+    # Resolution order:
     #   1. Explicit value entered in the wizard.
     #   2. devkit.external_url from devkit.yaml (production / shared deploy).
-    #   3. For docker target: http://host.docker.internal:8080/api/ingest/callback
-    #      — KE and dev_kit live in different compose projects, so the deployed
-    #      KE service uses the host-gateway alias (added to KE in compose) to
+    #   3. For docker target: http://host.docker.internal:8080 — KE and
+    #      dev_kit live in different compose projects, so the deployed KE
+    #      service uses the host-gateway alias (added to KE in compose) to
     #      reach dev_kit's published 8080 on the host.
     if not secrets.get("ke_devkit_callback_url"):
         devkit_ext = _DEVKIT_CONFIG.external_url
         if devkit_ext:
-            secrets["ke_devkit_callback_url"] = f"{devkit_ext.rstrip('/')}/api/ingest/callback"
+            secrets["ke_devkit_callback_url"] = devkit_ext.rstrip("/")
         elif target == "docker":
-            secrets["ke_devkit_callback_url"] = "http://host.docker.internal:8080/api/ingest/callback"
+            secrets["ke_devkit_callback_url"] = "http://host.docker.internal:8080"
 
     # Mark all services as queued initially
     all_services = [
