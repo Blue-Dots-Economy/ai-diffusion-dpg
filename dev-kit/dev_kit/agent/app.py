@@ -68,6 +68,45 @@ _engines: dict[str, ConversationEngine] = {}
 
 logger = logging.getLogger(__name__)
 
+
+def _rewrite_compose_bind_paths_to_host(services: dict) -> None:
+    """Rewrite relative bind-mount sources to absolute host paths in-place.
+
+    When dev_kit runs inside a container and drives ``docker compose``
+    against the host daemon (via the bind-mounted /var/run/docker.sock),
+    the daemon resolves bind sources against the *host* filesystem — not
+    the dev_kit container's. Compose paths like ``../../dev-kit/dpg/foo.yaml``
+    resolve to ``/app/dev-kit/dpg/foo.yaml`` from inside the dev_kit
+    container; the host has no ``/app/dev-kit/...``, so the daemon
+    auto-creates an empty directory there and the file→file mount fails.
+
+    ``HOST_REPO_ROOT`` (passed in via the dev_kit service env) tells us
+    where the repo lives on the host so we can rewrite every relative
+    bind source to a path the daemon will resolve correctly. No-op when
+    the env var is unset (dev_kit running directly on the host).
+
+    Args:
+        services: The ``services`` mapping from a parsed compose document.
+            Mutated in place.
+    """
+    host_repo_root = os.environ.get("HOST_REPO_ROOT")
+    if not host_repo_root:
+        return
+    project_dir_host = os.path.join(host_repo_root.rstrip("/"), "automation", "docker")
+    for svc in services.values():
+        vols = svc.get("volumes")
+        if not vols:
+            continue
+        rewritten = []
+        for vol in vols:
+            if isinstance(vol, str) and ":" in vol and (vol.startswith("./") or vol.startswith("../")):
+                source, sep, rest = vol.partition(":")
+                absolute = os.path.normpath(os.path.join(project_dir_host, source))
+                rewritten.append(f"{absolute}{sep}{rest}")
+            else:
+                rewritten.append(vol)
+        svc["volumes"] = rewritten
+
 # Load dev-kit config once at startup
 _DEVKIT_CONFIG = _load_devkit_config()
 _KE_TO_DEVKIT_API_KEY = os.environ.get("KE_TO_DEVKIT_API_KEY", "")
@@ -831,6 +870,9 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
                 for env_var in tool_secrets:
                     if tool_secrets[env_var]:
                         ag_env.append(f"{env_var}=<set at deploy time>")
+        # Mirror the deploy-time rewrite so the preview matches what the
+        # actual deploy will write (and run) on the host.
+        _rewrite_compose_bind_paths_to_host(services)
         content = _yaml.dump(compose_doc, default_flow_style=False, sort_keys=False)
 
         return {"target": target, "preview": {"docker-compose.yml": content}}
@@ -1104,30 +1146,7 @@ async def _run_docker_deploy(
                     if value:
                         env_list.append(f"{env_var}={value}")
 
-        # Rewrite relative bind-mount sources to absolute host paths.
-        # When dev_kit runs inside a container and drives `docker compose`
-        # against the host daemon, the daemon resolves bind sources against
-        # the host filesystem — not the container. Compose paths like
-        # ../../dev-kit/dpg/foo.yaml resolve to /app/dev-kit/dpg/foo.yaml
-        # from inside the container, which doesn't exist on the host.
-        # HOST_REPO_ROOT (set on the dev_kit service env) tells us where
-        # the repo lives on the host so we can rewrite to absolute paths.
-        host_repo_root = os.environ.get("HOST_REPO_ROOT")
-        if host_repo_root:
-            project_dir_host = os.path.join(host_repo_root.rstrip("/"), "automation", "docker")
-            for svc in services.values():
-                vols = svc.get("volumes")
-                if not vols:
-                    continue
-                rewritten = []
-                for vol in vols:
-                    if isinstance(vol, str) and ":" in vol and (vol.startswith("./") or vol.startswith("../")):
-                        source, sep, rest = vol.partition(":")
-                        absolute = os.path.normpath(os.path.join(project_dir_host, source))
-                        rewritten.append(f"{absolute}{sep}{rest}")
-                    else:
-                        rewritten.append(vol)
-                svc["volumes"] = rewritten
+        _rewrite_compose_bind_paths_to_host(services)
         content = _yaml.dump(compose_doc, default_flow_style=False, sort_keys=False)
 
         # Write to a temp file next to the original so relative paths resolve
