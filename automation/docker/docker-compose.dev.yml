@@ -154,6 +154,17 @@ services:
     # all shell out to `docker`). Without this the CLI errors with
     # "failed to connect to the docker API at unix:///var/run/docker.sock".
     - /var/run/docker.sock:/var/run/docker.sock
+    # Reuse the host operator's `docker login` credentials so dev_kit's
+    # CLI is authenticated when it pulls images. Without this, deploys
+    # that pull >100 images / 6h hit Docker Hub's anonymous rate limit
+    # ("toomanyrequests: You have reached your unauthenticated pull rate
+    # limit"). The Dockerfile in dev-kit/Dockerfile runs as root, so the
+    # config lands at /root/.docker/config.json.
+    # ${HOME} resolves on the host before compose sends to the daemon;
+    # if the host operator hasn't run `docker login`, the file is absent
+    # and compose will refuse to start dev_kit — drop the line in that
+    # case (or run `docker login` first).
+    - ${HOME}/.docker/config.json:/root/.docker/config.json:ro
     # On Linux dev_kit's container can't reach the host's published ports
     # via `localhost` (its loopback is its own). The ingest proxy forwards
     # uploads to reach_layer_web, which lives in a different compose
