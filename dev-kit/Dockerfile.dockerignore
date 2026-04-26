@@ -25,5 +25,10 @@ observability_layer/
 # CI/CD and tooling
 .git
 .github
-automation/
 docs/
+
+# NOTE: automation/ is intentionally NOT excluded here. The dev_kit
+# image bakes automation/ at /app/automation so dev_kit.agent.app can
+# read docker-compose.dev.yml and the helm charts at runtime to render
+# deployment previews. The root .dockerignore still excludes it for
+# every other service image.

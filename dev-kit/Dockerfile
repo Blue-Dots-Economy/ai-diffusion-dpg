@@ -45,6 +45,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Python caches excluded via .dockerignore).
 COPY dev-kit/ .
 
+# Bake the automation directory (docker-compose + helm charts)
+# into the image at /app/automation. dev_kit.agent.app reads
+# COMPOSE_FILE and HELM_BASE from this location at runtime to
+# render deployment previews and execute deploys.
+COPY automation/ ./automation/
+
 # Overlay the compiled frontend assets from Stage 1.
 # This must come after `COPY . .` so it wins over any stale
 # static files that might exist in the source tree.
