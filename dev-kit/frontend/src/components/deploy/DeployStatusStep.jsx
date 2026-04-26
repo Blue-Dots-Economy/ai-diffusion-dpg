@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef } from 'react'
 import { api } from '../../api'
 import StatusBanner from '../shared/StatusBanner'
 import StatusBadge from '../shared/StatusBadge'
-import { encryptSecretsDict } from '../../crypto.js'
+import { buildSecretsPayload } from '../../crypto.js'
 
 const PHASES = [
   { name: 'Data', services: ['redis', 'memgraph'] },
@@ -45,7 +45,7 @@ export default function DeployStatusStep({ slug, data, onSuccess }) {
       try {
         const options = {
           target: data.target,
-          encrypted_secrets: await encryptSecretsDict(data.secrets),
+          ...(await buildSecretsPayload(data.secrets)),
           preset: data.preset,
           resources: data.resources,
           kubeconfig: data.target === 'kubernetes' ? data.kubeconfig : undefined,
@@ -88,7 +88,7 @@ export default function DeployStatusStep({ slug, data, onSuccess }) {
     try {
       await api.executeDeploy(slug, {
         target: data.target,
-        encrypted_secrets: await encryptSecretsDict(data.secrets),
+        ...(await buildSecretsPayload(data.secrets)),
         preset: data.preset,
         resources: data.resources,
         kubeconfig: data.target === 'kubernetes' ? data.kubeconfig : undefined,

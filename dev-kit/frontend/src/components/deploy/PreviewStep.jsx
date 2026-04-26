@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../../api'
 import StatusBanner from '../shared/StatusBanner'
-import { encryptSecretsDict } from '../../crypto.js'
+import { buildSecretsPayload } from '../../crypto.js'
 
 const INFRA_LABELS = {
   redis: 'Redis',
@@ -36,7 +36,7 @@ export default function PreviewStep({ slug, data }) {
       try {
         const options = {
           target: data.target,
-          encrypted_secrets: await encryptSecretsDict(data.secrets),
+          ...(await buildSecretsPayload(data.secrets)),
           preset: data.preset,
           resources: data.resources,
           kubeconfig: data.target === 'kubernetes' ? data.kubeconfig : undefined,

@@ -17,6 +17,41 @@
 let _cachedPublicKey = null
 
 /**
+ * Whether the Web Crypto SubtleCrypto API is available.
+ *
+ * `window.crypto.subtle` is only exposed in secure contexts (HTTPS or
+ * localhost). When the dev-kit is served over plain HTTP from a remote host
+ * (e.g. a VM IP), it is `undefined` and any call to importKey/encrypt throws.
+ *
+ * @returns {boolean}
+ */
+export function isSubtleCryptoAvailable() {
+  return typeof window !== 'undefined'
+    && !!window.crypto
+    && !!window.crypto.subtle
+    && typeof window.crypto.subtle.importKey === 'function'
+}
+
+/**
+ * Build the secrets payload for deploy endpoints.
+ *
+ * In a secure context, encrypts every secret with hybrid RSA-OAEP + AES-GCM
+ * and returns `{ encrypted_secrets }`. In a non-secure context where
+ * SubtleCrypto is unavailable, falls back to `{ secrets }` (plaintext); the
+ * dev-kit backend accepts both shapes.
+ *
+ * @param {Object} secretsDict - Flat or nested object of secret strings.
+ * @returns {Promise<Object>} Either `{ encrypted_secrets }` or `{ secrets }`.
+ */
+export async function buildSecretsPayload(secretsDict) {
+  const dict = secretsDict || {}
+  if (isSubtleCryptoAvailable()) {
+    return { encrypted_secrets: await encryptSecretsDict(dict) }
+  }
+  return { secrets: dict }
+}
+
+/**
  * Fetch and import the server's RSA public key.
  * Result is cached for the lifetime of the page.
  *

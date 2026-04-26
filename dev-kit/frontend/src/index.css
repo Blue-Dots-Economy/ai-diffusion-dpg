@@ -33,3 +33,10 @@ body {
 .light .border-red-800, .light .border-red-700 { border-color: #fca5a5 !important; }
 .light .bg-indigo-700 { background-color: #4338ca !important; }
 .light .bg-indigo-700 * { color: #ffffff !important; }
+.light .bg-blue-950\/20,
+.light .bg-blue-950\/30 { background-color: #eff6ff !important; }
+.light .border-blue-800\/30,
+.light .border-blue-800\/50 { border-color: #93c5fd !important; }
+.light .text-blue-200 { color: #1e3a8a !important; }
+.light .text-blue-300 { color: #1d4ed8 !important; }
+.light .ring-blue-500\/50 { --tw-ring-color: rgba(59, 130, 246, 0.5) !important; }
