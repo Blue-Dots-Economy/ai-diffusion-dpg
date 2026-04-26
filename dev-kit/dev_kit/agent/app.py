@@ -122,6 +122,91 @@ _UPLOAD_CHAIN_KEYS: dict[str, str] = {
     "ke_to_devkit_api_key": _KE_TO_DEVKIT_API_KEY or "",
 }
 
+
+def _rehydrate_upload_chain_from_running_containers() -> bool:
+    """Recover upload-chain API keys by inspecting a running reach_layer_web.
+
+    Upload-chain keys are generated once during ``executeDeploy`` and stored
+    only in this process's globals. After a dev_kit restart (or for a
+    teammate who's auto-unlocked straight to Ingest without re-running
+    deploy), the globals are empty / regenerated random — but the deployed
+    reach_layer_web container still holds the *original* key in its env, so
+    the proxied X-API-Key mismatches and the upstream returns 401.
+
+    On demand we shell out to ``docker ps`` (already wired via the host
+    docker socket) to find any container labelled
+    ``com.docker.compose.service=reach_layer_web`` and read
+    DEVKIT_TO_REACH_API_KEY / KE_TO_DEVKIT_API_KEY out of its env. The
+    first match wins (typical setup runs one project at a time).
+
+    Returns:
+        True when at least one of the two keys was repopulated, False
+        otherwise — used by the ingest proxy to decide whether to retry.
+    """
+    global _DEVKIT_TO_REACH_API_KEY, _KE_TO_DEVKIT_API_KEY
+    import subprocess
+    try:
+        ps = subprocess.run(
+            ["docker", "ps", "--format", "{{.Names}}\t{{.Labels}}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if ps.returncode != 0:
+            return False
+        for line in ps.stdout.splitlines():
+            if "\t" not in line:
+                continue
+            name, labels = line.split("\t", 1)
+            if "com.docker.compose.service=reach_layer_web" not in labels:
+                continue
+            envs = subprocess.run(
+                [
+                    "docker", "inspect", "--format",
+                    "{{range .Config.Env}}{{println .}}{{end}}", name,
+                ],
+                capture_output=True, text=True, timeout=5,
+            )
+            if envs.returncode != 0:
+                continue
+            recovered = False
+            for env_line in envs.stdout.splitlines():
+                if "=" not in env_line:
+                    continue
+                k, v = env_line.split("=", 1)
+                if not v:
+                    continue
+                if k == "DEVKIT_TO_REACH_API_KEY":
+                    _DEVKIT_TO_REACH_API_KEY = v
+                    _UPLOAD_CHAIN_KEYS["devkit_to_reach_api_key"] = v
+                    recovered = True
+                elif k == "KE_TO_DEVKIT_API_KEY":
+                    _KE_TO_DEVKIT_API_KEY = v
+                    _UPLOAD_CHAIN_KEYS["ke_to_devkit_api_key"] = v
+                    recovered = True
+                elif k == "REACH_TO_KE_API_KEY":
+                    _UPLOAD_CHAIN_KEYS["reach_to_ke_api_key"] = v
+                    recovered = True
+            if recovered:
+                logger.info(
+                    "devkit.upload_chain_rehydrated",
+                    extra={
+                        "operation": "rehydrate_upload_chain",
+                        "status": "success",
+                        "container": name,
+                    },
+                )
+                return True
+        return False
+    except Exception as exc:
+        logger.warning(
+            "devkit.upload_chain_rehydrate_failed",
+            extra={
+                "operation": "rehydrate_upload_chain",
+                "status": "failure",
+                "error": str(exc),
+            },
+        )
+        return False
+
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
@@ -1561,6 +1646,12 @@ async def ingest_submit(request: Request):
         for fname, fbytes in file_parts.items()
     ]
 
+    # If the in-process upload-chain keys are empty (dev_kit restarted, or
+    # the teammate auto-unlocked into Ingest without a fresh deploy), try
+    # to recover them from the still-running reach_layer_web container.
+    if not _DEVKIT_TO_REACH_API_KEY:
+        _rehydrate_upload_chain_from_running_containers()
+
     start = time.time()
     try:
         async with _httpx.AsyncClient(timeout=120.0) as http_client:
@@ -1686,6 +1777,11 @@ async def ingest_callback(
         {"ok": true} on success.
     """
     x_api_key = request.headers.get("X-API-Key")
+    # Same restart-recovery path as ingest_submit: KE callbacks arrive after
+    # an upload finishes, possibly long after dev_kit was restarted, so the
+    # globals may be empty even though KE has the original key.
+    if not _KE_TO_DEVKIT_API_KEY:
+        _rehydrate_upload_chain_from_running_containers()
     _verify_api_key(x_api_key, _KE_TO_DEVKIT_API_KEY)
 
     logger.info(
