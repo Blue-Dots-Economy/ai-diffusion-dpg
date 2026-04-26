@@ -342,6 +342,16 @@ class AgentWorkflowConfig(BaseModel):
         default=[],
         description="Routing rules applied globally when a global_intent fires",
     )
+    global_tools: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Tool names available to every subagent unless that subagent "
+            "declares its own non-empty `tools` list (which then takes "
+            "precedence). Each name must match a connector in connectors.read, "
+            "connectors.write, connectors.identity, or connectors.internal. "
+            "Mirrors agent_core.AgentWorkflowConfig.global_tools."
+        ),
+    )
     default_fallback_subagent_id: str = Field(
         default="",
         description="Subagent to route to when no routing rule matches the current intent",
