@@ -207,6 +207,161 @@ def _rehydrate_upload_chain_from_running_containers() -> bool:
         )
         return False
 
+
+def _ensure_upload_chain_keys_for_running_project() -> bool:
+    """Repair an existing deploy that has empty upload-chain keys.
+
+    When ``executeDeploy`` has never run in this dev_kit session AND the
+    running ``reach_layer_web`` container was deployed earlier with empty
+    DEVKIT_TO_REACH_API_KEY / KE_TO_DEVKIT_API_KEY / REACH_TO_KE_API_KEY
+    env values (the previous-bug case the user just hit), both ends
+    "match" as empty strings and reach_layer_web's auth check rejects
+    the empty header — ingest fails with 401. ``_rehydrate_*`` only
+    repopulates dev_kit's globals from whatever the container has, so
+    if the container's keys are also empty, rehydrate is a no-op.
+
+    This helper closes the loop:
+    1. Find the most recent rendered compose file for any running
+       ``dpg-<slug>-reach_layer_web-1`` container.
+    2. Read the env on that container.
+    3. If any of the three upload-chain envs are empty, generate fresh
+       keys, set dev_kit globals, and run
+       ``docker compose -p dpg-<slug> -f <file> up -d --force-recreate
+       reach_layer_web knowledge_engine`` with the keys exported into
+       the subprocess env so compose's ``${VAR:-}`` substitution picks
+       them up. ``run_compose_up`` is bypassed because we don't want to
+       go through the secrets/_DEVKIT_CONFIG path here — this is a
+       targeted recovery, not a full deploy.
+
+    Returns:
+        True when keys were either already present or successfully
+        regenerated and the affected services recreated. False on any
+        unexpected error (caller falls back to current behaviour).
+    """
+    global _DEVKIT_TO_REACH_API_KEY, _KE_TO_DEVKIT_API_KEY
+    import subprocess
+    try:
+        ps = subprocess.run(
+            ["docker", "ps", "--format", "{{.Names}}\t{{.Labels}}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if ps.returncode != 0:
+            return False
+        for line in ps.stdout.splitlines():
+            if "\t" not in line:
+                continue
+            name, labels = line.split("\t", 1)
+            if "com.docker.compose.service=reach_layer_web" not in labels:
+                continue
+            project = ""
+            for kv in labels.split(","):
+                if kv.startswith("com.docker.compose.project="):
+                    project = kv.split("=", 1)[1]
+                    break
+            if not project:
+                continue
+
+            envs = subprocess.run(
+                ["docker", "inspect", "--format",
+                 "{{range .Config.Env}}{{println .}}{{end}}", name],
+                capture_output=True, text=True, timeout=5,
+            )
+            if envs.returncode != 0:
+                continue
+            current: dict[str, str] = {}
+            for env_line in envs.stdout.splitlines():
+                if "=" not in env_line:
+                    continue
+                k, v = env_line.split("=", 1)
+                if k in ("DEVKIT_TO_REACH_API_KEY", "KE_TO_DEVKIT_API_KEY", "REACH_TO_KE_API_KEY"):
+                    current[k] = v
+
+            all_present = all(current.get(k) for k in (
+                "DEVKIT_TO_REACH_API_KEY", "KE_TO_DEVKIT_API_KEY", "REACH_TO_KE_API_KEY",
+            ))
+            if all_present:
+                # Container already has full keys — just sync our globals.
+                _DEVKIT_TO_REACH_API_KEY = current["DEVKIT_TO_REACH_API_KEY"]
+                _KE_TO_DEVKIT_API_KEY = current["KE_TO_DEVKIT_API_KEY"]
+                _UPLOAD_CHAIN_KEYS["devkit_to_reach_api_key"] = current["DEVKIT_TO_REACH_API_KEY"]
+                _UPLOAD_CHAIN_KEYS["ke_to_devkit_api_key"] = current["KE_TO_DEVKIT_API_KEY"]
+                _UPLOAD_CHAIN_KEYS["reach_to_ke_api_key"] = current["REACH_TO_KE_API_KEY"]
+                return True
+
+            # At least one env is empty — generate fresh keys and recreate.
+            new_keys = {
+                "DEVKIT_TO_REACH_API_KEY": _secrets_module.token_urlsafe(32),
+                "KE_TO_DEVKIT_API_KEY": _secrets_module.token_urlsafe(32),
+                "REACH_TO_KE_API_KEY": _secrets_module.token_urlsafe(32),
+            }
+            _DEVKIT_TO_REACH_API_KEY = new_keys["DEVKIT_TO_REACH_API_KEY"]
+            _KE_TO_DEVKIT_API_KEY = new_keys["KE_TO_DEVKIT_API_KEY"]
+            _UPLOAD_CHAIN_KEYS["devkit_to_reach_api_key"] = new_keys["DEVKIT_TO_REACH_API_KEY"]
+            _UPLOAD_CHAIN_KEYS["ke_to_devkit_api_key"] = new_keys["KE_TO_DEVKIT_API_KEY"]
+            _UPLOAD_CHAIN_KEYS["reach_to_ke_api_key"] = new_keys["REACH_TO_KE_API_KEY"]
+
+            # Find the rendered compose for this project (the temp file
+            # _run_docker_deploy wrote into /app/automation/docker/).
+            slug = project[len("dpg-"):] if project.startswith("dpg-") else project
+            search_dir = COMPOSE_FILE.parent
+            candidates = sorted(
+                search_dir.glob(f"dpg-{slug}-*.yml"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            if not candidates:
+                logger.warning(
+                    "devkit.upload_chain_recreate_no_compose",
+                    extra={
+                        "operation": "ensure_upload_chain",
+                        "status": "skipped",
+                        "project": project,
+                    },
+                )
+                return False
+            compose_path = str(candidates[0])
+
+            recreate_env = {**os.environ, **new_keys}
+            recreate = subprocess.run(
+                ["docker", "compose", "-p", project, "-f", compose_path,
+                 "up", "-d", "--force-recreate",
+                 "reach_layer_web", "knowledge_engine"],
+                capture_output=True, text=True, timeout=180, env=recreate_env,
+            )
+            if recreate.returncode != 0:
+                logger.error(
+                    "devkit.upload_chain_recreate_failed",
+                    extra={
+                        "operation": "ensure_upload_chain",
+                        "status": "failure",
+                        "project": project,
+                        "error": recreate.stderr[:500],
+                    },
+                )
+                return False
+
+            logger.info(
+                "devkit.upload_chain_regenerated",
+                extra={
+                    "operation": "ensure_upload_chain",
+                    "status": "success",
+                    "project": project,
+                    "services_recreated": "reach_layer_web,knowledge_engine",
+                },
+            )
+            return True
+        return False
+    except Exception as exc:
+        logger.warning(
+            "devkit.upload_chain_ensure_failed",
+            extra={
+                "operation": "ensure_upload_chain",
+                "status": "failure",
+                "error": str(exc),
+            },
+        )
+        return False
+
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
@@ -1663,8 +1818,12 @@ async def ingest_submit(request: Request):
     # If the in-process upload-chain keys are empty (dev_kit restarted, or
     # the teammate auto-unlocked into Ingest without a fresh deploy), try
     # to recover them from the still-running reach_layer_web container.
+    # If the container itself was deployed with empty keys, generate fresh
+    # ones and force-recreate the affected services so dev_kit and the
+    # deployed stack are aligned.
     if not _DEVKIT_TO_REACH_API_KEY:
-        _rehydrate_upload_chain_from_running_containers()
+        if not _rehydrate_upload_chain_from_running_containers() or not _DEVKIT_TO_REACH_API_KEY:
+            _ensure_upload_chain_keys_for_running_project()
 
     start = time.time()
     try:
