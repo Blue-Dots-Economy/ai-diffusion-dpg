@@ -950,6 +950,13 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
                 continue
             svc = services[svc_name]
             svc.pop("container_name", None)
+            # Force pull_policy=missing on every service: avoids re-pulling
+            # already-cached images on every redeploy and prevents the
+            # `toomanyrequests: unauthenticated pull rate limit` failure on
+            # demo VMs where dev_kit's CLI isn't logged into Docker Hub.
+            # Operators can refresh manually with `docker pull <image>`.
+            if "image" in svc:
+                svc["pull_policy"] = "missing"
             if svc_name == "action_gateway" and tool_secrets:
                 ag_env = svc.setdefault("environment", [])
                 for env_var in tool_secrets:
@@ -1237,6 +1244,13 @@ async def _run_docker_deploy(
                 continue
             svc = services[svc_name]
             svc.pop("container_name", None)
+            # Force pull_policy=missing on every service: avoids re-pulling
+            # already-cached images on every redeploy and prevents the
+            # `toomanyrequests: unauthenticated pull rate limit` failure on
+            # demo VMs where dev_kit's CLI isn't logged into Docker Hub.
+            # Operators can refresh manually with `docker pull <image>`.
+            if "image" in svc:
+                svc["pull_policy"] = "missing"
             if svc_name == "action_gateway" and tool_secrets:
                 env_list = svc.setdefault("environment", [])
                 for env_var, value in tool_secrets.items():
