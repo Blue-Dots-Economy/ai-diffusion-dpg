@@ -199,7 +199,13 @@ services:
       # Upload chain auth — reach-layer calls KE with this key; KE calls back dev-kit with KE_TO_DEVKIT_API_KEY.
       - REACH_TO_KE_API_KEY=${REACH_TO_KE_API_KEY:-}
       - KE_TO_DEVKIT_API_KEY=${KE_TO_DEVKIT_API_KEY:-}
-      - KE_DEVKIT_CALLBACK_URL=${KE_DEVKIT_CALLBACK_URL:-http://dev_kit:8080}
+      # dev_kit runs in a *separate* compose project (the host-side
+      # automation/docker stack), so the service name `dev_kit` doesn't
+      # resolve from KE's network. Default to host.docker.internal:8080,
+      # which routes through the host's published 8080 to dev_kit. The
+      # extra_hosts: host-gateway entry below makes the alias resolve on
+      # Linux; Docker Desktop provides it automatically.
+      - KE_DEVKIT_CALLBACK_URL=${KE_DEVKIT_CALLBACK_URL:-http://host.docker.internal:8080}
       - KB_DATA_DIR=/data/kb
       - CHROMA_PERSIST_DIR=/app/chroma_db
       # Azure Blob Storage — required only when the domain uses Azure for KB ingestion.
@@ -217,6 +223,11 @@ services:
       - kb_data:/data/kb                      # upload staging area for KB documents
     networks:
       - dpg_net
+    # KE → dev_kit ingest callback. dev_kit publishes 8080 on the host
+    # but lives in a different compose project, so resolve it through
+    # the host gateway rather than relying on cross-project DNS.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     deploy:
       resources:
         limits:
