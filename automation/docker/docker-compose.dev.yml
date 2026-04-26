@@ -107,6 +107,11 @@ services:
       - dpg_net
     volumes:
     - ../../dev-kit/configs:/app/configs
+    # Mount the host docker socket so the dev_kit container can drive
+    # `docker compose` against the host daemon (deploy / preview / status
+    # all shell out to `docker`). Without this the CLI errors with
+    # "failed to connect to the docker API at unix:///var/run/docker.sock".
+    - /var/run/docker.sock:/var/run/docker.sock
     deploy:
       resources:
         limits:
