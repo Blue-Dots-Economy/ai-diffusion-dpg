@@ -11,3 +11,13 @@ observability:
     collector_endpoint: "http://otelcol:4317"
     sample_rate: 1.0
     export_interval_ms: 5000
+
+# Dignity check is opt-in per domain. The Configuration Agent fills these in
+# for Conversational agents (5 canonical domain-tailored questions). Schema:
+#   enabled: bool
+#   questions: list[str]   ← MUST be plain string sentences, not dicts/objects
+#   fail_action: rewrite | flag | skip
+dignity_check:
+  enabled: false
+  questions: []
+  fail_action: "rewrite"

@@ -637,9 +637,39 @@ class TrustConfig(BaseModel):
     )
 
 
+class DignityCheckConfig(BaseModel):
+    """Pre-response dignity check block. Mirrors trust_layer/src/schema/config.py.
+
+    The runtime trust_layer container hard-fails at startup if any element of
+    ``questions`` is not a plain string, so the dev-kit must reject anything
+    else *before* writing the domain config to disk. The Configuration Agent
+    has previously emitted ``[{category, severity}, …]`` dicts here from
+    confused content-moderation taxonomies; explicit ``list[str]`` typing
+    surfaces that as a tool error the LLM can self-correct from.
+    """
+
+    enabled: bool = False
+    questions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "List of plain English (or domain-language) sentences the LLM "
+            "evaluates before each response. Strings only — never dicts or "
+            "category objects."
+        ),
+    )
+    fail_action: str = Field(
+        default="rewrite",
+        description="One of: rewrite, flag, skip.",
+    )
+
+
 class TrustLayerConfig(BaseModel):
     server: ServerConfig
     trust: TrustConfig
+    dignity_check: DignityCheckConfig = Field(
+        default_factory=DignityCheckConfig,
+        description="Pre-response dignity check (used for Conversational agents).",
+    )
 
 
 # ---------------------------------------------------------------------------
