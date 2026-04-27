@@ -9,7 +9,10 @@ import asyncio
 import json
 import logging
 import os
+import re as _re
 from typing import Dict, List, Optional
+
+_ANSI_ESCAPE = _re.compile(r'\x1b\[[0-9;]*[mGKHF]')
 
 import yaml
 
@@ -258,6 +261,96 @@ async def run_compose_up(
             extra={"operation": "run_compose_up", "status": "failure", "error": str(exc)},
         )
         return {"success": False, "stdout": "", "stderr": str(exc)}
+
+
+async def restart_service(
+    compose_file_path: str,
+    service_name: str,
+    project_name: Optional[str] = None,
+) -> Dict:
+    """Restart a single service in a Docker Compose project.
+
+    Does not rebuild or redeploy — equivalent to ``docker compose restart <svc>``.
+    Only stdout/stderr of the docker command are returned; no secrets are exposed.
+
+    Args:
+        compose_file_path: Absolute path to the docker-compose.yml file.
+        service_name: Compose service name to restart (e.g. ``knowledge_engine``).
+        project_name: Optional Docker Compose project name override.
+
+    Returns:
+        Dict with ``success`` (bool), ``stdout`` (str), ``stderr`` (str).
+    """
+    cmd = ["docker", "compose", "-f", compose_file_path]
+    if project_name:
+        cmd += ["-p", project_name]
+    cmd += ["restart", service_name]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        success = proc.returncode == 0
+        logger.info(
+            "restart_service",
+            extra={
+                "operation": "restart_service",
+                "status": "success" if success else "failure",
+                "service": service_name,
+            },
+        )
+        return {"success": success, "stdout": stdout.decode(), "stderr": stderr.decode()}
+    except Exception as exc:
+        logger.error(
+            "restart_service_exception",
+            extra={"operation": "restart_service", "status": "failure", "error": str(exc)},
+        )
+        return {"success": False, "stdout": "", "stderr": str(exc)}
+
+
+async def get_service_logs(
+    compose_file_path: str,
+    service_name: str,
+    project_name: Optional[str] = None,
+    tail: int = 15,
+) -> str:
+    """Return the last *tail* lines of a service's container logs, ANSI-stripped.
+
+    Only reads container stdout/stderr — never exposes environment variables or
+    secrets. Suitable for surfacing startup failure context in the deploy UI.
+
+    Args:
+        compose_file_path: Absolute path to the docker-compose.yml file.
+        service_name: Compose service name.
+        project_name: Optional Docker Compose project name.
+        tail: Number of log lines to fetch from the end.
+
+    Returns:
+        Cleaned, trimmed log text. Empty string on error.
+    """
+    cmd = ["docker", "compose", "-f", compose_file_path]
+    if project_name:
+        cmd += ["-p", project_name]
+    cmd += ["logs", "--no-color", f"--tail={tail}", service_name]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        raw = stdout.decode(errors="replace")
+        cleaned = _ANSI_ESCAPE.sub("", raw).strip()
+        lines = [ln for ln in cleaned.splitlines() if ln.strip()][-tail:]
+        return "\n".join(lines)
+    except Exception as exc:
+        logger.error(
+            "get_service_logs_exception",
+            extra={"operation": "get_service_logs", "status": "failure", "error": str(exc)},
+        )
+        return ""
 
 
 async def list_project_containers(project_name: str) -> List[Dict]:

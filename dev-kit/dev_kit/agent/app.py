@@ -1627,6 +1627,41 @@ async def _run_k8s_deploy(slug: str, state, secrets: dict, resources: dict, kube
         )
 
 
+# Services with no Docker healthcheck — treat "running" as "healthy"
+# since that's the best signal they ever emit.
+_NO_HEALTHCHECK_SERVICES = {"loki", "grafana", "prometheus", "jaeger", "otel_collector"}
+
+# Compose service name → canonical state key
+_COMPOSE_TO_STATE = {
+    "reach_layer_web": "reach_layer",
+    "reach_layer_voice": "reach_layer",
+    "otelcol": "otel_collector",
+}
+
+
+def _docker_status(c_state: str, c_status: str, svc_name: str) -> str:
+    """Map raw docker compose State/Status fields to a canonical service status.
+
+    Args:
+        c_state: Value of the ``State`` field from ``docker compose ps``.
+        c_status: Value of the ``Status`` field (includes health text).
+        svc_name: Canonical state service name (after compose→state mapping).
+
+    Returns:
+        One of: ``healthy``, ``running``, ``starting``, ``failed``, or the
+        raw c_state value for unrecognised states.
+    """
+    if c_state == "running":
+        if "healthy" in c_status.lower() or svc_name in _NO_HEALTHCHECK_SERVICES:
+            return "healthy"
+        return "running"
+    if c_state == "exited":
+        return "failed"
+    if c_state in ("created", "restarting"):
+        return "starting"
+    return c_state or "starting"
+
+
 @app.get("/api/projects/{slug}/deploy/status")
 async def get_deploy_status(slug: str) -> dict:
     """Poll deployment status of all services.
@@ -1657,25 +1692,15 @@ async def get_deploy_status(slug: str) -> dict:
         if not containers:
             return {"services": [], "overall": "idle"}
 
-        _PROBE_COMPOSE_TO_STATE = {
-            "reach_layer_web": "reach_layer",
-            "reach_layer_voice": "reach_layer",
-            "otelcol": "otel_collector",
-        }
         services_out: list[dict] = []
         all_ok = True
         for c in containers:
             compose_name = c.get("Service") or c.get("Name", "")
-            svc_name = _PROBE_COMPOSE_TO_STATE.get(compose_name, compose_name)
+            svc_name = _COMPOSE_TO_STATE.get(compose_name, compose_name)
             c_state = c.get("State", "")
             c_status = c.get("Status", "")
-            if c_state == "running":
-                status = "healthy" if "healthy" in c_status.lower() else "running"
-            elif c_state == "exited":
-                status = "failed"
-                all_ok = False
-            else:
-                status = c_state or "unknown"
+            status = _docker_status(c_state, c_status, svc_name)
+            if status == "failed":
                 all_ok = False
             services_out.append({"name": svc_name, "status": status, "error": ""})
         return {
@@ -1684,17 +1709,8 @@ async def get_deploy_status(slug: str) -> dict:
             "target": "docker",
         }
 
-    # For Docker deployments, always poll live container status so the UI
-    # gets real-time updates (compose up -d returns quickly but containers
-    # take time to become healthy).
-    # Compose service names use dashes; state keys use underscores.
-    _COMPOSE_TO_STATE = {
-        "reach_layer_web": "reach_layer",
-        "reach_layer_voice": "reach_layer",
-        "otelcol": "otel_collector",
-    }
     if state.target == "docker" and state.compose_file_path:
-        from dev_kit.agent.deployer.compose import get_compose_status
+        from dev_kit.agent.deployer.compose import get_compose_status, get_service_logs
 
         containers = await get_compose_status(state.compose_file_path, project_name=f"dpg-{slug}")
         if containers:
@@ -1703,14 +1719,17 @@ async def get_deploy_status(slug: str) -> dict:
                 svc_name = _COMPOSE_TO_STATE.get(compose_name, compose_name)
                 c_state = c.get("State", "")
                 c_status = c.get("Status", "")
-                if c_state == "running":
-                    status = "healthy" if "healthy" in c_status.lower() else "running"
-                elif c_state == "exited":
-                    status = "failed"
-                else:
-                    status = c_state
+                status = _docker_status(c_state, c_status, svc_name)
+                error_text = ""
+                if status == "failed":
+                    # Fetch last log lines so the UI can show a readable reason.
+                    # get_service_logs reads only container stdout/stderr — no secrets.
+                    error_text = await get_service_logs(
+                        state.compose_file_path, compose_name,
+                        project_name=f"dpg-{slug}", tail=15,
+                    )
                 if svc_name in state.services:
-                    state.set_service(svc_name, status)
+                    state.set_service(svc_name, status, error=error_text)
             statuses = {s["status"] for s in state.services.values()}
             if state.overall != "deploying":
                 state.overall = "failed" if "failed" in statuses else "complete"
@@ -1724,7 +1743,6 @@ async def get_deploy_status(slug: str) -> dict:
             pods = await get_pod_status(state.namespace, state.kubeconfig_path)
             if pods:
                 for pod in pods:
-                    # Map pod name back to service (release name is prefix)
                     pod_name = pod["name"]
                     matched_svc = None
                     for svc_name in state.services:
@@ -1746,6 +1764,81 @@ async def get_deploy_status(slug: str) -> dict:
                 state.overall = "failed" if "failed" in statuses else "complete"
 
     return state.to_response()
+
+
+@app.post("/api/projects/{slug}/deploy/services/{service}/restart")
+async def restart_deploy_service(slug: str, service: str) -> dict:
+    """Restart a single deployed service without redeploying the full stack.
+
+    Translates the state service name to the compose service name, runs
+    ``docker compose restart`` on that one service, and resets its in-memory
+    status to ``starting`` so the polling loop shows fresh progress.
+
+    Only supported for Docker deployments. No secrets are accepted or returned.
+
+    Args:
+        slug: Project slug.
+        service: Canonical state service name (e.g. ``knowledge_engine``,
+            ``reach_layer``).
+
+    Returns:
+        ``{"ok": true}`` on success.
+
+    Raises:
+        HTTPException 422: Invalid characters in service name.
+        HTTPException 404: No active deployment for this project.
+        HTTPException 400: Not a Docker deployment, or service name unknown.
+        HTTPException 500: Docker restart command failed.
+    """
+    import re as _re
+    if not _re.match(r'^[a-zA-Z0-9_]+$', service):
+        raise HTTPException(422, "Invalid service name")
+
+    from dev_kit.agent.deployer.state import get_state
+    from dev_kit.agent.deployer.compose import restart_service
+
+    state = get_state(slug)
+    if not state:
+        raise HTTPException(404, "No active deployment for this project")
+    if state.target != "docker":
+        raise HTTPException(400, "Per-service restart is only supported for Docker deployments")
+    if not state.compose_file_path:
+        raise HTTPException(400, "Compose file path not available in deployment state")
+    if service not in state.services:
+        raise HTTPException(400, f"Unknown service: {service}")
+
+    # Map canonical state name → compose service name
+    _STATE_TO_COMPOSE = {
+        "reach_layer": "reach_layer_web",
+        "otel_collector": "otelcol",
+    }
+    compose_service = _STATE_TO_COMPOSE.get(service, service)
+
+    start = time.time()
+    result = await restart_service(
+        state.compose_file_path, compose_service, project_name=f"dpg-{slug}"
+    )
+    if not result["success"]:
+        # Truncate stderr so docker's verbose output doesn't leak compose internals
+        err_preview = result["stderr"].strip()[:300]
+        raise HTTPException(500, f"Failed to restart {service}: {err_preview}")
+
+    # Reset service in state — polling will update it to running/healthy shortly
+    state.set_service(service, "starting")
+    if state.overall in ("failed", "complete"):
+        state.overall = "deploying"
+
+    logger.info(
+        "devkit.restart_service",
+        extra={
+            "operation": "devkit.restart_service",
+            "status": "success",
+            "slug": slug,
+            "service": service,
+            "latency_ms": int((time.time() - start) * 1000),
+        },
+    )
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------

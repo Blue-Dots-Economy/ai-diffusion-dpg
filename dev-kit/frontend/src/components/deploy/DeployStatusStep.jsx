@@ -14,11 +14,11 @@ const PHASES = [
 ]
 
 const STATUS_ICONS = {
-  queued: '⏳',
-  starting: '🔄',
-  running: '✅',
-  failed: '❌',
-  healthy: '💚',
+  queued:   { icon: '○', cls: 'text-gray-500' },
+  starting: { icon: '◌', cls: 'text-blue-400' },
+  running:  { icon: '◑', cls: 'text-yellow-400' },
+  healthy:  { icon: '✓', cls: 'text-green-400' },
+  failed:   { icon: '✗', cls: 'text-red-400' },
 }
 
 const SERVICE_LABELS = {
@@ -30,21 +30,25 @@ const SERVICE_LABELS = {
   observability_layer: 'Observability Layer',
 }
 
+function ServiceIcon({ status }) {
+  const s = STATUS_ICONS[status] || STATUS_ICONS.queued
+  return <span className={`text-sm font-mono ${s.cls}`}>{s.icon}</span>
+}
+
 export default function DeployStatusStep({ slug, data, onSuccess }) {
   const [status, setStatus] = useState({ services: [], overall: 'deploying' })
   const [deployed, setDeployed] = useState(false)
   const [error, setError] = useState(null)
   const [readyToIngest, setReadyToIngest] = useState(false)
+  const [restarting, setRestarting] = useState(new Set())
   const pollRef = useRef(null)
   const onSuccessRef = useRef(onSuccess)
   onSuccessRef.current = onSuccess
 
   useEffect(() => {
-    // Probe before deploying. Mounting this step (e.g. via the step
-    // indicator after the wizard auto-unlocked, or just clicking back to
-    // Status while a deploy is already in flight) must not trigger a
-    // fresh `docker compose up`. Only kick a deploy when no deployment
-    // exists for this slug (`overall === 'idle'`).
+    // Probe before deploying. Mounting this step must not trigger a fresh
+    // `docker compose up` if a deployment already exists for this slug.
+    // Only kick a deploy when overall === 'idle'.
     let cancelled = false
     async function init() {
       try {
@@ -57,21 +61,13 @@ export default function DeployStatusStep({ slug, data, onSuccess }) {
           setReadyToIngest(true)
           return
         }
-        if (initial.overall === 'deploying') {
+        if (initial.overall === 'deploying' || initial.overall === 'failed') {
           setDeployed(true)
           startPolling()
           return
         }
-        if (initial.overall === 'failed') {
-          // Surface the existing failure; user can hit Retry. Don't
-          // silently redeploy here — they may want to fix config first.
-          setDeployed(true)
-          setError('Previous deployment failed. Click Retry to redeploy.')
-          return
-        }
 
-        // overall === 'idle' (or unknown) — this is the first time we
-        // hit Status for this slug, kick the actual deploy now.
+        // overall === 'idle' (or unknown) — first deploy for this slug
         const options = {
           target: data.target,
           ...(await buildSecretsPayload(data.secrets)),
@@ -96,6 +92,7 @@ export default function DeployStatusStep({ slug, data, onSuccess }) {
   }, [])
 
   function startPolling() {
+    if (pollRef.current) return // already polling
     pollRef.current = setInterval(async () => {
       try {
         const result = await api.getDeployStatus(slug)
@@ -103,9 +100,7 @@ export default function DeployStatusStep({ slug, data, onSuccess }) {
         if (result.overall === 'complete' || result.overall === 'failed') {
           clearInterval(pollRef.current)
           pollRef.current = null
-          if (result.overall === 'complete') {
-            setReadyToIngest(true)
-          }
+          if (result.overall === 'complete') setReadyToIngest(true)
         }
       } catch (e) {
         console.error('Status poll error:', e)
@@ -131,6 +126,31 @@ export default function DeployStatusStep({ slug, data, onSuccess }) {
     }
   }
 
+  async function handleServiceRestart(svcName) {
+    setRestarting(prev => new Set(prev).add(svcName))
+    setStatus(prev => ({
+      ...prev,
+      overall: prev.overall === 'failed' ? 'deploying' : prev.overall,
+      services: prev.services.map(s =>
+        s.name === svcName ? { ...s, status: 'starting', error: '' } : s
+      ),
+    }))
+    try {
+      await api.restartService(slug, svcName)
+      startPolling()
+    } catch (e) {
+      setStatus(prev => ({
+        ...prev,
+        overall: 'failed',
+        services: prev.services.map(s =>
+          s.name === svcName ? { ...s, status: 'failed', error: e.message || 'Restart failed' } : s
+        ),
+      }))
+    } finally {
+      setRestarting(prev => { const n = new Set(prev); n.delete(svcName); return n })
+    }
+  }
+
   const serviceMap = {}
   status.services.forEach(s => { serviceMap[s.name] = s })
 
@@ -141,7 +161,7 @@ export default function DeployStatusStep({ slug, data, onSuccess }) {
         {status.overall === 'complete'
           ? 'All services deployed successfully!'
           : status.overall === 'failed'
-          ? 'Deployment encountered errors.'
+          ? 'One or more services failed. Restart individual services below.'
           : 'Deploying services…'}
       </p>
 
@@ -185,16 +205,33 @@ export default function DeployStatusStep({ slug, data, onSuccess }) {
             <div className="divide-y divide-gray-800/50">
               {phase.services.map(svcName => {
                 const svc = serviceMap[svcName] || { status: 'queued' }
+                const isRestarting = restarting.has(svcName)
                 return (
-                  <div key={svcName} className="flex items-center justify-between px-4 py-2.5">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm">{STATUS_ICONS[svc.status] || STATUS_ICONS.queued}</span>
-                      <span className="text-sm">{SERVICE_LABELS[svcName] || svcName}</span>
+                  <div key={svcName} className="px-4 py-2.5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <ServiceIcon status={svc.status || 'queued'} />
+                        <span className="text-sm">{SERVICE_LABELS[svcName] || svcName}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {svc.status === 'failed' && data.target === 'docker' && (
+                          <button
+                            onClick={() => handleServiceRestart(svcName)}
+                            disabled={isRestarting}
+                            className="text-xs bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-300 px-2 py-1 rounded transition-colors"
+                          >
+                            {isRestarting ? '…' : '↺ Restart'}
+                          </button>
+                        )}
+                        <StatusBadge status={svc.status || 'queued'} />
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      {svc.error && <span className="text-xs text-red-400 max-w-[200px] truncate">{svc.error}</span>}
-                      <StatusBadge status={svc.status || 'queued'} />
-                    </div>
+                    {svc.error && (
+                      <details className="mt-1 ml-5">
+                        <summary className="text-xs text-red-400 cursor-pointer select-none">Show error</summary>
+                        <pre className="mt-1 text-xs text-red-300 bg-red-950/40 rounded p-2 overflow-x-auto whitespace-pre-wrap break-words max-h-32 overflow-y-auto">{svc.error}</pre>
+                      </details>
+                    )}
                   </div>
                 )
               })}

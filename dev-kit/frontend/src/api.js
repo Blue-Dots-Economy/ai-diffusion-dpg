@@ -83,4 +83,7 @@ export const api = {
 
   getIngestJobs: (limit = 100) =>
     request('GET', `/ingest/jobs?limit=${limit}`),
+
+  restartService: (slug, service) =>
+    request('POST', `/projects/${slug}/deploy/services/${service}/restart`),
 }

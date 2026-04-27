@@ -26,14 +26,15 @@ export const BLOCK_DESC = {
 }
 
 export const STATUS_PILL = {
-  complete: 'bg-green-900 text-green-300 border-green-700',
-  draft: 'bg-yellow-900 text-yellow-300 border-yellow-700',
-  pending: 'bg-gray-800 text-gray-400 border-gray-700',
-  stale: 'bg-red-900 text-red-300 border-red-700',
-  running: 'bg-green-900 text-green-300 border-green-700',
-  failed: 'bg-red-900 text-red-300 border-red-700',
-  starting: 'bg-blue-900 text-blue-300 border-blue-700',
-  queued: 'bg-gray-800 text-gray-400 border-gray-700',
+  complete:  'bg-green-900 text-green-300 border-green-700',
+  healthy:   'bg-green-900 text-green-300 border-green-700',
+  draft:     'bg-yellow-900 text-yellow-300 border-yellow-700',
+  running:   'bg-yellow-900 text-yellow-300 border-yellow-700',
+  starting:  'bg-blue-900 text-blue-300 border-blue-700',
+  pending:   'bg-gray-800 text-gray-400 border-gray-700',
+  queued:    'bg-gray-800 text-gray-400 border-gray-700',
+  failed:    'bg-red-900 text-red-300 border-red-700',
+  stale:     'bg-red-900 text-red-300 border-red-700',
 }
 
 export const STATUS_COLORS = {
