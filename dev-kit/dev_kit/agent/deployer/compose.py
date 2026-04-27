@@ -214,6 +214,12 @@ async def run_compose_up(
         # redeploying the same stack preserves existing login sessions.
         env.setdefault("REACH_SESSION_SECRET",
                        secrets.get("reach_session_secret") or _secrets_module.token_urlsafe(32))
+        # Derive PUBLIC_URL from NGROK_DOMAIN when available so the voice container
+        # starts with a known public URL (needed for Vobiz webhook registration).
+        # A fixed ngrok domain (paid account) avoids the chicken-and-egg problem
+        # where the voice server needs PUBLIC_URL before ngrok has started.
+        if not env.get("PUBLIC_URL") and env.get("NGROK_DOMAIN"):
+            env["PUBLIC_URL"] = f"https://{env['NGROK_DOMAIN']}"
         # Upload chain auth — resolves ${VAR:-} placeholders in the compose file
         _upload_chain = {
             "devkit_to_reach_api_key": "DEVKIT_TO_REACH_API_KEY",
