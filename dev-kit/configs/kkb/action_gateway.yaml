@@ -11,7 +11,7 @@ tools:
       from the ONEST network including roles, employers, locations, and salary details.
       Always call with a natural language query_text describing what the user is looking for.
       Add structured filters only when the user has explicitly stated those preferences.
-    base_url: "https://onest-lite-bap.dhiway.net/api/v3"
+    base_url: "https://up-onest-lite-bap.dhiway.net/api/v1"
     auth:
       type: api_key
       header: X-API-KEY
@@ -22,7 +22,7 @@ tools:
     endpoints:
       - name: search
         method: POST
-        path: /search
+        path: /search/top
         params:
           - name: query_text
             source: agent
@@ -78,27 +78,35 @@ tools:
             source: static
             type: integer
             value: 1
+          - name: role
+            source: agent
+            type: string
+            required: false
+            description: "Preferred role. Include only if stated."
+          - name: location
+            source: agent
+            type: string
+            required: false
+            description: "Preferred location of search. Include only if stated."
     response:
       max_size_chars: 4000
       # Slim LLM-visible projection — shapes what flows back into the second
       # LLM call as result_text. The raw response is still retained on
       # ToolResult.result for observability.
       projection:
-        list_key: data.items
+        list_key: data
         fields:
-          role_id: job.job_id
-          title: job.beckn_structure.tags.jobDetails.title
-          employer: job.beckn_structure.tags.basicInfo.jobProviderName
-          city: job.beckn_structure.locations.city
-          state: job.beckn_structure.locations.state
-          pay_min: job.beckn_structure.tags.jobDetails.minMonthlyInHand
-          pay_max: job.beckn_structure.tags.jobDetails.maxMonthlyInHand
-          positions: job.beckn_structure.tags.jobDetails.positions
-          mode_of_work: job.beckn_structure.tags.jobDetails.modeOfWork
-          working_hours: job.beckn_structure.tags.jobDetails.workingHoursPerDay
-          industry: job.beckn_structure.tags.industry
-          status: job.beckn_structure.tags.status
-          is_active: job.is_active
+          role_id: job_id
+          title: metadata.tags.jobDetails.title
+          employer: metadata.tags.basicInfo.jobProviderName
+          city: metadata.locations.city
+          state: metadata.locations.state
+          pay_min: metadata.tags.jobDetails.minMonthlyInHand
+          pay_max: metadata.tags.jobDetails.maxMonthlyInHand
+          positions: metadata.tags.jobDetails.positions
+          industry: metadata.tags.industry
+          status: metadata.tags.status
+          role: metadata.tags.role
 
   # ────────────────────────────────────────────────────────────────────
   # Mocked profile / apply flow (demo fixtures).

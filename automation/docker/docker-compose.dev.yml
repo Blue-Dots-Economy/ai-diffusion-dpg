@@ -117,7 +117,7 @@ services:
       # the host daemon via /var/run/docker.sock.
       # Default: ${PWD}/../.. assumes `docker compose -f .../docker-compose.dev.yml`
       # is launched from the automation/docker directory (per CLAUDE.md).
-      - HOST_REPO_ROOT=${HOST_REPO_ROOT:-${PWD}/../..}
+      - HOST_REPO_ROOT=${HOST_REPO_ROOT:-${PWD}}
       # Forwarded so dev_kit's `docker compose up` subprocess (which inherits
       # os.environ via run_compose_up) can substitute ${NGROK_AUTHTOKEN:-} in
       # the deployed ngrok service. Without this the deployed ngrok starts
