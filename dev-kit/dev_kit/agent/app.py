@@ -1537,6 +1537,25 @@ async def execute_deploy(slug: str, body: dict) -> dict:
     Returns:
         Dict with ``status: started`` and the resolved target name.
     """
+    from fastapi import HTTPException as _HTTPException
+
+    # Gate: reject deploys with config errors so broken configs never reach containers.
+    validation = pre_deploy_validate(slug)
+    if not validation["valid"]:
+        block_msgs = [
+            f"[{block}] {err}"
+            for block, errs in (validation.get("block_errors") or {}).items()
+            for err in errs
+        ]
+        all_errors = block_msgs + (validation.get("invariant_errors") or [])
+        raise _HTTPException(
+            status_code=422,
+            detail={
+                "error": "Config validation failed — fix errors before deploying.",
+                "errors": all_errors,
+            },
+        )
+
     import tempfile
     from dev_kit.agent.deployer.state import start_deploy
 

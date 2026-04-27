@@ -450,11 +450,15 @@ class TestGetDeployPreview:
 # ---------------------------------------------------------------------------
 
 
+_VALID_VALIDATION = {"valid": True, "block_errors": {}, "invariant_errors": []}
+
+
 class TestExecuteDeploy:
     def test_returns_started_status(self, client_with_project):
         """Execute deploy returns started status."""
         client, slug = client_with_project
-        with mock.patch.object(app_module, "_run_docker_deploy", new_callable=mock.AsyncMock):
+        with mock.patch.object(app_module, "pre_deploy_validate", return_value=_VALID_VALIDATION), \
+             mock.patch.object(app_module, "_run_docker_deploy", new_callable=mock.AsyncMock):
             res = client.post(
                 f"/api/projects/{slug}/deploy/execute",
                 json={"target": "docker"},
@@ -467,10 +471,24 @@ class TestExecuteDeploy:
     def test_default_target_is_docker(self, client_with_project):
         """Omitting target defaults to docker."""
         client, slug = client_with_project
-        with mock.patch.object(app_module, "_run_docker_deploy", new_callable=mock.AsyncMock):
+        with mock.patch.object(app_module, "pre_deploy_validate", return_value=_VALID_VALIDATION), \
+             mock.patch.object(app_module, "_run_docker_deploy", new_callable=mock.AsyncMock):
             res = client.post(f"/api/projects/{slug}/deploy/execute", json={})
         assert res.status_code == 200
         assert res.json()["target"] == "docker"
+
+    def test_rejects_deploy_when_validation_fails(self, client_with_project):
+        """Execute deploy returns 422 when config validation has errors."""
+        client, slug = client_with_project
+        invalid = {
+            "valid": False,
+            "block_errors": {},
+            "invariant_errors": ["agent_core.agent_workflow.workflow_id is empty."],
+        }
+        with mock.patch.object(app_module, "pre_deploy_validate", return_value=invalid):
+            res = client.post(f"/api/projects/{slug}/deploy/execute", json={"target": "docker"})
+        assert res.status_code == 422
+        assert "errors" in res.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -494,7 +512,8 @@ class TestGetDeployStatus:
     def test_returns_deploying_after_execute(self, client_with_project):
         """Status endpoint returns deploying state after execute is called."""
         client, slug = client_with_project
-        with mock.patch.object(app_module, "_run_docker_deploy", new_callable=mock.AsyncMock):
+        with mock.patch.object(app_module, "pre_deploy_validate", return_value=_VALID_VALIDATION), \
+             mock.patch.object(app_module, "_run_docker_deploy", new_callable=mock.AsyncMock):
             client.post(
                 f"/api/projects/{slug}/deploy/execute",
                 json={"target": "docker"},

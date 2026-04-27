@@ -25,7 +25,7 @@ const DPG_LABELS = {
 
 const ALL_LABELS = { ...INFRA_LABELS, ...DPG_LABELS }
 
-export default function PreviewStep({ slug, data }) {
+export default function PreviewStep({ slug, data, onValidationResult }) {
   const [preview, setPreview] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -38,12 +38,14 @@ export default function PreviewStep({ slug, data }) {
     try {
       const result = await api.validateDeployConfig(slug)
       setValidation(result)
+      onValidationResult?.(result)
     } catch {
       setValidation(null)
+      onValidationResult?.(null)
     } finally {
       setValidating(false)
     }
-  }, [slug])
+  }, [slug, onValidationResult])
 
   useEffect(() => {
     runValidation()

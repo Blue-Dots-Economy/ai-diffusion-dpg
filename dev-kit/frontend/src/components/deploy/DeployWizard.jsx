@@ -72,6 +72,7 @@ export default function DeployWizard({ slug, onBack }) {
   }, [])
 
   const [validationError, setValidationError] = useState('')
+  const [previewValidation, setPreviewValidation] = useState(null) // null | {valid, ...}
 
   function handleNext() {
     setValidationError('')
@@ -107,6 +108,17 @@ export default function DeployWizard({ slug, onBack }) {
       setValidationError('Please select a deploy target.')
       return
     }
+    // Step 6: Block deploy if config validation has errors
+    if (!alreadyCompleted && step === 6) {
+      if (previewValidation === null) {
+        setValidationError('Config validation is still running — please wait.')
+        return
+      }
+      if (!previewValidation.valid) {
+        setValidationError('Fix the config errors shown above before deploying.')
+        return
+      }
+    }
 
     if (!completed.includes(step)) {
       setCompleted(prev => [...prev, step])
@@ -136,7 +148,7 @@ export default function DeployWizard({ slug, onBack }) {
     3: <ResourcePresetStep {...stepProps} />,
     4: <MandatoryInputsStep {...stepProps} project={project} />,
     5: <DeployTargetStep {...stepProps} />,
-    6: <PreviewStep {...stepProps} />,
+    6: <PreviewStep {...stepProps} onValidationResult={setPreviewValidation} />,
     7: <DeployStatusStep {...stepProps} onSuccess={() => {
       if (!completed.includes(7)) setCompleted(prev => [...prev, 7])
       setStep(8)
@@ -190,7 +202,9 @@ export default function DeployWizard({ slug, onBack }) {
             {step === 6 ? (
               <button
                 onClick={handleNext}
-                className="text-sm bg-green-700 hover:bg-green-600 text-white px-5 py-2 rounded-xl font-medium transition-colors"
+                disabled={previewValidation === null || !previewValidation.valid}
+                title={!previewValidation ? 'Waiting for validation…' : !previewValidation.valid ? 'Fix config errors before deploying' : ''}
+                className="text-sm bg-green-700 hover:bg-green-600 disabled:opacity-40 disabled:cursor-not-allowed text-white px-5 py-2 rounded-xl font-medium transition-colors"
               >
                 Deploy
               </button>
