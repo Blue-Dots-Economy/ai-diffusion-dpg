@@ -156,7 +156,10 @@ export default function DeployWizard({ slug, onBack }) {
     4: <MandatoryInputsStep {...stepProps} project={project} />,
     5: <DeployTargetStep {...stepProps} />,
     6: <PreviewStep {...stepProps} />,
-    7: <DeployStatusStep {...stepProps} onSuccess={() => setStep(8)} />,
+    7: <DeployStatusStep {...stepProps} onSuccess={() => {
+      if (!completed.includes(7)) setCompleted(prev => [...prev, 7])
+      setStep(8)
+    }} />,
     8: <IngestDocumentsStep slug={slug} project={project} onNext={onBack} onBack={() => setStep(7)} />,
   }
 

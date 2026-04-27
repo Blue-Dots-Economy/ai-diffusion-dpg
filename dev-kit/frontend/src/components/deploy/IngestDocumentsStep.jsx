@@ -92,9 +92,16 @@ function reducer(state, action) {
         ),
       }
     case 'LOAD_HISTORY': {
-      // Merge history records — skip any job_id already in local state
+      // Deduplicate by filename (jobs arrive newest-first) then skip job_ids
+      // already in local state. This means re-uploading the same file only
+      // shows the latest record, matching what ChromaDB actually contains
+      // (the KE deletes old chunks before re-ingesting the same filename).
+      const latestByFilename = new Map()
+      for (const j of action.jobs) {
+        if (!latestByFilename.has(j.filename)) latestByFilename.set(j.filename, j)
+      }
       const existingJobIds = new Set(state.rows.map(r => r.jobId).filter(Boolean))
-      const newRows = action.jobs
+      const newRows = [...latestByFilename.values()]
         .filter(j => !existingJobIds.has(j.job_id))
         .map(j => ({
           id: _rowId(),
