@@ -1942,6 +1942,63 @@ async def ingest_job_status(job_id: str):
         raise HTTPException(502, "Upstream error communicating with Reach Layer") from e
 
 
+@app.get("/api/ingest/jobs")
+async def list_ingest_jobs(limit: int = 100):
+    """Return ingestion history by proxying to Reach Layer → KE.
+
+    Called by the frontend on mount of the Ingest Documents step so previously
+    ingested files are shown even after navigating away and back.
+
+    Args:
+        limit: Maximum number of records to return (default 100, max 500).
+
+    Returns:
+        Job list response from KE.
+
+    Raises:
+        HTTPException: 503 if Reach Layer is unreachable.
+        HTTPException: 504 if Reach Layer times out.
+        HTTPException: 502 on other upstream errors.
+    """
+    import httpx as _httpx
+    start = time.time()
+    try:
+        async with _httpx.AsyncClient(timeout=10.0) as http_client:
+            ke_response = await http_client.get(
+                f"{_REACH_LAYER_URL}/ingest/jobs",
+                params={"limit": min(limit, 500)},
+                headers={"X-API-Key": _DEVKIT_TO_REACH_API_KEY},
+            )
+        logger.info(
+            "devkit.list_ingest_jobs",
+            extra={
+                "operation": "devkit.list_ingest_jobs",
+                "status": "success",
+                "reach_status": ke_response.status_code,
+                "latency_ms": int((time.time() - start) * 1000),
+            },
+        )
+        return Response(
+            content=ke_response.content,
+            status_code=ke_response.status_code,
+            media_type=ke_response.headers.get("content-type", "application/json"),
+        )
+    except _httpx.ConnectError as e:
+        logger.error(
+            "devkit.list_ingest_jobs_unreachable",
+            extra={"operation": "devkit.list_ingest_jobs", "status": "failure", "error": str(e)},
+        )
+        raise HTTPException(503, "Reach Layer is unreachable") from e
+    except _httpx.TimeoutException as e:
+        logger.error(
+            "devkit.list_ingest_jobs_timeout",
+            extra={"operation": "devkit.list_ingest_jobs", "status": "failure", "error": str(e)},
+        )
+        raise HTTPException(504, "Reach Layer timed out") from e
+    except _httpx.HTTPError as e:
+        raise HTTPException(502, "Upstream error communicating with Reach Layer") from e
+
+
 class _CallbackBody(BaseModel):
     """Payload sent by KE when a job completes."""
 

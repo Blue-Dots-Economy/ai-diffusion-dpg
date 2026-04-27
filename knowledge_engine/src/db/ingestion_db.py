@@ -191,6 +191,52 @@ class IngestionDB:
             extra={"operation": "ingestion_db.update_status", "status": "success", "job_id": job_id, "new_status": status},
         )
 
+    def list_records(self, limit: int = 100) -> list[IngestionRecord]:
+        """Return up to *limit* records ordered by upload time descending.
+
+        Args:
+            limit: Maximum number of records to return.
+
+        Returns:
+            List of IngestionRecord objects, newest first.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM ingestion_records ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            queued_ids_in_order = [
+                row["job_id"] for row in conn.execute(
+                    "SELECT job_id FROM ingestion_records WHERE status = 'queued' ORDER BY id ASC"
+                ).fetchall()
+            ]
+
+        result = []
+        for row in rows:
+            queue_position: Optional[int] = None
+            if row["status"] == "queued" and row["job_id"] in queued_ids_in_order:
+                queue_position = queued_ids_in_order.index(row["job_id"]) + 1
+            result.append(IngestionRecord(
+                job_id=row["job_id"],
+                batch_id=row["batch_id"],
+                filename=row["filename"],
+                file_size_bytes=row["file_size_bytes"],
+                source_type=row["source_type"],
+                cloud_path=row["cloud_path"],
+                mode=row["mode"],
+                status=row["status"],
+                chunks_added=row["chunks_added"],
+                error=row["error"],
+                user_id=row["user_id"],
+                uploaded_at=row["uploaded_at"],
+                ingested_at=row["ingested_at"],
+                expires_at=row["expires_at"],
+                doc_type=row["doc_type"] if "doc_type" in row.keys() else None,
+                enabled=row["enabled"],
+                queue_position=queue_position,
+            ))
+        return result
+
     def get_record(self, job_id: str) -> Optional[IngestionRecord]:
         """Fetch a record by job_id and calculate queue_position.
 

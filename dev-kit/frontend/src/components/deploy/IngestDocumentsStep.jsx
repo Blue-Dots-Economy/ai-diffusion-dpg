@@ -91,6 +91,26 @@ function reducer(state, action) {
             : r
         ),
       }
+    case 'LOAD_HISTORY': {
+      // Merge history records — skip any job_id already in local state
+      const existingJobIds = new Set(state.rows.map(r => r.jobId).filter(Boolean))
+      const newRows = action.jobs
+        .filter(j => !existingJobIds.has(j.job_id))
+        .map(j => ({
+          id: _rowId(),
+          mode: j.mode || 'local_write_ingest',
+          file: null,
+          cloudPath: '',
+          filename: j.filename,
+          docType: j.doc_type || '',
+          jobId: j.job_id,
+          status: j.status,
+          queuePosition: j.queue_position ?? null,
+          chunksAdded: j.chunks_added ?? null,
+          error: j.error ?? null,
+        }))
+      return { ...state, rows: [...state.rows, ...newRows] }
+    }
     default:
       return state
   }
@@ -127,6 +147,8 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
   const [state, dispatch] = useReducer(reducer, INITIAL_STATE)
   const pollingRef = useRef({})
   const timeoutRef = useRef({})
+  // Stable ref to _startPolling so the mount effect can call it without stale closures
+  const _startPollingRef = useRef(null)
   // Backend always returns azure_storage as `{ needed: bool }`, so we have to
   // check the flag — `Boolean(project?.azure_storage)` would be true even when
   // Azure isn't configured.
@@ -159,6 +181,22 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
         })
       }).catch(() => {
         // Non-fatal — operator can still type a doc_type manually.
+      })
+
+      // Fetch ingestion history so previously ingested files appear on revisit
+      api.getIngestJobs().then(payload => {
+        const jobs = payload.jobs || []
+        if (jobs.length > 0) {
+          dispatch({ type: 'LOAD_HISTORY', jobs })
+          // Resume polling for any non-terminal jobs (queued / ingesting)
+          jobs.forEach(j => {
+            if (j.status !== 'ingested' && j.status !== 'failed' && _startPollingRef.current) {
+              _startPollingRef.current(j.job_id)
+            }
+          })
+        }
+      }).catch(() => {
+        // Non-fatal — history fetch fails if services aren't up yet.
       })
 
       // Poll deploy status until reach_layer is healthy
@@ -333,6 +371,8 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
       })
     }, pollTimeoutMs)
   }, [pollIntervalMs, pollTimeoutMs])
+  // Keep ref current so the mount effect can call _startPolling without stale closures
+  _startPollingRef.current = _startPolling
 
   // ---------------------------------------------------------------------------
   // Render

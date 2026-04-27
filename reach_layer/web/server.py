@@ -900,6 +900,56 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
             )
             raise HTTPException(504, "Knowledge Engine timed out") from e
 
+    @app.get("/ingest/jobs")
+    async def list_ingest_jobs(
+        request: Request,
+        limit: int = 100,
+    ):
+        """Proxy ingestion history list from dev-kit to KE.
+
+        Validates dev-kit API key, then forwards the GET to KE's job list endpoint.
+
+        Args:
+            request: Incoming request (used to read X-API-Key header).
+            limit: Maximum number of records to return.
+
+        Returns:
+            Proxied JSON response from KE.
+
+        Raises:
+            HTTPException: 401 if API key invalid; 503/504 if KE unreachable.
+        """
+        x_api_key = request.headers.get("X-API-Key")
+        _verify_api_key(x_api_key, _DEVKIT_TO_REACH_API_KEY)
+
+        if not _KE_INTERNAL_URL:
+            raise HTTPException(503, "KE_INTERNAL_URL is not configured")
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    f"{_KE_INTERNAL_URL}/upload/jobs",
+                    params={"limit": limit},
+                    headers={"X-API-Key": _REACH_TO_KE_API_KEY},
+                )
+            return Response(
+                content=response.content,
+                status_code=response.status_code,
+                media_type=response.headers.get("content-type", "application/json"),
+            )
+        except httpx.ConnectError as e:
+            logger.error(
+                "reach.list_ingest_jobs_ke_unreachable",
+                extra={"operation": "reach.list_ingest_jobs", "status": "failure", "error": str(e)},
+            )
+            raise HTTPException(503, "Knowledge Engine is unreachable") from e
+        except httpx.TimeoutException as e:
+            logger.error(
+                "reach.list_ingest_jobs_timeout",
+                extra={"operation": "reach.list_ingest_jobs", "status": "failure", "error": str(e)},
+            )
+            raise HTTPException(504, "Knowledge Engine timed out") from e
+
     return app
 
 

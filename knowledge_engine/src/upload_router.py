@@ -275,6 +275,46 @@ def create_upload_router(
             "uploaded_at": record.uploaded_at,
         }
 
+    @router.get("/upload/jobs")
+    async def list_jobs(
+        limit: int = 100,
+        x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    ):
+        """Return the most recent ingestion records ordered by upload time descending.
+
+        Args:
+            limit: Maximum number of records to return (default 100).
+            x_api_key: Value of X-API-Key request header.
+
+        Returns:
+            Dict with a ``jobs`` list. Each entry has job_id, filename, status,
+            queue_position, chunks_added, error, uploaded_at, ingested_at,
+            doc_type, and mode.
+
+        Raises:
+            HTTPException: 401 if API key is invalid.
+        """
+        verify_api_key(x_api_key, reach_to_ke_api_key)
+
+        records = db.list_records(limit=min(limit, 500))
+        return {
+            "jobs": [
+                {
+                    "job_id": r.job_id,
+                    "filename": r.filename,
+                    "status": r.status,
+                    "queue_position": r.queue_position,
+                    "chunks_added": r.chunks_added,
+                    "error": r.error,
+                    "uploaded_at": r.uploaded_at,
+                    "ingested_at": r.ingested_at,
+                    "doc_type": r.doc_type,
+                    "mode": r.mode,
+                }
+                for r in records
+            ]
+        }
+
     return router
 
 

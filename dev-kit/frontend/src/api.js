@@ -80,4 +80,7 @@ export const api = {
 
   getJobStatus: (jobId) =>
     request('GET', `/ingest/job/${jobId}`),
+
+  getIngestJobs: (limit = 100) =>
+    request('GET', `/ingest/jobs?limit=${limit}`),
 }

@@ -135,8 +135,8 @@ def _assert_all_tools_registered(config: dict, registry: "AdapterRegistry") -> N
     Two registration patterns exist:
     - REST API adapters: register under the bare config ``id``
       (e.g. ``onest_market_lookup``).
-    - MCP adapters: register each discovered sub-tool as ``{id}.{tool_name}``
-      (e.g. ``obsrv_docs.searchDocumentation``). The bare ``id`` is never a
+    - MCP adapters: register each discovered sub-tool as ``{id}__{tool_name}``
+      (e.g. ``obsrv_docs__searchDocumentation``). The bare ``id`` is never a
       registered name, so the check uses a prefix match instead.
 
     Args:
@@ -156,8 +156,9 @@ def _assert_all_tools_registered(config: dict, registry: "AdapterRegistry") -> N
         if not tool_id:
             continue
         # Exact match (REST API) or any sub-tool under this id (MCP namespace prefix).
+        # MCP tools use __ as namespace separator (see adapters/mcp.py).
         registered = tool_id in registered_names or any(
-            name.startswith(f"{tool_id}.") for name in registered_names
+            name.startswith(f"{tool_id}__") for name in registered_names
         )
         if not registered:
             missing.append(tool_id)
