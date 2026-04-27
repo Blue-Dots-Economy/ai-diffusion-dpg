@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re as _re
+import secrets as _secrets_module
 from typing import Dict, List, Optional
 
 _ANSI_ESCAPE = _re.compile(r'\x1b\[[0-9;]*[mGKHF]')
@@ -208,8 +209,11 @@ async def run_compose_up(
             env["GF_SECURITY_ADMIN_PASSWORD"] = secrets["grafana_admin_password"]
         if secrets.get("google_client_id"):
             env["GOOGLE_CLIENT_ID"] = secrets["google_client_id"]
-        if secrets.get("reach_session_secret"):
-            env["REACH_SESSION_SECRET"] = secrets["reach_session_secret"]
+        # Auto-generate a session secret when not provided — Google auth requires it.
+        # Falls back to the value already in os.environ (e.g. set on the VM) so
+        # redeploying the same stack preserves existing login sessions.
+        env.setdefault("REACH_SESSION_SECRET",
+                       secrets.get("reach_session_secret") or _secrets_module.token_urlsafe(32))
         # Upload chain auth — resolves ${VAR:-} placeholders in the compose file
         _upload_chain = {
             "devkit_to_reach_api_key": "DEVKIT_TO_REACH_API_KEY",

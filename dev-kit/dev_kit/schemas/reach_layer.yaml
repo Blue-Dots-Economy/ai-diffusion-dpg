@@ -10,10 +10,7 @@ reach_layer:
       prompt: ""              # prompt prefix shown before user input, e.g. "You: "
       agent_prefix: ""        # prefix shown before agent replies, e.g. "Agent: "
     web:
-      auth:
-        enabled: false
-        google_client_id: ""
-        cookie_secure: true
+      # auth is pre-configured in DPG defaults (Google login always on) — do NOT set here
       ui:
         app_name: ""                  # required — display name shown in browser tab and chat header
         app_tagline: ""               # required — short subtitle shown under the app name

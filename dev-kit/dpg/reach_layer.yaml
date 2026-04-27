@@ -59,7 +59,9 @@ reach_layer:
       sessions:
         limit: 25
       auth:
-        # enabled, google_client_id, cookie_secure are per-domain → dev-kit/configs/<domain>/
+        enabled: true
+        google_client_id: ${GOOGLE_CLIENT_ID}
+        cookie_secure: false
         session_cookie_name: "reach_session"
         session_ttl_s: 86400
         cookie_samesite: "lax"
