@@ -14,18 +14,8 @@ import IngestDocumentsStep from './IngestDocumentsStep'
 const ALL_STEPS_BEFORE_INGEST = [1, 2, 3, 4, 5, 6, 7]
 
 export default function DeployWizard({ slug, onBack }) {
-  const [step, setStep] = useState(() => {
-    const saved = sessionStorage.getItem(`dpg_wizard_step_${slug}`)
-    return saved ? parseInt(saved, 10) : 1
-  })
-  const [completed, setCompleted] = useState(() => {
-    try {
-      const saved = sessionStorage.getItem(`dpg_wizard_completed_${slug}`)
-      return saved ? JSON.parse(saved) : []
-    } catch {
-      return []
-    }
-  })
+  const [step, setStep] = useState(1)
+  const [completed, setCompleted] = useState([])
   const [project, setProject] = useState(null)
   const [deployedSkip, setDeployedSkip] = useState(false)
   const [data, setData] = useState({
@@ -51,15 +41,6 @@ export default function DeployWizard({ slug, onBack }) {
     clusterInfo: null,
   })
 
-  // Persist step and completed to sessionStorage (never persists secrets — they live in `data`)
-  useEffect(() => {
-    sessionStorage.setItem(`dpg_wizard_step_${slug}`, String(step))
-  }, [step, slug])
-
-  useEffect(() => {
-    sessionStorage.setItem(`dpg_wizard_completed_${slug}`, JSON.stringify(completed))
-  }, [completed, slug])
-
   useEffect(() => {
     api.getProject(slug)
       .then(p => setProject(p))
@@ -76,29 +57,12 @@ export default function DeployWizard({ slug, onBack }) {
       .then(res => {
         if (cancelled) return
         if (res?.overall === 'complete' && Array.isArray(res.services) && res.services.length > 0) {
-          // Stack is up — unlock all steps and jump to Ingest
           setCompleted(ALL_STEPS_BEFORE_INGEST)
           setStep(8)
           setDeployedSkip(true)
-        } else if (res?.overall === 'deploying' || res?.overall === 'failed') {
-          // Deploy in progress or failed — go to Status step, keep completed as-is
-          setStep(7)
-        } else {
-          // idle — no active deployment (e.g. containers were cleaned up or
-          // devkit was restarted). Reset wizard so user starts fresh.
-          setStep(1)
-          setCompleted([])
-          sessionStorage.removeItem(`dpg_wizard_step_${slug}`)
-          sessionStorage.removeItem(`dpg_wizard_completed_${slug}`)
         }
       })
-      .catch(() => {
-        // API error or truly idle — reset to be safe
-        setStep(1)
-        setCompleted([])
-        sessionStorage.removeItem(`dpg_wizard_step_${slug}`)
-        sessionStorage.removeItem(`dpg_wizard_completed_${slug}`)
-      })
+      .catch(() => { /* idle — leave wizard at step 1 */ })
     return () => { cancelled = true }
   }, [slug])
 
