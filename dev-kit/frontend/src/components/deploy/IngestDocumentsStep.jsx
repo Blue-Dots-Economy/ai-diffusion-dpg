@@ -92,16 +92,9 @@ function reducer(state, action) {
         ),
       }
     case 'LOAD_HISTORY': {
-      // Deduplicate by filename (jobs arrive newest-first) then skip job_ids
-      // already in local state. This means re-uploading the same file only
-      // shows the latest record, matching what ChromaDB actually contains
-      // (the KE deletes old chunks before re-ingesting the same filename).
-      const latestByFilename = new Map()
-      for (const j of action.jobs) {
-        if (!latestByFilename.has(j.filename)) latestByFilename.set(j.filename, j)
-      }
+      // Merge history records — skip any job_id already in local state
       const existingJobIds = new Set(state.rows.map(r => r.jobId).filter(Boolean))
-      const newRows = [...latestByFilename.values()]
+      const newRows = action.jobs
         .filter(j => !existingJobIds.has(j.job_id))
         .map(j => ({
           id: _rowId(),
@@ -390,6 +383,11 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
   const allTerminal = state.rows.length > 0 &&
     state.rows.every(r => r.status === 'ingested' || r.status === 'failed')
 
+  // Names of files already successfully ingested — used to warn before re-upload
+  const ingestedFilenames = new Set(
+    state.rows.filter(r => r.status === 'ingested').map(r => r.filename)
+  )
+
   if (!state.config) {
     return (
       <div className="flex items-center justify-center py-12 text-gray-400 text-sm">
@@ -439,12 +437,19 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
                     className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
                   />
                 ) : (
-                  <input
-                    type="file"
-                    accept={supportedExtensions.join(',')}
-                    onChange={e => handleFileChange(row.id, e.target.files?.[0])}
-                    className="text-sm text-gray-300 file:mr-3 file:py-1 file:px-3 file:rounded-lg file:border-0 file:text-xs file:bg-gray-700 file:text-gray-200 hover:file:bg-gray-600 cursor-pointer"
-                  />
+                  <>
+                    <input
+                      type="file"
+                      accept={supportedExtensions.join(',')}
+                      onChange={e => handleFileChange(row.id, e.target.files?.[0])}
+                      className="text-sm text-gray-300 file:mr-3 file:py-1 file:px-3 file:rounded-lg file:border-0 file:text-xs file:bg-gray-700 file:text-gray-200 hover:file:bg-gray-600 cursor-pointer"
+                    />
+                    {row.filename && ingestedFilenames.has(row.filename) && (
+                      <p className="mt-1 text-xs text-yellow-400">
+                        Already ingested — uploading will replace existing chunks in the vector store.
+                      </p>
+                    )}
+                  </>
                 )}
               </div>
 
