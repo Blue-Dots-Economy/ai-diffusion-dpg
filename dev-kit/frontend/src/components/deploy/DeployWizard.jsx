@@ -76,12 +76,29 @@ export default function DeployWizard({ slug, onBack }) {
       .then(res => {
         if (cancelled) return
         if (res?.overall === 'complete' && Array.isArray(res.services) && res.services.length > 0) {
+          // Stack is up — unlock all steps and jump to Ingest
           setCompleted(ALL_STEPS_BEFORE_INGEST)
           setStep(8)
           setDeployedSkip(true)
+        } else if (res?.overall === 'deploying' || res?.overall === 'failed') {
+          // Deploy in progress or failed — go to Status step, keep completed as-is
+          setStep(7)
+        } else {
+          // idle — no active deployment (e.g. containers were cleaned up or
+          // devkit was restarted). Reset wizard so user starts fresh.
+          setStep(1)
+          setCompleted([])
+          sessionStorage.removeItem(`dpg_wizard_step_${slug}`)
+          sessionStorage.removeItem(`dpg_wizard_completed_${slug}`)
         }
       })
-      .catch(() => { /* idle — leave wizard at step 1 */ })
+      .catch(() => {
+        // API error or truly idle — reset to be safe
+        setStep(1)
+        setCompleted([])
+        sessionStorage.removeItem(`dpg_wizard_step_${slug}`)
+        sessionStorage.removeItem(`dpg_wizard_completed_${slug}`)
+      })
     return () => { cancelled = true }
   }, [slug])
 
