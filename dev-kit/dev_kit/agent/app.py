@@ -1713,6 +1713,12 @@ async def get_deploy_status(slug: str) -> dict:
         from dev_kit.agent.deployer.compose import get_compose_status, get_service_logs
 
         containers = await get_compose_status(state.compose_file_path, project_name=f"dpg-{slug}")
+        if not containers:
+            # Containers are gone (e.g. docker compose down was run externally).
+            # Clear stale in-memory state so next deploy starts fresh.
+            from dev_kit.agent.deployer.state import clear_state
+            clear_state(slug)
+            return {"services": [], "overall": "idle"}
         if containers:
             for c in containers:
                 compose_name = c.get("Service", c.get("Name", ""))
