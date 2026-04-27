@@ -19,6 +19,7 @@ export default function YamlPanel({ slug, configs, onSaved }) {
   const [saveMsg, setSaveMsg] = useState(null)
   const [validationModal, setValidationModal] = useState(null)  // null | string[]
   const [copied, setCopied] = useState(false)
+  const [reloading, setReloading] = useState(false)
   const [showGuide, setShowGuide] = useState(false)
   const [descriptions, setDescriptions] = useState({})
   const [validationByBlock, setValidationByBlock] = useState({})
@@ -150,6 +151,21 @@ export default function YamlPanel({ slug, configs, onSaved }) {
     }
   }
 
+  async function handleReload() {
+    setReloading(true)
+    setSaveMsg(null)
+    try {
+      await api.reloadConfigs(slug)
+      const freshConfigs = await api.getConfigs(slug)
+      freshConfigs.forEach(c => onSaved?.(c.block, c))
+      setSaveMsg('Reloaded from disk.')
+    } catch (err) {
+      setSaveMsg(`Reload error: ${err.message}`)
+    } finally {
+      setReloading(false)
+    }
+  }
+
   async function handleCopy() {
     const content = viewRef.current?.state.doc.toString() || ''
     try {
@@ -237,12 +253,22 @@ export default function YamlPanel({ slug, configs, onSaved }) {
         </div>
         <div className="flex gap-1.5">
           {!editing ? (
-            <button
-              onClick={startEdit}
-              className="text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 px-2.5 py-1 rounded-lg transition-colors"
-            >
-              Edit
-            </button>
+            <>
+              <button
+                onClick={handleReload}
+                disabled={reloading}
+                title="Reload config from disk (picks up manual file edits)"
+                className="text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-gray-300 px-2.5 py-1 rounded-lg transition-colors"
+              >
+                {reloading ? '…' : '↺ Reload'}
+              </button>
+              <button
+                onClick={startEdit}
+                className="text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 px-2.5 py-1 rounded-lg transition-colors"
+              >
+                Edit
+              </button>
+            </>
           ) : (
             <>
               <button

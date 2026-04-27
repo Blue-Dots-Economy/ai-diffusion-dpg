@@ -138,7 +138,6 @@ connectors:
 preprocessing:
   language_normalisation:
     model: ""                   # optional — Claude model ID override; falls back to agent.primary_model when empty
-    provider: llm_native        # normalisation provider (llm_native)
     default_language: ""        # required — primary language e.g. english, hindi
     supported_languages: []     # required — e.g. [english, hindi, hinglish, kannada]
     min_detection_tokens: 3     # inputs with fewer tokens skip LLM detection; returns default_language
@@ -148,7 +147,6 @@ preprocessing:
     model: ""                   # required — Claude model ID for NLU classification
     confidence_threshold: 0.5   # intents below this treated as unknown (0.0–1.0)
     user_state_confidence_threshold: 0.4   # below this, user-state classification stays sticky (previous state retained)
-    history_turns: 2            # number of prior conversation turns included in NLU context
     domain_instruction: ""      # system prompt context for NLU classifier
     intents:                    # required — complete flat list of ALL intent identifiers
       - greeting

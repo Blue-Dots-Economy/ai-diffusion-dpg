@@ -1326,6 +1326,8 @@ _OPEN_MAP_PLACEHOLDER_KEYS = frozenset({
     "intent_name", "doc_type_name", "value_one",
     # Trust Layer open maps
     "policy_pack_name", "guardrail_name",
+    # Action Gateway response.projection.fields — user-defined target → dot-path map
+    "example_target",
 })
 
 
