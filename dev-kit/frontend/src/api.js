@@ -52,9 +52,11 @@ export const api = {
   getResourcePresets: (slug) => request('GET', `/projects/${slug}/deploy/resource-presets`),
   applyResourcePreset: (slug, tier) => request('POST', `/projects/${slug}/deploy/resource-presets/${tier}`),
   validateKubeconfig: (slug, content) => request('POST', `/projects/${slug}/deploy/validate-kubeconfig`, { content }),
+  validateDeployConfig: (slug) => request('POST', `/projects/${slug}/deploy/validate`),
   getDeployPreview: (slug, options) => request('POST', `/projects/${slug}/deploy/preview`, options),
   executeDeploy: (slug, options) => request('POST', `/projects/${slug}/deploy/execute`, options),
   getDeployStatus: (slug) => request('GET', `/projects/${slug}/deploy/status`),
+  reloadConfigs: (slug) => request('POST', `/projects/${slug}/configs/reload`),
 
   // Ingest endpoints
   getDevKitConfig: () =>

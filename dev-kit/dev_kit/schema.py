@@ -146,6 +146,10 @@ class ConversationAgentConfig(BaseModel):
         default="I'm sorry, I didn't understand that. Could you please rephrase?",
         description="Shown when the NLU classifier returns unknown intent below confidence threshold.",
     )
+    unsupported_language_message: str = Field(
+        default="",
+        description="Shown when the user requests a language not in preprocessing.language_normalisation.supported_languages.",
+    )
     termination_message: str = Field(
         default="Thank you! Goodbye.",
         description="Shown when the user ends the session via termination_intent.",
@@ -165,6 +169,10 @@ class ConversationAgentConfig(BaseModel):
     returning_user_greeting: str = Field(
         default="",
         description="Personalised greeting for returning users whose profile already exists.",
+    )
+    user_state_model: "UserStateModelConfig" = Field(
+        default_factory=lambda: UserStateModelConfig(),
+        description="Conversational user mental-state model (GH-139). Set enabled=true for Conversational agents.",
     )
     session_end_eval: "SessionEndEvalConfig" = Field(
         default_factory=lambda: SessionEndEvalConfig(),
@@ -189,6 +197,37 @@ class SessionEndEvalConfig(BaseModel):
     )
 
 
+class UserStateEntryConfig(BaseModel):
+    """A single user mental-state entry in the conversational state model (GH-139)."""
+
+    id: str = Field(default="", description="Unique snake_case state identifier, e.g. fog, orientation")
+    signals: list[str] = Field(
+        default=[],
+        description="Natural-language phrases/cues that indicate the user is in this state",
+    )
+    guidance: str = Field(
+        default="",
+        description="Agent behavioural instruction injected into the system prompt for this state",
+    )
+
+
+class UserStateModelConfig(BaseModel):
+    """Conversational user mental-state model configuration (GH-139)."""
+
+    enabled: bool = Field(
+        default=False,
+        description="When false this block is a no-op; set true for Conversational agents",
+    )
+    default_state: str = Field(
+        default="",
+        description="Required when enabled=true; must match an id in the states list",
+    )
+    states: list[UserStateEntryConfig] = Field(
+        default=[],
+        description="Required when enabled=true; list of possible user mental states",
+    )
+
+
 class LanguageNormalisationConfig(BaseModel):
     model: str = Field(
         default="",
@@ -200,6 +239,10 @@ class LanguageNormalisationConfig(BaseModel):
         description="Default language used when none is detected from user input, e.g. hindi",
     )
     supported_languages: list[str] = Field(..., description="Languages the agent supports, e.g. [hindi, english, kannada, hinglish]")
+    min_detection_tokens: int = Field(
+        default=3,
+        description="Inputs with fewer tokens than this skip LLM detection and return default_language",
+    )
     transliteration: bool = Field(default=True, description="Normalise transliterated input to canonical script")
     code_switching: bool = Field(default=True, description="Handle mixed-language input within a single message")
 
@@ -207,6 +250,10 @@ class LanguageNormalisationConfig(BaseModel):
 class NLUProcessorConfig(BaseModel):
     model: str = Field(..., description="Claude model ID for NLU classification")
     confidence_threshold: float = Field(default=0.5, description="Float 0-1. Intents below this are treated as unknown")
+    user_state_confidence_threshold: float = Field(
+        default=0.4,
+        description="Below this confidence, user-state classification stays sticky (previous state retained). Conversational agents only.",
+    )
     history_turns: int = Field(default=2)
     domain_instruction: str = Field(
         default="",
@@ -217,6 +264,10 @@ class NLUProcessorConfig(BaseModel):
     sentiment_classes: list[str] = Field(
         default=["neutral", "positive", "distressed"],
         description="Sentiment classes to classify, e.g. [neutral, positive, distressed]",
+    )
+    signal_intents: dict[str, str] = Field(
+        default_factory=dict,
+        description="Optional map of intent → signal_type written to the ContextGraph Signal node, e.g. {pay_disappointment: objection}",
     )
 
 

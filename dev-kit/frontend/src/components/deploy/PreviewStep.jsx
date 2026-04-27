@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useCallback } from 'react'
 import { api } from '../../api'
 import StatusBanner from '../shared/StatusBanner'
 import { buildSecretsPayload } from '../../crypto.js'
@@ -30,8 +30,23 @@ export default function PreviewStep({ slug, data }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [expanded, setExpanded] = useState(null)
+  const [validation, setValidation] = useState(null)   // null | {valid, block_errors, invariant_errors}
+  const [validating, setValidating] = useState(true)
+
+  const runValidation = useCallback(async () => {
+    setValidating(true)
+    try {
+      const result = await api.validateDeployConfig(slug)
+      setValidation(result)
+    } catch {
+      setValidation(null)
+    } finally {
+      setValidating(false)
+    }
+  }, [slug])
 
   useEffect(() => {
+    runValidation()
     async function fetchPreview() {
       try {
         const options = {
@@ -74,6 +89,50 @@ export default function PreviewStep({ slug, data }) {
     setExpanded(prev => prev === key ? null : key)
   }
 
+  // Collect all validation errors across blocks + invariants
+  const blockIssues = validation
+    ? Object.entries(validation.block_errors || {}).flatMap(([block, errs]) =>
+        errs.map(e => `[${block}] ${e}`)
+      )
+    : []
+  const allIssues = [...blockIssues, ...(validation?.invariant_errors || [])]
+
+  function renderValidationPanel() {
+    if (validating) {
+      return (
+        <div className="mb-4 flex items-center gap-2 text-xs text-gray-400">
+          <span className="animate-pulse">◌</span> Checking config…
+        </div>
+      )
+    }
+    if (!validation) return null
+    if (allIssues.length === 0) {
+      return (
+        <div className="mb-4 flex items-center gap-2 text-xs text-green-400">
+          <span>✓</span> Config validation passed — no issues found.
+          <button onClick={runValidation} className="ml-2 text-gray-500 hover:text-gray-300 transition-colors">Re-check</button>
+        </div>
+      )
+    }
+    return (
+      <div className="mb-4 border border-red-800 rounded-xl bg-red-950/30 p-4">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-sm font-semibold text-red-400">
+            {allIssues.length} config issue{allIssues.length !== 1 ? 's' : ''} found — fix before deploying
+          </p>
+          <button onClick={runValidation} disabled={validating} className="text-xs text-gray-500 hover:text-gray-300 transition-colors">
+            Re-check
+          </button>
+        </div>
+        <ul className="space-y-1">
+          {allIssues.map((issue, i) => (
+            <li key={i} className="text-xs text-red-300 font-mono leading-relaxed">• {issue}</li>
+          ))}
+        </ul>
+      </div>
+    )
+  }
+
   if (isDocker) {
     // Docker: single compose file view
     const content = previewData['docker-compose.yml'] || Object.values(previewData)[0] || ''
@@ -81,6 +140,7 @@ export default function PreviewStep({ slug, data }) {
       <div>
         <h2 className="text-lg font-semibold mb-1">Deployment Preview</h2>
         <p className="text-sm text-gray-400 mb-4">Review the generated Docker Compose configuration.</p>
+        {renderValidationPanel()}
         <StatusBanner
           variant="info"
           title="14 services · Docker Compose"
@@ -135,7 +195,7 @@ export default function PreviewStep({ slug, data }) {
     <div>
       <h2 className="text-lg font-semibold mb-1">Deployment Preview</h2>
       <p className="text-sm text-gray-400 mb-4">Click a service to view its rendered Helm template.</p>
-
+      {renderValidationPanel()}
       <StatusBanner
         variant="info"
         title={`${serviceKeys.length} services · Kubernetes (Helm)`}

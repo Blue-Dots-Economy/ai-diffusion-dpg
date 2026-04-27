@@ -30,6 +30,7 @@ export default function ConfigEditor({ slug, block, onBack }) {
   const [saveMsg, setSaveMsg] = useState(null)
   const [validationModal, setValidationModal] = useState(null)  // null | string[]
   const [copied, setCopied] = useState(false)
+  const [reloading, setReloading] = useState(false)
   const [showGuide, setShowGuide] = useState(false)
   const [descriptions, setDescriptions] = useState({})
 
@@ -113,6 +114,27 @@ export default function ConfigEditor({ slug, block, onBack }) {
     }
   }
 
+  async function handleReload() {
+    setReloading(true)
+    setSaveMsg(null)
+    try {
+      await api.reloadConfigs(slug)
+      // Re-fetch the config content so the editor shows the current disk state
+      const { content, status: s } = await api.getConfig(slug, block)
+      setStatus(s)
+      if (viewRef.current) {
+        viewRef.current.dispatch({
+          changes: { from: 0, to: viewRef.current.state.doc.length, insert: content || '' },
+        })
+      }
+      setSaveMsg('Reloaded from disk.')
+    } catch (err) {
+      setSaveMsg(`Reload error: ${err.message}`)
+    } finally {
+      setReloading(false)
+    }
+  }
+
   async function handleCopy() {
     const content = viewRef.current?.state.doc.toString() || ''
     try {
@@ -158,6 +180,16 @@ export default function ConfigEditor({ slug, block, onBack }) {
           >
             {copied ? '✓ Copied' : 'Copy'}
           </button>
+          {!editing && (
+            <button
+              onClick={handleReload}
+              disabled={reloading}
+              title="Reload config from disk (useful after editing files directly)"
+              className="text-xs bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-400 hover:text-gray-200 px-2.5 py-1.5 rounded-lg transition-colors"
+            >
+              {reloading ? '…' : '↺ Reload'}
+            </button>
+          )}
           {!editing ? (
             <button
               onClick={startEdit}
