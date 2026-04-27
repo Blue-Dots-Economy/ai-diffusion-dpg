@@ -23,6 +23,7 @@ const INITIAL_STATE = {
   submitting: false,
   submitError: null,
   servicesReady: false,
+  historyLoading: true,
 }
 
 function _rowId() {
@@ -57,6 +58,8 @@ function reducer(state, action) {
       }
     case 'SET_SERVICES_READY':
       return { ...state, servicesReady: action.value }
+    case 'SET_HISTORY_LOADING':
+      return { ...state, historyLoading: action.value }
     case 'ADD_ROW':
       return { ...state, rows: [...state.rows, action.row] }
     case 'REMOVE_ROW':
@@ -197,6 +200,8 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
         }
       }).catch(() => {
         // Non-fatal — history fetch fails if services aren't up yet.
+      }).finally(() => {
+        dispatch({ type: 'SET_HISTORY_LOADING', value: false })
       })
 
       // Poll deploy status until reach_layer is healthy
@@ -207,9 +212,11 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
             s => s.name === 'reach_layer' || s.name === 'reach_layer_web'
           )
           const keSvc = (status.services || []).find(s => s.name === 'knowledge_engine')
+          const agentCoreSvc = (status.services || []).find(s => s.name === 'agent_core')
           if (
             (reachSvc && reachSvc.status === 'healthy') &&
-            (keSvc && keSvc.status === 'healthy')
+            (keSvc && keSvc.status === 'healthy') &&
+            (agentCoreSvc && agentCoreSvc.status === 'healthy')
           ) {
             dispatch({ type: 'SET_SERVICES_READY', value: true })
             clearInterval(svcPollId)
@@ -409,7 +416,15 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
       {!state.servicesReady && (
         <div className="mb-4 px-4 py-3 bg-yellow-900/30 border border-yellow-700 rounded-xl text-sm text-yellow-300 flex items-center gap-2">
           <span className="animate-spin text-xs">⏳</span>
-          Waiting for services to become healthy (Knowledge Engine + Reach Layer)…
+          Waiting for services to become healthy (Agent Core + Knowledge Engine + Reach Layer)…
+        </div>
+      )}
+
+      {/* Ingestion history loader */}
+      {state.historyLoading && (
+        <div className="flex items-center gap-2 text-xs text-gray-500 mb-3">
+          <span className="animate-spin">⟳</span>
+          Loading ingestion history…
         </div>
       )}
 

@@ -1657,7 +1657,16 @@ def _docker_status(c_state: str, c_status: str, svc_name: str) -> str:
         return "running"
     if c_state == "exited":
         return "failed"
-    if c_state in ("created", "restarting"):
+    if c_state == "restarting":
+        # Crash-loop detection: Docker reports restart count in the Status
+        # field as "Restarting (N) X seconds ago". After 3+ restarts the
+        # container is unlikely to self-heal — surface it as failed so the
+        # UI shows the Restart button rather than spinning forever.
+        m = re.search(r"Restarting \((\d+)\)", c_status)
+        if m and int(m.group(1)) >= 3:
+            return "failed"
+        return "starting"
+    if c_state == "created":
         return "starting"
     return c_state or "starting"
 
