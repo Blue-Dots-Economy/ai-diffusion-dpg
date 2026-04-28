@@ -3,6 +3,7 @@ import React, { useState, useCallback, useEffect } from 'react'
 import { api } from '../../api'
 import StepIndicator from './StepIndicator'
 import DpgValuesStep from './DpgValuesStep'
+import ConfigReviewStep from './ConfigReviewStep'
 import DependenciesStep from './DependenciesStep'
 import ResourcePresetStep from './ResourcePresetStep'
 import MandatoryInputsStep from './MandatoryInputsStep'
@@ -11,7 +12,7 @@ import PreviewStep from './PreviewStep'
 import DeployStatusStep from './DeployStatusStep'
 import IngestDocumentsStep from './IngestDocumentsStep'
 
-const ALL_STEPS_BEFORE_INGEST = [1, 2, 3, 4, 5, 6, 7]
+const ALL_STEPS_BEFORE_INGEST = [1, 2, 3, 4, 5, 6, 7, 8]
 
 export default function DeployWizard({ slug, onBack }) {
   const [step, setStep] = useState(1)
@@ -49,6 +50,12 @@ export default function DeployWizard({ slug, onBack }) {
       .catch(() => setProject({}))
   }, [slug])
 
+  useEffect(() => {
+    function handleGoToStep(e) { setStep(e.detail) }
+    window.addEventListener('deploy-wizard-go-to-step', handleGoToStep)
+    return () => window.removeEventListener('deploy-wizard-go-to-step', handleGoToStep)
+  }, [])
+
   // On mount, probe deploy status. If the stack is already up (e.g. a
   // teammate opens the wizard after someone else deployed), unlock every
   // step and jump to Ingest — they shouldn't have to re-enter API keys
@@ -60,7 +67,7 @@ export default function DeployWizard({ slug, onBack }) {
         if (cancelled) return
         if (res?.overall === 'complete' && Array.isArray(res.services) && res.services.length > 0) {
           setCompleted(ALL_STEPS_BEFORE_INGEST)
-          setStep(8)
+          setStep(9)
           setDeployedSkip(true)
           if (res.target) {
             setData(prev => ({ ...prev, target: res.target }))
@@ -89,13 +96,13 @@ export default function DeployWizard({ slug, onBack }) {
     // re-prompt for API keys the current user may not have.
     const alreadyCompleted = completed.includes(step)
 
-    // Step 3: Resource preset must be selected
-    if (!alreadyCompleted && step === 3 && !data.preset) {
+    // Step 4: Resource preset must be selected
+    if (!alreadyCompleted && step === 4 && !data.preset) {
       setValidationError('Please select a resource preset before proceeding.')
       return
     }
-    // Step 4: Required secrets must be filled
-    if (!alreadyCompleted && step === 4) {
+    // Step 5: Required secrets must be filled
+    if (!alreadyCompleted && step === 5) {
       if (!data.secrets?.anthropic_api_key?.trim()) {
         setValidationError('Anthropic API Key is required.')
         return
@@ -108,19 +115,19 @@ export default function DeployWizard({ slug, onBack }) {
         }
       }
     }
-    // Step 5: Deploy target must be selected
-    if (!alreadyCompleted && step === 5 && !data.target) {
+    // Step 6: Deploy target must be selected
+    if (!alreadyCompleted && step === 6 && !data.target) {
       setValidationError('Please select a deploy target.')
       return
     }
-    // Step 6: Block deploy if config validation has errors
-    if (!alreadyCompleted && step === 6) {
+    // Step 7: Block deploy if config validation has errors
+    if (!alreadyCompleted && step === 7) {
       if (previewValidation === null) {
         setValidationError('Config validation is still running — please wait.')
         return
       }
       if (!previewValidation.valid) {
-        setValidationError('Fix the config errors shown above before deploying.')
+        setValidationError('Fix the config errors shown in Config Review before deploying.')
         return
       }
     }
@@ -128,15 +135,15 @@ export default function DeployWizard({ slug, onBack }) {
     if (!completed.includes(step)) {
       setCompleted(prev => [...prev, step])
     }
-    // Mark deploy intent only when advancing from step 6 (the Deploy button).
-    // Any other navigation to step 7 must not auto-trigger a deploy.
-    setDeployIntent(step === 6)
-    setStep(prev => Math.min(prev + 1, 8))
+    // Mark deploy intent only when advancing from step 7 (the Deploy button).
+    // Any other navigation to step 8 must not auto-trigger a deploy.
+    setDeployIntent(step === 7)
+    setStep(prev => Math.min(prev + 1, 9))
   }
 
-  // When stack is destroyed, remove step 7 from completed so step 8 becomes
+  // When stack is destroyed, remove step 8 from completed so step 9 becomes
   // unclickable — there's nothing to ingest into a destroyed stack.
-  const effectiveCompleted = stackDestroyed ? completed.filter(s => s !== 7) : completed
+  const effectiveCompleted = stackDestroyed ? completed.filter(s => s !== 8) : completed
 
   // Allow jumping to any step that's already been completed (or the next
   // pending one). Prevents users from skipping ahead through unfinished
@@ -157,24 +164,25 @@ export default function DeployWizard({ slug, onBack }) {
   const stepProps = { slug, data, updateData }
   const steps = {
     1: <DpgValuesStep {...stepProps} />,
-    2: <DependenciesStep {...stepProps} />,
-    3: <ResourcePresetStep {...stepProps} />,
-    4: <MandatoryInputsStep {...stepProps} project={project} />,
-    5: <DeployTargetStep {...stepProps} />,
-    6: <PreviewStep {...stepProps} onValidationResult={setPreviewValidation} />,
-    7: <DeployStatusStep {...stepProps}
+    2: <ConfigReviewStep slug={slug} onValidationResult={setPreviewValidation} />,
+    3: <DependenciesStep {...stepProps} />,
+    4: <ResourcePresetStep {...stepProps} />,
+    5: <MandatoryInputsStep {...stepProps} project={project} />,
+    6: <DeployTargetStep {...stepProps} />,
+    7: <PreviewStep {...stepProps} onValidationResult={setPreviewValidation} />,
+    8: <DeployStatusStep {...stepProps}
       destroyed={stackDestroyed}
       onDestroyedChange={setStackDestroyed}
       autoDeployOnMount={deployIntent}
-      onBack={() => { setDeployIntent(false); setStep(6) }}
+      onBack={() => { setDeployIntent(false); setStep(7) }}
       onSuccess={() => {
-        if (!completed.includes(7)) setCompleted(prev => [...prev, 7])
-        setStep(8)
+        if (!completed.includes(8)) setCompleted(prev => [...prev, 8])
+        setStep(9)
       }} />,
-    8: <IngestDocumentsStep slug={slug} project={project} onNext={onBack} onBack={() => setStep(7)} />,
+    9: <IngestDocumentsStep slug={slug} project={project} onNext={onBack} onBack={() => setStep(8)} />,
   }
 
-  const isLastStep = step === 8
+  const isLastStep = step === 9
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100 flex flex-col">
@@ -190,7 +198,7 @@ export default function DeployWizard({ slug, onBack }) {
 
       <StepIndicator currentStep={step} completedSteps={effectiveCompleted} onStepClick={handleStepClick} />
 
-      {deployedSkip && step === 8 && (
+      {deployedSkip && step === 9 && (
         <div className="px-6 pt-4 max-w-5xl mx-auto w-full">
           <p className="text-xs text-gray-400">
             This stack is already deployed — earlier steps are unlocked for review.
@@ -205,7 +213,7 @@ export default function DeployWizard({ slug, onBack }) {
       </div>
 
       {/* Footer nav */}
-      {step !== 7 && !isLastStep && (
+      {step !== 8 && !isLastStep && (
         <div className="px-6 py-4 border-t border-gray-800">
           {validationError && (
             <p className="text-sm text-red-400 mb-3 text-center">{validationError}</p>
@@ -217,11 +225,11 @@ export default function DeployWizard({ slug, onBack }) {
             >
               ← {step === 1 ? 'Dashboard' : 'Back'}
             </button>
-            {step === 6 ? (
+            {step === 7 ? (
               <button
                 onClick={handleNext}
                 disabled={previewValidation === null || !previewValidation.valid}
-                title={!previewValidation ? 'Waiting for validation…' : !previewValidation.valid ? 'Fix config errors before deploying' : ''}
+                title={!previewValidation ? 'Waiting for validation…' : !previewValidation.valid ? 'Fix config errors in Config Review before deploying' : ''}
                 className="text-sm bg-green-700 hover:bg-green-600 disabled:opacity-40 disabled:cursor-not-allowed text-white px-5 py-2 rounded-xl font-medium transition-colors"
               >
                 Deploy

@@ -833,14 +833,28 @@ def pre_deploy_validate(slug: str) -> dict[str, Any]:
         "reach_layer": ReachLayerConfig,
     }
 
+    import copy as _copy
     block_errors: dict[str, list[str]] = {}
     merged: dict[str, dict] = {}
+
+    selected_channels = _get_engine(slug).accumulator.get_reach_channel_selection_or_default()
 
     # 1. Full Pydantic validation per block using merged (dpg + domain) config.
     for block, model_cls in _MODELS.items():
         try:
             data = _load_and_merge(slug, block)
-            merged[block] = data
+            merged[block] = data  # store original for display in merged_configs
+            if block == "reach_layer":
+                # Deep-copy before patching so merged[block] retains the full
+                # config (shown to the user) while validation sees the patched copy.
+                # Null out channels that won't be deployed so Pydantic skips
+                # their required fields (e.g. voice raya.stt_language).
+                # ChannelsConfig already declares each channel as Optional.
+                data = _copy.deepcopy(data)
+                channels = (data.get("reach_layer") or {}).get("channels") or {}
+                for ch in ("voice", "cli", "web"):
+                    if ch not in selected_channels and ch in channels:
+                        channels[ch] = None
             model_cls.model_validate(data)
             block_errors[block] = []
         except _VE as exc:
@@ -1057,10 +1071,26 @@ def pre_deploy_validate(slug: str) -> dict[str, Any]:
         )
 
     all_valid = all(len(errs) == 0 for errs in block_errors.values()) and not invariant_errors
+
+    # Build display-friendly merged configs: for reach_layer, mark unselected
+    # channels as enabled: false so the viewer reflects what will actually deploy.
+    display_merged = {}
+    for block, data in merged.items():
+        if not data:
+            continue
+        if block == "reach_layer":
+            data = _copy.deepcopy(data)
+            channels = (data.get("reach_layer") or {}).get("channels") or {}
+            for ch in ("voice", "cli", "web"):
+                if ch not in selected_channels and ch in channels and isinstance(channels[ch], dict):
+                    channels[ch]["enabled"] = False
+        display_merged[block] = yaml.dump(data, default_flow_style=False, sort_keys=False)
+
     return {
         "valid": all_valid,
         "block_errors": block_errors,
         "invariant_errors": invariant_errors,
+        "merged_configs": display_merged,
     }
 
 

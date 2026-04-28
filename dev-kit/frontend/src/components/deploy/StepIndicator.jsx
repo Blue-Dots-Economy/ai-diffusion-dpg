@@ -3,13 +3,14 @@ import React from 'react'
 
 const STEPS = [
   { key: 1, label: 'DPG Values' },
-  { key: 2, label: 'Dependencies' },
-  { key: 3, label: 'Resources' },
-  { key: 4, label: 'Inputs' },
-  { key: 5, label: 'Target' },
-  { key: 6, label: 'Preview' },
-  { key: 7, label: 'Status' },
-  { key: 8, label: 'Ingest' },
+  { key: 2, label: 'Config Review' },
+  { key: 3, label: 'Dependencies' },
+  { key: 4, label: 'Resources' },
+  { key: 5, label: 'Inputs' },
+  { key: 6, label: 'Target' },
+  { key: 7, label: 'Preview' },
+  { key: 8, label: 'Status' },
+  { key: 9, label: 'Ingest' },
 ]
 
 export default function StepIndicator({ currentStep, completedSteps, onStepClick }) {
