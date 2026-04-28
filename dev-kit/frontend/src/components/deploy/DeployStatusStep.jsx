@@ -211,6 +211,8 @@ export default function DeployStatusStep({ slug, data, onSuccess, onBack, destro
   const serviceMap = {}
   status.services.forEach(s => { serviceMap[s.name] = s })
 
+  const failedServices = status.services.filter(s => s.status === 'failed')
+
   const canDestroy = data.target === 'docker' &&
     (status.overall === 'complete' || status.overall === 'failed')
 
@@ -257,6 +259,22 @@ export default function DeployStatusStep({ slug, data, onSuccess, onBack, destro
                 </button>
               )}
             </div>
+          }
+        />
+      )}
+
+      {status.overall === 'failed' && !error && failedServices.length > 0 && (
+        <StatusBanner
+          variant="error"
+          title={`${failedServices.length} service${failedServices.length > 1 ? 's' : ''} failed to start`}
+          subtitle={`${failedServices.map(s => SERVICE_LABELS[s.name] || s.name).join(', ')} — check the error details below, fix the issue, and redeploy.`}
+          action={
+            <button
+              onClick={handleRedeploy}
+              className="text-xs bg-red-800 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg transition-colors"
+            >
+              Redeploy
+            </button>
           }
         />
       )}
@@ -366,7 +384,7 @@ export default function DeployStatusStep({ slug, data, onSuccess, onBack, destro
                 const svc = serviceMap[svcName] || { status: 'queued' }
                 const isRestarting = restarting.has(svcName)
                 return (
-                  <div key={svcName} className="px-4 py-2.5">
+                  <div key={svcName} className={`px-4 py-2.5${svc.status === 'failed' ? ' border-l-2 border-red-500 bg-red-950/20' : ''}`}>
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <ServiceIcon status={svc.status || 'queued'} />

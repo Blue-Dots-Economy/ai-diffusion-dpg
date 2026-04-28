@@ -1982,6 +1982,28 @@ _COMPOSE_TO_STATE = {
 }
 
 
+async def _get_restart_count(container_name: str) -> int:
+    """Return the restart count for a container via docker inspect.
+
+    Args:
+        container_name: Container name or ID.
+
+    Returns:
+        Number of times the container has been restarted, or 0 on error.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "inspect", container_name,
+            "--format", "{{.RestartCount}}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        return int(stdout.decode().strip())
+    except Exception:
+        return 0
+
+
 def _docker_status(c_state: str, c_status: str, svc_name: str) -> str:
     """Map raw docker compose State/Status fields to a canonical service status.
 
@@ -1995,20 +2017,17 @@ def _docker_status(c_state: str, c_status: str, svc_name: str) -> str:
         raw c_state value for unrecognised states.
     """
     if c_state == "running":
+        if "unhealthy" in c_status.lower():
+            return "failed"
         if "healthy" in c_status.lower() or svc_name in _NO_HEALTHCHECK_SERVICES:
             return "healthy"
         return "running"
-    if c_state == "exited":
+    if c_state in ("exited", "dead"):
         return "failed"
     if c_state == "restarting":
-        # Crash-loop detection: Docker reports restart count in the Status
-        # field as "Restarting (N) X seconds ago". After 3+ restarts the
-        # container is unlikely to self-heal — surface it as failed so the
-        # UI shows the Restart button rather than spinning forever.
-        m = re.search(r"Restarting \((\d+)\)", c_status)
-        if m and int(m.group(1)) >= 3:
-            return "failed"
-        return "starting"
+        # Any restart means the container crashed — surface immediately so
+        # the user sees the error log and can act rather than waiting forever.
+        return "failed"
     if c_state == "created":
         return "starting"
     return c_state or "starting"
@@ -2083,6 +2102,14 @@ async def get_deploy_status(slug: str) -> dict:
                 c_state = c.get("State", "")
                 c_status = c.get("Status", "")
                 status = _docker_status(c_state, c_status, svc_name)
+                # A container can be crash-looping while briefly showing State:
+                # running between restarts (e.g. startup error before health check
+                # resolves). docker compose ps doesn't expose restart count, so
+                # inspect the container directly for any health-checked service.
+                if (status == "running"
+                        and svc_name not in _NO_HEALTHCHECK_SERVICES
+                        and await _get_restart_count(c.get("Name", compose_name)) > 0):
+                    status = "failed"
                 error_text = ""
                 if status == "failed":
                     # Fetch last log lines so the UI can show a readable reason.
@@ -2094,10 +2121,23 @@ async def get_deploy_status(slug: str) -> dict:
                 if svc_name in state.services:
                     state.set_service(svc_name, status, error=error_text)
             statuses = {s["status"] for s in state.services.values()}
-            if state.overall != "deploying":
-                state.overall = "failed" if "failed" in statuses else "complete"
+            if "failed" in statuses:
+                state.overall = "failed"
             elif all(s in ("healthy", "running") for s in statuses):
-                state.overall = "complete"
+                # Only mark complete when every health-checked service is healthy.
+                # A service stuck in "running" may be about to crash — keep polling
+                # until it either goes healthy or the restart count check catches it.
+                hc_all_healthy = all(
+                    state.services[svc]["status"] == "healthy"
+                    for svc in state.services
+                    if svc not in _NO_HEALTHCHECK_SERVICES
+                )
+                if hc_all_healthy:
+                    state.overall = "complete"
+                elif state.overall != "deploying":
+                    # compose up finished but health checks haven't resolved yet —
+                    # revert to deploying so the frontend keeps polling.
+                    state.overall = "deploying"
 
     elif state.overall in ("complete", "failed"):
         if state.target == "kubernetes" and state.kubeconfig_path:
