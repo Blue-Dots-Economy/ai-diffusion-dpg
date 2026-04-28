@@ -23,8 +23,13 @@ agent:
 
 channels:
   voice:
-    # GH-194: hard cap on voice response length (token cap below + prompt rule).
-    max_tokens: 200
+    # Voice response length is enforced via the system prompt rule below
+    # ("Reply in at most 2 short sentences"), not a hard token cap. A hard
+    # max_tokens cuts Hindi replies mid-word — Devanagari tokenises ~1.5
+    # chars/token, so 200 tokens is ~30–40 words, which a natural 2-sentence
+    # reply plus tool context routinely overruns. Falling back to the
+    # framework default (claude_wrapper._DEFAULT_MAX_TOKENS = 4096) means
+    # max_tokens never trips on healthy turns; the prompt is the only brake.
     # GH-242: filler utterance config moved to reach_layer.yaml — the voice
     # service is the actual reader of these keys, and declaring them only
     # under agent_core.channels.voice meant they never reached the voice

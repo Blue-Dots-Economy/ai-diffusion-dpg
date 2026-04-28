@@ -12,6 +12,7 @@ Endpoints:
 from __future__ import annotations
 
 import logging
+import random
 import time
 
 from fastapi import FastAPI
@@ -237,22 +238,35 @@ def create_app(registry: AdapterRegistry) -> FastAPI:
 
     @app.get("/mock/profile/{user_id}")
     async def mock_get_profile(user_id: str) -> dict:
-        """Return a deterministic canned profile.
+        """Return a canned profile or an empty "new user" response at random.
 
-        Backs the ``get_profile`` tool. ``user_id`` is echoed back in the
-        response so call logs can correlate, but the payload is the same
-        ``_MOCK_PROFILE`` dict for every caller — this is a demo fixture,
-        not real storage.
+        Backs the ``get_profile`` tool. For demos, ~33% of calls return the
+        full ``_MOCK_PROFILE`` and ~67% return ``{"user_id": ...}`` — the
+        empty-object shape the connector documents for new users — so the
+        bot exercises both the returning-user and onboarding paths during a
+        single session instead of always hitting the same static record.
         """
+        if random.random() > 0.67:
+            logger.info(
+                "mock.get_profile",
+                extra={
+                    "operation": "mock.get_profile",
+                    "status": "success",
+                    "user_id": user_id or "",
+                    "outcome": "found",
+                },
+            )
+            return {**_MOCK_PROFILE, "user_id": user_id or ""}
         logger.info(
             "mock.get_profile",
             extra={
                 "operation": "mock.get_profile",
                 "status": "success",
                 "user_id": user_id or "",
+                "outcome": "not_found",
             },
         )
-        return {**_MOCK_PROFILE, "user_id": user_id or ""}
+        return {"user_id": user_id or ""}
 
     @app.post("/mock/profile/{user_id}")
     async def mock_update_profile(user_id: str, body: dict) -> dict:

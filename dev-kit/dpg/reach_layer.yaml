@@ -91,9 +91,9 @@ reach_layer:
         # telephony-realistic values; override per-domain only with measured
         # evidence that a specific caller-population needs something else.
         stop_secs: 0.4        # silence window before closing the utterance
-        min_volume: 0.7       # reject soft background noise / distant voices
-        confidence: 0.75      # require high-confidence speech, not static
-        start_secs: 0.25      # require ~250 ms of continuous speech to trigger
+        min_volume: 0.4       # reject soft background noise / distant voices
+        confidence: 0.6       # require high-confidence speech, not static
+        start_secs: 0.2       # require ~250 ms of continuous speech to trigger
         smoothing_factor: 0.1
       raya:
         api_key: ${RAYA_API_KEY}
