@@ -1067,9 +1067,9 @@ class WebChannelConfig(BaseModel):
 class RayaSTTTTSConfig(BaseModel):
     """Raya STT/TTS configuration for the voice channel."""
 
-    stt_language: str = Field(..., description="BCP-47 language code for speech-to-text, e.g. 'hi', 'en'")
-    tts_language: str = Field(..., description="BCP-47 language code for text-to-speech")
-    voice_id: str = Field(..., description="Voice ID for the TTS provider")
+    stt_language: str = Field(default="", description="BCP-47 language code for speech-to-text, e.g. 'hi', 'en'")
+    tts_language: str = Field(default="", description="BCP-47 language code for text-to-speech")
+    voice_id: str = Field(default="", description="Voice ID for the TTS provider")
 
 
 class VoiceAgentCoreConfig(BaseModel):
