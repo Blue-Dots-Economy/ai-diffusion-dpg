@@ -1019,7 +1019,7 @@ class McpToolDef(BaseModel):
     category: Literal["read", "write", "identity"] = Field(..., description="Tool category")
     description: str = Field(..., description="What this tool does — shown to LLM")
     server_url: str = Field(..., description="Base URL of the MCP server")
-    tool_name: str = Field(..., description="Tool name as returned by tools/list on the MCP server")
+    tool_name: str = Field(default="", description="Tool name as returned by tools/list on the MCP server; auto-discovered at runtime if empty")
     input_schema: dict[str, Any] = Field(
         default_factory=dict,
         description="JSON Schema for the tool input, as returned by MCP tools/list"
@@ -1094,9 +1094,9 @@ class WebChannelConfig(BaseModel):
 class RayaSTTTTSConfig(BaseModel):
     """Raya STT/TTS configuration for the voice channel."""
 
-    stt_language: str = Field(..., description="BCP-47 language code for speech-to-text, e.g. 'hi', 'en'")
-    tts_language: str = Field(..., description="BCP-47 language code for text-to-speech")
-    voice_id: str = Field(..., description="Voice ID for the TTS provider")
+    stt_language: str = Field(default="", description="BCP-47 language code for speech-to-text, e.g. 'hi', 'en'")
+    tts_language: str = Field(default="", description="BCP-47 language code for text-to-speech")
+    voice_id: str = Field(default="", description="Voice ID for the TTS provider")
 
 
 class VoiceAgentCoreConfig(BaseModel):
