@@ -55,7 +55,7 @@ class DeployState:
             {"name": name, **data}
             for name, data in self.services.items()
         ]
-        return {"services": svc_list, "overall": self.overall}
+        return {"services": svc_list, "overall": self.overall, "target": self.target}
 
 
 # Active deployments keyed by project slug.

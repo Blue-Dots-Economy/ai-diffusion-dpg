@@ -18,6 +18,8 @@ export default function DeployWizard({ slug, onBack }) {
   const [completed, setCompleted] = useState([])
   const [project, setProject] = useState(null)
   const [deployedSkip, setDeployedSkip] = useState(false)
+  const [stackDestroyed, setStackDestroyed] = useState(false)
+  const [deployIntent, setDeployIntent] = useState(false)
   const [data, setData] = useState({
     dpgValues: {},
     dependencies: {},
@@ -60,6 +62,9 @@ export default function DeployWizard({ slug, onBack }) {
           setCompleted(ALL_STEPS_BEFORE_INGEST)
           setStep(8)
           setDeployedSkip(true)
+          if (res.target) {
+            setData(prev => ({ ...prev, target: res.target }))
+          }
         }
       })
       .catch(() => { /* idle — leave wizard at step 1 */ })
@@ -123,8 +128,15 @@ export default function DeployWizard({ slug, onBack }) {
     if (!completed.includes(step)) {
       setCompleted(prev => [...prev, step])
     }
+    // Mark deploy intent only when advancing from step 6 (the Deploy button).
+    // Any other navigation to step 7 must not auto-trigger a deploy.
+    setDeployIntent(step === 6)
     setStep(prev => Math.min(prev + 1, 8))
   }
+
+  // When stack is destroyed, remove step 7 from completed so step 8 becomes
+  // unclickable — there's nothing to ingest into a destroyed stack.
+  const effectiveCompleted = stackDestroyed ? completed.filter(s => s !== 7) : completed
 
   // Allow jumping to any step that's already been completed (or the next
   // pending one). Prevents users from skipping ahead through unfinished
@@ -132,7 +144,8 @@ export default function DeployWizard({ slug, onBack }) {
   function handleStepClick(target) {
     setValidationError('')
     if (target === step) return
-    if (target <= step || completed.includes(target) || completed.includes(target - 1)) {
+    if (target <= step || effectiveCompleted.includes(target) || effectiveCompleted.includes(target - 1)) {
+      setDeployIntent(false) // direct navigation never triggers auto-deploy
       setStep(target)
     }
   }
@@ -149,10 +162,15 @@ export default function DeployWizard({ slug, onBack }) {
     4: <MandatoryInputsStep {...stepProps} project={project} />,
     5: <DeployTargetStep {...stepProps} />,
     6: <PreviewStep {...stepProps} onValidationResult={setPreviewValidation} />,
-    7: <DeployStatusStep {...stepProps} onSuccess={() => {
-      if (!completed.includes(7)) setCompleted(prev => [...prev, 7])
-      setStep(8)
-    }} />,
+    7: <DeployStatusStep {...stepProps}
+      destroyed={stackDestroyed}
+      onDestroyedChange={setStackDestroyed}
+      autoDeployOnMount={deployIntent}
+      onBack={() => { setDeployIntent(false); setStep(6) }}
+      onSuccess={() => {
+        if (!completed.includes(7)) setCompleted(prev => [...prev, 7])
+        setStep(8)
+      }} />,
     8: <IngestDocumentsStep slug={slug} project={project} onNext={onBack} onBack={() => setStep(7)} />,
   }
 
@@ -170,7 +188,7 @@ export default function DeployWizard({ slug, onBack }) {
         </div>
       </div>
 
-      <StepIndicator currentStep={step} completedSteps={completed} onStepClick={handleStepClick} />
+      <StepIndicator currentStep={step} completedSteps={effectiveCompleted} onStepClick={handleStepClick} />
 
       {deployedSkip && step === 8 && (
         <div className="px-6 pt-4 max-w-5xl mx-auto w-full">

@@ -2163,6 +2163,103 @@ async def restart_deploy_service(slug: str, service: str) -> dict:
     return {"ok": True}
 
 
+@app.post("/api/projects/{slug}/destroy")
+async def destroy_deploy(slug: str, body: dict) -> dict:
+    """Tear down a running Docker Compose deployment for a project.
+
+    Runs ``docker compose down --remove-orphans`` against the project, with an
+    optional ``--volumes`` flag to also wipe named volumes (ChromaDB, Memgraph,
+    kb_data). Returns immediately with ``status: started`` and runs teardown as
+    a background task. Poll ``/deploy/status`` to track progress — overall
+    transitions to ``destroying`` during teardown and the state is cleared
+    (returning ``idle``) on success.
+
+    Args:
+        slug: Project slug identifying the deployment to destroy.
+        body: Dict with optional ``remove_volumes`` (bool, default False).
+
+    Returns:
+        ``{"status": "started"}``
+
+    Raises:
+        HTTPException 400: Target is not ``docker`` or a deploy is in progress.
+    """
+    from dev_kit.agent.deployer.state import get_state
+
+    remove_volumes: bool = bool(body.get("remove_volumes", False))
+    project_name = f"dpg-{slug}"
+
+    state = get_state(slug)
+    if state and state.target != "docker":
+        raise HTTPException(400, "Destroy is only supported for Docker deployments")
+    if state and state.overall == "deploying":
+        raise HTTPException(400, "Cannot destroy while a deployment is in progress")
+
+    compose_path = state.compose_file_path if state else None
+    if state:
+        state.overall = "destroying"
+
+    asyncio.create_task(_run_docker_destroy(slug, compose_path, project_name, remove_volumes))
+    return {"status": "started"}
+
+
+async def _run_docker_destroy(
+    slug: str,
+    compose_file_path: Optional[str],
+    project_name: str,
+    remove_volumes: bool,
+) -> None:
+    """Background task: run docker compose down and clean up state."""
+    from dev_kit.agent.deployer.compose import run_compose_down
+    from dev_kit.agent.deployer.state import get_state, clear_state
+
+    try:
+        result = await run_compose_down(
+            project_name=project_name,
+            compose_file_path=compose_file_path,
+            remove_volumes=remove_volumes,
+        )
+        if result["success"]:
+            if compose_file_path:
+                try:
+                    Path(compose_file_path).unlink(missing_ok=True)
+                except Exception as exc:
+                    logger.warning(
+                        "devkit.destroy_compose_cleanup_failed",
+                        extra={"operation": "_run_docker_destroy", "error": str(exc)},
+                    )
+            clear_state(slug)
+            logger.info(
+                "devkit.destroy_complete",
+                extra={
+                    "operation": "_run_docker_destroy",
+                    "status": "success",
+                    "slug": slug,
+                    "remove_volumes": remove_volumes,
+                },
+            )
+        else:
+            state = get_state(slug)
+            if state:
+                state.overall = "failed"
+            logger.error(
+                "devkit.destroy_failed",
+                extra={
+                    "operation": "_run_docker_destroy",
+                    "status": "failure",
+                    "error": result["stderr"][:500],
+                },
+            )
+    except Exception as exc:
+        state = get_state(slug)
+        if state:
+            state.overall = "failed"
+        logger.error(
+            "devkit.destroy_exception",
+            extra={"operation": "_run_docker_destroy", "status": "failure", "error": str(exc)},
+        )
+
+
 # ---------------------------------------------------------------------------
 # Ingest proxy endpoints (dev-kit → Reach Layer → KE)
 # ---------------------------------------------------------------------------

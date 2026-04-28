@@ -273,6 +273,63 @@ async def run_compose_up(
         return {"success": False, "stdout": "", "stderr": str(exc)}
 
 
+async def run_compose_down(
+    project_name: str,
+    compose_file_path: Optional[str] = None,
+    remove_volumes: bool = False,
+) -> Dict:
+    """Stop and remove all containers in a Docker Compose project.
+
+    Args:
+        project_name: Docker Compose project name (e.g. ``dpg-<slug>``).
+        compose_file_path: Optional absolute path to the compose file. When
+            provided, used with ``-f`` for precise service resolution. When
+            None, falls back to project-name-only targeting via ``-p`` (used
+            when dev-kit restarts and state.compose_file_path is lost).
+        remove_volumes: When True, appends ``--volumes`` to also remove named
+            volumes (ChromaDB, Memgraph, kb_data). Defaults to False.
+
+    Returns:
+        Dict with keys:
+            success (bool): True if docker compose exited with code 0.
+            stdout (str): Standard output.
+            stderr (str): Standard error.
+    """
+    cmd = ["docker", "compose"]
+    if compose_file_path:
+        cmd += ["-f", compose_file_path]
+    cmd += ["-p", project_name, "down", "--remove-orphans"]
+    if remove_volumes:
+        cmd.append("--volumes")
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        success = proc.returncode == 0
+        result = {"success": success, "stdout": stdout.decode(), "stderr": stderr.decode()}
+        logger.info(
+            "run_compose_down",
+            extra={
+                "operation": "run_compose_down",
+                "status": "success" if success else "failure",
+                "project_name": project_name,
+                "compose_file": compose_file_path,
+                "remove_volumes": remove_volumes,
+            },
+        )
+        return result
+    except Exception as exc:
+        logger.error(
+            "run_compose_down_exception",
+            extra={"operation": "run_compose_down", "status": "failure", "error": str(exc)},
+        )
+        return {"success": False, "stdout": "", "stderr": str(exc)}
+
+
 async def restart_service(
     compose_file_path: str,
     service_name: str,

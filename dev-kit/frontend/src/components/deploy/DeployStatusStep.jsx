@@ -35,12 +35,15 @@ function ServiceIcon({ status }) {
   return <span className={`text-sm font-mono ${s.cls}`}>{s.icon}</span>
 }
 
-export default function DeployStatusStep({ slug, data, onSuccess }) {
+export default function DeployStatusStep({ slug, data, onSuccess, onBack, destroyed = false, onDestroyedChange, autoDeployOnMount = false }) {
   const [status, setStatus] = useState({ services: [], overall: 'deploying' })
   const [deployed, setDeployed] = useState(false)
   const [error, setError] = useState(null)
   const [readyToIngest, setReadyToIngest] = useState(false)
   const [restarting, setRestarting] = useState(new Set())
+  const [showDestroyConfirm, setShowDestroyConfirm] = useState(false)
+  const [removeVolumes, setRemoveVolumes] = useState(false)
+  const [destroying, setDestroying] = useState(false)
   const pollRef = useRef(null)
   const onSuccessRef = useRef(onSuccess)
   onSuccessRef.current = onSuccess
@@ -67,7 +70,16 @@ export default function DeployStatusStep({ slug, data, onSuccess }) {
           return
         }
 
-        // overall === 'idle' (or unknown) — first deploy for this slug
+        // overall === 'idle' — only deploy when the user explicitly clicked the
+        // Deploy button on step 6 (autoDeployOnMount=true). Direct navigation to
+        // step 7 via the step indicator must never trigger an auto-deploy.
+        if (!autoDeployOnMount) {
+          setStatus({ services: [], overall: 'idle' })
+          return
+        }
+
+        // User clicked Deploy on step 6 — clear destroyed flag and deploy.
+        onDestroyedChange?.(false)
         const options = {
           target: data.target,
           ...(await buildSecretsPayload(data.secrets)),
@@ -97,10 +109,22 @@ export default function DeployStatusStep({ slug, data, onSuccess }) {
       try {
         const result = await api.getDeployStatus(slug)
         setStatus(result)
-        if (result.overall === 'complete' || result.overall === 'failed') {
+        if (result.overall === 'complete') {
           clearInterval(pollRef.current)
           pollRef.current = null
-          if (result.overall === 'complete') setReadyToIngest(true)
+          setReadyToIngest(true)
+        } else if (result.overall === 'failed') {
+          clearInterval(pollRef.current)
+          pollRef.current = null
+        } else if (result.overall === 'idle') {
+          // Destroy completed — backend cleared state
+          clearInterval(pollRef.current)
+          pollRef.current = null
+          setDeployed(false)
+          setReadyToIngest(false)
+          setDestroying(false)
+          setStatus({ services: [], overall: 'idle' })
+          onDestroyedChange?.(true)
         }
       } catch (e) {
         console.error('Status poll error:', e)
@@ -151,17 +175,65 @@ export default function DeployStatusStep({ slug, data, onSuccess }) {
     }
   }
 
+  async function handleRedeploy() {
+    onDestroyedChange?.(false)
+    setError(null)
+    setStatus({ services: [], overall: 'deploying' })
+    try {
+      await api.executeDeploy(slug, {
+        target: data.target,
+        ...(await buildSecretsPayload(data.secrets)),
+        preset: data.preset,
+        resources: data.resources,
+        kubeconfig: data.target === 'kubernetes' ? data.kubeconfig : undefined,
+      })
+      setDeployed(true)
+      startPolling()
+    } catch (e) {
+      setError(e.message || 'Redeploy failed')
+    }
+  }
+
+  async function handleDestroy() {
+    setShowDestroyConfirm(false)
+    setDestroying(true)
+    setStatus(prev => ({ ...prev, overall: 'destroying' }))
+    try {
+      await api.destroyProject(slug, removeVolumes)
+      startPolling()
+    } catch (e) {
+      setStatus(prev => ({ ...prev, overall: 'failed' }))
+      setError(e.message || 'Destroy failed')
+      setDestroying(false)
+    }
+  }
+
   const serviceMap = {}
   status.services.forEach(s => { serviceMap[s.name] = s })
 
+  const canDestroy = data.target === 'docker' &&
+    (status.overall === 'complete' || status.overall === 'failed')
+
   return (
     <div>
-      <h2 className="text-lg font-semibold mb-1">Deployment Status</h2>
-      <p className="text-sm text-gray-400 mb-4">
+      <div className="flex items-center gap-3 mb-4">
+        <button
+          onClick={onBack}
+          className="text-sm text-gray-400 hover:text-white transition-colors"
+        >
+          ← Back
+        </button>
+        <h2 className="text-lg font-semibold">Deployment Status</h2>
+      </div>
+      <p className="text-sm text-gray-400 mb-4 -mt-2">
         {status.overall === 'complete'
           ? 'All services deployed successfully!'
           : status.overall === 'failed'
           ? 'One or more services failed. Restart individual services below.'
+          : status.overall === 'destroying'
+          ? 'Tearing down containers…'
+          : destroyed
+          ? 'Stack has been destroyed. Deploy again when ready.'
           : 'Deploying services…'}
       </p>
 
@@ -171,8 +243,43 @@ export default function DeployStatusStep({ slug, data, onSuccess }) {
           title="Deployment Error"
           subtitle={error}
           action={
-            <button onClick={handleRetry} className="text-xs bg-red-800 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg transition-colors">
-              Retry
+            <div className="flex gap-2">
+              <button onClick={handleRetry} className="text-xs bg-red-800 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg transition-colors">
+                Retry
+              </button>
+              {canDestroy && (
+                <button
+                  onClick={() => setShowDestroyConfirm(true)}
+                  disabled={destroying}
+                  className="text-xs bg-gray-800 hover:bg-red-900 disabled:opacity-50 text-gray-300 px-3 py-1.5 rounded-lg transition-colors"
+                >
+                  Destroy
+                </button>
+              )}
+            </div>
+          }
+        />
+      )}
+
+      {status.overall === 'destroying' && (
+        <StatusBanner
+          variant="warning"
+          title="Destroying Stack"
+          subtitle="Stopping and removing all containers. This may take a few seconds…"
+        />
+      )}
+
+      {destroyed && (
+        <StatusBanner
+          variant="warning"
+          title="Stack Destroyed"
+          subtitle="All containers have been stopped and removed."
+          action={
+            <button
+              onClick={handleRedeploy}
+              className="text-xs bg-blue-700 hover:bg-blue-600 text-white px-3 py-1.5 rounded-lg transition-colors font-medium"
+            >
+              Redeploy
             </button>
           }
         />
@@ -185,7 +292,14 @@ export default function DeployStatusStep({ slug, data, onSuccess }) {
             title="Deployment Complete"
             subtitle={`All ${status.services.length} services are running. ${data.target === 'docker' ? 'Access the Reach Layer UI at http://localhost:8005' : 'Services deployed to your Kubernetes cluster.'}`}
           />
-          <div className="flex justify-end mt-4 mb-2">
+          <div className="flex justify-between mt-4 mb-2">
+            <button
+              onClick={() => setShowDestroyConfirm(true)}
+              disabled={destroying}
+              className="text-sm bg-gray-800 hover:bg-red-900 disabled:opacity-50 text-gray-300 px-4 py-2 rounded-xl transition-colors"
+            >
+              Destroy Stack
+            </button>
             <button
               onClick={() => onSuccessRef.current && onSuccessRef.current()}
               className="text-sm bg-blue-600 hover:bg-blue-500 text-white px-5 py-2 rounded-xl font-medium transition-colors"
@@ -196,8 +310,53 @@ export default function DeployStatusStep({ slug, data, onSuccess }) {
         </>
       )}
 
+      {/* Destroy confirmation modal */}
+      {showDestroyConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl shadow-xl w-full max-w-md mx-4 p-6">
+            <h3 className="text-base font-semibold mb-2">Destroy Stack?</h3>
+            <p className="text-sm text-gray-400 mb-4">
+              This will run <code className="text-red-400 bg-gray-800 px-1 rounded">docker compose down --remove-orphans</code> and
+              stop all containers for this project.
+            </p>
+
+            <label className="flex items-start gap-3 cursor-pointer select-none mb-5">
+              <input
+                type="checkbox"
+                checked={removeVolumes}
+                onChange={e => setRemoveVolumes(e.target.checked)}
+                className="mt-0.5 accent-red-500"
+              />
+              <span className="text-sm">
+                <span className="text-white font-medium">Wipe all data</span>
+                <span className="block text-gray-400 text-xs mt-0.5">
+                  {removeVolumes
+                    ? 'All data will be permanently deleted — knowledge base (ChromaDB), user memory (Memgraph), and uploaded documents. This cannot be undone.'
+                    : 'Leave unchecked to keep your knowledge base and user memory. You can redeploy without re-ingesting documents.'}
+                </span>
+              </span>
+            </label>
+
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setShowDestroyConfirm(false)}
+                className="text-sm bg-gray-800 hover:bg-gray-700 text-gray-300 px-4 py-2 rounded-xl transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDestroy}
+                className="text-sm bg-red-700 hover:bg-red-600 text-white px-4 py-2 rounded-xl font-medium transition-colors"
+              >
+                {removeVolumes ? 'Destroy & Wipe Data' : 'Confirm Destroy'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-col gap-4">
-        {PHASES.map(phase => (
+        {!destroyed && PHASES.map(phase => (
           <div key={phase.name} className="border border-gray-700 rounded-xl overflow-hidden">
             <div className="px-4 py-2 bg-gray-900 border-b border-gray-700">
               <span className="text-xs font-medium text-gray-300">{phase.name}</span>
@@ -242,3 +401,4 @@ export default function DeployStatusStep({ slug, data, onSuccess }) {
     </div>
   )
 }
+

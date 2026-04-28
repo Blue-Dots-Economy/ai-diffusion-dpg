@@ -88,4 +88,7 @@ export const api = {
 
   restartService: (slug, service) =>
     request('POST', `/projects/${slug}/deploy/services/${service}/restart`),
+
+  destroyProject: (slug, removeVolumes = false) =>
+    request('POST', `/projects/${slug}/destroy`, { remove_volumes: removeVolumes }),
 }
