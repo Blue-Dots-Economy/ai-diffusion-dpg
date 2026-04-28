@@ -29,6 +29,7 @@ tools:
             required: false
             description: ""
             value: null
+            default: null          # default value when source is 'agent' and param is optional
     response:
       max_size_chars: 4000
       # Optional projection — when present, only these fields are sent to the LLM

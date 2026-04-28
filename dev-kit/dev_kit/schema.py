@@ -644,7 +644,7 @@ class OutputRulesConfig(BaseModel):
 class GuardrailConfig(BaseModel):
     """A single guardrail rule within a policy pack."""
 
-    id: str = Field(..., description="Unique guardrail identifier, e.g. GR-001")
+    id: str = Field(default="", description="Unique guardrail identifier, e.g. GR-001")
     severity: str = Field(..., description="Guardrail severity: blocker or warning")
     failure_mode: str = Field(..., description="Action on failure: block or constrain")
     prompt_constraints: list[str] = Field(default=[], description="MUST/MUST NOT instructions injected into the LLM prompt")
@@ -1018,7 +1018,7 @@ class McpToolDef(BaseModel):
     type: Literal["mcp"] = Field(default="mcp")
     category: Literal["read", "write", "identity"] = Field(..., description="Tool category")
     description: str = Field(..., description="What this tool does — shown to LLM")
-    mcp_server_url: str = Field(..., description="Base URL of the MCP server")
+    server_url: str = Field(..., description="Base URL of the MCP server")
     tool_name: str = Field(..., description="Tool name as returned by tools/list on the MCP server")
     input_schema: dict[str, Any] = Field(
         default_factory=dict,

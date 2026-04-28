@@ -45,7 +45,7 @@ def test_mcp_tool_validates():
                 "type": "mcp",
                 "category": "read",
                 "description": "Query Obsrv data",
-                "mcp_server_url": "https://mcp.example.com",
+                "server_url": "https://mcp.example.com",
                 "tool_name": "query_dataset",
                 "input_schema": {"type": "object", "properties": {"dataset": {"type": "string"}}},
             }
@@ -170,7 +170,7 @@ def test_discriminated_union_uses_type_field():
             "type": "mcp",
             "category": "read",
             "description": "x",
-            "mcp_server_url": "https://mcp.example.com",
+            "server_url": "https://mcp.example.com",
             "tool_name": "query",
         }]
     }

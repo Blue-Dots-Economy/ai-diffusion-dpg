@@ -339,14 +339,25 @@ class ConfigAccumulator:
         return list(self._data["reach_layer"].get("_selected_channels", []))
 
     def get_reach_channel_selection_or_default(self) -> list[str]:
-        """Return selected channels with a fallback for deploy.
+        """Return selected channels, falling back to what is configured in YAML.
 
         Returns:
-            List of selected channel names. Defaults to ['web', 'voice', 'cli']
-            if no selection was made during configuration.
+            List of selected channel names. If no explicit selection was stored
+            (e.g. project configured before channel tracking was introduced),
+            infers active channels from non-null entries in reach_layer.channels.
+            Falls back to ['web'] only if neither source yields a result.
         """
         selection = self.get_reach_channel_selection()
-        return selection if selection else ["web", "voice", "cli"]
+        if selection:
+            return selection
+        # Infer from what's actually configured in the reach_layer YAML data.
+        channels_cfg = (
+            self._data.get("reach_layer", {})
+            .get("reach_layer", {})
+            .get("channels", {})
+        )
+        inferred = [ch for ch, cfg in channels_cfg.items() if cfg is not None]
+        return inferred if inferred else ["web"]
 
     def set_agent_core_connector(self, category: str, connector: dict) -> None:
         """Add or replace a connector in agent_core.connectors[category].
