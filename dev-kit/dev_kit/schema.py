@@ -238,7 +238,7 @@ class LanguageNormalisationConfig(BaseModel):
         default="",
         description="Default language used when none is detected from user input, e.g. hindi",
     )
-    supported_languages: list[str] = Field(..., description="Languages the agent supports, e.g. [hindi, english, kannada, hinglish]")
+    supported_languages: list[str] = Field(default=[], description="Languages the agent supports, e.g. [hindi, english, kannada, hinglish]")
     min_detection_tokens: int = Field(
         default=3,
         description="Inputs with fewer tokens than this skip LLM detection and return default_language",
@@ -248,7 +248,7 @@ class LanguageNormalisationConfig(BaseModel):
 
 
 class NLUProcessorConfig(BaseModel):
-    model: str = Field(..., description="Claude model ID for NLU classification")
+    model: str = Field(default="", description="Claude model ID for NLU classification. Empty = use agent.primary_model.")
     confidence_threshold: float = Field(default=0.5, description="Float 0-1. Intents below this are treated as unknown")
     user_state_confidence_threshold: float = Field(
         default=0.4,
@@ -555,11 +555,10 @@ class MetadataFiltersConfig(BaseModel):
 
 class StaticKBConfig(BaseModel):
     enabled: bool = True
-    vector_store: str = "chromadb"
-    collection_name: str = Field(..., description="ChromaDB collection name for this domain's knowledge base")
+    collection_name: str = Field(..., description="ChromaDB collection name for this domain's knowledge base. Must be unique per domain.")
     chroma_persist_dir: str = "./data/chroma_db"
-    embedding_provider: str = "sentence_transformers"
-    embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2"
+    embedding_provider: str = Field(default="chroma_default", description="Embedding backend: chroma_default, sentence_transformers, or openai")
+    embedding_model: str = Field(default="", description="Model ID for the embedding provider. Leave empty to use the provider default.")
     top_k: int = 3
     similarity_threshold: float = 0.65
     default_doc_type: str = "general"
@@ -588,36 +587,13 @@ class KBBlocksConfig(BaseModel):
     multimodal_input_handler: MultimodalConfig = MultimodalConfig()
 
 
-class KBInnerConversationConfig(BaseModel):
-    max_history_turns: int = 10
-
-
 class KnowledgeConfig(BaseModel):
-    conversation: KBInnerConversationConfig = KBInnerConversationConfig()
     blocks: KBBlocksConfig
-
-
-class PersonaConfig(BaseModel):
-    text: str = Field(default="", description="Persona text injected into the LLM system prompt")
-
-
-class ConversationKEConfig(BaseModel):
-    persona: PersonaConfig = Field(
-        default_factory=PersonaConfig,
-        description="Persona definition for the LLM. The text is injected verbatim into every prompt.",
-    )
-    language_instruction: str = ""
-    guardrail_reminders: list[str] = []
 
 
 class KnowledgeEngineConfig(BaseModel):
     server: ServerConfig
     knowledge: KnowledgeConfig
-    conversation: ConversationKEConfig = Field(
-        default_factory=ConversationKEConfig,
-        description="LLM persona and prompt configuration for this domain. "
-                    "Provide persona.text for best quality responses.",
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -644,9 +620,8 @@ class OutputRulesConfig(BaseModel):
 class GuardrailConfig(BaseModel):
     """A single guardrail rule within a policy pack."""
 
-    id: str = Field(default="", description="Unique guardrail identifier, e.g. GR-001")
-    severity: str = Field(..., description="Guardrail severity: blocker or warning")
-    failure_mode: str = Field(..., description="Action on failure: block or constrain")
+    severity: str = Field(default="blocker", description="Guardrail severity: blocker or warning")
+    failure_mode: str = Field(default="block", description="Action on failure: block or constrain")
     prompt_constraints: list[str] = Field(default=[], description="MUST/MUST NOT instructions injected into the LLM prompt")
     required_disclosures: list[str] = Field(default=[], description="Disclosure strings appended to LLM output when this guardrail fires")
     refusal_template: str | None = Field(default=None, description="Fixed refusal text returned when failure_mode is block")
@@ -655,10 +630,9 @@ class GuardrailConfig(BaseModel):
 class PolicyPackConfig(BaseModel):
     """A named policy pack grouping related risk categories and guardrail rules."""
 
-    risks: list[str] = Field(default=[], description="Risk identifiers active in this policy pack")
     guardrails: dict[str, GuardrailConfig] = Field(
         default_factory=dict,
-        description="Map of risk_name → GuardrailConfig. Keys must match entries in risks.",
+        description="Map of risk_name → GuardrailConfig. e.g. {toxic_language: {severity: blocker, ...}}",
     )
 
 
@@ -771,12 +745,12 @@ class SessionStateConfig(BaseModel):
 
 
 class UserNodeConfig(BaseModel):
-    label: str = Field(..., description="Memgraph node label for the root user node, e.g. 'User'")
-    key: str = Field(..., description="Property used as the unique user identifier, e.g. 'user_id'")
+    label: str = Field(default="User", description="Memgraph node label for the root user node, e.g. 'User'")
+    key: str = Field(default="user_id", description="Property used as the unique user identifier, e.g. 'user_id'")
 
 
 class GraphConfig(BaseModel):
-    user_node: UserNodeConfig
+    user_node: UserNodeConfig = Field(default_factory=UserNodeConfig)
     subnodes: dict[str, Any] = Field(
         default_factory=dict,
         description="Named subnode definitions attached to the user node. "
@@ -795,7 +769,7 @@ class MergeRuleConfig(BaseModel):
 
 class PersistentStateConfig(BaseModel):
     backend: str = Field(default="memgraph", description="Persistent storage backend identifier")
-    graph: GraphConfig
+    graph: GraphConfig = Field(default_factory=GraphConfig)
     merge_on_session_end: list[MergeRuleConfig] = Field(
         default=[],
         description="Rules for promoting session fields to graph node properties when the session is flushed",
@@ -804,7 +778,7 @@ class PersistentStateConfig(BaseModel):
 
 class StateConfig(BaseModel):
     session: SessionStateConfig = Field(default_factory=SessionStateConfig)
-    persistent: PersistentStateConfig
+    persistent: PersistentStateConfig = Field(default_factory=PersistentStateConfig)
 
 
 class UserDataPersistenceConfig(BaseModel):
@@ -955,7 +929,6 @@ class ToolParamDef(BaseModel):
     required: bool = Field(default=False, description="Whether the agent must provide this param")
     description: str = Field(default="", description="Description shown to the agent")
     value: Any = Field(default=None, description="Fixed value when source is 'static'")
-    default: Any = Field(default=None, description="Default value when source is 'agent' and param is optional")
 
 
 class ToolEndpointDef(BaseModel):

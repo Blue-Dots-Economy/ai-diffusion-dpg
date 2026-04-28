@@ -1,5 +1,17 @@
-conversation:
-  persona:
-    text: You are a helpful Obsrv documentation assistant. Answer questions clearly
-      and concisely based on the documentation provided.
-  language_instruction: Respond in the user's language
+knowledge:
+  blocks:
+    static_knowledge_base:
+      enabled: true
+      collection_name: obsrv_docs
+      embedding_provider: chroma_default
+      embedding_model: ""
+      default_doc_type: obsrv_docs
+      metadata_filters:
+        use_location_filter: false
+        use_intent_filter: true
+      sources: []
+      intent_filters:
+        obsrv_documentation: [obsrv_docs]
+
+observability:
+  domain: obsrv-docs-assistant

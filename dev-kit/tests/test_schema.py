@@ -110,10 +110,8 @@ class TestValidatePartialKeyCheck:
             "trust": {
                 "policy_packs": {
                     "my_custom_pack": {
-                        "risks": ["false_certainty"],
                         "guardrails": {
                             "false_certainty": {
-                                "id": "GR-001",
                                 "severity": "blocker",
                                 "failure_mode": "block",
                                 "prompt_constraints": [],
@@ -184,20 +182,22 @@ class TestOutputRulesConfig:
 
 
 class TestGuardrailConfig:
-    def test_required_fields_enforced(self):
-        with pytest.raises(ValidationError):
-            GuardrailConfig()  # id, severity, failure_mode all required
-
-    def test_valid_guardrail(self):
-        g = GuardrailConfig(id="GR-001", severity="blocker", failure_mode="block")
-        assert g.id == "GR-001"
+    def test_defaults_are_valid(self):
+        g = GuardrailConfig()
+        assert g.severity == "blocker"
+        assert g.failure_mode == "block"
         assert g.prompt_constraints == []
         assert g.required_disclosures == []
         assert g.refusal_template is None
 
+    def test_valid_guardrail_with_overrides(self):
+        g = GuardrailConfig(severity="blocker", failure_mode="block")
+        assert g.severity == "blocker"
+        assert g.failure_mode == "block"
+
     def test_refusal_template_can_be_null_or_string(self):
-        g1 = GuardrailConfig(id="GR-002", severity="warning", failure_mode="constrain", refusal_template=None)
-        g2 = GuardrailConfig(id="GR-003", severity="blocker", failure_mode="block", refusal_template="I cannot help.")
+        g1 = GuardrailConfig(severity="warning", failure_mode="constrain", refusal_template=None)
+        g2 = GuardrailConfig(severity="blocker", failure_mode="block", refusal_template="I cannot help.")
         assert g1.refusal_template is None
         assert g2.refusal_template == "I cannot help."
 
@@ -205,14 +205,12 @@ class TestGuardrailConfig:
 class TestPolicyPackConfig:
     def test_empty_policy_pack_is_valid(self):
         pp = PolicyPackConfig()
-        assert pp.risks == []
         assert pp.guardrails == {}
 
     def test_guardrails_is_dict_of_guardrail_config(self):
         pp = PolicyPackConfig(
-            risks=["false_certainty"],
             guardrails={
-                "false_certainty": GuardrailConfig(id="GR-001", severity="blocker", failure_mode="block")
+                "false_certainty": GuardrailConfig(severity="blocker", failure_mode="block")
             },
         )
         assert isinstance(pp.guardrails["false_certainty"], GuardrailConfig)
@@ -254,8 +252,7 @@ class TestTrustConfig:
             output_rules=OutputRulesConfig(blocked_phrases=["guarantee"], output_blocked_message="Blocked output."),
             policy_packs={
                 "my_pack": PolicyPackConfig(
-                    risks=["false_certainty"],
-                    guardrails={"false_certainty": GuardrailConfig(id="GR-001", severity="blocker", failure_mode="block")},
+                    guardrails={"false_certainty": GuardrailConfig(severity="blocker", failure_mode="block")},
                 )
             },
             consent=ConsentConfig(consent_phrases=["yes"], decline_phrases=["no"]),
@@ -575,7 +572,6 @@ class TestLoaderIntegration:
         pack = cfg.trust.policy_packs["kkb_advisory_jobs"]
         assert "false_certainty" in pack.guardrails
         gr = pack.guardrails["false_certainty"]
-        assert gr.id == "GR-001"
         assert gr.severity == "blocker"
         assert gr.failure_mode == "block"
         assert len(gr.prompt_constraints) > 0

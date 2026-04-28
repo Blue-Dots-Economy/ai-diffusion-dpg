@@ -17,14 +17,12 @@ trust:
 
   policy_packs:
     policy_pack_name:                 # replace with actual pack name, e.g. kkb_advisory_jobs
-      risks: []                       # risk identifiers active in this pack
       guardrails:
         guardrail_name:               # replace with risk name, e.g. false_certainty
-          id: ""                      # unique identifier, e.g. GR-001
           # severity and failure_mode declare intent but are not yet acted on
           # at runtime — differential enforcement is tracked in GH-170.
-          severity: ""                # blocker | warning
-          failure_mode: ""            # block | constrain
+          severity: blocker           # blocker | warning
+          failure_mode: block         # block | constrain
           prompt_constraints: []      # MUST/MUST NOT instructions injected into the LLM prompt
           required_disclosures: []    # disclosure strings appended to LLM output
           refusal_template: null      # fixed refusal text used when the guardrail fires in block mode

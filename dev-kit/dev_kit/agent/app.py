@@ -979,6 +979,12 @@ def pre_deploy_validate(slug: str) -> dict[str, Any]:
                     invariant_errors.append(
                         f"reach_layer.channels.voice.raya.{field} is empty but voice is in selected_channels."
                     )
+            if not voice_cfg.get("terminal_word"):
+                invariant_errors.append(
+                    "reach_layer.channels.voice.terminal_word is not set but voice is in selected_channels. "
+                    "The voice session never ends without a terminal word (e.g. 'goodbye'). "
+                    "Set reach_layer.channels.voice.terminal_word."
+                )
 
     # Check 7: selected_channels[x] → agent_core.channels.<x> must exist in raw YAML.
     # DPG agent_core defaults have no channels.* entries; if the domain config also
