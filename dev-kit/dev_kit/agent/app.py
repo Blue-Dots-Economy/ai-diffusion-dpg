@@ -2066,6 +2066,11 @@ async def get_deploy_status(slug: str) -> dict:
 
         containers = await get_compose_status(state.compose_file_path, project_name=f"dpg-{slug}")
         if not containers:
+            if state.overall == "deploying":
+                # Images are still being pulled / containers not yet created.
+                # Return the in-memory state so the UI keeps showing queued/starting
+                # instead of falsely declaring the stack destroyed.
+                return state.to_response()
             # Containers are gone (e.g. docker compose down was run externally).
             # Clear stale in-memory state so next deploy starts fresh.
             from dev_kit.agent.deployer.state import clear_state
