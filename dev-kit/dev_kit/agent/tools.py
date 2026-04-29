@@ -804,7 +804,19 @@ class ToolHandler:
             "routing": [],
         }
         self._acc.set_subagent(sa)
-        return f"Subagent '{inputs['id']}' created."
+        if sa["is_terminal"]:
+            return f"Subagent '{inputs['id']}' created (terminal — no routing required)."
+        return (
+            f"Subagent '{inputs['id']}' created. "
+            f"REMINDER: non-terminal subagents must have at least one routing rule. "
+            f"Call `add_routing_rule` for every intent in valid_intents that should "
+            f"transition to another subagent, plus a catch-all "
+            f"`add_routing_rule(from_subagent_id='{inputs['id']}', intent='*', "
+            f"next_subagent_id='<target>')` so unmatched intents have a destination. "
+            f"If you do nothing, the renderer will insert a self-loop catch-all to "
+            f"prevent a startup crash, but this is a safety net — design the routing "
+            f"explicitly."
+        )
 
     def _handle_update_subagent(self, inputs: dict) -> str:
         try:

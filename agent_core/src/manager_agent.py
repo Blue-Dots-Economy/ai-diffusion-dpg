@@ -477,7 +477,28 @@ class ManagerAgent:
                 detected_language=ke_context.get("detected_language", ""),
             )
             chunk_texts = [c.text for c in chunks] if chunks else []
-            combined = "\n\n".join(chunk_texts) if chunk_texts else "No relevant context found."
+            if chunk_texts:
+                combined = "\n\n---\n\n".join(chunk_texts)
+            else:
+                # Be explicit so the LLM knows the KB itself returned nothing —
+                # not a transient failure to retrieve. This avoids responses
+                # like "I'm having difficulty retrieving …" that imply an
+                # outage when the actual cause is an empty-result query.
+                combined = (
+                    "KNOWLEDGE_BASE_EMPTY_RESULT: The knowledge base was queried "
+                    "successfully but returned 0 matching chunks for this query. "
+                    "Do NOT apologise for a system failure — there isn't one. "
+                    "Either (a) tell the user this topic isn't covered in the "
+                    "available documentation and offer adjacent topics that are, "
+                    "or (b) ask the user a clarifying question if their query "
+                    "was ambiguous."
+                )
+            logger.info(
+                "  [STEP 9] knowledge_retrieval  ←  chunks=%d  query=%r  latency=%dms",
+                len(chunk_texts),
+                (ke_context.get("normalised_input") or "")[:120],
+                int((time.time() - start) * 1000),
+            )
             logger.info("manager_agent.knowledge_retrieval", extra={
                 "operation": "manager_agent._execute_knowledge_retrieval",
                 "status": "success",
@@ -487,7 +508,11 @@ class ManagerAgent:
             return ToolResult(
                 tool_use_id=tool_call.tool_use_id,
                 tool_name=tool_call.tool_name,
-                result={"context": combined},
+                result={"context": combined, "chunk_count": len(chunk_texts)},
+                # Plain text — what the LLM actually consumes. Without this,
+                # the consumer falls back to str(result) which produces an
+                # ugly Python dict-repr like "{'context': '…'}".
+                result_text=combined,
                 success=True,
             )
         except Exception as e:

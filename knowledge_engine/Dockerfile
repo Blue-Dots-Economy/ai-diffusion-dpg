@@ -60,8 +60,14 @@ COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /observability_layer /observability_layer
 
 # Pre-populated Chroma ONNX model cache (skips download on first embed call).
+# Chroma resolves the cache via os.path.expanduser("~/.cache/chroma"), so the
+# directory must exist under the runtime user's HOME. Populate both the
+# dedicated `knowledgeengine` user's HOME and `/root` so the image is
+# cache-hit regardless of which user actually runs (e.g. if `USER` is
+# overridden at deploy time, or the image is invoked as root).
 COPY --from=builder --chown=knowledgeengine:knowledgeengine \
      /opt/chroma-cache /home/knowledgeengine/.cache/chroma
+COPY --from=builder /opt/chroma-cache /root/.cache/chroma
 
 # Copy application source, entrypoint, config, and scripts
 COPY knowledge_engine/src/ ./src/
@@ -80,7 +86,8 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     UV_NO_CACHE=1 \
     PATH="/app/.venv/bin:$PATH" \
-    VIRTUAL_ENV=/app/.venv
+    VIRTUAL_ENV=/app/.venv \
+    HOME=/home/knowledgeengine
 
 # ChromaDB vector store is written here at ingest time.
 # Mount a named volume at this path to persist embeddings across container restarts.

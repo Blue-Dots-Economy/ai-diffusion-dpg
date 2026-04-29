@@ -61,6 +61,38 @@ def _sync_agent_core_intents(data: dict) -> dict:
     return data
 
 
+def _ensure_subagent_routing(data: dict) -> dict:
+    """Auto-add a self-loop catch-all rule for any non-terminal subagent missing routing.
+
+    Agent Core's startup validation (rule 7) rejects any non-terminal subagent
+    with an empty ``routing`` list. The LLM occasionally forgets to call
+    ``add_routing_rule`` after ``create_subagent``, which is fatal at deploy
+    time. Inserting a ``{intent: '*', next_subagent_id: <self>}`` rule keeps
+    the user in the same subagent on otherwise-unhandled intents — the same
+    pattern used throughout the reference KKB workflow — and preserves the
+    intent of "this subagent stays active until something explicitly moves
+    the user forward."
+
+    Args:
+        data: Cleaned agent_core block dict.
+
+    Returns:
+        Updated dict with a guaranteed-non-empty routing list on every
+        non-terminal subagent.
+    """
+    workflow: dict = data.get("agent_workflow", {})
+    if not workflow:
+        return data
+    for sa in workflow.get("subagents", []):
+        if sa.get("is_terminal"):
+            continue
+        routing = sa.get("routing") or []
+        if routing:
+            continue
+        sa["routing"] = [{"intent": "*", "next_subagent_id": sa["id"]}]
+    return data
+
+
 def render_all(project_path: Path, accumulator: ConfigAccumulator) -> dict[str, ConfigStatus]:
     """Write all 7 block config YAML files and return their statuses.
 
@@ -112,6 +144,7 @@ def render_block(project_path: Path, block: str, accumulator: ConfigAccumulator)
     # and merge voice TTS rules into the system prompt suffix.
     if block == "agent_core":
         data = _sync_agent_core_intents(data)
+        data = _ensure_subagent_routing(data)
         data = merge_voice_tts_into_suffix(data)
 
     yaml_content = yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
