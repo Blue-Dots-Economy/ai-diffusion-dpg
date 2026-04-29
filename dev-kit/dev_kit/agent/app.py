@@ -2090,8 +2090,17 @@ async def get_deploy_status(slug: str) -> dict:
                 # Return the in-memory state so the UI keeps showing queued/starting
                 # instead of falsely declaring the stack destroyed.
                 return state.to_response()
-            # Containers are gone (e.g. docker compose down was run externally).
-            # Clear stale in-memory state so next deploy starts fresh.
+            if state.overall == "failed":
+                # Deploy failed before any container was created (e.g. image pull
+                # rate limit, port conflict). Preserve the failure so the UI can
+                # surface the real error instead of misreporting it as destroyed.
+                return state.to_response()
+            if state.overall == "destroying":
+                # Destroy is in flight; let _run_docker_destroy clear state on
+                # completion. Returning here would race the teardown task.
+                return state.to_response()
+            # Containers are gone after a previously-complete deploy
+            # (e.g. `docker compose down` was run externally).
             from dev_kit.agent.deployer.state import clear_state
             clear_state(slug)
             return {"services": [], "overall": "idle"}

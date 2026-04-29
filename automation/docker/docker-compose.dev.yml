@@ -96,8 +96,6 @@ services:
     container_name: dev_kit
     environment:
       - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
-      - DEVKIT_TO_REACH_API_KEY=${DEVKIT_TO_REACH_API_KEY:-}
-      - KE_TO_DEVKIT_API_KEY=${KE_TO_DEVKIT_API_KEY:-}
       - REACH_LAYER_URL=${REACH_LAYER_URL:-http://host.docker.internal:8005}
       - HOST_REPO_ROOT=${HOST_REPO_ROOT:-${PWD}}
       - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
