@@ -321,6 +321,91 @@ class ConfigAccumulator:
                 })
         return deepcopy(result)
 
+    def get_required_channel_secrets(self) -> list[dict]:
+        """Return credential descriptors for channels selected by the domain admin.
+
+        Inspects the selected deployment channels and returns a structured list
+        that the deploy wizard renders as credential input fields. Web channel
+        requires Google OAuth client ID; voice channel requires Vobiz and Raya
+        credentials plus the public service URL.
+
+        Returns:
+            List of dicts, each with keys:
+                ``env_var``     — environment variable name injected into container
+                ``label``       — field label shown in the UI
+                ``description`` — hint text shown below the field
+                ``required``    — always True for all current channel credentials
+                ``section``     — "web" or "voice"
+                ``secret``      — True → SecretInput (masked); False → plain input
+            Returns an empty list when no credential-bearing channel is selected.
+        """
+        selected = self.get_reach_channel_selection()
+        result = []
+        if "web" in selected:
+            result.append({
+                "env_var": "GOOGLE_CLIENT_ID",
+                "label": "Google Client ID",
+                "description": (
+                    "Google is the only supported auth provider. Get your Client ID from "
+                    "the Google Cloud Console — create an OAuth 2.0 credential and add "
+                    "your deployment URL as an authorised origin."
+                ),
+                "required": True,
+                "section": "web",
+                "secret": False,
+            })
+        if "voice" in selected:
+            result.extend([
+                {
+                    "env_var": "VOBIZ_AUTH_ID",
+                    "label": "Vobiz Auth ID",
+                    "description": "Your Vobiz account Auth ID. Found in the Vobiz dashboard under Account settings.",
+                    "required": True,
+                    "section": "voice",
+                    "secret": True,
+                },
+                {
+                    "env_var": "VOBIZ_AUTH_TOKEN",
+                    "label": "Vobiz Auth Token",
+                    "description": "Your Vobiz account Auth Token. Found in the Vobiz dashboard under Account settings.",
+                    "required": True,
+                    "section": "voice",
+                    "secret": True,
+                },
+                {
+                    "env_var": "RAYA_API_KEY",
+                    "label": "Raya API Key",
+                    "description": "API key for Raya STT/TTS. Found in your Raya dashboard.",
+                    "required": True,
+                    "section": "voice",
+                    "secret": True,
+                },
+                {
+                    "env_var": "PUBLIC_URL",
+                    "label": "Voice Public URL",
+                    "description": (
+                        "Public HTTPS URL of the voice service "
+                        "(e.g. https://voice.203-0-113-42.sslip.io). "
+                        "The voice server returns this to Vobiz so it knows where to open the audio WebSocket."
+                    ),
+                    "required": True,
+                    "section": "voice",
+                    "secret": False,
+                },
+                {
+                    "env_var": "VOBIZ_FROM_NUMBER",
+                    "label": "Vobiz From Number",
+                    "description": (
+                        "Vobiz-assigned phone number used as caller ID on outbound calls "
+                        "(E.164 format, e.g. +919876543210). Required — the voice service will not start without it."
+                    ),
+                    "required": True,
+                    "section": "voice",
+                    "secret": False,
+                },
+            ])
+        return deepcopy(result)
+
     def set_reach_channel_selection(self, channels: list[str]) -> None:
         """Store the selected deployment channels in reach_layer config.
 
