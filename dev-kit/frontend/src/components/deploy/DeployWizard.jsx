@@ -101,8 +101,9 @@ export default function DeployWizard({ slug, onBack }) {
       setValidationError('Please select a resource preset before proceeding.')
       return
     }
-    // Step 5: Required secrets must be filled
-    if (!alreadyCompleted && step === 5) {
+    // Step 5: Required secrets must be filled — always enforced even on revisit,
+    // because SecretInput clears the stored value when the user clicks "Change".
+    if (step === 5) {
       if (!data.secrets?.anthropic_api_key?.trim()) {
         setValidationError('Anthropic API Key is required.')
         return
