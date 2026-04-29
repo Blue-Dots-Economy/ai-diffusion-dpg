@@ -513,6 +513,7 @@ def get_project(slug: str) -> dict:
 
     # Required secrets — derived from tool auth configuration
     meta["required_secrets"] = engine.accumulator.get_required_secrets()
+    meta["channel_secrets"] = engine.accumulator.get_required_channel_secrets()
 
     return meta
 
