@@ -90,3 +90,96 @@ describe('MandatoryInputsStep — new fields', () => {
     expect(screen.getByLabelText(/azure account name/i)).toHaveValue('')
   })
 })
+
+describe('MandatoryInputsStep — channel credentials', () => {
+  it('does not show Web or Voice sections when channel_secrets is absent', () => {
+    render(<MandatoryInputsStep {...defaultProps} />)
+    expect(screen.queryByText(/web channel/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/voice channel/i)).not.toBeInTheDocument()
+  })
+
+  it('does not show channel sections when channel_secrets is empty array', () => {
+    const props = {
+      ...defaultProps,
+      project: { ...defaultProps.project, channel_secrets: [] },
+    }
+    render(<MandatoryInputsStep {...props} />)
+    expect(screen.queryByText(/web channel/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/voice channel/i)).not.toBeInTheDocument()
+  })
+
+  it('shows Web Channel section and Google Client ID field when section=web present', () => {
+    const props = {
+      ...defaultProps,
+      project: {
+        ...defaultProps.project,
+        channel_secrets: [
+          {
+            env_var: 'GOOGLE_CLIENT_ID',
+            label: 'Google Client ID',
+            required: true,
+            section: 'web',
+            secret: false,
+            description: 'Google OAuth Client ID.',
+          },
+        ],
+      },
+    }
+    render(<MandatoryInputsStep {...props} />)
+    expect(screen.getByText(/web channel/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/google client id/i)).toBeInTheDocument()
+  })
+
+  it('shows Voice Channel section and all five voice fields when section=voice present', () => {
+    const props = {
+      ...defaultProps,
+      project: {
+        ...defaultProps.project,
+        channel_secrets: [
+          { env_var: 'VOBIZ_AUTH_ID', label: 'Vobiz Auth ID', required: true, section: 'voice', secret: true, description: 'Vobiz Auth ID.' },
+          { env_var: 'VOBIZ_AUTH_TOKEN', label: 'Vobiz Auth Token', required: true, section: 'voice', secret: true, description: 'Vobiz Auth Token.' },
+          { env_var: 'RAYA_API_KEY', label: 'Raya API Key', required: true, section: 'voice', secret: true, description: 'Raya API Key.' },
+          { env_var: 'PUBLIC_URL', label: 'Voice Public URL', required: true, section: 'voice', secret: false, description: 'HTTPS URL.' },
+          { env_var: 'VOBIZ_FROM_NUMBER', label: 'Vobiz From Number', required: true, section: 'voice', secret: false, description: 'Caller ID.' },
+        ],
+      },
+    }
+    render(<MandatoryInputsStep {...props} />)
+    expect(screen.getByText(/voice channel/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/vobiz auth id/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/vobiz auth token/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/raya api key/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/voice public url/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/vobiz from number/i)).toBeInTheDocument()
+  })
+
+  it('calls onUpdate with correct channel_secrets shape when plain-text field changes', () => {
+    const onUpdate = vi.fn()
+    const props = {
+      ...defaultProps,
+      onUpdate,
+      project: {
+        ...defaultProps.project,
+        channel_secrets: [
+          {
+            env_var: 'GOOGLE_CLIENT_ID',
+            label: 'Google Client ID',
+            required: true,
+            section: 'web',
+            secret: false,
+            description: 'Google OAuth Client ID.',
+          },
+        ],
+      },
+    }
+    render(<MandatoryInputsStep {...props} />)
+    fireEvent.change(screen.getByLabelText(/google client id/i), { target: { value: 'my-client-123' } })
+    expect(onUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        secrets: expect.objectContaining({
+          channel_secrets: expect.objectContaining({ GOOGLE_CLIENT_ID: 'my-client-123' }),
+        }),
+      }),
+    )
+  })
+})
