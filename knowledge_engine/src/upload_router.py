@@ -348,7 +348,11 @@ async def run_queue_worker(
 
         try:
             staged_path = await _stage_file(job, kb_data_dir, azure_acct, azure_key, azure_cont)
-            chunks = static_kb_block.ingest_single(ke_config, staged_path, doc_type=job.doc_type)
+            loop = asyncio.get_event_loop()
+            chunks = await loop.run_in_executor(
+                None,
+                lambda: static_kb_block.ingest_single(ke_config, staged_path, doc_type=job.doc_type),
+            )
             ingested_at = datetime.now(timezone.utc).isoformat()
             db.update_status(job.job_id, "ingested", chunks_added=chunks, ingested_at=ingested_at)
             await _send_callback(
