@@ -357,9 +357,6 @@ services:
       # Loader scopes to the voice channel via load_reach_config("voice").
       - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
-      # STT debug WAV dumps (read by reach_layer.channels.voice.raya.stt_debug_dump_dir).
-      # Disabled by default — only writes when the yaml sets a path inside this mount.
-      - ./tmp/stt_dumps:/tmp/stt_dumps
     ports:
       - "8006:8006"
     networks:
