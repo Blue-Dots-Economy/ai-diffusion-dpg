@@ -929,6 +929,12 @@ class ToolParamDef(BaseModel):
     required: bool = Field(default=False, description="Whether the agent must provide this param")
     description: str = Field(default="", description="Description shown to the agent")
     value: Any = Field(default=None, description="Fixed value when source is 'static'")
+    default: Any = Field(
+        default=None,
+        description="Optional default the agent may fall back to when it omits this param. "
+                    "Used as a hint only; runtime does not auto-inject — the value still "
+                    "comes from the LLM at call time.",
+    )
 
 
 class ToolEndpointDef(BaseModel):

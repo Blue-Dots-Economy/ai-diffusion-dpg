@@ -29,6 +29,7 @@ tools:
             required: false
             description: ""
             value: null
+            default: null          # optional fallback hint shown to the LLM (e.g. 1 for page, 20 for limit)
     response:
       max_size_chars: 4000
       # Optional projection — when present, only these fields are sent to the LLM
