@@ -4,6 +4,7 @@ import { vi, describe, it, expect, beforeEach } from 'vitest'
 // Mock the api module
 vi.mock('../../api', () => ({
   api: {
+    getProject: vi.fn().mockResolvedValue({ current_phase: 'tools' }),
     getHistory: vi.fn().mockResolvedValue([]),
     getCheckpoints: vi.fn().mockResolvedValue([]),
     getGraph: vi.fn().mockResolvedValue({ nodes: [], edges: [] }),

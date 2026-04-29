@@ -38,7 +38,7 @@ function SecretInput({ existingValue, onUpdate, placeholder, id, className }) {
   )
 }
 
-function PhoneNumberInput({ value, onChange }) {
+function PhoneNumberInput({ value, onChange, id }) {
   const digits = (value || '').replace(/\D/g, '')
   // Initialise: assume first 2 chars are country code if value already stored
   const [cc, setCc] = React.useState(() => digits.length >= 2 ? digits.slice(0, 2) : '')
@@ -63,6 +63,7 @@ function PhoneNumberInput({ value, onChange }) {
       <div className="flex items-center">
         <span className="text-gray-500 text-sm mr-1">+</span>
         <input
+          id={id}
           type="text"
           value={cc}
           onChange={e => handleCc(e.target.value)}
@@ -220,6 +221,7 @@ export default function MandatoryInputsStep({ data, updateData, onUpdate, projec
                 </label>
                 {env_var === 'VOBIZ_FROM_NUMBER' ? (
                   <PhoneNumberInput
+                    id={`channel_${env_var}`}
                     value={(secrets.channel_secrets || {})[env_var] || ''}
                     onChange={v => updateChannelSecret(env_var, v)}
                   />

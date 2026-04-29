@@ -9,6 +9,9 @@ vi.mock('../../../api', () => ({
       upload: { max_files_per_upload: 5, max_file_size_mb: 30, supported_extensions: ['.pdf', '.txt'] },
       polling: { poll_interval_seconds: 5, poll_timeout_minutes: 15 },
     }),
+    getProjectDocTypes: vi.fn().mockResolvedValue({ doc_types: ['general'], default_doc_type: 'general' }),
+    getIngestJobs: vi.fn().mockResolvedValue([]),
+    getDeployStatus: vi.fn().mockResolvedValue({ overall: 'idle', services: [] }),
     submitIngestBatch: vi.fn(),
     getJobStatus: vi.fn(),
   },
@@ -65,14 +68,14 @@ describe('IngestDocumentsStep', () => {
   it('shows Azure modes when project has azure_storage', async () => {
     const props = {
       ...defaultProps,
-      project: { azure_storage: { account_name: 'a', account_key: 'k', container_name: 'c' } },
+      project: { azure_storage: { needed: true, account_name: 'a', account_key: 'k', container_name: 'c' } },
     }
     render(<IngestDocumentsStep {...props} />)
     await waitFor(() => screen.getByText(/\+ Add File/i))
     fireEvent.click(screen.getByText(/\+ Add File/i))
-    const modeSelect = screen.getByRole('combobox')
-    const options = Array.from(modeSelect.options).map(o => o.value)
-    expect(options).toContain('cloud_fetch_ingest')
+    const allSelects = screen.getAllByRole('combobox')
+    const allOptions = allSelects.flatMap(s => Array.from(s.options).map(o => o.value))
+    expect(allOptions).toContain('cloud_fetch_ingest')
   })
 
   it('shows skip button', async () => {
