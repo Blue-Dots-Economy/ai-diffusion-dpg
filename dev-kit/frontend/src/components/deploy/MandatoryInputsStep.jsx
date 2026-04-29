@@ -38,6 +38,50 @@ function SecretInput({ existingValue, onUpdate, placeholder, id, className }) {
   )
 }
 
+function PhoneNumberInput({ value, onChange }) {
+  const digits = (value || '').replace(/\D/g, '')
+  // Initialise: assume first 2 chars are country code if value already stored
+  const [cc, setCc] = React.useState(() => digits.length >= 2 ? digits.slice(0, 2) : '')
+  const [local, setLocal] = React.useState(() => digits.length >= 2 ? digits.slice(2) : digits)
+
+  function handleCc(raw) {
+    const cleaned = raw.replace(/\D/g, '').slice(0, 4)
+    setCc(cleaned)
+    onChange(cleaned + local)
+  }
+
+  function handleLocal(raw) {
+    const cleaned = raw.replace(/\D/g, '')
+    setLocal(cleaned)
+    onChange(cc + cleaned)
+  }
+
+  const inputClass = 'bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors'
+
+  return (
+    <div className="flex gap-2">
+      <div className="flex items-center">
+        <span className="text-gray-500 text-sm mr-1">+</span>
+        <input
+          type="text"
+          value={cc}
+          onChange={e => handleCc(e.target.value)}
+          placeholder="91"
+          maxLength={4}
+          className={`${inputClass} w-16`}
+        />
+      </div>
+      <input
+        type="text"
+        value={local}
+        onChange={e => handleLocal(e.target.value)}
+        placeholder="9240024444"
+        className={`${inputClass} flex-1`}
+      />
+    </div>
+  )
+}
+
 export default function MandatoryInputsStep({ data, updateData, onUpdate, project, onNext, onBack }) {
   const secrets = data.secrets || {}
 
@@ -174,7 +218,12 @@ export default function MandatoryInputsStep({ data, updateData, onUpdate, projec
                 <label htmlFor={`channel_${env_var}`} className="block text-xs text-gray-300 mb-1">
                   {label} {required && <span className="text-red-400">*</span>}
                 </label>
-                {secret ? (
+                {env_var === 'VOBIZ_FROM_NUMBER' ? (
+                  <PhoneNumberInput
+                    value={(secrets.channel_secrets || {})[env_var] || ''}
+                    onChange={v => updateChannelSecret(env_var, v)}
+                  />
+                ) : secret ? (
                   <SecretInput
                     id={`channel_${env_var}`}
                     existingValue={(secrets.channel_secrets || {})[env_var]}

@@ -122,6 +122,11 @@ export default function DeployWizard({ slug, onBack }) {
           return
         }
       }
+      const fromNumber = data.secrets?.channel_secrets?.['VOBIZ_FROM_NUMBER']
+      if (fromNumber && !/^[1-9]\d{6,14}$/.test(fromNumber)) {
+        setValidationError('Vobiz From Number is invalid — enter country code (e.g. 91) and a valid number.')
+        return
+      }
     }
     // Step 6: Deploy target must be selected
     if (!alreadyCompleted && step === 6 && !data.target) {
