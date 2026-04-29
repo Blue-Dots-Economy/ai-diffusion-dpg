@@ -149,9 +149,9 @@ preprocessing:
     user_state_confidence_threshold: 0.4   # below this, user-state classification stays sticky (previous state retained)
     domain_instruction: ""      # system prompt context for NLU classifier
     intents:                    # required — complete flat list of ALL intent identifiers
-      - greeting
-      - consent_granted
-      - consent_declined
+      # `unknown` is the only baseline intent. All other intents must be derived from
+      # the user's described use case and explicitly signed off by the user.
+      # Do NOT auto-include greeting, clarification, consent_granted, or consent_declined.
       - unknown
     entities: []                # entity names to extract e.g. [name, location, trade]
     sentiment_classes:          # sentiment classes to classify

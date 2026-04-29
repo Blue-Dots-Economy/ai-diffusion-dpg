@@ -22,17 +22,21 @@ from dev_kit.schemas.loader import get_valid_sections
 TOOL_DEFINITIONS: list[dict] = [
     {
         "name": "set_project_meta",
-        "description": "Set the project name, description, and domain slug. Call once you understand the use case from the Domain Overview phase.",
+        "description": (
+            "Set the project name, description, persona, and domain summary. "
+            "Call once you understand the use case from the Domain Overview phase. "
+            "NOTE: the project slug is fixed at create-time (derived from the original "
+            "project name) and cannot be changed here — it is the on-disk directory key."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Human-readable project name"},
-                "slug": {"type": "string", "description": "URL-safe identifier, lowercase with hyphens, e.g. rural-jobs-assistant"},
                 "description": {"type": "string", "description": "One-paragraph description of the use case"},
                 "user_persona": {"type": "string", "description": "Who the end users are"},
                 "domain_summary": {"type": "string", "description": "The domain and problem the AI agent addresses"},
             },
-            "required": ["name", "slug", "description"],
+            "required": ["name", "description"],
         },
     },
     {
@@ -590,8 +594,15 @@ class ToolHandler:
         return handler(tool_input)
 
     def _handle_set_project_meta(self, inputs: dict) -> str:
-        self._state["project_meta"].update(inputs)
-        return f"Project meta updated: {inputs.get('name', '')} ({inputs.get('slug', '')})"
+        # Slug is the on-disk directory key; renaming it here would orphan the
+        # directory created at project-create time. Strip any slug the LLM
+        # supplies and persist the rest. Other meta fields with their own
+        # dedicated handlers are also stripped to prevent accidental overwrite.
+        protected = {"slug", "current_phase", "phases_completed", "agent_type", "phase_decisions"}
+        clean = {k: v for k, v in inputs.items() if k not in protected}
+        self._update_project_meta(clean)
+        slug = self._read_project_meta().get("slug", "")
+        return f"Project meta updated: {clean.get('name', '')} ({slug})"
 
     def _handle_set_agent_type(self, inputs: dict) -> str:
         """Record the project's agent type in ``_meta/project.json``.
