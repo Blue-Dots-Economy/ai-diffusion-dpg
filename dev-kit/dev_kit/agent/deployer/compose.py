@@ -207,19 +207,11 @@ async def run_compose_up(
             env["REDIS_URL"] = f"redis://:{secrets['redis_password']}@redis:6379/0"
         if secrets.get("grafana_admin_password"):
             env["GF_SECURITY_ADMIN_PASSWORD"] = secrets["grafana_admin_password"]
-        if secrets.get("google_client_id"):
-            env["GOOGLE_CLIENT_ID"] = secrets["google_client_id"]
         # Auto-generate a session secret when not provided — Google auth requires it.
         # Falls back to the value already in os.environ (e.g. set on the VM) so
         # redeploying the same stack preserves existing login sessions.
         env.setdefault("REACH_SESSION_SECRET",
                        secrets.get("reach_session_secret") or _secrets_module.token_urlsafe(32))
-        # Derive PUBLIC_URL from NGROK_DOMAIN when available so the voice container
-        # starts with a known public URL (needed for Vobiz webhook registration).
-        # A fixed ngrok domain (paid account) avoids the chicken-and-egg problem
-        # where the voice server needs PUBLIC_URL before ngrok has started.
-        if not env.get("PUBLIC_URL") and env.get("NGROK_DOMAIN"):
-            env["PUBLIC_URL"] = f"https://{env['NGROK_DOMAIN']}"
         # Upload chain auth — resolves ${VAR:-} placeholders in the compose file
         _upload_chain = {
             "devkit_to_reach_api_key": "DEVKIT_TO_REACH_API_KEY",
@@ -245,6 +237,10 @@ async def run_compose_up(
         for secret_key, env_var in _azure.items():
             if secrets.get(secret_key):
                 env[env_var] = secrets[secret_key]
+        # Channel credentials — inject each non-empty value as its env var name
+        for env_var, value in secrets.get("channel_secrets", {}).items():
+            if value:
+                env[env_var] = value
 
     try:
         proc = await asyncio.create_subprocess_exec(
