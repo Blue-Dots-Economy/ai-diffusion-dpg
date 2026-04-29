@@ -114,6 +114,13 @@ export default function DeployWizard({ slug, onBack }) {
           return
         }
       }
+      const channelSecrets = project?.channel_secrets || []
+      for (const { env_var, label } of channelSecrets) {
+        if (!data.secrets?.channel_secrets?.[env_var]?.trim()) {
+          setValidationError(`${label} is required.`)
+          return
+        }
+      }
     }
     // Step 6: Deploy target must be selected
     if (!alreadyCompleted && step === 6 && !data.target) {
