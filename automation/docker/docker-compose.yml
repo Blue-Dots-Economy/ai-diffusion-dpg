@@ -187,12 +187,19 @@ services:
       - VOBIZ_FROM_NUMBER=${VOBIZ_FROM_NUMBER:-}
       - RAYA_API_KEY=${RAYA_API_KEY:-}
       - PUBLIC_URL=${PUBLIC_URL:-}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
     ports:
       - "8080:8080"
     networks:
       - dpg_net
     volumes:
     - ../../dev-kit/configs:/app/configs
+    # Persist the RSA keypair used to decrypt browser-encrypted secrets.
+    # Without this mount the key is regenerated on every container restart,
+    # invalidating the public key cached in any open browser tab and causing
+    # /deploy/preview and /deploy/execute to 500 with "Decryption failed"
+    # until the user hard-refreshes.
+    - devkit_keystore:/root/.devkit
     # Mount the host docker socket so the dev_kit container can drive
     # `docker compose` against the host daemon (deploy / preview / status
     # all shell out to `docker`). Without this the CLI errors with
@@ -744,3 +751,4 @@ volumes:
   chroma_data:                             # ChromaDB embeddings, persisted across container restarts
   memgraph_data:                           # Memgraph graph database, persisted across container restarts
   kb_data:                                 # KB document upload staging area (shared: reach-layer → knowledge-engine)
+  devkit_keystore:                         # dev_kit RSA keypair for browser-side secret encryption (~/.devkit)
