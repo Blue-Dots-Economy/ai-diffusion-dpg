@@ -2090,11 +2090,22 @@ async def get_deploy_status(slug: str) -> dict:
                 # Return the in-memory state so the UI keeps showing queued/starting
                 # instead of falsely declaring the stack destroyed.
                 return state.to_response()
+            if state.overall == "destroying":
+                # All containers stopped — destroy complete.
+                from dev_kit.agent.deployer.state import clear_state
+                clear_state(slug)
+                return {"services": [], "overall": "idle"}
             # Containers are gone (e.g. docker compose down was run externally).
             # Clear stale in-memory state so next deploy starts fresh.
             from dev_kit.agent.deployer.state import clear_state
             clear_state(slug)
             return {"services": [], "overall": "idle"}
+        if state.overall == "destroying":
+            # Containers still exist but teardown is in progress — don't
+            # recompute overall from live Docker state (services still appear
+            # healthy during the shutdown window, which would flip the UI back
+            # to "Deployment Complete").
+            return state.to_response()
         if containers:
             for c in containers:
                 compose_name = c.get("Service", c.get("Name", ""))
