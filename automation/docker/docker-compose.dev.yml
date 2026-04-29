@@ -96,75 +96,32 @@ services:
     container_name: dev_kit
     environment:
       - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
-      # Upload chain auth — dev-kit acts as upload orchestrator.
-      # Generate with: openssl rand -hex 32
-      - DEVKIT_TO_REACH_API_KEY=${DEVKIT_TO_REACH_API_KEY:-}
-      - KE_TO_DEVKIT_API_KEY=${KE_TO_DEVKIT_API_KEY:-}
-      # Ingest proxy target. dev_kit and the deployed reach_layer_web run
-      # in different compose projects (different networks), so using the
-      # service name `reach_layer_web` from inside dev_kit either fails to
-      # resolve or resolves to a non-routable IP — POST /api/ingest/submit
-      # then returns 504. Default to host.docker.internal:8005 (mapped via
-      # extra_hosts: host-gateway below) which lands on the host's
-      # published 8005 port from any compose project. Override via the
-      # shell only if you've manually wired both projects to a shared
-      # network.
       - REACH_LAYER_URL=${REACH_LAYER_URL:-http://host.docker.internal:8005}
-      # Absolute host path of the repo. dev_kit rewrites the relative
-      # bind sources in the deployed compose file to host-absolute
-      # paths so the host docker daemon can resolve them when starting
-      # services. Required when dev_kit runs in a container and drives
-      # the host daemon via /var/run/docker.sock.
-      # Default: ${PWD}/../.. assumes `docker compose -f .../docker-compose.dev.yml`
-      # is launched from the automation/docker directory (per CLAUDE.md).
       - HOST_REPO_ROOT=${HOST_REPO_ROOT:-${PWD}}
-      # Forwarded so dev_kit's `docker compose up` subprocess (which inherits
-      # os.environ via run_compose_up) can substitute ${NGROK_AUTHTOKEN:-} in
-      # the deployed ngrok service. Without this the deployed ngrok starts
-      # with an empty authtoken and crashes with ERR_NGROK_4018.
-      # Set on the host before bringing dev_kit up:
-      #   export NGROK_AUTHTOKEN=<token from https://dashboard.ngrok.com/authtokens>
       - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
-      # Voice channel credentials. The deployed reach_layer_voice service
-      # references ${VOBIZ_AUTH_ID:-} / ${VOBIZ_AUTH_TOKEN:-} / etc., and
-      # CampaignManager hard-fails on startup with
-      #   ValueError: reach_layer.channels.voice.vobiz.auth_id is required
-      # when those env vars are empty. Forward them through dev_kit so the
-      # `docker compose up` subprocess can substitute them.
-      # Set on the host before bringing dev_kit up (only required when the
-      # voice channel is selected at deploy time):
-      #   export VOBIZ_AUTH_ID=...
-      #   export VOBIZ_AUTH_TOKEN=...
-      #   export VOBIZ_FROM_NUMBER=+...
-      #   export RAYA_API_KEY=...
-      #   export PUBLIC_URL=https://<your-ngrok-host>   # optional override
       - VOBIZ_AUTH_ID=${VOBIZ_AUTH_ID:-}
       - VOBIZ_AUTH_TOKEN=${VOBIZ_AUTH_TOKEN:-}
       - VOBIZ_FROM_NUMBER=${VOBIZ_FROM_NUMBER:-}
       - RAYA_API_KEY=${RAYA_API_KEY:-}
       - PUBLIC_URL=${PUBLIC_URL:-}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
     ports:
       - "8080:8080"
     networks:
       - dpg_net
     volumes:
     - ../../dev-kit/configs:/app/configs
+    # Persist the RSA keypair used to decrypt browser-encrypted secrets.
+    # Without this mount the key is regenerated on every container restart,
+    # invalidating the public key cached in any open browser tab and causing
+    # /deploy/preview and /deploy/execute to 500 with "Decryption failed"
+    # until the user hard-refreshes.
+    - devkit_keystore:/root/.devkit
     # Mount the host docker socket so the dev_kit container can drive
     # `docker compose` against the host daemon (deploy / preview / status
     # all shell out to `docker`). Without this the CLI errors with
     # "failed to connect to the docker API at unix:///var/run/docker.sock".
     - /var/run/docker.sock:/var/run/docker.sock
-    # Reuse the host operator's `docker login` credentials so dev_kit's
-    # CLI is authenticated when it pulls images. Without this, deploys
-    # that pull >100 images / 6h hit Docker Hub's anonymous rate limit
-    # ("toomanyrequests: You have reached your unauthenticated pull rate
-    # limit"). The Dockerfile in dev-kit/Dockerfile runs as root, so the
-    # config lands at /root/.docker/config.json.
-    # ${HOME} resolves on the host before compose sends to the daemon;
-    # if the host operator hasn't run `docker login`, the file is absent
-    # and compose will refuse to start dev_kit — drop the line in that
-    # case (or run `docker login` first).
-    - ${HOME}/.docker/config.json:/root/.docker/config.json:ro
     # On Linux dev_kit's container can't reach the host's published ports
     # via `localhost` (its loopback is its own). The ingest proxy forwards
     # uploads to reach_layer_web, which lives in a different compose
@@ -669,3 +626,4 @@ volumes:
   chroma_data:                             # ChromaDB embeddings, persisted across container restarts
   memgraph_data:                           # Memgraph graph database, persisted across container restarts
   kb_data:                                 # KB document upload staging area (shared: reach-layer → knowledge-engine)
+  devkit_keystore:                         # dev_kit RSA keypair for browser-side secret encryption (~/.devkit)

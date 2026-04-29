@@ -128,6 +128,7 @@ class ParamDefinition(BaseModel):
     required: bool = False
     description: str = ""
     value: Optional[object] = None
+    default: Optional[object] = None
 
 
 class EndpointDefinition(BaseModel):
