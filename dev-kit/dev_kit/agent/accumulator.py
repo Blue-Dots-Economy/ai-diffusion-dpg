@@ -407,12 +407,19 @@ class ConfigAccumulator:
         return deepcopy(result)
 
     def set_reach_channel_selection(self, channels: list[str]) -> None:
-        """Store the selected deployment channels in reach_layer config.
+        """Store the selected deployment channels and write the web service mode.
 
         Args:
             channels: List of selected channel names (e.g. ['web', 'cli']).
+                When 'web' is not in the list, sets reach_layer.channels.web.mode
+                to 'routing_only' so the web service boots without the full UI stack.
         """
         self._data["reach_layer"]["_selected_channels"] = list(channels)
+        web_mode = "full" if "web" in channels else "routing_only"
+        reach_cfg = self._data["reach_layer"].setdefault("reach_layer", {})
+        channels_cfg = reach_cfg.setdefault("channels", {})
+        web_cfg = channels_cfg.setdefault("web", {})
+        web_cfg["mode"] = web_mode
 
     def get_reach_channel_selection(self) -> list[str]:
         """Return the selected deployment channels, or empty list if not yet set.
