@@ -8,6 +8,7 @@ agent_core/src/llm_wrapper/claude_wrapper.py.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -23,8 +24,12 @@ from src.chat_provider.types import (
     ChatRequest,
     ChatResponse,
     Message,
+    OutputFormat,
     TextBlock,
+    TextBlock as _TextBlock,
+    TokenUsage,
     ToolDefinition,
+    ToolUseBlock,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,6 +45,23 @@ _CACHE_MIN_CHARS = 3000
 # (it's not, since the model has a default of 4096, but we keep the
 # constant so the provider can override consistently if needed).
 _DEFAULT_MAX_TOKENS = 4096
+
+
+def _safe_int(value) -> int:
+    """Coerce a possibly-missing usage field to int.
+
+    Mirrors the behaviour of llm_wrapper.claude_wrapper._safe_int — keeps
+    MagicMock and None values from poisoning metric streams.
+    """
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    return 0
 
 
 class AnthropicChatProvider(ChatProviderBase):
@@ -339,3 +361,60 @@ class AnthropicChatProvider(ChatProviderBase):
             }
 
         raise AssertionError(f"unknown block type {block.type!r}")
+
+    def _from_wire(self, raw, output_format: OutputFormat | None) -> ChatResponse:
+        """Translate an Anthropic Message into a neutral ChatResponse.
+
+        When output_format was set on the request, the response was
+        forced into a respond_with_json tool call. We unwrap that here:
+        parsed_output is set to the tool input, content is replaced with
+        a single TextBlock carrying the JSON string, and stop_reason is
+        normalised to "end_turn" so the caller sees a clean response
+        rather than tool_use semantics.
+        """
+        content_blocks: list = []
+        synthetic_input: dict | None = None
+        for block in raw.content:
+            if block.type == "text":
+                content_blocks.append(_TextBlock(text=block.text))
+            elif block.type == "tool_use":
+                if (
+                    output_format is not None
+                    and block.name == "respond_with_json"
+                ):
+                    synthetic_input = block.input  # already a dict
+                else:
+                    content_blocks.append(
+                        ToolUseBlock(
+                            tool_use_id=block.id,
+                            tool_name=block.name,
+                            input=block.input,
+                        )
+                    )
+
+        usage = raw.usage
+        token_usage = TokenUsage(
+            input_tokens=_safe_int(getattr(usage, "input_tokens", 0)),
+            output_tokens=_safe_int(getattr(usage, "output_tokens", 0)),
+            cache_read_tokens=_safe_int(getattr(usage, "cache_read_input_tokens", 0)),
+            cache_creation_tokens=_safe_int(getattr(usage, "cache_creation_input_tokens", 0)),
+        )
+
+        if output_format is not None and synthetic_input is not None:
+            return ChatResponse(
+                content=[_TextBlock(text=json.dumps(synthetic_input))],
+                parsed_output=synthetic_input,
+                stop_reason="end_turn",
+                model_used=self._active_model,
+                usage=token_usage,
+            )
+
+        # Standard path
+        stop_reason = raw.stop_reason or "end_turn"
+        return ChatResponse(
+            content=content_blocks,
+            parsed_output=None,
+            stop_reason=stop_reason,
+            model_used=self._active_model,
+            usage=token_usage,
+        )

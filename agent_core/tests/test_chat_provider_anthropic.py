@@ -273,3 +273,101 @@ class TestToWire:
         )
         wire = p._to_wire(req)
         assert wire["max_tokens"] == 200
+
+
+from unittest.mock import MagicMock
+
+
+def _mk_anthropic_message(
+    text: str | None = None,
+    tool_use: dict | None = None,
+    stop_reason: str = "end_turn",
+    input_tokens: int = 10,
+    output_tokens: int = 5,
+    cache_read: int = 0,
+    cache_create: int = 0,
+) -> MagicMock:
+    """Build a MagicMock that mimics anthropic.types.Message."""
+    raw = MagicMock()
+    blocks: list = []
+    if text is not None:
+        b = MagicMock()
+        b.type = "text"
+        b.text = text
+        blocks.append(b)
+    if tool_use is not None:
+        b = MagicMock()
+        b.type = "tool_use"
+        b.id = tool_use["id"]
+        b.name = tool_use["name"]
+        b.input = tool_use["input"]
+        blocks.append(b)
+    raw.content = blocks
+    raw.stop_reason = stop_reason
+    raw.usage.input_tokens = input_tokens
+    raw.usage.output_tokens = output_tokens
+    raw.usage.cache_read_input_tokens = cache_read
+    raw.usage.cache_creation_input_tokens = cache_create
+    return raw
+
+
+class TestFromWire:
+    def test_text_only(self):
+        p = _make_provider()
+        raw = _mk_anthropic_message(text="hello back", input_tokens=12, output_tokens=4)
+        resp = p._from_wire(raw, output_format=None)
+        assert resp.stop_reason == "end_turn"
+        assert resp.model_used == "claude-sonnet-4-5-20250514"
+        assert len(resp.content) == 1
+        assert resp.content[0].type == "text"
+        assert resp.content[0].text == "hello back"
+        assert resp.parsed_output is None
+        assert resp.usage.input_tokens == 12
+        assert resp.usage.output_tokens == 4
+        assert resp.usage.cache_read_tokens == 0
+        assert resp.usage.cache_creation_tokens == 0
+
+    def test_tool_use(self):
+        p = _make_provider()
+        raw = _mk_anthropic_message(
+            text="checking",
+            tool_use={"id": "t_1", "name": "lookup", "input": {"q": "x"}},
+            stop_reason="tool_use",
+        )
+        resp = p._from_wire(raw, output_format=None)
+        assert resp.stop_reason == "tool_use"
+        assert len(resp.content) == 2
+        assert resp.content[1].type == "tool_use"
+        assert resp.content[1].tool_name == "lookup"
+
+    def test_output_format_unwraps_synthetic_tool_use(self):
+        p = _make_provider()
+        of = OutputFormat(schema={"type": "object", "properties": {"answer": {"type": "string"}}})
+        raw = _mk_anthropic_message(
+            tool_use={"id": "t_x", "name": "respond_with_json", "input": {"answer": "42"}},
+            stop_reason="tool_use",
+        )
+        resp = p._from_wire(raw, output_format=of)
+        assert resp.parsed_output == {"answer": "42"}
+        # Stop reason is normalised back to end_turn — caller sees a clean response.
+        assert resp.stop_reason == "end_turn"
+        # Content carries a synthesised TextBlock with the JSON string.
+        assert len(resp.content) == 1
+        assert resp.content[0].type == "text"
+        assert '"answer"' in resp.content[0].text
+
+    def test_cache_token_fields_use_safe_int(self):
+        p = _make_provider()
+        raw = _mk_anthropic_message()
+        # Simulate a missing field (older SDK / mocked response without cache fields)
+        del raw.usage.cache_read_input_tokens
+        del raw.usage.cache_creation_input_tokens
+        resp = p._from_wire(raw, output_format=None)
+        assert resp.usage.cache_read_tokens == 0
+        assert resp.usage.cache_creation_tokens == 0
+
+    def test_max_tokens_stop_reason_passthrough(self):
+        p = _make_provider()
+        raw = _mk_anthropic_message(text="truncated", stop_reason="max_tokens")
+        resp = p._from_wire(raw, output_format=None)
+        assert resp.stop_reason == "max_tokens"
