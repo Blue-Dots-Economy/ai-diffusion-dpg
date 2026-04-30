@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 import anthropic
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import before_sleep_log, retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from dev_kit.agent.accumulator import PHASES, ConfigAccumulator
 from dev_kit.agent.checkpoints import build_summary, list_checkpoints, restore_checkpoint, save_checkpoint
@@ -35,6 +35,7 @@ _llm_retry = retry(
     stop=stop_after_attempt(2),
     wait=wait_exponential(multiplier=1, min=1, max=4),
     reraise=True,
+    before_sleep=before_sleep_log(logger, logging.WARNING),
 )
 
 
