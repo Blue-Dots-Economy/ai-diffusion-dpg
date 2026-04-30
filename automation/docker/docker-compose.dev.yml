@@ -31,7 +31,7 @@ services:
   # Action Gateway — external API stub / ONEST mock (port 9999)
   # ---------------------------------------------------------------------------
   action_gateway:
-    image: sanketikahub/dpg-action-gateway:latest
+    image: srivatsak2002/dpg-action-gateway:latest
     pull_policy: missing
     container_name: action_gateway
     environment:
@@ -148,7 +148,7 @@ services:
   # On startup: runs ingest first, then starts the server.
   # ---------------------------------------------------------------------------
   knowledge_engine:
-    image: sanketikahub/dpg-knowledge-engine:latest
+    image: srivatsak2002/dpg-knowledge-engine:latest
     pull_policy: missing
     container_name: knowledge_engine
     environment:
@@ -270,11 +270,14 @@ services:
   # reach_layer_base HTTP helpers. Deploy only the channel(s) you need.
   # ---------------------------------------------------------------------------
   reach_layer_web:
-    image: sanketikahub/dpg-reach-layer-web:latest
+    image: srivatsak2002/dpg-reach-layer-web:latest
     pull_policy: missing
     container_name: reach_layer_web
     environment:
       - CONFIG_FOLDER=/app/config
+      # routing_only = health + ingest proxy only (no SPA, no auth, no chat).
+      # full = complete web channel. Injected automatically by the deploy wizard.
+      - REACH_LAYER_WEB_MODE=${REACH_LAYER_WEB_MODE:-full}
       # Optional when auth.enabled: false (default). Required and validated by server.py
       # at startup when auth.enabled: true — export both before running docker compose.
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
