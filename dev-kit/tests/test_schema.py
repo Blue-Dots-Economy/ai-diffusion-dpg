@@ -31,6 +31,7 @@ from dev_kit.schema import (
     TrustConfig,
     TrustLayerConfig,
     validate_partial,
+    WebChannelConfig,
 )
 from dev_kit.loader import load_agent_core, load_observability_layer, load_trust_layer
 
@@ -582,9 +583,6 @@ class TestLoaderIntegration:
         assert "knowledge_retrieval" in internal_names
 
 
-from dev_kit.schema import WebChannelConfig
-
-
 class TestWebChannelConfigMode:
     def test_default_mode_is_full(self):
         cfg = WebChannelConfig()
@@ -599,6 +597,5 @@ class TestWebChannelConfigMode:
         assert cfg.mode == "full"
 
     def test_invalid_mode_raises(self):
-        from pydantic import ValidationError
         with pytest.raises(ValidationError):
             WebChannelConfig(mode="partial")
