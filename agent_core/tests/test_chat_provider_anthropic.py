@@ -66,3 +66,210 @@ class TestInit:
         with patch("anthropic.Anthropic"), patch("anthropic.AsyncAnthropic"):
             p = AnthropicChatProvider(VALID_CONFIG)
         assert p.get_active_model() == "claude-sonnet-4-5-20250514"
+
+
+from src.chat_provider.types import (
+    ChatRequest,
+    ImageBlock,
+    ImageSource,
+    Message,
+    OutputFormat,
+    SystemPrompt,
+    TextBlock,
+    ToolDefinition,
+    ToolResultBlock,
+    ToolUseBlock,
+)
+
+
+def _make_provider(features: dict | None = None) -> AnthropicChatProvider:
+    cfg = dict(VALID_CONFIG)
+    if features is not None:
+        cfg["features"] = features
+    with patch("anthropic.Anthropic"), patch("anthropic.AsyncAnthropic"):
+        return AnthropicChatProvider(cfg)
+
+
+class TestToWire:
+    def test_minimal_text_request(self):
+        p = _make_provider()
+        req = ChatRequest(messages=[Message(role="user", content=[TextBlock(text="hi")])])
+        wire = p._to_wire(req)
+        assert wire == {
+            "model": "claude-sonnet-4-5-20250514",
+            "max_tokens": 4096,
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+            "timeout": 5.0,
+        }
+
+    def test_system_prompt_with_cache_hint_long_enough(self):
+        p = _make_provider()
+        long_text = "x" * 3500   # over _CACHE_MIN_CHARS
+        req = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="hi")])],
+            system=SystemPrompt(blocks=[TextBlock(text=long_text, cache_hint="session")]),
+        )
+        wire = p._to_wire(req)
+        assert wire["system"] == [
+            {"type": "text", "text": long_text, "cache_control": {"type": "ephemeral"}}
+        ]
+
+    def test_system_prompt_short_skips_cache_marker(self):
+        p = _make_provider()
+        short = "you are helpful"
+        req = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="hi")])],
+            system=SystemPrompt(blocks=[TextBlock(text=short, cache_hint="session")]),
+        )
+        wire = p._to_wire(req)
+        assert wire["system"] == [{"type": "text", "text": short}]
+
+    def test_system_prompt_caching_disabled_drops_marker(self):
+        p = _make_provider(features={"prompt_cache": False, "streaming": True, "image_input": True})
+        long_text = "x" * 3500
+        req = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="hi")])],
+            system=SystemPrompt(blocks=[TextBlock(text=long_text, cache_hint=None)]),
+        )
+        wire = p._to_wire(req)
+        assert "cache_control" not in wire["system"][0]
+
+    def test_tool_definition_passthrough(self):
+        p = _make_provider()
+        td = ToolDefinition(
+            name="get_x",
+            description="get x",
+            input_schema={"type": "object", "properties": {"q": {"type": "string"}}},
+        )
+        req = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="hi")])],
+            tools=[td],
+        )
+        wire = p._to_wire(req)
+        assert wire["tools"] == [
+            {
+                "name": "get_x",
+                "description": "get x",
+                "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}},
+            }
+        ]
+
+    def test_tool_choice_auto(self):
+        p = _make_provider()
+        td = ToolDefinition(name="x", description="d", input_schema={"type": "object"})
+        req = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="hi")])],
+            tools=[td],
+            tool_choice="auto",
+        )
+        wire = p._to_wire(req)
+        assert wire["tool_choice"] == {"type": "auto"}
+
+    def test_tool_choice_any(self):
+        p = _make_provider()
+        td = ToolDefinition(name="x", description="d", input_schema={"type": "object"})
+        req = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="hi")])],
+            tools=[td],
+            tool_choice="any",
+        )
+        wire = p._to_wire(req)
+        assert wire["tool_choice"] == {"type": "any"}
+
+    def test_tool_choice_named(self):
+        p = _make_provider()
+        td = ToolDefinition(name="my_tool", description="d", input_schema={"type": "object"})
+        req = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="hi")])],
+            tools=[td],
+            tool_choice="my_tool",
+        )
+        wire = p._to_wire(req)
+        assert wire["tool_choice"] == {"type": "tool", "name": "my_tool"}
+
+    def test_tool_choice_none_drops_tools(self):
+        p = _make_provider()
+        td = ToolDefinition(name="x", description="d", input_schema={"type": "object"})
+        req = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="hi")])],
+            tools=[td],
+            tool_choice="none",
+        )
+        wire = p._to_wire(req)
+        assert "tools" not in wire and "tool_choice" not in wire
+
+    def test_image_block_url(self):
+        p = _make_provider()
+        img = ImageBlock(source=ImageSource(kind="url", url="https://x/y.png"))
+        req = ChatRequest(messages=[Message(role="user", content=[img])])
+        wire = p._to_wire(req)
+        assert wire["messages"][0]["content"][0] == {
+            "type": "image",
+            "source": {"type": "url", "url": "https://x/y.png"},
+        }
+
+    def test_image_block_base64(self):
+        p = _make_provider()
+        img = ImageBlock(source=ImageSource(kind="base64", media_type="image/png", data="ABC=="))
+        req = ChatRequest(messages=[Message(role="user", content=[img])])
+        wire = p._to_wire(req)
+        assert wire["messages"][0]["content"][0] == {
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": "ABC=="},
+        }
+
+    def test_assistant_message_with_tool_use_and_tool_result(self):
+        p = _make_provider()
+        req = ChatRequest(
+            messages=[
+                Message(role="user", content=[TextBlock(text="look it up")]),
+                Message(
+                    role="assistant",
+                    content=[
+                        TextBlock(text="checking"),
+                        ToolUseBlock(tool_use_id="t_1", tool_name="lookup", input={"q": "x"}),
+                    ],
+                ),
+                Message(
+                    role="user",
+                    content=[ToolResultBlock(tool_use_id="t_1", content="42")],
+                ),
+            ]
+        )
+        wire = p._to_wire(req)
+        assert wire["messages"][1]["content"] == [
+            {"type": "text", "text": "checking"},
+            {"type": "tool_use", "id": "t_1", "name": "lookup", "input": {"q": "x"}},
+        ]
+        assert wire["messages"][2]["content"] == [
+            {"type": "tool_result", "tool_use_id": "t_1", "content": "42", "is_error": False}
+        ]
+
+    def test_output_format_emulated_via_tool_coercion(self):
+        p = _make_provider()
+        of = OutputFormat(
+            schema={"type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"]}
+        )
+        req = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="answer")])],
+            output_format=of,
+        )
+        wire = p._to_wire(req)
+        # A synthetic tool is appended and tool_choice forces it.
+        assert wire["tools"] == [
+            {
+                "name": "respond_with_json",
+                "description": "Return the response as JSON conforming to the schema.",
+                "input_schema": of.schema,
+            }
+        ]
+        assert wire["tool_choice"] == {"type": "tool", "name": "respond_with_json"}
+
+    def test_max_tokens_passed_through(self):
+        p = _make_provider()
+        req = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="hi")])],
+            max_tokens=200,
+        )
+        wire = p._to_wire(req)
+        assert wire["max_tokens"] == 200
