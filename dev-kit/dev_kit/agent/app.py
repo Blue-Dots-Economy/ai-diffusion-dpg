@@ -209,6 +209,7 @@ def _rehydrate_upload_chain_from_running_containers() -> bool:
                 "status": "failure",
                 "error": str(exc),
             },
+            exc_info=True,
         )
         return False
 
@@ -434,6 +435,7 @@ def _load_project_meta(slug: str) -> dict:
         logger.error(
             "project_meta_corrupt",
             extra={"operation": "_load_project_meta", "status": "failure", "error": str(exc), "latency_ms": 0},
+            exc_info=True,
         )
         raise HTTPException(status_code=500, detail="Project metadata is corrupt") from exc
 
@@ -504,6 +506,7 @@ def list_projects() -> list[dict]:
                         "latency_ms": 0,
                         "path": str(meta_file),
                     },
+                    exc_info=True,
                 )
     return projects
 
@@ -574,6 +577,7 @@ async def chat(slug: str, body: ChatRequest) -> dict:
                 "latency_ms": int((time.time() - start) * 1000),
                 "slug": slug,
             },
+            exc_info=True,
         )
         raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
     except Exception as exc:
@@ -675,6 +679,7 @@ def preview_checkpoint(slug: str, phase: str) -> list[dict]:
         logger.error(
             "checkpoint_preview_corrupt",
             extra={"operation": "preview_checkpoint", "status": "failure", "error": str(exc), "latency_ms": 0},
+            exc_info=True,
         )
         raise HTTPException(status_code=404, detail=f"Checkpoint '{phase}' accumulator unreadable") from exc
 
@@ -1855,8 +1860,9 @@ async def _run_docker_deploy(
                 state.set_service(svc_name, "failed", result["stderr"][:200])
             state.overall = "failed"
             logger.error(
-                "docker_deploy_failed",
-                extra={"operation": "_run_docker_deploy", "status": "failure", "error": result["stderr"][:500]},
+                "docker_deploy_failed: %s",
+                result["stderr"][:500],
+                extra={"operation": "_run_docker_deploy", "status": "failure"},
             )
     except Exception as exc:
         for svc_name in state.services:
@@ -1865,6 +1871,7 @@ async def _run_docker_deploy(
         logger.error(
             "docker_deploy_exception",
             extra={"operation": "_run_docker_deploy", "status": "failure", "error": str(exc)},
+            exc_info=True,
         )
 
 
@@ -2002,12 +2009,12 @@ async def _run_k8s_deploy(slug: str, state, secrets: dict, resources: dict, kube
                 else:
                     state.set_service(svc_name, "failed", result["stderr"][:200])
                     logger.error(
-                        "k8s_deploy_service_failed",
+                        "k8s_deploy_service_failed: %s",
+                        result["stderr"][:500],
                         extra={
                             "operation": "_run_k8s_deploy",
                             "status": "failure",
                             "service": svc_name,
-                            "error": result["stderr"][:500],
                         },
                     )
 
@@ -2026,6 +2033,7 @@ async def _run_k8s_deploy(slug: str, state, secrets: dict, resources: dict, kube
         logger.error(
             "k8s_deploy_exception",
             extra={"operation": "_run_k8s_deploy", "status": "failure", "error": str(exc)},
+            exc_info=True,
         )
 
 
@@ -2060,6 +2068,7 @@ async def _get_restart_count(container_name: str) -> int:
         stdout, _ = await proc.communicate()
         return int(stdout.decode().strip())
     except Exception:
+        logger.warning("get_restart_count_failed", extra={"operation": "_get_restart_count", "container": container_name}, exc_info=True)
         return 0
 
 
@@ -2391,6 +2400,7 @@ async def _run_docker_destroy(
                     logger.warning(
                         "devkit.destroy_compose_cleanup_failed",
                         extra={"operation": "_run_docker_destroy", "error": str(exc)},
+                        exc_info=True,
                     )
             clear_state(slug)
             logger.info(
@@ -2407,12 +2417,9 @@ async def _run_docker_destroy(
             if state:
                 state.overall = "failed"
             logger.error(
-                "devkit.destroy_failed",
-                extra={
-                    "operation": "_run_docker_destroy",
-                    "status": "failure",
-                    "error": result["stderr"][:500],
-                },
+                "devkit.destroy_failed: %s",
+                result["stderr"][:500],
+                extra={"operation": "_run_docker_destroy", "status": "failure"},
             )
     except Exception as exc:
         state = get_state(slug)
@@ -2421,6 +2428,7 @@ async def _run_docker_destroy(
         logger.error(
             "devkit.destroy_exception",
             extra={"operation": "_run_docker_destroy", "status": "failure", "error": str(exc)},
+            exc_info=True,
         )
 
 
@@ -2543,18 +2551,21 @@ async def ingest_submit(request: Request):
         logger.error(
             "devkit.ingest_submit_unreachable",
             extra={"operation": "devkit.ingest_submit", "status": "failure", "error": str(e)},
+            exc_info=True,
         )
         raise HTTPException(503, "Reach Layer is unreachable") from e
     except _httpx.TimeoutException as e:
         logger.error(
             "devkit.ingest_submit_timeout",
             extra={"operation": "devkit.ingest_submit", "status": "failure", "error": str(e)},
+            exc_info=True,
         )
         raise HTTPException(504, "Reach Layer timed out") from e
     except _httpx.HTTPError as e:
         logger.error(
             "devkit.ingest_submit_error",
             extra={"operation": "devkit.ingest_submit", "status": "failure", "error": str(e)},
+            exc_info=True,
         )
         raise HTTPException(502, "Upstream error communicating with Reach Layer") from e
 
@@ -2606,15 +2617,22 @@ async def ingest_job_status(job_id: str):
         logger.error(
             "devkit.ingest_job_status_unreachable",
             extra={"operation": "devkit.ingest_job_status", "status": "failure", "error": str(e)},
+            exc_info=True,
         )
         raise HTTPException(503, "Reach Layer is unreachable") from e
     except _httpx.TimeoutException as e:
         logger.error(
             "devkit.ingest_job_status_timeout",
             extra={"operation": "devkit.ingest_job_status", "status": "failure", "error": str(e)},
+            exc_info=True,
         )
         raise HTTPException(504, "Reach Layer timed out") from e
     except _httpx.HTTPError as e:
+        logger.error(
+            "devkit.ingest_job_status_error",
+            extra={"operation": "devkit.ingest_job_status", "status": "failure", "error": str(e)},
+            exc_info=True,
+        )
         raise HTTPException(502, "Upstream error communicating with Reach Layer") from e
 
 
@@ -2663,15 +2681,22 @@ async def list_ingest_jobs(limit: int = 100):
         logger.error(
             "devkit.list_ingest_jobs_unreachable",
             extra={"operation": "devkit.list_ingest_jobs", "status": "failure", "error": str(e)},
+            exc_info=True,
         )
         raise HTTPException(503, "Reach Layer is unreachable") from e
     except _httpx.TimeoutException as e:
         logger.error(
             "devkit.list_ingest_jobs_timeout",
             extra={"operation": "devkit.list_ingest_jobs", "status": "failure", "error": str(e)},
+            exc_info=True,
         )
         raise HTTPException(504, "Reach Layer timed out") from e
     except _httpx.HTTPError as e:
+        logger.error(
+            "devkit.list_ingest_jobs_error",
+            extra={"operation": "devkit.list_ingest_jobs", "status": "failure", "error": str(e)},
+            exc_info=True,
+        )
         raise HTTPException(502, "Upstream error communicating with Reach Layer") from e
 
 
@@ -2773,6 +2798,7 @@ def _append_callback_to_ingest_log(
                 "status": "failure",
                 "error": str(e),
             },
+            exc_info=True,
         )
 
 

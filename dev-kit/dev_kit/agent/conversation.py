@@ -84,6 +84,7 @@ class ConversationEngine:
                         "error": str(exc),
                         "path": str(acc_path),
                     },
+                    exc_info=True,
                 )
 
         meta_path = self._project_path / "_meta" / "project.json"
@@ -101,6 +102,7 @@ class ConversationEngine:
                         "error": str(exc),
                         "path": str(meta_path),
                     },
+                    exc_info=True,
                 )
 
         # Restore conversation history — prefer the persisted history file over
@@ -117,6 +119,7 @@ class ConversationEngine:
                         "status": "failure",
                         "error": str(exc),
                     },
+                    exc_info=True,
                 )
                 self._history = self._load_history_from_checkpoints()
         else:
@@ -158,6 +161,7 @@ class ConversationEngine:
                             "error": str(exc),
                             "path": str(history_file),
                         },
+                        exc_info=True,
                     )
         if history:
             logger.info(
@@ -185,6 +189,7 @@ class ConversationEngine:
             logger.warning(
                 "history_save_failed",
                 extra={"operation": "conversation._save_history", "status": "failure", "error": str(exc)},
+                exc_info=True,
             )
 
     def _save_accumulator(self) -> None:
@@ -268,6 +273,7 @@ class ConversationEngine:
                         "error_type": type(exc).__name__,
                         "latency_ms": int((time.time() - start) * 1000),
                     },
+                    exc_info=True,
                 )
                 raise ConversationError(f"LLM call failed: {exc}") from exc
 

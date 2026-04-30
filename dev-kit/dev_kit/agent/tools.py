@@ -607,6 +607,7 @@ class ToolHandler:
             logger.error(
                 "devkit.tool.dispatch_failed",
                 extra={"operation": f"tool.{tool_name}", "status": "failure", "slug": slug, "error": str(e)},
+                exc_info=True,
             )
             raise
 
@@ -981,6 +982,7 @@ class ToolHandler:
                     "error": f"HTTP {exc.response.status_code}",
                     "latency_ms": int((time.time() - start) * 1000),
                 },
+                exc_info=True,
             )
             return f"ERROR: HTTP {exc.response.status_code} fetching {url}"
         except httpx.HTTPError as exc:
@@ -993,6 +995,7 @@ class ToolHandler:
                     "error": str(exc),
                     "latency_ms": int((time.time() - start) * 1000),
                 },
+                exc_info=True,
             )
             return f"ERROR: could not fetch spec from {url} — {exc}"
 
@@ -1024,6 +1027,7 @@ class ToolHandler:
                     "error": f"could not parse fetched content — {exc}",
                     "latency_ms": int((time.time() - start) * 1000),
                 },
+                exc_info=True,
             )
             return f"ERROR: could not parse fetched content — {exc}"
 
@@ -1039,6 +1043,7 @@ class ToolHandler:
                     "error": str(exc),
                     "latency_ms": int((time.time() - start) * 1000),
                 },
+                exc_info=True,
             )
             return f"ERROR: {exc}"
 
@@ -1132,6 +1137,7 @@ class ToolHandler:
                     "error": str(exc),
                     "latency_ms": int((time.time() - start) * 1000),
                 },
+                exc_info=True,
             )
             return f"ERROR: {exc}"
 
