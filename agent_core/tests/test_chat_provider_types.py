@@ -162,3 +162,67 @@ class TestOutputFormat:
     def test_strict_false(self):
         of = OutputFormat(type="json_schema", schema={}, strict=False)
         assert of.strict is False
+
+
+from src.chat_provider.types import ChatRequest, ChatResponse, TokenUsage
+
+
+class TestChatRequest:
+    def test_minimal(self):
+        r = ChatRequest(messages=[Message(role="user", content=[TextBlock(text="hi")])])
+        assert r.tools == []
+        assert r.tool_choice == "auto"
+        assert r.output_format is None
+        assert r.max_tokens == 4096
+
+    def test_force_tool_by_name(self):
+        r = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="hi")])],
+            tool_choice="my_tool",
+        )
+        assert r.tool_choice == "my_tool"
+
+    def test_empty_messages_is_allowed_by_the_model(self):
+        r = ChatRequest(messages=[])
+        assert r.messages == []
+
+
+class TestTokenUsage:
+    def test_default_all_none(self):
+        u = TokenUsage()
+        assert u.input_tokens is None
+        assert u.cache_read_tokens is None
+
+    def test_partial(self):
+        u = TokenUsage(input_tokens=10, output_tokens=5)
+        assert u.cache_read_tokens is None
+
+
+class TestChatResponse:
+    def test_minimal_text(self):
+        r = ChatResponse(
+            content=[TextBlock(text="hi back")],
+            stop_reason="end_turn",
+            model_used="claude-test",
+            usage=TokenUsage(input_tokens=1, output_tokens=2),
+        )
+        assert r.parsed_output is None
+
+    def test_with_parsed_output(self):
+        r = ChatResponse(
+            content=[TextBlock(text='{"x": 1}')],
+            parsed_output={"x": 1},
+            stop_reason="end_turn",
+            model_used="claude-test",
+            usage=TokenUsage(),
+        )
+        assert r.parsed_output == {"x": 1}
+
+    def test_invalid_stop_reason(self):
+        with pytest.raises(ValidationError):
+            ChatResponse(
+                content=[],
+                stop_reason="something",  # type: ignore[arg-type]
+                model_used="x",
+                usage=TokenUsage(),
+            )

@@ -137,3 +137,61 @@ class OutputFormat(BaseModel):
     type: Literal["json_schema"] = "json_schema"
     schema: dict[str, Any]
     strict: bool = True
+
+
+# ---------------------------------------------------------------------------
+# Request / response
+# ---------------------------------------------------------------------------
+
+
+class ChatRequest(BaseModel):
+    """A single request to a chat provider.
+
+    Provider/model selection lives on the ChatProviderBase instance; this
+    request is provider-agnostic.
+    """
+
+    messages: list[Message]
+    system: SystemPrompt | None = None
+    tools: list[ToolDefinition] = Field(default_factory=list)
+    tool_choice: Literal["auto", "any", "none"] | str = "auto"
+    output_format: OutputFormat | None = None
+    max_tokens: int = 4096
+
+
+class TokenUsage(BaseModel):
+    """Per-call token accounting.
+
+    None means "the provider does not report this", not "zero".
+    Concrete providers populate the fields they have; everything else
+    stays None so dashboards can distinguish missing from zero.
+    """
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_creation_tokens: int | None = None
+
+
+class ChatResponse(BaseModel):
+    """Provider-neutral response.
+
+    `content` mirrors the message-input shape (list of ContentBlock) so a
+    follow-up turn can be built by appending Message(role="assistant",
+    content=response.content).
+
+    `parsed_output` is populated iff the request specified output_format
+    and the model returned valid JSON for the schema. On parse/validation
+    failure, parsed_output is None and stop_reason is "error".
+
+    `raw` is the provider's underlying response object (or a dict
+    reduction of it) and is intended for debugging only — never relied on
+    by callers.
+    """
+
+    content: list[ContentBlock]
+    parsed_output: dict | None = None
+    stop_reason: Literal["end_turn", "tool_use", "max_tokens", "stop_sequence", "error"]
+    model_used: str
+    usage: TokenUsage
+    raw: dict | None = None
