@@ -50,6 +50,8 @@ class DevKitConfig:
     # Used as the KE → dev-kit callback URL for ingestion completion notifications.
     # Overridable via DEVKIT_EXTERNAL_URL env var or devkit.yaml `external_url` key.
     external_url: str = ""
+    # Log level for the dev-kit backend. Overridable via DEVKIT_LOG_LEVEL env var.
+    log_level: str = "INFO"
 
 
 def load_devkit_config(path: Optional[Path] = None) -> DevKitConfig:
@@ -84,6 +86,7 @@ def load_devkit_config(path: Optional[Path] = None) -> DevKitConfig:
     return DevKitConfig(
         user_id=raw.get("user_id", "devkit-operator"),
         external_url=os.environ.get("DEVKIT_EXTERNAL_URL", raw.get("external_url", "")),
+        log_level=os.environ.get("DEVKIT_LOG_LEVEL", raw.get("log_level", "INFO")).upper(),
         upload=UploadConfig(
             max_files_per_upload=upload_raw.get("max_files_per_upload", 5),
             max_file_size_mb=upload_raw.get("max_file_size_mb", 30),

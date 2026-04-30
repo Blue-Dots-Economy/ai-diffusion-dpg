@@ -22,12 +22,6 @@ import zipfile
 from pathlib import Path
 from typing import Any, Optional
 
-_LOG_LEVEL = os.environ.get("DEVKIT_LOG_LEVEL", "INFO").upper()
-logging.basicConfig(
-    level=getattr(logging, _LOG_LEVEL, logging.INFO),
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-)
-
 import anthropic
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -113,8 +107,13 @@ def _rewrite_compose_bind_paths_to_host(services: dict) -> None:
                 rewritten.append(vol)
         svc["volumes"] = rewritten
 
-# Load dev-kit config once at startup
+# Load dev-kit config once at startup; configure logging immediately after so
+# all subsequent logger calls honour the level from config (or DEVKIT_LOG_LEVEL env var).
 _DEVKIT_CONFIG = _load_devkit_config()
+logging.basicConfig(
+    level=getattr(logging, _DEVKIT_CONFIG.log_level, logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
 _KE_TO_DEVKIT_API_KEY = os.environ.get("KE_TO_DEVKIT_API_KEY", "")
 _DEVKIT_TO_REACH_API_KEY = os.environ.get("DEVKIT_TO_REACH_API_KEY", "")
 _REACH_LAYER_URL = os.environ.get("REACH_LAYER_URL", "http://localhost:8005")

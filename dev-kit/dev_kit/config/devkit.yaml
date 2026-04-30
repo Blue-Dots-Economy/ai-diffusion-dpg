@@ -4,6 +4,10 @@
 # All values are framework-scoped and apply to all deployments.
 # Do not add domain-specific values here.
 
+# Log level for the dev-kit backend (DEBUG, INFO, WARNING, ERROR, CRITICAL).
+# Override via DEVKIT_LOG_LEVEL env var when running in Docker or CI.
+log_level: "INFO"
+
 # Identity used for all upload requests until login is implemented.
 user_id: "devkit-operator"
 
