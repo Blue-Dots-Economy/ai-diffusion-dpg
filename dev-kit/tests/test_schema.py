@@ -580,3 +580,25 @@ class TestLoaderIntegration:
         cfg = load_agent_core("kkb")
         internal_names = [c.name for c in cfg.connectors.internal]
         assert "knowledge_retrieval" in internal_names
+
+
+from dev_kit.schema import WebChannelConfig
+
+
+class TestWebChannelConfigMode:
+    def test_default_mode_is_full(self):
+        cfg = WebChannelConfig()
+        assert cfg.mode == "full"
+
+    def test_routing_only_mode_accepted(self):
+        cfg = WebChannelConfig(mode="routing_only")
+        assert cfg.mode == "routing_only"
+
+    def test_full_mode_accepted(self):
+        cfg = WebChannelConfig(mode="full")
+        assert cfg.mode == "full"
+
+    def test_invalid_mode_raises(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            WebChannelConfig(mode="partial")

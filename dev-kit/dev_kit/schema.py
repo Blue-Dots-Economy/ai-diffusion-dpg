@@ -1057,6 +1057,14 @@ class WebAuthConfig(BaseModel):
 class WebChannelConfig(BaseModel):
     """Configuration for the web channel adapter (React frontend)."""
 
+    mode: Literal["routing_only", "full"] = Field(
+        default="full",
+        description=(
+            "Boot mode for the web service. 'full' enables the React SPA, auth, chat, "
+            "and session endpoints. 'routing_only' exposes only /health and /ingest/* — "
+            "used when the web channel is not selected but the ingest proxy is still needed."
+        ),
+    )
     auth: WebAuthConfig = Field(default_factory=WebAuthConfig)
     ui: dict[str, Any] = Field(
         default_factory=dict,
