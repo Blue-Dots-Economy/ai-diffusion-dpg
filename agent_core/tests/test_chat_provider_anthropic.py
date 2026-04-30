@@ -371,3 +371,82 @@ class TestFromWire:
         raw = _mk_anthropic_message(text="truncated", stop_reason="max_tokens")
         resp = p._from_wire(raw, output_format=None)
         assert resp.stop_reason == "max_tokens"
+
+
+import anthropic as _anthropic
+from src.chat_provider.base import UnsupportedFeatureError
+
+
+class TestCall:
+    def test_normal_text_response(self):
+        p = _make_provider()
+        raw = _mk_anthropic_message(text="hi back", input_tokens=10, output_tokens=2)
+        p._client.messages.create = MagicMock(return_value=raw)
+
+        req = ChatRequest(messages=[Message(role="user", content=[TextBlock(text="hi")])])
+        resp = p.call(req)
+
+        assert resp.stop_reason == "end_turn"
+        assert resp.content[0].text == "hi back"
+        p._client.messages.create.assert_called_once()
+
+    def test_empty_messages_raises_value_error(self):
+        p = _make_provider()
+        req = ChatRequest(messages=[])
+        with pytest.raises(ValueError, match="messages must not be empty"):
+            p.call(req)
+
+    def test_unsupported_feature_raises(self):
+        p = _make_provider(features={"prompt_cache": False, "streaming": True, "image_input": True})
+        long_text = "x" * 3500
+        req = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="hi")])],
+            system=SystemPrompt(blocks=[TextBlock(text=long_text, cache_hint="session")]),
+        )
+        with pytest.raises(UnsupportedFeatureError):
+            p.call(req)
+
+    def test_retry_on_rate_limit_then_success(self):
+        p = _make_provider()
+        raw_ok = _mk_anthropic_message(text="ok")
+
+        class _FakeRateLimit(_anthropic.RateLimitError):
+            def __init__(self): pass
+
+        p._client.messages.create = MagicMock(side_effect=[_FakeRateLimit(), raw_ok])
+
+        req = ChatRequest(messages=[Message(role="user", content=[TextBlock(text="hi")])])
+        resp = p.call(req)
+
+        assert resp.stop_reason == "end_turn"
+        assert p._client.messages.create.call_count == 2
+
+    def test_exhausted_retries_returns_error_response(self):
+        p = _make_provider()
+
+        class _FakeRateLimit(_anthropic.RateLimitError):
+            def __init__(self): pass
+
+        p._client.messages.create = MagicMock(side_effect=_FakeRateLimit)
+
+        req = ChatRequest(messages=[Message(role="user", content=[TextBlock(text="hi")])])
+        resp = p.call(req)
+
+        assert resp.stop_reason == "error"
+        assert resp.content == []
+        # retry_attempts in VALID_CONFIG is 2
+        assert p._client.messages.create.call_count == 2
+
+    def test_non_retryable_api_error_returns_error_response(self):
+        p = _make_provider()
+
+        class _FakeAPIError(_anthropic.APIError):
+            def __init__(self): pass
+
+        p._client.messages.create = MagicMock(side_effect=_FakeAPIError())
+
+        req = ChatRequest(messages=[Message(role="user", content=[TextBlock(text="hi")])])
+        resp = p.call(req)
+
+        assert resp.stop_reason == "error"
+        assert p._client.messages.create.call_count == 1   # not retried

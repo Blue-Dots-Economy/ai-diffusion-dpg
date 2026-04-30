@@ -10,16 +10,20 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import AsyncGenerator
 from typing import Any
 
 import anthropic
+from opentelemetry import trace as otel_trace
 
 from src.chat_provider.base import (
     Capabilities,
     ChatProviderBase,
     ProviderConfigError,
+    UnsupportedFeatureError,
 )
+from src.chat_provider.metrics import record_call_metrics
 from src.chat_provider.types import (
     ChatRequest,
     ChatResponse,
@@ -45,6 +49,14 @@ _CACHE_MIN_CHARS = 3000
 # (it's not, since the model has a default of 4096, but we keep the
 # constant so the provider can override consistently if needed).
 _DEFAULT_MAX_TOKENS = 4096
+
+
+class _RetryableExhausted(Exception):
+    """Internal: all retry attempts on transient errors were consumed.
+
+    Caught only inside AnthropicChatProvider.call() / .stream() to
+    transition into the error-response path. Never escapes.
+    """
 
 
 def _safe_int(value) -> int:
@@ -144,18 +156,191 @@ class AnthropicChatProvider(ChatProviderBase):
     # ------------------------------------------------------------------
 
     def call(self, request: ChatRequest) -> ChatResponse:
-        """Execute a synchronous LLM call.
+        """Execute a single Anthropic call with retries on transient failures.
 
         Args:
             request: The chat request to send to the model.
 
         Returns:
-            ChatResponse with the model's reply.
+            ChatResponse with the model's reply, or an error response if all
+            retries are exhausted or a non-retryable error occurs.
 
         Raises:
-            NotImplementedError: Until implemented in Task 11.
+            ValueError: If request.messages is empty.
+            UnsupportedFeatureError: If request uses features disabled in config.
         """
-        raise NotImplementedError("Implemented in Task 11")
+        if not request.messages:
+            raise ValueError("messages must not be empty")
+        self._validate_features(request)
+        self._validate_request(request, is_stream=False)
+
+        try:
+            return self._call_with_retry(request)
+        except _RetryableExhausted:
+            return ChatResponse(
+                content=[],
+                stop_reason="error",
+                model_used=self._active_model,
+                usage=TokenUsage(),
+            )
+
+    def _validate_features(self, request: ChatRequest) -> None:
+        """Raise UnsupportedFeatureError if the request uses a disabled deployment feature.
+
+        Args:
+            request: The chat request to validate.
+
+        Raises:
+            UnsupportedFeatureError: If a feature required by the request is
+                disabled in this provider's effective feature config.
+        """
+        if request.system is not None and not self._features["prompt_cache"]:
+            for block in request.system.blocks:
+                if block.cache_hint:
+                    raise UnsupportedFeatureError(
+                        "prompt_cache is disabled in this deployment; "
+                        "remove cache_hint from system blocks."
+                    )
+
+    def _call_with_retry(self, request: ChatRequest) -> ChatResponse:
+        """Execute the Anthropic API call with retry/backoff and OTel spans.
+
+        Args:
+            request: The chat request to execute.
+
+        Returns:
+            ChatResponse on success.
+
+        Raises:
+            _RetryableExhausted: When all retry attempts on transient errors
+                are consumed.
+        """
+        last_error: Exception | None = None
+
+        for attempt in range(self._max_attempts):
+            delay = self._backoff_seconds[
+                min(attempt, len(self._backoff_seconds) - 1)
+            ]
+            if delay > 0:
+                time.sleep(delay)
+
+            start = time.time()
+            tracer = otel_trace.get_tracer(__name__)
+            try:
+                kwargs = self._to_wire(request)
+                with tracer.start_as_current_span("llm.call") as span:
+                    span.set_attribute("gen_ai.system", "anthropic")
+                    span.set_attribute("gen_ai.model", self._active_model)
+                    span.set_attribute("llm.attempt", attempt + 1)
+                    span.set_attribute("llm.call_kind", "sync")
+                    raw = self._client.messages.create(**kwargs)
+                    response = self._from_wire(raw, output_format=request.output_format)
+                    latency_ms = int((time.time() - start) * 1000)
+                    span.set_attribute(
+                        "gen_ai.usage.input_tokens", response.usage.input_tokens or 0
+                    )
+                    span.set_attribute(
+                        "gen_ai.usage.output_tokens", response.usage.output_tokens or 0
+                    )
+                    span.set_attribute(
+                        "gen_ai.usage.cache_read_input_tokens",
+                        response.usage.cache_read_tokens or 0,
+                    )
+                    span.set_attribute(
+                        "gen_ai.usage.cache_creation_input_tokens",
+                        response.usage.cache_creation_tokens or 0,
+                    )
+
+                record_call_metrics(
+                    model=self._active_model,
+                    call_kind="sync",
+                    status="success",
+                    latency_ms=latency_ms,
+                    response=response,
+                    provider_system="anthropic",
+                )
+                logger.info(
+                    "chat_provider.anthropic.call",
+                    extra={
+                        "operation": "chat_provider.anthropic.call",
+                        "status": "success",
+                        "model": self._active_model,
+                        "attempt": attempt + 1,
+                        "latency_ms": latency_ms,
+                        "input_tokens": response.usage.input_tokens,
+                        "output_tokens": response.usage.output_tokens,
+                        "cache_read_input_tokens": response.usage.cache_read_tokens,
+                        "cache_creation_input_tokens": response.usage.cache_creation_tokens,
+                    },
+                )
+                return response
+
+            except (anthropic.APITimeoutError, anthropic.RateLimitError) as e:
+                last_error = e
+                logger.warning(
+                    "chat_provider.anthropic.retryable_error",
+                    extra={
+                        "operation": "chat_provider.anthropic.call",
+                        "status": "failure",
+                        "model": self._active_model,
+                        "attempt": attempt + 1,
+                        "error": str(e),
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+
+            except anthropic.APIError as e:
+                logger.error(
+                    "chat_provider.anthropic.api_error",
+                    extra={
+                        "operation": "chat_provider.anthropic.call",
+                        "status": "failure",
+                        "model": self._active_model,
+                        "attempt": attempt + 1,
+                        "error": str(e),
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+                return ChatResponse(
+                    content=[],
+                    stop_reason="error",
+                    model_used=self._active_model,
+                    usage=TokenUsage(),
+                )
+
+            except Exception as e:
+                logger.error(
+                    "chat_provider.anthropic.unexpected_error",
+                    extra={
+                        "operation": "chat_provider.anthropic.call",
+                        "status": "failure",
+                        "model": self._active_model,
+                        "attempt": attempt + 1,
+                        "error": f"{type(e).__name__}: {e}",
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+                return ChatResponse(
+                    content=[],
+                    stop_reason="error",
+                    model_used=self._active_model,
+                    usage=TokenUsage(),
+                )
+
+        logger.error(
+            "chat_provider.anthropic.exhausted",
+            extra={
+                "operation": "chat_provider.anthropic.call",
+                "status": "failure",
+                "model": self._active_model,
+                "attempts": self._max_attempts,
+                "error": str(last_error),
+            },
+        )
+        raise _RetryableExhausted(
+            f"All {self._max_attempts} retry attempts exhausted for model "
+            f"{self._active_model}"
+        )
 
     async def stream(
         self,
