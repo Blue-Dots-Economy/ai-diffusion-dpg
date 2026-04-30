@@ -262,6 +262,213 @@ async def _chat_session_mode(
     return formatted
 
 
+def _register_ingest_routes(app: FastAPI, config: dict) -> None:
+    """Register GET /health and the three /ingest/* proxy routes onto app.
+
+    Called by both create_routing_only_app and create_app so ingest behaviour
+    is identical in both modes. Env vars are read at request time so that
+    test fixtures can set them after app creation.
+
+    Args:
+        app: FastAPI instance to register routes on.
+        config: Full merged config dict (used for ke_internal_url fallback).
+    """
+    _ke_internal_url_fallback = config.get("ke_internal_url", "")
+
+    @app.get("/health")
+    def health() -> dict:
+        """Return service health status."""
+        return {"status": "ok"}
+
+    @app.post("/ingest/upload")
+    async def ingest_upload(
+        request: Request,
+    ):
+        """Stream multipart upload from dev-kit to KE without buffering.
+
+        Validates dev-kit API key, then streams the full multipart body to KE.
+        Streaming avoids accumulating up to 150 MB (5 files × 30 MB) in memory.
+        """
+        devkit_key = os.environ.get("DEVKIT_TO_REACH_API_KEY", "")
+        reach_to_ke_key = os.environ.get("REACH_TO_KE_API_KEY", "")
+        ke_url = os.environ.get("KE_INTERNAL_URL") or _ke_internal_url_fallback
+
+        x_api_key = request.headers.get("X-API-Key")
+        _verify_api_key(x_api_key, devkit_key)
+
+        if not ke_url:
+            raise HTTPException(503, "KE_INTERNAL_URL is not configured")
+
+        start = time.time()
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(
+                    f"{ke_url}/upload",
+                    content=request.stream(),
+                    headers={
+                        "Content-Type": request.headers.get("Content-Type", ""),
+                        "X-API-Key": reach_to_ke_key,
+                    },
+                )
+            logger.info(
+                "reach.ingest_upload",
+                extra={
+                    "operation": "reach.ingest_upload",
+                    "status": "success",
+                    "ke_status": response.status_code,
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+            return Response(
+                content=response.content,
+                status_code=response.status_code,
+                media_type=response.headers.get("content-type", "application/json"),
+            )
+        except httpx.ConnectError as e:
+            logger.error(
+                "reach.ingest_upload_ke_unreachable",
+                extra={
+                    "operation": "reach.ingest_upload",
+                    "status": "failure",
+                    "error": str(e),
+                },
+            )
+            raise HTTPException(503, "Knowledge Engine is unreachable") from e
+        except httpx.TimeoutException as e:
+            logger.error(
+                "reach.ingest_upload_timeout",
+                extra={
+                    "operation": "reach.ingest_upload",
+                    "status": "failure",
+                    "error": str(e),
+                },
+            )
+            raise HTTPException(504, "Knowledge Engine timed out") from e
+
+    @app.get("/ingest/job/{job_id}")
+    async def ingest_job_status(
+        job_id: str,
+        request: Request,
+    ):
+        """Proxy job status poll from dev-kit to KE.
+
+        Validates dev-kit API key, then forwards the GET to KE's job status endpoint.
+        """
+        devkit_key = os.environ.get("DEVKIT_TO_REACH_API_KEY", "")
+        reach_to_ke_key = os.environ.get("REACH_TO_KE_API_KEY", "")
+        ke_url = os.environ.get("KE_INTERNAL_URL") or _ke_internal_url_fallback
+
+        x_api_key = request.headers.get("X-API-Key")
+        _verify_api_key(x_api_key, devkit_key)
+
+        if not ke_url:
+            raise HTTPException(503, "KE_INTERNAL_URL is not configured")
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    f"{ke_url}/upload/job/{job_id}",
+                    headers={"X-API-Key": reach_to_ke_key},
+                )
+            return Response(
+                content=response.content,
+                status_code=response.status_code,
+                media_type=response.headers.get("content-type", "application/json"),
+            )
+        except httpx.ConnectError as e:
+            logger.error(
+                "reach.ingest_job_status_ke_unreachable",
+                extra={
+                    "operation": "reach.ingest_job_status",
+                    "status": "failure",
+                    "error": str(e),
+                },
+            )
+            raise HTTPException(503, "Knowledge Engine is unreachable") from e
+        except httpx.TimeoutException as e:
+            logger.error(
+                "reach.ingest_job_status_timeout",
+                extra={
+                    "operation": "reach.ingest_job_status",
+                    "status": "failure",
+                    "error": str(e),
+                },
+            )
+            raise HTTPException(504, "Knowledge Engine timed out") from e
+
+    @app.get("/ingest/jobs")
+    async def list_ingest_jobs(
+        request: Request,
+        limit: int = 100,
+    ):
+        """Proxy ingestion history list from dev-kit to KE.
+
+        Validates dev-kit API key, then forwards the GET to KE's job list endpoint.
+
+        Args:
+            request: Incoming request (used to read X-API-Key header).
+            limit: Maximum number of records to return.
+
+        Returns:
+            Proxied JSON response from KE.
+
+        Raises:
+            HTTPException: 401 if API key invalid; 503/504 if KE unreachable.
+        """
+        devkit_key = os.environ.get("DEVKIT_TO_REACH_API_KEY", "")
+        reach_to_ke_key = os.environ.get("REACH_TO_KE_API_KEY", "")
+        ke_url = os.environ.get("KE_INTERNAL_URL") or _ke_internal_url_fallback
+
+        x_api_key = request.headers.get("X-API-Key")
+        _verify_api_key(x_api_key, devkit_key)
+
+        if not ke_url:
+            raise HTTPException(503, "KE_INTERNAL_URL is not configured")
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    f"{ke_url}/upload/jobs",
+                    params={"limit": limit},
+                    headers={"X-API-Key": reach_to_ke_key},
+                )
+            return Response(
+                content=response.content,
+                status_code=response.status_code,
+                media_type=response.headers.get("content-type", "application/json"),
+            )
+        except httpx.ConnectError as e:
+            logger.error(
+                "reach.list_ingest_jobs_ke_unreachable",
+                extra={"operation": "reach.list_ingest_jobs", "status": "failure", "error": str(e)},
+            )
+            raise HTTPException(503, "Knowledge Engine is unreachable") from e
+        except httpx.TimeoutException as e:
+            logger.error(
+                "reach.list_ingest_jobs_timeout",
+                extra={"operation": "reach.list_ingest_jobs", "status": "failure", "error": str(e)},
+            )
+            raise HTTPException(504, "Knowledge Engine timed out") from e
+
+
+def create_routing_only_app(config: dict) -> FastAPI:
+    """Create a minimal FastAPI app for voice-only deployments.
+
+    Registers only GET /health and the three /ingest/* proxy routes.
+    No WebReachLayer, no HTTP clients, no auth validation, no React SPA.
+
+    Args:
+        config: Full merged config dict (used by _register_ingest_routes).
+
+    Returns:
+        Configured minimal FastAPI application.
+    """
+    app = FastAPI(title="Reach Layer — Web Channel Adapter (routing-only)")
+    FastAPIInstrumentor.instrument_app(app)
+    _register_ingest_routes(app, config)
+    return app
+
+
 def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
     """Create and return the FastAPI application.
 
@@ -355,15 +562,6 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
         """Close shared HTTP clients on shutdown."""
         ac_client.close()
         ml_client.close()
-
-    # ------------------------------------------------------------------
-    # GET /health
-    # ------------------------------------------------------------------
-
-    @app.get("/health")
-    def health() -> dict:
-        """Return service health status."""
-        return {"status": "ok"}
 
     # ------------------------------------------------------------------
     # GET /app-config — expose UI branding config to the browser
@@ -783,172 +981,7 @@ def create_app(web_reach: WebReachLayer, config: dict) -> FastAPI:
         )
         return {"ok": True, "session_id": sid}
 
-    # ------------------------------------------------------------------
-    # Upload proxy — Reach Layer → KE (approved architecture exception)
-    # Scope: POST /ingest/upload and GET /ingest/job/{id} only.
-    # ------------------------------------------------------------------
-
-    _DEVKIT_TO_REACH_API_KEY = os.environ.get("DEVKIT_TO_REACH_API_KEY", "")
-    _REACH_TO_KE_API_KEY = os.environ.get("REACH_TO_KE_API_KEY", "")
-    _KE_INTERNAL_URL = os.environ.get("KE_INTERNAL_URL") or config.get("ke_internal_url", "")
-
-    @app.post("/ingest/upload")
-    async def ingest_upload(
-        request: Request,
-    ):
-        """Stream multipart upload from dev-kit to KE without buffering.
-
-        Validates dev-kit API key, then streams the full multipart body to KE.
-        Streaming avoids accumulating up to 150 MB (5 files × 30 MB) in memory.
-        """
-        x_api_key = request.headers.get("X-API-Key")
-        _verify_api_key(x_api_key, _DEVKIT_TO_REACH_API_KEY)
-
-        if not _KE_INTERNAL_URL:
-            raise HTTPException(503, "KE_INTERNAL_URL is not configured")
-
-        start = time.time()
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    f"{_KE_INTERNAL_URL}/upload",
-                    content=request.stream(),
-                    headers={
-                        "Content-Type": request.headers.get("Content-Type", ""),
-                        "X-API-Key": _REACH_TO_KE_API_KEY,
-                    },
-                )
-            logger.info(
-                "reach.ingest_upload",
-                extra={
-                    "operation": "reach.ingest_upload",
-                    "status": "success",
-                    "ke_status": response.status_code,
-                    "latency_ms": int((time.time() - start) * 1000),
-                },
-            )
-            return Response(
-                content=response.content,
-                status_code=response.status_code,
-                media_type=response.headers.get("content-type", "application/json"),
-            )
-        except httpx.ConnectError as e:
-            logger.error(
-                "reach.ingest_upload_ke_unreachable",
-                extra={
-                    "operation": "reach.ingest_upload",
-                    "status": "failure",
-                    "error": str(e),
-                },
-            )
-            raise HTTPException(503, "Knowledge Engine is unreachable") from e
-        except httpx.TimeoutException as e:
-            logger.error(
-                "reach.ingest_upload_timeout",
-                extra={
-                    "operation": "reach.ingest_upload",
-                    "status": "failure",
-                    "error": str(e),
-                },
-            )
-            raise HTTPException(504, "Knowledge Engine timed out") from e
-
-    @app.get("/ingest/job/{job_id}")
-    async def ingest_job_status(
-        job_id: str,
-        request: Request,
-    ):
-        """Proxy job status poll from dev-kit to KE.
-
-        Validates dev-kit API key, then forwards the GET to KE's job status endpoint.
-        """
-        x_api_key = request.headers.get("X-API-Key")
-        _verify_api_key(x_api_key, _DEVKIT_TO_REACH_API_KEY)
-
-        if not _KE_INTERNAL_URL:
-            raise HTTPException(503, "KE_INTERNAL_URL is not configured")
-
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    f"{_KE_INTERNAL_URL}/upload/job/{job_id}",
-                    headers={"X-API-Key": _REACH_TO_KE_API_KEY},
-                )
-            return Response(
-                content=response.content,
-                status_code=response.status_code,
-                media_type=response.headers.get("content-type", "application/json"),
-            )
-        except httpx.ConnectError as e:
-            logger.error(
-                "reach.ingest_job_status_ke_unreachable",
-                extra={
-                    "operation": "reach.ingest_job_status",
-                    "status": "failure",
-                    "error": str(e),
-                },
-            )
-            raise HTTPException(503, "Knowledge Engine is unreachable") from e
-        except httpx.TimeoutException as e:
-            logger.error(
-                "reach.ingest_job_status_timeout",
-                extra={
-                    "operation": "reach.ingest_job_status",
-                    "status": "failure",
-                    "error": str(e),
-                },
-            )
-            raise HTTPException(504, "Knowledge Engine timed out") from e
-
-    @app.get("/ingest/jobs")
-    async def list_ingest_jobs(
-        request: Request,
-        limit: int = 100,
-    ):
-        """Proxy ingestion history list from dev-kit to KE.
-
-        Validates dev-kit API key, then forwards the GET to KE's job list endpoint.
-
-        Args:
-            request: Incoming request (used to read X-API-Key header).
-            limit: Maximum number of records to return.
-
-        Returns:
-            Proxied JSON response from KE.
-
-        Raises:
-            HTTPException: 401 if API key invalid; 503/504 if KE unreachable.
-        """
-        x_api_key = request.headers.get("X-API-Key")
-        _verify_api_key(x_api_key, _DEVKIT_TO_REACH_API_KEY)
-
-        if not _KE_INTERNAL_URL:
-            raise HTTPException(503, "KE_INTERNAL_URL is not configured")
-
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    f"{_KE_INTERNAL_URL}/upload/jobs",
-                    params={"limit": limit},
-                    headers={"X-API-Key": _REACH_TO_KE_API_KEY},
-                )
-            return Response(
-                content=response.content,
-                status_code=response.status_code,
-                media_type=response.headers.get("content-type", "application/json"),
-            )
-        except httpx.ConnectError as e:
-            logger.error(
-                "reach.list_ingest_jobs_ke_unreachable",
-                extra={"operation": "reach.list_ingest_jobs", "status": "failure", "error": str(e)},
-            )
-            raise HTTPException(503, "Knowledge Engine is unreachable") from e
-        except httpx.TimeoutException as e:
-            logger.error(
-                "reach.list_ingest_jobs_timeout",
-                extra={"operation": "reach.list_ingest_jobs", "status": "failure", "error": str(e)},
-            )
-            raise HTTPException(504, "Knowledge Engine timed out") from e
+    _register_ingest_routes(app, config)
 
     return app
 
@@ -1024,5 +1057,13 @@ except Exception as _otel_err:
         },
     )
 
-_web_reach = WebReachLayer(_config)
-app = create_app(_web_reach, _config)
+WEB_MODE = os.getenv("REACH_LAYER_WEB_MODE", "full")
+if WEB_MODE == "routing_only":
+    logger.info(
+        "reach_server.startup_mode",
+        extra={"operation": "server.startup", "status": "success", "mode": "routing_only"},
+    )
+    app = create_routing_only_app(_config)
+else:
+    _web_reach = WebReachLayer(_config)
+    app = create_app(_web_reach, _config)

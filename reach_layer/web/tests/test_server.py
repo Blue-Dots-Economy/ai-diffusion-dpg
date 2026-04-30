@@ -629,3 +629,118 @@ class TestIngestJobProxy:
             headers={"X-API-Key": "devkit-key-test"},
         )
         assert response.status_code == 404
+
+
+from server import create_routing_only_app
+
+
+# ---------------------------------------------------------------------------
+# Fixture for routing_only mode
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def client_routing_only(config):
+    """TestClient for routing_only mode — no WebReachLayer needed."""
+    app = create_routing_only_app(config)
+    return TestClient(app)
+
+
+# ---------------------------------------------------------------------------
+# routing_only mode — routes that MUST work
+# ---------------------------------------------------------------------------
+
+def test_routing_only_health(client_routing_only):
+    res = client_routing_only.get("/health")
+    assert res.status_code == 200
+    assert res.json() == {"status": "ok"}
+
+
+@respx.mock
+def test_routing_only_ingest_upload_proxies_to_ke(client_routing_only, monkeypatch):
+    monkeypatch.setenv("DEVKIT_TO_REACH_API_KEY", "test-devkit-key")
+    monkeypatch.setenv("KE_INTERNAL_URL", "http://ke-test")
+    respx.post("http://ke-test/upload").mock(
+        return_value=httpx.Response(200, json={"job_id": "j1"})
+    )
+    res = client_routing_only.post(
+        "/ingest/upload",
+        headers={"X-API-Key": "test-devkit-key", "Content-Type": "multipart/form-data; boundary=x"},
+        content=b"--x\r\nContent-Disposition: form-data; name=\"file\"\r\n\r\ndata\r\n--x--",
+    )
+    assert res.status_code == 200
+
+
+@respx.mock
+def test_routing_only_ingest_job_proxies_to_ke(client_routing_only, monkeypatch):
+    monkeypatch.setenv("DEVKIT_TO_REACH_API_KEY", "test-devkit-key")
+    monkeypatch.setenv("KE_INTERNAL_URL", "http://ke-test")
+    respx.get("http://ke-test/upload/job/job-123").mock(
+        return_value=httpx.Response(200, json={"status": "complete"})
+    )
+    res = client_routing_only.get(
+        "/ingest/job/job-123",
+        headers={"X-API-Key": "test-devkit-key"},
+    )
+    assert res.status_code == 200
+
+
+@respx.mock
+def test_routing_only_ingest_jobs_proxies_to_ke(client_routing_only, monkeypatch):
+    monkeypatch.setenv("DEVKIT_TO_REACH_API_KEY", "test-devkit-key")
+    monkeypatch.setenv("KE_INTERNAL_URL", "http://ke-test")
+    respx.get("http://ke-test/upload/jobs").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    res = client_routing_only.get(
+        "/ingest/jobs",
+        headers={"X-API-Key": "test-devkit-key"},
+    )
+    assert res.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# routing_only mode — web/auth/chat/session routes must NOT exist (404)
+# ---------------------------------------------------------------------------
+
+def test_routing_only_root_is_404(client_routing_only):
+    assert client_routing_only.get("/").status_code == 404
+
+
+def test_routing_only_chat_is_404(client_routing_only):
+    assert client_routing_only.post("/chat", json={}).status_code == 404
+
+
+def test_routing_only_app_config_is_404(client_routing_only):
+    assert client_routing_only.get("/app-config").status_code == 404
+
+
+def test_routing_only_auth_google_is_404(client_routing_only):
+    assert client_routing_only.post("/auth/google", json={"credential": "x"}).status_code == 404
+
+
+def test_routing_only_sessions_is_404(client_routing_only):
+    assert client_routing_only.get("/sessions").status_code == 404
+
+
+def test_routing_only_user_history_is_404(client_routing_only):
+    assert client_routing_only.get("/user-history/user-1").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# routing_only mode — no auth env vars required at startup
+# ---------------------------------------------------------------------------
+
+def test_routing_only_boots_without_google_client_id(config, monkeypatch):
+    monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+    monkeypatch.delenv("REACH_SESSION_SECRET", raising=False)
+    app = create_routing_only_app(config)   # must not raise
+    client = TestClient(app)
+    assert client.get("/health").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Full mode — existing behaviour preserved (smoke test)
+# ---------------------------------------------------------------------------
+
+def test_full_mode_health_still_works(client):
+    assert client.get("/health").status_code == 200
