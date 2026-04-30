@@ -338,6 +338,9 @@ services:
     container_name: reach_layer_web
     environment:
       - CONFIG_FOLDER=/app/config
+      # routing_only = health + ingest proxy only (no SPA, no auth, no chat).
+      # full = complete web channel. Injected automatically by the deploy wizard.
+      - REACH_LAYER_WEB_MODE=${REACH_LAYER_WEB_MODE:-full}
       # Optional when auth.enabled: false (default). Required and validated by server.py
       # at startup when auth.enabled: true — export both before running docker compose.
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
