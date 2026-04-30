@@ -142,3 +142,8 @@ reach_layer/web/dist/
 # -----------------------------------------------------------------------------
 dev-kit/configs/**/_meta/
 .worktrees/
+test-fixtures/
+dev-kit/configs/e*
+dev-kit/configs/h*
+dev-kit/configs/k*
+dev-kit/configs/y*
