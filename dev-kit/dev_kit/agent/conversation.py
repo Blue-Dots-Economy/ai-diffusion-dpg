@@ -308,13 +308,32 @@ class ConversationEngine:
             if self._state["phase_changed"]:
                 old_phase = self._state["phase"]
                 new_phase = self._state["phase_changed"]
+                slug = self._state.get("project_meta", {}).get("slug", "")
                 phase_list = PHASES
                 phase_number = phase_list.index(old_phase) + 1 if old_phase in phase_list else 0
                 phase_label = f"{phase_number:02d}_{old_phase}"
                 save_checkpoint(self._project_path, phase_label, self.accumulator, self._history[:-2])
+                logger.info(
+                    "devkit.conversation.checkpoint_saved",
+                    extra={
+                        "operation": "conversation.checkpoint_save",
+                        "status": "success",
+                        "slug": slug,
+                        "phase": phase_label,
+                    },
+                )
                 checkpoint_created = phase_label
                 self._state["phase"] = new_phase
                 self._state["phase_changed"] = None
+                logger.info(
+                    "devkit.conversation.phase_transition",
+                    extra={
+                        "operation": "conversation.phase_transition",
+                        "status": "success",
+                        "slug": slug,
+                        "to_phase": new_phase,
+                    },
+                )
                 system = self._build_system_prompt()
 
             # Handle rollback requested by tool
@@ -364,7 +383,26 @@ class ConversationEngine:
         self._save_accumulator()
         self._save_project_meta()
         self._save_history()
+        _render_slug = self._state.get("project_meta", {}).get("slug", "")
+        logger.info(
+            "devkit.conversation.render_all",
+            extra={
+                "operation": "conversation.render_all",
+                "status": "start",
+                "slug": _render_slug,
+            },
+        )
+        _render_start = time.time()
         render_all(self._project_path, self.accumulator)
+        logger.info(
+            "devkit.conversation.render_all",
+            extra={
+                "operation": "conversation.render_all",
+                "status": "success",
+                "slug": _render_slug,
+                "elapsed_ms": int((time.time() - _render_start) * 1000),
+            },
+        )
 
         return {
             "reply": reply,

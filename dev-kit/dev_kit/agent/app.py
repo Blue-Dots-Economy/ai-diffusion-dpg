@@ -469,6 +469,10 @@ def create_project(body: CreateProjectRequest) -> dict:
     acc = ConfigAccumulator()
     render_all(project_path, acc)
     _engines[slug] = ConversationEngine(project_path, _anthropic_client)
+    logger.info(
+        "devkit.project.created",
+        extra={"operation": "api.create_project", "status": "success", "slug": slug},
+    )
     return meta
 
 
@@ -526,6 +530,10 @@ def delete_project(slug: str) -> dict:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
     shutil.rmtree(project_path)
     _engines.pop(slug, None)
+    logger.info(
+        "devkit.project.deleted",
+        extra={"operation": "api.delete_project", "status": "success", "slug": slug},
+    )
     return {"deleted": slug}
 
 
@@ -619,6 +627,15 @@ def restore_checkpoint_route(slug: str, phase: str) -> dict:
     engine._history = engine._load_history_from_checkpoints()
     render_all(project_path, restored_acc)
     engine._save_accumulator()
+    logger.info(
+        "devkit.conversation.checkpoint_restored",
+        extra={
+            "operation": "conversation.checkpoint_restore",
+            "status": "success",
+            "slug": slug,
+            "phase": phase,
+        },
+    )
     return {"restored": phase, "summary": summary}
 
 
@@ -1078,6 +1095,23 @@ def pre_deploy_validate(slug: str) -> dict[str, Any]:
         )
 
     all_valid = all(len(errs) == 0 for errs in block_errors.values()) and not invariant_errors
+
+    issue_count = sum(len(errs) for errs in block_errors.values()) + len(invariant_errors)
+    if all_valid:
+        logger.info(
+            "devkit.deploy.validation_passed",
+            extra={"operation": "api.deploy_validate", "status": "success", "slug": slug},
+        )
+    else:
+        logger.warning(
+            "devkit.deploy.validation_failed",
+            extra={
+                "operation": "api.deploy_validate",
+                "status": "failure",
+                "slug": slug,
+                "issues": issue_count,
+            },
+        )
 
     # Build display-friendly merged configs: for reach_layer, mark unselected
     # channels as enabled: false so the viewer reflects what will actually deploy.
@@ -1688,6 +1722,10 @@ async def execute_deploy(slug: str, body: dict) -> dict:
     for svc in all_services:
         state.set_service(svc, "queued")
 
+    logger.info(
+        "devkit.deploy.execute_triggered",
+        extra={"operation": "api.deploy_execute", "status": "start", "slug": slug, "target": target},
+    )
     if target == "docker":
         selected_channels = _get_engine(slug).accumulator.get_reach_channel_selection_or_default()
         asyncio.create_task(_run_docker_deploy(slug, state, secrets, resources, selected_channels))
@@ -1710,6 +1748,11 @@ async def _run_docker_deploy(
     import tempfile
     from dev_kit.agent.deployer.compose import run_compose_up
     from dev_kit.agent.deployer.helm import DEPLOY_PHASES
+
+    logger.info(
+        "devkit.docker_deploy.start",
+        extra={"operation": "_run_docker_deploy", "status": "start", "slug": slug},
+    )
 
     # Map channel name → compose service name. CLI is already profile-gated in the
     # compose file so it never starts with `docker compose up`; web/voice need explicit
@@ -1825,6 +1868,10 @@ async def _run_k8s_deploy(slug: str, state, secrets: dict, resources: dict, kube
     import tempfile
     from dev_kit.agent.deployer.helm import DEPLOY_PHASES, build_helm_command, run_helm_command
 
+    logger.info(
+        "devkit.k8s_deploy.start",
+        extra={"operation": "_run_k8s_deploy", "status": "start", "slug": slug},
+    )
     _helm_base = HELM_BASE
     state.namespace = namespace
 
@@ -2316,6 +2363,15 @@ async def _run_docker_destroy(
     from dev_kit.agent.deployer.compose import run_compose_down
     from dev_kit.agent.deployer.state import get_state, clear_state
 
+    logger.info(
+        "devkit.destroy.start",
+        extra={
+            "operation": "_run_docker_destroy",
+            "status": "start",
+            "slug": slug,
+            "remove_volumes": remove_volumes,
+        },
+    )
     try:
         result = await run_compose_down(
             project_name=project_name,

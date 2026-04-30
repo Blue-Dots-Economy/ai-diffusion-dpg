@@ -591,7 +591,24 @@ class ToolHandler:
         handler = handlers.get(tool_name)
         if handler is None:
             raise ValueError(f"Unknown tool: {tool_name!r}")
-        return handler(tool_input)
+        slug = self._state.get("project_meta", {}).get("slug", "")
+        logger.info(
+            "devkit.tool.dispatch",
+            extra={"operation": f"tool.{tool_name}", "status": "start", "slug": slug},
+        )
+        try:
+            result = handler(tool_input)
+            logger.info(
+                "devkit.tool.dispatch",
+                extra={"operation": f"tool.{tool_name}", "status": "success", "slug": slug},
+            )
+            return result
+        except Exception as e:
+            logger.error(
+                "devkit.tool.dispatch_failed",
+                extra={"operation": f"tool.{tool_name}", "status": "failure", "slug": slug, "error": str(e)},
+            )
+            raise
 
     def _handle_set_project_meta(self, inputs: dict) -> str:
         # Slug is the on-disk directory key; renaming it here would orphan the
@@ -904,6 +921,14 @@ class ToolHandler:
             }
             for t in tools
         ]
+        logger.info(
+            "devkit.tool.openapi_parsed",
+            extra={
+                "operation": "tool.parse_openapi_spec",
+                "status": "success",
+                "endpoint_count": len(candidates),
+            },
+        )
         return json.dumps(candidates, ensure_ascii=False, indent=2)
 
     def _handle_fetch_openapi_spec_from_url(self, inputs: dict) -> str:
@@ -1187,6 +1212,15 @@ class ToolHandler:
             }
             for t in tools
         ]
+        logger.info(
+            "devkit.tool.mcp_discovered",
+            extra={
+                "operation": "tool.discover_mcp_tools",
+                "status": "success",
+                "server_url": url,
+                "tool_count": len(tools),
+            },
+        )
         return json.dumps(summary, ensure_ascii=False, indent=2)
 
     def _handle_add_mcp_tool(self, inputs: dict) -> str:
@@ -1219,6 +1253,15 @@ class ToolHandler:
             self._acc.add_action_gateway_tool(tool)
         except ValueError as exc:
             return f"ERROR: {exc}"
+        logger.info(
+            "devkit.tool.mcp_registered",
+            extra={
+                "operation": "tool.add_mcp_tool",
+                "status": "success",
+                "server_name": inputs["id"],
+                "transport": tool["transport"],
+            },
+        )
         return (
             f"MCP server '{inputs['id']}' registered with Action Gateway (transport: {tool['transport']}). "
             f"Tools discovered at startup will be available as '{inputs['id']}__<tool_name>'. "

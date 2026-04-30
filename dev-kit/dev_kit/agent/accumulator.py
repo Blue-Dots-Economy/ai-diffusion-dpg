@@ -9,8 +9,11 @@ graph management, serialisation, and status tracking.
 """
 from __future__ import annotations
 
+import logging
 from copy import deepcopy
 from enum import Enum
+
+logger = logging.getLogger(__name__)
 
 
 BLOCKS: list[str] = [
@@ -93,6 +96,15 @@ class ConfigAccumulator:
             raise ValueError(f"Unknown block: {block!r}. Must be one of {BLOCKS}")
         if not section:
             self._data[block] = _deep_merge(self._data[block], values)
+            logger.info(
+                "devkit.accumulator.config_updated",
+                extra={
+                    "operation": "accumulator.update",
+                    "status": "success",
+                    "block": block,
+                    "path": "(root)",
+                },
+            )
             return
         keys = section.split(".")
         target = self._data[block]
@@ -105,6 +117,15 @@ class ConfigAccumulator:
         if last not in current or not isinstance(current.get(last), dict):
             current[last] = {}
         current[last] = _deep_merge(current[last], values)
+        logger.info(
+            "devkit.accumulator.config_updated",
+            extra={
+                "operation": "accumulator.update",
+                "status": "success",
+                "block": block,
+                "path": section,
+            },
+        )
 
     def get_block(self, block: str) -> dict:
         """Return a deep copy of the full config dict for a block.
@@ -420,6 +441,15 @@ class ConfigAccumulator:
         channels_cfg = reach_cfg.setdefault("channels", {})
         web_cfg = channels_cfg.setdefault("web", {})
         web_cfg["mode"] = web_mode
+        logger.info(
+            "devkit.accumulator.channels_set",
+            extra={
+                "operation": "accumulator.set_reach_channel_selection",
+                "status": "success",
+                "channels": list(channels),
+                "web_mode": web_mode,
+            },
+        )
 
     def get_reach_channel_selection(self) -> list[str]:
         """Return the selected deployment channels, or empty list if not yet set.
