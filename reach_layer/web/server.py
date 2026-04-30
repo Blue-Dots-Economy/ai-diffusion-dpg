@@ -1060,10 +1060,14 @@ except Exception as _otel_err:
 WEB_MODE = os.getenv("REACH_LAYER_WEB_MODE", "full")
 if WEB_MODE == "routing_only":
     logger.info(
-        "reach_server.startup_mode",
+        "Starting reach_layer_web in routing_only mode — web UI disabled",
         extra={"operation": "server.startup", "status": "success", "mode": "routing_only"},
     )
     app = create_routing_only_app(_config)
 else:
+    logger.info(
+        "Starting reach_layer_web in full mode",
+        extra={"operation": "server.startup", "status": "success", "mode": "full"},
+    )
     _web_reach = WebReachLayer(_config)
     app = create_app(_web_reach, _config)
