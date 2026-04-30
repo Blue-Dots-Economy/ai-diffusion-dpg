@@ -587,3 +587,50 @@ def test_get_project_returns_required_secrets_and_azure_needed(tmp_path, monkeyp
     # Must NOT include account_key or container_name
     assert "account_key" not in data["azure_storage"]
     assert "container_name" not in data["azure_storage"]
+
+
+# ---------------------------------------------------------------------------
+# REACH_LAYER_WEB_MODE injection in deploy preview
+# ---------------------------------------------------------------------------
+
+import yaml as _yaml
+
+
+class TestWebModeInjection:
+    """REACH_LAYER_WEB_MODE is injected into reach_layer_web based on channel selection."""
+
+    def _get_web_env(self, client, slug: str, selected_channels: list[str]) -> list[str]:
+        """Return the environment list for reach_layer_web from the preview compose output."""
+        client.get(f"/api/projects/{slug}")
+        engine = app_module._engines[slug]
+        engine.accumulator.set_reach_channel_selection(selected_channels)
+
+        res = client.post(
+            f"/api/projects/{slug}/deploy/preview",
+            json={"target": "docker"},
+        )
+        assert res.status_code == 200
+        compose_str = res.json()["preview"]["docker-compose.yml"]
+        parsed = _yaml.safe_load(compose_str)
+        svc = parsed.get("services", {}).get("reach_layer_web", {})
+        return svc.get("environment", [])
+
+    def test_voice_only_preview_sets_routing_only(self, client_with_project):
+        client, slug = client_with_project
+        env = self._get_web_env(client, slug, ["voice"])
+        assert any("REACH_LAYER_WEB_MODE=routing_only" in str(e) for e in env)
+
+    def test_web_selected_preview_sets_full(self, client_with_project):
+        client, slug = client_with_project
+        env = self._get_web_env(client, slug, ["web"])
+        assert any("REACH_LAYER_WEB_MODE=full" in str(e) for e in env)
+
+    def test_web_and_voice_preview_sets_full(self, client_with_project):
+        client, slug = client_with_project
+        env = self._get_web_env(client, slug, ["web", "voice"])
+        assert any("REACH_LAYER_WEB_MODE=full" in str(e) for e in env)
+
+    def test_cli_only_preview_sets_routing_only(self, client_with_project):
+        client, slug = client_with_project
+        env = self._get_web_env(client, slug, ["cli"])
+        assert any("REACH_LAYER_WEB_MODE=routing_only" in str(e) for e in env)

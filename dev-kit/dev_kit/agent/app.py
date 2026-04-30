@@ -1439,6 +1439,9 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
                 for env_var in tool_secrets:
                     if tool_secrets[env_var]:
                         ag_env.append(f"{env_var}=<set at deploy time>")
+            if svc_name == "reach_layer_web":
+                web_mode = "full" if "web" in set(selected_channels) else "routing_only"
+                svc.setdefault("environment", []).append(f"REACH_LAYER_WEB_MODE={web_mode}")
         # Mirror the deploy-time rewrite so the preview matches what the
         # actual deploy will write (and run) on the host.
         _rewrite_compose_bind_paths_to_host(services)
@@ -1770,6 +1773,9 @@ async def _run_docker_deploy(
                 for env_var, value in tool_secrets.items():
                     if value:
                         env_list.append(f"{env_var}={value}")
+            if svc_name == "reach_layer_web":
+                web_mode = "full" if "web" in set(selected_channels) else "routing_only"
+                svc.setdefault("environment", []).append(f"REACH_LAYER_WEB_MODE={web_mode}")
 
         _rewrite_compose_bind_paths_to_host(services)
         content = _yaml.dump(compose_doc, default_flow_style=False, sort_keys=False)
