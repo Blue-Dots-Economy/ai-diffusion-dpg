@@ -348,7 +348,11 @@ class AnthropicChatProvider(ChatProviderBase):
         *,
         abort_event: "asyncio.Event | None" = None,
     ) -> AsyncGenerator[str, None]:
-        """Stream an LLM response token by token.
+        """Stream raw text tokens from Anthropic.
+
+        Same retry contract as call(); on exhausted retries the
+        generator returns silently. Raises ToolUseRequested if the model
+        emits any tool_use blocks (caller executes tools and resumes).
 
         Args:
             request: The chat request to send to the model.
@@ -358,11 +362,191 @@ class AnthropicChatProvider(ChatProviderBase):
             str tokens as they arrive from the model.
 
         Raises:
-            NotImplementedError: Until implemented in Task 12.
+            ValueError: If request.messages is empty.
+            UnsupportedFeatureError: If output_format is set (stream does
+                not support structured output).
+            ToolUseRequested: If the model emits tool_use blocks in the
+                final message.
         """
-        raise NotImplementedError("Implemented in Task 12")
-        if False:  # pragma: no cover
-            yield ""
+        if not request.messages:
+            raise ValueError("messages must not be empty")
+        self._validate_request(request, is_stream=True)
+
+        try:
+            async for token in self._stream_with_retry(request, abort_event):
+                yield token
+        except _RetryableExhausted:
+            return
+
+    async def _stream_with_retry(
+        self,
+        request: ChatRequest,
+        abort_event: "asyncio.Event | None",
+    ) -> AsyncGenerator[str, None]:
+        """Execute the streaming Anthropic API call with retry/backoff and OTel spans.
+
+        Args:
+            request: The chat request to stream.
+            abort_event: Optional event to abort iteration early.
+
+        Yields:
+            str tokens as they arrive from the model.
+
+        Raises:
+            _RetryableExhausted: When all retry attempts on transient errors are consumed.
+            ToolUseRequested: When the model emits tool_use blocks in the final message.
+        """
+        last_error: Exception | None = None
+
+        for attempt in range(self._max_attempts):
+            delay = self._backoff_seconds[
+                min(attempt, len(self._backoff_seconds) - 1)
+            ]
+            if delay > 0:
+                await asyncio.sleep(delay)
+
+            start = time.time()
+            tracer = otel_trace.get_tracer(__name__)
+            try:
+                kwargs = self._to_wire(request)
+                tool_calls: list[ToolUseBlock] = []
+                stop_reason: str | None = None
+                input_tokens = 0
+                output_tokens = 0
+                cache_read_tokens = 0
+                cache_creation_tokens = 0
+
+                with tracer.start_as_current_span("llm.call") as span:
+                    span.set_attribute("gen_ai.system", "anthropic")
+                    span.set_attribute("gen_ai.model", self._active_model)
+                    span.set_attribute("llm.attempt", attempt + 1)
+                    span.set_attribute("llm.call_kind", "stream")
+
+                    async with self._async_client.messages.stream(**kwargs) as stream:
+                        async for event in stream:
+                            if abort_event is not None and abort_event.is_set():
+                                return
+                            if hasattr(event, "type") and event.type == "content_block_delta":
+                                if hasattr(event.delta, "text"):
+                                    yield event.delta.text
+
+                        final_message = await stream.get_final_message()
+                        stop_reason = final_message.stop_reason
+                        input_tokens = _safe_int(getattr(final_message.usage, "input_tokens", 0))
+                        output_tokens = _safe_int(getattr(final_message.usage, "output_tokens", 0))
+                        cache_read_tokens = _safe_int(
+                            getattr(final_message.usage, "cache_read_input_tokens", 0)
+                        )
+                        cache_creation_tokens = _safe_int(
+                            getattr(final_message.usage, "cache_creation_input_tokens", 0)
+                        )
+                        for block in final_message.content:
+                            if block.type == "tool_use":
+                                tool_calls.append(
+                                    ToolUseBlock(
+                                        tool_use_id=block.id,
+                                        tool_name=block.name,
+                                        input=block.input,
+                                    )
+                                )
+
+                    span.set_attribute("gen_ai.usage.input_tokens", input_tokens)
+                    span.set_attribute("gen_ai.usage.output_tokens", output_tokens)
+                    span.set_attribute("gen_ai.usage.cache_read_input_tokens", cache_read_tokens)
+                    span.set_attribute("gen_ai.usage.cache_creation_input_tokens", cache_creation_tokens)
+
+                latency_ms = int((time.time() - start) * 1000)
+                synth_usage = TokenUsage(
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_creation_tokens=cache_creation_tokens,
+                )
+                synth_resp = ChatResponse(
+                    content=[],
+                    stop_reason=stop_reason or "end_turn",
+                    model_used=self._active_model,
+                    usage=synth_usage,
+                )
+                record_call_metrics(
+                    model=self._active_model,
+                    call_kind="stream",
+                    status="success",
+                    latency_ms=latency_ms,
+                    response=synth_resp,
+                    provider_system="anthropic",
+                )
+                logger.info(
+                    "chat_provider.anthropic.stream",
+                    extra={
+                        "operation": "chat_provider.anthropic.stream",
+                        "status": "success",
+                        "model": self._active_model,
+                        "attempt": attempt + 1,
+                        "latency_ms": latency_ms,
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "cache_read_input_tokens": cache_read_tokens,
+                        "cache_creation_input_tokens": cache_creation_tokens,
+                        "stop_reason": stop_reason,
+                    },
+                )
+
+                if stop_reason == "tool_use" and tool_calls:
+                    from src.chat_provider.base import ToolUseRequested
+                    raise ToolUseRequested(tool_calls)
+
+                return
+
+            except _RetryableExhausted:
+                raise
+
+            except Exception as e:
+                from src.chat_provider.base import ToolUseRequested
+                if isinstance(e, ToolUseRequested):
+                    raise
+                if isinstance(e, (anthropic.APITimeoutError, anthropic.RateLimitError)):
+                    last_error = e
+                    logger.warning(
+                        "chat_provider.anthropic.stream_retryable_error",
+                        extra={
+                            "operation": "chat_provider.anthropic.stream",
+                            "status": "failure",
+                            "model": self._active_model,
+                            "attempt": attempt + 1,
+                            "error": str(e),
+                            "latency_ms": int((time.time() - start) * 1000),
+                        },
+                    )
+                    continue
+                # Non-retryable
+                logger.error(
+                    "chat_provider.anthropic.stream_error",
+                    extra={
+                        "operation": "chat_provider.anthropic.stream",
+                        "status": "failure",
+                        "model": self._active_model,
+                        "attempt": attempt + 1,
+                        "error": f"{type(e).__name__}: {e}",
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+                return
+
+        logger.error(
+            "chat_provider.anthropic.stream_exhausted",
+            extra={
+                "operation": "chat_provider.anthropic.stream",
+                "status": "failure",
+                "model": self._active_model,
+                "attempts": self._max_attempts,
+                "error": str(last_error),
+            },
+        )
+        raise _RetryableExhausted(
+            f"All {self._max_attempts} stream retry attempts exhausted for model "
+            f"{self._active_model}"
+        )
 
     def get_active_model(self) -> str:
         """Return the currently active model identifier.

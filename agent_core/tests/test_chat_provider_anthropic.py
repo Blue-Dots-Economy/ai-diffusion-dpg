@@ -450,3 +450,116 @@ class TestCall:
 
         assert resp.stop_reason == "error"
         assert p._client.messages.create.call_count == 1   # not retried
+
+
+import asyncio
+from unittest.mock import MagicMock
+
+from src.chat_provider.base import ToolUseRequested as ChatToolUseRequested
+
+
+class _FakeStreamEvent:
+    def __init__(self, type_: str, text: str | None = None) -> None:
+        self.type = type_
+        self.delta = MagicMock()
+        if text is not None:
+            self.delta.text = text
+
+
+class _FakeStream:
+    def __init__(
+        self,
+        text_deltas: list[str],
+        final_message: MagicMock,
+    ) -> None:
+        self._events = [_FakeStreamEvent("content_block_delta", text=t) for t in text_deltas]
+        self._final = final_message
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def __aiter__(self):
+        async def gen():
+            for e in self._events:
+                yield e
+        return gen()
+
+    async def get_final_message(self):
+        return self._final
+
+
+def _install_stream(provider: AnthropicChatProvider, stream: _FakeStream) -> None:
+    """Replace messages.stream(...) on the async client with a callable returning the stream."""
+    provider._async_client.messages.stream = MagicMock(return_value=stream)
+
+
+class TestStream:
+    @pytest.mark.asyncio
+    async def test_streams_text(self):
+        p = _make_provider()
+        final = _mk_anthropic_message(text="hello there", stop_reason="end_turn")
+        stream = _FakeStream(text_deltas=["hello ", "there"], final_message=final)
+        _install_stream(p, stream)
+
+        req = ChatRequest(messages=[Message(role="user", content=[TextBlock(text="hi")])])
+        out = []
+        async for token in p.stream(req):
+            out.append(token)
+        assert out == ["hello ", "there"]
+
+    @pytest.mark.asyncio
+    async def test_tool_use_raises(self):
+        p = _make_provider()
+        final = _mk_anthropic_message(
+            tool_use={"id": "t_1", "name": "lookup", "input": {"q": "x"}},
+            stop_reason="tool_use",
+        )
+        stream = _FakeStream(text_deltas=["checking"], final_message=final)
+        _install_stream(p, stream)
+
+        req = ChatRequest(messages=[Message(role="user", content=[TextBlock(text="hi")])])
+        out = []
+        with pytest.raises(ChatToolUseRequested) as ei:
+            async for token in p.stream(req):
+                out.append(token)
+        assert out == ["checking"]
+        assert ei.value.tool_calls[0].tool_name == "lookup"
+
+    @pytest.mark.asyncio
+    async def test_empty_messages_raises_value_error(self):
+        p = _make_provider()
+        req = ChatRequest(messages=[])
+        with pytest.raises(ValueError, match="messages must not be empty"):
+            async for _ in p.stream(req):
+                pass
+
+    @pytest.mark.asyncio
+    async def test_output_format_on_stream_raises(self):
+        p = _make_provider()
+        of = OutputFormat(schema={})
+        req = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="hi")])],
+            output_format=of,
+        )
+        with pytest.raises(UnsupportedFeatureError, match="stream"):
+            async for _ in p.stream(req):
+                pass
+
+    @pytest.mark.asyncio
+    async def test_abort_event_short_circuits(self):
+        p = _make_provider()
+        final = _mk_anthropic_message(text="hello there")
+        stream = _FakeStream(text_deltas=["hel", "lo", " ", "there"], final_message=final)
+        _install_stream(p, stream)
+
+        abort = asyncio.Event()
+        req = ChatRequest(messages=[Message(role="user", content=[TextBlock(text="hi")])])
+        out = []
+        async for token in p.stream(req, abort_event=abort):
+            out.append(token)
+            if len(out) == 2:
+                abort.set()
+        assert out == ["hel", "lo"]
