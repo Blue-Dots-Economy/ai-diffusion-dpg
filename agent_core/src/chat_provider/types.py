@@ -84,3 +84,56 @@ ContentBlock = Annotated[
     Union[TextBlock, ImageBlock, ToolUseBlock, ToolResultBlock],
     Field(discriminator="type"),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Messages, tools, system prompt, output format
+# ---------------------------------------------------------------------------
+
+
+class Message(BaseModel):
+    """One conversational turn.
+
+    `role` is restricted to user/assistant; the system prompt does not
+    travel as a Message — it sits on ChatRequest.system as a SystemPrompt.
+    `content` is always a list, even for plain text.
+    """
+
+    role: Literal["user", "assistant"]
+    content: list[ContentBlock]
+
+
+class ToolDefinition(BaseModel):
+    """Tool contract presented to the model.
+
+    `input_schema` is a JSON Schema dict; both Anthropic and OpenAI
+    accept this shape natively (Anthropic as `input_schema`, OpenAI as
+    `function.parameters`).
+    """
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+
+
+class SystemPrompt(BaseModel):
+    """Ordered list of system text blocks.
+
+    Each block may carry a cache_hint so callers (e.g. ManagerAgent) can
+    mark cache boundaries without writing provider-specific dicts.
+    """
+
+    blocks: list[TextBlock]
+
+
+class OutputFormat(BaseModel):
+    """Structured-output contract.
+
+    Only json_schema is supported in PR1. OpenAI uses this natively
+    (response_format strict mode); Anthropic emulates via tool-coercion.
+    `_validate_request` forbids OutputFormat on stream() for all providers.
+    """
+
+    type: Literal["json_schema"] = "json_schema"
+    schema: dict[str, Any]
+    strict: bool = True

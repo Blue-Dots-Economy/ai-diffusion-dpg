@@ -94,3 +94,71 @@ class TestToolResultBlock:
     def test_round_trip(self):
         b = ToolResultBlock(tool_use_id="t_1", content="ok", is_error=True)
         assert ToolResultBlock.model_validate(b.model_dump()) == b
+
+
+from src.chat_provider.types import (
+    Message,
+    OutputFormat,
+    SystemPrompt,
+    ToolDefinition,
+)
+
+
+class TestMessage:
+    def test_user_text(self):
+        m = Message(role="user", content=[TextBlock(text="hi")])
+        assert m.role == "user"
+        assert len(m.content) == 1
+
+    def test_assistant_with_tool_use(self):
+        m = Message(
+            role="assistant",
+            content=[
+                TextBlock(text="let me check"),
+                ToolUseBlock(tool_use_id="t_1", tool_name="lookup", input={"q": 1}),
+            ],
+        )
+        assert m.content[1].type == "tool_use"
+
+    def test_invalid_role(self):
+        with pytest.raises(ValidationError):
+            Message(role="system", content=[TextBlock(text="x")])  # type: ignore[arg-type]
+
+    def test_content_must_be_list(self):
+        with pytest.raises(ValidationError):
+            Message(role="user", content="just a string")  # type: ignore[arg-type]
+
+
+class TestToolDefinition:
+    def test_minimal(self):
+        t = ToolDefinition(
+            name="get_weather",
+            description="Get the weather",
+            input_schema={"type": "object", "properties": {}},
+        )
+        assert t.name == "get_weather"
+
+
+class TestSystemPrompt:
+    def test_with_blocks(self):
+        sp = SystemPrompt(
+            blocks=[
+                TextBlock(text="You are helpful.", cache_hint="session"),
+                TextBlock(text="Today's user is Aniket.", cache_hint="turn"),
+            ]
+        )
+        assert len(sp.blocks) == 2
+        assert sp.blocks[0].cache_hint == "session"
+
+
+class TestOutputFormat:
+    def test_minimal(self):
+        of = OutputFormat(
+            type="json_schema",
+            schema={"type": "object", "properties": {"x": {"type": "integer"}}},
+        )
+        assert of.strict is True
+
+    def test_strict_false(self):
+        of = OutputFormat(type="json_schema", schema={}, strict=False)
+        assert of.strict is False
