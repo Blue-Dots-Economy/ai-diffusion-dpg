@@ -18,6 +18,7 @@ import asyncio
 import json
 import os
 import unittest.mock as mock
+import yaml as _yaml
 from pathlib import Path
 
 import pytest
@@ -592,8 +593,6 @@ def test_get_project_returns_required_secrets_and_azure_needed(tmp_path, monkeyp
 # ---------------------------------------------------------------------------
 # REACH_LAYER_WEB_MODE injection in deploy preview
 # ---------------------------------------------------------------------------
-
-import yaml as _yaml
 
 
 class TestWebModeInjection:
