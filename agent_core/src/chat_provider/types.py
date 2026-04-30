@@ -45,10 +45,10 @@ class ImageSource(BaseModel):
     @model_validator(mode="after")
     def _validate_kind(self) -> "ImageSource":
         if self.kind == "url":
-            if not self.url:
+            if self.url is None:
                 raise ValueError("ImageSource(kind='url') requires url")
         else:  # base64
-            if not self.media_type or not self.data:
+            if self.media_type is None or self.data is None:
                 raise ValueError(
                     "ImageSource(kind='base64') requires both media_type and data"
                 )
