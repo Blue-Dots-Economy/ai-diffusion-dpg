@@ -54,8 +54,11 @@ _DEFAULT_MAX_TOKENS = 4096
 class _RetryableExhausted(Exception):
     """Internal: all retry attempts on transient errors were consumed.
 
-    Caught only inside AnthropicChatProvider.call() / .stream() to
-    transition into the error-response path. Never escapes.
+    Caught inside AnthropicChatProvider.call() / .stream() to transition
+    into the error-response path. Also imported by the legacy adapter
+    (llm_wrapper/claude_wrapper.py) so it can detect retry exhaustion
+    and trigger its own fallback logic. This coupling is intentional and
+    scoped — the adapter is deleted in PR5 (#292).
     """
 
 

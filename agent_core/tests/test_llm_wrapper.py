@@ -21,6 +21,21 @@ stream_call() coverage:
 - Failure: fallback model switch after primary exhaustion
 - Failure: all retries exhausted yields nothing
 - Failure: non-retryable APIError yields nothing
+
+Patch-path note (Task 14 / PR1 #288):
+  ClaudeLLMWrapper is now a thin adapter over AnthropicChatProvider.
+  All anthropic SDK calls happen inside AnthropicChatProvider, so we
+  patch at:
+    src.chat_provider.anthropic_provider.anthropic.Anthropic
+    src.chat_provider.anthropic_provider.anthropic.AsyncAnthropic
+    src.chat_provider.anthropic_provider.time.sleep
+    src.chat_provider.anthropic_provider.asyncio.sleep
+  (previously patched at src.llm_wrapper.claude_wrapper.anthropic.*)
+  Both primary and fallback providers call anthropic.Anthropic() at init,
+  so mock_anthropic_cls is called twice; both return the same mock_client
+  via return_value, meaning primary._client and fallback._client are the
+  same object. Side effects on messages.create / messages.stream are
+  consumed in order across both providers.
 """
 
 from __future__ import annotations
@@ -108,7 +123,7 @@ def test_init_raises_on_empty_fallback_model():
 # Normal execution
 # ---------------------------------------------------------------------------
 
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 def test_call_returns_text_response(mock_anthropic_cls):
     mock_client = MagicMock()
     mock_anthropic_cls.return_value = mock_client
@@ -125,7 +140,7 @@ def test_call_returns_text_response(mock_anthropic_cls):
     assert response.output_tokens == 5
 
 
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 def test_call_returns_tool_use_response(mock_anthropic_cls):
     mock_client = MagicMock()
     mock_anthropic_cls.return_value = mock_client
@@ -141,7 +156,7 @@ def test_call_returns_tool_use_response(mock_anthropic_cls):
     assert response.tool_calls[0].tool_use_id == "tu_123"
 
 
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 def test_call_without_tools_does_not_pass_tools_param(mock_anthropic_cls):
     mock_client = MagicMock()
     mock_anthropic_cls.return_value = mock_client
@@ -158,14 +173,14 @@ def test_call_without_tools_does_not_pass_tools_param(mock_anthropic_cls):
 # Edge cases
 # ---------------------------------------------------------------------------
 
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 def test_call_raises_on_empty_messages(mock_anthropic_cls):
     wrapper = ClaudeLLMWrapper(VALID_CONFIG)
     with pytest.raises(ValueError, match="messages must not be empty"):
         wrapper.call(messages=[], tools=[], system=SYSTEM)
 
 
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 def test_get_active_model_returns_primary_initially(mock_anthropic_cls):
     wrapper = ClaudeLLMWrapper(VALID_CONFIG)
     assert wrapper.get_active_model() == "claude-primary"
@@ -175,8 +190,8 @@ def test_get_active_model_returns_primary_initially(mock_anthropic_cls):
 # Retry and fallback
 # ---------------------------------------------------------------------------
 
-@patch("src.llm_wrapper.claude_wrapper.time.sleep")
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.time.sleep")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 def test_retries_on_rate_limit_then_succeeds(mock_anthropic_cls, mock_sleep):
     import anthropic as anthropic_module
 
@@ -196,15 +211,18 @@ def test_retries_on_rate_limit_then_succeeds(mock_anthropic_cls, mock_sleep):
     assert mock_client.messages.create.call_count == 2
 
 
-@patch("src.llm_wrapper.claude_wrapper.time.sleep")
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.time.sleep")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 def test_switches_to_fallback_after_primary_exhaustion(mock_anthropic_cls, mock_sleep):
     import anthropic as anthropic_module
 
     mock_client = MagicMock()
     mock_anthropic_cls.return_value = mock_client
 
-    # Primary fails all retries; fallback succeeds
+    # Primary fails all retries; fallback succeeds.
+    # Both primary._client and fallback._client are the same mock_client
+    # (mock_anthropic_cls.return_value is shared), so side_effect is consumed
+    # in order across both providers.
     mock_client.messages.create.side_effect = [
         anthropic_module.APITimeoutError(request=MagicMock()),
         anthropic_module.APITimeoutError(request=MagicMock()),
@@ -218,8 +236,8 @@ def test_switches_to_fallback_after_primary_exhaustion(mock_anthropic_cls, mock_
     assert wrapper.get_active_model() == "claude-fallback"
 
 
-@patch("src.llm_wrapper.claude_wrapper.time.sleep")
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.time.sleep")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 def test_returns_error_response_when_all_attempts_fail(mock_anthropic_cls, mock_sleep):
     import anthropic as anthropic_module
 
@@ -236,7 +254,7 @@ def test_returns_error_response_when_all_attempts_fail(mock_anthropic_cls, mock_
     assert response.content is None
 
 
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 def test_non_retryable_api_error_returns_error_immediately(mock_anthropic_cls):
     import anthropic as anthropic_module
 
@@ -253,7 +271,7 @@ def test_non_retryable_api_error_returns_error_immediately(mock_anthropic_cls):
     assert mock_client.messages.create.call_count == 1
 
 
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 def test_missing_api_key_returns_error_not_raises(mock_anthropic_cls):
     """TypeError from missing API key must return stop_reason=error, not crash the server."""
     mock_client = MagicMock()
@@ -353,8 +371,8 @@ async def _collect_stream(gen):
 # ---------------------------------------------------------------------------
 
 
-@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.AsyncAnthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 async def test_stream_call_yields_text_tokens(mock_anthropic_cls, mock_async_cls):
     """stream_call() yields text tokens from the LLM stream."""
     mock_client = MagicMock()
@@ -372,8 +390,8 @@ async def test_stream_call_yields_text_tokens(mock_anthropic_cls, mock_async_cls
     assert tokens == ["Hello", " world", "!"]
 
 
-@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.AsyncAnthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 async def test_stream_call_raises_tool_use_requested(mock_anthropic_cls, mock_async_cls):
     """stream_call() raises ToolUseRequested when LLM returns tool_use stop reason."""
     mock_client = MagicMock()
@@ -408,8 +426,8 @@ async def test_stream_call_raises_tool_use_requested(mock_anthropic_cls, mock_as
 # ---------------------------------------------------------------------------
 
 
-@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.AsyncAnthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 async def test_stream_call_raises_on_empty_messages(mock_anthropic_cls, mock_async_cls):
     """stream_call() raises ValueError for empty messages."""
     wrapper = ClaudeLLMWrapper(VALID_CONFIG)
@@ -417,8 +435,8 @@ async def test_stream_call_raises_on_empty_messages(mock_anthropic_cls, mock_asy
         await _collect_stream(wrapper.stream_call(messages=[], system=SYSTEM))
 
 
-@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.AsyncAnthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 async def test_stream_call_without_tools(mock_anthropic_cls, mock_async_cls):
     """stream_call() works without tools parameter."""
     mock_client = MagicMock()
@@ -444,9 +462,9 @@ async def test_stream_call_without_tools(mock_anthropic_cls, mock_async_cls):
 # ---------------------------------------------------------------------------
 
 
-@patch("src.llm_wrapper.claude_wrapper.asyncio.sleep", new_callable=AsyncMock)
-@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.asyncio.sleep", new_callable=AsyncMock)
+@patch("src.chat_provider.anthropic_provider.anthropic.AsyncAnthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 async def test_stream_retries_on_timeout_then_succeeds(mock_anthropic_cls, mock_async_cls, mock_sleep):
     """stream_call() retries on APITimeoutError and succeeds on second attempt."""
     import anthropic as anthropic_module
@@ -471,9 +489,9 @@ async def test_stream_retries_on_timeout_then_succeeds(mock_anthropic_cls, mock_
     assert mock_async_client.messages.stream.call_count == 2
 
 
-@patch("src.llm_wrapper.claude_wrapper.asyncio.sleep", new_callable=AsyncMock)
-@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.asyncio.sleep", new_callable=AsyncMock)
+@patch("src.chat_provider.anthropic_provider.anthropic.AsyncAnthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 async def test_stream_switches_to_fallback_after_exhaustion(mock_anthropic_cls, mock_async_cls, mock_sleep):
     """stream_call() switches to fallback model after primary retries are exhausted."""
     import anthropic as anthropic_module
@@ -488,7 +506,9 @@ async def test_stream_switches_to_fallback_after_exhaustion(mock_anthropic_cls, 
 
     mock_async_client = MagicMock()
     mock_async_cls.return_value = mock_async_client
-    # Primary fails twice (max_attempts=2), then fallback succeeds
+    # Primary fails twice (max_attempts=2), then fallback succeeds.
+    # Both providers share the same mock_async_client (AsyncAnthropic is called
+    # twice at init, returning the same mock via return_value).
     mock_async_client.messages.stream = MagicMock(
         side_effect=[
             timeout_ctx,
@@ -505,9 +525,9 @@ async def test_stream_switches_to_fallback_after_exhaustion(mock_anthropic_cls, 
     assert wrapper.get_active_model() == "claude-fallback"
 
 
-@patch("src.llm_wrapper.claude_wrapper.asyncio.sleep", new_callable=AsyncMock)
-@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.asyncio.sleep", new_callable=AsyncMock)
+@patch("src.chat_provider.anthropic_provider.anthropic.AsyncAnthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 async def test_stream_yields_nothing_when_all_attempts_fail(mock_anthropic_cls, mock_async_cls, mock_sleep):
     """stream_call() yields nothing when all retry attempts on both models are exhausted."""
     import anthropic as anthropic_module
@@ -534,8 +554,8 @@ async def test_stream_yields_nothing_when_all_attempts_fail(mock_anthropic_cls, 
     assert tokens == []
 
 
-@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.AsyncAnthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 async def test_stream_non_retryable_api_error_yields_nothing(mock_anthropic_cls, mock_async_cls):
     """stream_call() yields nothing on non-retryable APIError (no retry)."""
     import anthropic as anthropic_module
@@ -569,8 +589,8 @@ async def test_stream_non_retryable_api_error_yields_nothing(mock_anthropic_cls,
 # ---------------------------------------------------------------------------
 
 
-@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.AsyncAnthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 async def test_stream_call_accepts_abort_event_kwarg(mock_anthropic_cls, mock_async_cls):
     """stream_call() accepts abort_event=None and behaves identically to no kwarg."""
     mock_client = MagicMock()
@@ -588,8 +608,8 @@ async def test_stream_call_accepts_abort_event_kwarg(mock_anthropic_cls, mock_as
     assert tokens == ["a", "b", "c"]
 
 
-@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.AsyncAnthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 async def test_stream_call_aborts_between_chunks_when_event_set(
     mock_anthropic_cls, mock_async_cls,
 ):
@@ -646,8 +666,9 @@ def test_wrap_system_for_caching_passes_through_preformed_list():
     assert ClaudeLLMWrapper._wrap_system_for_caching(blocks) is blocks
 
 
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 def test_call_forwards_cache_control_for_long_system_prompt(mock_anthropic_cls):
+    """A system prompt >= _CACHE_MIN_CHARS is forwarded with a cache_control block."""
     mock_client = MagicMock()
     mock_anthropic_cls.return_value = mock_client
     mock_client.messages.create.return_value = _mock_text_response()
@@ -661,8 +682,15 @@ def test_call_forwards_cache_control_for_long_system_prompt(mock_anthropic_cls):
     assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral"}
 
 
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
-def test_call_leaves_short_system_prompt_as_string(mock_anthropic_cls):
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
+def test_call_leaves_short_system_prompt_as_list_block(mock_anthropic_cls):
+    """A short system prompt is forwarded as a list block without cache_control.
+
+    Note: The adapter always sends system as a list[dict] (via
+    AnthropicChatProvider._to_wire); a short prompt gets a list block
+    without cache_control, rather than a bare string. This is wire-format
+    equivalent — Anthropic accepts both.
+    """
     mock_client = MagicMock()
     mock_anthropic_cls.return_value = mock_client
     mock_client.messages.create.return_value = _mock_text_response()
@@ -671,11 +699,13 @@ def test_call_leaves_short_system_prompt_as_string(mock_anthropic_cls):
     wrapper.call(messages=MESSAGES, tools=[], system=SYSTEM)
 
     kwargs = mock_client.messages.create.call_args.kwargs
-    assert isinstance(kwargs["system"], str)
-    assert kwargs["system"] == SYSTEM
+    assert isinstance(kwargs["system"], list)
+    assert kwargs["system"][0]["type"] == "text"
+    assert kwargs["system"][0]["text"] == SYSTEM
+    assert "cache_control" not in kwargs["system"][0]
 
 
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 def test_call_parses_cache_tokens_from_response(mock_anthropic_cls):
     mock_client = MagicMock()
     mock_anthropic_cls.return_value = mock_client
@@ -691,7 +721,7 @@ def test_call_parses_cache_tokens_from_response(mock_anthropic_cls):
     assert response.cache_creation_input_tokens == 0
 
 
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 def test_call_zero_cache_tokens_when_fields_absent(mock_anthropic_cls):
     """Old SDK versions without cache fields must not break us."""
     mock_client = MagicMock()
@@ -724,8 +754,8 @@ def test_safe_int_handles_none_and_garbage():
 # ---------------------------------------------------------------------------
 
 
-@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.AsyncAnthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 async def test_stream_call_uses_default_max_tokens_when_unset(mock_anthropic_cls, mock_async_cls):
     """stream_call() falls back to the wrapper default (4096) when max_tokens is not provided."""
     mock_anthropic_cls.return_value = MagicMock()
@@ -743,8 +773,8 @@ async def test_stream_call_uses_default_max_tokens_when_unset(mock_anthropic_cls
     assert call_kwargs["max_tokens"] == 4096
 
 
-@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.AsyncAnthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 async def test_stream_call_forwards_max_tokens_override(mock_anthropic_cls, mock_async_cls):
     """stream_call() forwards an explicit max_tokens value to the Anthropic client."""
     mock_anthropic_cls.return_value = MagicMock()
@@ -763,8 +793,8 @@ async def test_stream_call_forwards_max_tokens_override(mock_anthropic_cls, mock
     assert call_kwargs["max_tokens"] == 200
 
 
-@patch("src.llm_wrapper.claude_wrapper.anthropic.AsyncAnthropic")
-@patch("src.llm_wrapper.claude_wrapper.anthropic.Anthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.AsyncAnthropic")
+@patch("src.chat_provider.anthropic_provider.anthropic.Anthropic")
 async def test_stream_call_treats_none_max_tokens_as_default(mock_anthropic_cls, mock_async_cls):
     """Passing max_tokens=None explicitly yields the default 4096 cap."""
     mock_anthropic_cls.return_value = MagicMock()
