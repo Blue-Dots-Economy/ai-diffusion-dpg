@@ -146,6 +146,10 @@ def render_block(project_path: Path, block: str, accumulator: ConfigAccumulator)
         data = _sync_agent_core_intents(data)
         data = _ensure_subagent_routing(data)
         data = merge_voice_tts_into_suffix(data)
+        # Guard: runtime schema requires max_tool_rounds >= 1; clamp if LLM wrote 0.
+        agent_cfg = data.get("agent", {})
+        if isinstance(agent_cfg.get("max_tool_rounds"), int) and agent_cfg["max_tool_rounds"] < 1:
+            agent_cfg["max_tool_rounds"] = 1
 
     yaml_content = yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
 

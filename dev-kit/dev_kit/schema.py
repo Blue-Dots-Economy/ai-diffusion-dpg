@@ -117,7 +117,7 @@ class AgentConfig(BaseModel):
     timeout_ms: int = Field(default=10000, description="LLM call timeout in milliseconds")
     retry_attempts: int = Field(default=2, description="Number of retry attempts on transient failure")
     retry_backoff_seconds: list[float] = Field(default=[0, 0.5, 1.0])
-    max_tool_rounds: int = Field(default=1, description="Maximum tool call rounds per turn")
+    max_tool_rounds: int = Field(default=3, ge=1, description="Maximum tool call rounds per turn")
     ask_for_consent: bool = Field(
         default=False,
         description="If True, Agent Core asks new users for DPDP consent before storing any data.",
