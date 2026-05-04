@@ -1,59 +1,36 @@
 """
-agent_core/src/llm_proxy_server.py
+agent_core/src/servers/llm_proxy_server.py
 
 FastAPI application exposing the internal LLM proxy endpoint.
 
 NOTE: This server is NOT currently used. Language Normalisation and NLU Processor
-have been moved into Agent Core and call the LLM wrapper directly. The proxy
-endpoint is retained so that other DPG layers (e.g. Trust Layer, Action Gateway)
-can use it in the future without requiring their own Anthropic API key.
+call their injected ChatProviderBase directly. The proxy endpoint is retained so
+that other DPG layers (e.g. Trust Layer, Action Gateway) can use it in the
+future without requiring their own provider API key.
 
-Any DPG that needs LLM access calls this endpoint instead of holding an Anthropic
+Any DPG that needs LLM access calls this endpoint instead of holding a provider
 API key itself. Agent Core remains the sole owner of the key and the sole caller
-of the Anthropic API.
+of the upstream LLM API.
 
 Endpoint:
-    POST /internal/llm/call   — proxy an LLM call through ClaudeLLMWrapper
+    POST /internal/llm/call   — proxy an LLM call through ChatProviderBase
     GET  /health               — readiness probe
+
+Request/response shape: native chat_provider neutral types (ChatRequest /
+ChatResponse). The proxy is provider-agnostic — Anthropic and OpenAI both
+serialise into the same neutral schema.
 """
 
 import logging
 import time
-from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from src.llm_wrapper.base import LLMWrapperBase
-from src.models import LLMResponse
+from src.chat_provider.base import ChatProviderBase
+from src.chat_provider.types import ChatRequest, ChatResponse
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Request / Response Pydantic schemas
-# ---------------------------------------------------------------------------
-
-class ToolCallSchema(BaseModel):
-    tool_name: str
-    tool_use_id: str
-    input_params: dict[str, Any]
-
-
-class LLMCallRequest(BaseModel):
-    messages: list[dict]
-    tools: list[dict] = []
-    system: str = ""
-    model_override: Optional[str] = None
-
-
-class LLMCallResponse(BaseModel):
-    content: Optional[str]
-    tool_calls: list[ToolCallSchema] = []
-    stop_reason: str
-    model_used: str
-    input_tokens: int
-    output_tokens: int
 
 
 class HealthResponse(BaseModel):
@@ -65,18 +42,18 @@ class HealthResponse(BaseModel):
 # App factory
 # ---------------------------------------------------------------------------
 
-def create_app(llm: LLMWrapperBase) -> FastAPI:
-    """
-    Create and return the FastAPI application with the LLM wrapper bound to it.
+def create_app(chat_provider: ChatProviderBase) -> FastAPI:
+    """Create and return the FastAPI app with the chat_provider bound to it.
 
     Args:
-        llm: The LLMWrapperBase instance (ClaudeLLMWrapper in production).
-             Stored on app.state so the endpoint can access it without globals.
+        chat_provider: The ChatProviderBase instance (typically built via
+                       build_chat_provider() in main.py). Stored on app.state
+                       so the endpoint can access it without globals.
 
     Called once at startup from main.py.
     """
-    if llm is None:
-        raise ValueError("llm must not be None")
+    if chat_provider is None:
+        raise ValueError("chat_provider must not be None")
 
     app = FastAPI(
         title="Agent Core — LLM Proxy",
@@ -84,38 +61,30 @@ def create_app(llm: LLMWrapperBase) -> FastAPI:
         version="0.1.0",
         docs_url="/docs",
     )
-    app.state.llm = llm
+    app.state.chat_provider = chat_provider
 
     # ----------------------------------------------------------------
     # POST /internal/llm/call
     # ----------------------------------------------------------------
 
-    @app.post("/internal/llm/call", response_model=LLMCallResponse)
-    def llm_call(request: LLMCallRequest) -> LLMCallResponse:
-        """
-        Proxy an LLM call to the Anthropic API via ClaudeLLMWrapper.
+    @app.post("/internal/llm/call", response_model=ChatResponse)
+    def llm_call(request: ChatRequest) -> ChatResponse:
+        """Proxy an LLM call to the configured provider.
 
-        The caller (e.g. Knowledge Engine's HttpLLMWrapper) sends messages,
-        optional tools, an optional system prompt, and an optional model override.
-        Agent Core forwards the call, applies retry/fallback logic, and returns
-        the normalised LLMResponse as JSON.
+        The caller sends a neutral ChatRequest body. Agent Core forwards
+        the call (with retry, fallback, and capability validation handled
+        inside the provider) and returns the ChatResponse as JSON.
 
-        Returns HTTP 422 if messages list is empty.
-        Returns stop_reason="error" in the body if the LLM call itself fails —
-        never returns HTTP 500 for LLM-level failures.
+        Returns HTTP 422 if messages list is empty (mirrors today's
+        Pydantic-validation behaviour).
+        ChatResponse with stop_reason="error" is returned in the body
+        when the provider itself fails — never HTTP 500.
         """
         if not request.messages:
             raise HTTPException(status_code=422, detail="messages must not be empty")
 
         start = time.time()
-
-        response: LLMResponse = app.state.llm.call(
-            messages=request.messages,
-            tools=request.tools,
-            system=request.system,
-            model_override=request.model_override,
-        )
-
+        response: ChatResponse = app.state.chat_provider.call(request)
         latency_ms = int((time.time() - start) * 1000)
         status = "failure" if response.stop_reason == "error" else "success"
 
@@ -126,27 +95,13 @@ def create_app(llm: LLMWrapperBase) -> FastAPI:
                 "status": status,
                 "model": response.model_used,
                 "latency_ms": latency_ms,
-                "input_tokens": response.input_tokens,
-                "output_tokens": response.output_tokens,
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens,
                 "stop_reason": response.stop_reason,
             },
         )
 
-        return LLMCallResponse(
-            content=response.content,
-            tool_calls=[
-                ToolCallSchema(
-                    tool_name=tc.tool_name,
-                    tool_use_id=tc.tool_use_id,
-                    input_params=tc.input_params,
-                )
-                for tc in response.tool_calls
-            ],
-            stop_reason=response.stop_reason,
-            model_used=response.model_used,
-            input_tokens=response.input_tokens,
-            output_tokens=response.output_tokens,
-        )
+        return response
 
     # ----------------------------------------------------------------
     # GET /health
@@ -154,13 +109,10 @@ def create_app(llm: LLMWrapperBase) -> FastAPI:
 
     @app.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:
-        """
-        Readiness probe. Returns the currently active model name so callers
-        can confirm which model Agent Core is routing to.
-        """
+        """Readiness probe. Returns the currently active model name."""
         return HealthResponse(
             status="ok",
-            active_model=app.state.llm.get_active_model(),
+            active_model=app.state.chat_provider.get_active_model(),
         )
 
     return app
