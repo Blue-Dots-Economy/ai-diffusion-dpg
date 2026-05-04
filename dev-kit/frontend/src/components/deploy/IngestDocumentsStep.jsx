@@ -622,7 +622,7 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
           >
             Skip
           </button>
-          {allTerminal && (
+          {(allTerminal || (!state.historyLoading && state.rows.length === 0)) && (
             <a
               href={`http://${window.location.hostname}:8005`}
               target="_blank"
