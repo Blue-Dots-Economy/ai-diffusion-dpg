@@ -57,7 +57,6 @@ from src.preprocessing.language_normalisation import LanguageNormaliser
 from src.manager_agent import ManagerAgent
 from src.models import (
     DoneEvent,
-    LLMResponse,
     NLUResult,
     SentenceEvent,
     SignalEvent,
@@ -2649,10 +2648,10 @@ class AgentCore(AgentCoreBase):
             t45 = time.time()
             yield _stamp(SignalEvent(stage="nlu", status="start"))
 
-            # asyncio.to_thread offloads each sync llm.call onto the default
-            # thread pool so the two Anthropic round-trips overlap in wall
-            # clock. They never race on shared state — each uses its own
-            # LLMResponse.
+            # asyncio.to_thread offloads each sync provider.call() onto the
+            # default thread pool so the two LLM round-trips overlap in wall
+            # clock. They never race on shared state — each receives its own
+            # ChatResponse.
             (normalised_input, turn_language), early_nlu_result = await asyncio.gather(
                 asyncio.to_thread(
                     self._language_normaliser.normalise,
