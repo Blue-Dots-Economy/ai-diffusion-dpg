@@ -1385,21 +1385,6 @@ def _apply_resources_to_compose(content: str, resources: dict) -> str:
     return _yaml.dump(compose, default_flow_style=False, sort_keys=False)
 
 
-@app.put("/api/projects/{slug}/deploy/compose-file")
-async def update_compose_file(slug: str, body: dict) -> dict:
-    """Write updated docker-compose content back to the compose file.
-
-    Args:
-        slug: Project slug (unused; endpoint is project-scoped for consistency).
-        body: Dict with ``content`` key containing the full YAML string.
-
-    Returns:
-        Dict with ``status: ok`` on success.
-    """
-    COMPOSE_FILE.write_text(body["content"])
-    return {"status": "ok"}
-
-
 @app.get("/api/deploy/public-key")
 def get_deploy_public_key() -> dict:
     """Return the server RSA public key for browser-side secret encryption.
