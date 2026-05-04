@@ -115,12 +115,9 @@ class NLUProcessor:
         """
         nlu_config = (config or {}).get("preprocessing", {}).get("nlu_processor", {})
         # Retained for telemetry/logging only — the actual model used is
-        # determined by the injected chat_provider (which is pre-configured).
+        # determined by the injected chat_provider (which is pre-configured
+        # by build_chat_provider with the matching model id).
         self._model: str = nlu_config.get("model", "")
-        if not self._model:
-            raise ConfigurationError(
-                "preprocessing.nlu_processor.model is missing in domain configuration."
-            )
         self._chat_provider = chat_provider
 
         self._domain_instruction: str = nlu_config.get(

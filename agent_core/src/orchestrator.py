@@ -250,21 +250,10 @@ class AgentCore(AgentCoreBase):
         ) or {}
         lang_model = lang_block.get("model") or ""
         if lang_model and lang_model != primary_model:
-            try:
-                self._lang_chat_provider = build_chat_provider({
-                    **self._config.get("agent", {}),
-                    "primary_model": lang_model,
-                })
-            except Exception as _err:
-                logger.warning(
-                    "orchestrator.lang_provider_fallback",
-                    extra={
-                        "operation": "orchestrator.init",
-                        "status": "skipped",
-                        "error": f"{type(_err).__name__}: {_err}",
-                    },
-                )
-                self._lang_chat_provider = self._llm
+            self._lang_chat_provider = build_chat_provider({
+                **self._config.get("agent", {}),
+                "primary_model": lang_model,
+            })
         else:
             self._lang_chat_provider = self._llm
 
@@ -273,21 +262,10 @@ class AgentCore(AgentCoreBase):
         ) or {}
         nlu_model = nlu_block.get("model") or ""
         if nlu_model and nlu_model != primary_model:
-            try:
-                self._nlu_chat_provider = build_chat_provider({
-                    **self._config.get("agent", {}),
-                    "primary_model": nlu_model,
-                })
-            except Exception as _err:
-                logger.warning(
-                    "orchestrator.nlu_provider_fallback",
-                    extra={
-                        "operation": "orchestrator.init",
-                        "status": "skipped",
-                        "error": f"{type(_err).__name__}: {_err}",
-                    },
-                )
-                self._nlu_chat_provider = self._llm
+            self._nlu_chat_provider = build_chat_provider({
+                **self._config.get("agent", {}),
+                "primary_model": nlu_model,
+            })
         else:
             self._nlu_chat_provider = self._llm
 
