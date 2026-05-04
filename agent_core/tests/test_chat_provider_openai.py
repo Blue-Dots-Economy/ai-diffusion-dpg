@@ -7,6 +7,18 @@ from unittest.mock import patch
 
 from src.chat_provider.openai_provider import OpenAIChatProvider
 from src.chat_provider.base import Capabilities, ProviderConfigError
+from src.chat_provider.types import (
+    ChatRequest,
+    ImageBlock,
+    ImageSource,
+    Message,
+    OutputFormat,
+    SystemPrompt,
+    TextBlock,
+    ToolDefinition,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 
 
 VALID_CONFIG = {
@@ -65,3 +77,194 @@ class TestInit:
         with patch("openai.OpenAI"), patch("openai.AsyncOpenAI"):
             p = OpenAIChatProvider(VALID_CONFIG)
         assert p.get_active_model() == "gpt-4o-2024-08-06"
+
+
+def _make_provider(features: dict | None = None) -> OpenAIChatProvider:
+    cfg = dict(VALID_CONFIG)
+    if features is not None:
+        cfg["features"] = features
+    with patch("openai.OpenAI"), patch("openai.AsyncOpenAI"):
+        return OpenAIChatProvider(cfg)
+
+
+class TestToWire:
+    def test_minimal_text_request(self):
+        p = _make_provider()
+        req = ChatRequest(messages=[Message(role="user", content=[TextBlock(text="hi")])])
+        wire = p._to_wire(req)
+        assert wire == {
+            "model": "gpt-4o-2024-08-06",
+            "max_completion_tokens": 4096,
+            "messages": [{"role": "user", "content": "hi"}],
+            "timeout": 5.0,
+        }
+
+    def test_system_prompt_concatenated_at_head(self):
+        p = _make_provider()
+        req = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="hi")])],
+            system=SystemPrompt(blocks=[
+                TextBlock(text="You are helpful."),
+                TextBlock(text="Be concise."),
+            ]),
+        )
+        wire = p._to_wire(req)
+        assert wire["messages"][0] == {
+            "role": "system",
+            "content": "You are helpful.\n\nBe concise.",
+        }
+        assert wire["messages"][1]["role"] == "user"
+
+    def test_text_only_message_uses_string_content(self):
+        # Single TextBlock → content is a string, not a list of parts.
+        p = _make_provider()
+        req = ChatRequest(messages=[Message(role="user", content=[TextBlock(text="hi")])])
+        wire = p._to_wire(req)
+        assert wire["messages"][0]["content"] == "hi"
+
+    def test_image_block_uses_content_parts(self):
+        p = _make_provider()
+        img = ImageBlock(source=ImageSource(kind="url", url="https://x/y.png"))
+        req = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="describe"), img])]
+        )
+        wire = p._to_wire(req)
+        assert wire["messages"][0]["content"] == [
+            {"type": "text", "text": "describe"},
+            {"type": "image_url", "image_url": {"url": "https://x/y.png"}},
+        ]
+
+    def test_image_base64_uses_data_url(self):
+        p = _make_provider()
+        img = ImageBlock(source=ImageSource(kind="base64", media_type="image/png", data="ABC=="))
+        req = ChatRequest(messages=[Message(role="user", content=[img])])
+        wire = p._to_wire(req)
+        assert wire["messages"][0]["content"] == [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,ABC=="}},
+        ]
+
+    def test_tool_definition(self):
+        p = _make_provider()
+        td = ToolDefinition(
+            name="get_x",
+            description="get x",
+            input_schema={"type": "object", "properties": {"q": {"type": "string"}}},
+        )
+        req = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="hi")])],
+            tools=[td],
+        )
+        wire = p._to_wire(req)
+        assert wire["tools"] == [{
+            "type": "function",
+            "function": {
+                "name": "get_x",
+                "description": "get x",
+                "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
+            },
+        }]
+
+    def test_tool_choice_auto(self):
+        p = _make_provider()
+        td = ToolDefinition(name="x", description="d", input_schema={"type": "object"})
+        req = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="hi")])],
+            tools=[td], tool_choice="auto",
+        )
+        wire = p._to_wire(req)
+        assert wire["tool_choice"] == "auto"
+
+    def test_tool_choice_any_maps_to_required(self):
+        p = _make_provider()
+        td = ToolDefinition(name="x", description="d", input_schema={"type": "object"})
+        req = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="hi")])],
+            tools=[td], tool_choice="any",
+        )
+        wire = p._to_wire(req)
+        assert wire["tool_choice"] == "required"
+
+    def test_tool_choice_none_drops_tools(self):
+        p = _make_provider()
+        td = ToolDefinition(name="x", description="d", input_schema={"type": "object"})
+        req = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="hi")])],
+            tools=[td], tool_choice="none",
+        )
+        wire = p._to_wire(req)
+        assert "tools" not in wire and "tool_choice" not in wire
+
+    def test_tool_choice_named(self):
+        p = _make_provider()
+        td = ToolDefinition(name="my_tool", description="d", input_schema={"type": "object"})
+        req = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="hi")])],
+            tools=[td], tool_choice="my_tool",
+        )
+        wire = p._to_wire(req)
+        assert wire["tool_choice"] == {
+            "type": "function",
+            "function": {"name": "my_tool"},
+        }
+
+    def test_assistant_tool_use_and_tool_result_messages(self):
+        p = _make_provider()
+        req = ChatRequest(
+            messages=[
+                Message(role="user", content=[TextBlock(text="look it up")]),
+                Message(
+                    role="assistant",
+                    content=[
+                        TextBlock(text="checking"),
+                        ToolUseBlock(tool_use_id="call_abc", tool_name="lookup", input={"q": "x"}),
+                    ],
+                ),
+                Message(
+                    role="user",
+                    content=[ToolResultBlock(tool_use_id="call_abc", content="42")],
+                ),
+            ]
+        )
+        wire = p._to_wire(req)
+        assert wire["messages"][1] == {
+            "role": "assistant",
+            "content": "checking",
+            "tool_calls": [{
+                "id": "call_abc",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": '{"q": "x"}'},
+            }],
+        }
+        assert wire["messages"][2] == {
+            "role": "tool",
+            "tool_call_id": "call_abc",
+            "content": "42",
+        }
+
+    def test_output_format_native_response_format(self):
+        p = _make_provider()
+        of = OutputFormat(
+            schema={"type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"]},
+        )
+        req = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="answer")])],
+            output_format=of,
+        )
+        wire = p._to_wire(req)
+        assert wire["response_format"] == {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "out",
+                "schema": of.schema,
+                "strict": True,
+            },
+        }
+
+    def test_max_tokens_passed_through(self):
+        p = _make_provider()
+        req = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="hi")])],
+            max_tokens=200,
+        )
+        wire = p._to_wire(req)
+        assert wire["max_completion_tokens"] == 200
