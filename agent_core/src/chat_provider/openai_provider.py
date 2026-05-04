@@ -303,21 +303,218 @@ class OpenAIChatProvider(ChatProviderBase):
         *,
         abort_event: "asyncio.Event | None" = None,
     ) -> AsyncGenerator[str, None]:
-        """Stream a chat response from the OpenAI API.
+        """Stream raw text tokens from OpenAI Chat Completions.
+
+        Same retry contract as call(). Yields text deltas as they
+        arrive. After the stream closes, if any tool_calls were emitted,
+        raises ToolUseRequested with the accumulated calls.
 
         Args:
             request: The chat request containing messages, tools, and config.
             abort_event: Optional asyncio Event; when set, streaming stops early.
 
         Yields:
-            Text chunks as they arrive from the API.
+            Text token strings as they arrive from the API.
 
         Raises:
-            NotImplementedError: Until Task 8 is implemented.
+            ValueError: If request.messages is empty.
+            UnsupportedFeatureError: If request uses output_format (not
+                compatible with streaming).
+            ToolUseRequested: After the stream closes, if the model emitted
+                tool calls (finish_reason="tool_calls").
         """
-        raise NotImplementedError("Implemented in Task 8")
-        if False:  # pragma: no cover
-            yield ""
+        if not request.messages:
+            raise ValueError("messages must not be empty")
+        self._validate_request(request, is_stream=True)
+
+        try:
+            async for token in self._stream_with_retry(request, abort_event):
+                yield token
+        except _RetryableExhausted:
+            return
+
+    async def _stream_with_retry(
+        self,
+        request: ChatRequest,
+        abort_event: "asyncio.Event | None",
+    ) -> AsyncGenerator[str, None]:
+        """Inner retry loop for stream().
+
+        Args:
+            request: The chat request to stream.
+            abort_event: Optional event to abort mid-stream.
+
+        Yields:
+            Text token strings.
+
+        Raises:
+            _RetryableExhausted: If all attempts are consumed by transient errors.
+            ToolUseRequested: If the model returns tool_calls finish_reason.
+        """
+        last_error: Exception | None = None
+
+        for attempt in range(self._max_attempts):
+            delay = self._backoff_seconds[
+                min(attempt, len(self._backoff_seconds) - 1)
+            ]
+            if delay > 0:
+                await asyncio.sleep(delay)
+
+            start = time.time()
+            tracer = otel_trace.get_tracer(__name__)
+            try:
+                kwargs = self._to_wire(request)
+                kwargs["stream"] = True
+                kwargs["stream_options"] = {"include_usage": True}
+
+                tool_call_buf: dict[int, dict] = {}
+                stop_reason: str | None = None
+                input_tokens = 0
+                output_tokens = 0
+
+                with tracer.start_as_current_span("llm.call") as span:
+                    span.set_attribute("gen_ai.system", "openai")
+                    span.set_attribute("gen_ai.model", self._active_model)
+                    span.set_attribute("llm.attempt", attempt + 1)
+                    span.set_attribute("llm.call_kind", "stream")
+
+                    stream_obj = await self._async_client.chat.completions.create(**kwargs)
+                    async for chunk in stream_obj:
+                        if abort_event is not None and abort_event.is_set():
+                            return
+
+                        choice = chunk.choices[0] if chunk.choices else None
+                        if choice is not None:
+                            delta = choice.delta
+                            if delta is not None:
+                                if delta.content:
+                                    yield delta.content
+                                if delta.tool_calls:
+                                    for tc_delta in delta.tool_calls:
+                                        idx = tc_delta.index
+                                        slot = tool_call_buf.setdefault(
+                                            idx, {"id": None, "name": None, "args": ""}
+                                        )
+                                        if tc_delta.id is not None:
+                                            slot["id"] = tc_delta.id
+                                        fn = tc_delta.function
+                                        if fn is not None and fn.name:
+                                            slot["name"] = fn.name
+                                        if fn is not None and fn.arguments:
+                                            slot["args"] += fn.arguments
+                            if choice.finish_reason is not None:
+                                stop_reason = choice.finish_reason
+
+                        # Final chunk: usage block.
+                        if getattr(chunk, "usage", None) is not None:
+                            input_tokens = _safe_int(getattr(chunk.usage, "prompt_tokens", 0))
+                            output_tokens = _safe_int(getattr(chunk.usage, "completion_tokens", 0))
+
+                    span.set_attribute("gen_ai.usage.input_tokens", input_tokens)
+                    span.set_attribute("gen_ai.usage.output_tokens", output_tokens)
+
+                latency_ms = int((time.time() - start) * 1000)
+                synth_resp = ChatResponse(
+                    content=[],
+                    stop_reason=(
+                        "tool_use" if stop_reason == "tool_calls"
+                        else "end_turn" if stop_reason == "stop"
+                        else "max_tokens" if stop_reason == "length"
+                        else "error" if stop_reason == "content_filter"
+                        else "end_turn"
+                    ),
+                    model_used=self._active_model,
+                    usage=TokenUsage(input_tokens=input_tokens, output_tokens=output_tokens),
+                )
+                record_call_metrics(
+                    model=self._active_model,
+                    call_kind="stream",
+                    status="success",
+                    latency_ms=latency_ms,
+                    response=synth_resp,
+                    provider_system="openai",
+                )
+                logger.info(
+                    "chat_provider.openai.stream",
+                    extra={
+                        "operation": "chat_provider.openai.stream",
+                        "status": "success",
+                        "model": self._active_model,
+                        "attempt": attempt + 1,
+                        "latency_ms": latency_ms,
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "stop_reason": stop_reason,
+                    },
+                )
+
+                # If any tool calls accumulated, raise ToolUseRequested.
+                if stop_reason == "tool_calls" and tool_call_buf:
+                    from src.chat_provider.base import ToolUseRequested
+                    tool_calls: list[ToolUseBlock] = []
+                    for idx in sorted(tool_call_buf.keys()):
+                        slot = tool_call_buf[idx]
+                        try:
+                            parsed = json.loads(slot["args"]) if slot["args"] else {}
+                        except json.JSONDecodeError:
+                            parsed = {}
+                        tool_calls.append(
+                            ToolUseBlock(
+                                tool_use_id=slot["id"] or f"call_{idx}",
+                                tool_name=slot["name"] or "",
+                                input=parsed,
+                            )
+                        )
+                    raise ToolUseRequested(tool_calls)
+
+                return
+
+            except _RetryableExhausted:
+                raise
+            except Exception as e:
+                from src.chat_provider.base import ToolUseRequested
+                if isinstance(e, ToolUseRequested):
+                    raise
+                if isinstance(e, (openai.APITimeoutError, openai.RateLimitError)):
+                    last_error = e
+                    logger.warning(
+                        "chat_provider.openai.stream_retryable_error",
+                        extra={
+                            "operation": "chat_provider.openai.stream",
+                            "status": "failure",
+                            "model": self._active_model,
+                            "attempt": attempt + 1,
+                            "error": str(e),
+                            "latency_ms": int((time.time() - start) * 1000),
+                        },
+                    )
+                    continue
+                logger.error(
+                    "chat_provider.openai.stream_error",
+                    extra={
+                        "operation": "chat_provider.openai.stream",
+                        "status": "failure",
+                        "model": self._active_model,
+                        "attempt": attempt + 1,
+                        "error": f"{type(e).__name__}: {e}",
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+                return
+
+        logger.error(
+            "chat_provider.openai.stream_exhausted",
+            extra={
+                "operation": "chat_provider.openai.stream",
+                "status": "failure",
+                "model": self._active_model,
+                "attempts": self._max_attempts,
+                "error": str(last_error),
+            },
+        )
+        raise _RetryableExhausted(
+            f"All {self._max_attempts} stream retry attempts exhausted for model {self._active_model}"
+        )
 
     def get_active_model(self) -> str:
         """Return the model identifier currently active for API calls.

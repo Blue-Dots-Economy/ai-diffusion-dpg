@@ -453,3 +453,137 @@ class TestCall:
 
         assert resp.stop_reason == "error"
         assert p._client.chat.completions.create.call_count == 1
+
+
+import asyncio
+from src.chat_provider.base import ToolUseRequested as ChatToolUseRequested
+
+
+class _FakeOpenAIDelta:
+    def __init__(self, *, content: str | None = None, tool_calls: list | None = None) -> None:
+        self.content = content
+        self.tool_calls = tool_calls
+
+
+class _FakeOpenAIToolCallDelta:
+    def __init__(self, *, index: int, id: str | None = None, name: str | None = None,
+                 arguments: str | None = None) -> None:
+        self.index = index
+        self.id = id
+        self.type = "function" if (name or arguments) else None
+        self.function = MagicMock()
+        self.function.name = name
+        self.function.arguments = arguments
+
+
+class _FakeOpenAIChunk:
+    def __init__(self, *, content: str | None = None, tool_calls: list | None = None,
+                 finish_reason: str | None = None, usage: dict | None = None) -> None:
+        choice = MagicMock()
+        choice.delta = _FakeOpenAIDelta(content=content, tool_calls=tool_calls)
+        choice.finish_reason = finish_reason
+        self.choices = [choice]
+        if usage is not None:
+            u = MagicMock()
+            u.prompt_tokens = usage.get("prompt_tokens", 0)
+            u.completion_tokens = usage.get("completion_tokens", 0)
+            self.usage = u
+        else:
+            self.usage = None
+
+
+class _FakeAsyncStream:
+    def __init__(self, chunks: list[_FakeOpenAIChunk]) -> None:
+        self._chunks = chunks
+
+    def __aiter__(self):
+        async def gen():
+            for c in self._chunks:
+                yield c
+        return gen()
+
+
+def _install_async_stream(provider: OpenAIChatProvider, chunks: list) -> None:
+    async def _create(*args, **kwargs):
+        return _FakeAsyncStream(chunks)
+    provider._async_client.chat.completions.create = _create
+
+
+class TestStream:
+    @pytest.mark.asyncio
+    async def test_streams_text(self):
+        p = _make_provider()
+        chunks = [
+            _FakeOpenAIChunk(content="hello "),
+            _FakeOpenAIChunk(content="there"),
+            _FakeOpenAIChunk(finish_reason="stop", usage={"prompt_tokens": 5, "completion_tokens": 2}),
+        ]
+        _install_async_stream(p, chunks)
+
+        req = ChatRequest(messages=[Message(role="user", content=[TextBlock(text="hi")])])
+        out = []
+        async for token in p.stream(req):
+            out.append(token)
+        assert out == ["hello ", "there"]
+
+    @pytest.mark.asyncio
+    async def test_tool_use_raises_after_accumulation(self):
+        p = _make_provider()
+        # Tool call arrives in 3 partial chunks: id+name first, then args fragments.
+        chunks = [
+            _FakeOpenAIChunk(content="checking"),
+            _FakeOpenAIChunk(tool_calls=[_FakeOpenAIToolCallDelta(index=0, id="call_1", name="lookup", arguments='{"q": ')]),
+            _FakeOpenAIChunk(tool_calls=[_FakeOpenAIToolCallDelta(index=0, arguments='"x"}')]),
+            _FakeOpenAIChunk(finish_reason="tool_calls", usage={"prompt_tokens": 5, "completion_tokens": 4}),
+        ]
+        _install_async_stream(p, chunks)
+
+        req = ChatRequest(messages=[Message(role="user", content=[TextBlock(text="hi")])])
+        out = []
+        with pytest.raises(ChatToolUseRequested) as ei:
+            async for token in p.stream(req):
+                out.append(token)
+        assert out == ["checking"]
+        assert ei.value.tool_calls[0].tool_name == "lookup"
+        assert ei.value.tool_calls[0].input == {"q": "x"}
+
+    @pytest.mark.asyncio
+    async def test_empty_messages_raises_value_error(self):
+        p = _make_provider()
+        req = ChatRequest(messages=[])
+        with pytest.raises(ValueError, match="messages must not be empty"):
+            async for _ in p.stream(req):
+                pass
+
+    @pytest.mark.asyncio
+    async def test_output_format_on_stream_raises(self):
+        p = _make_provider()
+        of = OutputFormat(schema={})
+        req = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="hi")])],
+            output_format=of,
+        )
+        with pytest.raises(UnsupportedFeatureError, match="stream"):
+            async for _ in p.stream(req):
+                pass
+
+    @pytest.mark.asyncio
+    async def test_abort_event_short_circuits(self):
+        p = _make_provider()
+        chunks = [
+            _FakeOpenAIChunk(content="hel"),
+            _FakeOpenAIChunk(content="lo"),
+            _FakeOpenAIChunk(content=" "),
+            _FakeOpenAIChunk(content="there"),
+            _FakeOpenAIChunk(finish_reason="stop", usage={"prompt_tokens": 5, "completion_tokens": 2}),
+        ]
+        _install_async_stream(p, chunks)
+
+        abort = asyncio.Event()
+        req = ChatRequest(messages=[Message(role="user", content=[TextBlock(text="hi")])])
+        out = []
+        async for token in p.stream(req, abort_event=abort):
+            out.append(token)
+            if len(out) == 2:
+                abort.set()
+        assert out == ["hel", "lo"]
