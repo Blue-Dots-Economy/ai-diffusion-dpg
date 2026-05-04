@@ -28,7 +28,18 @@ from collections.abc import AsyncGenerator
 from typing import Any, Optional
 
 from src.base import AgentCoreBase
-from src.exceptions import ToolUseRequested
+from src.chat_provider.base import ChatProviderBase, ToolUseRequested
+from src.chat_provider.types import (
+    ChatRequest,
+    ChatResponse,
+    Message,
+    OutputFormat,
+    SystemPrompt,
+    TextBlock,
+    ToolDefinition,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 from src.interfaces.action_gateway import ActionGatewayBase
 from src.interfaces.async_.action_gateway import AsyncActionGatewayBase
 from src.interfaces.async_.knowledge_engine import AsyncKnowledgeEngineBase
@@ -42,7 +53,6 @@ from src.interfaces.reach_layer import ReachLayerBase
 from src.interfaces.trust_layer import TrustLayerBase
 from src.http_clients.trust_layer import TrustLayerConstraintError
 from src.preprocessing.language_normalisation import LanguageNormaliser
-from src.llm_wrapper.base import LLMWrapperBase
 from src.manager_agent import ManagerAgent
 from src.models import (
     DoneEvent,
@@ -70,6 +80,39 @@ logger = logging.getLogger(__name__)
 _HTTPX_INSTRUMENTED = False
 
 
+def _text_of(resp: ChatResponse) -> str | None:
+    """Return the first TextBlock's text from a ChatResponse, or None."""
+    for b in resp.content:
+        if b.type == "text":
+            return b.text
+    return None
+
+
+def _tool_calls_of(resp: ChatResponse) -> list:
+    """Convert ChatResponse tool_use blocks to legacy ToolCall list."""
+    from src.models import ToolCall  # local import avoids circular at module level
+    return [
+        ToolCall(
+            tool_name=b.tool_name,
+            tool_use_id=b.tool_use_id,
+            input_params=b.input,
+        )
+        for b in resp.content if b.type == "tool_use"
+    ]
+
+
+def _legacy_tools_to_neutral(tools: list[dict]) -> list[ToolDefinition]:
+    """Convert legacy Anthropic-shape tool dicts to neutral ToolDefinition."""
+    return [
+        ToolDefinition(
+            name=t["name"],
+            description=t.get("description", ""),
+            input_schema=t.get("input_schema", {}),
+        )
+        for t in (tools or [])
+    ]
+
+
 class AgentCore(AgentCoreBase):
     """
     Stateless orchestrator. Holds references to injected components only —
@@ -80,7 +123,7 @@ class AgentCore(AgentCoreBase):
 
     Args:
         config:           Domain configuration dict.
-        llm_wrapper:      LLM inferencing interface.
+        chat_provider:    ChatProviderBase implementation; the sole LLM caller.
         memory:           Memory Layer interface.
         trust:            Trust Layer interface.
         knowledge_engine: Knowledge Engine interface.
@@ -93,7 +136,7 @@ class AgentCore(AgentCoreBase):
     def __init__(
         self,
         config: dict,
-        llm_wrapper: LLMWrapperBase,
+        chat_provider: ChatProviderBase,
         memory: MemoryLayerBase,
         trust: TrustLayerBase,
         knowledge_engine: KnowledgeEngineBase,
@@ -113,7 +156,7 @@ class AgentCore(AgentCoreBase):
             raise ValueError("workflow must not be None")
 
         self._config = config
-        self._llm = llm_wrapper
+        self._llm = chat_provider
         self._memory = memory
         self._trust = trust
         self._knowledge_engine = knowledge_engine
@@ -939,17 +982,22 @@ class AgentCore(AgentCoreBase):
             "structured" if output_format else "free-form",
         )
         t8 = time.time()
-        llm_response = self._llm.call(
-            messages=messages,
-            tools=active_tools,
-            system=system,
-            output_format=output_format,
+        neutral_of = (
+            OutputFormat(schema=output_format.get("schema", output_format))
+            if output_format else None
         )
+        request = ChatRequest(
+            messages=messages,
+            system=system,
+            tools=_legacy_tools_to_neutral(active_tools),
+            output_format=neutral_of,
+        )
+        llm_response = self._llm.call(request)
         logger.info(
             "  [STEP 8] LLM Call #1  ✓  stop_reason=%s  model_used=%s"
             "  input_tokens=%d  output_tokens=%d  latency=%dms",
             llm_response.stop_reason, llm_response.model_used,
-            llm_response.input_tokens, llm_response.output_tokens,
+            (llm_response.usage.input_tokens or 0), (llm_response.usage.output_tokens or 0),
             int((time.time() - t8) * 1000),
         )
         if llm_response.stop_reason == "tool_use":
@@ -975,7 +1023,7 @@ class AgentCore(AgentCoreBase):
         final_text, tool_calls, tool_results = self._manager_agent.run_turn(
             messages=messages,
             session_id=session_id,
-            initial_llm_response=llm_response,
+            initial_response=llm_response,
             system=system,
             active_tools=active_tools,
             ke_context=ke_context,
@@ -1584,23 +1632,23 @@ class AgentCore(AgentCoreBase):
     @staticmethod
     def _build_tool_exchange_messages(
         exchanges: list[dict],
-    ) -> list[dict]:
-        """Convert persisted tool exchange records into Anthropic messages.
+    ) -> list[Message]:
+        """Convert persisted tool exchange records into neutral Message objects.
 
-        Each exchange is rendered as one ``assistant`` message containing
-        all of its ``tool_use`` blocks followed by one ``user`` message
-        containing the matching ``tool_result`` blocks, exactly as the
-        Anthropic tool-use protocol requires.
+        Each exchange is rendered as one ``assistant`` Message containing
+        all of its ``ToolUseBlock`` blocks followed by one ``user`` Message
+        containing the matching ``ToolResultBlock`` blocks, exactly as the
+        tool-use protocol requires.
 
         Args:
             exchanges: Ordered list of exchange dicts as persisted by
                 ``_capture_tool_exchange``. Malformed entries are skipped.
 
         Returns:
-            Flat list of ``messages`` dicts ready to prepend to a turn's
-            ``messages`` array.
+            Flat list of ``Message`` objects ready to prepend to a turn's
+            ``messages`` list.
         """
-        out: list[dict] = []
+        out: list[Message] = []
         if not exchanges:
             return out
         for ex in exchanges:
@@ -1610,8 +1658,33 @@ class AgentCore(AgentCoreBase):
             results = ex.get("tool_results") or []
             if not uses or not results:
                 continue
-            out.append({"role": "assistant", "content": list(uses)})
-            out.append({"role": "user", "content": list(results)})
+            use_blocks: list[ToolUseBlock] = []
+            for u in uses:
+                if not isinstance(u, dict):
+                    continue
+                try:
+                    use_blocks.append(ToolUseBlock(
+                        tool_use_id=u.get("id", ""),
+                        tool_name=u.get("name", ""),
+                        input=u.get("input") or {},
+                    ))
+                except Exception:
+                    continue
+            result_blocks: list[ToolResultBlock] = []
+            for r in results:
+                if not isinstance(r, dict):
+                    continue
+                try:
+                    result_blocks.append(ToolResultBlock(
+                        tool_use_id=r.get("tool_use_id", ""),
+                        content=r.get("content", ""),
+                    ))
+                except Exception:
+                    continue
+            if not use_blocks or not result_blocks:
+                continue
+            out.append(Message(role="assistant", content=use_blocks))
+            out.append(Message(role="user", content=result_blocks))
         return out
 
     @staticmethod
@@ -2169,15 +2242,17 @@ class AgentCore(AgentCoreBase):
             return message
         t_translate = time.time()
         try:
-            response = self._llm.call(
-                messages=[{"role": "user", "content": message}],
-                tools=[],
-                system=(
-                    f"Translate the user message to {target_language}. "
-                    "Return ONLY the translated text, no explanation."
-                ),
+            sys_text = (
+                f"Translate the user message to {target_language}. "
+                "Return ONLY the translated text, no explanation."
             )
-            if response.stop_reason != "error" and response.content:
+            request = ChatRequest(
+                messages=[Message(role="user", content=[TextBlock(text=message)])],
+                system=SystemPrompt(blocks=[TextBlock(text=sys_text)]),
+            )
+            response = self._llm.call(request)
+            text_content = _text_of(response)
+            if response.stop_reason != "error" and text_content:
                 logger.info(
                     "orchestrator.consent_translation_success",
                     extra={
@@ -2187,7 +2262,7 @@ class AgentCore(AgentCoreBase):
                         "latency_ms": int((time.time() - t_translate) * 1000),
                     },
                 )
-                return response.content.strip()
+                return text_content.strip()
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "orchestrator.consent_translation_failed",
@@ -3138,13 +3213,13 @@ class AgentCore(AgentCoreBase):
             channel_max_tokens = channel_config.get("max_tokens")
 
             try:
-                async for token in self._llm.stream_call(
+                request = ChatRequest(
                     messages=messages,
-                    tools=active_tools if active_tools else None,
                     system=system,
-                    max_tokens=channel_max_tokens,
-                    abort_event=abort_event,
-                ):
+                    tools=_legacy_tools_to_neutral(active_tools) if active_tools else [],
+                    max_tokens=channel_max_tokens or 4096,
+                )
+                async for token in self._llm.stream(request, abort_event=abort_event):
                     if _aborted():
                         return
                     token_buffer += token
@@ -3187,8 +3262,15 @@ class AgentCore(AgentCoreBase):
             except ToolUseRequested as e:
                 # ── Step 9: Tool use ───────────────────────────────────
                 was_tool_used = True
-                all_tool_calls = e.tool_calls
-                tool_names = [tc.tool_name for tc in e.tool_calls]
+                all_tool_calls = [
+                    ToolCall(
+                        tool_name=tu.tool_name,
+                        tool_use_id=tu.tool_use_id,
+                        input_params=tu.input,
+                    )
+                    for tu in e.tool_calls
+                ]
+                tool_names = [tc.tool_name for tc in all_tool_calls]
                 logger.info(
                     "  [STEP 8] LLM Stream Call #1  ✓  stop_reason=tool_use  tools=%s  latency=%dms",
                     tool_names, int((time.time() - t8) * 1000),
@@ -3212,7 +3294,7 @@ class AgentCore(AgentCoreBase):
                     "normalised_input": normalised_input,
                     "detected_language": detected_language,
                 }
-                for tc in e.tool_calls:
+                for tc in all_tool_calls:
                     # GH-191: ``end_session`` is an internal signal. Mirror the
                     # sync path (manager_agent.run_turn): never dispatch it to
                     # Action Gateway; just flip the flag so the DoneEvent below
@@ -3275,16 +3357,33 @@ class AgentCore(AgentCoreBase):
 
                 # Resume streaming with tool results — loop handles multi-step tool chains
                 _MAX_TOOL_ROUNDS: int = self._config.get("agent", {}).get("max_tool_rounds", 3)
-                _current_tool_calls = e.tool_calls
+                _current_tool_calls = all_tool_calls
                 _current_tool_results = tool_results_for_llm
                 _tool_round = 1
 
                 while True:
-                    messages.append({"role": "assistant", "content": [
-                        {"type": "tool_use", "id": tc.tool_use_id, "name": tc.tool_name, "input": tc.input_params}
-                        for tc in _current_tool_calls
-                    ]})
-                    messages.append({"role": "user", "content": _current_tool_results})
+                    messages.append(Message(
+                        role="assistant",
+                        content=[
+                            ToolUseBlock(
+                                tool_use_id=tc.tool_use_id,
+                                tool_name=tc.tool_name,
+                                input=tc.input_params or {},
+                            )
+                            for tc in _current_tool_calls
+                        ],
+                    ))
+                    messages.append(Message(
+                        role="user",
+                        content=[
+                            ToolResultBlock(
+                                tool_use_id=tr["tool_use_id"],
+                                content=tr.get("content", ""),
+                                is_error=tr.get("is_error", False),
+                            )
+                            for tr in _current_tool_results
+                        ],
+                    ))
 
                     # #193: snapshot this round so it can be replayed next turn.
                     _ex = self._capture_tool_exchange(
@@ -3296,13 +3395,13 @@ class AgentCore(AgentCoreBase):
                     if _aborted():
                         return
                     try:
-                        async for token in self._llm.stream_call(
+                        request = ChatRequest(
                             messages=messages,
-                            tools=active_tools if active_tools else None,
                             system=system,
-                            max_tokens=channel_max_tokens,
-                            abort_event=abort_event,
-                        ):
+                            tools=_legacy_tools_to_neutral(active_tools) if active_tools else [],
+                            max_tokens=channel_max_tokens or 4096,
+                        )
+                        async for token in self._llm.stream(request, abort_event=abort_event):
                             if _aborted():
                                 return
                             token_buffer += token
@@ -3341,14 +3440,22 @@ class AgentCore(AgentCoreBase):
                             )
                             break
 
-                        _nested_tool_names = [tc.tool_name for tc in nested_e.tool_calls]
+                        _nested_tool_calls = [
+                            ToolCall(
+                                tool_name=tu.tool_name,
+                                tool_use_id=tu.tool_use_id,
+                                input_params=tu.input,
+                            )
+                            for tu in nested_e.tool_calls
+                        ]
+                        _nested_tool_names = [tc.tool_name for tc in _nested_tool_calls]
                         logger.info(
                             "  [STEP 9] Tool-Use Loop (round %d)  →  executing tools=%s",
                             _tool_round, _nested_tool_names,
                         )
                         yield _stamp(SignalEvent(stage="tool_start", status="start"))
                         _nested_results = []
-                        for tc in nested_e.tool_calls:
+                        for tc in _nested_tool_calls:
                             # GH-191: intercept end_session in nested rounds too.
                             if tc.tool_name == "end_session":
                                 session_ended = True
@@ -3392,7 +3499,7 @@ class AgentCore(AgentCoreBase):
                             "  [STEP 9] Tool-Use Loop (round %d)  ✓  tools=%s",
                             _tool_round, _nested_tool_names,
                         )
-                        _current_tool_calls = nested_e.tool_calls
+                        _current_tool_calls = _nested_tool_calls
                         _current_tool_results = _nested_results
 
                 model_used = self._llm.get_active_model()

@@ -231,7 +231,7 @@ class TestStreamTurnBatching:
             for i in range(9):
                 yield f"Sentence number {i}. "
 
-        agent._llm.stream_call = mock_stream
+        agent._llm.stream = mock_stream
         agent._async_trust.check_output = AsyncMock(
             return_value=TrustCheckResult(passed=True, action="allow")
         )
@@ -255,7 +255,7 @@ class TestStreamTurnBatching:
             for i in range(9):
                 yield f"Sentence number {i}. "
 
-        agent._llm.stream_call = mock_stream
+        agent._llm.stream = mock_stream
 
         call_idx = {"n": 0}
 
@@ -317,7 +317,7 @@ class TestStreamTurnBatching:
                 clock["t"] = 0.65
                 yield "Sentence three. "
 
-            agent._llm.stream_call = mock_stream
+            agent._llm.stream = mock_stream
             agent._async_trust.check_output = AsyncMock(
                 return_value=TrustCheckResult(passed=True, action="allow")
             )
@@ -344,7 +344,7 @@ class TestStreamTurnBatching:
             yield "Only one. "
             yield "And two. "
 
-        agent._llm.stream_call = mock_stream
+        agent._llm.stream = mock_stream
         agent._async_trust.check_output = AsyncMock(
             return_value=TrustCheckResult(passed=True, action="allow")
         )
