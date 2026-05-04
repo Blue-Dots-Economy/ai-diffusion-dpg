@@ -186,6 +186,21 @@ class TerminationShortCircuitConfig(BaseModel):
     confidence_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
+class FeaturesConfig(BaseModel):
+    """Per-deployment chat-provider feature toggles.
+
+    None means "use the provider's intrinsic capability." A bool tightens
+    the effective feature for this deployment. Cannot widen — the
+    chat_provider factory rejects True against a False capability.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    prompt_cache: bool | None = None
+    streaming: bool | None = None
+    image_input: bool | None = None
+
+
 class AgentConfig(BaseModel):
     """Top-level LLM wrapper settings."""
 
@@ -193,6 +208,8 @@ class AgentConfig(BaseModel):
 
     primary_model: str = ""
     fallback_model: str = ""
+    provider: Literal["anthropic", "openai"] = "anthropic"
+    features: FeaturesConfig = Field(default_factory=FeaturesConfig)
     timeout_ms: int = Field(default=10000, gt=0)
     retry_attempts: int = Field(default=2, ge=1)
     retry_backoff_seconds: list[float] = Field(default_factory=lambda: [0, 0.5, 1.0])

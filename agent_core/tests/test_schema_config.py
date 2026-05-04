@@ -324,3 +324,52 @@ def test_agent_workflow_config_rejects_unknown_field():
     from src.schema.config import AgentWorkflowConfig
     with pytest.raises(ValidationError):
         AgentWorkflowConfig(workflow_id="w", version="1.0.0", globall_tools=["x"])
+
+
+class TestAgentProviderAndFeatures:
+    """PR2 — agent.provider and agent.features schema additions."""
+
+    def _base_agent(self) -> dict:
+        return {"primary_model": "x", "fallback_model": "y"}
+
+    def test_provider_defaults_to_anthropic(self):
+        from src.schema.config import AgentConfig
+        cfg = AgentConfig.model_validate(self._base_agent())
+        assert cfg.provider == "anthropic"
+
+    def test_provider_accepts_known_values(self):
+        from src.schema.config import AgentConfig
+        for p in ("anthropic", "openai"):
+            cfg = AgentConfig.model_validate({**self._base_agent(), "provider": p})
+            assert cfg.provider == p
+
+    def test_provider_rejects_unknown_values(self):
+        from pydantic import ValidationError
+        from src.schema.config import AgentConfig
+        with pytest.raises(ValidationError):
+            AgentConfig.model_validate({**self._base_agent(), "provider": "wat"})
+
+    def test_features_default_all_none(self):
+        from src.schema.config import AgentConfig
+        cfg = AgentConfig.model_validate(self._base_agent())
+        assert cfg.features.prompt_cache is None
+        assert cfg.features.streaming is None
+        assert cfg.features.image_input is None
+
+    def test_features_accepts_partial(self):
+        from src.schema.config import AgentConfig
+        cfg = AgentConfig.model_validate({
+            **self._base_agent(),
+            "features": {"prompt_cache": False},
+        })
+        assert cfg.features.prompt_cache is False
+        assert cfg.features.streaming is None
+
+    def test_features_rejects_unknown_keys(self):
+        from pydantic import ValidationError
+        from src.schema.config import AgentConfig
+        with pytest.raises(ValidationError):
+            AgentConfig.model_validate({
+                **self._base_agent(),
+                "features": {"made_up": True},
+            })
