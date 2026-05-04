@@ -1632,23 +1632,23 @@ class AgentCore(AgentCoreBase):
     @staticmethod
     def _build_tool_exchange_messages(
         exchanges: list[dict],
-    ) -> list[dict]:
-        """Convert persisted tool exchange records into Anthropic messages.
+    ) -> list[Message]:
+        """Convert persisted tool exchange records into neutral Message objects.
 
-        Each exchange is rendered as one ``assistant`` message containing
-        all of its ``tool_use`` blocks followed by one ``user`` message
-        containing the matching ``tool_result`` blocks, exactly as the
-        Anthropic tool-use protocol requires.
+        Each exchange is rendered as one ``assistant`` Message containing
+        all of its ``ToolUseBlock`` blocks followed by one ``user`` Message
+        containing the matching ``ToolResultBlock`` blocks, exactly as the
+        tool-use protocol requires.
 
         Args:
             exchanges: Ordered list of exchange dicts as persisted by
                 ``_capture_tool_exchange``. Malformed entries are skipped.
 
         Returns:
-            Flat list of ``messages`` dicts ready to prepend to a turn's
-            ``messages`` array.
+            Flat list of ``Message`` objects ready to prepend to a turn's
+            ``messages`` list.
         """
-        out: list[dict] = []
+        out: list[Message] = []
         if not exchanges:
             return out
         for ex in exchanges:
@@ -1658,8 +1658,33 @@ class AgentCore(AgentCoreBase):
             results = ex.get("tool_results") or []
             if not uses or not results:
                 continue
-            out.append({"role": "assistant", "content": list(uses)})
-            out.append({"role": "user", "content": list(results)})
+            use_blocks: list[ToolUseBlock] = []
+            for u in uses:
+                if not isinstance(u, dict):
+                    continue
+                try:
+                    use_blocks.append(ToolUseBlock(
+                        tool_use_id=u.get("id", ""),
+                        tool_name=u.get("name", ""),
+                        input=u.get("input") or {},
+                    ))
+                except Exception:
+                    continue
+            result_blocks: list[ToolResultBlock] = []
+            for r in results:
+                if not isinstance(r, dict):
+                    continue
+                try:
+                    result_blocks.append(ToolResultBlock(
+                        tool_use_id=r.get("tool_use_id", ""),
+                        content=r.get("content", ""),
+                    ))
+                except Exception:
+                    continue
+            if not use_blocks or not result_blocks:
+                continue
+            out.append(Message(role="assistant", content=use_blocks))
+            out.append(Message(role="user", content=result_blocks))
         return out
 
     @staticmethod
