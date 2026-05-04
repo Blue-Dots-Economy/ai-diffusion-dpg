@@ -247,8 +247,20 @@ class OpenAIChatProvider(ChatProviderBase):
                     },
                 )
             except openai.APIError as e:
+                # Surface the OpenAI error in the log MESSAGE itself — not just
+                # in `extra` — so a default logging.basicConfig deployment
+                # shows what went wrong without needing a structured-extras
+                # formatter. Captures status code, request id, and validation
+                # message body where available.
+                _body = (
+                    getattr(getattr(e, "response", None), "text", None)
+                    or getattr(e, "message", None)
+                    or str(e)
+                )
                 logger.error(
-                    "chat_provider.openai.api_error",
+                    "chat_provider.openai.api_error: %s — %s",
+                    type(e).__name__,
+                    _body,
                     extra={
                         "operation": "chat_provider.openai.call",
                         "status": "failure",

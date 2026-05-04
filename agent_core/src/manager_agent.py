@@ -425,11 +425,16 @@ class ManagerAgent:
         ])
 
         # ── Assemble blocks ───────────────────────────────────────────
+        # cache_hint only when the active provider can honour it. OpenAI's
+        # capability is False today (#304 will flip it). Without this gate,
+        # _validate_request raises UnsupportedFeatureError on every turn for
+        # providers that don't support prompt caching.
+        cache_hint = "session" if self._llm.capabilities.supports_prompt_cache else None
         blocks: list[TextBlock] = []
         if tier1:
-            blocks.append(TextBlock(text=tier1, cache_hint="session"))
+            blocks.append(TextBlock(text=tier1, cache_hint=cache_hint))
         if tier2:
-            blocks.append(TextBlock(text=tier2, cache_hint="session"))
+            blocks.append(TextBlock(text=tier2, cache_hint=cache_hint))
         if tier3:
             blocks.append(TextBlock(text=tier3))
         return SystemPrompt(blocks=blocks)

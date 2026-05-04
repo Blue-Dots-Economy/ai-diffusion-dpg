@@ -118,6 +118,14 @@ class ParamDefinition(BaseModel):
         description: Free-form description shown to the LLM for routing.
         value: The static value used when ``source=static``; ignored
             otherwise.
+        items: JSON-schema for array element type when ``type=array``.
+            Required by OpenAI's function-calling validation; Anthropic
+            tolerates its absence. When omitted on an ``array`` param the
+            adapter defaults to ``{"type": "string"}`` so single-typed
+            string arrays (the common case) work without per-domain
+            configuration. Pass an explicit dict to declare richer item
+            shapes, e.g. ``items: {type: string, enum: [...]}`` for
+            constrained arrays.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -129,6 +137,7 @@ class ParamDefinition(BaseModel):
     description: str = ""
     value: Optional[object] = None
     default: Optional[object] = None
+    items: Optional[dict] = None
 
 
 class EndpointDefinition(BaseModel):

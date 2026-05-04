@@ -31,7 +31,11 @@ agent:
   # provider's intrinsic capability" when omitted. Setting a flag to
   # true against a provider that lacks the capability fails at startup
   # with a ProviderConfigError.
-  features:
+  #
+  # The block uses an explicit empty mapping `{}` so YAML never parses it
+  # as null when every sub-key is commented out — agent.features must be
+  # a mapping or absent, never null.
+  features: {}
     # prompt_cache: true   # Anthropic: enabled by capability. OpenAI: not supported (yet).
     # streaming: true      # Both providers support streaming natively.
     # image_input: true    # Both providers support image input.

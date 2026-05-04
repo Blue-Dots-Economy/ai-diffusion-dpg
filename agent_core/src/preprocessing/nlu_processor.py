@@ -291,15 +291,21 @@ class NLUProcessor:
             )
 
             # Wrap the static prompt with a cache hint so the provider can
-            # activate prompt caching from turn 2 onward.
-            if self._prompt_cache_enabled:
-                system_payload = SystemPrompt(blocks=[
-                    TextBlock(text=system_prompt_text, cache_hint="session"),
-                ])
+            # activate prompt caching from turn 2 onward. The hint is set only
+            # when (a) the deployment opted in via prompt_cache_enabled AND
+            # (b) the active provider can honour it. The capability check
+            # avoids _validate_request raising on providers that don't support
+            # prompt caching (e.g. OpenAI today; #304 will flip the flag).
+            if (
+                self._prompt_cache_enabled
+                and self._chat_provider.capabilities.supports_prompt_cache
+            ):
+                cache_hint: str | None = "session"
             else:
-                system_payload = SystemPrompt(blocks=[
-                    TextBlock(text=system_prompt_text),
-                ])
+                cache_hint = None
+            system_payload = SystemPrompt(blocks=[
+                TextBlock(text=system_prompt_text, cache_hint=cache_hint),
+            ])
 
             # Build NLU context message with workflow, last-question grounding,
             # and the per-turn dynamic values that previously lived in the

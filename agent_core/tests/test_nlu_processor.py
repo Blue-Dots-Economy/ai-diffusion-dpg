@@ -28,9 +28,23 @@ import json
 import pytest
 from unittest.mock import MagicMock
 
-from src.chat_provider.base import ChatProviderBase
+from src.chat_provider.base import Capabilities, ChatProviderBase
 from src.chat_provider.types import (
     ChatRequest, ChatResponse, Message, SystemPrompt, TextBlock, TokenUsage
+)
+
+
+# Default capabilities for mocked providers — match Anthropic's intrinsic flags
+# so tests exercise the cache-hint code path. Override per-test for OpenAI-shaped
+# (supports_prompt_cache=False) coverage.
+_DEFAULT_TEST_CAPS = Capabilities(
+    supports_tools=True,
+    supports_streaming=True,
+    supports_prompt_cache=True,
+    supports_image_input=True,
+    supports_audio_input=False,
+    supports_structured_output=True,
+    supports_force_tool_choice=True,
 )
 from src.preprocessing.nlu_processor import NLUProcessor
 from src.models import NLUResult
@@ -75,8 +89,9 @@ def _make_chat_response(intent="unknown", entities=None, sentiment="neutral",
 
 
 def make_provider_returning(intent="unknown", entities=None, sentiment="neutral",
-                            confidence=0.9) -> MagicMock:
+                            confidence=0.9, capabilities: Capabilities | None = None) -> MagicMock:
     provider = MagicMock(spec=ChatProviderBase)
+    provider.capabilities = capabilities or _DEFAULT_TEST_CAPS
     provider.call.return_value = _make_chat_response(
         intent=intent, entities=entities, sentiment=sentiment, confidence=confidence
     )
@@ -169,6 +184,38 @@ def test_provider_call_invoked(processor, mock_provider):
     assert isinstance(request, ChatRequest)
 
 
+def test_cache_hint_set_when_provider_supports_caching():
+    """Caching-capable provider → NLU emits cache_hint='session' on the system block."""
+    provider = make_provider_returning(intent="market_truth_query")
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    proc.process("kaam chahiye", "", "")
+    request = provider.call.call_args.args[0]
+    assert request.system.blocks[0].cache_hint == "session"
+
+
+def test_cache_hint_omitted_when_provider_does_not_support_caching():
+    """Regression for the OpenAI deployment bug: when supports_prompt_cache=False
+    NLU must NOT set cache_hint, otherwise _validate_request raises and every NLU
+    turn returns the fallback NLUResult.
+    """
+    no_cache_caps = Capabilities(
+        supports_tools=True,
+        supports_streaming=True,
+        supports_prompt_cache=False,
+        supports_image_input=True,
+        supports_audio_input=False,
+        supports_structured_output=True,
+        supports_force_tool_choice=True,
+    )
+    provider = make_provider_returning(intent="market_truth_query", capabilities=no_cache_caps)
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    result = proc.process("kaam chahiye", "", "")
+    # No NLU error — request shape is provider-compatible.
+    assert result.intent == "market_truth_query"
+    request = provider.call.call_args.args[0]
+    assert request.system.blocks[0].cache_hint is None
+
+
 # ---------------------------------------------------------------------------
 # Context injection — current_question and workflow_step grounding
 # ---------------------------------------------------------------------------
@@ -209,6 +256,7 @@ def test_empty_context_fields_do_not_crash():
 
 def test_empty_input_returns_fallback_without_llm_call():
     provider = MagicMock(spec=ChatProviderBase)
+    provider.capabilities = _DEFAULT_TEST_CAPS
     proc = NLUProcessor(CONFIG, chat_provider=provider)
     result = proc.process("", "", "")
     assert result.intent == "unknown"
@@ -225,6 +273,7 @@ def test_invalid_intent_from_llm_falls_back_to_unknown():
 
 def test_non_dict_entities_treated_as_empty():
     provider = MagicMock(spec=ChatProviderBase)
+    provider.capabilities = _DEFAULT_TEST_CAPS
     provider.call.return_value = ChatResponse(
         content=[TextBlock(text=json.dumps({
             "intent": "market_truth_query",
@@ -255,6 +304,7 @@ def test_returns_nlu_result_type():
 
 def test_llm_error_stop_reason_returns_fallback():
     provider = MagicMock(spec=ChatProviderBase)
+    provider.capabilities = _DEFAULT_TEST_CAPS
     provider.call.return_value = ChatResponse(
         content=[],
         stop_reason="error",
@@ -269,6 +319,7 @@ def test_llm_error_stop_reason_returns_fallback():
 
 def test_llm_exception_returns_fallback_gracefully():
     provider = MagicMock(spec=ChatProviderBase)
+    provider.capabilities = _DEFAULT_TEST_CAPS
     provider.call.side_effect = RuntimeError("network error")
     proc = NLUProcessor(CONFIG, chat_provider=provider)
     result = proc.process("kaam chahiye", "", "")
@@ -278,6 +329,7 @@ def test_llm_exception_returns_fallback_gracefully():
 
 def test_malformed_json_returns_fallback():
     provider = MagicMock(spec=ChatProviderBase)
+    provider.capabilities = _DEFAULT_TEST_CAPS
     provider.call.return_value = ChatResponse(
         content=[TextBlock(text="This is not JSON at all")],
         stop_reason="end_turn",
@@ -293,6 +345,7 @@ def test_malformed_json_returns_fallback():
 def test_json_in_prose_extracted_and_parsed():
     prose = 'Sure! Here is the result: {"intent": "scheme_query", "entities": {}, "sentiment": "neutral", "confidence": 0.85}'
     provider = MagicMock(spec=ChatProviderBase)
+    provider.capabilities = _DEFAULT_TEST_CAPS
     provider.call.return_value = ChatResponse(
         content=[TextBlock(text=prose)],
         stop_reason="end_turn",
@@ -308,6 +361,7 @@ def test_json_in_prose_extracted_and_parsed():
 def test_never_raises_on_unexpected_exception():
     """process() must never propagate unexpected exceptions to the caller."""
     provider = MagicMock(spec=ChatProviderBase)
+    provider.capabilities = _DEFAULT_TEST_CAPS
     provider.call.side_effect = Exception("totally unexpected")
     proc = NLUProcessor(CONFIG, chat_provider=provider)
     result = proc.process("some input", "", "")
@@ -553,6 +607,7 @@ def _disabled_processor():
 
 def _mock_provider_with_payload(payload_json: str) -> MagicMock:
     provider = MagicMock(spec=ChatProviderBase)
+    provider.capabilities = _DEFAULT_TEST_CAPS
     provider.call.return_value = ChatResponse(
         content=[TextBlock(text=payload_json)],
         stop_reason="end_turn",
@@ -795,6 +850,7 @@ def test_cache_usage_tokens_logged_on_success(caplog):
     """GH-195 — cache_read_input_tokens and cache_creation_input_tokens must
     appear as structured log fields so ops can verify the cache is hitting."""
     provider = MagicMock(spec=ChatProviderBase)
+    provider.capabilities = _DEFAULT_TEST_CAPS
     provider.call.return_value = ChatResponse(
         content=[TextBlock(text=json.dumps({
             "intent": "market_truth_query",

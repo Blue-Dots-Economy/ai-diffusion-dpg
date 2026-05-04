@@ -21,7 +21,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +211,22 @@ class AgentConfig(BaseModel):
     provider: Literal["anthropic", "openai"] = "anthropic"
     features: FeaturesConfig = Field(default_factory=FeaturesConfig)
     timeout_ms: int = Field(default=10000, gt=0)
+
+    @field_validator("features", mode="before")
+    @classmethod
+    def _coerce_null_features(cls, value):
+        """Treat ``features: null`` (or YAML's empty mapping) as the default.
+
+        YAML parses an ``agent.features:`` block whose every sub-key is
+        commented out as ``None`` rather than as an empty dict. Without this
+        coercion startup fails with a ValidationError on a config file that
+        looks correct to a domain author. The semantics are unambiguous:
+        no features expressed → use the provider's intrinsic capabilities,
+        which is exactly what FeaturesConfig() defaults to.
+        """
+        if value is None:
+            return FeaturesConfig()
+        return value
     retry_attempts: int = Field(default=2, ge=1)
     retry_backoff_seconds: list[float] = Field(default_factory=lambda: [0, 0.5, 1.0])
     max_tool_rounds: int = Field(default=3, ge=1)
@@ -383,6 +399,11 @@ class LanguageNormalisationConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    # Per-helper provider override (#287 follow-up). When set, build_chat_provider
+    # uses this provider for the language-norm helper instead of inheriting
+    # agent.provider. Lets a deployment run primary chat on OpenAI while
+    # keeping language norm on Anthropic (or vice versa). None → inherit.
+    provider: Literal["anthropic", "openai"] | None = None
     model: str = ""
     default_language: str = ""
     supported_languages: list[str] = Field(default_factory=list)
@@ -396,6 +417,8 @@ class NLUProcessorConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    # Per-helper provider override — see LanguageNormalisationConfig.provider.
+    provider: Literal["anthropic", "openai"] | None = None
     model: str = ""
     confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     user_state_confidence_threshold: float = Field(default=0.4, ge=0.0, le=1.0)

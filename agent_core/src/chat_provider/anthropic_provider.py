@@ -293,8 +293,19 @@ class AnthropicChatProvider(ChatProviderBase):
                 )
 
             except anthropic.APIError as e:
+                # Surface the API error in the log MESSAGE itself — not just
+                # in `extra` — so a default logging.basicConfig deployment
+                # shows what went wrong without needing a structured-extras
+                # formatter.
+                _body = (
+                    getattr(getattr(e, "response", None), "text", None)
+                    or getattr(e, "message", None)
+                    or str(e)
+                )
                 logger.error(
-                    "chat_provider.anthropic.api_error",
+                    "chat_provider.anthropic.api_error: %s — %s",
+                    type(e).__name__,
+                    _body,
                     extra={
                         "operation": "chat_provider.anthropic.call",
                         "status": "failure",
