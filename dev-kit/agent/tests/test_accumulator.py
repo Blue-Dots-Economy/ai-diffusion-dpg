@@ -186,16 +186,16 @@ class TestHasKnowledgeBase:
         acc = ConfigAccumulator()
         assert acc.has_knowledge_base() is False
 
-    def test_knowledge_engine_with_empty_sources_returns_false(self):
-        """knowledge_engine configured with an empty sources list returns False."""
+    def test_knowledge_engine_with_disabled_skb_returns_false(self):
+        """knowledge_engine with static_knowledge_base.enabled=False returns False."""
         acc = ConfigAccumulator()
-        acc.update("knowledge_engine", "static_knowledge_base", {"sources": []})
+        acc.update("knowledge_engine", "knowledge.blocks.static_knowledge_base", {"enabled": False})
         assert acc.has_knowledge_base() is False
 
-    def test_knowledge_engine_with_non_empty_sources_returns_true(self):
-        """knowledge_engine with at least one source returns True."""
+    def test_knowledge_engine_with_enabled_skb_returns_true(self):
+        """knowledge_engine with static_knowledge_base.enabled=True returns True."""
         acc = ConfigAccumulator()
-        acc.update("knowledge_engine", "static_knowledge_base", {"sources": ["path/to/docs"]})
+        acc.update("knowledge_engine", "knowledge.blocks.static_knowledge_base", {"enabled": True})
         assert acc.has_knowledge_base() is True
 
     def test_missing_knowledge_engine_key_returns_false_no_exception(self):
