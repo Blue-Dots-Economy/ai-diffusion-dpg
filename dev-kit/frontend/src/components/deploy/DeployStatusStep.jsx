@@ -35,7 +35,7 @@ function ServiceIcon({ status }) {
   return <span className={`text-sm font-mono ${s.cls}`}>{s.icon}</span>
 }
 
-export default function DeployStatusStep({ slug, data, onSuccess, onBack, destroyed = false, onDestroyedChange, autoDeployOnMount = false }) {
+export default function DeployStatusStep({ slug, data, project, onSuccess, onBack, destroyed = false, onDestroyedChange, autoDeployOnMount = false }) {
   const [status, setStatus] = useState({ services: [], overall: 'deploying' })
   const [deployed, setDeployed] = useState(false)
   const [error, setError] = useState(null)
@@ -44,7 +44,7 @@ export default function DeployStatusStep({ slug, data, onSuccess, onBack, destro
   const [showDestroyConfirm, setShowDestroyConfirm] = useState(false)
   const [removeVolumes, setRemoveVolumes] = useState(false)
   const [destroying, setDestroying] = useState(false)
-  const [redeployMissingDataError, setRedeployMissingDataError] = useState(false)
+  const [redeployMissingDataError, setRedeployMissingDataError] = useState(null)
   const pollRef = useRef(null)
   const onSuccessRef = useRef(onSuccess)
   onSuccessRef.current = onSuccess
@@ -177,11 +177,45 @@ export default function DeployStatusStep({ slug, data, onSuccess, onBack, destro
   }
 
   async function handleRedeploy() {
-    if (!data?.target || !data?.secrets?.anthropic_api_key) {
-      setRedeployMissingDataError(true)
-      return
+    // Collect missing fields per step
+    const missingByStep = {};
+
+    // Step 4 — preset
+    if (!data?.preset) {
+      missingByStep[4] = ['Resource preset'];
     }
-    setRedeployMissingDataError(false)
+
+    // Step 5 — secrets
+    const missingSecrets = [];
+    if (!data?.secrets?.anthropic_api_key) {
+      missingSecrets.push('Anthropic API key');
+    }
+    const requiredToolSecrets = project?.required_secrets || [];
+    for (const field of requiredToolSecrets) {
+      if (!data?.secrets?.tool_secrets?.[field.env_var]) {
+        missingSecrets.push(field.description || field.env_var);
+      }
+    }
+    const channelSecrets = project?.channel_secrets || [];
+    for (const field of channelSecrets) {
+      if (field.required && !data?.secrets?.channel_secrets?.[field.env_var]) {
+        missingSecrets.push(field.label || field.env_var);
+      }
+    }
+    if (missingSecrets.length > 0) {
+      missingByStep[5] = missingSecrets;
+    }
+
+    // Step 6 — target
+    if (!data?.target) {
+      missingByStep[6] = ['Deployment target'];
+    }
+
+    if (Object.keys(missingByStep).length > 0) {
+      setRedeployMissingDataError(missingByStep);
+      return;
+    }
+    setRedeployMissingDataError(null);
     onDestroyedChange?.(false)
     setError(null)
     setStatus({ services: [], overall: 'deploying' })
@@ -219,7 +253,7 @@ export default function DeployStatusStep({ slug, data, onSuccess, onBack, destro
 
   const failedServices = status.services.filter(s => s.status === 'failed')
 
-  const canDestroy = data.target === 'docker' &&
+  const canDestroy = data?.target === 'docker' &&
     (status.overall === 'complete' || status.overall === 'failed' || status.overall === 'deploying')
 
   const destroyLabel = status.overall === 'deploying' ? 'Cancel Deploy' : 'Destroy'
@@ -309,12 +343,23 @@ export default function DeployStatusStep({ slug, data, onSuccess, onBack, destro
 
       {redeployMissingDataError && (
         <div className="mt-3 p-3 bg-yellow-900/30 border border-yellow-700 rounded-lg text-yellow-300 text-sm">
-          <p className="mb-2">Deploy configuration is missing. Please go back and re-enter your deployment target and API key.</p>
+          <p className="mb-2 font-medium">Deploy configuration is incomplete. Please re-enter the following:</p>
+          <ul className="list-disc list-inside mb-3 space-y-0.5">
+            {Object.entries(redeployMissingDataError)
+              .sort(([a], [b]) => Number(a) - Number(b))
+              .flatMap(([, fields]) => fields)
+              .map((field, i) => (
+                <li key={i} className="text-yellow-200">{field}</li>
+              ))}
+          </ul>
           <button
-            onClick={() => window.dispatchEvent(new CustomEvent('deploy-wizard-go-to-step', { detail: 5 }))}
+            onClick={() => {
+              const earliestStep = Math.min(...Object.keys(redeployMissingDataError).map(Number));
+              window.dispatchEvent(new CustomEvent('deploy-wizard-go-to-step', { detail: earliestStep }));
+            }}
             className="text-yellow-200 underline text-xs hover:text-white"
           >
-            Go Back to Step 5
+            Go Back to Step {Math.min(...Object.keys(redeployMissingDataError).map(Number))}
           </button>
         </div>
       )}

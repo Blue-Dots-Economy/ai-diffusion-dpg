@@ -184,6 +184,7 @@ export default function DeployWizard({ slug, onBack }) {
     6: <DeployTargetStep {...stepProps} />,
     7: <PreviewStep {...stepProps} onValidationResult={setPreviewValidation} />,
     8: <DeployStatusStep {...stepProps}
+      project={project}
       destroyed={stackDestroyed}
       onDestroyedChange={setStackDestroyed}
       autoDeployOnMount={deployIntent}
