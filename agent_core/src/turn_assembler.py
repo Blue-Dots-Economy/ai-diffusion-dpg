@@ -21,9 +21,9 @@ Design decisions NOT in the original spec (documented here for traceability):
    the Turn. This is a lightweight read that would happen anyway at stream_turn()
    start — we just pull it earlier to enable smarter assembly decisions.
 
-3. Constructor dependencies: TurnAssembler takes nlu_processor, llm_wrapper, workflow,
-   async_memory, and config alongside agent_core. These are needed for the semantic
-   completeness gate which runs NLU classification before the full pipeline starts.
+3. Constructor dependencies: TurnAssembler takes nlu_processor, workflow,
+   async_memory, and config alongside agent_core. NLU classification is run by
+   the injected NLUProcessor (which holds its own chat_provider).
 
 4. subscribe() rolls over across turns: After DoneEvent, subscribe() waits for
    session.turn_changed to learn when a new Turn becomes current. This supports
@@ -150,7 +150,6 @@ class TurnAssembler(TurnAssemblerBase):
         agent_core: Any,
         config: dict,
         nlu_processor: Any = None,
-        llm_wrapper: Any = None,
         workflow: Any = None,
         async_memory: Any = None,
     ) -> None:
@@ -162,7 +161,8 @@ class TurnAssembler(TurnAssemblerBase):
                     config["reach_layer"]["turn_assembler"] and per-channel overrides
                     from config["reach_layer"]["channels"][<name>]["turn_assembler"].
             nlu_processor: NLUProcessor instance for semantic completeness gate.
-            llm_wrapper: LLMWrapperBase instance for NLU LLM calls.
+                           When provided, the processor must already hold its own
+                           chat_provider — turn_assembler does not pass an LLM in.
             workflow: AgentWorkflow instance for intent scoping.
             async_memory: AsyncMemoryLayerBase for fetching context_bundle on first segment.
 
@@ -177,7 +177,6 @@ class TurnAssembler(TurnAssemblerBase):
         self._agent_core = agent_core
         self._config = config
         self._nlu_processor = nlu_processor
-        self._llm = llm_wrapper
         self._workflow = workflow
         self._async_memory = async_memory
 
@@ -770,7 +769,7 @@ class TurnAssembler(TurnAssemblerBase):
         Returns:
             True if invocation was triggered, False to fall through to timers.
         """
-        if not self._nlu_processor or not self._llm:
+        if not self._nlu_processor:
             return False
 
         threshold = gate_config.get("confidence_threshold", 0.75)
@@ -802,7 +801,6 @@ class TurnAssembler(TurnAssemblerBase):
                 normalised_input=assembled_text,
                 current_question=current_question,
                 current_subagent_id=current_subagent_id,
-                llm=self._llm,
                 allowed_intents=allowed_intents,
             )
 

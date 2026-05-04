@@ -5,7 +5,7 @@ Startup entrypoint for the Agent Core orchestration service.
 
 Responsibilities:
 - Load config from config/config.yaml
-- Instantiate ClaudeLLMWrapper with agent config
+- Instantiate build_chat_provider with agent config
 - Create HTTP clients for Memory Layer, Trust Layer, Observability Layer, Knowledge Engine,
   and Action Gateway
 - Wire ToolRegistry, AgentWorkflowLoader, ManagerAgent, and AgentCore
@@ -17,7 +17,7 @@ Run:
     uvicorn main:app --reload         (dev hot-reload)
 
 Environment:
-    ANTHROPIC_API_KEY must be set. ClaudeLLMWrapper reads it from the environment
+    ANTHROPIC_API_KEY must be set. build_chat_provider reads it from the environment
     via the Anthropic SDK -- never hardcoded here.
 
 Prerequisites (all must be running before this starts):
@@ -46,7 +46,7 @@ _env_local = Path(__file__).parent.parent / ".env.local"
 _env_local_warn = _env_local.exists() and not load_dotenv(_env_local)
 load_dotenv()  # .env in block dir or injected environment (Docker/prod)
 
-from src.llm_wrapper.claude_wrapper import ClaudeLLMWrapper
+from src.chat_provider import build_chat_provider
 from src.http_clients.knowledge_engine import HttpKnowledgeEngineClient
 from src.http_clients.memory_layer import MemoryLayerHttpClient
 from src.http_clients.trust_layer import TrustLayerHttpClient
@@ -165,7 +165,7 @@ def _build_app():
 
     agent_cfg = config.get("agent", {})
 
-    llm = ClaudeLLMWrapper(agent_cfg)
+    llm = build_chat_provider(agent_cfg)
 
     memory   = MemoryLayerHttpClient(config)
     trust    = TrustLayerHttpClient(config)
@@ -180,7 +180,7 @@ def _build_app():
     workflow = AgentWorkflowLoader().load(config=config, tool_registry=tool_registry)
 
     manager = ManagerAgent(
-        llm_wrapper=llm,
+        chat_provider=llm,
         tool_registry=tool_registry,
         action_gateway=gateway,
         knowledge_engine=ke,
@@ -196,7 +196,7 @@ def _build_app():
     # Agent Core -- central orchestrator
     agent_core = AgentCore(
         config=config,
-        llm_wrapper=llm,
+        chat_provider=llm,
         memory=memory,
         trust=trust,
         knowledge_engine=ke,
