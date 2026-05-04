@@ -182,10 +182,18 @@ class RestApiAdapter(ToolAdapter):
         properties: dict = {}
         required: list[str] = []
         for p in agent_params:
-            properties[p["name"]] = {
+            param_schema: dict = {
                 "type": p.get("type", "string"),
                 "description": p.get("description", ""),
             }
+            # OpenAI's function-calling validation rejects array params
+            # without an `items` schema; Anthropic accepts the same shape.
+            # When the domain config declares `items` use it verbatim;
+            # otherwise default to `{"type": "string"}` so the most common
+            # case (string arrays) works without per-domain configuration.
+            if param_schema["type"] == "array":
+                param_schema["items"] = p.get("items") or {"type": "string"}
+            properties[p["name"]] = param_schema
             if p.get("required", False):
                 required.append(p["name"])
 

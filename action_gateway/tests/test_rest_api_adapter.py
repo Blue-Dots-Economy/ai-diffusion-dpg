@@ -122,6 +122,58 @@ class TestRestApiAdapterToolDefinition:
         required = tool.input_schema.get("required", [])
         assert "location" in required
 
+    def test_array_param_gets_default_items_schema(self, rest_tool_config):
+        """Array params without an explicit items schema get items={type:string}.
+
+        Regression: OpenAI's function-calling validation rejects
+        `{"type": "array"}` without `items`. Anthropic accepts it, so
+        domain configs originally written against the Anthropic provider
+        omit `items`. The adapter now defaults to `items: {type: string}`
+        so cross-provider deploys work unchanged.
+        """
+        cfg = {
+            **rest_tool_config,
+            "endpoints": [{
+                **rest_tool_config["endpoints"][0],
+                "params": [
+                    {"name": "location", "source": "agent", "type": "string", "required": True},
+                    {"name": "languages", "source": "agent", "type": "array", "required": False},
+                ],
+            }],
+        }
+        adapter = RestApiAdapter(cfg)
+        tool = adapter.get_tool_definitions()[0]
+        languages = tool.input_schema["properties"]["languages"]
+        assert languages["type"] == "array"
+        assert languages["items"] == {"type": "string"}
+
+    def test_array_param_uses_explicit_items_schema_when_provided(self, rest_tool_config):
+        """When the domain config declares `items`, the adapter passes it through verbatim."""
+        cfg = {
+            **rest_tool_config,
+            "endpoints": [{
+                **rest_tool_config["endpoints"][0],
+                "params": [
+                    {"name": "location", "source": "agent", "type": "string", "required": True},
+                    {
+                        "name": "preferred_work_mode",
+                        "source": "agent",
+                        "type": "array",
+                        "required": False,
+                        "items": {
+                            "type": "string",
+                            "enum": ["on-site-no-shift", "on-site-shifts", "remote", "hybrid"],
+                        },
+                    },
+                ],
+            }],
+        }
+        adapter = RestApiAdapter(cfg)
+        tool = adapter.get_tool_definitions()[0]
+        items = tool.input_schema["properties"]["preferred_work_mode"]["items"]
+        assert items["type"] == "string"
+        assert "remote" in items["enum"]
+
 
 # ---------------------------------------------------------------------------
 # TestRestApiAdapterExecute
