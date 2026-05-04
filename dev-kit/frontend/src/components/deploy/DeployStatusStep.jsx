@@ -113,6 +113,7 @@ export default function DeployStatusStep({ slug, data, project, onSuccess, onBac
         if (result.overall === 'complete') {
           clearInterval(pollRef.current)
           pollRef.current = null
+          setError(null)
           setReadyToIngest(true)
         } else if (result.overall === 'failed') {
           clearInterval(pollRef.current)
@@ -254,9 +255,7 @@ export default function DeployStatusStep({ slug, data, project, onSuccess, onBac
   const failedServices = status.services.filter(s => s.status === 'failed')
 
   const canDestroy = data?.target === 'docker' &&
-    (status.overall === 'complete' || status.overall === 'failed' || status.overall === 'deploying')
-
-  const destroyLabel = status.overall === 'deploying' ? 'Cancel Deploy' : 'Destroy'
+    (status.overall === 'complete' || status.overall === 'failed')
 
   return (
     <div>
@@ -281,18 +280,6 @@ export default function DeployStatusStep({ slug, data, project, onSuccess, onBac
           : 'Deploying services…'}
       </p>
 
-      {status.overall === 'deploying' && !error && (
-        <div className="flex justify-end mb-3">
-          <button
-            onClick={() => setShowDestroyConfirm(true)}
-            disabled={destroying}
-            className="text-sm bg-gray-800 hover:bg-red-900 disabled:opacity-50 text-gray-300 px-4 py-2 rounded-xl transition-colors"
-          >
-            Cancel Deploy
-          </button>
-        </div>
-      )}
-
       {error && (
         <StatusBanner
           variant="error"
@@ -309,7 +296,7 @@ export default function DeployStatusStep({ slug, data, project, onSuccess, onBac
                   disabled={destroying}
                   className="text-xs bg-gray-800 hover:bg-red-900 disabled:opacity-50 text-gray-300 px-3 py-1.5 rounded-lg transition-colors"
                 >
-                  {destroyLabel}
+                  Destroy
                 </button>
               )}
             </div>
