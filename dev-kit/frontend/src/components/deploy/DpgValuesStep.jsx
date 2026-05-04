@@ -8,6 +8,7 @@ function YamlTab({ slug, block, content }) {
   const containerRef = useRef(null)
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState(null)
   const { startEdit, cancelEdit, getContent, setReadOnly } = useYamlEditor(containerRef, content, { readOnly: true })
 
   function handleEdit() {
@@ -17,17 +18,21 @@ function YamlTab({ slug, block, content }) {
 
   function handleCancel() {
     setEditing(false)
+    setSaveError(null)
     cancelEdit()
   }
 
   async function handleSave() {
     setSaving(true)
+    setSaveError(null)
     try {
       await api.updateDpgValue(slug, block, getContent())
       setEditing(false)
       setReadOnly(true)
     } catch (e) {
       console.error(e)
+      const detail = e?.response?.data?.detail || e?.message || 'Failed to save'
+      setSaveError(detail)
     } finally {
       setSaving(false)
     }
@@ -51,6 +56,11 @@ function YamlTab({ slug, block, content }) {
         </div>
       </div>
       <div ref={containerRef} className="border border-gray-700 rounded-xl overflow-hidden min-h-[300px]" />
+      {saveError && (
+        <div className="mt-2 p-2 bg-red-900/30 border border-red-700 rounded text-red-300 text-sm">
+          {saveError}
+        </div>
+      )}
     </div>
   )
 }

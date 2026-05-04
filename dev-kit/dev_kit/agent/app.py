@@ -1235,6 +1235,10 @@ async def update_dpg_value(slug: str, block: str, body: dict) -> dict:
     """
     if block not in BLOCKS:
         raise HTTPException(status_code=400, detail=f"Unknown block: {block}")
+    try:
+        yaml.safe_load(body["content"])
+    except yaml.YAMLError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid YAML: {exc}")
     path = DPG_DIR / f"{block}.yaml"
     path.write_text(body["content"])
     return {"status": "ok"}
