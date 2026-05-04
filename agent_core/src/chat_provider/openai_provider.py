@@ -381,3 +381,71 @@ class OpenAIChatProvider(ChatProviderBase):
             return {"url": src.url}
         # base64 → data URL
         return {"url": f"data:{src.media_type};base64,{src.data}"}
+
+    def _from_wire(self, raw, output_format: OutputFormat | None) -> ChatResponse:
+        """Translate an OpenAI ChatCompletion into a neutral ChatResponse.
+
+        Args:
+            raw: The raw OpenAI ChatCompletion response object.
+            output_format: If provided, attempt to parse msg.content as JSON
+                and populate parsed_output; marks stop_reason="error" on failure.
+
+        Returns:
+            A ChatResponse with content blocks, token usage, and stop_reason.
+        """
+        choice = raw.choices[0]
+        msg = choice.message
+
+        content_blocks: list = []
+        if msg.content:
+            content_blocks.append(TextBlock(text=msg.content))
+
+        if msg.tool_calls:
+            for tc in msg.tool_calls:
+                try:
+                    parsed_input = json.loads(tc.function.arguments)
+                except (json.JSONDecodeError, TypeError):
+                    parsed_input = {}
+                content_blocks.append(
+                    ToolUseBlock(
+                        tool_use_id=tc.id,
+                        tool_name=tc.function.name,
+                        input=parsed_input,
+                    )
+                )
+
+        usage = TokenUsage(
+            input_tokens=_safe_int(getattr(raw.usage, "prompt_tokens", 0)),
+            output_tokens=_safe_int(getattr(raw.usage, "completion_tokens", 0)),
+            cache_read_tokens=None,
+            cache_creation_tokens=None,
+        )
+
+        finish_map = {
+            "stop": "end_turn",
+            "tool_calls": "tool_use",
+            "length": "max_tokens",
+            "content_filter": "error",
+            "function_call": "tool_use",
+        }
+        stop_reason = finish_map.get(choice.finish_reason, "end_turn")
+
+        # Structured output unwrap.
+        parsed_output: dict | None = None
+        if output_format is not None:
+            if msg.content:
+                try:
+                    parsed_output = json.loads(msg.content)
+                except (json.JSONDecodeError, TypeError):
+                    parsed_output = None
+                    stop_reason = "error"
+            else:
+                stop_reason = "error"
+
+        return ChatResponse(
+            content=content_blocks,
+            parsed_output=parsed_output,
+            stop_reason=stop_reason,
+            model_used=self._active_model,
+            usage=usage,
+        )

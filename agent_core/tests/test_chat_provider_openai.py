@@ -268,3 +268,112 @@ class TestToWire:
         )
         wire = p._to_wire(req)
         assert wire["max_completion_tokens"] == 200
+
+
+from unittest.mock import MagicMock
+
+
+def _mk_openai_completion(
+    text: str | None = None,
+    tool_calls: list[dict] | None = None,
+    finish_reason: str = "stop",
+    prompt_tokens: int = 10,
+    completion_tokens: int = 5,
+) -> MagicMock:
+    """Build a MagicMock that mimics openai.ChatCompletion."""
+    raw = MagicMock()
+    msg = MagicMock()
+    msg.content = text
+    if tool_calls is not None:
+        wire_calls = []
+        for tc in tool_calls:
+            wc = MagicMock()
+            wc.id = tc["id"]
+            wc.type = "function"
+            wc.function = MagicMock()
+            wc.function.name = tc["name"]
+            wc.function.arguments = tc["arguments"]
+            wire_calls.append(wc)
+        msg.tool_calls = wire_calls
+    else:
+        msg.tool_calls = None
+
+    choice = MagicMock()
+    choice.message = msg
+    choice.finish_reason = finish_reason
+    raw.choices = [choice]
+
+    raw.usage.prompt_tokens = prompt_tokens
+    raw.usage.completion_tokens = completion_tokens
+    return raw
+
+
+class TestFromWire:
+    def test_text_only(self):
+        p = _make_provider()
+        raw = _mk_openai_completion(text="hello back", prompt_tokens=12, completion_tokens=4)
+        resp = p._from_wire(raw, output_format=None)
+        assert resp.stop_reason == "end_turn"
+        assert resp.model_used == "gpt-4o-2024-08-06"
+        assert len(resp.content) == 1
+        assert resp.content[0].type == "text"
+        assert resp.content[0].text == "hello back"
+        assert resp.parsed_output is None
+        assert resp.usage.input_tokens == 12
+        assert resp.usage.output_tokens == 4
+        assert resp.usage.cache_read_tokens is None
+        assert resp.usage.cache_creation_tokens is None
+
+    def test_tool_calls(self):
+        p = _make_provider()
+        raw = _mk_openai_completion(
+            text=None,
+            tool_calls=[{"id": "call_1", "name": "lookup", "arguments": '{"q": "x"}'}],
+            finish_reason="tool_calls",
+        )
+        resp = p._from_wire(raw, output_format=None)
+        assert resp.stop_reason == "tool_use"
+        assert len(resp.content) == 1
+        assert resp.content[0].type == "tool_use"
+        assert resp.content[0].tool_name == "lookup"
+        assert resp.content[0].input == {"q": "x"}
+
+    def test_text_plus_tool_call(self):
+        p = _make_provider()
+        raw = _mk_openai_completion(
+            text="checking",
+            tool_calls=[{"id": "call_1", "name": "lookup", "arguments": "{}"}],
+            finish_reason="tool_calls",
+        )
+        resp = p._from_wire(raw, output_format=None)
+        assert len(resp.content) == 2
+        assert resp.content[0].type == "text"
+        assert resp.content[1].type == "tool_use"
+
+    def test_finish_reason_length(self):
+        p = _make_provider()
+        raw = _mk_openai_completion(text="trunc", finish_reason="length")
+        resp = p._from_wire(raw, output_format=None)
+        assert resp.stop_reason == "max_tokens"
+
+    def test_finish_reason_content_filter(self):
+        p = _make_provider()
+        raw = _mk_openai_completion(text=None, finish_reason="content_filter")
+        resp = p._from_wire(raw, output_format=None)
+        assert resp.stop_reason == "error"
+
+    def test_output_format_parses_json(self):
+        p = _make_provider()
+        of = OutputFormat(schema={"type": "object", "properties": {"answer": {"type": "string"}}})
+        raw = _mk_openai_completion(text='{"answer": "42"}')
+        resp = p._from_wire(raw, output_format=of)
+        assert resp.parsed_output == {"answer": "42"}
+        assert resp.stop_reason == "end_turn"
+
+    def test_output_format_with_invalid_json_marks_error(self):
+        p = _make_provider()
+        of = OutputFormat(schema={})
+        raw = _mk_openai_completion(text='{"not valid')
+        resp = p._from_wire(raw, output_format=of)
+        assert resp.parsed_output is None
+        assert resp.stop_reason == "error"
