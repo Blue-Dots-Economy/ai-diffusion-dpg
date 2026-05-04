@@ -98,10 +98,16 @@ LLM calls update_config → ERROR → LLM retries with same wrong value → ERRO
 A per-(block, section) attempt counter lives on the `ConfigAccumulator` instance (one accumulator per project conversation):
 
 ```python
+import os
+
 class ConfigAccumulator:
     _validation_attempts: dict[tuple[str, str], int]   # (block, section) → attempt count
-    _MAX_VALIDATION_ATTEMPTS: int = 3
+    _MAX_VALIDATION_ATTEMPTS: int = int(os.environ.get("DEVKIT_VALIDATION_MAX_ATTEMPTS", "3"))
 ```
+
+The cap is configurable via the `DEVKIT_VALIDATION_MAX_ATTEMPTS` environment variable
+(default `3`). Lower values fail-fast to user fallback in production; higher values
+give the LLM more room to self-correct in development.
 
 **Counter lifecycle:**
 
@@ -1639,10 +1645,35 @@ Phased to avoid a big-bang switch:
 | 5 | Operator edits a DPG field in a way the schema rejects but the runtime would accept | The DPG schema is authored from the runtime block schema, so this should be rare. If found, fix the DPG schema (looser) — runtime is the source of truth. |
 | 6 | LLM still generates invalid configs after schema injection | Layer 2 (tool handler validation + retries) catches it. After 3 attempts, falls back to user. |
 
-**Open questions for review:**
+**Open question for review:**
 
-- **Q1.** Should `EntityToProfileFieldSection` enforce that target `profile_field_name` values match declared `state.persistent.graph.subnodes.UserProfile.declared_fields`? This is a cross-block invariant — would require the validator to read accumulator state. Current design: leave as open map, catch at runtime.
-- **Q2.** Should schema injection in phase prompts include only the *required* sections, or also informational adjacent ones (e.g., language phase shows `AgentSection` plus a comment "you'll touch `AgentWorkflowSection` later")? Current design: required only — keeps prompts focused.
-- **Q3.** Where should the per-LLM-attempt cap be configurable? Current design: hardcoded `_MAX_VALIDATION_ATTEMPTS = 3`. If we want operator override, expose as `DEVKIT_VALIDATION_MAX_ATTEMPTS` env var.
+### Q1. Cross-block consistency check for `entity_to_profile_field` ↔ `UserProfile.declared_fields`
+
+**Background.** Two related fields are written in different phases by different schemas:
+
+- **Memory phase** writes `memory_layer.state.persistent.graph.subnodes.UserProfile.declared_fields` — the canonical list of profile fields the agent can persist (e.g., `[name, location, occupation]`).
+- **Language phase** writes `agent_core.entity_to_profile_field` — a map from NLU entity names to profile field names (e.g., `{user_name: name, job: occupation}`).
+
+The values on the right-hand side of `entity_to_profile_field` **must** appear in `UserProfile.declared_fields`. Otherwise Memory Layer rejects the write at runtime (silent data loss — agent appears to work, but profile data isn't saved).
+
+**Why mismatches happen in practice.**
+
+1. **Phases run in different order across the wizard, and the LLM can lose context across them.** Language is phase 3, memory is phase 5. When the LLM writes `entity_to_profile_field` in language phase, `declared_fields` doesn't exist yet. When it later writes `declared_fields` in memory phase, it may forget what it mapped to and use a different name (e.g., maps `job → occupation` in language, but declares `[name, location, work]` in memory — `occupation` and `work` were meant to be the same thing).
+2. **Operator manual edits.** The deploy wizard's YAML editor lets operators edit either side directly. They can add `caller_age: age` to `entity_to_profile_field` without remembering to also add `age` to `UserProfile.declared_fields`.
+3. **Schema evolution.** Project starts with `[name, location]`, operator later adds an entity mapping for age but doesn't update the profile field list.
+
+**Failure mode if uncaught.** Memory Layer silently drops writes to undeclared fields. The agent appears healthy. Operator only finds out when they query the graph weeks later and notice missing data.
+
+**The design choice.**
+
+| Option | What it means | Cost |
+|---|---|---|
+| **A. Cross-block schema validation** (catch at LLM tool-call time) | When validating `EntityToProfileFieldSection`, the validator reads `memory_layer.state.persistent.graph.subnodes.UserProfile.declared_fields` from the accumulator and rejects any RHS value not in that list. | Validator needs accumulator access (current schemas validate only their own data — this is the only cross-block dependency). Adds plumbing: `validate_domain_section()` signature changes from `(block, section, merged_data) → error?` to `(block, section, merged_data, full_accumulator) → error?`. |
+| **B. Runtime catch only** (current design) | Schema treats `entity_to_profile_field` as an open map. Memory Layer raises at deploy or first session. | No schema change. Cost is the silent-data-loss risk above. |
+
+**Reviewer:** which option do we take?
+
+- **A** if catching profile-field typos at tool-call time (with cross-block awareness) is worth the plumbing.
+- **B** if we accept the runtime risk and prefer keeping schema validators block-local.
 
 ---
