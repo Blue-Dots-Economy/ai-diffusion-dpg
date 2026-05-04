@@ -3,7 +3,7 @@ import json
 import pytest
 from unittest.mock import patch, MagicMock
 
-from dev_kit.agent.accumulator import ConfigAccumulator
+from dev_kit.agent.accumulator import ConfigAccumulator, ConfigStatus
 from dev_kit.agent.tools import ToolHandler, _parse_sse_json
 
 
@@ -371,3 +371,47 @@ class TestDeclareAzureStorageTool:
         result = handler._handle_declare_azure_storage({"unexpected": "value"})
         assert acc.is_azure_needed() is True
         assert isinstance(result, str)
+
+
+# ---------------------------------------------------------------------------
+# set_phase skip branch — action_gateway auto-complete for informational agents
+# ---------------------------------------------------------------------------
+
+class TestSetPhaseSkipToolsPhase:
+    """When tools phase is auto-skipped for an informational agent, action_gateway
+    must be marked COMPLETE so the deploy wizard is not blocked."""
+
+    def _make_handler(self, agent_type: str = "informational", current_phase: str = "trust"):
+        """Create a ToolHandler pre-loaded with an agent_type in project_meta."""
+        acc = ConfigAccumulator()
+        state = {
+            "phase": current_phase,
+            "phase_changed": None,
+            "rollback_to": None,
+            "project_meta": {"agent_type": agent_type},
+        }
+        return ToolHandler(acc, state), acc
+
+    def test_action_gateway_marked_complete_when_tools_skipped(self):
+        """action_gateway status is COMPLETE after tools phase is auto-skipped."""
+        handler, acc = self._make_handler(agent_type="informational", current_phase="trust")
+        # Confirm action_gateway starts PENDING
+        assert acc.get_status("action_gateway") == ConfigStatus.PENDING
+        result = handler.dispatch("set_phase", {"phase": "tools"})
+        assert acc.get_status("action_gateway") == ConfigStatus.COMPLETE
+        assert "skipped" in result.lower() or "skip" in result.lower()
+
+    def test_action_gateway_not_affected_for_transactional_agents(self):
+        """action_gateway is NOT auto-completed when tools phase is required (transactional)."""
+        handler, acc = self._make_handler(agent_type="transactional", current_phase="trust")
+        # transactional agents: tools phase is 'required', so entering it normally
+        result = handler.dispatch("set_phase", {"phase": "tools"})
+        assert acc.get_status("action_gateway") == ConfigStatus.PENDING
+        assert "advancing" in result.lower() or "tools" in result.lower()
+
+    def test_other_skip_phases_do_not_affect_action_gateway(self):
+        """Skipping a different phase (user_state) does not change action_gateway status."""
+        handler, acc = self._make_handler(agent_type="informational", current_phase="memory")
+        # user_state is also 'skip' for informational; action_gateway should stay PENDING
+        result = handler.dispatch("set_phase", {"phase": "user_state"})
+        assert acc.get_status("action_gateway") == ConfigStatus.PENDING

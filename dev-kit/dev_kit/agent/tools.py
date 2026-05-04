@@ -775,6 +775,8 @@ class ToolHandler:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
             self._update_project_meta({"phase_decisions": phase_decisions})
+            if requested == "tools":
+                self._acc.set_status("action_gateway", ConfigStatus.COMPLETE)
             self._state["phase_changed"] = requested
             next_idx = requested_idx + 1
             if next_idx < len(PHASES):
