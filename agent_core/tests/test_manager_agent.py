@@ -411,6 +411,62 @@ def test_build_system_prompt_none_channel_config_no_suffix():
     assert without == with_none
 
 
+def test_build_system_prompt_omits_cache_hint_when_provider_lacks_caching():
+    """Regression: a provider with supports_prompt_cache=False (e.g. OpenAI today)
+    must not receive cache_hint='session' on tier-1/tier-2 blocks. Otherwise
+    _validate_request raises UnsupportedFeatureError on every Step-8 LLM call.
+    """
+    from src.chat_provider.base import Capabilities
+
+    no_cache_caps = Capabilities(
+        supports_tools=True,
+        supports_streaming=True,
+        supports_prompt_cache=False,
+        supports_image_input=True,
+        supports_audio_input=False,
+        supports_structured_output=True,
+        supports_force_tool_choice=True,
+    )
+    agent, *_ = _make_manager([_text_llm_response()])
+    agent._llm.capabilities = no_cache_caps
+
+    prompt = agent.build_system_prompt(
+        agent_system_prompt="You are helpful.",
+        subagent_system_prompt="Help with jobs.",
+        detected_language="hindi", channel="cli", profile={},
+    )
+    for block in prompt.blocks:
+        assert block.cache_hint is None
+
+
+def test_build_system_prompt_sets_cache_hint_when_provider_supports_caching():
+    """Anthropic-shaped capabilities → tier-1 + tier-2 blocks carry cache_hint='session'."""
+    from src.chat_provider.base import Capabilities
+
+    cache_caps = Capabilities(
+        supports_tools=True,
+        supports_streaming=True,
+        supports_prompt_cache=True,
+        supports_image_input=True,
+        supports_audio_input=False,
+        supports_structured_output=True,
+        supports_force_tool_choice=True,
+    )
+    agent, *_ = _make_manager([_text_llm_response()])
+    agent._llm.capabilities = cache_caps
+
+    prompt = agent.build_system_prompt(
+        agent_system_prompt="You are helpful.",
+        subagent_system_prompt="Help with jobs.",
+        detected_language="hindi", channel="cli", profile={},
+    )
+    # First two blocks (tier 1 + tier 2) carry cache_hint; tier 3 does not.
+    assert prompt.blocks[0].cache_hint == "session"
+    assert prompt.blocks[1].cache_hint == "session"
+    if len(prompt.blocks) >= 3:
+        assert prompt.blocks[2].cache_hint is None
+
+
 def test_build_system_prompt_user_state_guidance_none_no_section():
     """user_state_guidance=None does not inject a section."""
     agent = _make_manager_for_prompt()
