@@ -385,6 +385,33 @@ class TestAgentProviderAndFeatures:
         assert cfg.features.streaming is None
         assert cfg.features.image_input is None
 
+    def test_nlu_processor_accepts_provider_override(self):
+        """Each helper may declare its own provider independently of agent.provider."""
+        from src.schema.config import NLUProcessorConfig
+        cfg = NLUProcessorConfig.model_validate(
+            {"provider": "anthropic", "model": "claude-haiku-4-5-20251001"}
+        )
+        assert cfg.provider == "anthropic"
+        assert cfg.model == "claude-haiku-4-5-20251001"
+
+    def test_language_normalisation_accepts_provider_override(self):
+        from src.schema.config import LanguageNormalisationConfig
+        cfg = LanguageNormalisationConfig.model_validate(
+            {"provider": "openai", "model": "gpt-4o-mini-2024-07-18"}
+        )
+        assert cfg.provider == "openai"
+
+    def test_helper_provider_rejects_unknown_value(self):
+        from pydantic import ValidationError
+        from src.schema.config import NLUProcessorConfig
+        with pytest.raises(ValidationError):
+            NLUProcessorConfig.model_validate({"provider": "wat", "model": "x"})
+
+    def test_helper_provider_defaults_to_none_meaning_inherit(self):
+        from src.schema.config import NLUProcessorConfig
+        cfg = NLUProcessorConfig.model_validate({"model": "x"})
+        assert cfg.provider is None
+
     def test_dpg_yaml_loads_under_full_validation(self):
         """Regression: the shipped dev-kit/dpg/agent_core.yaml must pass
         full schema validation. Caught a production-startup ValidationError

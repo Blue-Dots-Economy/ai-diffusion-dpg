@@ -239,34 +239,31 @@ class AgentCore(AgentCoreBase):
         self._async_learning = async_learning
 
         # Language Normalisation and NLU run directly in Agent Core.
-        # Each helper gets its own ChatProvider — when the configured model
-        # differs from primary_model a dedicated provider is built; otherwise
-        # the shared primary provider is reused to avoid extra connections.
-        primary_model = self._config.get("agent", {}).get("primary_model", "")
+        # Each helper gets its own ChatProvider — when the configured
+        # provider+model differs from the primary, a dedicated provider is
+        # built; otherwise the shared primary provider is reused to avoid
+        # extra client connections. Each helper may override BOTH the
+        # provider and the model independently of agent.provider, so a
+        # deployment can run primary chat on OpenAI while keeping NLU on
+        # Anthropic (or vice versa) — see #287 follow-up.
+        agent_block = self._config.get("agent", {}) or {}
+        primary_model = agent_block.get("primary_model", "")
+        primary_provider = agent_block.get("provider", "anthropic")
 
-        lang_block = (self._config.get("preprocessing", {}) or {}).get(
-            "language_normalisation", {}
-        ) or {}
-        lang_model = lang_block.get("model") or ""
-        if lang_model and lang_model != primary_model:
-            self._lang_chat_provider = build_chat_provider({
-                **self._config.get("agent", {}),
-                "primary_model": lang_model,
-            })
-        else:
-            self._lang_chat_provider = self._llm
-
-        nlu_block = (self._config.get("preprocessing", {}) or {}).get(
-            "nlu_processor", {}
-        ) or {}
-        nlu_model = nlu_block.get("model") or ""
-        if nlu_model and nlu_model != primary_model:
-            self._nlu_chat_provider = build_chat_provider({
-                **self._config.get("agent", {}),
-                "primary_model": nlu_model,
-            })
-        else:
-            self._nlu_chat_provider = self._llm
+        self._lang_chat_provider = self._build_helper_provider(
+            block=(self._config.get("preprocessing", {}) or {}).get(
+                "language_normalisation", {}
+            ) or {},
+            primary_model=primary_model,
+            primary_provider=primary_provider,
+        )
+        self._nlu_chat_provider = self._build_helper_provider(
+            block=(self._config.get("preprocessing", {}) or {}).get(
+                "nlu_processor", {}
+            ) or {},
+            primary_model=primary_model,
+            primary_provider=primary_provider,
+        )
 
         self._language_normaliser = LanguageNormaliser(chat_provider=self._lang_chat_provider)
         self._nlu_processor = NLUProcessor(self._config, chat_provider=self._nlu_chat_provider)
@@ -333,6 +330,36 @@ class AgentCore(AgentCoreBase):
         _tracer = otel_trace.get_tracer(__name__)
         with _tracer.start_as_current_span("orchestrator.turn") as _span:
             return self._process_turn_inner(turn_input, _span)
+
+    def _build_helper_provider(
+        self,
+        *,
+        block: dict,
+        primary_model: str,
+        primary_provider: str,
+    ) -> ChatProviderBase:
+        """Build (or reuse) a ChatProviderBase for a preprocessing helper.
+
+        Each helper (language_normalisation, nlu_processor) may declare its
+        own ``provider`` and ``model`` independently of ``agent.*``. When
+        either differs from the primary, a dedicated ChatProviderBase is
+        constructed with those values; when both match, the main provider
+        (``self._llm``) is reused.
+
+        ProviderConfigError is intentionally not caught — a misconfigured
+        helper override fails loud at startup per spec §6 Layer 2.
+        """
+        helper_provider = block.get("provider") or primary_provider
+        helper_model = block.get("model") or ""
+        if not helper_model:
+            return self._llm
+        if helper_provider == primary_provider and helper_model == primary_model:
+            return self._llm
+        return build_chat_provider({
+            **self._config.get("agent", {}),
+            "provider": helper_provider,
+            "primary_model": helper_model,
+        })
 
     def _process_turn_inner(self, turn_input: TurnInput, _span: otel_trace.Span) -> TurnResult:
         """Execute the instrumented turn body inside the orchestrator.turn span.
@@ -990,11 +1017,12 @@ class AgentCore(AgentCoreBase):
         # ── Step 8: LLM call #1 with scoped tools ────────────────────
         active_tools = self._workflow.resolve_tools_for(next_subagent_id)
         output_format = next_subagent.output_format
-        primary_model = self._config.get("agent", {}).get("primary_model", "unknown")
+        primary_model = self._llm.get_active_model()
+        primary_provider = self._config.get("agent", {}).get("provider", "anthropic")
         logger.info(
-            "  [STEP 8] LLM Call #1  →  Anthropic API (model=%s)"
+            "  [STEP 8] LLM Call #1  →  provider=%s  model=%s"
             "  tools_available=%d  message_count=%d  output_format=%s",
-            primary_model, len(active_tools), len(messages),
+            primary_provider, primary_model, len(active_tools), len(messages),
             "structured" if output_format else "free-form",
         )
         t8 = time.time()
@@ -3200,7 +3228,8 @@ class AgentCore(AgentCoreBase):
             active_tools = self._workflow.resolve_tools_for(next_subagent_id)
             sentence_index = 0
             token_buffer = ""
-            primary_model = self._config.get("agent", {}).get("primary_model", "unknown")
+            primary_model = self._llm.get_active_model()
+            primary_provider = self._config.get("agent", {}).get("provider", "anthropic")
 
             # GH-196 — Trust /check/output batcher (config-driven).
             _batch_cfg = (
@@ -3216,9 +3245,9 @@ class AgentCore(AgentCoreBase):
                 enabled=bool(_batch_cfg.get("enabled", True)),
             )
             logger.info(
-                "  [STEP 8] LLM Stream Call #1  →  Anthropic API (model=%s)"
+                "  [STEP 8] LLM Stream Call #1  →  provider=%s  model=%s"
                 "  tools_available=%d  message_count=%d",
-                primary_model, len(active_tools), len(messages),
+                primary_provider, primary_model, len(active_tools), len(messages),
             )
             t8 = time.time()
 
@@ -3362,9 +3391,9 @@ class AgentCore(AgentCoreBase):
                     tool_names, int((time.time() - t9) * 1000),
                 )
                 logger.info(
-                    "  [STEP 8] LLM Stream Call #2  →  Anthropic API (model=%s)"
+                    "  [STEP 8] LLM Stream Call #2  →  provider=%s  model=%s"
                     "  message_count=%d",
-                    primary_model, len(messages) + 2,
+                    primary_provider, primary_model, len(messages) + 2,
                 )
                 t8b = time.time()
 

@@ -33,7 +33,7 @@ from __future__ import annotations
 import asyncio
 import time
 import pytest
-from unittest.mock import MagicMock, AsyncMock, ANY
+from unittest.mock import MagicMock, AsyncMock, ANY, patch
 
 from src.orchestrator import AgentCore
 from src.models import (
@@ -268,6 +268,87 @@ def test_raises_on_none_workflow():
             learning=MagicMock(),
             workflow=None,
         )
+
+
+class TestHelperProviderConstruction:
+    """Per-helper provider override (NLU + language_normalisation can run on
+    a different provider than agent.provider) — see #287 follow-up."""
+
+    def _build_agent_core(self, config: dict):
+        return AgentCore(
+            config=config,
+            chat_provider=MagicMock(spec=ChatProviderBase),
+            memory=MagicMock(),
+            trust=MagicMock(),
+            knowledge_engine=MagicMock(),
+            tool_registry=MagicMock(),
+            manager_agent=MagicMock(),
+            learning=MagicMock(),
+            workflow=_make_workflow(),
+        )
+
+    def _agent_block(self, **overrides) -> dict:
+        return {
+            "primary_model": "gpt-4o-2024-08-06",
+            "timeout_ms": 5000,
+            "retry_attempts": 2,
+            "provider": "openai",
+            **overrides,
+        }
+
+    def test_helper_with_no_model_reuses_primary(self):
+        agent = self._build_agent_core({"agent": self._agent_block(), "preprocessing": {}})
+        assert agent._nlu_chat_provider is agent._llm
+        assert agent._lang_chat_provider is agent._llm
+
+    def test_helper_with_matching_provider_and_model_reuses_primary(self):
+        cfg = {
+            "agent": self._agent_block(),
+            "preprocessing": {
+                "nlu_processor": {
+                    "provider": "openai",
+                    "model": "gpt-4o-2024-08-06",
+                },
+            },
+        }
+        agent = self._build_agent_core(cfg)
+        assert agent._nlu_chat_provider is agent._llm
+
+    def test_helper_with_different_provider_builds_dedicated_provider(self):
+        """Regression: the production bug where deployment had agent.provider=openai
+        but nlu_processor.model was a Claude model — without per-helper provider
+        override, build_chat_provider would build an OpenAI provider with a Claude
+        model name and fail at SDK call time.
+        """
+        cfg = {
+            "agent": self._agent_block(),  # agent.provider=openai, primary_model=gpt-4o
+            "preprocessing": {
+                "nlu_processor": {
+                    "provider": "anthropic",
+                    "model": "claude-haiku-4-5-20251001",
+                },
+            },
+        }
+        with patch("anthropic.Anthropic"), patch("anthropic.AsyncAnthropic"):
+            agent = self._build_agent_core(cfg)
+        # Different provider class → different instance (not self._llm).
+        assert agent._nlu_chat_provider is not agent._llm
+        assert type(agent._nlu_chat_provider).__name__ == "AnthropicChatProvider"
+        assert agent._nlu_chat_provider.get_active_model() == "claude-haiku-4-5-20251001"
+
+    def test_helper_with_only_model_override_inherits_agent_provider(self):
+        cfg = {
+            "agent": self._agent_block(),  # agent.provider=openai
+            "preprocessing": {
+                # provider omitted → inherit agent.provider=openai
+                "nlu_processor": {"model": "gpt-4o-mini-2024-07-18"},
+            },
+        }
+        with patch("openai.OpenAI"), patch("openai.AsyncOpenAI"):
+            agent = self._build_agent_core(cfg)
+        assert agent._nlu_chat_provider is not agent._llm
+        assert type(agent._nlu_chat_provider).__name__ == "OpenAIChatProvider"
+        assert agent._nlu_chat_provider.get_active_model() == "gpt-4o-mini-2024-07-18"
 
 
 def test_raises_on_none_turn_input():

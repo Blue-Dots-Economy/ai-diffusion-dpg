@@ -399,6 +399,11 @@ class LanguageNormalisationConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    # Per-helper provider override (#287 follow-up). When set, build_chat_provider
+    # uses this provider for the language-norm helper instead of inheriting
+    # agent.provider. Lets a deployment run primary chat on OpenAI while
+    # keeping language norm on Anthropic (or vice versa). None → inherit.
+    provider: Literal["anthropic", "openai"] | None = None
     model: str = ""
     default_language: str = ""
     supported_languages: list[str] = Field(default_factory=list)
@@ -412,6 +417,8 @@ class NLUProcessorConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    # Per-helper provider override — see LanguageNormalisationConfig.provider.
+    provider: Literal["anthropic", "openai"] | None = None
     model: str = ""
     confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     user_state_confidence_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
