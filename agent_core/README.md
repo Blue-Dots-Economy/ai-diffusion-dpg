@@ -32,7 +32,7 @@ agent_core/
 │   ├── base.py                          # AgentCoreBase ABC — process_turn() + stream_turn()
 │   ├── models.py                        # TurnInput, TurnResult, ContextBundle, NLUResult,
 │   │                                    #   TrustCheckResult, ToolCall, ToolResult,
-│   │                                    #   LLMResponse, TurnEvent, RetrievalChunk,
+│   │                                    #   TurnEvent, RetrievalChunk,
 │   │                                    #   SignalEvent, SentenceEvent, DoneEvent,
 │   │                                    #   StreamEvent, SegmentInput
 │   ├── exceptions.py                    # AgentCoreError, LLMCallError, TrustViolationError,
@@ -58,9 +58,13 @@ agent_core/
 │   │       ├── knowledge_engine.py      # AsyncKnowledgeEngineBase
 │   │       ├── action_gateway.py        # AsyncActionGatewayBase
 │   │       └── observability_layer.py   # AsyncObservabilityLayerBase
-│   ├── llm_wrapper/
-│   │   ├── base.py                      # LLMWrapperBase — call() + stream_call()
-│   │   └── claude_wrapper.py            # Only file that imports the anthropic SDK
+│   ├── chat_provider/
+│   │   ├── base.py                      # ChatProviderBase, Capabilities, error types
+│   │   ├── types.py                     # neutral Pydantic types (Message, ChatRequest, …)
+│   │   ├── anthropic_provider.py        # AnthropicChatProvider — only file that imports `anthropic`
+│   │   ├── openai_provider.py           # OpenAIChatProvider     — only file that imports `openai`
+│   │   ├── metrics.py                   # provider-agnostic OTel instruments
+│   │   └── __init__.py                  # public exports + build_chat_provider() factory
 │   ├── preprocessing/
 │   │   ├── language_normalisation.py
 │   │   └── nlu_processor.py
@@ -88,7 +92,12 @@ agent_core/
 └── tests/                               # 457+ tests across 18 files, ≥70% coverage
     ├── test_orchestrator.py
     ├── test_manager_agent.py
-    ├── test_llm_wrapper.py
+    ├── test_chat_provider_anthropic.py
+    ├── test_chat_provider_openai.py
+    ├── test_chat_provider_base.py
+    ├── test_chat_provider_factory.py
+    ├── test_chat_provider_metrics.py
+    ├── test_chat_provider_types.py
     ├── test_workflow_loader.py
     ├── test_tool_registry.py
     ├── test_nlu_processor.py
@@ -122,8 +131,8 @@ Both `process_turn()` and `stream_turn()` run the same 13-step sequence:
 5.  Routing                     Deterministic — NLU result + session conditions select subagent
 6.  Assemble constraints        Trust Layer.assemble_constraints if active_risks present
 7.  Build system prompt         Subagent prompt + guardrail constraints + required disclosures
-8.  LLM call #1                 ClaudeLLMWrapper — call() (sync) or stream_call() (streaming),
-                                with retry and fallback
+8.  LLM call #1                 ChatProviderBase — call() (sync) or stream() (streaming),
+                                via the configured provider (anthropic or openai)
 9.  Tool-use loop               ManagerAgent — if LLM returns tool_use: route via ToolRegistry;
                                 knowledge_retrieval → KE; all other tools → Action Gateway;
                                 append result, LLM call #2; bounded by max_tool_rounds
@@ -280,13 +289,13 @@ LLM proxy endpoint (implemented, not yet wired).
 Implements both `process_turn()` (sync) and `stream_turn()` (async generator). Runs the 13-step sequence. Holds no session state. All dependencies are injected at construction, including the async HTTP clients used by `stream_turn()`. `_split_sentences()` is a small utility that splits LLM tokens into sentence boundaries (supports Devanagari and fullwidth punctuation).
 
 **`turn_assembler.py` — TurnAssembler**
-Buffers multi-segment input and decides when to invoke `stream_turn()`. Holds `_sessions: dict[str, Session]` in memory; each Session owns the current Turn. Constructor takes optional `nlu_processor`, `llm_wrapper`, `workflow`, `async_memory` — if absent, the semantic gate is effectively disabled.
+Buffers multi-segment input and decides when to invoke `stream_turn()`. Holds `_sessions: dict[str, Session]` in memory; each Session owns the current Turn. Constructor takes optional `nlu_processor`, `workflow`, `async_memory` — if absent, the semantic gate is effectively disabled.
 
 **`manager_agent.py` — ManagerAgent**
-LLM → tool → LLM loop. Both sync and async variants. Used by `process_turn()` for synchronous tool rounds; `stream_turn()` handles tool use via the `ToolUseRequested` exception raised from `stream_call()`.
+LLM → tool → LLM loop. Both sync and async variants. Used by `process_turn()` for synchronous tool rounds; `stream_turn()` handles tool use via the `ToolUseRequested` exception raised from `provider.stream()`.
 
-**`llm_wrapper/claude_wrapper.py` — ClaudeLLMWrapper**
-Only file in the codebase that imports the `anthropic` SDK. Exposes `call()` (sync) and `stream_call()` (async generator). Both share the same retry + fallback model logic. `stream_call()` accumulates tool_use blocks during the stream; if the final `stop_reason == "tool_use"` it raises `ToolUseRequested(tool_calls)` — the caller executes the tool and resumes streaming.
+**`chat_provider/` — multi-provider LLM interface**
+`ChatProviderBase` is the only LLM type the rest of agent_core depends on. `build_chat_provider(agent_config)` selects a concrete provider from `agent.provider` (anthropic or openai today; AzureOpenAI/Ollama as follow-ups). Each provider lives in its own file and is the sole importer of its SDK. `call()` is sync; `stream()` yields text deltas and raises `ToolUseRequested(list[ToolUseBlock])` when the model emits tool calls — the caller executes the tools and resumes. Capabilities (prompt cache, image input, structured output, etc.) are declared per provider class and reconciled against deployment YAML at startup; mismatches fail loud with `ProviderConfigError`.
 
 **`preprocessing/language_normalisation.py` — LanguageNormaliser**
 Runs before NLU. Detects dialect, normalises code-switching (Hindi/Kannada/English), and transliterates Romanised Indic text. Currently only the `internal` provider (LLM-based normalisation via a haiku model) is implemented.
@@ -388,7 +397,8 @@ uv run pytest tests/ -v --cov=src --cov-report=term-missing
 
 | Package | Version | Purpose |
 |---|---|---|
-| `anthropic` | >=0.40.0 | Anthropic SDK — used only in `llm_wrapper/claude_wrapper.py` |
+| `anthropic` | >=0.40.0 | Anthropic SDK — used only in `chat_provider/anthropic_provider.py` |
+| `openai` | >=1.50.0 | OpenAI SDK — used only in `chat_provider/openai_provider.py` |
 | `httpx` | >=0.27.0 | HTTP clients (sync + async) for all downstream DPG services |
 | `pydantic` | >=2.0 | Request/response models |
 | `pyyaml` | >=6.0 | Config loading |
@@ -419,9 +429,9 @@ See `CLAUDE.md` and `ARCHITECTURE.md` in the repository root for full engineerin
 
 ## Known gaps
 
-**Only the Anthropic (Claude) LLM wrapper is implemented.** `ClaudeLLMWrapper` is the only concrete `LLMWrapperBase` implementation. OpenAI-compatible and Ollama wrappers are planned to allow model substitution without changing the orchestration layer.
+**Anthropic and OpenAI providers are implemented (#287).** AzureOpenAI and Ollama are planned follow-ups; they slot into `chat_provider/` without changing the orchestration layer.
 
-**`POST /internal/llm/call` proxy is not yet wired to downstream callers.** The endpoint is implemented and registered, but no other DPG block calls it. The intended architecture routes all Anthropic API calls from other blocks through this proxy; current state has only Agent Core calling the Anthropic SDK directly.
+**`POST /internal/llm/call` proxy is not yet wired to downstream callers.** The endpoint is implemented and registered, but no other DPG block calls it. The intended architecture routes all LLM calls from other blocks through this proxy; current state has only Agent Core calling the configured provider's SDK directly.
 
 **HiTL output escalation path deferred.** When `POST /check/output` returns `action: "escalate"`, Agent Core does not call `/escalate` — this path is not wired. Blocked sentences in the stream are replaced with fallback text only.
 

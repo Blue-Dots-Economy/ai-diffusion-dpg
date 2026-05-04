@@ -1,4 +1,7 @@
 agent:
+  # Provider selection (#287). Defaults to anthropic on the schema; making
+  # the choice explicit so deployments are auditable.
+  provider: anthropic
   primary_model: claude-haiku-4-5-20251001
   fallback_model: claude-haiku-4-5-20251001
   ask_for_consent: false
