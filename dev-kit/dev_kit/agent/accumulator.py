@@ -318,6 +318,17 @@ class ConfigAccumulator:
         """
         return bool(self._data.get("azure_storage", {}).get("needed"))
 
+    def has_knowledge_base(self) -> bool:
+        """Return True if the knowledge_engine config has at least one static_knowledge_base source.
+
+        Returns:
+            True if ``knowledge_engine.static_knowledge_base.sources`` is non-empty,
+            False if the list is absent or empty.
+        """
+        ke = self._data.get("knowledge_engine", {})
+        sources = ke.get("static_knowledge_base", {}).get("sources", [])
+        return bool(sources)
+
     def get_required_secrets(self) -> list[dict]:
         """Return the list of API key secrets required by configured tools.
 

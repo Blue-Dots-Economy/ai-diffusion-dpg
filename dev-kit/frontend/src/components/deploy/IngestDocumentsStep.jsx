@@ -395,6 +395,41 @@ export default function IngestDocumentsStep({ slug, project, onNext, onBack }) {
     state.rows.filter(r => r.status === 'ingested').map(r => r.filename)
   )
 
+  // When the project has no knowledge base, the ingest UI is irrelevant.
+  // Default to `true` (show full UI) when the field is absent so old projects
+  // that predate this field are not silently skipped.
+  const hasKnowledgeBase = project?.has_knowledge_base !== false
+
+  if (!hasKnowledgeBase) {
+    const webUrl = project?.reach_layer_web_url || `http://${window.location.hostname}:8005`
+    return (
+      <div>
+        <h2 className="text-lg font-semibold mb-1">Ingest Knowledge Documents</h2>
+        <div className="text-center py-8">
+          <p className="text-gray-400 mb-6">
+            This agent does not use a knowledge base. No documents need to be ingested.
+          </p>
+          <a
+            href={webUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-xl text-sm font-medium mb-4 transition-colors"
+          >
+            Open Agent Chat ↗
+          </a>
+          <div>
+            <button
+              onClick={() => onNext({})}
+              className="bg-green-700 hover:bg-green-600 text-white px-6 py-2 rounded-xl text-sm"
+            >
+              Done →
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   if (!state.config) {
     return (
       <div className="flex items-center justify-center py-12 text-gray-400 text-sm">

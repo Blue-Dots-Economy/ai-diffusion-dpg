@@ -527,6 +527,9 @@ def get_project(slug: str) -> dict:
     meta["required_secrets"] = engine.accumulator.get_required_secrets()
     meta["channel_secrets"] = engine.accumulator.get_required_channel_secrets()
 
+    # Knowledge base presence — used by the deploy wizard to skip the ingest step
+    meta["has_knowledge_base"] = engine.accumulator.has_knowledge_base()
+
     return meta
 
 
