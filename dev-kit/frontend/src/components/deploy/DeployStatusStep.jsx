@@ -118,6 +118,7 @@ export default function DeployStatusStep({ slug, data, project, onSuccess, onBac
         } else if (result.overall === 'failed') {
           clearInterval(pollRef.current)
           pollRef.current = null
+          setDestroying(false)
         } else if (result.overall === 'idle') {
           // Destroy completed — backend cleared state
           clearInterval(pollRef.current)
