@@ -373,3 +373,39 @@ class TestAgentProviderAndFeatures:
                 **self._base_agent(),
                 "features": {"made_up": True},
             })
+
+    def test_features_null_coerces_to_default(self):
+        """Regression: YAML parses ``features:`` with all sub-keys
+        commented out as ``None``, and the schema must accept that as
+        equivalent to an absent block (use provider capabilities).
+        """
+        from src.schema.config import AgentConfig
+        cfg = AgentConfig.model_validate({**self._base_agent(), "features": None})
+        assert cfg.features.prompt_cache is None
+        assert cfg.features.streaming is None
+        assert cfg.features.image_input is None
+
+    def test_dpg_yaml_loads_under_full_validation(self):
+        """Regression: the shipped dev-kit/dpg/agent_core.yaml must pass
+        full schema validation. Caught a production-startup ValidationError
+        where ``agent.features`` parsed to None from the commented-out block.
+        """
+        import yaml
+        from pathlib import Path
+        from src.schema.config import MergedConfig
+
+        repo_root = Path(__file__).resolve().parents[2]
+        dpg = yaml.safe_load(
+            (repo_root / "dev-kit" / "dpg" / "agent_core.yaml").read_text()
+        ) or {}
+        domain = yaml.safe_load(
+            (repo_root / "dev-kit" / "configs" / "kkb" / "agent_core.yaml").read_text()
+        ) or {}
+        merged: dict = {**dpg}
+        for k, v in domain.items():
+            if isinstance(v, dict) and isinstance(merged.get(k), dict):
+                merged[k] = {**merged[k], **v}
+            else:
+                merged[k] = v
+        # Should not raise.
+        MergedConfig.validate_full(merged)

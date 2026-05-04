@@ -21,7 +21,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +211,22 @@ class AgentConfig(BaseModel):
     provider: Literal["anthropic", "openai"] = "anthropic"
     features: FeaturesConfig = Field(default_factory=FeaturesConfig)
     timeout_ms: int = Field(default=10000, gt=0)
+
+    @field_validator("features", mode="before")
+    @classmethod
+    def _coerce_null_features(cls, value):
+        """Treat ``features: null`` (or YAML's empty mapping) as the default.
+
+        YAML parses an ``agent.features:`` block whose every sub-key is
+        commented out as ``None`` rather than as an empty dict. Without this
+        coercion startup fails with a ValidationError on a config file that
+        looks correct to a domain author. The semantics are unambiguous:
+        no features expressed → use the provider's intrinsic capabilities,
+        which is exactly what FeaturesConfig() defaults to.
+        """
+        if value is None:
+            return FeaturesConfig()
+        return value
     retry_attempts: int = Field(default=2, ge=1)
     retry_backoff_seconds: list[float] = Field(default_factory=lambda: [0, 0.5, 1.0])
     max_tool_rounds: int = Field(default=3, ge=1)
