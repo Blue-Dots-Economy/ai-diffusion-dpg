@@ -158,13 +158,15 @@ not declare the block are unaffected.
 
 **TurnAssembler:** For channels that deliver multi-segment input (voice VAD, rapid corrections), `TurnAssembler` sits between the server and `stream_turn()`. Holds `Session` objects keyed by `session_id`; each `Session` owns the current `Turn` (per-turn segments, event queue, abort signal, state). The pipeline invokes via a three-policy stack: semantic completeness gate (NLU confidence), silence trigger (reset on every segment), and max-wait ceiling (absolute). Exposes `POST /sessions/{id}/input`, `GET /sessions/{id}/events` (SSE), and `DELETE /sessions/{id}/active_turn` (barge-in). Cancel is structural — a cancelled `Turn` is dead, its queue sealed, and a successor `Turn` gets a fresh queue (#224).
 
+**LLM access (`chat_provider/`).** `ChatProviderBase` is the single LLM interface every Agent Core component depends on. Concrete providers (`AnthropicChatProvider`, `OpenAIChatProvider`) are selected via `build_chat_provider(agent_config)` based on `agent.provider`. Each provider owns the wire-format translation, retry/timeout, and OTel telemetry for its SDK; nothing else in agent_core imports the underlying provider library. NLU and language-normalisation use dedicated provider instances (configured by their own `model` fields) so cheap classification calls can run on a smaller model. Multimodal *input* (image blocks) is supported day one; image generation, TTS, ASR, and realtime APIs are deliberately out of scope and would land as sibling abstractions rather than as additions to ChatProviderBase.
+
 **Key files:**
 - `agent_core/src/orchestrator.py` — `process_turn()` (sync) and `stream_turn()` (async generator)
 - `agent_core/src/turn_assembler.py` — `TurnAssemblerBase`, `TurnAssembler`
 - `agent_core/src/session.py` — `Session` per-session lifecycle object
 - `agent_core/src/turn.py` — `Turn` per-turn lifecycle object, `TurnStatus` state machine
 - `agent_core/src/manager_agent.py` — system prompt assembly, tool-use loop (sync + async)
-- `agent_core/src/llm_wrapper/claude_wrapper.py` — only file that imports `anthropic`; exposes `call()` and `stream_call()`
+- `agent_core/src/chat_provider/` — `ChatProviderBase`, `build_chat_provider()`, neutral types, `AnthropicChatProvider` (only file that imports `anthropic`), `OpenAIChatProvider` (only file that imports `openai`)
 - `agent_core/src/preprocessing/language_normaliser.py`
 - `agent_core/src/preprocessing/nlu_processor.py`
 - `agent_core/src/tool_registry.py`
@@ -178,7 +180,7 @@ not declare the block are unaffected.
 **Known gaps:**
 - HiTL escalation for output path not wired: `orchestrator.py` — when Trust output returns `action: "escalate"`, the escalation call is deferred.
 - `/internal/llm/call` proxy endpoint is implemented but not yet wired to downstream callers.
-- Only `ClaudeLLMWrapper` is implemented. OpenAI-compatible and Ollama wrappers are planned to allow model substitution without changing the orchestration layer.
+- Anthropic and OpenAI providers are implemented (#287). AzureOpenAI and Ollama are planned follow-ups; both slot into `chat_provider/` without changing the orchestration layer.
 - Channel-aware prompt assembly not implemented — all channels receive the same system prompt (#97).
 
 ---
@@ -441,7 +443,7 @@ Agent Core: Manager Agent selects subagent + tools        [current_subagent_id +
   │  system_prompt = subagent_prompt + guardrail_constraints + required_disclosures
   │  tool list filtered by action_gates
   ▼
-Agent Core: LLM call #1 (ClaudeLLMWrapper)
+Agent Core: LLM call #1 (ChatProviderBase)
   │
   ├─ [tool_use block returned]
   │    Agent Core: execute tool → Action Gateway
@@ -645,7 +647,8 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 | Subagent-based routing | ✅ | current_subagent_id tracked; routing rules driven by config graph |
 | Semantic RAG | ✅ | ChromaDB, multilingual embeddings, intent-based filtering |
 | Glossary mapping | ✅ | Config-driven colloquial → canonical |
-| LLM call with retry/fallback | ✅ | Exponential backoff, primary/fallback model switching |
+| LLM call with retry | ✅ | Exponential backoff inside each ChatProviderBase implementation |
+| Multi-provider LLM abstraction | ✅ | `chat_provider/` selects Anthropic or OpenAI by config (#287) |
 | Tool-use loop | ✅ | Bounded by `max_tool_rounds`, action_gates from Trust Layer applied |
 | KE conditional call (tool-only) | ✅ | `knowledge_retrieval` internal tool; LLM decides when to call KE; subagents without `knowledge_retrieval` never trigger KE |
 | Session state (turn + session) | ✅ | Redis with TTL |
