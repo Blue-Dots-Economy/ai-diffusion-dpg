@@ -377,3 +377,79 @@ class TestFromWire:
         resp = p._from_wire(raw, output_format=of)
         assert resp.parsed_output is None
         assert resp.stop_reason == "error"
+
+
+import openai as _openai
+from src.chat_provider.base import UnsupportedFeatureError
+
+
+class _FakeRateLimit(_openai.RateLimitError):
+    def __init__(self):  # noqa: D401
+        pass
+
+
+class _FakeAPIError(_openai.APIError):
+    def __init__(self):  # noqa: D401
+        pass
+
+
+class TestCall:
+    def test_normal_text_response(self):
+        p = _make_provider()
+        raw = _mk_openai_completion(text="hi back", prompt_tokens=10, completion_tokens=2)
+        p._client.chat.completions.create = MagicMock(return_value=raw)
+
+        req = ChatRequest(messages=[Message(role="user", content=[TextBlock(text="hi")])])
+        resp = p.call(req)
+
+        assert resp.stop_reason == "end_turn"
+        assert resp.content[0].text == "hi back"
+        p._client.chat.completions.create.assert_called_once()
+
+    def test_empty_messages_raises_value_error(self):
+        p = _make_provider()
+        req = ChatRequest(messages=[])
+        with pytest.raises(ValueError, match="messages must not be empty"):
+            p.call(req)
+
+    def test_unsupported_feature_raises(self):
+        # OpenAI capability for prompt_cache is False; cache_hint should raise.
+        p = _make_provider()
+        req = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="hi")])],
+            system=SystemPrompt(blocks=[TextBlock(text="x" * 3500, cache_hint="session")]),
+        )
+        with pytest.raises(UnsupportedFeatureError):
+            p.call(req)
+
+    def test_retry_on_rate_limit_then_success(self):
+        p = _make_provider()
+        raw_ok = _mk_openai_completion(text="ok")
+        p._client.chat.completions.create = MagicMock(side_effect=[_FakeRateLimit(), raw_ok])
+
+        req = ChatRequest(messages=[Message(role="user", content=[TextBlock(text="hi")])])
+        resp = p.call(req)
+
+        assert resp.stop_reason == "end_turn"
+        assert p._client.chat.completions.create.call_count == 2
+
+    def test_exhausted_retries_returns_error_response(self):
+        p = _make_provider()
+        p._client.chat.completions.create = MagicMock(side_effect=_FakeRateLimit())
+
+        req = ChatRequest(messages=[Message(role="user", content=[TextBlock(text="hi")])])
+        resp = p.call(req)
+
+        assert resp.stop_reason == "error"
+        assert resp.content == []
+        assert p._client.chat.completions.create.call_count == 2
+
+    def test_non_retryable_api_error_returns_error_response(self):
+        p = _make_provider()
+        p._client.chat.completions.create = MagicMock(side_effect=_FakeAPIError())
+
+        req = ChatRequest(messages=[Message(role="user", content=[TextBlock(text="hi")])])
+        resp = p.call(req)
+
+        assert resp.stop_reason == "error"
+        assert p._client.chat.completions.create.call_count == 1

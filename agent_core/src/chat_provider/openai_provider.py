@@ -27,6 +27,7 @@ from src.chat_provider.base import (
     Capabilities,
     ChatProviderBase,
     ProviderConfigError,
+    UnsupportedFeatureError,
 )
 from src.chat_provider.metrics import record_call_metrics
 from src.chat_provider.types import (
@@ -145,18 +146,156 @@ class OpenAIChatProvider(ChatProviderBase):
     # ------------------------------------------------------------------
 
     def call(self, request: ChatRequest) -> ChatResponse:
-        """Send a synchronous chat request to the OpenAI API.
+        """Execute a single OpenAI call with retries on transient failures.
 
         Args:
             request: The chat request containing messages, tools, and config.
 
         Returns:
-            ChatResponse with content blocks and token usage.
+            ChatResponse with content blocks and token usage, or an error
+            response if all retry attempts are exhausted or a non-retryable
+            error occurs.
 
         Raises:
-            NotImplementedError: Until Task 7 is implemented.
+            ValueError: If request.messages is empty.
+            UnsupportedFeatureError: If the request uses capabilities not
+                supported by OpenAI (e.g. prompt caching).
         """
-        raise NotImplementedError("Implemented in Task 7")
+        if not request.messages:
+            raise ValueError("messages must not be empty")
+        self._validate_request(request, is_stream=False)
+
+        try:
+            return self._call_with_retry(request)
+        except _RetryableExhausted:
+            return ChatResponse(
+                content=[],
+                stop_reason="error",
+                model_used=self._active_model,
+                usage=TokenUsage(),
+            )
+
+    def _call_with_retry(self, request: ChatRequest) -> ChatResponse:
+        """Execute the OpenAI API call with retry logic for transient errors.
+
+        Args:
+            request: The chat request to execute.
+
+        Returns:
+            ChatResponse on success.
+
+        Raises:
+            _RetryableExhausted: If all retry attempts are consumed by
+                transient errors (rate limits, timeouts).
+        """
+        last_error: Exception | None = None
+        for attempt in range(self._max_attempts):
+            delay = self._backoff_seconds[
+                min(attempt, len(self._backoff_seconds) - 1)
+            ]
+            if delay > 0:
+                time.sleep(delay)
+
+            start = time.time()
+            tracer = otel_trace.get_tracer(__name__)
+            try:
+                kwargs = self._to_wire(request)
+                with tracer.start_as_current_span("llm.call") as span:
+                    span.set_attribute("gen_ai.system", "openai")
+                    span.set_attribute("gen_ai.model", self._active_model)
+                    span.set_attribute("llm.attempt", attempt + 1)
+                    span.set_attribute("llm.call_kind", "sync")
+                    raw = self._client.chat.completions.create(**kwargs)
+                    response = self._from_wire(raw, output_format=request.output_format)
+                    latency_ms = int((time.time() - start) * 1000)
+                    span.set_attribute("gen_ai.usage.input_tokens", response.usage.input_tokens or 0)
+                    span.set_attribute("gen_ai.usage.output_tokens", response.usage.output_tokens or 0)
+
+                record_call_metrics(
+                    model=self._active_model,
+                    call_kind="sync",
+                    status="success",
+                    latency_ms=latency_ms,
+                    response=response,
+                    provider_system="openai",
+                )
+                logger.info(
+                    "chat_provider.openai.call",
+                    extra={
+                        "operation": "chat_provider.openai.call",
+                        "status": "success",
+                        "model": self._active_model,
+                        "attempt": attempt + 1,
+                        "latency_ms": latency_ms,
+                        "input_tokens": response.usage.input_tokens,
+                        "output_tokens": response.usage.output_tokens,
+                    },
+                )
+                return response
+
+            except (openai.APITimeoutError, openai.RateLimitError) as e:
+                last_error = e
+                logger.warning(
+                    "chat_provider.openai.retryable_error",
+                    extra={
+                        "operation": "chat_provider.openai.call",
+                        "status": "failure",
+                        "model": self._active_model,
+                        "attempt": attempt + 1,
+                        "error": str(e),
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+            except openai.APIError as e:
+                logger.error(
+                    "chat_provider.openai.api_error",
+                    extra={
+                        "operation": "chat_provider.openai.call",
+                        "status": "failure",
+                        "model": self._active_model,
+                        "attempt": attempt + 1,
+                        "error": str(e),
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+                return ChatResponse(
+                    content=[],
+                    stop_reason="error",
+                    model_used=self._active_model,
+                    usage=TokenUsage(),
+                )
+            except Exception as e:
+                logger.error(
+                    "chat_provider.openai.unexpected_error",
+                    extra={
+                        "operation": "chat_provider.openai.call",
+                        "status": "failure",
+                        "model": self._active_model,
+                        "attempt": attempt + 1,
+                        "error": f"{type(e).__name__}: {e}",
+                        "latency_ms": int((time.time() - start) * 1000),
+                    },
+                )
+                return ChatResponse(
+                    content=[],
+                    stop_reason="error",
+                    model_used=self._active_model,
+                    usage=TokenUsage(),
+                )
+
+        logger.error(
+            "chat_provider.openai.exhausted",
+            extra={
+                "operation": "chat_provider.openai.call",
+                "status": "failure",
+                "model": self._active_model,
+                "attempts": self._max_attempts,
+                "error": str(last_error),
+            },
+        )
+        raise _RetryableExhausted(
+            f"All {self._max_attempts} retry attempts exhausted for model {self._active_model}"
+        )
 
     async def stream(
         self,
