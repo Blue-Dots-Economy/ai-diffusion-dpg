@@ -323,12 +323,23 @@ export default function DeployStatusStep({ slug, data, project, onSuccess, onBac
           title={`${failedServices.length} service${failedServices.length > 1 ? 's' : ''} failed to start`}
           subtitle={`${failedServices.map(s => SERVICE_LABELS[s.name] || s.name).join(', ')} — check the error details below, fix the issue, and redeploy.`}
           action={
-            <button
-              onClick={handleRedeploy}
-              className="text-xs bg-red-800 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg transition-colors"
-            >
-              Redeploy
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={handleRedeploy}
+                className="text-xs bg-red-800 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg transition-colors"
+              >
+                Redeploy
+              </button>
+              {canDestroy && (
+                <button
+                  onClick={() => setShowDestroyConfirm(true)}
+                  disabled={destroying}
+                  className="text-xs bg-gray-800 hover:bg-red-900 disabled:opacity-50 text-gray-300 px-3 py-1.5 rounded-lg transition-colors"
+                >
+                  Destroy
+                </button>
+              )}
+            </div>
           }
         />
       )}
