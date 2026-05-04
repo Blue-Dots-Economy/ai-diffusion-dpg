@@ -62,7 +62,6 @@ services:
     container_name: action_gateway
     environment:
       - CONFIG_FOLDER=/app/config
-      - ONEST_API_KEY
       # Connector API keys are injected here at deploy time by dev-kit (e.g. ONEST_API_KEY=...).
       # When running docker compose manually, add KEY=value lines to this section.
     volumes:
@@ -135,63 +134,63 @@ services:
   # ---------------------------------------------------------------------------
   # Dev-Kit — Configuration Agent UI (port 8080)
   # ---------------------------------------------------------------------------
-  # dev_kit:
-  #   build:
-  #     context: ../..
-  #     dockerfile: dev-kit/Dockerfile
-  #     platforms:
-  #       - linux/amd64
-  #       - linux/arm64
-  #   image: sanketikahub/dpg-dev-kit:${GIT_SHA:-latest}
-  #   container_name: dev_kit
-  #   environment:
-  #     - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
-  #     - REACH_LAYER_URL=${REACH_LAYER_URL:-http://host.docker.internal:8005}
-  #     - HOST_REPO_ROOT=${HOST_REPO_ROOT:-${PWD}}
-  #     - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
-  #     - VOBIZ_AUTH_ID=${VOBIZ_AUTH_ID:-}
-  #     - VOBIZ_AUTH_TOKEN=${VOBIZ_AUTH_TOKEN:-}
-  #     - VOBIZ_FROM_NUMBER=${VOBIZ_FROM_NUMBER:-}
-  #     - RAYA_API_KEY=${RAYA_API_KEY:-}
-  #     - PUBLIC_URL=${PUBLIC_URL:-}
-  #     - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
-  #   ports:
-  #     - "8080:8080"
-  #   networks:
-  #     - dpg_net
-  #   volumes:
-  #   - ../../dev-kit/configs:/app/configs
-  #   # Persist the RSA keypair used to decrypt browser-encrypted secrets.
-  #   # Without this mount the key is regenerated on every container restart,
-  #   # invalidating the public key cached in any open browser tab and causing
-  #   # /deploy/preview and /deploy/execute to 500 with "Decryption failed"
-  #   # until the user hard-refreshes.
-  #   - devkit_keystore:/root/.devkit
-  #   # Mount the host docker socket so the dev_kit container can drive
-  #   # `docker compose` against the host daemon (deploy / preview / status
-  #   # all shell out to `docker`). Without this the CLI errors with
-  #   # "failed to connect to the docker API at unix:///var/run/docker.sock".
-  #   - /var/run/docker.sock:/var/run/docker.sock
-  #   # On Linux dev_kit's container can't reach the host's published ports
-  #   # via `localhost` (its loopback is its own). The ingest proxy forwards
-  #   # uploads to reach_layer_web, which lives in a different compose
-  #   # project / network and is only reachable via the host's published
-  #   # 8005. host-gateway adds an /etc/hosts entry that points
-  #   # host.docker.internal at the host so the proxy resolves correctly.
-  #   extra_hosts:
-  #     - "host.docker.internal:host-gateway"
-  #   deploy:
-  #     resources:
-  #       limits:
-  #         cpus: '0.1'
-  #         memory: 512M
-  #   healthcheck:
-  #     test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/', timeout=3)"]
-  #     interval: 10s
-  #     timeout: 5s
-  #     retries: 3
-  #     start_period: 30s
-  #   restart: unless-stopped
+  dev_kit:
+    build:
+      context: ../..
+      dockerfile: dev-kit/Dockerfile
+      platforms:
+        - linux/amd64
+        - linux/arm64
+    image: sanketikahub/dpg-dev-kit:${GIT_SHA:-latest}
+    container_name: dev_kit
+    environment:
+      - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
+      - REACH_LAYER_URL=${REACH_LAYER_URL:-http://host.docker.internal:8005}
+      - HOST_REPO_ROOT=${HOST_REPO_ROOT:-${PWD}}
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
+      - VOBIZ_AUTH_ID=${VOBIZ_AUTH_ID:-}
+      - VOBIZ_AUTH_TOKEN=${VOBIZ_AUTH_TOKEN:-}
+      - VOBIZ_FROM_NUMBER=${VOBIZ_FROM_NUMBER:-}
+      - RAYA_API_KEY=${RAYA_API_KEY:-}
+      - PUBLIC_URL=${PUBLIC_URL:-}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+    ports:
+      - "8080:8080"
+    networks:
+      - dpg_net
+    volumes:
+    - ../../dev-kit/configs:/app/configs
+    # Persist the RSA keypair used to decrypt browser-encrypted secrets.
+    # Without this mount the key is regenerated on every container restart,
+    # invalidating the public key cached in any open browser tab and causing
+    # /deploy/preview and /deploy/execute to 500 with "Decryption failed"
+    # until the user hard-refreshes.
+    - devkit_keystore:/root/.devkit
+    # Mount the host docker socket so the dev_kit container can drive
+    # `docker compose` against the host daemon (deploy / preview / status
+    # all shell out to `docker`). Without this the CLI errors with
+    # "failed to connect to the docker API at unix:///var/run/docker.sock".
+    - /var/run/docker.sock:/var/run/docker.sock
+    # On Linux dev_kit's container can't reach the host's published ports
+    # via `localhost` (its loopback is its own). The ingest proxy forwards
+    # uploads to reach_layer_web, which lives in a different compose
+    # project / network and is only reachable via the host's published
+    # 8005. host-gateway adds an /etc/hosts entry that points
+    # host.docker.internal at the host so the proxy resolves correctly.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
 
   # ---------------------------------------------------------------------------
   # Knowledge Engine — RAG, NLU, prompt assembly (port 8001)
@@ -410,49 +409,49 @@ services:
   # Vobiz/WebSocket telephony bridge. PUBLIC_URL is injected by the ngrok
   # service via NGROK_URL or set manually.
   # ---------------------------------------------------------------------------
-  # reach_layer_voice:
-  #   build:
-  #     context: ../..
-  #     dockerfile: reach_layer/voice/Dockerfile
-  #     platforms:
-  #       - linux/amd64
-  #       - linux/arm64
-  #   image: sanketikahub/dpg-reach-layer-voice:${GIT_SHA:-latest}
-  #   container_name: reach_layer_voice
-  #   environment:
-  #     - DPG_CONFIG_PATH=/app/config/dpg.yaml
-  #     - DOMAIN_CONFIG_PATH=/app/config/domain.yaml
-  #     - NLTK_DATA=/tmp/nltk_data
-  #     - PUBLIC_URL=${PUBLIC_URL:-}                       # set from shell or use ngrok service below
-  #     - VOBIZ_AUTH_ID=${VOBIZ_AUTH_ID:-}
-  #     - VOBIZ_AUTH_TOKEN=${VOBIZ_AUTH_TOKEN:-}
-  #     - VOBIZ_FROM_NUMBER=${VOBIZ_FROM_NUMBER:-}
-  #     - RAYA_API_KEY=${RAYA_API_KEY:-}
-  #     - LOG_LEVEL=DEBUG
-  #   volumes:
-  #     # Unified Reach Layer config: DPG defaults + per-domain overrides.
-  #     # Loader scopes to the voice channel via load_reach_config("voice").
-  #     - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
-  #     - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
-  #   ports:
-  #     - "8006:8006"
-  #   networks:
-  #     - dpg_net
-  #   deploy:
-  #     resources:
-  #       limits:
-  #         cpus: '0.5'
-  #         memory: 1g
-  #   depends_on:
-  #     agent_core:
-  #       condition: service_healthy
-  #   healthcheck:
-  #     test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8006/health', timeout=3)"]
-  #     interval: 10s
-  #     timeout: 8s
-  #     retries: 3
-  #     start_period: 15s
-  #   restart: unless-stopped
+  reach_layer_voice:
+    build:
+      context: ../..
+      dockerfile: reach_layer/voice/Dockerfile
+      platforms:
+        - linux/amd64
+        - linux/arm64
+    image: sanketikahub/dpg-reach-layer-voice:${GIT_SHA:-latest}
+    container_name: reach_layer_voice
+    environment:
+      - DPG_CONFIG_PATH=/app/config/dpg.yaml
+      - DOMAIN_CONFIG_PATH=/app/config/domain.yaml
+      - NLTK_DATA=/tmp/nltk_data
+      - PUBLIC_URL=${PUBLIC_URL:-}                       # set from shell or use ngrok service below
+      - VOBIZ_AUTH_ID=${VOBIZ_AUTH_ID:-}
+      - VOBIZ_AUTH_TOKEN=${VOBIZ_AUTH_TOKEN:-}
+      - VOBIZ_FROM_NUMBER=${VOBIZ_FROM_NUMBER:-}
+      - RAYA_API_KEY=${RAYA_API_KEY:-}
+      - LOG_LEVEL=DEBUG
+    volumes:
+      # Unified Reach Layer config: DPG defaults + per-domain overrides.
+      # Loader scopes to the voice channel via load_reach_config("voice").
+      - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
+    ports:
+      - "8006:8006"
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1g
+    depends_on:
+      agent_core:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8006/health', timeout=3)"]
+      interval: 10s
+      timeout: 8s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
 
   # ---------------------------------------------------------------------------
   # Trust Layer — content safety gate (port 8003)
