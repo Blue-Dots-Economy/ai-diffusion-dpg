@@ -6,7 +6,7 @@ All LLM calls are mocked — no real API calls.
 
 Coverage:
 - Normal: hindi/hinglish/english/kannada detected and normalised text returned
-- Normal: model_override passed from config to llm.call
+- Normal: chat_provider.call() invoked (model owned by provider, not per-call override)
 - Normal: JSON embedded in prose is still parsed correctly
 - Edge: empty input returns (raw_input, "") without calling LLM
 - Edge: missing config section uses defaults
@@ -21,8 +21,11 @@ import json
 import pytest
 from unittest.mock import MagicMock
 
+from src.chat_provider.base import ChatProviderBase
+from src.chat_provider.types import (
+    ChatRequest, ChatResponse, Message, SystemPrompt, TextBlock, TokenUsage
+)
 from src.preprocessing.language_normalisation import LanguageNormaliser
-from src.models import LLMResponse
 
 
 # ---------------------------------------------------------------------------
@@ -44,22 +47,28 @@ CONFIG = {
 CONFIG_NO_PREPROCESSING = {}
 
 
-def make_llm_returning(normalised: str, detected: str) -> MagicMock:
-    llm = MagicMock()
-    llm.call.return_value = LLMResponse(
-        content=json.dumps({
+def _make_chat_response(normalised: str, detected: str) -> ChatResponse:
+    return ChatResponse(
+        content=[TextBlock(text=json.dumps({
             "detected_language": detected,
             "normalised_text": normalised,
-        }),
+        }))],
         stop_reason="end_turn",
         model_used="claude-haiku-4-5-20251001",
+        usage=TokenUsage(input_tokens=10, output_tokens=5),
     )
-    return llm
+
+
+def make_provider_returning(normalised: str, detected: str) -> MagicMock:
+    provider = MagicMock(spec=ChatProviderBase)
+    provider.call.return_value = _make_chat_response(normalised, detected)
+    return provider
 
 
 @pytest.fixture
 def normaliser():
-    return LanguageNormaliser()
+    provider = MagicMock(spec=ChatProviderBase)
+    return LanguageNormaliser(chat_provider=provider)
 
 
 # ---------------------------------------------------------------------------
@@ -67,64 +76,79 @@ def normaliser():
 # ---------------------------------------------------------------------------
 
 
-def test_hindi_input_detected_and_returned(normaliser):
-    llm = make_llm_returning("kaam chahiye mujhe", "hindi")
-    normalised, detected = normaliser.normalise("kaam chahiye mujhe", CONFIG, llm)
+def test_hindi_input_detected_and_returned():
+    provider = make_provider_returning("kaam chahiye mujhe", "hindi")
+    n = LanguageNormaliser(chat_provider=provider)
+    normalised, detected = n.normalise("kaam chahiye mujhe", CONFIG)
     assert detected == "hindi"
     assert normalised == "kaam chahiye mujhe"
 
 
-def test_hinglish_input_detected(normaliser):
-    llm = make_llm_returning("electrician ka kaam chahiye", "hinglish")
-    normalised, detected = normaliser.normalise("electrician ka kaam chahiye", CONFIG, llm)
+def test_hinglish_input_detected():
+    provider = make_provider_returning("electrician ka kaam chahiye", "hinglish")
+    n = LanguageNormaliser(chat_provider=provider)
+    normalised, detected = n.normalise("electrician ka kaam chahiye", CONFIG)
     assert detected == "hinglish"
 
 
-def test_english_input_detected(normaliser):
-    llm = make_llm_returning("I want electrician work", "english")
-    _, detected = normaliser.normalise("I want electrician work", CONFIG, llm)
+def test_english_input_detected():
+    provider = make_provider_returning("I want electrician work", "english")
+    n = LanguageNormaliser(chat_provider=provider)
+    _, detected = n.normalise("I want electrician work", CONFIG)
     assert detected == "english"
 
 
-def test_kannada_input_detected(normaliser):
-    llm = make_llm_returning("ನಾನು ವಿದ್ಯುತ್ ತಂತ್ರಜ್ಞ", "kannada")
-    _, detected = normaliser.normalise("ನಾನು ವಿದ್ಯುತ್ ತಂತ್ರಜ್ಞ", CONFIG, llm)
+def test_kannada_input_detected():
+    provider = make_provider_returning("ನಾನು ವಿದ್ಯುತ್ ತಂತ್ರಜ್ಞ", "kannada")
+    n = LanguageNormaliser(chat_provider=provider)
+    _, detected = n.normalise("ನಾನು ವಿದ್ಯುತ್ ತಂತ್ರಜ್ಞ", CONFIG)
     assert detected == "kannada"
 
 
-def test_normalised_text_from_llm_returned(normaliser):
-    llm = make_llm_returning("cleaned and normalised text", "english")
-    normalised, _ = normaliser.normalise("original input text", CONFIG, llm)
+def test_normalised_text_from_llm_returned():
+    provider = make_provider_returning("cleaned and normalised text", "english")
+    n = LanguageNormaliser(chat_provider=provider)
+    normalised, _ = n.normalise("original input text", CONFIG)
     assert normalised == "cleaned and normalised text"
 
 
-def test_model_override_passed_from_config(normaliser):
-    llm = make_llm_returning("hello world there", "english")
-    normaliser.normalise("hello world there", CONFIG, llm)
-    call_kwargs = llm.call.call_args[1]
-    assert call_kwargs.get("model_override") == "claude-haiku-4-5-20251001"
+def test_provider_call_invoked():
+    """chat_provider.call() must be invoked with a ChatRequest (no model_override kwarg)."""
+    provider = make_provider_returning("hello world there", "english")
+    n = LanguageNormaliser(chat_provider=provider)
+    n.normalise("hello world there", CONFIG)
+    provider.call.assert_called_once()
+    request = provider.call.call_args.args[0]
+    assert isinstance(request, ChatRequest)
 
 
-def test_json_embedded_in_prose_parsed(normaliser):
+def test_json_embedded_in_prose_parsed():
     """LLM sometimes wraps JSON in prose — must still parse correctly."""
     prose = 'Here is the result: {"detected_language": "hinglish", "normalised_text": "kaam chahiye mujhe"}'
-    llm = MagicMock()
-    llm.call.return_value = LLMResponse(
-        content=prose, stop_reason="end_turn", model_used="claude-haiku-4-5-20251001"
+    provider = MagicMock(spec=ChatProviderBase)
+    provider.call.return_value = ChatResponse(
+        content=[TextBlock(text=prose)],
+        stop_reason="end_turn",
+        model_used="claude-haiku-4-5-20251001",
+        usage=TokenUsage(input_tokens=10, output_tokens=5),
     )
-    normalised, detected = normaliser.normalise("kaam chahiye mujhe", CONFIG, llm)
+    n = LanguageNormaliser(chat_provider=provider)
+    normalised, detected = n.normalise("kaam chahiye mujhe", CONFIG)
     assert detected == "hinglish"
     assert normalised == "kaam chahiye mujhe"
 
 
-def test_missing_preprocessing_config_uses_defaults(normaliser):
-    """No preprocessing section → uses supported_languages default, no model_override."""
-    llm = make_llm_returning("hello world there", "english")
-    normalised, detected = normaliser.normalise("hello world there", CONFIG_NO_PREPROCESSING, llm)
+def test_missing_preprocessing_config_uses_defaults():
+    """No preprocessing section → uses supported_languages default, model owned by provider."""
+    provider = make_provider_returning("hello world there", "english")
+    n = LanguageNormaliser(chat_provider=provider)
+    normalised, detected = n.normalise("hello world there", CONFIG_NO_PREPROCESSING)
     assert detected == "english"
     assert normalised == "hello world there"
-    call_kwargs = llm.call.call_args[1]
-    assert call_kwargs.get("model_override") is None
+    # No model_override kwarg expected — provider owns the model
+    provider.call.assert_called_once()
+    request = provider.call.call_args.args[0]
+    assert isinstance(request, ChatRequest)
 
 
 # ---------------------------------------------------------------------------
@@ -132,12 +156,13 @@ def test_missing_preprocessing_config_uses_defaults(normaliser):
 # ---------------------------------------------------------------------------
 
 
-def test_empty_input_returns_raw_and_empty_language_without_llm_call(normaliser):
-    llm = MagicMock()
-    normalised, detected = normaliser.normalise("", CONFIG, llm)
+def test_empty_input_returns_raw_and_empty_language_without_llm_call():
+    provider = MagicMock(spec=ChatProviderBase)
+    n = LanguageNormaliser(chat_provider=provider)
+    normalised, detected = n.normalise("", CONFIG)
     assert normalised == ""
     assert detected == ""
-    llm.call.assert_not_called()
+    provider.call.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -145,42 +170,52 @@ def test_empty_input_returns_raw_and_empty_language_without_llm_call(normaliser)
 # ---------------------------------------------------------------------------
 
 
-def test_llm_error_stop_reason_falls_back_to_raw_input(normaliser):
-    llm = MagicMock()
-    llm.call.return_value = LLMResponse(content=None, stop_reason="error")
+def test_llm_error_stop_reason_falls_back_to_raw_input():
+    provider = MagicMock(spec=ChatProviderBase)
+    provider.call.return_value = ChatResponse(
+        content=[],
+        stop_reason="error",
+        model_used="claude-haiku-4-5-20251001",
+        usage=TokenUsage(),
+    )
+    n = LanguageNormaliser(chat_provider=provider)
     original = "kaam chahiye Hubli mein"
-    normalised, detected = normaliser.normalise(original, CONFIG, llm)
+    normalised, detected = n.normalise(original, CONFIG)
     assert normalised == original
     assert detected == ""
 
 
-def test_llm_exception_falls_back_gracefully(normaliser):
-    llm = MagicMock()
-    llm.call.side_effect = RuntimeError("network error")
+def test_llm_exception_falls_back_gracefully():
+    provider = MagicMock(spec=ChatProviderBase)
+    provider.call.side_effect = RuntimeError("network error")
+    n = LanguageNormaliser(chat_provider=provider)
     original = "kaam chahiye Hubli mein"
-    normalised, detected = normaliser.normalise(original, CONFIG, llm)
+    normalised, detected = n.normalise(original, CONFIG)
     assert normalised == original
     assert detected == ""
 
 
-def test_malformed_json_falls_back_to_raw_input(normaliser):
-    llm = MagicMock()
-    llm.call.return_value = LLMResponse(
-        content="not valid json here",
+def test_malformed_json_falls_back_to_raw_input():
+    provider = MagicMock(spec=ChatProviderBase)
+    provider.call.return_value = ChatResponse(
+        content=[TextBlock(text="not valid json here")],
         stop_reason="end_turn",
         model_used="claude-haiku-4-5-20251001",
+        usage=TokenUsage(input_tokens=10, output_tokens=5),
     )
+    n = LanguageNormaliser(chat_provider=provider)
     original = "kaam chahiye Hubli mein"
-    normalised, detected = normaliser.normalise(original, CONFIG, llm)
+    normalised, detected = n.normalise(original, CONFIG)
     assert normalised == original
     assert detected == ""
 
 
-def test_never_raises_on_unexpected_exception(normaliser):
+def test_never_raises_on_unexpected_exception():
     """normalise() must never propagate unexpected exceptions to the caller."""
-    llm = MagicMock()
-    llm.call.side_effect = Exception("totally unexpected")
-    result = normaliser.normalise("some input", CONFIG, llm)
+    provider = MagicMock(spec=ChatProviderBase)
+    provider.call.side_effect = Exception("totally unexpected")
+    n = LanguageNormaliser(chat_provider=provider)
+    result = n.normalise("some input", CONFIG)
     assert isinstance(result, tuple)
     assert len(result) == 2
 
@@ -201,44 +236,51 @@ CONFIG_WITH_DEFAULT = {
 }
 
 
-def test_system_prompt_contains_default_language(normaliser):
+def test_system_prompt_contains_default_language():
     """System prompt sent to LLM must mention the configured default_language."""
-    llm = make_llm_returning("hello", "english")
-    normaliser.normalise("hello world there", CONFIG_WITH_DEFAULT, llm)
-    call_kwargs = llm.call.call_args[1]
-    assert "hindi" in call_kwargs["system"]
+    provider = make_provider_returning("hello", "english")
+    n = LanguageNormaliser(chat_provider=provider)
+    n.normalise("hello world there", CONFIG_WITH_DEFAULT)
+    request: ChatRequest = provider.call.call_args.args[0]
+    system_text = "\n".join(b.text for b in request.system.blocks)
+    assert "hindi" in system_text
 
 
-def test_system_prompt_has_no_hardcoded_domain_content(normaliser):
+def test_system_prompt_has_no_hardcoded_domain_content():
     """No employment-chatbot or domain-specific example text in the system prompt."""
-    llm = make_llm_returning("hello", "english")
-    normaliser.normalise("hello world there", CONFIG_WITH_DEFAULT, llm)
-    call_kwargs = llm.call.call_args[1]
-    assert "employment" not in call_kwargs["system"]
-    assert "bijli" not in call_kwargs["system"]
+    provider = make_provider_returning("hello", "english")
+    n = LanguageNormaliser(chat_provider=provider)
+    n.normalise("hello world there", CONFIG_WITH_DEFAULT)
+    request: ChatRequest = provider.call.call_args.args[0]
+    system_text = "\n".join(b.text for b in request.system.blocks)
+    assert "employment" not in system_text
+    assert "bijli" not in system_text
 
 
-def test_short_input_skips_llm_and_returns_default_language(normaliser):
+def test_short_input_skips_llm_and_returns_default_language():
     """Input with fewer than min_detection_tokens words skips LLM call."""
-    llm = MagicMock()
-    normalised, detected = normaliser.normalise("ok", CONFIG_WITH_DEFAULT, llm)
-    llm.call.assert_not_called()
+    provider = MagicMock(spec=ChatProviderBase)
+    n = LanguageNormaliser(chat_provider=provider)
+    normalised, detected = n.normalise("ok", CONFIG_WITH_DEFAULT)
+    provider.call.assert_not_called()
     assert normalised == "ok"
     assert detected == "hindi"
 
 
-def test_short_input_default_token_threshold_is_three(normaliser):
+def test_short_input_default_token_threshold_is_three():
     """Exactly 3 words should trigger the LLM; fewer should not."""
-    llm = make_llm_returning("hello world foo", "english")
-    normaliser.normalise("hello world foo", CONFIG_WITH_DEFAULT, llm)
-    llm.call.assert_called_once()  # 3 words → LLM called
+    provider = make_provider_returning("hello world foo", "english")
+    n = LanguageNormaliser(chat_provider=provider)
+    n.normalise("hello world foo", CONFIG_WITH_DEFAULT)
+    provider.call.assert_called_once()  # 3 words → LLM called
 
-    llm2 = MagicMock()
-    normaliser.normalise("hello world", CONFIG_WITH_DEFAULT, llm2)
-    llm2.call.assert_not_called()  # 2 words → skipped
+    provider2 = MagicMock(spec=ChatProviderBase)
+    n2 = LanguageNormaliser(chat_provider=provider2)
+    n2.normalise("hello world", CONFIG_WITH_DEFAULT)
+    provider2.call.assert_not_called()  # 2 words → skipped
 
 
-def test_custom_min_detection_tokens_respected(normaliser):
+def test_custom_min_detection_tokens_respected():
     """min_detection_tokens from config overrides the default of 3."""
     cfg = {
         "preprocessing": {
@@ -250,11 +292,10 @@ def test_custom_min_detection_tokens_respected(normaliser):
             }
         }
     }
-    llm = make_llm_returning("ok", "english")
-    normaliser.normalise("ok", cfg, llm)
-    llm.call.assert_called_once()  # threshold = 1 → single word triggers LLM
-
-
+    provider = make_provider_returning("ok", "english")
+    n = LanguageNormaliser(chat_provider=provider)
+    n.normalise("ok", cfg)
+    provider.call.assert_called_once()  # threshold = 1 → single word triggers LLM
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +303,7 @@ def test_custom_min_detection_tokens_respected(normaliser):
 # ---------------------------------------------------------------------------
 
 
-def test_devanagari_input_with_hindi_default_bypasses_llm(normaliser):
+def test_devanagari_input_with_hindi_default_bypasses_llm():
     """Pure Devanagari input + default_language=hindi → LLM call skipped."""
     cfg = {
         "preprocessing": {
@@ -274,16 +315,17 @@ def test_devanagari_input_with_hindi_default_bypasses_llm(normaliser):
             }
         }
     }
-    llm = MagicMock()
-    normalised, detected = normaliser.normalise(
-        "मुझे इलेक्ट्रीशियन का काम चाहिए हुबली में", cfg, llm
+    provider = MagicMock(spec=ChatProviderBase)
+    n = LanguageNormaliser(chat_provider=provider)
+    normalised, detected = n.normalise(
+        "मुझे इलेक्ट्रीशियन का काम चाहिए हुबली में", cfg
     )
     assert detected == "hindi"
     assert normalised == "मुझे इलेक्ट्रीशियन का काम चाहिए हुबली में"
-    llm.call.assert_not_called()
+    provider.call.assert_not_called()
 
 
-def test_kannada_input_with_kannada_default_bypasses_llm(normaliser):
+def test_kannada_input_with_kannada_default_bypasses_llm():
     """Pure Kannada script + default_language=kannada → LLM call skipped."""
     cfg = {
         "preprocessing": {
@@ -295,15 +337,16 @@ def test_kannada_input_with_kannada_default_bypasses_llm(normaliser):
             }
         }
     }
-    llm = MagicMock()
-    normalised, detected = normaliser.normalise(
-        "ನಾನು ಇಲೆಕ್ಟ್ರೀಷಿಯನ್ ಕೆಲಸ ಮಾಡುತ್ತೇನೆ", cfg, llm
+    provider = MagicMock(spec=ChatProviderBase)
+    n = LanguageNormaliser(chat_provider=provider)
+    normalised, detected = n.normalise(
+        "ನಾನು ಇಲೆಕ್ಟ್ರೀಷಿಯನ್ ಕೆಲಸ ಮಾಡುತ್ತೇನೆ", cfg
     )
     assert detected == "kannada"
-    llm.call.assert_not_called()
+    provider.call.assert_not_called()
 
 
-def test_hinglish_roman_input_does_not_bypass(normaliser):
+def test_hinglish_roman_input_does_not_bypass():
     """Majority-Latin Hinglish input must still go through the LLM — Roman
     script could be English, transliterated Hindi, or a mix."""
     cfg = {
@@ -316,12 +359,13 @@ def test_hinglish_roman_input_does_not_bypass(normaliser):
             }
         }
     }
-    llm = make_llm_returning("merko electrician ka kaam chahiye", "hinglish")
-    normaliser.normalise("merko electrician ka kaam chahiye", cfg, llm)
-    llm.call.assert_called_once()
+    provider = make_provider_returning("merko electrician ka kaam chahiye", "hinglish")
+    n = LanguageNormaliser(chat_provider=provider)
+    n.normalise("merko electrician ka kaam chahiye", cfg)
+    provider.call.assert_called_once()
 
 
-def test_mixed_script_minority_devanagari_does_not_bypass(normaliser):
+def test_mixed_script_minority_devanagari_does_not_bypass():
     """Devanagari fragment in a mostly-Latin sentence must not trigger bypass."""
     cfg = {
         "preprocessing": {
@@ -333,12 +377,13 @@ def test_mixed_script_minority_devanagari_does_not_bypass(normaliser):
             }
         }
     }
-    llm = make_llm_returning("i want काम urgently please", "hinglish")
-    normaliser.normalise("i want काम urgently please", cfg, llm)
-    llm.call.assert_called_once()
+    provider = make_provider_returning("i want काम urgently please", "hinglish")
+    n = LanguageNormaliser(chat_provider=provider)
+    n.normalise("i want काम urgently please", cfg)
+    provider.call.assert_called_once()
 
 
-def test_script_bypass_can_be_disabled_by_config(normaliser):
+def test_script_bypass_can_be_disabled_by_config():
     """script_bypass=false forces the LLM path even for default-script input."""
     cfg = {
         "preprocessing": {
@@ -351,12 +396,13 @@ def test_script_bypass_can_be_disabled_by_config(normaliser):
             }
         }
     }
-    llm = make_llm_returning("मुझे काम चाहिए हुबली में", "hindi")
-    normaliser.normalise("मुझे काम चाहिए हुबली में", cfg, llm)
-    llm.call.assert_called_once()
+    provider = make_provider_returning("मुझे काम चाहिए हुबली में", "hindi")
+    n = LanguageNormaliser(chat_provider=provider)
+    n.normalise("मुझे काम चाहिए हुबली में", cfg)
+    provider.call.assert_called_once()
 
 
-def test_english_default_language_never_bypasses(normaliser):
+def test_english_default_language_never_bypasses():
     """Latin script is ambiguous across English/Hinglish/mis-transcribed — the
     bypass map intentionally excludes ``english`` so the LLM always runs."""
     cfg = {
@@ -369,9 +415,10 @@ def test_english_default_language_never_bypasses(normaliser):
             }
         }
     }
-    llm = make_llm_returning("I want an electrician job", "english")
-    normaliser.normalise("I want an electrician job", cfg, llm)
-    llm.call.assert_called_once()
+    provider = make_provider_returning("I want an electrician job", "english")
+    n = LanguageNormaliser(chat_provider=provider)
+    n.normalise("I want an electrician job", cfg)
+    provider.call.assert_called_once()
 
 
 def test_is_input_in_default_script_helper():

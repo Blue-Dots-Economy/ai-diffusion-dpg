@@ -20,7 +20,8 @@ import logging
 import re
 import time
 
-from src.llm_wrapper.base import LLMWrapperBase
+from src.chat_provider.base import ChatProviderBase
+from src.chat_provider.types import ChatRequest, Message, SystemPrompt, TextBlock
 
 logger = logging.getLogger(__name__)
 
@@ -117,11 +118,19 @@ class LanguageNormaliser:
     Config section: preprocessing.language_normalisation
     """
 
+    def __init__(self, chat_provider: ChatProviderBase) -> None:
+        """Initialise with an injected chat provider.
+
+        Args:
+            chat_provider: Pre-configured ChatProviderBase instance used for
+                           all language normalisation LLM calls.
+        """
+        self._chat_provider = chat_provider
+
     def normalise(
         self,
         raw_input: str,
         config: dict,
-        llm: LLMWrapperBase,
     ) -> tuple[str, str]:
         """
         Detect language and normalise input text.
@@ -129,7 +138,6 @@ class LanguageNormaliser:
         Args:
             raw_input: Original user message.
             config:    Full agent_core config dict.
-            llm:       LLM wrapper for direct LLM calls.
 
         Returns:
             (normalised_input, detected_language)
@@ -149,7 +157,6 @@ class LanguageNormaliser:
             "supported_languages", ["hindi", "kannada", "english", "hinglish"]
         )
         default_language = block_cfg.get("default_language", "")
-        model_override = block_cfg.get("model")
         min_detection_tokens = int(block_cfg.get("min_detection_tokens", 3))
 
         try:
@@ -192,16 +199,14 @@ class LanguageNormaliser:
                 return raw_input, default_language
 
             system_prompt = _build_lang_norm_prompt(supported_languages, default_language)
-            messages = [{"role": "user", "content": raw_input}]
-
-            llm_response = llm.call(
-                messages=messages,
-                tools=[],
-                system=system_prompt,
-                model_override=model_override,
+            request = ChatRequest(
+                messages=[Message(role="user", content=[TextBlock(text=raw_input)])],
+                system=SystemPrompt(blocks=[TextBlock(text=system_prompt)]),
             )
+            llm_response = self._chat_provider.call(request)
 
-            if llm_response.stop_reason == "error" or not llm_response.content:
+            text = next((b.text for b in llm_response.content if b.type == "text"), None)
+            if llm_response.stop_reason == "error" or not text:
                 logger.warning(
                     "language_normalisation.llm_failure",
                     extra={
@@ -214,7 +219,7 @@ class LanguageNormaliser:
                 return raw_input, ""
 
             normalised, detected = self._parse_response(
-                llm_response.content.strip(), raw_input
+                text.strip(), raw_input
             )
 
             logger.info(
