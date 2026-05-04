@@ -44,6 +44,7 @@ export default function DeployStatusStep({ slug, data, onSuccess, onBack, destro
   const [showDestroyConfirm, setShowDestroyConfirm] = useState(false)
   const [removeVolumes, setRemoveVolumes] = useState(false)
   const [destroying, setDestroying] = useState(false)
+  const [redeployMissingDataError, setRedeployMissingDataError] = useState(false)
   const pollRef = useRef(null)
   const onSuccessRef = useRef(onSuccess)
   onSuccessRef.current = onSuccess
@@ -176,6 +177,11 @@ export default function DeployStatusStep({ slug, data, onSuccess, onBack, destro
   }
 
   async function handleRedeploy() {
+    if (!data?.target || !data?.secrets?.anthropic_api_key) {
+      setRedeployMissingDataError(true)
+      return
+    }
+    setRedeployMissingDataError(false)
     onDestroyedChange?.(false)
     setError(null)
     setStatus({ services: [], overall: 'deploying' })
@@ -299,6 +305,18 @@ export default function DeployStatusStep({ slug, data, onSuccess, onBack, destro
           title="Destroying Stack"
           subtitle="Stopping and removing all containers. This may take a few seconds…"
         />
+      )}
+
+      {redeployMissingDataError && (
+        <div className="mt-3 p-3 bg-yellow-900/30 border border-yellow-700 rounded-lg text-yellow-300 text-sm">
+          <p className="mb-2">Deploy configuration is missing. Please go back and re-enter your deployment target and API key.</p>
+          <button
+            onClick={() => window.dispatchEvent(new CustomEvent('deploy-wizard-go-to-step', { detail: 5 }))}
+            className="text-yellow-200 underline text-xs hover:text-white"
+          >
+            Go Back to Step 5
+          </button>
+        </div>
       )}
 
       {destroyed && (
