@@ -132,6 +132,11 @@ reach_layer/web/web-src/node_modules/
 reach_layer/web/dist/
 
 # -----------------------------------------------------------------------------
+# Frontend build artifacts — generated during Docker image build, never commit
+# -----------------------------------------------------------------------------
+dev-kit/dev_kit/agent/static/
+
+# -----------------------------------------------------------------------------
 # Local developer overrides
 # -----------------------------------------------------------------------------
 .env.local
@@ -142,3 +147,8 @@ reach_layer/web/dist/
 # -----------------------------------------------------------------------------
 dev-kit/configs/**/_meta/
 .worktrees/
+test-fixtures/
+dev-kit/configs/e*
+dev-kit/configs/h*
+dev-kit/configs/k*
+dev-kit/configs/y*
