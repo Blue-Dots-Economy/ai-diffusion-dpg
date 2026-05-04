@@ -1662,7 +1662,12 @@ The values on the right-hand side of `entity_to_profile_field` **must** appear i
 2. **Operator manual edits.** The deploy wizard's YAML editor lets operators edit either side directly. They can add `caller_age: age` to `entity_to_profile_field` without remembering to also add `age` to `UserProfile.declared_fields`.
 3. **Schema evolution.** Project starts with `[name, location]`, operator later adds an entity mapping for age but doesn't update the profile field list.
 
-**Failure mode if uncaught.** Memory Layer silently drops writes to undeclared fields. The agent appears healthy. Operator only finds out when they query the graph weeks later and notice missing data.
+**Runtime behaviour if uncaught.** Memory Layer does **not** fail to start (it has no awareness of `entity_to_profile_field` — that lives in agent_core's config). At write time, [`graph_user_store.upsert_profile_field`](../../../memory_layer/src/graph_user_store.py) routes the value:
+
+- If the key IS in `declared_fields` → stored as a property on the `UserProfile` node (intended location).
+- If the key is NOT in `declared_fields` → stored as a separate `UserAttribute` ad-hoc node.
+
+So the data is **not lost** — there's a fallback. But the failure mode is **silent schema drift**: the graph ends up structurally different from what the operator intended. Queries against `UserProfile.years_old` return `null`, while the value sits on a `UserAttribute` node nobody is looking at. The write logs `status: success` with `is_declared: false` buried in INFO logs — no warning is surfaced. Re-engagement triggers, dashboards, and downstream queries built on `UserProfile` properties miss the data. The bug is hard to trace because nothing visibly breaks.
 
 **The design choice.**
 
