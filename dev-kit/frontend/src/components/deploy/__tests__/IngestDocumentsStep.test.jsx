@@ -83,4 +83,29 @@ describe('IngestDocumentsStep', () => {
     await waitFor(() => screen.getByText(/skip/i))
     expect(screen.getByText(/skip/i)).toBeInTheDocument()
   })
+
+  describe('has_knowledge_base prop', () => {
+    it('renders alternate UI when has_knowledge_base is false', async () => {
+      const props = { ...defaultProps, project: { ...defaultProps.project, has_knowledge_base: false } }
+      render(<IngestDocumentsStep {...props} />)
+      expect(screen.getByText(/No documents need to be ingested/i)).toBeInTheDocument()
+    })
+
+    it('does not render Add File button when has_knowledge_base is false', async () => {
+      const props = { ...defaultProps, project: { ...defaultProps.project, has_knowledge_base: false } }
+      render(<IngestDocumentsStep {...props} />)
+      expect(screen.queryByText(/\+ Add File/i)).not.toBeInTheDocument()
+    })
+
+    it('renders normal ingest form when has_knowledge_base is true', async () => {
+      const props = { ...defaultProps, project: { ...defaultProps.project, has_knowledge_base: true } }
+      render(<IngestDocumentsStep {...props} />)
+      await waitFor(() => expect(screen.getByText(/\+ Add File/i)).toBeInTheDocument())
+    })
+
+    it('renders normal ingest form when has_knowledge_base is absent (safe default)', async () => {
+      render(<IngestDocumentsStep {...defaultProps} />)
+      await waitFor(() => expect(screen.getByText(/\+ Add File/i)).toBeInTheDocument())
+    })
+  })
 })
