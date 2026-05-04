@@ -300,16 +300,6 @@ class AgentSection(BaseModel):
             )
         return self
 
-    @model_validator(mode="after")
-    def backoff_length_matches_retries(self) -> "AgentSection":
-        expected = self.retry_attempts + 1
-        if len(self.retry_backoff_seconds) != expected:
-            raise ValueError(
-                f"retry_backoff_seconds must have {expected} entries "
-                f"(retry_attempts + 1), got {len(self.retry_backoff_seconds)}"
-            )
-        return self
-
 
 # -- agent_core.preprocessing (language phase) -------------------------------
 
