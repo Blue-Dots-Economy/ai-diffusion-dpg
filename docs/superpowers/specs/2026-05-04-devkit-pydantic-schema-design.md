@@ -112,7 +112,7 @@ class ConfigAccumulator:
 | `update_config(block, section, values)` validates **FAIL**, attempt < 3 | Increment counter, return error to LLM, keep going |
 | `update_config(block, section, values)` validates **FAIL**, attempt == 3 | Return **terminal** error to LLM, mark section as `STALE`, do **not** increment further |
 
-**Why reset on new user message:** Each user turn is a fresh attempt. If the operator says "use Sonnet for both primary and fallback even though they should differ" — that's a domain decision, the LLM should be allowed to try a fresh approach without inheriting the prior turn's failures.
+**Why reset on new user message:** Each user turn is a fresh attempt. The operator may provide new information that changes the right answer — e.g., "actually, set `retry_attempts` to 4 with a longer backoff" — so prior-turn failures on different values shouldn't disable retries on values the LLM is now correctly attempting.
 
 **Why per-(block, section):** A failure on `agent_core.agent` shouldn't disable retries on `agent_core.preprocessing.nlu_processor`. They're independent.
 
