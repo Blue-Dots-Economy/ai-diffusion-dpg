@@ -28,6 +28,7 @@ from collections.abc import AsyncGenerator
 from typing import Any, Optional
 
 from src.base import AgentCoreBase
+from src.chat_provider import build_chat_provider
 from src.chat_provider.base import ChatProviderBase, ToolUseRequested
 from src.chat_provider.types import (
     ChatRequest,
@@ -239,9 +240,37 @@ class AgentCore(AgentCoreBase):
         self._async_learning = async_learning
 
         # Language Normalisation and NLU run directly in Agent Core.
-        # Stateless — instantiated once, reused across all sessions.
-        self._language_normaliser = LanguageNormaliser()
-        self._nlu_processor = NLUProcessor(self._config)
+        # Each helper gets its own ChatProvider — when the configured model
+        # differs from primary_model a dedicated provider is built; otherwise
+        # the shared primary provider is reused to avoid extra connections.
+        primary_model = self._config.get("agent", {}).get("primary_model", "")
+
+        lang_block = (self._config.get("preprocessing", {}) or {}).get(
+            "language_normalisation", {}
+        ) or {}
+        lang_model = lang_block.get("model") or ""
+        if lang_model and lang_model != primary_model:
+            self._lang_chat_provider = build_chat_provider({
+                **self._config.get("agent", {}),
+                "primary_model": lang_model,
+            })
+        else:
+            self._lang_chat_provider = self._llm
+
+        nlu_block = (self._config.get("preprocessing", {}) or {}).get(
+            "nlu_processor", {}
+        ) or {}
+        nlu_model = nlu_block.get("model") or ""
+        if nlu_model and nlu_model != primary_model:
+            self._nlu_chat_provider = build_chat_provider({
+                **self._config.get("agent", {}),
+                "primary_model": nlu_model,
+            })
+        else:
+            self._nlu_chat_provider = self._llm
+
+        self._language_normaliser = LanguageNormaliser(chat_provider=self._lang_chat_provider)
+        self._nlu_processor = NLUProcessor(self._config, chat_provider=self._nlu_chat_provider)
 
         # User-state model (GH-139) — cached lookup for per-turn guidance injection.
         usm = (self._config or {}).get("conversation", {}).get("user_state_model", {}) or {}
@@ -378,20 +407,14 @@ class AgentCore(AgentCoreBase):
         # ── Step 4: Language Normalisation ───────────────────────────
         # Runs before the consent gate so the detected language is available
         # to translate the consent prompt on Turn 1.
-        lang_model = (
-            self._config.get("preprocessing", {})
-            .get("language_normalisation", {})
-            .get("model_override", "haiku")
-        )
         logger.info(
-            "  [STEP 4] Language Normalisation  →  LLM call (model_override=%s)",
-            lang_model,
+            "  [STEP 4] Language Normalisation  →  LLM call (model=%s)",
+            self._lang_chat_provider.get_active_model(),
         )
         t4 = time.time()
         normalised_input, turn_language = self._language_normaliser.normalise(
             raw_input=turn_input.user_message,
             config=self._config,
-            llm=self._llm,
         )
 
         # Determine language preference — lock it in if not already set
@@ -612,11 +635,6 @@ class AgentCore(AgentCoreBase):
 
         # ── Step 5: NLU Processor ─────────────────────────────────────
         allowed_intents = self._workflow.nlu_intent_set.get(current_subagent_id, [])
-        nlu_model = (
-            self._config.get("preprocessing", {})
-            .get("nlu_processor", {})
-            .get("model_override", "haiku")
-        )
 
         # Collect existing profile keys (declared + ad-hoc) so the NLU prompt
         # can instruct the LLM to reuse them instead of inventing synonyms.
@@ -640,10 +658,10 @@ class AgentCore(AgentCoreBase):
                 previous_user_state_id = self._user_state_default
 
         logger.info(
-            "  [STEP 5] NLU Processor  →  LLM call (model_override=%s)"
+            "  [STEP 5] NLU Processor  →  LLM call (model=%s)"
             "  current_subagent_id=%s  allowed_intents=%d  current_question=%r"
             "  existing_profile_keys=%d",
-            nlu_model, current_subagent_id, len(allowed_intents),
+            self._nlu_chat_provider.get_active_model(), current_subagent_id, len(allowed_intents),
             current_question[:60] if current_question else "",
             len(existing_profile_keys),
         )
@@ -652,7 +670,6 @@ class AgentCore(AgentCoreBase):
             normalised_input=normalised_input,
             current_question=current_question,
             current_subagent_id=current_subagent_id,
-            llm=self._llm,
             allowed_intents=allowed_intents,
             existing_profile_keys=existing_profile_keys,
             previous_user_state=previous_user_state_id,
@@ -2641,14 +2658,12 @@ class AgentCore(AgentCoreBase):
                     self._language_normaliser.normalise,
                     turn_input.user_message,
                     self._config,
-                    self._llm,
                 ),
                 asyncio.to_thread(
                     self._nlu_processor.process,
                     turn_input.user_message,
                     current_question,
                     current_subagent_id,
-                    self._llm,
                     pre_allowed_intents,
                     pre_existing_profile_keys,
                     pre_previous_user_state_id,
@@ -2753,7 +2768,6 @@ class AgentCore(AgentCoreBase):
                             pending_msg,
                             current_question,
                             current_subagent_id,
-                            self._llm,
                             pre_allowed_intents,
                             pre_existing_profile_keys,
                             pre_previous_user_state_id,

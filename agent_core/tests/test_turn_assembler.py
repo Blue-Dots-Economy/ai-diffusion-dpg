@@ -91,7 +91,6 @@ def _make_assembler(
     agent_core=None,
     config=None,
     nlu_processor=None,
-    llm_wrapper=None,
     workflow=None,
     async_memory=None,
 ):
@@ -99,7 +98,6 @@ def _make_assembler(
         agent_core=agent_core or _make_mock_agent_core(),
         config=config or _make_config(),
         nlu_processor=nlu_processor,
-        llm_wrapper=llm_wrapper,
         workflow=workflow,
         async_memory=async_memory,
     )
@@ -487,7 +485,7 @@ class TestSemanticGate:
             agent_core=agent,
             config=_make_config(semantic_enabled=True, confidence_threshold=0.75, silence_ms=5000),
             nlu_processor=nlu,
-            llm_wrapper=MagicMock(),
+            
         )
 
         await ta.add_segment("s1", _make_segment("hello"))
@@ -509,7 +507,7 @@ class TestSemanticGate:
         ta = _make_assembler(
             config=_make_config(semantic_enabled=True, confidence_threshold=0.75, silence_ms=5000, max_wait_ms=5000),
             nlu_processor=nlu,
-            llm_wrapper=MagicMock(),
+            
         )
 
         await ta.add_segment("s1", _make_segment("hello"))
@@ -528,7 +526,7 @@ class TestSemanticGate:
         ta = _make_assembler(
             config=_make_config(semantic_enabled=True, silence_ms=5000, max_wait_ms=5000),
             nlu_processor=nlu,
-            llm_wrapper=MagicMock(),
+            
         )
 
         await ta.add_segment("s1", _make_segment("hello"))
@@ -544,7 +542,7 @@ class TestSemanticGate:
         ta = _make_assembler(
             config=_make_config(semantic_enabled=True, silence_ms=5000, max_wait_ms=5000),
             nlu_processor=nlu,
-            llm_wrapper=MagicMock(),
+            
         )
 
         await ta.add_segment("s1", _make_segment("hello"))
@@ -559,7 +557,7 @@ class TestSemanticGate:
         ta = _make_assembler(
             config=_make_config(semantic_enabled=False, silence_ms=5000, max_wait_ms=5000),
             nlu_processor=nlu,
-            llm_wrapper=MagicMock(),
+            
         )
 
         await ta.add_segment("s1", _make_segment("hello"))
@@ -589,7 +587,7 @@ class TestSemanticGate:
             agent_core=agent,
             config=_make_config(semantic_enabled=True, silence_ms=5000),
             nlu_processor=nlu,
-            llm_wrapper=MagicMock(),
+            
             workflow=workflow,
             async_memory=async_memory,
         )

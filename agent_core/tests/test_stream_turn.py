@@ -154,7 +154,7 @@ def _make_agent_core(**overrides):
         },
         "preprocessing": {
             "language_normalisation": {"default_language": "english"},
-            "nlu_processor": {"model_override": "haiku", "model": "haiku"},
+            "nlu_processor": {},
         },
         "entity_persistence": {"scope": "persistent"},
         "entity_to_profile_field": {},

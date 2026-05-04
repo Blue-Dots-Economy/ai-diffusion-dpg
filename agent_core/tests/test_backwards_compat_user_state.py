@@ -7,8 +7,14 @@ ConfigurationError, no changed behaviour.
 """
 import yaml
 from pathlib import Path
+from unittest.mock import MagicMock
 
+from src.chat_provider.base import ChatProviderBase
 from src.preprocessing.nlu_processor import NLUProcessor
+
+
+def _mock_provider():
+    return MagicMock(spec=ChatProviderBase)
 
 
 def _load_merged_domain_config(domain: str) -> dict:
@@ -30,12 +36,12 @@ def _load_merged_domain_config(domain: str) -> dict:
 def test_kkb_config_boots_with_user_state_model_enabled():
     """KKB domain boots cleanly with user_state_model enabled (GH-139)."""
     cfg = _load_merged_domain_config("kkb")
-    p = NLUProcessor(cfg)
+    p = NLUProcessor(cfg, chat_provider=_mock_provider())
     assert p._user_state_enabled is True
 
 
 def test_obsrv_docs_assistant_boots():
     """Obsrv-docs-assistant domain boots cleanly; user_state disabled by default."""
     cfg = _load_merged_domain_config("obsrv-docs-assistant")
-    p = NLUProcessor(cfg)
+    p = NLUProcessor(cfg, chat_provider=_mock_provider())
     assert p._user_state_enabled is False
