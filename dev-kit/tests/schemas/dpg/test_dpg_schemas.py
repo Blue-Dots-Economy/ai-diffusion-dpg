@@ -164,12 +164,21 @@ def test_action_gateway_dpg_minimal():
 
 
 def test_action_gateway_dpg_port_range():
+    """Port range validation must fire on port=0 specifically (not missing fields)."""
+    base = {
+        "server": {"host": "0.0.0.0", "port": 9999},
+        "tools": [],
+        "observability": {"otel": {"collector_endpoint": "http://x:1"}},
+    }
+    # Baseline passes
+    ActionGatewayDpgConfig.model_validate(base)
+    # Port 0 fails on the constraint
+    base["server"]["port"] = 0
     with pytest.raises(ValidationError):
-        ActionGatewayDpgConfig.model_validate({
-            "server": {"port": 0},
-            "tools": [],
-            "observability": {"otel": {"collector_endpoint": "http://x:1"}},
-        })
+        ActionGatewayDpgConfig.model_validate(base)
+    # Port 65535 passes
+    base["server"]["port"] = 65535
+    ActionGatewayDpgConfig.model_validate(base)
 
 
 # -- reach_layer DPG ---------------------------------------------------------
