@@ -280,6 +280,9 @@ class ConversationEngine:
         self._history.append({"role": "user", "content": user_message})
         self._state["phase_changed"] = None
         self._state["rollback_to"] = None
+        # Reset per-section validation retry counters so the budget is fresh
+        # for this turn — within-turn tool retries keep climbing until the cap.
+        self.accumulator.reset_validation_attempts()
 
         system = self._build_system_prompt()
         messages = self._history[-_HISTORY_WINDOW:]

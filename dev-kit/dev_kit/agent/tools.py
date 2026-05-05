@@ -715,8 +715,15 @@ class ToolHandler:
                 f"Correct the section path or key names and retry update_config."
             )
 
-        self._acc.update(block, section, values)
-        return f"ok: updated {block}.{section}"
+        result = self._acc.update(block, section, values)
+        # acc.update returns:
+        #   "OK" — validation passed (or strict mode off / unschema'd section)
+        #   "VALIDATION_ERROR (attempt N/M):..." — schema rejected, LLM should retry
+        #   "VALIDATION_FAILED_AFTER_M_ATTEMPTS..." — cap reached, escalate or skip
+        # Relay the schema verdict directly so the LLM can self-correct.
+        if result == "OK":
+            return f"ok: updated {block}.{section}"
+        return result
 
     def _handle_set_phase(self, inputs: dict) -> str:
         """Advance the conversation to ``inputs['phase']``.

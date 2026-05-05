@@ -10,8 +10,11 @@ graph management, serialisation, and status tracking.
 from __future__ import annotations
 
 import logging
+import os
 from copy import deepcopy
 from enum import Enum
+
+from dev_kit.schemas.validation import validate_domain_section
 
 logger = logging.getLogger(__name__)
 
@@ -75,19 +78,41 @@ class ConfigAccumulator:
     def __init__(self) -> None:
         self._data: dict[str, dict] = {block: {} for block in BLOCKS}
         self._statuses: dict[str, ConfigStatus] = {block: ConfigStatus.PENDING for block in BLOCKS}
+        self._validation_attempts: dict[tuple[str, str], int] = {}
+        self._max_validation_attempts: int = int(
+            os.environ.get("DEVKIT_VALIDATION_MAX_ATTEMPTS", "3")
+        )
+        self._strict_mode: bool = os.environ.get("DEVKIT_DPG_SCHEMA_STRICT", "1") == "1"
 
     # ------------------------------------------------------------------
     # Config updates
     # ------------------------------------------------------------------
 
-    def update(self, block: str, section: str, values: dict) -> None:
-        """Deep-merge values into the block config at the given dot-notation section.
+    def update(self, block: str, section: str, values: dict) -> str:
+        """Deep-merge values into the block config and validate the result.
+
+        Performs the deep-merge unconditionally (so partial drafts accumulate),
+        then validates the affected top-level section against its Pydantic
+        schema. The string return is what the LLM sees as the tool result —
+        on failure it includes the attempt counter so the LLM can self-correct
+        on retry, and on cap exhaustion it switches to a fallback message and
+        marks the block STALE.
 
         Args:
             block: One of the 7 DPG block names.
             section: Dot-notation path, e.g. "preprocessing.nlu_processor".
                      Empty string merges directly into the block root.
             values: Values to merge.
+
+        Returns:
+            "OK" — validation passed (or strict mode is off, or section is
+            unschema'd).
+            "VALIDATION_ERROR (attempt N/M):..." — schema rejected the merged
+            section and the per-(block, top-level) attempt counter is below
+            the cap. The LLM is expected to retry with corrected values.
+            "VALIDATION_FAILED_AFTER_M_ATTEMPTS..." — counter has reached the
+            cap; the section is marked STALE and the LLM is asked to escalate
+            to the user or advance the phase.
 
         Raises:
             ValueError: If block is not a valid DPG block name.
@@ -105,27 +130,69 @@ class ConfigAccumulator:
                     "path": "(root)",
                 },
             )
-            return
-        keys = section.split(".")
-        target = self._data[block]
-        current = target
-        for key in keys[:-1]:
-            if key not in current or not isinstance(current[key], dict):
-                current[key] = {}
-            current = current[key]
-        last = keys[-1]
-        if last not in current or not isinstance(current.get(last), dict):
-            current[last] = {}
-        current[last] = _deep_merge(current[last], values)
-        logger.info(
-            "devkit.accumulator.config_updated",
-            extra={
-                "operation": "accumulator.update",
-                "status": "success",
-                "block": block,
-                "path": section,
-            },
-        )
+        else:
+            keys = section.split(".")
+            target = self._data[block]
+            current = target
+            for key in keys[:-1]:
+                if key not in current or not isinstance(current[key], dict):
+                    current[key] = {}
+                current = current[key]
+            last = keys[-1]
+            if last not in current or not isinstance(current.get(last), dict):
+                current[last] = {}
+            current[last] = _deep_merge(current[last], values)
+            logger.info(
+                "devkit.accumulator.config_updated",
+                extra={
+                    "operation": "accumulator.update",
+                    "status": "success",
+                    "block": block,
+                    "path": section,
+                },
+            )
+
+        if not self._strict_mode:
+            return "OK"
+
+        # No validation hook for root-level merges — they typically span
+        # multiple sections in a single call; per-section schemas don't apply.
+        if not section:
+            return "OK"
+
+        top_level = section.split(".", 1)[0]
+        merged_top = self._data[block].get(top_level, {})
+        error = validate_domain_section(block, section, merged_top)
+
+        key = (block, top_level)
+        if error:
+            attempt = self._validation_attempts.get(key, 0) + 1
+            if attempt >= self._max_validation_attempts:
+                self._validation_attempts[key] = attempt
+                self.set_status(block, ConfigStatus.STALE)
+                return (
+                    f"VALIDATION_FAILED_AFTER_{self._max_validation_attempts}_ATTEMPTS for "
+                    f"{block}.{top_level}:\n{error}\n\n"
+                    f"Tell the user we couldn't auto-configure this and ask for guidance, "
+                    f"OR call set_phase to advance and fix in Review phase."
+                )
+            self._validation_attempts[key] = attempt
+            return (
+                f"VALIDATION_ERROR (attempt {attempt}/{self._max_validation_attempts}):\n{error}"
+            )
+
+        self._validation_attempts.pop(key, None)
+        return "OK"
+
+    def reset_validation_attempts(self) -> None:
+        """Clear all per-section retry counters.
+
+        Called by the ConversationEngine at the start of each new user turn
+        so the retry budget resets between turns. Within a single tool-call
+        loop the counters keep climbing until the LLM produces a valid value
+        or hits the cap.
+        """
+        self._validation_attempts.clear()
 
     def get_block(self, block: str) -> dict:
         """Return a deep copy of the full config dict for a block.

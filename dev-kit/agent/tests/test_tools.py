@@ -34,7 +34,10 @@ class TestToolHandlerUpdateConfig:
         result = handler.dispatch("update_config", {
             "block": "agent_core",
             "section": "agent",
-            "values": {"primary_model": "claude-haiku-4-5-20251001"},
+            "values": {
+                "primary_model": "claude-haiku-4-5-20251001",
+                "fallback_model": "claude-sonnet-4-6",
+            },
         })
         assert acc.get_block("agent_core")["agent"]["primary_model"] == "claude-haiku-4-5-20251001"
         assert "ok" in result.lower() or "updated" in result.lower()
