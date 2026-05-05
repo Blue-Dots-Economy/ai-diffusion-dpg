@@ -8,7 +8,7 @@ Normalises inbound channels and delivers responses. The Reach Layer ships as **t
 
 The Reach Layer is the channel boundary. On the inbound side it accepts raw user input from a channel (stdin, HTTP body, SIP audio) and submits it to Agent Core. On the outbound side it delivers Agent Core's response on the originating channel.
 
-All state access (except the one approved exception below) must go through Agent Core. The Reach Layer never calls Knowledge Engine, Trust Layer, or other blocks directly.
+Turn-time state access goes through Agent Core. The Reach Layer also has two **production-approved direct calls** that sit *outside* the turn pipeline: (a) `GET /users/{user_id}/active-history` to Memory Layer for session-restore before turn 1, and (b) `POST /ingest` to Knowledge Engine for user-uploaded documents. Other Reach Layer → block calls are prohibited.
 
 ---
 
@@ -31,7 +31,7 @@ reach_layer/
 │   ├── dpg.yaml          # framework defaults (reach_layer.common + channels.{cli,web,voice})
 │   └── domain.yaml       # local-dev domain overrides (deploy mounts dev-kit configs over this)
 │
-├── cli/                  # Deployable 1 — interactive CLI (session mode)
+├── cli/                  # Deployable 1 — interactive CLI (direct mode)
 │   ├── main.py
 │   ├── src/cli_reach.py
 │   ├── tests/
@@ -47,7 +47,7 @@ reach_layer/
 │   ├── Dockerfile
 │   └── pyproject.toml
 │
-└── voice/                # Deployable 3 — pipecat VOIP (session mode)
+└── voice/                # Deployable 3 — pipecat VOIP (session mode — required by VAD)
     ├── server.py
     ├── src/vobiz_adapter.py, src/bot.py, src/campaign_manager.py
     ├── src/pipecat_services/, src/vad/, src/operators/
@@ -75,28 +75,37 @@ ReachLayerBase (async ABC)
 
 ### assembly_mode — how input reaches Agent Core
 
-Each channel reads `reach_layer.channels.<name>.assembly_mode` from `reach_layer.yaml` and routes accordingly:
+A channel and its assembly mode are independent. The mode describes the wire protocol used to deliver a turn; the channel describes the medium. Each channel reads `reach_layer.channels.<name>.assembly_mode` from `reach_layer.yaml` and routes accordingly:
 
-| assembly_mode | `submit_input()` endpoint                  | Response delivery                          | Used by     |
-|---------------|--------------------------------------------|--------------------------------------------|-------------|
-| `session`     | `POST /sessions/{id}/input` → 202          | long-lived `GET /sessions/{id}/events` SSE | cli, voice  |
-| `direct`      | `POST /process_turn` → sync TurnResult     | returned inline from `submit_input()`      | web         |
+| assembly_mode | `submit_input()` endpoint                  | Response delivery                          | Pick when                                              |
+|---------------|--------------------------------------------|--------------------------------------------|--------------------------------------------------------|
+| `direct`      | `POST /process_turn` → sync TurnResult     | returned inline from `submit_input()`      | The full user message is known when submitting.        |
+| `session`     | `POST /sessions/{id}/input` → 202          | long-lived `GET /sessions/{id}/events` SSE | Input arrives as partial segments (VAD, mid-utterance).|
 
 Session mode additionally supports barge-in via `DELETE /sessions/{id}/active_turn` (`cancel_turn()`).
+
+**Default channel → mode mapping:**
+
+| Channel | Default mode | Why |
+|---|---|---|
+| CLI | `direct` | A line-buffered prompt is a complete utterance; no assembler needed. |
+| Web | `direct` (configurable to `session`) | The SPA submits whole messages; deployments that want streaming/segment-buffered behaviour can opt into session. |
+| Voice | `session` (only) | VAD emits partial segments; the assembler owns turn-boundary decisions. |
+
+Voice is the only channel where the mode is fixed by the medium. The other channels are free to switch by configuration.
 
 ---
 
 ## CLI channel
 
-`CLIReach` (`cli/src/cli_reach.py`) inherits `TextChannelBase`. Uses **session** assembly mode.
+`CLIReach` (`cli/src/cli_reach.py`) inherits `TextChannelBase`. Uses **direct** assembly mode — a stdin line is a complete utterance, so there is nothing for TurnAssembler to buffer.
 
 **How it works:**
 
 1. `run_loop()` reads stdin line by line.
-2. Each line is submitted via `submit_input(session_id, text, user_id)` → Agent Core's TurnAssembler (`POST /sessions/{id}/input`).
-3. In parallel the CLI subscribes via `subscribe_events(session_id)` → long-lived SSE.
-4. Each `SentenceEvent` is written to stdout as it arrives.
-5. On EOF (Ctrl-D) or `quit` → `on_session_end()` and cleanup.
+2. Each line is submitted via `submit_input(session_id, text, user_id)` → Agent Core (`POST /process_turn` for sync output, or `POST /stream_turn` if SSE is preferred).
+3. The response (or SSE sentences) is written to stdout as it arrives.
+4. On EOF (Ctrl-D) or `quit` → `on_session_end()` and cleanup.
 
 A UUID session ID is generated once per process. Restart to start fresh.
 
@@ -104,7 +113,7 @@ A UUID session ID is generated once per process. Restart to start fresh.
 
 ## Web channel
 
-`WebReachLayer` (`web/src/web_reach.py`) is instantiated per-request by the FastAPI server in `web/server.py`. Uses **direct** assembly mode.
+`WebReachLayer` (`web/src/web_reach.py`) is instantiated per-request by the FastAPI server in `web/server.py`. Defaults to **direct** assembly mode; deployments that prefer streaming/segment-buffered behaviour can set `reach_layer.channels.web.assembly_mode: session`.
 
 ### `POST /chat`
 
@@ -136,7 +145,7 @@ On failure, returns a safe error message. Retries once on timeout.
 
 Returns the user's active session ID and prior turns.
 
-**Approved exception:** this endpoint calls Memory Layer directly, bypassing Agent Core. Scoped to the dev/demo web adapter only. All other channels and all other paths must route state access through Agent Core.
+**Approved direct call (production):** this endpoint calls Memory Layer directly to restore chat history before turn 1. The call sits *outside* the turn pipeline (no LLM response is owed), which is why it does not go through Agent Core. All other Reach Layer → block calls must still route through Agent Core, except the `POST /ingest` path that forwards user-uploaded documents to Knowledge Engine.
 
 ### `GET /app-config`
 
@@ -160,7 +169,7 @@ When `auth.enabled: true` in the domain config, the web channel requires a Googl
 
 ## Voice channel
 
-`VobizAdapter` (`voice/src/vobiz_adapter.py`) inherits `VoiceChannelBase`. Uses **session** assembly mode.
+`VobizAdapter` (`voice/src/vobiz_adapter.py`) inherits `VoiceChannelBase`. Uses **session** assembly mode — required by the medium, since VAD emits partial segments and turn boundaries are decided by the assembler. Inbound calls hit the dial number configured per deployment in `channels.voice.dial_number`.
 
 Built on the [pipecat](https://github.com/pipecat-ai/pipecat) pipeline:
 

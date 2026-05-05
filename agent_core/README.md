@@ -1,12 +1,12 @@
 # Agent Core
 
-The sole orchestrator and sole LLM caller in the AI Diffusion DPG framework. Stateless between turns. Supports both **synchronous** (`process_turn`) and **async streaming** (`stream_turn`) execution, with an optional **TurnAssembler** for multi-segment (voice / VAD / rapid-correction) input.
+The turn-time orchestrator and sole LLM caller in the AI Diffusion DPG framework. Stateless between turns. Supports both **synchronous** (`process_turn`) and **async streaming** (`stream_turn`) execution, with an optional **TurnAssembler** for multi-segment (voice VAD, rapid-correction) input. System-prompt assembly lives here in `manager_agent.build_system_prompt()` — Knowledge Engine returns ranked chunks; Agent Core decides how they enter the prompt.
 
 ---
 
 ## What this service does
 
-Agent Core is the central coordinator for every user turn. It is the only component that calls the Anthropic LLM and the only block that initiates calls to other DPG services. It runs a fixed 13-step sequence on every turn, enforces safety on both input and output, and returns the final response to the caller.
+Agent Core is the central coordinator for every user turn. It is the only component that calls the LLM and the only block that orchestrates the per-turn pipeline. Other blocks may make scoped, approved direct calls outside the turn pipeline (Reach → Memory for session-restore, Reach → KE for document upload, planned Action Gateway → KE/Memory caching) — see `ARCHITECTURE.md` §5. Agent Core runs a fixed 13-step sequence on every turn, enforces safety on both input and output, and returns the final response to the caller.
 
 Two execution paths are available:
 

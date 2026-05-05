@@ -1,20 +1,25 @@
 # Knowledge Engine
 
-Assembles retrieval context for the LLM prompt. Stateless — receives NLU results and session state in every request from Agent Core.
+Returns ranked retrieval chunks for the LLM prompt. Stateless on the retrieval path — receives NLU results and session state in every request from Agent Core. Also owns the document ingestion path and an SQLite ingestion ledger.
 
 ---
 
 ## What this service does
 
-The Knowledge Engine receives a user message that has already been language-normalised and NLU-tagged by Agent Core, then returns ranked knowledge chunks for injection into the LLM prompt. It does not call the LLM, does not call the Memory Layer, and does not assemble the final prompt — prompt assembly is Agent Core's responsibility. All session context is passed in the request body.
+The Knowledge Engine has two surfaces:
 
-Three internal blocks run in a fixed order on every request:
+**Retrieval (turn-time, called by Agent Core).** Receives a user message that Agent Core has already language-normalised and NLU-tagged, runs the retrieval pipeline (glossary → RAG), and returns ranked knowledge chunks. It does **not** call the LLM, does **not** call the Memory Layer, and does **not** assemble the final prompt — prompt assembly happens in Agent Core's `manager_agent.build_system_prompt()`. All session context is passed in the request body.
+
+**Ingestion (out-of-band).** Documents reach KE either through the `scripts/ingest.py` batch script or through `POST /ingest` (called directly from Reach Layer when a user uploads a document — an approved direct call outside the turn pipeline). KE embeds, chunks, writes vectors to ChromaDB, and records per-document state in the SQLite ingestion ledger.
+
+Internal blocks:
 
 | Block | Role |
 |---|---|
 | **Glossary** | Maps colloquial terms to canonical concepts (config-driven, case-insensitive) |
 | **Static Knowledge Base** | Semantic RAG retrieval over ingested domain documents (ChromaDB) |
 | **Multimodal Input Handler** | PDF and image extraction — fully implemented but disabled by default |
+| **Ingestion ledger** | SQLite store recording per-document state — `queued`, `ingested`, `failed`, `refreshed_at`. Drives idempotent re-ingest and answers "what's been ingested?" without scanning Chroma. |
 
 ---
 

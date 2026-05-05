@@ -10,8 +10,8 @@ Reference domain: **KKB (Kaam Ki Baat)** — a labour-market assistant for infor
 
 | Block | Group | Port | Status | Role |
 |-------|-------|------|--------|------|
-| **Agent Core** | Orchestration | 8000 | ✅ | Sole orchestrator + LLM caller. Language Normalisation, NLU, tool-use loop, subagent routing. Stateless. |
-| **Knowledge Engine** | Intelligence | 8001 | ✅ | Semantic RAG retrieval (ChromaDB) + glossary mapping. Assembles retrieval context for the LLM prompt. |
+| **Agent Core** | Orchestration | 8000 | ✅ | Turn-time orchestrator + sole LLM caller. Language Normalisation, NLU, system-prompt assembly, tool-use loop, subagent routing. Stateless. |
+| **Knowledge Engine** | Intelligence | 8001 | ✅ | Semantic RAG retrieval (ChromaDB) + glossary mapping + SQLite ingestion ledger. Returns ranked chunks; prompt assembly happens in Agent Core. |
 | **Memory Layer** | State | 8002 | ✅ | Redis (session/profile) + Memgraph (context graph) + SQLite (audit). 3-scope state management. 10 HTTP endpoints. |
 | **Observability Layer** | Learning | 8004 | ✅ | OTel instrumentation + Loki/Jaeger audit trail functional via shared `dpg_telemetry` package. OutcomeTracker. Grafana dashboards pending. |
 | **Trust Layer** | Trust | 8003 | 🟡 | 4 sub-blocks: ContentBlock, GuardrailsBlock, ConsentBlock, HiTLBlock(todo). Fail-closed. 7 endpoints. |
@@ -82,7 +82,7 @@ Target: ≥ 70% line coverage on `agent_core/` and `knowledge_engine/`.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — single source of truth: block responsibilities, runtime sequence, design decisions, implementation status
 - [dev-kit/README.md](dev-kit/README.md) — configuration toolchain (Tier 1 agent + Tier 2 YAML) and how to add a new domain
 - `agent_core/` — orchestrator, multi-provider chat_provider (Anthropic + OpenAI), NLU, tool-use loop (818 tests)
-- `knowledge_engine/` — RAG retrieval, glossary, prompt assembly (192 tests)
+- `knowledge_engine/` — RAG retrieval, glossary, ingestion ledger (192 tests)
 - `memory_layer/` — Redis session store + Memgraph context graph + SQLite audit (226 tests)
 - `trust_layer/` — ContentBlock, GuardrailsBlock, ConsentBlock, HiTLBlock (138 tests)
 - `observability_layer/` — OTel instrumentation via `dpg_telemetry` (101 tests)

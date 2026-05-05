@@ -24,7 +24,7 @@
 
 The framework assembles AI-powered voice/chat systems from **7 standardised DPG building blocks** configured per-domain via a **Domain Configuration Kit** (YAML). Runtime block boundaries are fixed; all domain intelligence is external (config-driven).
 
-The reference domain is **KKB (Kaam Ki Baat)** — a labour-market assistant helping informal workers in India find trades, check market salaries, and apply to ONEST job postings. Entry point: dial 5226.
+The reference domain is **KKB (Kaam Ki Baat)** — a labour-market assistant helping informal workers in India find trades, check market salaries, and apply to ONEST job postings. Entry point: dial the number configured in `channels.voice.dial_number`.
 
 ### Ports
 
@@ -187,7 +187,9 @@ not declare the block are unaffected.
 
 ### Knowledge Engine ✅
 
-Assembles retrieval context for the LLM prompt. Receives NLU results and session state in the request body. Does **not** call Memory Layer or Agent Core. Stateless.
+Returns ranked retrieval chunks. Stateless on the retrieval path; receives NLU results and session state in the request body. **Does not assemble the final LLM prompt** — prompt assembly lives in Agent Core's `manager_agent.build_system_prompt()` (subagent prompt + guardrail constraints + required disclosures + KE chunks). KE returns chunks; Agent Core decides how they enter the prompt.
+
+KE also owns the **document ingestion path**, fed by both `scripts/ingest.py` and the Reach Layer document-upload endpoint. Ingestion state (queued / ingested / failed / `refreshed_at`) is tracked in a small **SQLite ingestion ledger** so the service can answer "what's been ingested?" without re-scanning ChromaDB.
 
 **Internal blocks:**
 
@@ -196,14 +198,16 @@ Assembles retrieval context for the LLM prompt. Receives NLU results and session
 | Glossary & Domain Vocabulary | ✅ | Maps colloquial/dialect terms to canonical concepts (e.g., "kaam chahiye" → `market_truth_query`). Config-driven. |
 | Static Knowledge Base | ✅ | ChromaDB semantic RAG. `paraphrase-multilingual-MiniLM-L12-v2` embeddings. Top-3 chunks, 0.65 similarity threshold. Intent-based doc-type filtering. |
 | Multimodal Input Handler | 🟡 | Disabled via config (`enabled: false`). Placeholder for future image/audio. |
+| Ingestion ledger | ✅ | SQLite store recording per-document state — `queued`, `ingested`, `failed`, `refreshed_at`. Drives idempotent re-ingest and exposes "what's indexed" without scanning Chroma. |
 
-**Data:** `knowledge_engine/data/chroma_db/` — pre-computed vector store from 5 source documents (labour_schemes.pdf, trade_descriptions.pdf, training_institutes.csv, bridge_income_options.pdf, onest_market_truth.csv).
+**Data:** `knowledge_engine/data/chroma_db/` — pre-computed vector store from 5 source documents (labour_schemes.pdf, trade_descriptions.pdf, training_institutes.csv, bridge_income_options.pdf, onest_market_truth.csv). `knowledge_engine/data/ingestion.sqlite` — ingestion ledger.
 
 **Key files:**
 - `knowledge_engine/src/engine.py`
 - `knowledge_engine/src/blocks/glossary.py`
 - `knowledge_engine/src/blocks/static_knowledge_base.py`
-- `knowledge_engine/src/server.py` — FastAPI: `POST /retrieve`, `/health`
+- `knowledge_engine/src/ingestion_store.py` — SQLite ingestion ledger
+- `knowledge_engine/src/server.py` — FastAPI: `POST /retrieve`, `POST /ingest`, `/health`
 
 **Tests:** 192 tests across 13 files, ≥70% line coverage.
 
@@ -334,26 +338,46 @@ Normalises inbound channels and delivers responses. Ships as **three independent
 
 **Architecture:** `reach_layer/base/` (shared library, not a service) defines `ReachLayerBase` (async ABC), `TextChannelBase`, `VoiceChannelBase`, and the `SignalEvent` / `SentenceEvent` / `DoneEvent` dataclasses. Each channel imports `reach-layer-base` and overrides only its input/output surface. The HTTP wire protocol to Agent Core (submit, subscribe, cancel) is concrete on the base class and identical for all channels.
 
-**Assembly modes:**
+**Assembly modes (channel-independent):**
 
-| mode | submit endpoint | used by |
+A channel and an assembly mode are orthogonal concepts. The mode is the wire protocol used to deliver a turn:
+
+- `direct` — one synchronous request → one `TurnResult`. Suitable for any channel that has a fully assembled user message before invoking Agent Core.
+- `session` — multi-segment input is buffered in Agent Core's `TurnAssembler`, which decides when to invoke `stream_turn()` (semantic gate · silence trigger · max-wait ceiling). Required only when input arrives as a stream of partial segments.
+
+| mode | submit endpoint | when to pick it |
 |---|---|---|
-| `session` | `POST /sessions/{id}/input` → 202; stream via `GET /sessions/{id}/events` | CLI, Voice |
-| `direct` | `POST /process_turn` → sync `TurnResult` | Web |
+| `direct` | `POST /process_turn` (sync) or `POST /stream_turn` (SSE) | Whole user message is known at submission time. |
+| `session` | `POST /sessions/{id}/input` → 202; stream via `GET /sessions/{id}/events` | Input arrives as VAD/partial segments and the channel needs the assembler to decide turn boundaries. |
+
+**Default channel → mode mapping:**
+
+| Channel | Mode | Why |
+|---|---|---|
+| CLI | `direct` | A line-buffered prompt is a complete utterance; session mode would buy nothing. CLI does *not* need TurnAssembler. |
+| Web | `direct` (default) or `session` | Configurable per deployment. Defaults to `direct` because the SPA submits whole messages. |
+| Voice | `session` (only) | Voice is constrained to session mode — VAD emits partial segments and barge-in/turn-completion semantics are owned by the assembler. |
+
+A channel is therefore *not* identified by its mode — Web can run in either mode, and a future text channel that supports incremental editing could opt into `session`. Voice is the only channel where the mode is fixed by the medium.
 
 **Channel implementation status:**
 
 | Channel | Status | Notes |
 |---------|--------|-------|
-| CLI (`reach_layer/cli/`) | ✅ | `CLIReach` — session mode, readline loop, port-free |
-| Web (`reach_layer/web/`) | ✅ | FastAPI + React 19 SPA, port 8005. `POST /chat`, `GET /user-history/{user_id}`, `GET /app-config`. Direct mode. Google Sign-In optional. |
-| Voice (`reach_layer/voice/`) | 🟡 | `VobizAdapter` on pipecat pipeline (VAD → Raya STT → AgentCoreLLM → Raya TTS → SIP), port 8006. Session mode. Barge-in supported. 166 tests. |
+| CLI (`reach_layer/cli/`) | ✅ | `CLIReach` — direct mode, readline loop, port-free. No TurnAssembler. |
+| Web (`reach_layer/web/`) | ✅ | FastAPI + React 19 SPA, port 8005. `POST /chat`, `GET /user-history/{user_id}`, `GET /app-config`. Direct mode by default; session mode is supported. Google Sign-In optional. |
+| Voice (`reach_layer/voice/`) | 🟡 | `VobizAdapter` on pipecat pipeline (VAD → Raya STT → AgentCoreLLM → Raya TTS → SIP), port 8006. Session mode (required by VAD-driven input). Barge-in supported. 166 tests. |
 | Production SIP/PSTN | ❌ | Out of scope — VOIP via pipecat/Vobiz is the production path |
 | WhatsApp | ⏳ | Gupshup/Twilio webhook — pending |
 | Mobile SDK | ⏳ | Pending |
 | Outbound campaigns | ⏳ | `campaign_manager.py` skeleton exists; full implementation pending |
 
-**Approved exception:** `reach_layer/web/server.py` calls Memory Layer `GET /users/{user_id}/active-history` directly for session restore before the first turn. Scoped to dev/demo web adapter only. All other Reach Layer → Memory Layer calls are prohibited.
+**Approved direct calls (production):**
+
+- `reach_layer/web/server.py` calls Memory Layer `GET /users/{user_id}/active-history` to restore chat history on session resume, before turn 1. Production-approved — the call happens outside the turn pipeline (no LLM response is owed) and is the canonical way to repopulate the SPA's sidebar.
+- Reach Layer `POST /ingest` forwards user-uploaded documents to Knowledge Engine's ingestion endpoint. Production-approved for the same reason: ingestion is asynchronous to the turn pipeline.
+
+Other Reach Layer → downstream-block calls remain prohibited unless added to this list.
 
 **Key files:**
 - `reach_layer/base/reach_layer_base.py` — `ReachLayerBase` ABC + concrete HTTP helpers
@@ -440,13 +464,16 @@ Agent Core: POST /assemble_constraints → Trust Layer      [if active_risks pre
   │  returns: prompt_constraints, required_disclosures, action_gates, refusal_templates
   ▼
 Agent Core: Manager Agent selects subagent + tools        [current_subagent_id + NLU intent → routing rules in config]
-  │  system_prompt = subagent_prompt + guardrail_constraints + required_disclosures
+  │  build_system_prompt(): subagent_prompt + guardrail_constraints + required_disclosures
+  │  (KE chunks, when fetched, are appended via the knowledge_retrieval tool result — not pre-assembled by KE)
   │  tool list filtered by action_gates
   ▼
 Agent Core: LLM call #1 (ChatProviderBase)
   │
   ├─ [tool_use block returned]
-  │    Agent Core: execute tool → Action Gateway
+  │    Agent Core: route by tool name
+  │      knowledge_retrieval → Knowledge Engine /retrieve
+  │      any other tool      → Action Gateway /execute
   │    Agent Core: LLM call #2 (with tool_result)
   │
   ▼
@@ -464,36 +491,58 @@ Agent Core: deliver response → Reach Layer
 
 **Execution paths:**
 
-| Path | Endpoint | Response | Used by |
+| Path | Endpoint | Response | Default channel |
 |---|---|---|---|
-| Sync | `POST /process_turn` | `TurnResult` JSON | Web (direct mode) |
-| Streaming (SSE) | `POST /stream_turn` | `SignalEvent` → `SentenceEvent`s → `DoneEvent` | CLI/Voice (session mode) |
-| Session/TurnAssembler | `POST /sessions/{id}/input` + `GET /sessions/{id}/events` | SSE subscription | CLI, Voice (via TurnAssembler) |
+| Sync | `POST /process_turn` | `TurnResult` JSON | Web, CLI |
+| Streaming (SSE) | `POST /stream_turn` | `SignalEvent` → `SentenceEvent`s → `DoneEvent` | Web (when SSE preferred), CLI |
+| Session/TurnAssembler | `POST /sessions/{id}/input` + `GET /sessions/{id}/events` | SSE subscription | Voice (only — VAD multi-segment input) |
 
-All three paths run the same 13-step sequence. TurnAssembler buffers multi-segment input and calls `stream_turn()` in-process when a trigger fires (semantic gate, silence timer, or max-wait ceiling).
+All three paths run the same 13-step sequence. TurnAssembler buffers multi-segment input and calls `stream_turn()` in-process when a trigger fires (semantic gate, silence timer, or max-wait ceiling). Channels and modes are independent — see Reach Layer above for the channel ↔ mode default mapping.
 
 ---
 
 ## 5. Module Interaction Rules
 
-Only Agent Core initiates calls to other blocks. No other cross-module calls exist.
+**Agent Core is the only turn-time orchestrator** — it owns the per-turn pipeline (memory read → trust input → NLU → constraint assembly → prompt build → LLM → tools → trust output → deliver), and it is the only block that calls the LLM. The user only ever initiates a turn through Reach Layer → Agent Core.
+
+Within and around a turn, however, other blocks may communicate directly **under explicit, approved scopes** (production, not POC-only). Cross-block calls outside these scopes remain prohibited; new ones require an architecture-level approval.
+
+### Turn-time calls (initiated by Agent Core)
 
 | Caller | Callee | Purpose |
 |---|---|---|
 | Agent Core | Memory Layer | Read state at turn start; write state after response (async) |
 | Agent Core | Trust Layer | Check input (before LLM); check output (before user) |
-| Agent Core | Knowledge Engine | Assemble retrieval context (NLU results + session state in body) |
-| Agent Core | Action Gateway | Execute LLM-requested tool calls |
-| Agent Core | Observability Layer | Emit turn metadata (async, daemon thread) |
-| Reach Layer (web) | Agent Core | `POST /process_turn` — direct mode |
-| Reach Layer (cli/voice) | Agent Core | `POST /sessions/{id}/input` + `GET /sessions/{id}/events` — session mode |
+| Agent Core | Knowledge Engine | Retrieve ranked chunks (NLU results + session state in body). Routed via the `knowledge_retrieval` internal tool when the LLM requests it. |
+| Agent Core | Action Gateway | Execute LLM-requested external tool calls |
+| Agent Core | Observability Layer | Emit turn metadata (async, after delivery) |
 | Action Gateway | External systems | Only on instruction from Agent Core |
 
-**No other cross-module calls are permitted.**
+### Turn entry / exit (Reach Layer ↔ Agent Core)
 
-> **Approved exception — Reach Layer web channel:** The web channel's session-restore feature (`GET /user-history/{user_id}` in `reach_layer/server.py`) makes a direct call to the Memory Layer to load chat history before the first turn. This is a deliberate, scoped exception for the dev/demo web adapter only. All other Reach Layer → Memory Layer calls are still prohibited. Future production channel adapters must route state retrieval through Agent Core.
+| Caller | Callee | Purpose |
+|---|---|---|
+| Reach Layer (web) | Agent Core | `POST /process_turn` — direct (sync) mode |
+| Reach Layer (voice) | Agent Core | `POST /sessions/{id}/input` + `GET /sessions/{id}/events` — session mode |
+| Reach Layer (cli) | Agent Core | `POST /process_turn` (direct) or `POST /stream_turn` (SSE) — direct only; session is unnecessary for CLI |
 
-> **Planned exception — Action Gateway caching (#18):** When caching is implemented, Action Gateway will call Knowledge Engine and Memory Layer to read/write cached tool results. This is not yet implemented. For now, Action Gateway only talks to external APIs and MCP servers.
+### Approved direct calls (production)
+
+These are first-class production paths, not PoC carve-outs.
+
+| Caller | Callee | Purpose |
+|---|---|---|
+| Reach Layer (web) | Memory Layer | `GET /users/{user_id}/active-history` — restore chat history on session resume, before the first turn. |
+| Reach Layer | Knowledge Engine | `POST /ingest` (planned/in-flight) — user-uploaded documents are routed straight to KE for embedding + ledger update. The upload path bypasses the turn pipeline because no LLM response is owed. |
+
+### Planned direct calls (post-PoC, design-approved)
+
+| Caller | Callee | Purpose |
+|---|---|---|
+| Action Gateway | Knowledge Engine | Read/write cached tool results (caching layer, #18) |
+| Action Gateway | Memory Layer | Read/write cached connector responses scoped to a session (caching layer, #18) |
+
+> **Why this is consistent with "Agent Core orchestrates":** Agent Core still owns every turn's runtime sequence. The approved direct calls above are either (a) *outside* a turn (document ingestion, session-restore before turn 1) or (b) *cache-side* optimisations that don't change the turn semantics observed by Agent Core. No block other than Agent Core builds prompts, calls the LLM, or decides routing.
 
 ---
 
