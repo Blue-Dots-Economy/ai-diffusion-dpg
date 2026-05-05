@@ -1246,15 +1246,15 @@ def _validate_raya_voice_id(data: dict) -> list[str]:
 
 
 def validate_partial(block: str, data: dict) -> list[str]:
-    """Validate partial config data for a block without requiring completeness.
+    """Validate each top-level section of a block's data; return error messages.
 
-    Runs two checks in order:
-    1. Template structural check — every key in ``data`` must exist in the
-       YAML template. Catches renamed keys (e.g. ``blocked_msg`` instead of
-       ``blocked_message``) at every nesting level.
-    2. Pydantic type check — validates value types; filters out missing-field
-       errors so partial data is accepted.
-    3. Domain-specific checks (e.g. Raya voice ID validation for reach_layer).
+    Thin wrapper that delegates to the new section-split schemas. Preserves the
+    existing renderer interface (returns list[str] of error messages).
+
+    Two checks:
+    1. Block existence check — fails if block name is unknown.
+    2. For each top-level section: delegates to validate_domain_section, filtering
+       out "missing field" errors since partial data is accepted.
 
     Args:
         block: Block name, e.g. "agent_core" or "trust_layer".
@@ -1263,6 +1263,8 @@ def validate_partial(block: str, data: dict) -> list[str]:
     Returns:
         List of error strings. Empty list means valid so far.
     """
+    from dev_kit.schemas.validation import validate_domain_section
+
     # --- Block existence check ---
     try:
         load_template(block)
@@ -1272,38 +1274,22 @@ def validate_partial(block: str, data: dict) -> list[str]:
     if not data:
         return []
 
-    # --- 1. YAML template structural check: catch wrong key names at all levels ---
-    try:
-        template = load_template(block)
-        key_errors = _check_keys_against_template(data, template, path="")
-        if key_errors:
-            return key_errors
-    except (ValueError, FileNotFoundError) as exc:
-        logger.warning(
-            "validate_partial: template load failed for block %r — skipping key check",
-            block,
-            extra={"operation": "validate_partial", "status": "skipped", "error": str(exc)},
-        )
-
-    # --- 2. Pydantic type/value check (filters out missing-field errors) ---
-    pydantic_errors: list[str] = []
-    model_cls = _BLOCK_MODEL_MAP.get(block)
-    if model_cls is not None:
-        try:
-            model_cls.model_validate(data)
-        except ValidationError as exc:
-            pydantic_errors = [
-                f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}"
-                for err in exc.errors()
-                if err["type"] != "missing"
+    # --- Validate each section ---
+    errors: list[str] = []
+    for top_level, value in data.items():
+        if not isinstance(value, dict):
+            continue
+        err = validate_domain_section(block, top_level, value)
+        if err:
+            # Filter out "missing" error lines — partial data is allowed to omit fields.
+            # Keep lines with type/value constraint violations and extra field errors.
+            filtered_lines = [
+                line for line in err.split("\n")
+                if "[missing]" not in line
             ]
-
-    # --- 3. Domain-specific value checks ---
-    domain_errors: list[str] = []
-    if block == "reach_layer":
-        domain_errors.extend(_validate_raya_voice_id(data))
-
-    return pydantic_errors + domain_errors
+            if filtered_lines:
+                errors.append("\n".join(filtered_lines))
+    return errors
 
 
 # Open-map sentinel: template value is a dict/list whose keys are examples,
