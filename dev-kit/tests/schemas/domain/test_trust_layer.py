@@ -112,6 +112,18 @@ def test_guardrail_extra_forbidden():
         GuardrailConfig(unknown_field="x")
 
 
+def test_guardrail_refusal_template_rejects_empty_string():
+    """Empty refusal_template would be useless when failure_mode='block' fires."""
+    with pytest.raises(ValidationError):
+        GuardrailConfig(refusal_template="")
+
+
+def test_guardrail_refusal_template_none_allowed():
+    """None means 'no fixed refusal template' — valid."""
+    g = GuardrailConfig(refusal_template=None)
+    assert g.refusal_template is None
+
+
 # -- PolicyPackConfig --------------------------------------------------------
 
 def test_policy_pack_empty_guardrails_allowed():

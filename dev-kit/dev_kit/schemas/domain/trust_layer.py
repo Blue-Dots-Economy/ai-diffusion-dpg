@@ -62,7 +62,7 @@ class GuardrailConfig(BaseModel):
     failure_mode: GuardrailFailureMode = GuardrailFailureMode.constrain
     prompt_constraints: list[str] = Field(default_factory=list)
     required_disclosures: list[str] = Field(default_factory=list)
-    refusal_template: Optional[str] = None
+    refusal_template: Optional[str] = Field(default=None, min_length=1)
 
 
 class PolicyPackConfig(BaseModel):
