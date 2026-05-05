@@ -667,8 +667,6 @@ class ToolHandler:
         return f"ok: {phase} skipped by user"
 
     def _handle_update_config(self, inputs: dict) -> str:
-        from dev_kit.schemas.validation import validate_partial
-
         block = inputs["block"]
         section = inputs["section"]
         values = inputs["values"]
@@ -697,32 +695,32 @@ class ToolHandler:
                     "turn_assembler policy overrides."
                 )
 
-        # Build the nested partial and validate key names before writing.
-        partial: dict = {}
-        node = partial
-        parts = section.split(".")
-        for part in parts[:-1]:
-            node[part] = {}
-            node = node[part]
-        node[parts[-1]] = values
-
-        errors = validate_partial(block, partial)
-        if errors:
-            error_lines = "\n".join(f"  - {e}" for e in errors)
-            return (
-                f"ERROR — config NOT written. Invalid key names detected:\n{error_lines}\n\n"
-                f"Refer to the YAML template shown in the phase prompt for the exact key names. "
-                f"Correct the section path or key names and retry update_config."
-            )
-
+        # acc.update is now the single validation gate. It validates the
+        # would-be merged result before mutating state, filters [missing]
+        # errors during partial accumulation, increments a retry counter
+        # on real failures, and hard-rejects further calls to a section
+        # whose retry budget is already spent this turn.
         result = self._acc.update(block, section, values)
         # acc.update returns:
         #   "OK" — validation passed (or strict mode off / unschema'd section)
         #   "VALIDATION_ERROR (attempt N/M):..." — schema rejected, LLM should retry
-        #   "VALIDATION_FAILED_AFTER_M_ATTEMPTS..." — cap reached, escalate or skip
-        # Relay the schema verdict directly so the LLM can self-correct.
+        #   "VALIDATION_FAILED_AFTER_M_ATTEMPTS..." — cap just reached this call
+        #   "VALIDATION_SECTION_STALE..." — section already at cap, hard reject
+        # Relay the schema verdict directly so the LLM can self-correct
+        # (or stop, in the cap/stale cases).
         if result == "OK":
             return f"ok: updated {block}.{section}"
+        logger.warning(
+            "devkit.tool.update_config.rejected",
+            extra={
+                "operation": "tool.update_config",
+                "status": "rejected",
+                "block": block,
+                "section": section,
+                "verdict": result.split(":", 1)[0] if ":" in result else result.split("\n", 1)[0],
+                "response_to_llm": result[:500],
+            },
+        )
         return result
 
     def _handle_set_phase(self, inputs: dict) -> str:

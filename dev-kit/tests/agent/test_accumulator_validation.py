@@ -47,12 +47,54 @@ def test_counter_increments_on_repeated_failures():
 
 
 def test_counter_caps_at_max():
+    """The Mth failure returns VALIDATION_FAILED_AFTER and marks the section stale.
+
+    Subsequent calls to the same section return VALIDATION_SECTION_STALE
+    without re-validating — the loop safety net.
+    """
     acc = ConfigAccumulator()
     bad = {"primary_model": "claude-sonnet-4-6", "fallback_model": "claude-sonnet-4-6"}
+    r1 = acc.update("agent_core", "agent", bad)
+    r2 = acc.update("agent_core", "agent", bad)
+    r3 = acc.update("agent_core", "agent", bad)
+    r4 = acc.update("agent_core", "agent", bad)
+    assert "attempt 1/" in r1
+    assert "attempt 2/" in r2
+    assert "VALIDATION_FAILED_AFTER" in r3
+    assert "VALIDATION_SECTION_STALE" in r4
+    assert "DO NOT call update_config" in r4
+
+
+def test_section_stale_blocks_value_change_attempts():
+    """Even with a different (still-bad) value, a stale section is hard-rejected.
+
+    Prevents the LLM from looping by varying the bad value to escape the
+    retry counter.
+    """
+    acc = ConfigAccumulator()
+    bad_a = {"primary_model": "claude-sonnet-4-6", "fallback_model": "claude-sonnet-4-6"}
+    bad_b = {"primary_model": "claude-haiku-4-5-20251001", "fallback_model": "claude-haiku-4-5-20251001"}
     for _ in range(3):
-        acc.update("agent_core", "agent", bad)
-    final = acc.update("agent_core", "agent", bad)
-    assert "VALIDATION_FAILED_AFTER" in final
+        acc.update("agent_core", "agent", bad_a)
+    # Different bad payload — still stale, still rejected without validation.
+    result = acc.update("agent_core", "agent", bad_b)
+    assert "VALIDATION_SECTION_STALE" in result
+
+
+def test_validation_does_not_pollute_state_on_failure():
+    """Failed validation must not write the bad value into the accumulator.
+
+    Single-validation refactor: validate-before-write means rejected
+    payloads never enter self._data.
+    """
+    acc = ConfigAccumulator()
+    # Submit a value that fails validation (matching primary == fallback).
+    acc.update(
+        "agent_core", "agent",
+        {"primary_model": "claude-sonnet-4-6", "fallback_model": "claude-sonnet-4-6"},
+    )
+    # The agent_core block should still be empty — nothing written.
+    assert acc.get_block("agent_core").get("agent", {}) == {}
 
 
 def test_counter_resets_on_success():

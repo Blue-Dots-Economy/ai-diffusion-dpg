@@ -89,14 +89,19 @@ class ConfigAccumulator:
     # ------------------------------------------------------------------
 
     def update(self, block: str, section: str, values: dict) -> str:
-        """Deep-merge values into the block config and validate the result.
+        """Validate the would-be merged result, then commit only on success.
 
-        Performs the deep-merge unconditionally (so partial drafts accumulate),
-        then validates the affected top-level section against its Pydantic
-        schema. The string return is what the LLM sees as the tool result —
-        on failure it includes the attempt counter so the LLM can self-correct
-        on retry, and on cap exhaustion it switches to a fallback message and
-        marks the block STALE.
+        Builds a candidate copy of the block, merges ``values`` into the
+        target path, and validates the affected top-level section against
+        its Pydantic schema BEFORE mutating ``self._data``. ``[missing]``
+        errors are filtered so partial drafts can accumulate across turns.
+
+        Once the per-(block, top_level) retry counter reaches the cap, the
+        section is marked STALE and every subsequent call to that section
+        within the same turn is hard-rejected without re-validation. This
+        is the loop safety net — even if the LLM ignores the escalation
+        message, the same-section dispatch returns immediately with a stop
+        instruction.
 
         Args:
             block: One of the 7 DPG block names.
@@ -106,19 +111,26 @@ class ConfigAccumulator:
 
         Returns:
             "OK" — validation passed (or strict mode is off, or section is
-            unschema'd).
-            "VALIDATION_ERROR (attempt N/M):..." — schema rejected the merged
-            section and the per-(block, top-level) attempt counter is below
-            the cap. The LLM is expected to retry with corrected values.
-            "VALIDATION_FAILED_AFTER_M_ATTEMPTS..." — counter has reached the
-            cap; the section is marked STALE and the LLM is asked to escalate
-            to the user or advance the phase.
+            unschema'd, or section root). Write committed.
+            "VALIDATION_ERROR (attempt N/M):..." — schema rejected the
+            candidate merge; nothing was written; the LLM should retry
+            with corrected values.
+            "VALIDATION_FAILED_AFTER_M_ATTEMPTS..." — counter just hit the
+            cap; section marked STALE; LLM should escalate or advance.
+            "VALIDATION_SECTION_STALE..." — counter already at cap from a
+            prior attempt this turn; this call is hard-rejected without
+            validation. Returned to keep the LLM from looping on a section
+            it has already failed M times.
 
         Raises:
             ValueError: If block is not a valid DPG block name.
         """
         if block not in BLOCKS:
             raise ValueError(f"Unknown block: {block!r}. Must be one of {BLOCKS}")
+
+        # Section-root writes (empty section): skip schema validation —
+        # they typically span multiple sections and per-section schemas
+        # don't apply. Commit straight to data.
         if not section:
             self._data[block] = _deep_merge(self._data[block], values)
             logger.info(
@@ -130,18 +142,53 @@ class ConfigAccumulator:
                     "path": "(root)",
                 },
             )
-        else:
-            keys = section.split(".")
-            target = self._data[block]
-            current = target
-            for key in keys[:-1]:
-                if key not in current or not isinstance(current[key], dict):
-                    current[key] = {}
-                current = current[key]
-            last = keys[-1]
-            if last not in current or not isinstance(current.get(last), dict):
-                current[last] = {}
-            current[last] = _deep_merge(current[last], values)
+            return "OK"
+
+        top_level = section.split(".", 1)[0]
+        attempt_key = (block, top_level)
+
+        # Hard-reject if this section already exhausted its retry budget
+        # this turn. Skips validation entirely so the LLM cannot keep the
+        # tool-loop alive with new variations of the same bad write.
+        if (
+            self._strict_mode
+            and self._validation_attempts.get(attempt_key, 0) >= self._max_validation_attempts
+        ):
+            logger.warning(
+                "devkit.accumulator.section_stale_rejected",
+                extra={
+                    "operation": "accumulator.update",
+                    "status": "rejected_section_stale",
+                    "block": block,
+                    "section": section,
+                    "top_level": top_level,
+                    "attempts": self._validation_attempts[attempt_key],
+                    "max_attempts": self._max_validation_attempts,
+                },
+            )
+            return (
+                f"VALIDATION_SECTION_STALE for {block}.{top_level}: "
+                f"already failed {self._max_validation_attempts} times this turn. "
+                f"DO NOT call update_config for this section again. "
+                f"Either ask the user for guidance or call set_phase to advance."
+            )
+
+        # Build the would-be merged result without touching self._data.
+        candidate_block = deepcopy(self._data[block])
+        keys = section.split(".")
+        cursor = candidate_block
+        for key in keys[:-1]:
+            if key not in cursor or not isinstance(cursor[key], dict):
+                cursor[key] = {}
+            cursor = cursor[key]
+        last = keys[-1]
+        if last not in cursor or not isinstance(cursor.get(last), dict):
+            cursor[last] = {}
+        cursor[last] = _deep_merge(cursor[last], values)
+
+        # Strict mode off: commit without validation.
+        if not self._strict_mode:
+            self._data[block] = candidate_block
             logger.info(
                 "devkit.accumulator.config_updated",
                 extra={
@@ -151,37 +198,75 @@ class ConfigAccumulator:
                     "path": section,
                 },
             )
-
-        if not self._strict_mode:
             return "OK"
 
-        # No validation hook for root-level merges — they typically span
-        # multiple sections in a single call; per-section schemas don't apply.
-        if not section:
-            return "OK"
-
-        top_level = section.split(".", 1)[0]
-        merged_top = self._data[block].get(top_level, {})
+        merged_top = candidate_block.get(top_level, {})
         error = validate_domain_section(block, section, merged_top)
 
-        key = (block, top_level)
         if error:
-            attempt = self._validation_attempts.get(key, 0) + 1
-            if attempt >= self._max_validation_attempts:
-                self._validation_attempts[key] = attempt
-                self.set_status(block, ConfigStatus.STALE)
-                return (
-                    f"VALIDATION_FAILED_AFTER_{self._max_validation_attempts}_ATTEMPTS for "
-                    f"{block}.{top_level}:\n{error}\n\n"
-                    f"Tell the user we couldn't auto-configure this and ask for guidance, "
-                    f"OR call set_phase to advance and fix in Review phase."
-                )
-            self._validation_attempts[key] = attempt
-            return (
-                f"VALIDATION_ERROR (attempt {attempt}/{self._max_validation_attempts}):\n{error}"
-            )
+            # Filter [missing] errors — partial drafts are allowed during
+            # config building. If only [missing] errors remain, treat as
+            # valid and commit. Pre-existing [missing]-filter behaviour
+            # used to live in validate_partial; consolidating it here.
+            non_missing_lines = [line for line in error.split("\n") if "[missing]" not in line]
+            filtered_error = "\n".join(non_missing_lines).strip()
 
-        self._validation_attempts.pop(key, None)
+            if filtered_error:
+                attempt = self._validation_attempts.get(attempt_key, 0) + 1
+                self._validation_attempts[attempt_key] = attempt
+
+                if attempt >= self._max_validation_attempts:
+                    self.set_status(block, ConfigStatus.STALE)
+                    logger.warning(
+                        "devkit.accumulator.validation_cap_reached",
+                        extra={
+                            "operation": "accumulator.update",
+                            "status": "failure_cap_reached",
+                            "block": block,
+                            "section": section,
+                            "top_level": top_level,
+                            "attempts": attempt,
+                            "max_attempts": self._max_validation_attempts,
+                        },
+                    )
+                    return (
+                        f"VALIDATION_FAILED_AFTER_{self._max_validation_attempts}_ATTEMPTS for "
+                        f"{block}.{top_level}:\n{filtered_error}\n\n"
+                        f"Tell the user we couldn't auto-configure this and ask for guidance, "
+                        f"OR call set_phase to advance and fix in Review phase."
+                    )
+
+                logger.warning(
+                    "devkit.accumulator.validation_retry",
+                    extra={
+                        "operation": "accumulator.update",
+                        "status": "validation_error_returned",
+                        "block": block,
+                        "section": section,
+                        "top_level": top_level,
+                        "attempt": attempt,
+                        "max_attempts": self._max_validation_attempts,
+                    },
+                )
+                return (
+                    f"VALIDATION_ERROR (attempt {attempt}/{self._max_validation_attempts}):\n"
+                    f"{filtered_error}"
+                )
+
+        # Validation passed (or only [missing] errors that are tolerated
+        # during partial accumulation). Commit the candidate and clear the
+        # retry counter.
+        self._data[block] = candidate_block
+        self._validation_attempts.pop(attempt_key, None)
+        logger.info(
+            "devkit.accumulator.config_updated",
+            extra={
+                "operation": "accumulator.update",
+                "status": "success",
+                "block": block,
+                "path": section,
+            },
+        )
         return "OK"
 
     def reset_validation_attempts(self) -> None:

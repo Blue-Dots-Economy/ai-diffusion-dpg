@@ -25,6 +25,11 @@ from dev_kit.agent.tools import TOOL_DEFINITIONS, ToolHandler
 _MODEL = _os.environ.get("DEVKIT_MODEL", "claude-haiku-4-5-20251001")
 _MAX_TOKENS = int(_os.environ.get("DEVKIT_MAX_TOKENS", "4096"))
 _HISTORY_WINDOW = int(_os.environ.get("DEVKIT_HISTORY_WINDOW", "20"))  # Max recent messages to send per turn
+# Circuit breaker for the LLM tool-call loop. Normal turns use ~5-20 tool
+# calls (multiple update_config + set_phase + checkpoints). 50 is generous
+# enough to never trip in normal use, low enough to halt a runaway loop
+# (e.g. LLM ignores VALIDATION_SECTION_STALE and keeps retrying).
+_MAX_TOOL_ROUNDS = int(_os.environ.get("DEVKIT_MAX_TOOL_ROUNDS", "50"))
 
 logger = logging.getLogger(__name__)
 
@@ -295,7 +300,35 @@ class ConversationEngine:
             self._history.pop()  # roll back the appended user message
             raise
 
+        tool_rounds = 0
         while response.stop_reason == "tool_use":
+            tool_rounds += 1
+            if tool_rounds > _MAX_TOOL_ROUNDS:
+                # Circuit breaker: stop the loop even if the LLM keeps
+                # requesting tools. Append a final user-side note so the
+                # next LLM call must produce a text response, then break.
+                logger.warning(
+                    "devkit.conversation.tool_loop_capped",
+                    extra={
+                        "operation": "conversation.chat",
+                        "status": "tool_loop_capped",
+                        "rounds": tool_rounds - 1,
+                        "max_rounds": _MAX_TOOL_ROUNDS,
+                        "phase": self._state.get("phase"),
+                    },
+                )
+                self._history.append({
+                    "role": "user",
+                    "content": (
+                        f"SYSTEM: tool-call loop cap reached ({_MAX_TOOL_ROUNDS} "
+                        f"rounds). Stop calling tools and produce a text response "
+                        f"summarising progress and any unresolved issues. The user "
+                        f"will guide the next step."
+                    ),
+                })
+                response = await _call_llm(system, self._history[-_HISTORY_WINDOW:])
+                break
+
             tool_results = []
             for block in response.content:
                 if block.type == "tool_use":

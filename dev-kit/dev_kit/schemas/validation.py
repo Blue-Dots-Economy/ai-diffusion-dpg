@@ -125,6 +125,15 @@ def validate_domain_section(block: str, section: str, merged_data: dict) -> Opti
                 "block": block,
                 "section": top_level,
                 "error_count": len(e.errors()),
+                "field_errors": [
+                    {
+                        "loc": ".".join(str(p) for p in err["loc"]) or "<root>",
+                        "type": err.get("type", "unknown"),
+                        "msg": err.get("msg", ""),
+                        "input": _truncate_input(err.get("input")),
+                    }
+                    for err in e.errors()
+                ],
                 "latency_ms": int((time.time() - start) * 1000),
             },
         )
@@ -238,10 +247,45 @@ def validate_dpg_block(block: str, parsed_yaml: dict) -> Optional[str]:
                 "status": "failure",
                 "block": block,
                 "error_count": len(e.errors()),
+                "field_errors": [
+                    {
+                        "loc": ".".join(str(p) for p in err["loc"]) or "<root>",
+                        "type": err.get("type", "unknown"),
+                        "msg": err.get("msg", ""),
+                        "input": _truncate_input(err.get("input")),
+                    }
+                    for err in e.errors()
+                ],
                 "latency_ms": int((time.time() - start) * 1000),
             },
         )
         return formatted
+
+
+def _truncate_input(value: object, max_len: int = 200) -> object:
+    """Render an offending value compactly for log fields.
+
+    Pydantic ValidationError.errors() includes the original input value, which
+    can be a deeply nested dict or a long string. Logging it raw blows up log
+    volume and can leak large payloads. This helper repr's the value and caps
+    the length so structured logs stay readable.
+
+    Args:
+        value: The offending input from a Pydantic error dict (any type).
+        max_len: Maximum length of the rendered repr.
+
+    Returns:
+        The original value if small/None; otherwise a truncated repr string.
+    """
+    if value is None:
+        return None
+    try:
+        rendered = repr(value)
+    except Exception:
+        return "<unrenderable>"
+    if len(rendered) > max_len:
+        return rendered[:max_len] + "...<truncated>"
+    return rendered
 
 
 def _format_pydantic_error(err: ValidationError) -> str:
