@@ -17,7 +17,12 @@ from pydantic import AfterValidator
 # ---------------------------------------------------------------------------
 
 _CFG_PATH = Path(__file__).parent / "enums_config.yaml"
-_CFG: dict = yaml.safe_load(_CFG_PATH.read_text())
+try:
+    _CFG: dict = yaml.safe_load(_CFG_PATH.read_text())
+except FileNotFoundError as e:
+    raise ImportError(f"enums_config.yaml not found at {_CFG_PATH}") from e
+except yaml.YAMLError as e:
+    raise ImportError(f"enums_config.yaml is malformed: {e}") from e
 
 PROVIDERS: list[str] = _CFG["providers"]
 ANTHROPIC_MODELS: list[str] = _CFG["anthropic_models"]
@@ -35,6 +40,17 @@ EMBEDDING_PROVIDERS: list[str] = _CFG["embedding_providers"]
 
 
 def _make_validator(allowed: list[str], label: str):
+    """Create a Pydantic AfterValidator that enforces membership in `allowed`.
+
+    Args:
+        allowed: The list of valid string values for the field.
+        label: Human-readable field name used in the error message
+            (e.g. "provider", "model", "voice_id").
+
+    Returns:
+        A function suitable for use as `AfterValidator(...)` that returns
+        the value unchanged when valid, or raises ValueError otherwise.
+    """
     def check(v: str) -> str:
         if v not in allowed:
             raise ValueError(f"{label} must be one of {allowed}, got {v!r}")
