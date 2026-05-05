@@ -19,12 +19,9 @@ One top-level model per service:
 
 from __future__ import annotations
 
-import logging
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
-
-logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
