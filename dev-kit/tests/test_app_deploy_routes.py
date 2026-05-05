@@ -72,6 +72,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "CONFIGS_DIR", tmp_path)
     monkeypatch.setattr(app_module, "DPG_DIR", dpg_tmp)
     monkeypatch.setattr(deps_module, "HELM_INFRA_DIR", infra_tmp)
+    # Disable schema validation for existing tests (they use incomplete test YAML).
+    monkeypatch.setenv("DEVKIT_DPG_SCHEMA_STRICT", "0")
     app_module._engines.clear()
     return TestClient(app_module.app)
 
@@ -115,6 +117,8 @@ def client_with_project(tmp_path, monkeypatch, project_dir, project_slug):
     monkeypatch.setattr(app_module, "CONFIGS_DIR", tmp_path)
     monkeypatch.setattr(app_module, "DPG_DIR", dpg_tmp)
     monkeypatch.setattr(deps_module, "HELM_INFRA_DIR", infra_tmp)
+    # Disable schema validation for existing tests (they use incomplete test YAML).
+    monkeypatch.setenv("DEVKIT_DPG_SCHEMA_STRICT", "0")
     app_module._engines.clear()
     return TestClient(app_module.app), project_slug
 

@@ -1220,7 +1220,7 @@ async def get_dpg_values(slug: str) -> list:
 
 @app.put("/api/projects/{slug}/deploy/dpg-values/{block}")
 async def update_dpg_value(slug: str, block: str, body: dict) -> dict:
-    """Update a DPG framework YAML file.
+    """Update a DPG framework YAML file. Validates YAML syntax + Pydantic schema.
 
     Args:
         slug: Project slug (unused; endpoint is project-scoped for consistency).
@@ -1231,14 +1231,23 @@ async def update_dpg_value(slug: str, block: str, body: dict) -> dict:
         Dict with ``status: ok`` on success.
 
     Raises:
-        HTTPException: 400 if block name is not recognised.
+        HTTPException: 400 if block name is not recognised, YAML is invalid, or
+            Pydantic schema validation fails (when DEVKIT_DPG_SCHEMA_STRICT=1).
     """
     if block not in BLOCKS:
         raise HTTPException(status_code=400, detail=f"Unknown block: {block}")
     try:
-        yaml.safe_load(body["content"])
+        parsed = yaml.safe_load(body["content"]) or {}
     except yaml.YAMLError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid YAML: {exc}")
+
+    # Schema validation (gated by env flag for safe rollout).
+    if os.environ.get("DEVKIT_DPG_SCHEMA_STRICT", "1") == "1":
+        from dev_kit.schemas.validation import validate_dpg_block
+        error = validate_dpg_block(block, parsed)
+        if error:
+            raise HTTPException(status_code=400, detail=f"Schema validation failed:\n{error}")
+
     path = DPG_DIR / f"{block}.yaml"
     path.write_text(body["content"])
     return {"status": "ok"}
