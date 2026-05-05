@@ -69,13 +69,15 @@ def test_dotted_section_path_uses_top_level():
 
 
 def test_cross_field_validator_failure_visible():
-    """primary_model == fallback_model fires the model_validator."""
+    """A cross-field validator surfaces in the formatted error string."""
+    # provider=anthropic + an OpenAI model fires models_must_match_provider.
     err = validate_domain_section(
         "agent_core", "agent",
-        {"primary_model": "claude-sonnet-4-6", "fallback_model": "claude-sonnet-4-6"},
+        {"provider": "anthropic", "primary_model": "gpt-4o-2024-08-06",
+         "fallback_model": "claude-haiku-4-5-20251001"},
     )
     assert err is not None
-    assert "must be different" in err
+    assert "not valid for provider" in err
 
 
 # -- validate_dpg_block ------------------------------------------------------

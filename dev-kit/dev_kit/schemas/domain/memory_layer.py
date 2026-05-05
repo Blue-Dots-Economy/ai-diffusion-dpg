@@ -24,10 +24,14 @@ class SessionFieldDefinition(BaseModel):
 
     @model_validator(mode="after")
     def enum_requires_values(self) -> "SessionFieldDefinition":
+        """Validate enum schema. Empty-string default is allowed — represents
+        "not yet set" so the orchestrator's first-turn write can populate it
+        (e.g. KKB's `income_urgency` starts as "" until user expresses urgency).
+        """
         if self.type == SessionFieldType.enum:
             if not self.values:
                 raise ValueError("type='enum' requires non-empty 'values' list")
-            if self.default is not None and self.default not in self.values:
+            if self.default not in (None, "") and self.default not in self.values:
                 raise ValueError(f"default '{self.default}' must be one of values {self.values}")
         return self
 
@@ -35,6 +39,11 @@ class SessionFieldDefinition(BaseModel):
 # Framework-injected and lifecycle-managed session field names.
 # Declaring any of these in state.session.schema would silently overwrite
 # the framework value at session init — a quiet bug that's hard to trace.
+#
+# Note: language_preference is intentionally NOT reserved. Domains
+# (e.g. edubot-india) legitimately declare it in their session schema to
+# pin a default language; the orchestrator's first-turn detection still
+# overrides anything the schema initialises if the user actually sends text.
 RESERVED_SESSION_FIELD_NAMES: frozenset[str] = frozenset({
     # Infrastructure injected at session init (memory_layer.py:_build_initial_session)
     "user_id",
@@ -49,11 +58,6 @@ RESERVED_SESSION_FIELD_NAMES: frozenset[str] = frozenset({
     # Intermediate buffers
     "pending_user_message",
     "pending_normalised_input",
-    # Consent + preferences
-    "user_storage_mode",
-    "language_preference",
-    # Session telemetry
-    "turn_count",
 })
 
 
@@ -141,10 +145,15 @@ class PersistentStateConfig(BaseModel):
 
 
 class StateSection(BaseModel):
-    """memory_layer.state — session + persistent state config."""
+    """memory_layer.state — session + persistent state config.
+
+    persistent is optional — runtime memory_layer reads `.get("persistent", {})`
+    and informational/stateless agents (e.g. obsrv-docs-assistant) skip the
+    persistent graph entirely.
+    """
     model_config = ConfigDict(extra="forbid")
     session: SessionStateConfig
-    persistent: PersistentStateConfig
+    persistent: Optional[PersistentStateConfig] = None
 
 
 class UserDataPersistenceSection(BaseModel):

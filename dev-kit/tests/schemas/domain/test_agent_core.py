@@ -59,9 +59,14 @@ def test_agent_section_minimal():
     assert a.max_tool_rounds == 3
 
 
-def test_agent_section_primary_fallback_must_differ():
-    with pytest.raises(ValidationError, match="different"):
-        AgentSection(primary_model=_ANTHROPIC_PRIMARY, fallback_model=_ANTHROPIC_PRIMARY)
+def test_agent_section_primary_fallback_can_match():
+    """Runtime allows primary_model == fallback_model (e.g. healthbot-india).
+
+    The fallback exists to handle transient API failures even when both names
+    are identical — a stricter check would reject configs the runtime accepts.
+    """
+    a = AgentSection(primary_model=_ANTHROPIC_PRIMARY, fallback_model=_ANTHROPIC_PRIMARY)
+    assert a.primary_model == a.fallback_model
 
 
 def test_agent_section_max_tool_rounds_min_1():
@@ -449,9 +454,10 @@ def test_workflow_version_pattern():
         AgentWorkflowSection(**_workflow_kwargs(version="not_semver"))
 
 
-def test_workflow_system_prompt_min_length():
+def test_workflow_system_prompt_must_be_nonempty():
+    """Runtime accepts any non-empty agent_system_prompt; only "" is rejected."""
     with pytest.raises(ValidationError):
-        AgentWorkflowSection(**_workflow_kwargs(agent_system_prompt="too short"))
+        AgentWorkflowSection(**_workflow_kwargs(agent_system_prompt=""))
 
 
 def test_workflow_fallback_must_be_declared():

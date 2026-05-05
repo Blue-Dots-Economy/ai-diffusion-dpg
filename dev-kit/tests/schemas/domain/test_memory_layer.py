@@ -95,12 +95,27 @@ def test_session_state_schema_with_fields():
 def test_reserved_session_names_forbidden():
     """Schema must reject framework-managed field names."""
     for reserved in ("user_id", "journey_id", "is_returning", "opening_phrase_emitted",
-                      "current_subagent_id", "turn_count", "last_response"):
+                      "current_subagent_id", "last_response"):
         with pytest.raises(ValidationError, match="reserved"):
             SessionStateConfig(
                 ttl_minutes=60,
                 schema={reserved: SessionFieldDefinition(type="string")},
             )
+
+
+def test_language_preference_can_be_declared():
+    """language_preference is NOT reserved — domains may legitimately declare it.
+
+    Edubot-india pins a default language via state.session.schema; the orchestrator's
+    first-turn detection still updates it when the user actually sends text.
+    """
+    s = SessionStateConfig(
+        ttl_minutes=60,
+        schema={"language_preference": SessionFieldDefinition(
+            type="enum", values=["english", "hindi"], default="english"
+        )},
+    )
+    assert "language_preference" in s.schema
 
 
 def test_reserved_field_names_constant_complete():
@@ -109,7 +124,6 @@ def test_reserved_field_names_constant_complete():
         "user_id", "journey_id", "is_returning", "opening_phrase_emitted",
         "current_subagent_id", "was_adopted", "last_response",
         "pending_user_message", "pending_normalised_input",
-        "user_storage_mode", "language_preference", "turn_count",
     }
     assert RESERVED_SESSION_FIELD_NAMES == expected
 

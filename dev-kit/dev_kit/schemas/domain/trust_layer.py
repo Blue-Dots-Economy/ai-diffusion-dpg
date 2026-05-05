@@ -28,10 +28,12 @@ class HitlConfig(BaseModel):
 
     queue_backend excludes 'memory' — runtime crashes on it.
     Valid backends: log (dev), redis (prod queue), webhook (external HITL).
+    notification_webhook is read but not yet dispatched (GH-36).
     """
     model_config = ConfigDict(extra="forbid")
     holding_message: str = Field(..., min_length=1)
     queue_backend: TrustQueueBackend = TrustQueueBackend.log
+    notification_webhook: Optional[str] = None
 
 
 class InputRulesConfig(BaseModel):

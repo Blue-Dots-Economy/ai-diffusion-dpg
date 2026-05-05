@@ -6,7 +6,7 @@ step (post-deploy, via API) handles document ingestion. The LLM does not
 generate sources.
 """
 from __future__ import annotations
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from dev_kit.schemas.enums import EmbeddingProviderField
@@ -23,9 +23,9 @@ class StaticKnowledgeBaseSection(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
-    # collection_name and default_doc_type are optional in runtime (defaults shown).
-    # Keeping them optional so domains that accept the defaults don't have to set them.
-    collection_name: str = Field(default="dpg_knowledge", min_length=1, pattern=r"^[a-z][a-z0-9_]*$")
+    # collection_name pattern allows hyphens — runtime knowledge_engine accepts
+    # any non-empty string (e.g. youth-schemes-kb).
+    collection_name: str = Field(default="dpg_knowledge", min_length=1, pattern=r"^[a-z][a-z0-9_-]*$")
     top_k: int = Field(default=3, gt=0, le=50)
     similarity_threshold: float = Field(default=0.65, ge=0.0, le=1.0)
     embedding_provider: EmbeddingProviderField = "chroma_default"
@@ -34,6 +34,10 @@ class StaticKnowledgeBaseSection(BaseModel):
     chroma_persist_dir: str = "./data/chroma_db"   # Domain-overridable storage path
     metadata_filters: MetadataFiltersConfig = Field(default_factory=MetadataFiltersConfig)
     intent_filters: dict[str, list[str]] = Field(default_factory=dict)
+    # Existing domain configs declare a sources list inline (path/type/doc_type/refresh).
+    # The deploy wizard's IngestDocuments step also writes here. Accepted as a free-form
+    # list of dicts so legacy YAMLs round-trip without per-source schema enforcement.
+    sources: list[dict[str, Any]] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def intent_filter_requires_mappings_when_enabled(self) -> "StaticKnowledgeBaseSection":
@@ -62,11 +66,21 @@ class GlossarySection(BaseModel):
     )
 
 
+class MultimodalInputHandlerSection(BaseModel):
+    """Multimodal input handler block — image processing model selection.
+
+    Mirrors knowledge_engine runtime block. Empty/missing = disabled.
+    """
+    model_config = ConfigDict(extra="forbid")
+    image_model: str = ""
+
+
 class KnowledgeBlocksSection(BaseModel):
-    """Container for the knowledge blocks. Both children are optional."""
+    """Container for the knowledge blocks. All children optional."""
     model_config = ConfigDict(extra="forbid")
     static_knowledge_base: Optional[StaticKnowledgeBaseSection] = None
     glossary: Optional[GlossarySection] = None
+    multimodal_input_handler: Optional[MultimodalInputHandlerSection] = None
 
 
 class KnowledgeSection(BaseModel):

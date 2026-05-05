@@ -9,7 +9,6 @@ agent:
 preprocessing:
   language_normalisation:
     model: claude-haiku-4-5-20251001
-    provider: llm_native
     default_language: english
     supported_languages:
     - english
@@ -50,6 +49,8 @@ agent_workflow:
     system_prompt: Welcome the user warmly and briefly. Acknowledge that you can help
       them search and navigate the Obsrv documentation. Respond in the user's preferred
       language. Ask them what documentation topic or question they'd like help with.
+    opening_phrase: Hi! I can help you search and navigate the Obsrv documentation.
+      What would you like to know?
     routing:
     - intent: ready_for_question
       next_subagent_id: documentation_search
@@ -72,6 +73,7 @@ agent_workflow:
       questions, search the documentation using the available tools. Provide clear,
       contextual answers with links when relevant. Support follow-up questions by
       maintaining conversation context. Respond in the user's language.
+    opening_phrase: Let me search the Obsrv documentation for that.
     routing:
     - intent: ask_question
       next_subagent_id: documentation_search
@@ -91,6 +93,8 @@ agent_workflow:
     tools: []
     system_prompt: Thank the user for using the Obsrv documentation assistant. Wish
       them well with their development work. Keep it brief and friendly.
+    opening_phrase: Thanks for using the Obsrv docs assistant — good luck with your
+      build!
     routing: []
   workflow_id: obsrv_docs_assistant
   version: 1.0.0

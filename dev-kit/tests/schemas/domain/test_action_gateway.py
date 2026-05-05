@@ -208,25 +208,25 @@ def test_tool_extra_forbidden():
 
 def test_tools_section_can_be_empty():
     """tools list CAN be empty (no external tools)."""
-    s = ToolsSection(tools=[])
-    assert s.tools == []
+    s = ToolsSection.model_validate([])
+    assert s.root == []
 
 
 def test_tools_section_default_empty():
     s = ToolsSection()
-    assert s.tools == []
+    assert s.root == []
 
 
 def test_tools_section_with_tools():
-    s = ToolsSection(tools=[_rest_tool()])
-    assert len(s.tools) == 1
+    s = ToolsSection.model_validate([_rest_tool().model_dump()])
+    assert len(s.root) == 1
 
 
 def test_tools_section_max_50():
     """Domain configs cap at 50 tools."""
-    too_many = [_rest_tool(id=f"tool_{i}") for i in range(51)]
+    too_many = [_rest_tool(id=f"tool_{i}").model_dump() for i in range(51)]
     with pytest.raises(ValidationError):
-        ToolsSection(tools=too_many)
+        ToolsSection.model_validate(too_many)
 
 
 # -- ObservabilitySection ----------------------------------------------------

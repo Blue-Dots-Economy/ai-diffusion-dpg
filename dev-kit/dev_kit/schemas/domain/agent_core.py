@@ -42,6 +42,31 @@ def _coerce_null_features(value):
     return value
 
 
+class TerminationShortCircuitConfig(BaseModel):
+    """Agent.termination_short_circuit — NLU short-circuits when confident.
+
+    Mirrors agent_core/src/schema/config.py TerminationShortCircuitConfig.
+    Cuts the goodbye turn down to NLU + translation when confidence
+    crosses the threshold.
+    """
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = True
+    confidence_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+
+
+class CurrentQuestionConfig(BaseModel):
+    """Agent.current_question — feature toggle for current-question tracking."""
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = True
+
+
+class RecentToolExchangesConfig(BaseModel):
+    """Agent.recent_tool_exchanges — bounds last-N tool exchanges in context."""
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = True
+    max_exchanges: int = Field(default=3, ge=0, le=20)
+
+
 class AgentSection(BaseModel):
     """LLM model selection + retry/timeout policy. Required: provider, primary_model, fallback_model."""
     model_config = ConfigDict(extra="forbid")
@@ -56,6 +81,12 @@ class AgentSection(BaseModel):
     max_tool_rounds: int = Field(default=3, ge=1, le=20)
     ask_for_consent: bool = False
     consent_prompt: str = ""
+    # Optional sub-blocks mirrored from runtime AgentConfig. KKB declares
+    # termination_short_circuit; current_question and recent_tool_exchanges
+    # are framework-defaulted but accepted here for round-trip parity.
+    termination_short_circuit: Optional[TerminationShortCircuitConfig] = None
+    current_question: Optional[CurrentQuestionConfig] = None
+    recent_tool_exchanges: Optional[RecentToolExchangesConfig] = None
 
     # Pydantic 2 field validator: coerce YAML's empty mapping (None) to default FeaturesSection.
     # Null-coercion: YAML's empty mapping `features:` parses as None.
@@ -64,16 +95,6 @@ class AgentSection(BaseModel):
     _coerce_features = field_validator("features", mode="before")(
         classmethod(lambda cls, v: _coerce_null_features(v))
     )
-
-    @model_validator(mode="after")
-    def primary_fallback_must_differ(self) -> "AgentSection":
-        """Reject identical primary/fallback model IDs — fallback exists to handle primary failures."""
-        if self.primary_model == self.fallback_model:
-            raise ValueError(
-                "primary_model and fallback_model must be different — fallback exists "
-                "to handle primary failures, using the same model defeats the purpose"
-            )
-        return self
 
     @model_validator(mode="after")
     def models_must_match_provider(self) -> "AgentSection":
@@ -111,10 +132,15 @@ def _validate_helper_provider_model(provider: Optional[str], model: str) -> None
 
 
 class LanguageNormalisationSection(BaseModel):
-    """Language detection / normalisation helper config. provider=None inherits agent.provider."""
+    """Language detection / normalisation helper config. provider=None inherits agent.provider.
+
+    `model` defaults to "" — the runtime LanguageNormalisationConfig accepts
+    an empty model (the helper inherits agent.primary_model in that case),
+    so existing domain configs that omit the field round-trip cleanly.
+    """
     model_config = ConfigDict(extra="forbid")
     provider: Optional[ProviderField] = None   # None → inherit agent.provider at runtime
-    model: ChatModelField = Field(..., min_length=1)
+    model: str = ""   # empty allowed — helper inherits agent.primary_model at runtime
     default_language: LanguageField
     supported_languages: list[LanguageField] = Field(..., min_length=1)
     min_detection_tokens: int = Field(default=3, gt=0)
@@ -123,8 +149,9 @@ class LanguageNormalisationSection(BaseModel):
 
     @model_validator(mode="after")
     def model_must_match_helper_provider(self) -> "LanguageNormalisationSection":
-        """When provider is set, the helper's model must be in that provider's list."""
-        _validate_helper_provider_model(self.provider, self.model)
+        """When provider is set and model is non-empty, model must be in that provider's list."""
+        if self.model:
+            _validate_helper_provider_model(self.provider, self.model)
         return self
 
 
@@ -132,7 +159,7 @@ class NLUProcessorSection(BaseModel):
     """NLU classifier helper config. provider=None inherits agent.provider; intents must be non-empty."""
     model_config = ConfigDict(extra="forbid")
     provider: Optional[ProviderField] = None   # None → inherit agent.provider at runtime
-    model: ChatModelField
+    model: str = ""   # empty allowed — helper inherits agent.primary_model at runtime
     confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     user_state_confidence_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
     domain_instruction: str = ""
@@ -145,8 +172,9 @@ class NLUProcessorSection(BaseModel):
 
     @model_validator(mode="after")
     def model_must_match_helper_provider(self) -> "NLUProcessorSection":
-        """When provider is set, the helper's model must be in that provider's list."""
-        _validate_helper_provider_model(self.provider, self.model)
+        """When provider is set and model is non-empty, model must be in that provider's list."""
+        if self.model:
+            _validate_helper_provider_model(self.provider, self.model)
         return self
 
 
@@ -186,6 +214,18 @@ class UserStateModel(BaseModel):
         return self
 
 
+class SessionEndEvalConfig(BaseModel):
+    """Conversation.session_end_eval — opt-in session-end LLM signal (GH-137).
+
+    Mirrors runtime SessionEndEvalConfig. fail_action is validated but not
+    yet dispatched at runtime.
+    """
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = False
+    prompt: str = ""
+    fail_action: str = "none"
+
+
 class ConversationSection(BaseModel):
     """All conversation-level messages + optional user_state_model."""
     model_config = ConfigDict(extra="forbid")
@@ -200,6 +240,7 @@ class ConversationSection(BaseModel):
     returning_user_greeting: str = ""
     unsupported_language_message: str = ""
     user_state_model: Optional[UserStateModel] = None
+    session_end_eval: Optional[SessionEndEvalConfig] = None
 
 
 # -- agent_core.channels (language, reach phases) ----------------------------
@@ -281,12 +322,17 @@ class InvocationRules(BaseModel):
 
 
 class ConnectorDef(BaseModel):
-    """External tool/connector exposed to the LLM (REST API, identity, write actions)."""
+    """External tool/connector exposed to the LLM (REST API, identity, write actions).
+
+    description and invocation_rules are optional — the runtime ConnectorDef
+    defaults description="" and invocation_rules=InvocationRules() when omitted.
+    External read-only tools (like a public weather API) often skip both.
+    """
     model_config = ConfigDict(extra="forbid")
     name: str = Field(..., min_length=1)
-    description: str = Field(..., min_length=1)
+    description: str = ""
     input_schema: dict[str, Any] = Field(default_factory=dict)
-    invocation_rules: InvocationRules
+    invocation_rules: InvocationRules = Field(default_factory=InvocationRules)
 
 
 class InternalConnectorDef(ConnectorDef):
@@ -364,9 +410,12 @@ class SubAgent(BaseModel):
 class AgentWorkflowSection(BaseModel):
     """Top-level workflow definition: subagents, routing, fallback. 4 cross-field validators enforce graph integrity."""
     model_config = ConfigDict(extra="forbid")
-    workflow_id: str = Field(..., pattern=r"^[a-z][a-z0-9_]+$")
+    # workflow_id allows hyphens — runtime workflow_loader does not enforce a
+    # pattern beyond non-empty (e.g. youth-schemes-agent uses hyphens).
+    workflow_id: str = Field(..., min_length=1, pattern=r"^[a-z][a-z0-9_-]*$")
     version: str = Field(..., pattern=r"^\d+\.\d+\.\d+$")
-    agent_system_prompt: str = Field(..., min_length=20)
+    # agent_system_prompt min_length=1 — runtime accepts any non-empty string.
+    agent_system_prompt: str = Field(..., min_length=1)
     subagents: list[SubAgent] = Field(..., min_length=1)
     global_intents: list[str] = Field(default_factory=list)
     global_tools: list[str] = Field(default_factory=list)
@@ -440,6 +489,19 @@ class HitlSection(BaseModel):
     """HiTL handoff section — `response_message` is what the agent says when escalating."""
     model_config = ConfigDict(extra="forbid")
     response_message: str = Field(..., min_length=1)
+
+
+# -- agent_core.reach_layer (top-level default turn-assembler) ---------------
+
+class ReachLayerDefaultsSection(BaseModel):
+    """agent_core.reach_layer — fallback turn-assembler for channels without one.
+
+    Mirrors runtime ReachLayerDefaultsConfig. Lives at the top level of
+    agent_core.yaml intentionally — Agent Core reads these as defaults
+    when a channel does not declare its own turn_assembler block.
+    """
+    model_config = ConfigDict(extra="forbid")
+    turn_assembler: Optional[TurnAssemblerConfig] = None
 
 
 # -- agent_core.observability (observability phase) --------------------------

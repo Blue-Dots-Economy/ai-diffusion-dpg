@@ -35,10 +35,26 @@ class WebUiConfig(BaseModel):
     delete_conversation_confirm: str = ""
 
 
+class WebAuthConfig(BaseModel):
+    """Web channel auth toggle (Google SSO etc.). Mirrors runtime WebAuthConfig.
+
+    Domains may override individual fields (kkb sets cookie_secure=False for
+    local dev); session cookie name + TTL stay framework defaults.
+    """
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = False
+    google_client_id: str = ""
+    cookie_secure: bool = True
+    session_cookie_name: str = "reach_session"
+    session_ttl_s: int = Field(default=86400, gt=0)
+    cookie_samesite: str = "lax"
+
+
 class WebChannelSection(BaseModel):
     """reach_layer.channels.web — web-channel domain config."""
     model_config = ConfigDict(extra="forbid")
     ui: WebUiConfig
+    auth: Optional[WebAuthConfig] = None
 
 
 class RayaVoiceConfig(BaseModel):
@@ -75,6 +91,15 @@ class VoiceAgentCoreClient(BaseModel):
     barge_in_acknowledgement: str = ""
 
 
+class VadConfig(BaseModel):
+    """Silero VAD tuning for telephony audio (8 kHz). Mirrors runtime VadConfig.
+
+    KKB tightens stop_secs to 1.0 for Hindi cadence with rural callers.
+    """
+    model_config = ConfigDict(extra="forbid")
+    stop_secs: float = Field(default=0.4, ge=0.0, le=10.0)
+
+
 class VoiceChannelSection(BaseModel):
     """reach_layer.channels.voice — voice-channel domain config.
 
@@ -88,6 +113,14 @@ class VoiceChannelSection(BaseModel):
     filler_phrase: Optional[str] = Field(default=None, min_length=1)
     filler_threshold_ms: Optional[int] = Field(default=None, gt=0, le=10000)
     barge_in_recency_ms: Optional[int] = Field(default=None, gt=0, le=10000)
+    vad: Optional[VadConfig] = None
+
+
+class CliChannelSection(BaseModel):
+    """reach_layer.channels.cli — terminal REPL prompt + agent label."""
+    model_config = ConfigDict(extra="forbid")
+    prompt: str = ""
+    agent_prefix: str = ""
 
 
 class ChannelsSection(BaseModel):
@@ -95,6 +128,7 @@ class ChannelsSection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     web: Optional[WebChannelSection] = None
     voice: Optional[VoiceChannelSection] = None
+    cli: Optional[CliChannelSection] = None
 
 
 class CommonObservabilityConfig(BaseModel):

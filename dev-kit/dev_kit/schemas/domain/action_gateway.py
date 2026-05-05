@@ -9,7 +9,7 @@ Notable runtime constraints baked into enums:
 """
 from __future__ import annotations
 from typing import Any, Optional
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 
 from dev_kit.schemas.enums import (
     ToolType, ToolCategory, AuthType, HttpMethod,
@@ -48,11 +48,31 @@ class EndpointDefinition(BaseModel):
     params: list[ParamDefinition] = Field(default_factory=list)
 
 
+class FieldMapping(BaseModel):
+    """One entry in response.field_mapping (reserved — runtime impl in GH-93).
+
+    Mirrors action_gateway runtime FieldMapping. Existing healthbot/edubot
+    YAMLs declare these; runtime currently passes them through unprocessed.
+    """
+    model_config = ConfigDict(extra="forbid")
+    source: str = Field(..., min_length=1)
+    target: str = Field(..., min_length=1)
+    type: ParamType = ParamType.string
+    description: str = ""
+
+
 class ResponseConfig(BaseModel):
-    """Tool response handling — size cap + optional projection."""
+    """Tool response handling — size cap + optional projection / field_mapping."""
     model_config = ConfigDict(extra="forbid")
     max_size_chars: int = Field(default=4000, gt=0, le=50000)
     projection: Optional[dict] = None
+    field_mapping: Optional[list[FieldMapping]] = None
+
+
+class HealthCheckConfig(BaseModel):
+    """Per-tool startup health-check toggle. enabled=False skips the HEAD probe."""
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = True
 
 
 class ToolDefinition(BaseModel):
@@ -68,6 +88,7 @@ class ToolDefinition(BaseModel):
     category: ToolCategory = ToolCategory.read
     description: str = Field(..., min_length=1)
     timeout_ms: int = Field(default=5000, gt=0, le=120000)
+    health_check: Optional[HealthCheckConfig] = None
 
     # REST-only
     base_url: Optional[str] = None
@@ -95,10 +116,15 @@ class ToolDefinition(BaseModel):
         return self
 
 
-class ToolsSection(BaseModel):
-    """The tools list — CAN BE EMPTY when no external tools are configured."""
-    model_config = ConfigDict(extra="forbid")
-    tools: list[ToolDefinition] = Field(default_factory=list, max_length=50)
+class ToolsSection(RootModel[list[ToolDefinition]]):
+    """The tools list — CAN BE EMPTY when no external tools are configured.
+
+    Wraps a bare list because the YAML structure is ``tools: [ ... ]`` at the
+    top of action_gateway.yaml — the section value IS the list. Using a
+    RootModel lets validate() accept the list directly without an extra
+    wrapper key.
+    """
+    root: list[ToolDefinition] = Field(default_factory=list, max_length=50)
 
 
 class ObservabilitySection(BaseModel):

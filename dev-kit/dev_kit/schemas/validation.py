@@ -40,6 +40,7 @@ DOMAIN_SECTION_SCHEMAS: dict[tuple[str, str], type] = {
     ("agent_core", "agent_workflow"): agent_core.AgentWorkflowSection,
     ("agent_core", "entity_to_profile_field"): agent_core.EntityToProfileFieldSection,
     ("agent_core", "hitl"): agent_core.HitlSection,
+    ("agent_core", "reach_layer"): agent_core.ReachLayerDefaultsSection,
     ("agent_core", "observability"): agent_core.ObservabilitySection,
     ("knowledge_engine", "knowledge"): knowledge_engine.KnowledgeSection,
     ("knowledge_engine", "observability"): knowledge_engine.ObservabilitySection,
