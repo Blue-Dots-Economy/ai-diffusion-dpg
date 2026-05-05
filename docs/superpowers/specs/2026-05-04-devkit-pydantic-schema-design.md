@@ -1489,13 +1489,46 @@ def validate_dpg_block(block: str, parsed_yaml: dict) -> Optional[str]:
 
 
 def _format_pydantic_error(err: ValidationError) -> str:
-    """Render a ValidationError as a single human-readable string for LLM/operator feedback."""
+    """Render a ValidationError as a single human-readable string for LLM/operator feedback.
+
+    Includes the error type code, field path, message, and the offending input value
+    so the LLM can self-correct on retry without resending the same wrong value.
+    """
     lines = []
     for e in err.errors():
-        path = ".".join(str(p) for p in e["loc"])
-        lines.append(f"- {path}: {e['msg']}")
+        path = ".".join(str(p) for p in e["loc"]) or "<root>"
+        err_type = e.get("type", "unknown")
+        msg = e.get("msg", "")
+        # Include the offending value when present and small enough to be useful.
+        # `input` is the raw value Pydantic rejected.
+        offending = e.get("input")
+        if offending is None:
+            value_hint = ""
+        else:
+            try:
+                rendered = repr(offending)
+                if len(rendered) > 200:
+                    rendered = rendered[:200] + "...<truncated>"
+                value_hint = f" (you sent: {rendered})"
+            except Exception:
+                value_hint = ""
+        lines.append(f"- {path} [{err_type}]: {msg}{value_hint}")
     return "\n".join(lines)
 ```
+
+**Example LLM-facing error string** produced by this formatter:
+
+```
+VALIDATION_ERROR (attempt 1/3):
+- agent.max_tool_rounds [greater_than_equal]: Input should be greater than or equal to 1 (you sent: 0)
+- agent [value_error]: primary_model and fallback_model must be different (you sent: {'primary_model': 'claude-sonnet-4-6', 'fallback_model': 'claude-sonnet-4-6', ...})
+- agent.foo [extra_forbidden]: Extra inputs are not permitted (you sent: 'bar')
+```
+
+The three pieces — error type code in brackets, the human message, and the offending value — give the LLM enough context to:
+- Categorise the failure (constraint violation vs typo vs cross-field rule)
+- See the exact value that was rejected (avoids retrying with the same wrong value due to merge confusion)
+- Recover without needing the user to clarify intent
 
 ### 8.2 `accumulator.update()` changes
 
