@@ -64,6 +64,29 @@ Where the inline test code below references types that no longer exist (e.g., `C
 
 ---
 
+## Plan update notes (2026-05-05 — runtime verification round)
+
+After the multi-provider merge note above, a 7-agent verification round and a 4-agent code-audit round produced 16 additional spec changes (commit `9b11927`). These are reflected in the spec but not transcribed into the inline plan code below — when implementing the affected tasks, **read the spec section for the current schema and write tests accordingly**.
+
+Per-task additions to expect:
+
+- **Task 2 (knowledge_engine)** — `StaticKnowledgeBaseSection.collection_name` is now optional with default `"dpg_knowledge"`; `default_doc_type` is optional with default `"general"`; new field `chroma_persist_dir`. Tests should reflect this.
+- **Task 4 (trust_layer)** — `TrustSection` now includes `policy_pack: str` and `policy_packs: dict[str, PolicyPackConfig]`. New supporting classes: `GuardrailConfig`, `PolicyPackConfig`. Two new enums in `enums.py`: `GuardrailSeverity`, `GuardrailFailureMode`. Tests cover guardrail construction and the `policy_pack_must_be_declared` cross-field validator.
+- **Task 6 (memory_layer)** — Added `RESERVED_SESSION_FIELD_NAMES` constant + `schema_must_not_use_reserved_names` validator on `SessionStateConfig`. New typed classes `ChildNodeConfig` and `AdhocNodeConfig`; `SubnodeConfig.{child, children, adhoc}` are now properly typed (not `dict`). Tests cover both.
+- **Task 7 (reach_layer)** — `VoiceChannelSection.barge_in_recency_ms` (`Optional[int]`, gt=0, le=10000). One additional test case.
+- **Task 8 (agent_core)** — Substantial changes:
+  - `TtsRulesConfig` adds `email` + `named_entities`.
+  - `FeaturesSection` adds `_coerce_null_features` `mode="before"` validator (test: passing `features=None` to AgentSection coerces to default).
+  - `NLUProcessorSection.intents` now `min_length=1` required.
+  - `InvocationRules` adds 5 GH-176 fields and new `InvocationSafety` class; relaxes 4 string fields from `min_length=1` → optional empty.
+  - `SubAgent.opening_phrase` is now `min_length=1` required for **ALL** subagents (terminal too); drop the `non_terminal_needs_opening_phrase` validator.
+  - `RoutingRule` adds `session_writes_must_be_scalars` validator (rejects dict/list values).
+- **Task 11 (round-trip tests)** — extra protection: kkb's `policy_pack`/`policy_packs`, GH-176 invocation fields, TTS email/named_entities will now validate cleanly. employ-voice-bot's sli/audit overrides will validate cleanly too.
+
+Implementation should follow the spec verbatim — the inline code below is from before the verification round and may name fewer fields/validators than the spec ultimately requires.
+
+---
+
 ## File structure
 
 Files to create:
