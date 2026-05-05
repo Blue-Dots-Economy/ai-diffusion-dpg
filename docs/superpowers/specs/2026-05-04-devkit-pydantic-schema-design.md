@@ -444,6 +444,18 @@ class RoutingOperator(str, Enum):
 class InternalRoute(str, Enum):
     """Valid internal connector routes. Currently only knowledge_engine."""
     knowledge_engine = "knowledge_engine"
+
+
+class GuardrailSeverity(str, Enum):
+    """Trust layer policy-pack guardrail severity."""
+    blocker = "blocker"
+    warning = "warning"
+
+
+class GuardrailFailureMode(str, Enum):
+    """Trust layer guardrail failure response. block=refuse, constrain=apply prompt_constraints."""
+    block = "block"
+    constrain = "constrain"
 ```
 
 ---
@@ -459,7 +471,7 @@ Phase prompts inject the relevant subset (see phase→section mapping in design 
 """
 from __future__ import annotations
 from typing import Optional, Any
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from dev_kit.schemas.enums import (
     ANTHROPIC_MODELS, OPENAI_MODELS,
@@ -476,11 +488,23 @@ class FeaturesSection(BaseModel):
     None means "use the provider's intrinsic capability." A bool tightens the
     effective feature for this deployment. Cannot widen — chat_provider factory
     rejects True against a False capability.
+
+    Mirrors agent_core/src/schema/config.py FeaturesConfig including the
+    null-coercion validator: when YAML's `agent.features:` block has all
+    sub-keys commented out, it parses as None. Without this coercion, the
+    field would fail validation on a config the runtime accepts.
     """
     model_config = ConfigDict(extra="forbid")
     prompt_cache: Optional[bool] = None
     streaming: Optional[bool] = None
     image_input: Optional[bool] = None
+
+
+def _coerce_null_features(value):
+    """Treat features=None (YAML empty mapping) as the default FeaturesSection."""
+    if value is None:
+        return FeaturesSection()
+    return value
 
 
 class AgentSection(BaseModel):
@@ -497,6 +521,13 @@ class AgentSection(BaseModel):
     max_tool_rounds: int = Field(default=3, ge=1, le=20)
     ask_for_consent: bool = False
     consent_prompt: str = ""
+
+    # Null-coercion: YAML's empty mapping `features:` parses as None.
+    # Mirror runtime behaviour so domain configs with commented-out features
+    # don't fail validation.
+    _coerce_features = field_validator("features", mode="before")(
+        classmethod(lambda cls, v: _coerce_null_features(v))
+    )
 
     @model_validator(mode="after")
     def primary_fallback_must_differ(self) -> "AgentSection":
@@ -564,7 +595,7 @@ class NLUProcessorSection(BaseModel):
     confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     user_state_confidence_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
     domain_instruction: str = ""
-    intents: list[str] = Field(default_factory=list)
+    intents: list[str] = Field(..., min_length=1)   # workflow_loader rejects empty list
     entities: list[str] = Field(default_factory=list)
     sentiment_classes: list[str] = Field(
         default_factory=lambda: ["neutral", "positive", "distressed", "frustrated"]
@@ -637,6 +668,8 @@ class TtsRulesConfig(BaseModel):
     abbreviations: str = ""
     output_script: str = ""
     english_loanwords: str = ""
+    email: str = ""               # KKB has this; LLM doesn't generate
+    named_entities: str = ""      # KKB has this; LLM doesn't generate
 
 
 class TurnAssemblerConfig(BaseModel):
@@ -664,14 +697,37 @@ class ChannelsSection(BaseModel):
 
 # -- agent_core.connectors (knowledge, tools phases) -------------------------
 
-class InvocationRules(BaseModel):
+class InvocationSafety(BaseModel):
+    """GH-176 safety contract: data the LLM must never present or speak aloud."""
     model_config = ConfigDict(extra="forbid")
-    call_when: str = Field(..., min_length=1)
+    never_present: list[str] = Field(default_factory=list)
+    never_speak: list[str] = Field(default_factory=list)
+
+
+class InvocationRules(BaseModel):
+    """LLM invocation contract for one connector.
+
+    The first six fields are LLM-authored (call_when, required_before_calling,
+    must_not_substitute, on_empty, on_failure, bridge_line). The remaining
+    GH-176 presentation-contract fields (exception_no_call, ranking_order,
+    presentation_limit, refinement_loop_max, safety) are hand-authored by
+    the operator in the YAML — the LLM phase prompt does not ask for them.
+    Spec accepts them so existing KKB-style configs round-trip cleanly.
+    Runtime accepts empty defaults on all fields.
+    """
+    model_config = ConfigDict(extra="forbid")
+    call_when: str = ""
     required_before_calling: list[str] = Field(default_factory=list)
-    must_not_substitute: str = Field(..., min_length=1)
-    on_empty: str = Field(..., min_length=1)
-    on_failure: str = Field(..., min_length=1)
+    must_not_substitute: str = ""
+    on_empty: str = ""
+    on_failure: str = ""
     bridge_line: str = ""
+    # GH-176 presentation contract (hand-authored, not LLM-generated)
+    exception_no_call: str = ""
+    ranking_order: list[str] = Field(default_factory=list)
+    presentation_limit: Optional[int] = Field(default=None, gt=0)
+    refinement_loop_max: Optional[int] = Field(default=None, gt=0)
+    safety: InvocationSafety = Field(default_factory=InvocationSafety)
 
 
 class ConnectorDef(BaseModel):
@@ -712,8 +768,30 @@ class RoutingRule(BaseModel):
     conditions: list[RoutingCondition] = Field(default_factory=list)
     session_writes: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def session_writes_must_be_scalars(self) -> "RoutingRule":
+        """Runtime workflow_loader rejects non-scalar session_writes values.
+
+        Mirrors agent_core/src/workflow_loader.py: each value must be a
+        scalar (str, int, float, bool, None) — dict/list values cause a
+        ConfigurationError at startup.
+        """
+        for key, val in self.session_writes.items():
+            if isinstance(val, (dict, list)):
+                raise ValueError(
+                    f"session_writes[{key!r}] must be a scalar "
+                    f"(str/int/float/bool/None), got {type(val).__name__}: {val!r}"
+                )
+        return self
+
 
 class SubAgent(BaseModel):
+    """One subagent in the workflow graph.
+
+    Runtime workflow_loader.py requires opening_phrase for ALL subagents
+    (terminal and non-terminal alike — adopted-state callbacks always
+    need a phrase to emit on entry).
+    """
     model_config = ConfigDict(extra="forbid")
     id: str = Field(..., min_length=1)
     name: str = Field(..., min_length=1)
@@ -724,14 +802,10 @@ class SubAgent(BaseModel):
     valid_intents: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
     system_prompt: str = Field(..., min_length=1)
-    opening_phrase: str = ""
+    opening_phrase: str = Field(..., min_length=1)   # required for all subagents
     routing: list[RoutingRule] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def non_terminal_needs_opening_phrase(self) -> "SubAgent":
-        if not self.is_terminal and not self.opening_phrase.strip():
-            raise ValueError(f"Non-terminal subagent '{self.id}' must have non-empty opening_phrase")
-        return self
+    # opening_phrase non-empty enforced by Field(..., min_length=1) above —
+    # runtime requires it for ALL subagents (adopted-state callbacks).
 
 
 class AgentWorkflowSection(BaseModel):
@@ -850,12 +924,15 @@ class MetadataFiltersConfig(BaseModel):
 class StaticKnowledgeBaseSection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool = True
-    collection_name: str = Field(..., min_length=1, pattern=r"^[a-z][a-z0-9_]*$")
+    # collection_name and default_doc_type are optional in runtime (defaults shown).
+    # Keeping them optional so domains that accept the defaults don't have to set them.
+    collection_name: str = Field(default="dpg_knowledge", min_length=1, pattern=r"^[a-z][a-z0-9_]*$")
     top_k: int = Field(default=3, gt=0, le=50)
     similarity_threshold: float = Field(default=0.65, ge=0.0, le=1.0)
     embedding_provider: EmbeddingProviderField = "chroma_default"
     embedding_model: str = ""
-    default_doc_type: str = Field(..., min_length=1)
+    default_doc_type: str = Field(default="general", min_length=1)
+    chroma_persist_dir: str = "./data/chroma_db"   # Domain-overridable storage path
     metadata_filters: MetadataFiltersConfig = Field(default_factory=MetadataFiltersConfig)
     intent_filters: dict[str, list[str]] = Field(default_factory=dict)
 
@@ -928,10 +1005,53 @@ class SessionFieldDefinition(BaseModel):
         return self
 
 
+# Framework-injected and lifecycle-managed session field names.
+# Declaring any of these in state.session.schema would silently overwrite
+# the framework value at session init — a quiet bug that's hard to trace.
+RESERVED_SESSION_FIELD_NAMES: frozenset[str] = frozenset({
+    # Infrastructure injected at session init (memory_layer.py:_build_initial_session)
+    "user_id",
+    "journey_id",
+    "is_returning",
+    # Session lifecycle latches (must reset per session)
+    "opening_phrase_emitted",
+    # Framework routing/state managed by Agent Core orchestrator
+    "current_subagent_id",
+    "was_adopted",
+    "last_response",
+    # Intermediate buffers
+    "pending_user_message",
+    "pending_normalised_input",
+    # Consent + preferences
+    "user_storage_mode",
+    "language_preference",
+    # Session telemetry
+    "turn_count",
+})
+
+
 class SessionStateConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     ttl_minutes: int = Field(..., gt=0, le=10080)  # ≤ 1 week
     schema: dict[str, SessionFieldDefinition] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def schema_must_not_use_reserved_names(self) -> "SessionStateConfig":
+        """Forbid re-declaring framework-injected session fields.
+
+        If a domain declares e.g. `user_id` in schema, the framework's value
+        silently overwrites the declared default at session init — declared
+        as a hard error to surface this hazard at devkit time.
+        """
+        conflicts = set(self.schema.keys()) & RESERVED_SESSION_FIELD_NAMES
+        if conflicts:
+            raise ValueError(
+                f"state.session.schema declares reserved framework fields: "
+                f"{sorted(conflicts)}. These are managed by Memory Layer / Agent "
+                f"Core and must not be redeclared in domain config — they would "
+                f"be silently overwritten at session init."
+            )
+        return self
 
 
 class UserNodeConfig(BaseModel):
@@ -940,14 +1060,33 @@ class UserNodeConfig(BaseModel):
     key: str = Field(..., min_length=1)
 
 
+class AdhocNodeConfig(BaseModel):
+    """Ad-hoc attribute subnode (free-form key/value pairs on the graph)."""
+    model_config = ConfigDict(extra="forbid")
+    label: str = Field(..., min_length=1)
+    rel: str = Field(..., min_length=1)
+    fields: list[str] = Field(default_factory=list)
+
+
+class ChildNodeConfig(BaseModel):
+    """Child node under a subnode's `child` or `children`. Recursive."""
+    model_config = ConfigDict(extra="forbid")
+    label: str = Field(..., min_length=1)
+    rel: str = Field(..., min_length=1)
+    fields: list[str] = Field(default_factory=list)
+    children: Optional[list["ChildNodeConfig"]] = None
+    adhoc: Optional[AdhocNodeConfig] = None
+
+
 class SubnodeConfig(BaseModel):
+    """One subnode hanging off the user node. Mirrors runtime memory_layer schema."""
     model_config = ConfigDict(extra="forbid")
     rel: str = Field(..., min_length=1)
     grouping: bool = False
     declared_fields: list[str] = Field(default_factory=list)
-    child: Optional[dict] = None
-    children: Optional[list[dict]] = None
-    adhoc: Optional[dict] = None
+    child: Optional[ChildNodeConfig] = None
+    children: Optional[list[ChildNodeConfig]] = None
+    adhoc: Optional[AdhocNodeConfig] = None
 
 
 class GraphConfig(BaseModel):
@@ -1007,7 +1146,10 @@ class ObservabilitySection(BaseModel):
 ```python
 from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from dev_kit.schemas.enums import TrustQueueBackend, DignityFailAction
+from dev_kit.schemas.enums import (
+    TrustQueueBackend, DignityFailAction,
+    GuardrailSeverity, GuardrailFailureMode,
+)
 
 
 class ConsentConfig(BaseModel):
@@ -1035,12 +1177,47 @@ class OutputRulesConfig(BaseModel):
     output_blocked_message: str = Field(..., min_length=1)
 
 
+class GuardrailConfig(BaseModel):
+    """One named guardrail. prompt_constraints + required_disclosures are
+    actively injected into the LLM system prompt every turn (via
+    trust_layer/src/blocks/guardrails.py.assemble_constraints).
+    severity and failure_mode are validated but not yet runtime-enforced (GH-170).
+    """
+    model_config = ConfigDict(extra="forbid")
+    severity: GuardrailSeverity = GuardrailSeverity.warning
+    failure_mode: GuardrailFailureMode = GuardrailFailureMode.constrain
+    prompt_constraints: list[str] = Field(default_factory=list)
+    required_disclosures: list[str] = Field(default_factory=list)
+    refusal_template: Optional[str] = None
+
+
+class PolicyPackConfig(BaseModel):
+    """A named policy pack containing a dict of guardrails keyed by risk name."""
+    model_config = ConfigDict(extra="forbid")
+    guardrails: dict[str, GuardrailConfig] = Field(default_factory=dict)
+
+
 class TrustSection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     consent: ConsentConfig = Field(default_factory=ConsentConfig)
     hitl: HitlConfig
     input_rules: InputRulesConfig
     output_rules: OutputRulesConfig
+    # Active policy pack name + the dict of pack definitions. The active pack's
+    # guardrails are injected into the LLM system prompt every turn via
+    # trust_layer.guardrails.assemble_constraints. Without these, no safety
+    # constraints reach the LLM — silent safety degradation.
+    policy_pack: str = ""
+    policy_packs: dict[str, PolicyPackConfig] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def policy_pack_must_be_declared(self) -> "TrustSection":
+        if self.policy_pack and self.policy_pack not in self.policy_packs:
+            raise ValueError(
+                f"policy_pack {self.policy_pack!r} is not declared in policy_packs. "
+                f"Declared packs: {sorted(self.policy_packs.keys())}"
+            )
+        return self
 
 
 class DignityCheckSection(BaseModel):
@@ -1239,6 +1416,10 @@ class VoiceChannelSection(BaseModel):
     terminal_word: Optional[str] = None
     filler_phrase: Optional[str] = None
     filler_threshold_ms: Optional[int] = Field(default=None, gt=0, le=10000)
+    # Domain-tunable barge-in window: how long after TTS a user interrupt counts
+    # as barge-in. Default (runtime) is 1500ms — slower TTS or longer drain may
+    # need higher values. None → use runtime default.
+    barge_in_recency_ms: Optional[int] = Field(default=None, gt=0, le=10000)
 
 
 class ChannelsSection(BaseModel):
@@ -1296,10 +1477,35 @@ class OutcomesConfig(BaseModel):
     metrics: list[MetricDefinition] = Field(default_factory=list)
 
 
+# Domain-overridable SLI / audit / telemetry sections. The DPG schema (7.7)
+# defines framework defaults for these; domains can override individual fields
+# (e.g., employ-voice-bot bumps turn_latency_p99_ms to 1500). Spec accepts
+# partial overrides so the round-trip test passes against existing configs.
+
+class SliOverride(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    turn_latency_p99_ms: Optional[int] = Field(default=None, gt=0, le=10000)
+    trust_block_rate_max: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+
+
+class AuditOverride(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    pii_fields_excluded: Optional[list[str]] = None
+    retention_days: Optional[int] = Field(default=None, gt=0, le=3650)
+
+
+class TelemetryOverride(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    pii_fields_excluded: Optional[list[str]] = None
+
+
 class ObservabilitySection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     domain: str = Field(..., min_length=1)
     outcomes: Optional[OutcomesConfig] = None
+    sli: Optional[SliOverride] = None
+    audit: Optional[AuditOverride] = None
+    telemetry: Optional[TelemetryOverride] = None
 ```
 
 ---
