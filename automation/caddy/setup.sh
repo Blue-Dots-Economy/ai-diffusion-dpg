@@ -98,10 +98,12 @@ fi
 # ---------------------------------------------------------------------------
 
 echo "[2/5] Ensuring rate_limit plugin is installed..."
+PLUGIN_INSTALLED=0
 if caddy list-modules 2>/dev/null | grep -q '^http\.handlers\.rate_limit$'; then
   echo "      rate_limit module already present, skipping."
 else
   caddy add-package github.com/mholt/caddy-ratelimit
+  PLUGIN_INSTALLED=1
 fi
 
 # ---------------------------------------------------------------------------
@@ -197,18 +199,24 @@ chown root:caddy /etc/caddy/Caddyfile
 chmod 0640 /etc/caddy/Caddyfile
 
 # ---------------------------------------------------------------------------
-# Validate, then reload (no downtime). systemd's hot-reload picks up changes
-# without dropping in-flight TLS handshakes.
+# Validate, then reload (no downtime) -- unless the binary itself was just
+# swapped by `caddy add-package`, in which case we must restart so the new
+# binary is re-exec'd. `systemctl reload` only pushes config to the running
+# process via the admin API; modules added to the on-disk binary won't be
+# loaded until the process restarts.
 # ---------------------------------------------------------------------------
 
-echo "[5/5] Validating and reloading Caddy..."
+echo "[5/5] Validating and (re)starting Caddy..."
 caddy validate --config /etc/caddy/Caddyfile
 
 systemctl enable caddy >/dev/null 2>&1 || true
-if systemctl is-active --quiet caddy; then
-  systemctl reload caddy
-else
+if ! systemctl is-active --quiet caddy; then
   systemctl start caddy
+elif [[ "${PLUGIN_INSTALLED}" -eq 1 ]]; then
+  echo "      rate_limit plugin was just installed; restarting to pick up new binary."
+  systemctl restart caddy
+else
+  systemctl reload caddy
 fi
 
 cat <<EOF
