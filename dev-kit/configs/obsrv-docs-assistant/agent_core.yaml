@@ -3,7 +3,7 @@ agent:
   # the choice explicit so deployments are auditable.
   provider: anthropic
   primary_model: claude-haiku-4-5-20251001
-  fallback_model: claude-haiku-4-5-20251001
+  fallback_model: claude-sonnet-4-5-20250929
   ask_for_consent: false
   consent_prompt: ''
 preprocessing:

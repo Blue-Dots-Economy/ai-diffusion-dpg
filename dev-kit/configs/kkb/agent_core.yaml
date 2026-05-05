@@ -9,7 +9,7 @@ agent:
   # fallback_model: gpt-5.4-mini-2026-03-17
   provider: anthropic
   primary_model: claude-haiku-4-5-20251001
-  fallback_model: claude-haiku-4-5-20251001
+  fallback_model: claude-sonnet-4-5-20250929
   ask_for_consent: true
   consent_prompt: "नमस्ते! काम की बात में आपका स्वागत है। क्या मैं आपकी ट्रेड और लोकेशन याद रख सकती हूँ? इससे अगली बार आपको दोबारा बताना नहीं पड़ेगा।"
 

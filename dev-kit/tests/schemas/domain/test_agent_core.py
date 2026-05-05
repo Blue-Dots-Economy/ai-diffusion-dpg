@@ -59,14 +59,15 @@ def test_agent_section_minimal():
     assert a.max_tool_rounds == 3
 
 
-def test_agent_section_primary_fallback_can_match():
-    """Runtime allows primary_model == fallback_model (e.g. healthbot-india).
+def test_agent_section_primary_fallback_must_differ():
+    """Primary and fallback models must be different.
 
-    The fallback exists to handle transient API failures even when both names
-    are identical — a stricter check would reject configs the runtime accepts.
+    The fallback exists to handle primary failures; using the same model defeats
+    the purpose. This validator enforces design intent.
     """
-    a = AgentSection(primary_model=_ANTHROPIC_PRIMARY, fallback_model=_ANTHROPIC_PRIMARY)
-    assert a.primary_model == a.fallback_model
+    with pytest.raises(ValidationError) as exc_info:
+        AgentSection(primary_model=_ANTHROPIC_PRIMARY, fallback_model=_ANTHROPIC_PRIMARY)
+    assert "must be different" in str(exc_info.value)
 
 
 def test_agent_section_max_tool_rounds_min_1():

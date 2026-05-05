@@ -12,6 +12,21 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from dev_kit.schemas.enums import EmbeddingProviderField
 
 
+# -- Knowledge source typing (mirrors runtime KnowledgeSource) ----------
+
+KnowledgeSourceType = Literal["static", "always_include"]
+KnowledgeRefreshSchedule = Literal["manual", "annual", "monthly"]
+
+
+class KnowledgeSourceEntry(BaseModel):
+    """One ingestion source entry (mirrors runtime KnowledgeSource)."""
+    model_config = ConfigDict(extra="forbid")
+    path: str = Field(..., min_length=1)
+    type: KnowledgeSourceType
+    doc_type: str = Field(..., min_length=1)
+    refresh: KnowledgeRefreshSchedule
+
+
 class MetadataFiltersConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     use_location_filter: bool = True
@@ -35,9 +50,9 @@ class StaticKnowledgeBaseSection(BaseModel):
     metadata_filters: MetadataFiltersConfig = Field(default_factory=MetadataFiltersConfig)
     intent_filters: dict[str, list[str]] = Field(default_factory=dict)
     # Existing domain configs declare a sources list inline (path/type/doc_type/refresh).
-    # The deploy wizard's IngestDocuments step also writes here. Accepted as a free-form
-    # list of dicts so legacy YAMLs round-trip without per-source schema enforcement.
-    sources: list[dict[str, Any]] = Field(default_factory=list)
+    # The deploy wizard's IngestDocuments step also writes here. Typed as KnowledgeSourceEntry
+    # to mirror runtime strictness — schema is no longer looser than runtime.
+    sources: list[KnowledgeSourceEntry] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def intent_filter_requires_mappings_when_enabled(self) -> "StaticKnowledgeBaseSection":

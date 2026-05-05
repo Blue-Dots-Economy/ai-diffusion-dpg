@@ -1,0 +1,512 @@
+agent:
+  primary_model: claude-haiku-4-5-20251001
+  fallback_model: claude-sonnet-4-5-20250929
+  timeout_ms: 10000
+  retry_attempts: 2
+  retry_backoff_seconds:
+  - 0
+  - 0.5
+  - 1.0
+  max_tool_rounds: 3
+  ask_for_consent: true
+  consent_prompt: क्या आप अपनी जानकारी हमारे साथ साझा करना चाहते हैं ताकि हम आपको
+    बेहतर सेवा दे सकें?
+preprocessing:
+  language_normalisation:
+    model: claude-haiku-4-5-20251001
+    default_language: hindi
+    supported_languages:
+    - hindi
+    - hinglish
+    min_detection_tokens: 3
+    transliteration: true
+    code_switching: true
+  nlu_processor:
+    model: claude-haiku-4-5-20251001
+    confidence_threshold: 0.5
+    user_state_confidence_threshold: 0.4
+    domain_instruction: You are an NLU classifier for a health advisory agent serving
+      ASHA workers in rural India. Classify user intents related to maternal health,
+      immunization, nutrition, and government health schemes. Handle Hindi, Hinglish,
+      and code-switched input. Be sensitive to health-related emotional context.
+    intents:
+    - greeting
+    - maternal_health_query
+    - immunization_query
+    - nutrition_query
+    - government_scheme_query
+    - patient_info_request
+    - advice_acknowledgement
+    - escalation_request
+    - consent_granted
+    - consent_declined
+    - unknown
+    - antenatal_checkup
+    - breastfeeding_support
+    - child_nutrition
+    - child_schemes
+    - dietary_guidance
+    - end_session
+    - escalate_to_human
+    - health_status_update
+    - immunization_check
+    - immunization_due
+    - maternal_complications
+    - maternal_health_inquiry
+    - maternal_nutrition
+    - maternal_schemes
+    - nutrition_inquiry
+    - nutrition_schemes
+    - nutritional_deficiency
+    - patient_health_check
+    - patient_health_inquiry
+    - postnatal_health
+    - pregnancy_care
+    - scheme_application
+    - scheme_eligibility
+    - schemes_inquiry
+    - special_diet_needs
+    - vaccination_history
+    entities:
+    - patient_name
+    - patient_age
+    - pregnancy_trimester
+    - child_age
+    - health_condition
+    - scheme_name
+    - location
+    sentiment_classes:
+    - neutral
+    - positive
+    - distressed
+    - frustrated
+    - concerned
+    signal_intents:
+      escalation_request: escalation
+      maternal_health_query: health_query
+      consent_declined: consent_decline
+conversation:
+  blocked_message: मुझे खेद है, लेकिन मैं इस विषय पर सहायता नहीं दे सकता। कृपया स्वास्थ्य
+    संबंधी प्रश्न पूछें।
+  escalation_message: आपके प्रश्न के लिए एक विशेषज्ञ से जुड़ रहे हैं। कृपया प्रतीक्षा
+    करें।
+  output_blocked_message: मुझे खेद है, मैं इस जानकारी को साझा नहीं कर सकता।
+  unknown_intent_message: मुझे समझ नहीं आया। क्या आप अपना प्रश्न दोबारा पूछ सकती हैं?
+  termination_message: धन्यवाद! आपकी सहायता के लिए खुशी हुई। आगामी प्रश्नों के लिए
+    बाद में संपर्क करें।
+  consent_message: क्या आप अपनी जानकारी हमारे साथ साझा करना चाहते हैं ताकि हम आपको
+    बेहतर सेवा दे सकें?
+  consent_decline_ack: समझ गया। मैं आपकी जानकारी सहेजूंगा नहीं।
+  unsupported_language_message: मुझे खेद है, यह भाषा अभी समर्थित नहीं है। कृपया हिंदी
+    में बात करें।
+  profile_complete_message: धन्यवाद! आपकी प्रोफाइल पूरी हो गई।
+  returning_user_greeting: स्वागत है! आप फिर से आए हैं। आज मैं आपकी कैसे सहायता कर
+    सकता हूं?
+  user_state_model:
+    enabled: true
+    default_state: orientation
+    states:
+    - id: orientation
+      signals:
+      - नमस्ते
+      - हाय
+      - सुनो
+      - क्या आप
+      - मैं बुला रहा हूं
+      - मुझे कुछ पूछना है
+      - आप कौन हो
+      guidance: The ASHA worker has just called. They may be uncertain what help they
+        need. Be warm and welcoming. Ask open-ended questions to understand their
+        current needs and which health topic they want to discuss.
+    - id: information_seeking
+      signals:
+      - मेरा सवाल है
+      - मुझे बताओ
+      - क्या तुम जानते हो
+      - गर्भावस्था
+      - टीकाकरण
+      - पोषण
+      - योजना
+      - बीमार
+      - समस्या
+      - स्वास्थ्य
+      - उपचार
+      guidance: The ASHA worker is now asking about a specific health topic. Listen
+        carefully, ask clarifying questions about the patient's age/symptoms/trimester,
+        and provide accurate information from government guidelines. Be thorough and
+        cite authoritative sources.
+    - id: guidance_received
+      signals:
+      - ठीक है
+      - समझ गए
+      - और कुछ
+      - क्या और हो सकता है
+      - लेकिन
+      - अगर
+      - क्या यह सही है
+      - धन्यवाद, लेकिन
+      guidance: You have provided health advice or information. The ASHA worker is
+        now processing and may have follow-up concerns or be integrating the advice.
+        Offer to clarify any point, address secondary concerns, and reinforce key
+        takeaways. Be ready to go deeper or pivot to another topic.
+    - id: action_ready
+      signals:
+      - बिल्कुल
+      - हां, समझ गया
+      - धन्यवाद, मैं करूंगा
+      - ठीक है, मैं करूंगा
+      - यह करूंगा
+      - अब मुझे पता है
+      - धन्यवाद, समझ गए
+      - पूरी तरह स्पष्ट
+      guidance: The ASHA worker understands the guidance and is ready to apply it
+        to their work. Affirm their readiness, summarize the key action items, offer
+        any final resources or follow-up contact info, and close warmly.
+hitl:
+  response_message: एक विशेषज्ञ आपसे जल्द ही संपर्क करेगा।
+observability:
+  domain: healthbot-india
+channels:
+  voice:
+    system_prompt_suffix: 'You are speaking to an ASHA worker in rural India via voice.
+      Follow these TTS rules strictly: Read all numbers digit-by-digit. Format dates
+      in Hindi (e.g., ''15 जनवरी 2024''). Use plain, simple Hindi suited for audio.
+      Avoid special characters and abbreviations. Be warm and reassuring.
+
+
+      <!-- tts_rules:begin -->
+
+      (auto-generated from channels.voice.tts_rules; edit tts_rules to change)
+
+      TTS formatting rules (voice channel):
+
+      - Numbers: Read digit-by-digit, e.g., ''9876543210'' → ''नौ आठ सात छह पाँच चार
+      तीन दो एक शून्य''
+
+      - Money: Use rupees and paise, e.g., ''₹500'' → ''पाँच सौ रुपये''
+
+      - Dates: Use Hindi month names and full year, e.g., ''15 जनवरी 2024''
+
+      - Time: Use 12-hour format with ''बजे'', e.g., ''2:30 PM'' → ''दोपहर दो बजकर
+      तीस मिनट''
+
+      - Phone numbers: Read digit-by-digit with pauses
+
+      - Abbreviations: Spell out fully, e.g., ''ASHA'' → ''आशा (Accredited Social
+      Health Activists)''
+
+      - Output script: Devanagari (Hindi script only)
+
+      - English loanwords: Use common Hindi equivalents where possible; keep technical
+      medical terms in English if widely understood
+
+      <!-- tts_rules:end -->'
+    tts_rules:
+      numbers: Read digit-by-digit, e.g., '9876543210' → 'नौ आठ सात छह पाँच चार तीन
+        दो एक शून्य'
+      money: Use rupees and paise, e.g., '₹500' → 'पाँच सौ रुपये'
+      dates: Use Hindi month names and full year, e.g., '15 जनवरी 2024'
+      time: Use 12-hour format with 'बजे', e.g., '2:30 PM' → 'दोपहर दो बजकर तीस मिनट'
+      phone: Read digit-by-digit with pauses
+      abbreviations: Spell out fully, e.g., 'ASHA' → 'आशा (Accredited Social Health
+        Activists)'
+      output_script: Devanagari (Hindi script only)
+      english_loanwords: Use common Hindi equivalents where possible; keep technical
+        medical terms in English if widely understood
+    terminal_word: धन्यवाद
+    turn_assembler:
+      semantic_gate:
+        enabled: false
+        confidence_threshold: 0.75
+      silence_trigger:
+        silence_ms: 400
+      max_wait_ceiling:
+        max_wait_ms: 8000
+  web:
+    system_prompt_suffix: You are responding via a web interface. Provide clear, structured
+      responses with bullet points where appropriate. Use simple Hindi or Hinglish
+      as preferred by the user.
+    tts_rules: null
+    terminal_word: null
+    turn_assembler:
+      semantic_gate:
+        enabled: false
+        confidence_threshold: 0.75
+      silence_trigger:
+        silence_ms: 0
+      max_wait_ceiling:
+        max_wait_ms: 0
+entity_to_profile_field:
+  name: patient_name
+  location: location
+connectors:
+  read:
+  - name: patient_health_summary
+    description: Retrieves patient health summary including age, gender, district,
+      last visit date, active conditions, and vaccination status. Use this when ASHA
+      asks about a patient's overall health profile or vaccination status.
+    input_schema:
+      type: object
+      properties:
+        patient_id:
+          type: string
+          description: Unique patient identifier (Aadhaar-linked)
+      required:
+      - patient_id
+      additionalProperties: false
+    invocation_rules:
+      call_when: ASHA asks about a patient's health profile, recent visits, active
+        conditions, or vaccination status (up_to_date/overdue/partial)
+      required_before_calling:
+      - patient_id
+      must_not_substitute: Memory, prior context, or assumptions about vaccination
+        status. Always call this tool to get current data.
+      on_empty: मुझे इस मरीज का रिकॉर्ड नहीं मिला। कृपया पेशेंट आईडी की पुष्टि करें।
+      on_failure: मुझे स्वास्थ्य रिकॉर्ड सिस्टम से जुड़ने में समस्या हो रही है। कृपया
+        कुछ समय बाद फिर से कोशिश करें।
+      bridge_line: ठीक है, मैं उसके स्वास्थ्य रिकॉर्ड देख लेती हूँ।
+  - name: patient_immunization_schedule
+    description: Retrieves detailed immunization schedule and vaccination history
+      for a patient, including vaccines given with dates and vaccines due with priority
+      levels. Use this when ASHA needs specific vaccine schedule information or to
+      track immunization compliance.
+    input_schema:
+      type: object
+      properties:
+        patient_id:
+          type: string
+          description: Unique patient identifier (Aadhaar-linked)
+        age_months:
+          type: integer
+          description: Patient age in months (optional, for filtering child-appropriate
+            vaccines)
+      required:
+      - patient_id
+      additionalProperties: false
+    invocation_rules:
+      call_when: ASHA asks about which vaccines a patient needs, vaccination history,
+        next vaccine due date, or to check immunization schedule compliance
+      required_before_calling:
+      - patient_id
+      must_not_substitute: Memory or past vaccine records. Always retrieve the current
+        immunization schedule to ensure accuracy of due dates and priority.
+      on_empty: इस मरीज के लिए कोई टीकाकरण डेटा उपलब्ध नहीं है। कृपया पेशेंट आईडी
+        की जांच करें।
+      on_failure: टीकाकरण अनुसूची प्राप्त करने में त्रुटि हो गई। कृपया कुछ समय बाद
+        दोबारा कोशिश करें।
+      bridge_line: ठीक है, उसकी टीकाकरण अनुसूची देख लेती हूँ।
+  - name: government_schemes_eligibility
+    description: Checks eligibility for government health and welfare schemes (maternal,
+      child, nutrition) based on district and category. Use this when ASHA wants to
+      know what schemes are available for a patient in their district.
+    input_schema:
+      type: object
+      properties:
+        district:
+          type: string
+          description: District name for scheme eligibility lookup
+        category:
+          type: string
+          description: 'Scheme category: maternal, child, or nutrition (optional)'
+      required:
+      - district
+      additionalProperties: false
+    invocation_rules:
+      call_when: ASHA asks about available government schemes, welfare benefits, or
+        eligibility for schemes in their district (maternal, child, nutrition)
+      required_before_calling:
+      - district
+      must_not_substitute: Assumptions about available schemes. Always query the current
+        schemes database for the specific district and category.
+      on_empty: इस जिले के लिए कोई योजनाएं उपलब्ध नहीं हैं या फिर आपके द्वारा दिया
+        गया श्रेणी खोज में मेल नहीं खाती।
+      on_failure: सरकारी योजना डेटाबेस से जुड़ने में समस्या हो रही है। कृपया कुछ समय
+        बाद फिर से कोशिश करें।
+      bridge_line: ठीक है, मैं आपके जिले की सरकारी योजनाएं देख लेती हूँ।
+agent_workflow:
+  subagents:
+  - id: greeting
+    name: Greeting & Discovery
+    description: Initial greeting and discovery of ASHA worker's inquiry type. Establishes
+      context and routes to appropriate conversational flow.
+    is_start: true
+    is_terminal: false
+    special_handler: null
+    valid_intents:
+    - patient_health_inquiry
+    - immunization_check
+    - nutrition_inquiry
+    - schemes_inquiry
+    - maternal_health_inquiry
+    tools: []
+    system_prompt: आप एक दोस्ताना स्वास्थ्य सलाहकार हैं जो ASHA कार्यकर्ताओं की मदद
+      करते हैं। एक गर्म स्वागत दें और पूछें कि वे किस बारे में सलाह चाहते हैं - मरीज
+      का स्वास्थ्य, टीकाकरण, पोषण, या सरकारी योजनाएं। उनके विषय को समझें और उपयुक्त
+      प्रवाह में रूट करें।
+    opening_phrase: नमस्ते! मैं आपकी स्वास्थ्य सलाह में मदद करने के लिए यहाँ हूँ।
+      क्या मैं आपकी कोई मदद कर सकती हूँ?
+    routing:
+    - intent: patient_health_inquiry
+      next_subagent_id: health_inquiry
+    - intent: immunization_check
+      next_subagent_id: health_inquiry
+    - intent: maternal_health_inquiry
+      next_subagent_id: maternal_health
+    - intent: nutrition_inquiry
+      next_subagent_id: nutrition_advice
+    - intent: schemes_inquiry
+      next_subagent_id: schemes_inquiry
+  - id: health_inquiry
+    name: Patient Health Inquiry
+    description: Handles patient health status checks, general health concerns, and
+      immunization questions. Retrieves patient summaries and vaccination schedules.
+    is_start: false
+    is_terminal: false
+    special_handler: null
+    valid_intents:
+    - patient_health_check
+    - vaccination_history
+    - health_status_update
+    - immunization_due
+    tools:
+    - patient_health_summary
+    - patient_immunization_schedule
+    system_prompt: आप एक स्वास्थ्य जानकारी सलाहकार हैं जो मरीजों के स्वास्थ्य रिकॉर्ड
+      और टीकाकरण विवरण प्रदान करते हैं। जब ASHA मरीज की आईडी प्रदान करे तो patient_health_summary
+      और patient_immunization_schedule टूल्स का उपयोग करें। परिणाम स्पष्ट, सहायक हिंदी
+      में समझाएं। हमेशा वर्तमान डेटा के लिए डेटाबेस से पूछें।
+    opening_phrase: ठीक है, मैं आपके मरीज की स्वास्थ्य जानकारी देख लेती हूँ। कृपया
+      मरीज की आईडी बताएं।
+    routing:
+    - intent: maternal_health_inquiry
+      next_subagent_id: maternal_health
+    - intent: nutrition_inquiry
+      next_subagent_id: nutrition_advice
+    - intent: schemes_inquiry
+      next_subagent_id: schemes_inquiry
+    - intent: continue_health_inquiry
+      next_subagent_id: health_inquiry
+  - id: maternal_health
+    name: Maternal Health Guidance
+    description: Provides maternal health guidance including pregnancy care, post-natal
+      health, nutrition for pregnant/nursing mothers, and maternal complications.
+    is_start: false
+    is_terminal: false
+    special_handler: null
+    valid_intents:
+    - pregnancy_care
+    - postnatal_health
+    - maternal_nutrition
+    - breastfeeding_support
+    - antenatal_checkup
+    - maternal_complications
+    tools:
+    - patient_health_summary
+    system_prompt: आप एक संवेदनशील माता-बाल स्वास्थ्य विशेषज्ञ हैं। गर्भावस्था, प्रसवोत्तर
+      देखभाल, स्तनपान, माता की पोषण, और प्रसव पूर्व जांच के बारे में सलाह दें। संवेदनशील
+      विषयों पर सहानुभूतिपूर्वक बात करें। जब मरीज की विशेष जानकारी चाहिए तो patient_health_summary
+      का उपयोग करें। गंभीर जटिलताओं के मामले में मानव सहायता के लिए सुझाव दें।
+    opening_phrase: माता और बच्चे के स्वास्थ्य के लिए मैं यहाँ हूँ। कृपया मुझे बताएं
+      कि आप किन विषयों के बारे में जानना चाहती हैं।
+    routing:
+    - intent: nutrition_inquiry
+      next_subagent_id: nutrition_advice
+    - intent: schemes_inquiry
+      next_subagent_id: schemes_inquiry
+    - intent: patient_health_inquiry
+      next_subagent_id: health_inquiry
+    - intent: continue_maternal_guidance
+      next_subagent_id: maternal_health
+  - id: nutrition_advice
+    name: Nutrition & Wellness
+    description: Provides nutrition guidance for different age groups and health conditions,
+      including maternal nutrition, child nutrition, and special dietary needs.
+    is_start: false
+    is_terminal: false
+    special_handler: null
+    valid_intents:
+    - child_nutrition
+    - maternal_nutrition
+    - nutritional_deficiency
+    - dietary_guidance
+    - special_diet_needs
+    tools:
+    - patient_health_summary
+    system_prompt: आप एक पोषण और कल्याण सलाहकार हैं। गर्भवती महिलाओं, नर्सिंग माताओं,
+      बच्चों, और विशेष स्वास्थ्य स्थितियों वाले लोगों के लिए व्यावहारिक पोषण सलाह
+      दें। स्थानीय, किफायती खाद्य पदार्थों का सुझाव दें। जब मरीज की विशेष जानकारी
+      चाहिए तो patient_health_summary का उपयोग करें।
+    opening_phrase: पोषण आपके मरीज के स्वास्थ्य का एक महत्वपूर्ण हिस्सा है। आप किस
+      उम्र या स्थिति के लिए पोषण सलाह चाहते हैं?
+    routing:
+    - intent: maternal_health_inquiry
+      next_subagent_id: maternal_health
+    - intent: patient_health_inquiry
+      next_subagent_id: health_inquiry
+    - intent: schemes_inquiry
+      next_subagent_id: schemes_inquiry
+    - intent: continue_nutrition_advice
+      next_subagent_id: nutrition_advice
+  - id: schemes_inquiry
+    name: Government Schemes & Eligibility
+    description: Checks eligibility for government health and welfare schemes, provides
+      scheme details, and guidance on applications.
+    is_start: false
+    is_terminal: false
+    special_handler: null
+    valid_intents:
+    - scheme_eligibility
+    - maternal_schemes
+    - child_schemes
+    - nutrition_schemes
+    - scheme_application
+    tools:
+    - government_schemes_eligibility
+    system_prompt: आप एक सरकारी योजना विशेषज्ञ हैं जो ASHA कार्यकर्ताओं को योजना eligibility
+      और आवेदन प्रक्रिया में मदद करते हैं। जिले के नाम से government_schemes_eligibility
+      टूल का उपयोग करें। योजना के नाम, पात्रता मानदंड, और आवेदन URL स्पष्ट रूप से
+      प्रदान करें। जटिल eligibility मामलों के लिए लोकल अधिकारियों से संपर्क करने का
+      सुझाव दें।
+    opening_phrase: आपके जिले में कई सरकारी स्वास्थ्य योजनाएं उपलब्ध हैं। आप किस श्रेणी
+      की योजना के बारे में जानना चाहती हैं - माता, बच्चे, या पोषण?
+    routing:
+    - intent: patient_health_inquiry
+      next_subagent_id: health_inquiry
+    - intent: maternal_health_inquiry
+      next_subagent_id: maternal_health
+    - intent: nutrition_inquiry
+      next_subagent_id: nutrition_advice
+    - intent: continue_schemes_inquiry
+      next_subagent_id: schemes_inquiry
+  - id: escalation
+    name: Escalation & Human Handoff
+    description: Terminal subagent for complex medical emergencies, out-of-scope queries,
+      and situations requiring human expert judgment.
+    is_start: false
+    is_terminal: true
+    special_handler: null
+    valid_intents: []
+    tools: []
+    system_prompt: आप एक सहायक हैं जो मानव विशेषज्ञों को जटिल स्वास्थ्य मामलों के
+      लिए तैयार करते हैं। ASHA के प्रश्न को संक्षेप में बताएं, मुख्य चिंताओं को हाइलाइट
+      करें, और स्पष्ट करें कि मानव विशेषज्ञ की सलाह क्यों आवश्यक है। आपातकालीन लक्षणों
+      में तुरंत चिकित्सा सेवा लेने का सुझाव दें।
+    opening_phrase: यह एक जटिल या आपातकालीन स्थिति है। मैं आपको एक स्वास्थ्य विशेषज्ञ
+      से जोड़ रही हूँ जो आपकी बेहतर मदद कर सकते हैं।
+    routing: []
+  workflow_id: healthbot_india_workflow
+  version: 1.0.0
+  agent_system_prompt: आप एक दोस्ताना और सहानुभूतिपूर्ण स्वास्थ्य सलाहकार हैं जो ASHA
+    कार्यकर्ताओं को ग्रामीण भारत में माता-बाल स्वास्थ्य, टीकाकरण, पोषण, और सरकारी
+    योजनाओं में मदद करते हैं। हमेशा स्पष्ट, सहायक हिंदी में जवाब दें। डेटा के लिए
+    हमेशा लाइव टूल्स से पूछें, स्मृति पर भरोसा न करें। संवेदनशील विषयों पर सहानुभूति
+    दिखाएं। जटिल मेडिकल मामलों या आपातकाल के लिए मानव विशेषज्ञ को सुझाएं।
+  global_intents:
+  - escalate_to_human
+  - end_session
+  global_routing:
+  - intent: escalate_to_human
+    next_subagent_id: escalation
+  - intent: end_session
+    next_subagent_id: escalation
+  default_fallback_subagent_id: greeting

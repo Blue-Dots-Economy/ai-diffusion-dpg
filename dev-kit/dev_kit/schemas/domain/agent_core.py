@@ -97,6 +97,16 @@ class AgentSection(BaseModel):
     )
 
     @model_validator(mode="after")
+    def primary_fallback_must_differ(self) -> "AgentSection":
+        """Reject identical primary/fallback model IDs — fallback exists to handle primary failures."""
+        if self.primary_model == self.fallback_model:
+            raise ValueError(
+                "primary_model and fallback_model must be different — fallback exists "
+                "to handle primary failures, using the same model defeats the purpose"
+            )
+        return self
+
+    @model_validator(mode="after")
     def models_must_match_provider(self) -> "AgentSection":
         """Reject configs where primary or fallback model isn't in the chosen provider's model list."""
         valid = ANTHROPIC_MODELS if self.provider == "anthropic" else OPENAI_MODELS
