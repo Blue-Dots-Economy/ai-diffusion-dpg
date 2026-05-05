@@ -1,0 +1,425 @@
+"""
+Domain schemas for agent_core block.
+
+Each class corresponds to a top-level section the LLM writes via update_config.
+Phase prompts inject the relevant subset (see phase→section mapping in design doc).
+"""
+from __future__ import annotations
+from typing import Optional, Any
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from dev_kit.schemas.enums import (
+    ANTHROPIC_MODELS, OPENAI_MODELS,
+    ChatModelField, LanguageField, ProviderField,
+    SpecialHandler, RoutingOperator, InternalRoute,
+)
+
+
+# -- agent_core.agent (language phase) ---------------------------------------
+
+class FeaturesSection(BaseModel):
+    """Per-deployment chat-provider feature toggles.
+
+    None means "use the provider's intrinsic capability." A bool tightens the
+    effective feature for this deployment. Cannot widen — chat_provider factory
+    rejects True against a False capability.
+
+    Mirrors agent_core/src/schema/config.py FeaturesConfig including the
+    null-coercion validator: when YAML's `agent.features:` block has all
+    sub-keys commented out, it parses as None. Without this coercion, the
+    field would fail validation on a config the runtime accepts.
+    """
+    model_config = ConfigDict(extra="forbid")
+    prompt_cache: Optional[bool] = None
+    streaming: Optional[bool] = None
+    image_input: Optional[bool] = None
+
+
+def _coerce_null_features(value):
+    """Treat features=None (YAML empty mapping) as the default FeaturesSection."""
+    if value is None:
+        return FeaturesSection()
+    return value
+
+
+class AgentSection(BaseModel):
+    """LLM model selection + retry/timeout policy. Required: provider, primary_model, fallback_model."""
+    model_config = ConfigDict(extra="forbid")
+
+    provider: ProviderField = "anthropic"
+    primary_model: ChatModelField = Field(..., description="Primary LLM (must match provider)")
+    fallback_model: ChatModelField = Field(..., description="Fallback LLM (must match provider, must differ from primary)")
+    features: FeaturesSection = Field(default_factory=FeaturesSection)
+    timeout_ms: int = Field(default=10000, gt=0, le=60000)
+    retry_attempts: int = Field(default=2, ge=0, le=5)
+    retry_backoff_seconds: list[float] = Field(default_factory=lambda: [0, 0.5, 1.0])
+    max_tool_rounds: int = Field(default=3, ge=1, le=20)
+    ask_for_consent: bool = False
+    consent_prompt: str = ""
+
+    # Null-coercion: YAML's empty mapping `features:` parses as None.
+    # Mirror runtime behaviour so domain configs with commented-out features
+    # don't fail validation.
+    _coerce_features = field_validator("features", mode="before")(
+        classmethod(lambda cls, v: _coerce_null_features(v))
+    )
+
+    @model_validator(mode="after")
+    def primary_fallback_must_differ(self) -> "AgentSection":
+        if self.primary_model == self.fallback_model:
+            raise ValueError(
+                "primary_model and fallback_model must be different — fallback exists "
+                "to handle primary failures, using the same model defeats the purpose"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def models_must_match_provider(self) -> "AgentSection":
+        valid = ANTHROPIC_MODELS if self.provider == "anthropic" else OPENAI_MODELS
+        if self.primary_model not in valid:
+            raise ValueError(
+                f"primary_model {self.primary_model!r} is not valid for provider "
+                f"{self.provider!r}. Valid options: {valid}"
+            )
+        if self.fallback_model not in valid:
+            raise ValueError(
+                f"fallback_model {self.fallback_model!r} is not valid for provider "
+                f"{self.provider!r}. Valid options: {valid}"
+            )
+        return self
+
+
+# -- agent_core.preprocessing (language phase) -------------------------------
+
+def _validate_helper_provider_model(provider: Optional[str], model: str) -> None:
+    """If a helper provider is set, its model must be in that provider's list.
+
+    When provider is None the helper inherits agent.provider — no per-helper
+    validation here (cross-section validation is out of scope; spec section 6.2).
+    """
+    if provider is None:
+        # Still verify model is in the union of known models — caught by ChatModelField AfterValidator.
+        return
+    valid = ANTHROPIC_MODELS if provider == "anthropic" else OPENAI_MODELS
+    if model not in valid:
+        raise ValueError(
+            f"model {model!r} is not valid for provider {provider!r}. Valid options: {valid}"
+        )
+
+
+class LanguageNormalisationSection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    provider: Optional[ProviderField] = None   # None → inherit agent.provider at runtime
+    model: ChatModelField = Field(..., min_length=1)
+    default_language: LanguageField
+    supported_languages: list[LanguageField] = Field(..., min_length=1)
+    min_detection_tokens: int = Field(default=3, gt=0)
+    transliteration: bool = True
+    code_switching: bool = True
+
+    @model_validator(mode="after")
+    def model_must_match_helper_provider(self) -> "LanguageNormalisationSection":
+        _validate_helper_provider_model(self.provider, self.model)
+        return self
+
+
+class NLUProcessorSection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    provider: Optional[ProviderField] = None   # None → inherit agent.provider at runtime
+    model: ChatModelField
+    confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    user_state_confidence_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
+    domain_instruction: str = ""
+    intents: list[str] = Field(..., min_length=1)   # workflow_loader rejects empty list
+    entities: list[str] = Field(default_factory=list)
+    sentiment_classes: list[str] = Field(
+        default_factory=lambda: ["neutral", "positive", "distressed", "frustrated"]
+    )
+    signal_intents: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def model_must_match_helper_provider(self) -> "NLUProcessorSection":
+        _validate_helper_provider_model(self.provider, self.model)
+        return self
+
+
+class PreprocessingSection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    language_normalisation: LanguageNormalisationSection
+    nlu_processor: NLUProcessorSection
+
+
+# -- agent_core.conversation (language, trust, memory phases) ----------------
+
+class UserStateDefinition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(..., min_length=1)
+    signals: list[str] = Field(default_factory=list)
+    guidance: str = ""
+
+
+class UserStateModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = False
+    default_state: str = ""
+    states: list[UserStateDefinition] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def default_must_be_in_states(self) -> "UserStateModel":
+        if self.enabled:
+            ids = {s.id for s in self.states}
+            if not self.default_state or self.default_state not in ids:
+                raise ValueError(
+                    f"default_state '{self.default_state}' must be one of declared states: {sorted(ids)}"
+                )
+        return self
+
+
+class ConversationSection(BaseModel):
+    """All conversation-level messages + optional user_state_model."""
+    model_config = ConfigDict(extra="forbid")
+    blocked_message: str = Field(..., min_length=1)
+    escalation_message: str = Field(..., min_length=1)
+    output_blocked_message: str = Field(..., min_length=1)
+    unknown_intent_message: str = ""
+    termination_message: str = ""
+    consent_message: str = ""
+    consent_decline_ack: str = ""
+    profile_complete_message: str = ""
+    returning_user_greeting: str = ""
+    unsupported_language_message: str = ""
+    user_state_model: Optional[UserStateModel] = None
+
+
+# -- agent_core.channels (language, reach phases) ----------------------------
+
+class TtsRulesConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    numbers: str = ""
+    money: str = ""
+    dates: str = ""
+    time: str = ""
+    phone: str = ""
+    abbreviations: str = ""
+    output_script: str = ""
+    english_loanwords: str = ""
+    email: str = ""               # KKB has this; LLM doesn't generate
+    named_entities: str = ""      # KKB has this; LLM doesn't generate
+
+
+class TurnAssemblerConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    semantic_gate: dict = Field(default_factory=lambda: {"enabled": False, "confidence_threshold": 0.75})
+    silence_trigger: dict = Field(default_factory=lambda: {"silence_ms": 0})
+    max_wait_ceiling: dict = Field(default_factory=lambda: {"max_wait_ms": 0})
+
+
+class ChannelEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    system_prompt_suffix: str = ""
+    tts_rules: Optional[TtsRulesConfig] = None
+    turn_assembler: Optional[TurnAssemblerConfig] = None
+    terminal_word: Optional[str] = None
+    max_tokens: Optional[int] = Field(default=None, gt=0)
+
+
+class ChannelsSection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    web: Optional[ChannelEntry] = None
+    voice: Optional[ChannelEntry] = None
+    cli: Optional[ChannelEntry] = None
+
+
+# -- agent_core.connectors (knowledge, tools phases) -------------------------
+
+class InvocationSafety(BaseModel):
+    """GH-176 safety contract: data the LLM must never present or speak aloud."""
+    model_config = ConfigDict(extra="forbid")
+    never_present: list[str] = Field(default_factory=list)
+    never_speak: list[str] = Field(default_factory=list)
+
+
+class InvocationRules(BaseModel):
+    """LLM invocation contract for one connector.
+
+    The first six fields are LLM-authored (call_when, required_before_calling,
+    must_not_substitute, on_empty, on_failure, bridge_line). The remaining
+    GH-176 presentation-contract fields (exception_no_call, ranking_order,
+    presentation_limit, refinement_loop_max, safety) are hand-authored by
+    the operator in the YAML — the LLM phase prompt does not ask for them.
+    Spec accepts them so existing KKB-style configs round-trip cleanly.
+    Runtime accepts empty defaults on all fields.
+    """
+    model_config = ConfigDict(extra="forbid")
+    call_when: str = ""
+    required_before_calling: list[str] = Field(default_factory=list)
+    must_not_substitute: str = ""
+    on_empty: str = ""
+    on_failure: str = ""
+    bridge_line: str = ""
+    # GH-176 presentation contract (hand-authored, not LLM-generated)
+    exception_no_call: str = ""
+    ranking_order: list[str] = Field(default_factory=list)
+    presentation_limit: Optional[int] = Field(default=None, gt=0)
+    refinement_loop_max: Optional[int] = Field(default=None, gt=0)
+    safety: InvocationSafety = Field(default_factory=InvocationSafety)
+
+
+class ConnectorDef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(..., min_length=1)
+    description: str = Field(..., min_length=1)
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+    invocation_rules: InvocationRules
+
+
+class InternalConnectorDef(ConnectorDef):
+    """Routes to an internal block (e.g. knowledge_retrieval → knowledge_engine)."""
+    route: InternalRoute = InternalRoute.knowledge_engine
+
+
+class ConnectorsSection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    internal: list[InternalConnectorDef] = Field(default_factory=list)
+    read: list[ConnectorDef] = Field(default_factory=list)
+    write: list[ConnectorDef] = Field(default_factory=list)
+    identity: list[ConnectorDef] = Field(default_factory=list)
+
+
+# -- agent_core.agent_workflow (workflow phase) ------------------------------
+
+class RoutingCondition(BaseModel):
+    """Typed condition on a routing rule. Mirrors agent_core's runtime RoutingCondition."""
+    model_config = ConfigDict(extra="forbid")
+    field: str = Field(..., min_length=1)
+    operator: RoutingOperator
+    value: Any = None
+
+
+class RoutingRule(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    intent: str = Field(..., min_length=1)
+    next_subagent_id: str = Field(..., min_length=1)
+    conditions: list[RoutingCondition] = Field(default_factory=list)
+    session_writes: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def session_writes_must_be_scalars(self) -> "RoutingRule":
+        """Runtime workflow_loader rejects non-scalar session_writes values.
+
+        Mirrors agent_core/src/workflow_loader.py: each value must be a
+        scalar (str, int, float, bool, None) — dict/list values cause a
+        ConfigurationError at startup.
+        """
+        for key, val in self.session_writes.items():
+            if isinstance(val, (dict, list)):
+                raise ValueError(
+                    f"session_writes[{key!r}] must be a scalar "
+                    f"(str/int/float/bool/None), got {type(val).__name__}: {val!r}"
+                )
+        return self
+
+
+class SubAgent(BaseModel):
+    """One subagent in the workflow graph.
+
+    Runtime workflow_loader.py requires opening_phrase for ALL subagents
+    (terminal and non-terminal alike — adopted-state callbacks always
+    need a phrase to emit on entry).
+    """
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(..., min_length=1)
+    name: str = Field(..., min_length=1)
+    description: str = ""
+    is_start: bool = False
+    is_terminal: bool = False
+    special_handler: Optional[SpecialHandler] = None
+    valid_intents: list[str] = Field(default_factory=list)
+    tools: list[str] = Field(default_factory=list)
+    system_prompt: str = Field(..., min_length=1)
+    opening_phrase: str = Field(..., min_length=1)   # required for all subagents
+    routing: list[RoutingRule] = Field(default_factory=list)
+    # opening_phrase non-empty enforced by Field(..., min_length=1) above —
+    # runtime requires it for ALL subagents (adopted-state callbacks).
+
+
+class AgentWorkflowSection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    workflow_id: str = Field(..., pattern=r"^[a-z][a-z0-9_]+$")
+    version: str = Field(..., pattern=r"^\d+\.\d+\.\d+$")
+    agent_system_prompt: str = Field(..., min_length=20)
+    subagents: list[SubAgent] = Field(..., min_length=1)
+    global_intents: list[str] = Field(default_factory=list)
+    global_tools: list[str] = Field(default_factory=list)
+    global_routing: list[RoutingRule] = Field(default_factory=list)
+    default_fallback_subagent_id: str = Field(..., min_length=1)
+
+    @model_validator(mode="after")
+    def fallback_must_be_declared(self) -> "AgentWorkflowSection":
+        ids = {s.id for s in self.subagents}
+        if self.default_fallback_subagent_id not in ids:
+            raise ValueError(
+                f"default_fallback_subagent_id '{self.default_fallback_subagent_id}' "
+                f"is not a declared subagent id. Declared: {sorted(ids)}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def routing_targets_must_be_declared(self) -> "AgentWorkflowSection":
+        ids = {s.id for s in self.subagents}
+        for sa in self.subagents:
+            for rule in sa.routing:
+                if rule.next_subagent_id not in ids:
+                    raise ValueError(
+                        f"Subagent '{sa.id}' routing intent '{rule.intent}' targets "
+                        f"unknown subagent '{rule.next_subagent_id}'. Declared: {sorted(ids)}"
+                    )
+        for rule in self.global_routing:
+            if rule.next_subagent_id not in ids:
+                raise ValueError(
+                    f"global_routing intent '{rule.intent}' targets unknown subagent "
+                    f"'{rule.next_subagent_id}'"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def global_intents_must_not_overlap_subagent_intents(self) -> "AgentWorkflowSection":
+        global_set = set(self.global_intents)
+        for sa in self.subagents:
+            overlap = global_set & set(sa.valid_intents)
+            if overlap:
+                raise ValueError(
+                    f"Intents {sorted(overlap)} appear in both global_intents and "
+                    f"subagent '{sa.id}' valid_intents — runtime crashes on overlap"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def exactly_one_start_subagent(self) -> "AgentWorkflowSection":
+        starts = [s for s in self.subagents if s.is_start]
+        if len(starts) != 1:
+            raise ValueError(
+                f"Exactly one subagent must have is_start=true (got {len(starts)})"
+            )
+        return self
+
+
+# -- agent_core.entity_to_profile_field (memory phase) -----------------------
+
+class EntityToProfileFieldSection(BaseModel):
+    """Open map: entity_name → profile_field_name."""
+    model_config = ConfigDict(extra="allow")  # open map by design
+
+
+# -- agent_core.hitl (language phase) ----------------------------------------
+
+class HitlSection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    response_message: str = Field(..., min_length=1)
+
+
+# -- agent_core.observability (observability phase) --------------------------
+
+class ObservabilitySection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    domain: str = Field(..., min_length=1, pattern=r"^[a-z][a-z0-9-]*$")
