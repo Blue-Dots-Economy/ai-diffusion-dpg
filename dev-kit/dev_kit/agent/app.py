@@ -38,7 +38,7 @@ from dev_kit.agent.crypto import decrypt_secrets_dict, get_public_key_spki_b64
 from dev_kit.agent.errors import ConversationError
 from dev_kit.agent.renderer import load_block_from_file, render_all
 from dev_kit.config.loader import load_devkit_config as _load_devkit_config
-from dev_kit.schema import validate_partial
+from dev_kit.schemas.validation import validate_partial
 
 load_dotenv(Path(__file__).parent.parent.parent / ".env.local")
 load_dotenv()

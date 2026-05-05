@@ -124,6 +124,54 @@ def validate_domain_section(block: str, section: str, merged_data: dict) -> Opti
         return formatted
 
 
+def validate_partial(block: str, data: dict) -> list[str]:
+    """Validate each top-level section of a block's data; return error messages.
+
+    Thin wrapper around ``validate_domain_section`` that preserves the
+    legacy renderer interface (returns ``list[str]`` of error messages).
+    Two checks:
+
+    1. Block existence — fails if ``block`` is not a known DPG block.
+    2. For each top-level section in ``data``: delegates to
+       ``validate_domain_section`` and filters out "missing field" errors
+       since partial data is allowed to omit fields.
+
+    Args:
+        block: Block name, e.g. ``"agent_core"`` or ``"trust_layer"``.
+        data: Partial config dict to validate.
+
+    Returns:
+        List of error strings. Empty list means valid so far.
+    """
+    from dev_kit.schemas.loader import load_template
+
+    # --- Block existence check ---
+    try:
+        load_template(block)
+    except ValueError:
+        return [f"Unknown block: {block!r}"]
+
+    if not data:
+        return []
+
+    # --- Validate each section ---
+    errors: list[str] = []
+    for top_level, value in data.items():
+        if not isinstance(value, dict):
+            continue
+        err = validate_domain_section(block, top_level, value)
+        if err:
+            # Filter out "[missing]" lines — partial data is allowed to omit fields.
+            # Keep type/value constraint violations and extra-field errors.
+            filtered_lines = [
+                line for line in err.split("\n")
+                if "[missing]" not in line
+            ]
+            if filtered_lines:
+                errors.append("\n".join(filtered_lines))
+    return errors
+
+
 def validate_dpg_block(block: str, parsed_yaml: dict) -> Optional[str]:
     """Validate a full DPG framework YAML against its schema.
 

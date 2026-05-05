@@ -12,7 +12,7 @@ import yaml
 
 from dev_kit.agent.accumulator import BLOCKS, DRAFT_BLOCKS, ConfigAccumulator, ConfigStatus
 from dev_kit.agent.channel_tts import merge_voice_tts_into_suffix, strip_voice_tts_from_suffix
-from dev_kit.schema import validate_partial
+from dev_kit.schemas.validation import validate_partial
 
 _DRAFT_HEADER = "# STATUS: draft — block template not yet finalized\n"
 _STALE_HEADER_TPL = "# STATUS: stale — validation errors detected:\n{errors}\n"

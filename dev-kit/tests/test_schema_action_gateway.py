@@ -1,7 +1,8 @@
 """Tests for updated ActionGateway schema."""
 import pytest
 from pydantic import ValidationError
-from dev_kit.schema import ActionGatewayConfig, McpToolDef, validate_partial
+from dev_kit.schema import ActionGatewayConfig, McpToolDef
+from dev_kit.schemas.validation import validate_partial
 
 
 def test_rest_api_tool_validates():

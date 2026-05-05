@@ -667,7 +667,7 @@ class ToolHandler:
         return f"ok: {phase} skipped by user"
 
     def _handle_update_config(self, inputs: dict) -> str:
-        from dev_kit.schema import validate_partial
+        from dev_kit.schemas.validation import validate_partial
 
         block = inputs["block"]
         section = inputs["section"]

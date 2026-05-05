@@ -19,7 +19,7 @@ from dev_kit.schemas.domain import (
     reach_layer as rl_domain,
     trust_layer as tl_domain,
 )
-from dev_kit.schemas.loader import get_valid_sections, load_template_text
+from dev_kit.schemas.loader import get_valid_sections
 
 
 def _schema_source(*classes) -> str:
@@ -1143,39 +1143,3 @@ def get_phase_addition(phase: str, available_tools: list[str] | None = None) -> 
         )
 
     return ""
-
-
-def _extract_template_sections(block: str, sections: list[str]) -> str:
-    """Extract specific top-level sections from a YAML template as a string.
-
-    Reads the template file and returns only the lines belonging to the
-    requested top-level sections, preserving comments.
-
-    Args:
-        block: Block name.
-        sections: List of top-level section names to extract.
-
-    Returns:
-        YAML string containing only the requested sections.
-    """
-    full_text = load_template_text(block)
-    lines = full_text.splitlines()
-
-    result_lines: list[str] = []
-    current_section: str | None = None
-    in_target = False
-
-    for line in lines:
-        # Detect top-level section headers (non-indented keys)
-        if line and not line.startswith(" ") and not line.startswith("\t") and not line.startswith("#"):
-            key = line.split(":")[0].strip()
-            current_section = key
-            in_target = key in sections
-
-        if in_target:
-            result_lines.append(line)
-        elif current_section not in sections and line.startswith("#") and not result_lines:
-            # Skip file-level header comments before we've entered a target section
-            pass
-
-    return "\n".join(result_lines) + "\n"

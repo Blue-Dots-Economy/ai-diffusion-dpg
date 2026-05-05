@@ -1,4 +1,5 @@
-"""Tests for dev_kit.schema — validate_partial and all Pydantic config models."""
+"""Tests for dev_kit.schema — Pydantic config models — and the legacy
+``validate_partial`` shim (now in ``dev_kit.schemas.validation``)."""
 from __future__ import annotations
 
 import pytest
@@ -30,9 +31,9 @@ from dev_kit.schema import (
     SubAgentSchema,
     TrustConfig,
     TrustLayerConfig,
-    validate_partial,
     WebChannelConfig,
 )
+from dev_kit.schemas.validation import validate_partial
 from dev_kit.loader import load_agent_core, load_observability_layer, load_trust_layer
 
 

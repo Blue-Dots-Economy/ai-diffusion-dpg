@@ -1,7 +1,8 @@
 """Tests for updated ReachLayer schema."""
 import pytest
 from pydantic import ValidationError
-from dev_kit.schema import ReachLayerConfig, validate_partial
+from dev_kit.schema import ReachLayerConfig
+from dev_kit.schemas.validation import validate_partial
 
 
 def test_web_channel_config_validates():
