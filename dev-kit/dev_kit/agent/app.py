@@ -1167,31 +1167,40 @@ def get_workflow_graph(slug: str) -> dict:
 
 @app.get("/api/schemas/{block}")
 def get_schema_descriptions(block: str) -> dict:
-    """Parse inline comments from a block's YAML template and return key→description map.
+    """Return field descriptions from a block's Pydantic schemas.
 
-    Template lines are expected to follow the pattern::
+    Extracts field descriptions from the top-level section schemas
+    declared in DOMAIN_SECTION_SCHEMAS. For each section, field docstrings
+    are extracted from the Pydantic model's field definitions.
 
-        key: ""   # description text
-
-    If the template file does not exist (e.g. an unrecognised block name),
-    an empty descriptions dict is returned instead of a 404.
+    If the block is unrecognised, an empty descriptions dict is returned
+    instead of a 404.
 
     Args:
         block: DPG block name, e.g. ``reach_layer``.
 
     Returns:
         Dict with ``block`` and ``descriptions`` keys. ``descriptions`` maps
-        field names to their inline comment strings.
+        field names to their docstring or field description.
     """
-    template_file = _SCHEMAS_DIR / f"{block}.yaml"
+    from dev_kit.schemas.validation import DOMAIN_SECTION_SCHEMAS
+
     descriptions: dict[str, str] = {}
-    if template_file.exists():
-        pattern = re.compile(r'\s+(\w+):\s+"[^"]*"\s*#\s*(.+)')
-        for line in template_file.read_text().splitlines():
-            match = pattern.match(line)
-            if match:
-                key, description = match.group(1), match.group(2).strip()
-                descriptions[key] = description
+
+    # Collect all section schemas for this block
+    for (b, section), schema_class in DOMAIN_SECTION_SCHEMAS.items():
+        if b == block:
+            # Extract field descriptions from the Pydantic model
+            try:
+                fields = schema_class.model_fields
+                for field_name, field_info in fields.items():
+                    # Use the field's description if available, otherwise empty string
+                    description = field_info.description or ""
+                    descriptions[field_name] = description
+            except (AttributeError, TypeError):
+                # If the schema doesn't have model_fields, skip it
+                pass
+
     return {"block": block, "descriptions": descriptions}
 
 

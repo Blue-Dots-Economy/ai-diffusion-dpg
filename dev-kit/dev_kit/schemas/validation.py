@@ -1,8 +1,9 @@
 """Validation entry points used by the accumulator and deploy wizard endpoint.
 
-Two main functions:
+Three main functions:
 - validate_domain_section(block, section, merged_data) — for the LLM tool handler
 - validate_dpg_block(block, parsed_yaml) — for operator edits in deploy wizard
+- get_valid_sections(block) — returns section names for a block (replaces legacy loader)
 """
 from __future__ import annotations
 import logging
@@ -11,6 +12,12 @@ from typing import Optional
 from pydantic import ValidationError
 
 logger = logging.getLogger(__name__)
+
+# Known DPG block names
+_VALID_BLOCKS = {
+    "agent_core", "knowledge_engine", "memory_layer", "trust_layer",
+    "action_gateway", "reach_layer", "observability_layer",
+}
 
 from dev_kit.schemas.domain import (
     agent_core,
@@ -124,6 +131,25 @@ def validate_domain_section(block: str, section: str, merged_data: dict) -> Opti
         return formatted
 
 
+def get_valid_sections(block: str) -> list[str]:
+    """Return the sorted list of top-level section names declared for a block.
+
+    Used by tools.py to render the `update_config` tool description, and by
+    phases.py to list valid sections in the knowledge phase prompt.
+    Replaces the legacy loader-based lookup that read YAML templates.
+
+    Args:
+        block: Block name, e.g. "agent_core" or "trust_layer".
+
+    Returns:
+        Sorted list of valid top-level section names for this block.
+        Empty list if block is unknown.
+    """
+    return sorted(
+        section for (b, section) in DOMAIN_SECTION_SCHEMAS.keys() if b == block
+    )
+
+
 def validate_partial(block: str, data: dict) -> list[str]:
     """Validate each top-level section of a block's data; return error messages.
 
@@ -143,12 +169,8 @@ def validate_partial(block: str, data: dict) -> list[str]:
     Returns:
         List of error strings. Empty list means valid so far.
     """
-    from dev_kit.schemas.loader import load_template
-
     # --- Block existence check ---
-    try:
-        load_template(block)
-    except ValueError:
+    if block not in _VALID_BLOCKS:
         return [f"Unknown block: {block!r}"]
 
     if not data:

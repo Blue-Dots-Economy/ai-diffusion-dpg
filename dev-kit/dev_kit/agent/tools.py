@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 from dev_kit.agent.accumulator import BLOCKS, PHASES, ConfigAccumulator, ConfigStatus
 from dev_kit.agent.prompts.base import AGENT_TYPES, SHEET_REQUIREMENTS
-from dev_kit.schemas.loader import get_valid_sections
+from dev_kit.schemas.validation import get_valid_sections
 
 # ---------------------------------------------------------------------------
 # Tool JSON schema definitions passed to the Claude API

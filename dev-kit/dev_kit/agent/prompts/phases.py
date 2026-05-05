@@ -19,7 +19,7 @@ from dev_kit.schemas.domain import (
     reach_layer as rl_domain,
     trust_layer as tl_domain,
 )
-from dev_kit.schemas.loader import get_valid_sections
+from dev_kit.schemas.validation import get_valid_sections
 
 
 def _schema_source(*classes) -> str:

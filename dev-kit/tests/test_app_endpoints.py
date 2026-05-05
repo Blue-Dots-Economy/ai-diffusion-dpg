@@ -155,16 +155,16 @@ class TestCheckpointPreview:
 
 class TestSchemaDescriptions:
     def test_schema_descriptions_returns_key_map(self, client):
-        """reach_layer returns a descriptions dict with known keys."""
+        """reach_layer returns a descriptions dict with schema field names."""
         response = client.get("/api/schemas/reach_layer")
         assert response.status_code == 200
 
         data = response.json()
         assert data["block"] == "reach_layer"
         assert isinstance(data["descriptions"], dict)
-        # The reach_layer template has app_name with a comment
-        assert "app_name" in data["descriptions"]
-        assert len(data["descriptions"]["app_name"]) > 0
+        # ReachLayerSection has channels and common as top-level fields
+        assert "channels" in data["descriptions"]
+        assert "common" in data["descriptions"]
 
     def test_schema_descriptions_empty_for_unknown_block(self, client):
         """Returns empty descriptions dict (not 404) for a nonexistent block."""

@@ -6,6 +6,7 @@ from dev_kit.schemas.validation import (
     DPG_BLOCK_SCHEMAS,
     validate_domain_section,
     validate_dpg_block,
+    get_valid_sections,
 )
 
 
@@ -174,3 +175,29 @@ def test_error_format_truncates_long_values():
     )
     assert err is not None
     assert "...<truncated>" in err
+
+
+# -- get_valid_sections -------------------------------------------------------
+
+def test_get_valid_sections_returns_sorted_list():
+    sections = get_valid_sections("agent_core")
+    assert "agent" in sections
+    assert "agent_workflow" in sections
+    assert "preprocessing" in sections
+    assert sections == sorted(sections)
+
+
+def test_get_valid_sections_unknown_block_returns_empty():
+    assert get_valid_sections("nonexistent") == []
+
+
+def test_get_valid_sections_all_blocks():
+    # Verify all 7 blocks return non-empty sections
+    blocks = [
+        "agent_core", "knowledge_engine", "memory_layer", "trust_layer",
+        "action_gateway", "reach_layer", "observability_layer",
+    ]
+    for block in blocks:
+        sections = get_valid_sections(block)
+        assert len(sections) > 0, f"Block {block} should have sections"
+        assert sections == sorted(sections), f"Sections for {block} should be sorted"
