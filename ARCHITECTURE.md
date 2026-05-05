@@ -175,7 +175,7 @@ not declare the block are unaffected.
 - `agent_core/src/interfaces/` — sync ABCs; `interfaces/async_/` — async ABCs used by `stream_turn()`
 - `agent_core/src/servers/orchestration_server.py` — FastAPI: `POST /process_turn`, `POST /stream_turn`, session endpoints, `/health`, `POST /internal/llm/call`
 
-**Tests:** 457+ tests across 18 files, ≥70% line coverage (currently ~75%). `turn_assembler.py` at 96%.
+**Tests:** 818 tests across 32 files, ≥70% line coverage (currently ~75%). `turn_assembler.py` at 96%.
 
 **Known gaps:**
 - HiTL escalation for output path not wired: `orchestrator.py` — when Trust output returns `action: "escalate"`, the escalation call is deferred.
@@ -205,7 +205,7 @@ Assembles retrieval context for the LLM prompt. Receives NLU results and session
 - `knowledge_engine/src/blocks/static_knowledge_base.py`
 - `knowledge_engine/src/server.py` — FastAPI: `POST /retrieve`, `/health`
 
-**Tests:** 108 tests across 7 files, ≥70% line coverage.
+**Tests:** 192 tests across 13 files, ≥70% line coverage.
 
 ---
 
@@ -238,7 +238,7 @@ Manages state at three scopes. Agent Core reads at turn start and writes asynchr
 - `memory_layer/src/audit_store.py` — SQLite audit log (fully implemented)
 - `memory_layer/src/server.py` — FastAPI: 10 endpoints including `/context_bundle`, `/write`, `/flush_session`, `/audit`, `/users/{user_id}/active-history`, `/profile/{session_id}`, `/session/{session_id}`, `/health`
 
-**Tests:** 205 tests across 6 files.
+**Tests:** 226 tests across 7 files.
 
 ---
 
@@ -282,7 +282,7 @@ Mandatory safety gate. Stateless. Runs on every turn — never skipped. Structur
 - `trust_layer/src/server.py` — FastAPI: all endpoints above
 - `trust_layer/src/models.py` — all Pydantic request/response types
 
-**Tests:** 115 tests across 8 files (4 top-level + 4 per-block). All sub-blocks covered.
+**Tests:** 138 tests across 9 files. All sub-blocks covered.
 
 ---
 
@@ -324,7 +324,7 @@ Sole interface with external systems. Executes tool calls expressed by the LLM. 
 - `action_gateway/src/registry/adapter_factory.py` — `AdapterFactory`: instantiates adapters from YAML config
 - `action_gateway/src/models.py` — Pydantic request/response types
 
-**Tests:** 140 tests across 7 files.
+**Tests:** 173 tests across 8 files.
 
 ---
 
@@ -347,7 +347,7 @@ Normalises inbound channels and delivers responses. Ships as **three independent
 |---------|--------|-------|
 | CLI (`reach_layer/cli/`) | ✅ | `CLIReach` — session mode, readline loop, port-free |
 | Web (`reach_layer/web/`) | ✅ | FastAPI + React 19 SPA, port 8005. `POST /chat`, `GET /user-history/{user_id}`, `GET /app-config`. Direct mode. Google Sign-In optional. |
-| Voice (`reach_layer/voice/`) | 🟡 | `VobizAdapter` on pipecat pipeline (VAD → Raya STT → AgentCoreLLM → Raya TTS → SIP), port 8006. Session mode. Barge-in supported. 48 tests, 92% coverage. |
+| Voice (`reach_layer/voice/`) | 🟡 | `VobizAdapter` on pipecat pipeline (VAD → Raya STT → AgentCoreLLM → Raya TTS → SIP), port 8006. Session mode. Barge-in supported. 166 tests. |
 | Production SIP/PSTN | ❌ | Out of scope — VOIP via pipecat/Vobiz is the production path |
 | WhatsApp | ⏳ | Gupshup/Twilio webhook — pending |
 | Mobile SDK | ⏳ | Pending |
@@ -364,7 +364,7 @@ Normalises inbound channels and delivers responses. Ships as **three independent
 - `reach_layer/voice/src/vobiz_adapter.py` — `VobizAdapter`; `voice/src/bot.py`, `campaign_manager.py`
 - `reach_layer/voice/src/pipecat_services/` — Raya STT/TTS pipecat services
 
-**Tests:** 217 Python tests across 8 files + 143 React UI tests across 14 files.
+**Tests:** 308 Python tests across 20 files (cli 47 + web 95 + voice 166) + 143 React UI tests across 14 files.
 
 ---
 
@@ -407,7 +407,7 @@ vs. audit log — `user_id` allowed in traces for dashboarding, excluded from au
 - `observability_layer/src/otel_observability_layer.py` — `OtelObservabilityLayer` (primary implementation)
 - `observability_layer/src/server.py` — FastAPI: `/emit/turn`, `/emit/signal`, `/validate-config`, `/health`
 
-**Tests:** 94 tests across 7 files.
+**Tests:** 101 tests across 7 files.
 
 ---
 
@@ -629,13 +629,13 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 
 | Block | Status | Notes |
 |---|---|---|
-| Agent Core | ✅ | Orchestrator, LLM wrapper, preprocessing, tool-use loop, async SSE streaming, TurnAssembler, 10-subagent workflow. 457+ tests, 18 files, ≥70% coverage. |
-| Knowledge Engine | ✅ | Glossary, ChromaDB RAG, HTTP server (`POST /retrieve`). 108 tests, 7 files, ≥70% coverage. |
-| Memory Layer | ✅ | Redis (session) + Memgraph (user/journey/context graph) + SQLite (audit). 10 HTTP endpoints. 205 tests. |
-| Trust Layer | 🟡 | All 4 sub-blocks implemented. Fail-closed. HiTL: log backend only. Consent: in-process SQLite. 115 tests. |
-| Action Gateway | ✅ | Generic adapter framework (RestApiAdapter + McpAdapter). Config-driven via `tools:[]`. OTel instrumented. 140 tests. |
-| Reach Layer | 🟡 | 3 channels: CLI (✅) + Web/React 19 SPA (✅) + Voice/pipecat (🟡 48 tests, 92% cov). 217 Python + 143 UI tests. |
-| Observability Layer | 🟡 | OTel instrumentation functional. Audit = Loki+Jaeger via OTel Collector. Grafana dashboards pending. 94 tests. |
+| Agent Core | ✅ | Orchestrator, multi-provider chat_provider (Anthropic + OpenAI), preprocessing, tool-use loop, async SSE streaming, TurnAssembler, 10-subagent workflow. 818 tests, 32 files, ≥70% coverage. |
+| Knowledge Engine | ✅ | Glossary, ChromaDB RAG, HTTP server (`POST /retrieve`). 192 tests, 13 files, ≥70% coverage. |
+| Memory Layer | ✅ | Redis (session) + Memgraph (user/journey/context graph) + SQLite (audit). 10 HTTP endpoints. 226 tests. |
+| Trust Layer | 🟡 | All 4 sub-blocks implemented. Fail-closed. HiTL: log backend only. Consent: in-process SQLite. 138 tests. |
+| Action Gateway | ✅ | Generic adapter framework (RestApiAdapter + McpAdapter). Config-driven via `tools:[]`. OTel instrumented. 173 tests. |
+| Reach Layer | 🟡 | 3 channels: CLI (✅) + Web/React 19 SPA (✅, with `routing_only` mode for voice-only deployments) + Voice/pipecat (🟡 166 tests). 308 Python + 143 UI tests. |
+| Observability Layer | 🟡 | OTel instrumentation functional. Audit = Loki+Jaeger via OTel Collector. Grafana dashboards pending. 101 tests. |
 
 ### By feature
 

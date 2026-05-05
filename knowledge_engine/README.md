@@ -46,7 +46,7 @@ knowledge_engine/
 │       ├── glossary.py                  # Colloquial-term → canonical-concept mapping
 │       ├── static_knowledge_base.py     # ChromaDB semantic RAG with intent and location filters
 │       └── multimodal_input_handler.py  # PDF/image extraction (disabled via config)
-└── tests/                               # 108 tests across 7 files
+└── tests/                               # 192 tests across 13 files
     ├── test_engine.py
     ├── test_glossary.py
     ├── test_static_knowledge_base.py
@@ -202,7 +202,7 @@ cd knowledge_engine
 uv run pytest tests/ -v --cov=src --cov-report=term-missing
 ```
 
-108 tests across 7 files. Coverage threshold: 70% (enforced via `fail_under`).
+192 tests across 13 files. Coverage threshold: 70% (enforced via `fail_under`).
 
 ---
 

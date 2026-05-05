@@ -44,7 +44,7 @@ memory_layer/
 │   ├── graph_context_store.py  # GraphContextStore — Signal and ContextAttribute nodes
 │   ├── audit_store_base.py     # AuditStoreBase ABC (4 abstract methods)
 │   └── audit_store.py          # SQLiteAuditStore — session lifecycle + turn history
-└── tests/                      # 205 tests across 6 files
+└── tests/                      # 226 tests across 7 files
     ├── test_memory_layer.py    (48 tests)
     ├── test_server.py          (29 tests)
     ├── test_session_store.py   (40 tests)

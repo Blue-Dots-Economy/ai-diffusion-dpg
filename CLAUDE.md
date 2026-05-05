@@ -109,9 +109,9 @@ Only Agent Core initiates calls to other blocks. No other cross-module calls exi
 
 ### PoC scope
 
-Full implementations: **Agent Core** (457+ tests — sync + async streaming + TurnAssembler), **Knowledge Engine** (108 tests), **Memory Layer** (205 tests, Redis + Memgraph + SQLite), **Action Gateway** (140 tests — RestApiAdapter + McpAdapter), **Domain Configuration Kit**.
+Full implementations: **Agent Core** (818 tests — sync + async streaming + TurnAssembler + multi-provider chat_provider), **Knowledge Engine** (192 tests), **Memory Layer** (226 tests, Redis + Memgraph + SQLite), **Action Gateway** (173 tests — RestApiAdapter + McpAdapter), **Domain Configuration Kit** (365 tests).
 
-Partial implementations (correct interface, some gaps): **Trust Layer** (115 tests — all 4 sub-blocks; HiTL log backend only, consent store in-process), **Reach Layer** (217 Python + 143 UI tests — CLI ✅, Web/React SPA ✅, Voice/pipecat 🟡), **Observability Layer** (94 tests — OTel functional; Grafana dashboards pending).
+Partial implementations (correct interface, some gaps): **Trust Layer** (138 tests — all 4 sub-blocks; HiTL log backend only, consent store in-process), **Reach Layer** (308 Python + 143 UI tests — CLI ✅, Web/React SPA ✅ (with `routing_only` mode for voice-only deployments), Voice/pipecat 🟡), **Observability Layer** (101 tests — OTel functional; Grafana dashboards pending).
 
 **Stub interfaces must exactly match the real interface** — they must be replaceable without changing Agent Core or other modules.
 

@@ -89,7 +89,7 @@ agent_core/
 │       │                                #   DELETE /sessions/{id}/active_turn (barge-in)
 │       │                                #   GET  /health
 │       └── llm_proxy_server.py          # POST /internal/llm/call
-└── tests/                               # 457+ tests across 18 files, ≥70% coverage
+└── tests/                               # 818 tests across 32 files, ≥70% coverage
     ├── test_orchestrator.py
     ├── test_manager_agent.py
     ├── test_chat_provider_anthropic.py
@@ -389,7 +389,7 @@ cd agent_core
 uv run pytest tests/ -v --cov=src --cov-report=term-missing
 ```
 
-457+ tests across 18 files. Coverage threshold: 70% (currently ~75%). `turn_assembler.py` is covered at 96%.
+818 tests across 32 files. Coverage threshold: 70% (currently ~75%). `turn_assembler.py` is covered at 96%.
 
 ---
 

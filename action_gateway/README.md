@@ -44,7 +44,7 @@ action_gateway/
     └── test_main.py
 ```
 
-Total: 140 tests.
+Total: 173 tests across 8 files.
 
 ---
 

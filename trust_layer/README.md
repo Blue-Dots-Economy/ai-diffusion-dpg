@@ -42,7 +42,7 @@ trust_layer/
 │       ├── guardrails.py # GuardrailsBlock
 │       ├── consent.py    # ConsentBlock
 │       └── hitl.py       # HiTLBlock
-└── tests/                   # 115 tests across 8 files
+└── tests/                   # 138 tests across 9 files
     ├── test_models.py       (6 tests)
     ├── test_server.py       (28 tests)
     ├── test_main.py         (23 tests)

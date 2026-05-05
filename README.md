@@ -81,10 +81,10 @@ Target: ≥ 70% line coverage on `agent_core/` and `knowledge_engine/`.
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — single source of truth: block responsibilities, runtime sequence, design decisions, implementation status
 - [dev-kit/README.md](dev-kit/README.md) — configuration toolchain (Tier 1 agent + Tier 2 YAML) and how to add a new domain
-- `agent_core/` — orchestrator, LLM wrapper, NLU, tool-use loop (414 tests)
-- `knowledge_engine/` — RAG retrieval, glossary, prompt assembly (117 tests)
-- `memory_layer/` — Redis session store + Memgraph context graph + SQLite audit (200 tests)
-- `trust_layer/` — ContentBlock, GuardrailsBlock, ConsentBlock, HiTLBlock
-- `observability_layer/` — OTel instrumentation via `dpg_telemetry`
-- `reach_layer/` — CLI + web channel adapter
-- `action_gateway/` — mock ONEST connector
+- `agent_core/` — orchestrator, multi-provider chat_provider (Anthropic + OpenAI), NLU, tool-use loop (818 tests)
+- `knowledge_engine/` — RAG retrieval, glossary, prompt assembly (192 tests)
+- `memory_layer/` — Redis session store + Memgraph context graph + SQLite audit (226 tests)
+- `trust_layer/` — ContentBlock, GuardrailsBlock, ConsentBlock, HiTLBlock (138 tests)
+- `observability_layer/` — OTel instrumentation via `dpg_telemetry` (101 tests)
+- `reach_layer/` — CLI + web (React SPA) + voice (pipecat) channel adapters (308 Python + 143 UI tests)
+- `action_gateway/` — generic RestApiAdapter + McpAdapter (173 tests)
