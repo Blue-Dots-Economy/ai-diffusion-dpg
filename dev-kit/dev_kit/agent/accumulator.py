@@ -506,26 +506,22 @@ class ConfigAccumulator:
         return deepcopy(result)
 
     def set_reach_channel_selection(self, channels: list[str]) -> None:
-        """Store the selected deployment channels and write the web service mode.
+        """Store the selected deployment channels.
+
+        The reach_layer_web service mode (full vs routing_only) is derived from
+        this selection at deploy time and injected as the REACH_LAYER_WEB_MODE
+        environment variable; it is not part of the runtime YAML.
 
         Args:
             channels: List of selected channel names (e.g. ['web', 'cli']).
-                When 'web' is not in the list, sets reach_layer.channels.web.mode
-                to 'routing_only' so the web service boots without the full UI stack.
         """
         self._data["reach_layer"]["_selected_channels"] = list(channels)
-        web_mode = "full" if "web" in channels else "routing_only"
-        reach_cfg = self._data["reach_layer"].setdefault("reach_layer", {})
-        channels_cfg = reach_cfg.setdefault("channels", {})
-        web_cfg = channels_cfg.setdefault("web", {})
-        web_cfg["mode"] = web_mode
         logger.info(
             "devkit.accumulator.channels_set",
             extra={
                 "operation": "accumulator.set_reach_channel_selection",
                 "status": "success",
                 "channels": list(channels),
-                "web_mode": web_mode,
             },
         )
 
