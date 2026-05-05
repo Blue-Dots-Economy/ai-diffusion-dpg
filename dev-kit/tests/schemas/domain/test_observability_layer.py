@@ -150,6 +150,12 @@ def test_audit_override_pii_fields():
     assert a.pii_fields_excluded == ["user_message", "user_id"]
 
 
+def test_audit_override_pii_fields_empty_list_allowed():
+    """Empty list explicitly means 'no fields excluded' — valid (overrides DPG default)."""
+    a = AuditOverride(pii_fields_excluded=[])
+    assert a.pii_fields_excluded == []
+
+
 # -- TelemetryOverride -------------------------------------------------------
 
 def test_telemetry_override_optional():

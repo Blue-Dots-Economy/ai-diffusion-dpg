@@ -15,8 +15,8 @@ class LifecycleState(BaseModel):
     """One outcome lifecycle state. trigger_tool=None means entry/initial state."""
     model_config = ConfigDict(extra="forbid")
     state: str = Field(..., min_length=1, pattern=r"^[a-z][a-z0-9_]*$")
-    trigger_tool: Optional[str] = None
-    trigger_condition: Optional[str] = None
+    trigger_tool: Optional[str] = Field(default=None, min_length=1)
+    trigger_condition: Optional[str] = Field(default=None, min_length=1)
 
 
 class MetricDefinition(BaseModel):
@@ -42,21 +42,43 @@ class OutcomesConfig(BaseModel):
 # if absent, DPG defaults stand.
 
 class SliOverride(BaseModel):
-    """Service-level indicator threshold overrides."""
+    """Service-level indicator threshold overrides.
+
+    Domains may override DPG defaults to reflect realistic per-domain SLOs.
+    For example, employ-voice-bot bumps `turn_latency_p99_ms` from the DPG
+    default (1200) to 1500 because voice deployments tolerate higher latency.
+    All fields are Optional — only set the ones a domain wants to override.
+
+    Caps:
+      - turn_latency_p99_ms: 1–10000 ms (10s ceiling — anything higher is
+        symptomatic, not a healthy threshold).
+      - trust_block_rate_max: 0.0–1.0 (fraction of turns blocked).
+    """
     model_config = ConfigDict(extra="forbid")
     turn_latency_p99_ms: Optional[int] = Field(default=None, gt=0, le=10000)
     trust_block_rate_max: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 class AuditOverride(BaseModel):
-    """Audit log overrides (retention + PII exclusion)."""
+    """Audit log overrides — retention period and PII exclusion list.
+
+    The 3650-day (10-year) cap on retention_days reflects practical legal
+    retention horizons (e.g., DPDP Act). Increase pii_fields_excluded for
+    domains that emit additional sensitive fields beyond the framework defaults.
+    All fields Optional — DPG defaults stand if absent.
+    """
     model_config = ConfigDict(extra="forbid")
     pii_fields_excluded: Optional[list[str]] = None
     retention_days: Optional[int] = Field(default=None, gt=0, le=3650)
 
 
 class TelemetryOverride(BaseModel):
-    """OTel telemetry overrides (PII exclusion list)."""
+    """OTel telemetry overrides — PII exclusion list.
+
+    Domains may add fields to the framework default exclusion set so the
+    OTel exporter never emits them. All fields Optional — DPG defaults stand
+    if absent.
+    """
     model_config = ConfigDict(extra="forbid")
     pii_fields_excluded: Optional[list[str]] = None
 
