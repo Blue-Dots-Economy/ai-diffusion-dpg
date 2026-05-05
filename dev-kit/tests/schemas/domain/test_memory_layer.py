@@ -34,6 +34,13 @@ def test_session_field_int():
     assert f.default == 0
 
 
+def test_session_field_list():
+    """SessionFieldType.list_ is the 4th valid type — not validated by enum_requires_values."""
+    f = SessionFieldDefinition(type="list")
+    assert f.values is None
+    assert f.default is None
+
+
 def test_session_field_enum_requires_values():
     with pytest.raises(ValidationError, match="enum"):
         SessionFieldDefinition(type="enum", values=None)
@@ -148,6 +155,22 @@ def test_child_node_recursive():
         ],
     )
     assert c.children[0].label == "Step"
+
+
+def test_child_node_recursive_depth_three():
+    """Verify nested children at depth 3+ work — confirms forward-reference resolution."""
+    c = ChildNodeConfig(
+        label="Journey",
+        rel="HAS_JOURNEY",
+        children=[
+            ChildNodeConfig(
+                label="Step",
+                rel="HAS_STEP",
+                children=[ChildNodeConfig(label="Milestone", rel="HAS_MILESTONE")],
+            ),
+        ],
+    )
+    assert c.children[0].children[0].label == "Milestone"
 
 
 def test_child_node_with_adhoc():
