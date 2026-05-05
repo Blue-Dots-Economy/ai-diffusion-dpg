@@ -1,0 +1,51 @@
+# Edit this file to add a new model, voice, or language without code changes.
+# enums.py reads it at import time.
+providers:
+  - anthropic
+  - openai
+
+# Both providers' chat_provider implementations accept any string and pass it
+# to the API. The list below is "models we have tested or document as valid."
+anthropic_models:
+  - claude-haiku-4-5-20251001
+  - claude-sonnet-4-6
+  - claude-opus-4-7
+  - claude-sonnet-4-5-20250929   # used by KKB NLU helper
+
+openai_models:
+  - gpt-4o-2024-08-06            # documented in openai_provider.py
+  - gpt-4.1-2025-04-14           # referenced in kkb domain config
+  - gpt-5.4-mini-2026-03-17      # referenced in kkb domain config
+
+languages:
+  - english
+  - hindi
+  - marathi
+  - telugu
+  - kannada
+  - bengali
+  - assamese
+  - gujarati
+  - malayalam
+  - nepali
+  - tamil
+
+# Each voice tagged with its language. RAYA_LANGUAGES is derived at module load.
+raya_voices:
+  - {voice_id: "c849b31b-b0ba-488f-b97d-3fd12f2656f4", language: "mr",    name: "Sneha"}
+  - {voice_id: "d6a002d0-230c-49b1-a137-b8a7d564b1ae", language: "hi",    name: "Priyanka"}
+  - {voice_id: "25a7c7d9-57b3-488a-a880-33edf6642902", language: "te",    name: "Tanvi"}
+  - {voice_id: "6a897d02-83ab-43ea-b17f-a8cc2d96a279", language: "kn",    name: "Meera"}
+  - {voice_id: "a1b2c3d4-e5f6-4789-a012-b3c4d5e6f789", language: "bn",    name: "Aishwarya"}
+  - {voice_id: "d4e5f6a7-b8c9-4a01-d345-e6f7a8b9c012", language: "as",    name: "Priti"}
+  - {voice_id: "9a01bcde-2345-6789-abc1-123456abcdef", language: "gu",    name: "Jignesh"}
+  - {voice_id: "0f24fb66-e495-4781-9e84-1224aa7dacde", language: "en-in", name: "Nayra"}
+  - {voice_id: "90534e23-8bcb-4b1c-a16b-b9a4be646321", language: "en-us", name: "Solene"}
+  - {voice_id: "57a1e849-8e0f-43ee-adab-b4b74a9d79e1", language: "ml",    name: "Devika"}
+  - {voice_id: "5d6c7ee4-2563-4dab-9c8a-c3269e22cba9", language: "ne",    name: "Ritu"}
+  - {voice_id: "fed6231c-7e35-4fbe-bbca-254f566e5dd5", language: "ta",    name: "Abirami"}
+
+embedding_providers:
+  - chroma_default
+  - openai
+  - sentence_transformers
