@@ -2,25 +2,23 @@
 agent_core/tests/test_llm_proxy_server.py
 
 Unit tests for llm_proxy_server.py (FastAPI LLM proxy).
-All LLM wrapper calls are mocked — no real API calls are made.
+All chat-provider calls are mocked — no real API calls are made.
 
 Coverage:
 Normal execution:
-  - POST /internal/llm/call with text response returns correct LLMCallResponse
-  - POST /internal/llm/call with tool_use response returns tool_calls list
-  - POST /internal/llm/call passes model_override through to llm wrapper
-  - POST /internal/llm/call passes system prompt through to llm wrapper
+  - POST /internal/llm/call with text response returns ChatResponse
+  - POST /internal/llm/call with tool_use response returns content with tool_use blocks
+  - POST /internal/llm/call passes system prompt through
+  - POST /internal/llm/call passes tools through
   - GET /health returns status=ok and active_model
 
 Edge cases:
   - POST /internal/llm/call with empty messages returns HTTP 422
-  - POST /internal/llm/call omitting tools defaults to empty list
-  - POST /internal/llm/call omitting system defaults to empty string
   - create_app(None) raises ValueError
 
 Failure scenarios:
-  - LLM wrapper returns stop_reason=error → HTTP 200 with error in body, never HTTP 500
-  - LLM wrapper returns content=None (tool_use turn) → HTTP 200 with null content
+  - chat_provider returns stop_reason=error → HTTP 200 with error in body
+  - Malformed JSON body returns HTTP 422
 """
 
 from __future__ import annotations
@@ -29,81 +27,84 @@ import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import MagicMock
 
+from src.chat_provider.base import ChatProviderBase
+from src.chat_provider.types import (
+    ChatResponse,
+    TextBlock,
+    TokenUsage,
+    ToolUseBlock,
+)
 from src.servers.llm_proxy_server import create_app
-from src.llm_wrapper.base import LLMWrapperBase
-from src.models import LLMResponse, ToolCall
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_llm_mock(response: LLMResponse) -> LLMWrapperBase:
-    """Return a minimal LLMWrapperBase mock that returns the given response."""
-    mock = MagicMock(spec=LLMWrapperBase)
+def _make_provider_mock(response: ChatResponse) -> ChatProviderBase:
+    """Return a minimal ChatProviderBase mock that returns the given response."""
+    mock = MagicMock(spec=ChatProviderBase)
     mock.call.return_value = response
     mock.get_active_model.return_value = "claude-test-model"
     return mock
 
 
 def _text_response(
-    content: str = "Hello back!",
+    text: str = "Hello back!",
     model: str = "claude-test-model",
-) -> LLMResponse:
-    return LLMResponse(
-        content=content,
-        tool_calls=[],
+) -> ChatResponse:
+    return ChatResponse(
+        content=[TextBlock(text=text)],
         stop_reason="end_turn",
         model_used=model,
-        input_tokens=10,
-        output_tokens=5,
+        usage=TokenUsage(input_tokens=10, output_tokens=5),
     )
 
 
-def _tool_response() -> LLMResponse:
-    return LLMResponse(
-        content=None,
-        tool_calls=[
-            ToolCall(
-                tool_name="search_records",
+def _tool_response() -> ChatResponse:
+    return ChatResponse(
+        content=[
+            ToolUseBlock(
                 tool_use_id="tu_abc123",
-                input_params={"query": "electrician Hubli"},
-            )
+                tool_name="search_records",
+                input={"query": "electrician Hubli"},
+            ),
         ],
         stop_reason="tool_use",
         model_used="claude-test-model",
-        input_tokens=20,
-        output_tokens=10,
+        usage=TokenUsage(input_tokens=20, output_tokens=10),
     )
 
 
-def _error_response() -> LLMResponse:
-    return LLMResponse(
-        content=None,
-        tool_calls=[],
+def _error_response() -> ChatResponse:
+    return ChatResponse(
+        content=[],
         stop_reason="error",
         model_used="claude-test-model",
-        input_tokens=0,
-        output_tokens=0,
+        usage=TokenUsage(),
     )
 
 
-VALID_MESSAGES = [{"role": "user", "content": "kaam chahiye"}]
+# A minimal ChatRequest body: one user message with one text block.
+VALID_BODY: dict = {
+    "messages": [
+        {"role": "user", "content": [{"type": "text", "text": "kaam chahiye"}]}
+    ]
+}
 
 
 # ---------------------------------------------------------------------------
 # create_app factory
 # ---------------------------------------------------------------------------
 
-def test_create_app_raises_on_none_llm():
-    with pytest.raises(ValueError, match="llm must not be None"):
+def test_create_app_raises_on_none_chat_provider():
+    with pytest.raises(ValueError, match="chat_provider must not be None"):
         create_app(None)
 
 
 def test_create_app_returns_fastapi_app():
     from fastapi import FastAPI
-    mock_llm = _make_llm_mock(_text_response())
-    app = create_app(mock_llm)
+    app = create_app(_make_provider_mock(_text_response()))
     assert isinstance(app, FastAPI)
 
 
@@ -112,91 +113,71 @@ def test_create_app_returns_fastapi_app():
 # ---------------------------------------------------------------------------
 
 def test_llm_call_returns_text_response():
-    mock_llm = _make_llm_mock(_text_response())
-    client = TestClient(create_app(mock_llm))
+    provider = _make_provider_mock(_text_response())
+    client = TestClient(create_app(provider))
 
-    resp = client.post(
-        "/internal/llm/call",
-        json={"messages": VALID_MESSAGES},
-    )
+    resp = client.post("/internal/llm/call", json=VALID_BODY)
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["content"] == "Hello back!"
     assert body["stop_reason"] == "end_turn"
-    assert body["tool_calls"] == []
     assert body["model_used"] == "claude-test-model"
-    assert body["input_tokens"] == 10
-    assert body["output_tokens"] == 5
+    assert body["content"][0]["type"] == "text"
+    assert body["content"][0]["text"] == "Hello back!"
+    assert body["usage"]["input_tokens"] == 10
+    assert body["usage"]["output_tokens"] == 5
 
 
 def test_llm_call_returns_tool_use_response():
-    mock_llm = _make_llm_mock(_tool_response())
-    client = TestClient(create_app(mock_llm))
+    provider = _make_provider_mock(_tool_response())
+    client = TestClient(create_app(provider))
 
-    resp = client.post(
-        "/internal/llm/call",
-        json={
-            "messages": VALID_MESSAGES,
-            "tools": [{"name": "search_records", "description": "Search", "input_schema": {}}],
-        },
-    )
+    body_with_tool = {
+        **VALID_BODY,
+        "tools": [
+            {"name": "search_records", "description": "Search", "input_schema": {}},
+        ],
+    }
+    resp = client.post("/internal/llm/call", json=body_with_tool)
 
     assert resp.status_code == 200
     body = resp.json()
     assert body["stop_reason"] == "tool_use"
-    assert body["content"] is None
-    assert len(body["tool_calls"]) == 1
-    assert body["tool_calls"][0]["tool_name"] == "search_records"
-    assert body["tool_calls"][0]["tool_use_id"] == "tu_abc123"
-    assert body["tool_calls"][0]["input_params"] == {"query": "electrician Hubli"}
+    assert body["content"][0]["type"] == "tool_use"
+    assert body["content"][0]["tool_name"] == "search_records"
+    assert body["content"][0]["tool_use_id"] == "tu_abc123"
+    assert body["content"][0]["input"] == {"query": "electrician Hubli"}
 
 
-def test_llm_call_passes_model_override_to_wrapper():
-    mock_llm = _make_llm_mock(_text_response())
-    client = TestClient(create_app(mock_llm))
+def test_llm_call_passes_system_prompt_through():
+    provider = _make_provider_mock(_text_response())
+    client = TestClient(create_app(provider))
 
-    client.post(
-        "/internal/llm/call",
-        json={
-            "messages": VALID_MESSAGES,
-            "model_override": "claude-haiku-4-5-20251001",
+    body = {
+        **VALID_BODY,
+        "system": {
+            "blocks": [{"type": "text", "text": "You are a domain agent."}],
         },
-    )
+    }
+    client.post("/internal/llm/call", json=body)
 
-    mock_llm.call.assert_called_once()
-    _, kwargs = mock_llm.call.call_args
-    assert kwargs.get("model_override") == "claude-haiku-4-5-20251001"
-
-
-def test_llm_call_passes_system_prompt_to_wrapper():
-    mock_llm = _make_llm_mock(_text_response())
-    client = TestClient(create_app(mock_llm))
-
-    client.post(
-        "/internal/llm/call",
-        json={
-            "messages": VALID_MESSAGES,
-            "system": "You are a domain agent.",
-        },
-    )
-
-    _, kwargs = mock_llm.call.call_args
-    assert kwargs.get("system") == "You are a domain agent."
+    sent_request = provider.call.call_args.args[0]
+    assert sent_request.system is not None
+    assert sent_request.system.blocks[0].text == "You are a domain agent."
 
 
-def test_llm_call_passes_tools_to_wrapper():
-    mock_llm = _make_llm_mock(_text_response())
-    client = TestClient(create_app(mock_llm))
+def test_llm_call_passes_tools_through():
+    provider = _make_provider_mock(_text_response())
+    client = TestClient(create_app(provider))
 
-    tools = [{"name": "get_scheme", "description": "Fetch scheme", "input_schema": {}}]
-    client.post(
-        "/internal/llm/call",
-        json={"messages": VALID_MESSAGES, "tools": tools},
-    )
+    tools = [
+        {"name": "get_scheme", "description": "Fetch scheme", "input_schema": {}},
+    ]
+    client.post("/internal/llm/call", json={**VALID_BODY, "tools": tools})
 
-    _, kwargs = mock_llm.call.call_args
-    assert kwargs.get("tools") == tools
+    sent_request = provider.call.call_args.args[0]
+    assert len(sent_request.tools) == 1
+    assert sent_request.tools[0].name == "get_scheme"
 
 
 # ---------------------------------------------------------------------------
@@ -204,9 +185,9 @@ def test_llm_call_passes_tools_to_wrapper():
 # ---------------------------------------------------------------------------
 
 def test_health_returns_ok_and_active_model():
-    mock_llm = _make_llm_mock(_text_response())
-    mock_llm.get_active_model.return_value = "claude-sonnet-4-6"
-    client = TestClient(create_app(mock_llm))
+    provider = _make_provider_mock(_text_response())
+    provider.get_active_model.return_value = "claude-sonnet-4-6"
+    client = TestClient(create_app(provider))
 
     resp = client.get("/health")
 
@@ -216,130 +197,107 @@ def test_health_returns_ok_and_active_model():
     assert body["active_model"] == "claude-sonnet-4-6"
 
 
-def test_health_reflects_fallback_model_after_switch():
-    mock_llm = _make_llm_mock(_text_response())
-    mock_llm.get_active_model.return_value = "claude-haiku-4-5-20251001"
-    client = TestClient(create_app(mock_llm))
-
-    resp = client.get("/health")
-
-    assert resp.json()["active_model"] == "claude-haiku-4-5-20251001"
-
-
 # ---------------------------------------------------------------------------
 # Edge cases
 # ---------------------------------------------------------------------------
 
 def test_llm_call_returns_422_on_empty_messages():
-    mock_llm = _make_llm_mock(_text_response())
-    client = TestClient(create_app(mock_llm))
+    provider = _make_provider_mock(_text_response())
+    client = TestClient(create_app(provider))
 
-    resp = client.post(
-        "/internal/llm/call",
-        json={"messages": []},
-    )
+    resp = client.post("/internal/llm/call", json={"messages": []})
 
     assert resp.status_code == 422
 
 
-def test_llm_call_empty_messages_does_not_reach_llm_wrapper():
-    mock_llm = _make_llm_mock(_text_response())
-    client = TestClient(create_app(mock_llm))
+def test_llm_call_empty_messages_does_not_reach_provider():
+    provider = _make_provider_mock(_text_response())
+    client = TestClient(create_app(provider))
 
     client.post("/internal/llm/call", json={"messages": []})
 
-    mock_llm.call.assert_not_called()
+    provider.call.assert_not_called()
 
 
 def test_llm_call_defaults_tools_to_empty_list():
-    mock_llm = _make_llm_mock(_text_response())
-    client = TestClient(create_app(mock_llm))
+    provider = _make_provider_mock(_text_response())
+    client = TestClient(create_app(provider))
 
-    client.post("/internal/llm/call", json={"messages": VALID_MESSAGES})
+    client.post("/internal/llm/call", json=VALID_BODY)
 
-    _, kwargs = mock_llm.call.call_args
-    assert kwargs.get("tools") == []
-
-
-def test_llm_call_defaults_system_to_empty_string():
-    mock_llm = _make_llm_mock(_text_response())
-    client = TestClient(create_app(mock_llm))
-
-    client.post("/internal/llm/call", json={"messages": VALID_MESSAGES})
-
-    _, kwargs = mock_llm.call.call_args
-    assert kwargs.get("system") == ""
+    sent_request = provider.call.call_args.args[0]
+    assert sent_request.tools == []
 
 
-def test_llm_call_defaults_model_override_to_none():
-    mock_llm = _make_llm_mock(_text_response())
-    client = TestClient(create_app(mock_llm))
+def test_llm_call_defaults_system_to_none():
+    provider = _make_provider_mock(_text_response())
+    client = TestClient(create_app(provider))
 
-    client.post("/internal/llm/call", json={"messages": VALID_MESSAGES})
+    client.post("/internal/llm/call", json=VALID_BODY)
 
-    _, kwargs = mock_llm.call.call_args
-    assert kwargs.get("model_override") is None
+    sent_request = provider.call.call_args.args[0]
+    assert sent_request.system is None
 
 
 def test_llm_call_multiple_tool_calls_in_response():
-    multi_tool_response = LLMResponse(
-        content=None,
-        tool_calls=[
-            ToolCall(tool_name="tool_a", tool_use_id="tu_1", input_params={"x": 1}),
-            ToolCall(tool_name="tool_b", tool_use_id="tu_2", input_params={"y": 2}),
+    multi_tool_response = ChatResponse(
+        content=[
+            ToolUseBlock(tool_use_id="tu_1", tool_name="tool_a", input={"x": 1}),
+            ToolUseBlock(tool_use_id="tu_2", tool_name="tool_b", input={"y": 2}),
         ],
         stop_reason="tool_use",
         model_used="claude-test-model",
-        input_tokens=30,
-        output_tokens=15,
+        usage=TokenUsage(input_tokens=30, output_tokens=15),
     )
-    mock_llm = _make_llm_mock(multi_tool_response)
-    client = TestClient(create_app(mock_llm))
+    provider = _make_provider_mock(multi_tool_response)
+    client = TestClient(create_app(provider))
 
-    resp = client.post("/internal/llm/call", json={"messages": VALID_MESSAGES})
+    resp = client.post("/internal/llm/call", json=VALID_BODY)
 
     assert resp.status_code == 200
-    assert len(resp.json()["tool_calls"]) == 2
+    body = resp.json()
+    assert sum(1 for b in body["content"] if b["type"] == "tool_use") == 2
 
 
 # ---------------------------------------------------------------------------
 # Failure scenarios
 # ---------------------------------------------------------------------------
 
-def test_llm_error_returns_http_200_not_500():
-    """LLM failures are expressed in the body (stop_reason=error), never as HTTP 500."""
-    mock_llm = _make_llm_mock(_error_response())
-    client = TestClient(create_app(mock_llm))
+def test_provider_error_returns_http_200_not_500():
+    """Provider failures are expressed in the body (stop_reason=error), not HTTP 500."""
+    provider = _make_provider_mock(_error_response())
+    client = TestClient(create_app(provider))
 
-    resp = client.post("/internal/llm/call", json={"messages": VALID_MESSAGES})
+    resp = client.post("/internal/llm/call", json=VALID_BODY)
 
     assert resp.status_code == 200
     assert resp.json()["stop_reason"] == "error"
 
 
-def test_llm_error_response_has_null_content():
-    mock_llm = _make_llm_mock(_error_response())
-    client = TestClient(create_app(mock_llm))
+def test_provider_error_response_has_empty_content():
+    provider = _make_provider_mock(_error_response())
+    client = TestClient(create_app(provider))
 
-    resp = client.post("/internal/llm/call", json={"messages": VALID_MESSAGES})
+    resp = client.post("/internal/llm/call", json=VALID_BODY)
 
-    assert resp.json()["content"] is None
+    assert resp.json()["content"] == []
 
 
-def test_llm_error_response_has_zero_tokens():
-    mock_llm = _make_llm_mock(_error_response())
-    client = TestClient(create_app(mock_llm))
+def test_provider_error_response_has_none_token_fields():
+    provider = _make_provider_mock(_error_response())
+    client = TestClient(create_app(provider))
 
-    resp = client.post("/internal/llm/call", json={"messages": VALID_MESSAGES})
+    resp = client.post("/internal/llm/call", json=VALID_BODY)
 
     body = resp.json()
-    assert body["input_tokens"] == 0
-    assert body["output_tokens"] == 0
+    # TokenUsage defaults to all None when the provider didn't report
+    assert body["usage"]["input_tokens"] is None
+    assert body["usage"]["output_tokens"] is None
 
 
 def test_llm_call_invalid_json_body_returns_422():
-    mock_llm = _make_llm_mock(_text_response())
-    client = TestClient(create_app(mock_llm))
+    provider = _make_provider_mock(_text_response())
+    client = TestClient(create_app(provider))
 
     resp = client.post(
         "/internal/llm/call",
@@ -351,12 +309,9 @@ def test_llm_call_invalid_json_body_returns_422():
 
 
 def test_llm_call_missing_messages_field_returns_422():
-    mock_llm = _make_llm_mock(_text_response())
-    client = TestClient(create_app(mock_llm))
+    provider = _make_provider_mock(_text_response())
+    client = TestClient(create_app(provider))
 
-    resp = client.post(
-        "/internal/llm/call",
-        json={"tools": [], "system": ""},
-    )
+    resp = client.post("/internal/llm/call", json={"tools": []})
 
     assert resp.status_code == 422

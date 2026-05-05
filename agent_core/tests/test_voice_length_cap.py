@@ -18,12 +18,17 @@ import yaml
 
 from unittest.mock import MagicMock
 
+from src.chat_provider.types import SystemPrompt
 from src.manager_agent import ManagerAgent
 from src.schema.config import ChannelConfig, MergedConfig
 
 
-def _flat(blocks: list[dict]) -> str:
-    return "\n\n".join(b.get("text", "") for b in (blocks or []))
+def _flat(prompt) -> str:
+    if isinstance(prompt, SystemPrompt):
+        return "\n\n".join(b.text for b in prompt.blocks)
+    if not prompt:
+        return ""
+    return "\n\n".join(b.get("text", "") for b in prompt)
 
 
 def _load_kkb_merged() -> dict:
@@ -62,7 +67,7 @@ def test_assembled_voice_prompt_includes_sentence_cap_rule():
     voice_cfg = cfg["channels"]["voice"]
 
     agent = ManagerAgent(
-        llm_wrapper=MagicMock(),
+        chat_provider=MagicMock(),
         tool_registry=MagicMock(),
         action_gateway=MagicMock(),
         knowledge_engine=MagicMock(),

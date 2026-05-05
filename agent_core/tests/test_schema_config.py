@@ -324,3 +324,115 @@ def test_agent_workflow_config_rejects_unknown_field():
     from src.schema.config import AgentWorkflowConfig
     with pytest.raises(ValidationError):
         AgentWorkflowConfig(workflow_id="w", version="1.0.0", globall_tools=["x"])
+
+
+class TestAgentProviderAndFeatures:
+    """PR2 — agent.provider and agent.features schema additions."""
+
+    def _base_agent(self) -> dict:
+        return {"primary_model": "x", "fallback_model": "y"}
+
+    def test_provider_defaults_to_anthropic(self):
+        from src.schema.config import AgentConfig
+        cfg = AgentConfig.model_validate(self._base_agent())
+        assert cfg.provider == "anthropic"
+
+    def test_provider_accepts_known_values(self):
+        from src.schema.config import AgentConfig
+        for p in ("anthropic", "openai"):
+            cfg = AgentConfig.model_validate({**self._base_agent(), "provider": p})
+            assert cfg.provider == p
+
+    def test_provider_rejects_unknown_values(self):
+        from pydantic import ValidationError
+        from src.schema.config import AgentConfig
+        with pytest.raises(ValidationError):
+            AgentConfig.model_validate({**self._base_agent(), "provider": "wat"})
+
+    def test_features_default_all_none(self):
+        from src.schema.config import AgentConfig
+        cfg = AgentConfig.model_validate(self._base_agent())
+        assert cfg.features.prompt_cache is None
+        assert cfg.features.streaming is None
+        assert cfg.features.image_input is None
+
+    def test_features_accepts_partial(self):
+        from src.schema.config import AgentConfig
+        cfg = AgentConfig.model_validate({
+            **self._base_agent(),
+            "features": {"prompt_cache": False},
+        })
+        assert cfg.features.prompt_cache is False
+        assert cfg.features.streaming is None
+
+    def test_features_rejects_unknown_keys(self):
+        from pydantic import ValidationError
+        from src.schema.config import AgentConfig
+        with pytest.raises(ValidationError):
+            AgentConfig.model_validate({
+                **self._base_agent(),
+                "features": {"made_up": True},
+            })
+
+    def test_features_null_coerces_to_default(self):
+        """Regression: YAML parses ``features:`` with all sub-keys
+        commented out as ``None``, and the schema must accept that as
+        equivalent to an absent block (use provider capabilities).
+        """
+        from src.schema.config import AgentConfig
+        cfg = AgentConfig.model_validate({**self._base_agent(), "features": None})
+        assert cfg.features.prompt_cache is None
+        assert cfg.features.streaming is None
+        assert cfg.features.image_input is None
+
+    def test_nlu_processor_accepts_provider_override(self):
+        """Each helper may declare its own provider independently of agent.provider."""
+        from src.schema.config import NLUProcessorConfig
+        cfg = NLUProcessorConfig.model_validate(
+            {"provider": "anthropic", "model": "claude-haiku-4-5-20251001"}
+        )
+        assert cfg.provider == "anthropic"
+        assert cfg.model == "claude-haiku-4-5-20251001"
+
+    def test_language_normalisation_accepts_provider_override(self):
+        from src.schema.config import LanguageNormalisationConfig
+        cfg = LanguageNormalisationConfig.model_validate(
+            {"provider": "openai", "model": "gpt-4o-mini-2024-07-18"}
+        )
+        assert cfg.provider == "openai"
+
+    def test_helper_provider_rejects_unknown_value(self):
+        from pydantic import ValidationError
+        from src.schema.config import NLUProcessorConfig
+        with pytest.raises(ValidationError):
+            NLUProcessorConfig.model_validate({"provider": "wat", "model": "x"})
+
+    def test_helper_provider_defaults_to_none_meaning_inherit(self):
+        from src.schema.config import NLUProcessorConfig
+        cfg = NLUProcessorConfig.model_validate({"model": "x"})
+        assert cfg.provider is None
+
+    def test_dpg_yaml_loads_under_full_validation(self):
+        """Regression: the shipped dev-kit/dpg/agent_core.yaml must pass
+        full schema validation. Caught a production-startup ValidationError
+        where ``agent.features`` parsed to None from the commented-out block.
+        """
+        import yaml
+        from pathlib import Path
+        from src.schema.config import MergedConfig
+
+        repo_root = Path(__file__).resolve().parents[2]
+        dpg = yaml.safe_load(
+            (repo_root / "dev-kit" / "dpg" / "agent_core.yaml").read_text()
+        ) or {}
+        domain = yaml.safe_load(
+            (repo_root / "dev-kit" / "configs" / "kkb" / "agent_core.yaml").read_text()
+        ) or {}
+        merged: dict = {**dpg}
+        for k, v in domain.items():
+            if isinstance(v, dict) and isinstance(merged.get(k), dict):
+                merged[k] = {**merged[k], **v}
+            else:
+                merged[k] = v
+        # Should not raise.
+        MergedConfig.validate_full(merged)

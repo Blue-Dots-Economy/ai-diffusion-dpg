@@ -49,7 +49,7 @@ The framework assembles AI-powered voice/chat systems from **7 standardised DPG 
 
 ### Block responsibilities
 
-**Agent Core** — sole orchestrator and sole LLM caller. Runs Language Normalisation and NLU internally, then builds the system prompt. Owns the tool execution loop (LLM → tool → LLM), retry, and fallback model switching. Knowledge Engine is called only when the LLM invokes the `knowledge_retrieval` internal tool (subagents that do not include `knowledge_retrieval` in their tool list never trigger a KE call). Stateless between turns — any instance can handle any session. All Anthropic API calls go through `agent_core/src/llm_wrapper/claude_wrapper.py`. Also exposes `POST /internal/llm/call` as a future LLM proxy (implemented, not yet wired).
+**Agent Core** — sole orchestrator and sole LLM caller. Runs Language Normalisation and NLU internally, then builds the system prompt. Owns the tool execution loop (LLM → tool → LLM) and retry. Knowledge Engine is called only when the LLM invokes the `knowledge_retrieval` internal tool (subagents that do not include `knowledge_retrieval` in their tool list never trigger a KE call). Stateless between turns — any instance can handle any session. All LLM calls go through `agent_core/src/chat_provider/`. The package owns provider selection (Anthropic + OpenAI today; Azure/Ollama as follow-ups), neutral typing, retry/timeout, and OTel telemetry; the concrete provider files (`anthropic_provider.py`, `openai_provider.py`) are the only places that import their respective SDKs. Also exposes `POST /internal/llm/call` as a future LLM proxy (implemented, not yet wired).
 
 **Knowledge Engine** — assembles the full LLM prompt. Receives NLU results and session state from Agent Core in the request body; does **not** call Memory Layer directly. Stateless. Internal components: Glossary & Domain Vocabulary, Static Knowledge Base (semantic RAG), Multimodal Input Handler.
 
@@ -124,7 +124,7 @@ ASR/TTS pipeline, model training, infrastructure provisioning, multi-tenancy, te
 ## Development guidelines
 
 1. **Agent Core is the only orchestrator.** No other block initiates calls to other blocks.
-2. **Agent Core is the only LLM caller.** All Anthropic API interaction goes through `ClaudeLLMWrapper`.
+2. **Agent Core is the only LLM caller.** All LLM interaction goes through a `ChatProviderBase` instance constructed via `build_chat_provider(agent_config)`.
 3. **All external access goes through Action Gateway.** LLM expresses intent via tool definitions only.
 4. **Trust Layer runs on every I/O pass.** Input before LLM, output before user. Never skip either.
 5. **Agent Core is stateless.** All state lives in Memory Layer. Instances scale horizontally.

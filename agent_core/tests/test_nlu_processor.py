@@ -9,7 +9,7 @@ Coverage:
 - Normal: entities extracted from message
 - Normal: sentiment detected
 - Normal: confidence value returned
-- Normal: model_override passed from config to llm.call
+- Normal: chat_provider.call() invoked (model owned by provider, not per-call override)
 - Normal: current_question injected into LLM message for context resolution
 - Normal: workflow_step injected into LLM message for context resolution
 - Edge: empty current_question and workflow_step do not crash
@@ -28,8 +28,26 @@ import json
 import pytest
 from unittest.mock import MagicMock
 
+from src.chat_provider.base import Capabilities, ChatProviderBase
+from src.chat_provider.types import (
+    ChatRequest, ChatResponse, Message, SystemPrompt, TextBlock, TokenUsage
+)
+
+
+# Default capabilities for mocked providers — match Anthropic's intrinsic flags
+# so tests exercise the cache-hint code path. Override per-test for OpenAI-shaped
+# (supports_prompt_cache=False) coverage.
+_DEFAULT_TEST_CAPS = Capabilities(
+    supports_tools=True,
+    supports_streaming=True,
+    supports_prompt_cache=True,
+    supports_image_input=True,
+    supports_audio_input=False,
+    supports_structured_output=True,
+    supports_force_tool_choice=True,
+)
 from src.preprocessing.nlu_processor import NLUProcessor
-from src.models import NLUResult, LLMResponse
+from src.models import NLUResult
 
 
 # ---------------------------------------------------------------------------
@@ -54,24 +72,40 @@ CONFIG = {
 }
 
 
-def make_llm_returning(intent="unknown", entities=None, sentiment="neutral", confidence=0.9) -> MagicMock:
-    llm = MagicMock()
-    llm.call.return_value = LLMResponse(
-        content=json.dumps({
-            "intent": intent,
-            "entities": entities or {},
-            "sentiment": sentiment,
-            "confidence": confidence,
-        }),
-        stop_reason="end_turn",
+def _make_chat_response(intent="unknown", entities=None, sentiment="neutral",
+                        confidence=0.9, stop_reason="end_turn") -> ChatResponse:
+    text = json.dumps({
+        "intent": intent,
+        "entities": entities or {},
+        "sentiment": sentiment,
+        "confidence": confidence,
+    })
+    return ChatResponse(
+        content=[TextBlock(text=text)],
+        stop_reason=stop_reason,
         model_used="claude-haiku-4-5-20251001",
+        usage=TokenUsage(input_tokens=10, output_tokens=5),
     )
-    return llm
+
+
+def make_provider_returning(intent="unknown", entities=None, sentiment="neutral",
+                            confidence=0.9, capabilities: Capabilities | None = None) -> MagicMock:
+    provider = MagicMock(spec=ChatProviderBase)
+    provider.capabilities = capabilities or _DEFAULT_TEST_CAPS
+    provider.call.return_value = _make_chat_response(
+        intent=intent, entities=entities, sentiment=sentiment, confidence=confidence
+    )
+    return provider
 
 
 @pytest.fixture
-def processor():
-    return NLUProcessor(CONFIG)
+def mock_provider():
+    return make_provider_returning()
+
+
+@pytest.fixture
+def processor(mock_provider):
+    return NLUProcessor(CONFIG, chat_provider=mock_provider)
 
 
 # ---------------------------------------------------------------------------
@@ -79,66 +113,107 @@ def processor():
 # ---------------------------------------------------------------------------
 
 
-def test_market_truth_query_classified(processor):
-    llm = make_llm_returning(intent="market_truth_query", entities={"location": "Hubli"})
-    result = processor.process("kaam chahiye Hubli mein", "", "", llm)
+def test_market_truth_query_classified():
+    provider = make_provider_returning(intent="market_truth_query", entities={"location": "Hubli"})
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    result = proc.process("kaam chahiye Hubli mein", "", "")
     assert result.intent == "market_truth_query"
     assert result.entities.get("location") == "Hubli"
     assert result.confidence == 0.9
 
 
-def test_scheme_query_classified(processor):
-    llm = make_llm_returning(intent="scheme_query")
-    result = processor.process("PMKVY ke baare mein batao", "", "", llm)
+def test_scheme_query_classified():
+    provider = make_provider_returning(intent="scheme_query")
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    result = proc.process("PMKVY ke baare mein batao", "", "")
     assert result.intent == "scheme_query"
 
 
-def test_training_query_classified(processor):
-    llm = make_llm_returning(intent="training_query", entities={"trade": "electrician"})
-    result = processor.process("electrician course kahan hai", "", "", llm)
+def test_training_query_classified():
+    provider = make_provider_returning(intent="training_query", entities={"trade": "electrician"})
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    result = proc.process("electrician course kahan hai", "", "")
     assert result.intent == "training_query"
     assert result.entities.get("trade") == "electrician"
 
 
-def test_apply_now_classified(processor):
-    llm = make_llm_returning(intent="apply_now")
-    result = processor.process("apply kar do", "", "", llm)
+def test_apply_now_classified():
+    provider = make_provider_returning(intent="apply_now")
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    result = proc.process("apply kar do", "", "")
     assert result.intent == "apply_now"
 
 
-def test_counsellor_request_classified(processor):
-    llm = make_llm_returning(intent="counsellor_request")
-    result = processor.process("counsellor chahiye", "", "", llm)
+def test_counsellor_request_classified():
+    provider = make_provider_returning(intent="counsellor_request")
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    result = proc.process("counsellor chahiye", "", "")
     assert result.intent == "counsellor_request"
 
 
-def test_pay_range_query_classified(processor):
-    llm = make_llm_returning(intent="pay_range_query")
-    result = processor.process("kitna milega", "", "", llm)
+def test_pay_range_query_classified():
+    provider = make_provider_returning(intent="pay_range_query")
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    result = proc.process("kitna milega", "", "")
     assert result.intent == "pay_range_query"
 
 
-def test_distress_sentiment_detected(processor):
-    llm = make_llm_returning(intent="unknown", sentiment="distressed")
-    result = processor.process("bahut mushkil hai", "", "", llm)
+def test_distress_sentiment_detected():
+    provider = make_provider_returning(intent="unknown", sentiment="distressed")
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    result = proc.process("bahut mushkil hai", "", "")
     assert result.sentiment == "distressed"
 
 
-def test_multiple_entities_extracted(processor):
-    llm = make_llm_returning(
+def test_multiple_entities_extracted():
+    provider = make_provider_returning(
         intent="market_truth_query",
         entities={"trade": "welder", "location": "Dharwad"},
     )
-    result = processor.process("welder Dharwad mein kaam chahiye", "", "", llm)
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    result = proc.process("welder Dharwad mein kaam chahiye", "", "")
     assert result.entities.get("trade") == "welder"
     assert result.entities.get("location") == "Dharwad"
 
 
-def test_model_override_passed_from_config(processor):
-    llm = make_llm_returning(intent="market_truth_query")
-    processor.process("kaam chahiye", "", "", llm)
-    call_kwargs = llm.call.call_args[1]
-    assert call_kwargs.get("model_override") == "claude-haiku-4-5-20251001"
+def test_provider_call_invoked(processor, mock_provider):
+    """chat_provider.call() must be invoked with a ChatRequest (no model_override kwarg)."""
+    processor.process("kaam chahiye", "", "")
+    mock_provider.call.assert_called_once()
+    request = mock_provider.call.call_args.args[0]
+    assert isinstance(request, ChatRequest)
+
+
+def test_cache_hint_set_when_provider_supports_caching():
+    """Caching-capable provider → NLU emits cache_hint='session' on the system block."""
+    provider = make_provider_returning(intent="market_truth_query")
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    proc.process("kaam chahiye", "", "")
+    request = provider.call.call_args.args[0]
+    assert request.system.blocks[0].cache_hint == "session"
+
+
+def test_cache_hint_omitted_when_provider_does_not_support_caching():
+    """Regression for the OpenAI deployment bug: when supports_prompt_cache=False
+    NLU must NOT set cache_hint, otherwise _validate_request raises and every NLU
+    turn returns the fallback NLUResult.
+    """
+    no_cache_caps = Capabilities(
+        supports_tools=True,
+        supports_streaming=True,
+        supports_prompt_cache=False,
+        supports_image_input=True,
+        supports_audio_input=False,
+        supports_structured_output=True,
+        supports_force_tool_choice=True,
+    )
+    provider = make_provider_returning(intent="market_truth_query", capabilities=no_cache_caps)
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    result = proc.process("kaam chahiye", "", "")
+    # No NLU error — request shape is provider-compatible.
+    assert result.intent == "market_truth_query"
+    request = provider.call.call_args.args[0]
+    assert request.system.blocks[0].cache_hint is None
 
 
 # ---------------------------------------------------------------------------
@@ -146,31 +221,31 @@ def test_model_override_passed_from_config(processor):
 # ---------------------------------------------------------------------------
 
 
-def test_current_question_injected_into_llm_message(processor):
+def test_current_question_injected_into_llm_message():
     """NLU injects current_question so follow-up answers are resolved correctly."""
-    llm = make_llm_returning(intent="evaluate_option")
-    processor.process("welder", "Aap kaun sa kaam karte hain?", "profile_collection", llm)
-    call_kwargs = llm.call.call_args[1]
-    messages_sent = call_kwargs.get("messages", [])
-    assert len(messages_sent) == 1
-    content = messages_sent[0]["content"]
-    assert "Aap kaun sa kaam karte hain?" in content
-    assert "welder" in content
+    provider = make_provider_returning(intent="evaluate_option")
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    proc.process("welder", "Aap kaun sa kaam karte hain?", "profile_collection")
+    request: ChatRequest = provider.call.call_args.args[0]
+    user_content = request.messages[0].content[0].text
+    assert "Aap kaun sa kaam karte hain?" in user_content
+    assert "welder" in user_content
 
 
-def test_workflow_step_injected_into_llm_message(processor):
+def test_workflow_step_injected_into_llm_message():
     """NLU injects workflow_step for context-aware classification."""
-    llm = make_llm_returning(intent="evaluate_option")
-    processor.process("electrician", "", "profile_collection", llm)
-    call_kwargs = llm.call.call_args[1]
-    messages_sent = call_kwargs.get("messages", [])
-    content = messages_sent[0]["content"]
-    assert "profile_collection" in content
+    provider = make_provider_returning(intent="evaluate_option")
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    proc.process("electrician", "", "profile_collection")
+    request: ChatRequest = provider.call.call_args.args[0]
+    user_content = request.messages[0].content[0].text
+    assert "profile_collection" in user_content
 
 
-def test_empty_context_fields_do_not_crash(processor):
-    llm = make_llm_returning(intent="market_truth_query")
-    result = processor.process("kaam chahiye", "", "", llm)
+def test_empty_context_fields_do_not_crash():
+    provider = make_provider_returning(intent="market_truth_query")
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    result = proc.process("kaam chahiye", "", "")
     assert result.intent == "market_truth_query"
 
 
@@ -179,39 +254,46 @@ def test_empty_context_fields_do_not_crash(processor):
 # ---------------------------------------------------------------------------
 
 
-def test_empty_input_returns_fallback_without_llm_call(processor):
-    llm = MagicMock()
-    result = processor.process("", "", "", llm)
+def test_empty_input_returns_fallback_without_llm_call():
+    provider = MagicMock(spec=ChatProviderBase)
+    provider.capabilities = _DEFAULT_TEST_CAPS
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    result = proc.process("", "", "")
     assert result.intent == "unknown"
     assert result.confidence == 0.0
-    llm.call.assert_not_called()
+    provider.call.assert_not_called()
 
 
-def test_invalid_intent_from_llm_falls_back_to_unknown(processor):
-    llm = make_llm_returning(intent="completely_invalid_intent", confidence=0.95)
-    result = processor.process("some message", "", "", llm)
+def test_invalid_intent_from_llm_falls_back_to_unknown():
+    provider = make_provider_returning(intent="completely_invalid_intent", confidence=0.95)
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    result = proc.process("some message", "", "")
     assert result.intent == "unknown"
 
 
-def test_non_dict_entities_treated_as_empty(processor):
-    llm = MagicMock()
-    llm.call.return_value = LLMResponse(
-        content=json.dumps({
+def test_non_dict_entities_treated_as_empty():
+    provider = MagicMock(spec=ChatProviderBase)
+    provider.capabilities = _DEFAULT_TEST_CAPS
+    provider.call.return_value = ChatResponse(
+        content=[TextBlock(text=json.dumps({
             "intent": "market_truth_query",
             "entities": "not a dict",
             "sentiment": "neutral",
             "confidence": 0.9,
-        }),
+        }))],
         stop_reason="end_turn",
         model_used="claude-haiku-4-5-20251001",
+        usage=TokenUsage(input_tokens=10, output_tokens=5),
     )
-    result = processor.process("kaam chahiye", "", "", llm)
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    result = proc.process("kaam chahiye", "", "")
     assert result.entities == {}
 
 
-def test_returns_nlu_result_type(processor):
-    llm = make_llm_returning(intent="market_truth_query")
-    result = processor.process("kaam chahiye", "", "", llm)
+def test_returns_nlu_result_type():
+    provider = make_provider_returning(intent="market_truth_query")
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    result = proc.process("kaam chahiye", "", "")
     assert isinstance(result, NLUResult)
 
 
@@ -220,50 +302,69 @@ def test_returns_nlu_result_type(processor):
 # ---------------------------------------------------------------------------
 
 
-def test_llm_error_stop_reason_returns_fallback(processor):
-    llm = MagicMock()
-    llm.call.return_value = LLMResponse(content=None, stop_reason="error")
-    result = processor.process("kaam chahiye", "", "", llm)
+def test_llm_error_stop_reason_returns_fallback():
+    provider = MagicMock(spec=ChatProviderBase)
+    provider.capabilities = _DEFAULT_TEST_CAPS
+    provider.call.return_value = ChatResponse(
+        content=[],
+        stop_reason="error",
+        model_used="claude-haiku-4-5-20251001",
+        usage=TokenUsage(),
+    )
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    result = proc.process("kaam chahiye", "", "")
     assert result.intent == "unknown"
     assert result.confidence == 0.0
 
 
-def test_llm_exception_returns_fallback_gracefully(processor):
-    llm = MagicMock()
-    llm.call.side_effect = RuntimeError("network error")
-    result = processor.process("kaam chahiye", "", "", llm)
+def test_llm_exception_returns_fallback_gracefully():
+    provider = MagicMock(spec=ChatProviderBase)
+    provider.capabilities = _DEFAULT_TEST_CAPS
+    provider.call.side_effect = RuntimeError("network error")
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    result = proc.process("kaam chahiye", "", "")
     assert result.intent == "unknown"
     assert result.confidence == 0.0
 
 
-def test_malformed_json_returns_fallback(processor):
-    llm = MagicMock()
-    llm.call.return_value = LLMResponse(
-        content="This is not JSON at all",
+def test_malformed_json_returns_fallback():
+    provider = MagicMock(spec=ChatProviderBase)
+    provider.capabilities = _DEFAULT_TEST_CAPS
+    provider.call.return_value = ChatResponse(
+        content=[TextBlock(text="This is not JSON at all")],
         stop_reason="end_turn",
         model_used="claude-haiku-4-5-20251001",
+        usage=TokenUsage(input_tokens=10, output_tokens=5),
     )
-    result = processor.process("kaam chahiye", "", "", llm)
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    result = proc.process("kaam chahiye", "", "")
     assert result.intent == "unknown"
     assert result.confidence == 0.0
 
 
-def test_json_in_prose_extracted_and_parsed(processor):
+def test_json_in_prose_extracted_and_parsed():
     prose = 'Sure! Here is the result: {"intent": "scheme_query", "entities": {}, "sentiment": "neutral", "confidence": 0.85}'
-    llm = MagicMock()
-    llm.call.return_value = LLMResponse(
-        content=prose, stop_reason="end_turn", model_used="claude-haiku-4-5-20251001"
+    provider = MagicMock(spec=ChatProviderBase)
+    provider.capabilities = _DEFAULT_TEST_CAPS
+    provider.call.return_value = ChatResponse(
+        content=[TextBlock(text=prose)],
+        stop_reason="end_turn",
+        model_used="claude-haiku-4-5-20251001",
+        usage=TokenUsage(input_tokens=10, output_tokens=5),
     )
-    result = processor.process("PMKVY batao", "", "", llm)
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    result = proc.process("PMKVY batao", "", "")
     assert result.intent == "scheme_query"
     assert result.confidence == 0.85
 
 
-def test_never_raises_on_unexpected_exception(processor):
+def test_never_raises_on_unexpected_exception():
     """process() must never propagate unexpected exceptions to the caller."""
-    llm = MagicMock()
-    llm.call.side_effect = Exception("totally unexpected")
-    result = processor.process("some input", "", "", llm)
+    provider = MagicMock(spec=ChatProviderBase)
+    provider.capabilities = _DEFAULT_TEST_CAPS
+    provider.call.side_effect = Exception("totally unexpected")
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    result = proc.process("some input", "", "")
     assert isinstance(result, NLUResult)
 
 
@@ -290,33 +391,36 @@ def test_nlu_result_active_risks_set():
 # ---------------------------------------------------------------------------
 
 
-def _system_text(call_kwargs) -> str:
-    """Extract the system prompt text whether it's a string or a list of blocks."""
-    sys_payload = call_kwargs.get("system", "")
-    if isinstance(sys_payload, list):
-        return "\n".join(b.get("text", "") for b in sys_payload)
-    return sys_payload
-
-
-def _user_message_text(call_kwargs) -> str:
-    """Extract the first user message content (GH-195 — dynamic context lives here)."""
-    msgs = call_kwargs.get("messages", [])
-    if not msgs:
+def _system_text(request: ChatRequest) -> str:
+    """Extract the system prompt text from a ChatRequest."""
+    if request.system is None:
         return ""
-    return msgs[0].get("content", "")
+    return "\n".join(b.text for b in request.system.blocks)
 
 
-def test_existing_profile_keys_injected_into_user_message(processor):
+def _user_message_text(request: ChatRequest) -> str:
+    """Extract the first user message content from a ChatRequest."""
+    if not request.messages:
+        return ""
+    content = request.messages[0].content
+    if not content:
+        return ""
+    block = content[0]
+    return block.text if hasattr(block, "text") else ""
+
+
+def test_existing_profile_keys_injected_into_user_message():
     """GH-195 — existing_profile_keys is per-turn dynamic; it must live in the
     USER message, not in the (cached) system prompt."""
-    llm = make_llm_returning(intent="evaluate_option", entities={"location": "Mumbai"})
-    processor.process(
-        "Mumbai mein kaam chahiye", "", "", llm,
+    provider = make_provider_returning(intent="evaluate_option", entities={"location": "Mumbai"})
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    proc.process(
+        "Mumbai mein kaam chahiye", "", "",
         existing_profile_keys=["name", "location", "trade_or_stream"],
     )
-    call_kwargs = llm.call.call_args[1]
-    user_msg = _user_message_text(call_kwargs)
-    system_text = _system_text(call_kwargs)
+    request: ChatRequest = provider.call.call_args.args[0]
+    user_msg = _user_message_text(request)
+    system_text = _system_text(request)
     assert "name, location, trade_or_stream" in user_msg
     # Static dedup rule lives in the cached system prompt.
     assert "reuse that exact field name" in system_text
@@ -324,41 +428,45 @@ def test_existing_profile_keys_injected_into_user_message(processor):
     assert "name, location, trade_or_stream" not in system_text
 
 
-def test_no_profile_keys_omits_user_line(processor):
+def test_no_profile_keys_omits_user_line():
     """When no profile keys are available, no dedicated line is added to the user message."""
-    llm = make_llm_returning(intent="evaluate_option")
-    processor.process("kaam chahiye", "", "", llm, existing_profile_keys=None)
-    call_kwargs = llm.call.call_args[1]
-    user_msg = _user_message_text(call_kwargs)
-    system_text = _system_text(call_kwargs)
+    provider = make_provider_returning(intent="evaluate_option")
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    proc.process("kaam chahiye", "", "", existing_profile_keys=None)
+    request: ChatRequest = provider.call.call_args.args[0]
+    user_msg = _user_message_text(request)
+    system_text = _system_text(request)
     assert "Existing profile fields" not in user_msg
     # The static rule still describes what to do when no keys are present.
     assert "no existing fields are listed" in system_text.lower()
 
 
-def test_empty_profile_keys_list_omits_user_line(processor):
+def test_empty_profile_keys_list_omits_user_line():
     """An empty list is treated the same as None — no Existing profile line."""
-    llm = make_llm_returning(intent="evaluate_option")
-    processor.process("kaam chahiye", "", "", llm, existing_profile_keys=[])
-    call_kwargs = llm.call.call_args[1]
-    assert "Existing profile fields" not in _user_message_text(call_kwargs)
+    provider = make_provider_returning(intent="evaluate_option")
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    proc.process("kaam chahiye", "", "", existing_profile_keys=[])
+    request: ChatRequest = provider.call.call_args.args[0]
+    assert "Existing profile fields" not in _user_message_text(request)
 
 
-def test_adhoc_keys_included_in_user_message(processor):
+def test_adhoc_keys_included_in_user_message():
     """Ad-hoc attribute keys from previous sessions appear in the user message."""
-    llm = make_llm_returning(intent="evaluate_option", entities={"employer_name": "Reliance"})
-    processor.process(
-        "I work at Reliance", "", "", llm,
+    provider = make_provider_returning(intent="evaluate_option", entities={"employer_name": "Reliance"})
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    proc.process(
+        "I work at Reliance", "", "",
         existing_profile_keys=["name", "location", "employer_name"],
     )
-    call_kwargs = llm.call.call_args[1]
-    assert "employer_name" in _user_message_text(call_kwargs)
+    request: ChatRequest = provider.call.call_args.args[0]
+    assert "employer_name" in _user_message_text(request)
 
 
-def test_process_without_profile_keys_backward_compatible(processor):
+def test_process_without_profile_keys_backward_compatible():
     """Calling process() without existing_profile_keys still works (backward compat)."""
-    llm = make_llm_returning(intent="market_truth_query", entities={"location": "Hubli"})
-    result = processor.process("kaam chahiye Hubli mein", "", "", llm)
+    provider = make_provider_returning(intent="market_truth_query", entities={"location": "Hubli"})
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+    result = proc.process("kaam chahiye Hubli mein", "", "")
     assert result.intent == "market_truth_query"
     assert result.entities.get("location") == "Hubli"
 
@@ -389,8 +497,12 @@ def _base_config(user_state_model=None):
     return cfg
 
 
+def _make_provider():
+    return MagicMock(spec=ChatProviderBase)
+
+
 def test_nlu_user_state_disabled_by_default():
-    p = NLUProcessor(_base_config())
+    p = NLUProcessor(_base_config(), chat_provider=_make_provider())
     assert p._user_state_enabled is False
     assert p._user_states == []
     assert p._user_state_threshold == 0.4
@@ -399,7 +511,7 @@ def test_nlu_user_state_disabled_by_default():
 def test_nlu_user_state_threshold_read_from_config():
     cfg = _base_config()
     cfg["preprocessing"]["nlu_processor"]["user_state_confidence_threshold"] = 0.3
-    p = NLUProcessor(cfg)
+    p = NLUProcessor(cfg, chat_provider=_make_provider())
     assert p._user_state_threshold == 0.3
 
 
@@ -411,7 +523,7 @@ def test_nlu_user_state_enabled_reads_states():
             {"id": "fog", "signals": ["vague"], "guidance": "Orient gently."},
             {"id": "orientation", "signals": [], "guidance": "Show the map."},
         ],
-    }))
+    }), chat_provider=_make_provider())
     assert p._user_state_enabled is True
     assert {s["id"] for s in p._user_states} == {"fog", "orientation"}
     assert p._user_state_default == "fog"
@@ -422,7 +534,7 @@ def test_nlu_user_state_enabled_without_default_raises():
         NLUProcessor(_base_config({
             "enabled": True,
             "states": [{"id": "fog", "signals": [], "guidance": "g"}],
-        }))
+        }), chat_provider=_make_provider())
 
 
 def test_nlu_user_state_enabled_without_states_raises():
@@ -431,7 +543,7 @@ def test_nlu_user_state_enabled_without_states_raises():
             "enabled": True,
             "default_state": "fog",
             "states": [],
-        }))
+        }), chat_provider=_make_provider())
 
 
 def test_nlu_user_state_default_not_in_states_raises():
@@ -440,7 +552,7 @@ def test_nlu_user_state_default_not_in_states_raises():
             "enabled": True,
             "default_state": "nonexistent",
             "states": [{"id": "fog", "signals": [], "guidance": "g"}],
-        }))
+        }), chat_provider=_make_provider())
 
 
 def test_nlu_user_state_duplicate_ids_raise():
@@ -452,7 +564,7 @@ def test_nlu_user_state_duplicate_ids_raise():
                 {"id": "fog", "signals": [], "guidance": "g1"},
                 {"id": "fog", "signals": [], "guidance": "g2"},
             ],
-        }))
+        }), chat_provider=_make_provider())
 
 
 def test_nlu_user_state_empty_guidance_raises():
@@ -461,21 +573,21 @@ def test_nlu_user_state_empty_guidance_raises():
             "enabled": True,
             "default_state": "fog",
             "states": [{"id": "fog", "signals": [], "guidance": ""}],
-        }))
+        }), chat_provider=_make_provider())
 
 
 def test_nlu_user_state_threshold_out_of_range_raises():
     cfg = _base_config()
     cfg["preprocessing"]["nlu_processor"]["user_state_confidence_threshold"] = 1.5
     with pytest.raises(ConfigurationError, match="user_state_confidence_threshold"):
-        NLUProcessor(cfg)
+        NLUProcessor(cfg, chat_provider=_make_provider())
 
 
 # ---------------------------------------------------------------------------
 # User-state model — process() integration (GH-139 Task 4)
 # ---------------------------------------------------------------------------
 
-from src.models import LLMResponse, UserStateClassification
+from src.models import UserStateClassification
 
 
 def _enabled_processor():
@@ -486,32 +598,41 @@ def _enabled_processor():
             {"id": "fog", "signals": ["vague"], "guidance": "Orient gently. Surface 2-3 directions."},
             {"id": "orientation", "signals": ["asking about options"], "guidance": "Show the real market picture."},
         ],
-    }))
+    }), chat_provider=_make_provider())
 
 
 def _disabled_processor():
-    return NLUProcessor(_base_config())
+    return NLUProcessor(_base_config(), chat_provider=_make_provider())
 
 
-def _mock_llm(payload_json: str):
-    llm = MagicMock()
-    llm.call.return_value = LLMResponse(
-        content=payload_json, stop_reason="end_turn", model_used="haiku",
+def _mock_provider_with_payload(payload_json: str) -> MagicMock:
+    provider = MagicMock(spec=ChatProviderBase)
+    provider.capabilities = _DEFAULT_TEST_CAPS
+    provider.call.return_value = ChatResponse(
+        content=[TextBlock(text=payload_json)],
+        stop_reason="end_turn",
+        model_used="haiku",
+        usage=TokenUsage(input_tokens=10, output_tokens=5),
     )
-    return llm
+    return provider
 
 
 def test_process_returns_user_state_when_enabled_and_valid():
-    p = _enabled_processor()
-    llm = _mock_llm(
+    p = NLUProcessor(_base_config({
+        "enabled": True,
+        "default_state": "fog",
+        "states": [
+            {"id": "fog", "signals": ["vague"], "guidance": "Orient gently. Surface 2-3 directions."},
+            {"id": "orientation", "signals": ["asking about options"], "guidance": "Show the real market picture."},
+        ],
+    }), chat_provider=_mock_provider_with_payload(
         '{"intent":"unknown","entities":{},"sentiment":"neutral","confidence":0.9,'
         '"user_state":{"id":"orientation","confidence":0.82}}'
-    )
+    ))
     result = p.process(
         normalised_input="kitna pay hai",
         current_question="",
         current_subagent_id="main",
-        llm=llm,
         previous_user_state="fog",
     )
     assert result.user_state is not None
@@ -520,16 +641,21 @@ def test_process_returns_user_state_when_enabled_and_valid():
 
 
 def test_process_sticky_when_below_threshold():
-    p = _enabled_processor()
-    llm = _mock_llm(
+    p = NLUProcessor(_base_config({
+        "enabled": True,
+        "default_state": "fog",
+        "states": [
+            {"id": "fog", "signals": ["vague"], "guidance": "Orient gently. Surface 2-3 directions."},
+            {"id": "orientation", "signals": ["asking about options"], "guidance": "Show the real market picture."},
+        ],
+    }), chat_provider=_mock_provider_with_payload(
         '{"intent":"unknown","entities":{},"sentiment":"neutral","confidence":0.9,'
         '"user_state":{"id":"orientation","confidence":0.2}}'
-    )
+    ))
     result = p.process(
         normalised_input="hmm",
         current_question="",
         current_subagent_id="main",
-        llm=llm,
         previous_user_state="fog",
     )
     assert result.user_state is not None
@@ -538,16 +664,21 @@ def test_process_sticky_when_below_threshold():
 
 
 def test_process_sticky_when_id_unknown():
-    p = _enabled_processor()
-    llm = _mock_llm(
+    p = NLUProcessor(_base_config({
+        "enabled": True,
+        "default_state": "fog",
+        "states": [
+            {"id": "fog", "signals": ["vague"], "guidance": "Orient gently. Surface 2-3 directions."},
+            {"id": "orientation", "signals": ["asking about options"], "guidance": "Show the real market picture."},
+        ],
+    }), chat_provider=_mock_provider_with_payload(
         '{"intent":"unknown","entities":{},"sentiment":"neutral","confidence":0.9,'
         '"user_state":{"id":"gibberish","confidence":0.95}}'
-    )
+    ))
     result = p.process(
         normalised_input="x",
         current_question="",
         current_subagent_id="main",
-        llm=llm,
         previous_user_state="fog",
     )
     assert result.user_state is not None
@@ -555,15 +686,20 @@ def test_process_sticky_when_id_unknown():
 
 
 def test_process_sticky_when_key_missing():
-    p = _enabled_processor()
-    llm = _mock_llm(
+    p = NLUProcessor(_base_config({
+        "enabled": True,
+        "default_state": "fog",
+        "states": [
+            {"id": "fog", "signals": ["vague"], "guidance": "Orient gently. Surface 2-3 directions."},
+            {"id": "orientation", "signals": ["asking about options"], "guidance": "Show the real market picture."},
+        ],
+    }), chat_provider=_mock_provider_with_payload(
         '{"intent":"unknown","entities":{},"sentiment":"neutral","confidence":0.9}'
-    )
+    ))
     result = p.process(
         normalised_input="x",
         current_question="",
         current_subagent_id="main",
-        llm=llm,
         previous_user_state="orientation",
     )
     assert result.user_state is not None
@@ -571,36 +707,40 @@ def test_process_sticky_when_key_missing():
 
 
 def test_process_returns_none_when_disabled():
-    p = _disabled_processor()
-    llm = _mock_llm(
+    p = NLUProcessor(_base_config(), chat_provider=_mock_provider_with_payload(
         '{"intent":"unknown","entities":{},"sentiment":"neutral","confidence":0.9}'
-    )
+    ))
     result = p.process(
         normalised_input="x",
         current_question="",
         current_subagent_id="main",
-        llm=llm,
         previous_user_state=None,
     )
     assert result.user_state is None
 
 
 def test_process_prompt_includes_state_section_when_enabled():
-    p = _enabled_processor()
-    llm = _mock_llm(
+    provider = _mock_provider_with_payload(
         '{"intent":"unknown","entities":{},"sentiment":"neutral","confidence":0.9,'
         '"user_state":{"id":"fog","confidence":0.9}}'
     )
+    p = NLUProcessor(_base_config({
+        "enabled": True,
+        "default_state": "fog",
+        "states": [
+            {"id": "fog", "signals": ["vague"], "guidance": "Orient gently. Surface 2-3 directions."},
+            {"id": "orientation", "signals": ["asking about options"], "guidance": "Show the real market picture."},
+        ],
+    }), chat_provider=provider)
     p.process(
         normalised_input="x",
         current_question="",
         current_subagent_id="main",
-        llm=llm,
         previous_user_state="fog",
     )
-    call_kwargs = llm.call.call_args.kwargs
-    system_prompt = _system_text(call_kwargs)
-    user_msg = _user_message_text(call_kwargs)
+    request: ChatRequest = provider.call.call_args.args[0]
+    system_prompt = _system_text(request)
+    user_msg = _user_message_text(request)
     assert "User mental state classification" in system_prompt
     # State IDs are part of the static prompt (cacheable)...
     assert "fog" in system_prompt
@@ -612,17 +752,18 @@ def test_process_prompt_includes_state_section_when_enabled():
 
 
 def test_process_prompt_excludes_state_section_when_disabled():
-    p = _disabled_processor()
-    llm = _mock_llm('{"intent":"unknown","entities":{},"sentiment":"neutral","confidence":0.9}')
+    provider = _mock_provider_with_payload(
+        '{"intent":"unknown","entities":{},"sentiment":"neutral","confidence":0.9}'
+    )
+    p = NLUProcessor(_base_config(), chat_provider=provider)
     p.process(
         normalised_input="x",
         current_question="",
         current_subagent_id="main",
-        llm=llm,
         previous_user_state=None,
     )
-    call_kwargs = llm.call.call_args.kwargs
-    system_prompt = _system_text(call_kwargs)
+    request: ChatRequest = provider.call.call_args.args[0]
+    system_prompt = _system_text(request)
     assert "User mental state classification" not in system_prompt
 
 
@@ -631,45 +772,44 @@ def test_process_prompt_excludes_state_section_when_disabled():
 # ---------------------------------------------------------------------------
 
 
-def test_system_prompt_sent_as_cache_controlled_list(processor):
-    """The NLU system prompt must be a list with a cache_control marker so
+def test_system_prompt_sent_as_system_prompt_with_cache_hint(processor, mock_provider):
+    """The NLU system prompt must be a SystemPrompt with a cache_hint so
     Anthropic's prompt cache activates from turn 2."""
-    llm = make_llm_returning(intent="evaluate_option")
-    processor.process("some input", "", "", llm)
-    call_kwargs = llm.call.call_args.kwargs
-    sys_payload = call_kwargs["system"]
-    assert isinstance(sys_payload, list), (
-        "system must be a list of content blocks for prompt caching"
-    )
-    assert len(sys_payload) >= 1
-    first = sys_payload[0]
-    assert first.get("type") == "text"
-    assert first.get("cache_control") == {"type": "ephemeral"}
-    assert first.get("text")  # non-empty
+    processor.process("some input", "", "")
+    request: ChatRequest = mock_provider.call.call_args.args[0]
+    assert request.system is not None
+    assert isinstance(request.system, SystemPrompt)
+    assert len(request.system.blocks) >= 1
+    first = request.system.blocks[0]
+    assert first.type == "text"
+    assert first.cache_hint == "session"
+    assert first.text  # non-empty
 
 
-def test_cached_system_prompt_has_no_per_turn_dynamic_values(processor):
+def test_cached_system_prompt_has_no_per_turn_dynamic_values(processor, mock_provider):
     """Guardrail: values that change per turn must not leak into the cached
     system prefix, or the cache key changes every turn (GH-195 root cause)."""
-    llm = make_llm_returning(intent="evaluate_option")
     processor.process(
         "some input",
         current_question="",
         current_subagent_id="",
-        llm=llm,
         existing_profile_keys=["name", "trade_or_stream", "dynamic_hobby_xyz"],
     )
-    call_kwargs = llm.call.call_args.kwargs
-    system_text = _system_text(call_kwargs)
+    request: ChatRequest = mock_provider.call.call_args.args[0]
+    system_text = _system_text(request)
     # Dynamic profile-key list must NOT appear in the cached block.
     assert "dynamic_hobby_xyz" not in system_text
     assert "trade_or_stream" not in system_text
     # ...it must appear in the user message.
-    assert "dynamic_hobby_xyz" in _user_message_text(call_kwargs)
+    assert "dynamic_hobby_xyz" in _user_message_text(request)
 
 
 def test_user_state_previous_state_not_in_cached_prompt():
     """`previous_user_state` changes turn-to-turn and must live in the user message."""
+    provider = _mock_provider_with_payload(
+        '{"intent":"unknown","entities":{},"sentiment":"neutral","confidence":0.9,'
+        '"user_state":{"id":"orientation","confidence":0.9}}'
+    )
     p = NLUProcessor(_base_config({
         "enabled": True,
         "default_state": "fog",
@@ -677,59 +817,60 @@ def test_user_state_previous_state_not_in_cached_prompt():
             {"id": "fog", "signals": [], "guidance": "g1"},
             {"id": "orientation", "signals": [], "guidance": "g2"},
         ],
-    }))
-    llm = _mock_llm(
-        '{"intent":"unknown","entities":{},"sentiment":"neutral","confidence":0.9,'
-        '"user_state":{"id":"orientation","confidence":0.9}}'
-    )
+    }), chat_provider=provider)
     p.process(
         normalised_input="x",
         current_question="",
         current_subagent_id="main",
-        llm=llm,
         previous_user_state="orientation",
     )
-    call_kwargs = llm.call.call_args.kwargs
-    system_text = _system_text(call_kwargs)
-    user_msg = _user_message_text(call_kwargs)
+    request: ChatRequest = provider.call.call_args.args[0]
+    system_text = _system_text(request)
+    user_msg = _user_message_text(request)
     assert "Previous mental state: orientation" in user_msg
     assert "Previous state: orientation" not in system_text
     assert "Previous mental state: orientation" not in system_text
 
 
-def test_prompt_cache_disabled_sends_plain_string():
-    """When prompt_cache_enabled=false, the system prompt is a plain string —
-    allows debugging / opt-out without editing code."""
+def test_prompt_cache_disabled_sends_system_prompt_without_hint():
+    """When prompt_cache_enabled=false, the system prompt has no cache_hint."""
     cfg = _base_config()
     cfg["preprocessing"]["nlu_processor"]["prompt_cache_enabled"] = False
-    p = NLUProcessor(cfg)
-    llm = _mock_llm('{"intent":"unknown","entities":{},"sentiment":"neutral","confidence":0.9}')
-    p.process("x", "", "", llm)
-    sys_payload = llm.call.call_args.kwargs["system"]
-    assert isinstance(sys_payload, str)
+    provider = _mock_provider_with_payload(
+        '{"intent":"unknown","entities":{},"sentiment":"neutral","confidence":0.9}'
+    )
+    p = NLUProcessor(cfg, chat_provider=provider)
+    p.process("x", "", "")
+    request: ChatRequest = provider.call.call_args.args[0]
+    assert request.system is not None
+    assert all(b.cache_hint is None for b in request.system.blocks)
 
 
-def test_cache_usage_tokens_logged_on_success(processor, caplog):
+def test_cache_usage_tokens_logged_on_success(caplog):
     """GH-195 — cache_read_input_tokens and cache_creation_input_tokens must
     appear as structured log fields so ops can verify the cache is hitting."""
-    llm = MagicMock()
-    llm.call.return_value = LLMResponse(
-        content=json.dumps({
+    provider = MagicMock(spec=ChatProviderBase)
+    provider.capabilities = _DEFAULT_TEST_CAPS
+    provider.call.return_value = ChatResponse(
+        content=[TextBlock(text=json.dumps({
             "intent": "market_truth_query",
             "entities": {},
             "sentiment": "neutral",
             "confidence": 0.9,
-        }),
+        }))],
         stop_reason="end_turn",
         model_used="claude-haiku-4-5-20251001",
-        input_tokens=100,
-        output_tokens=20,
-        cache_read_input_tokens=1500,
-        cache_creation_input_tokens=0,
+        usage=TokenUsage(
+            input_tokens=100,
+            output_tokens=20,
+            cache_read_tokens=1500,
+            cache_creation_tokens=0,
+        ),
     )
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
     import logging as _logging
     with caplog.at_level(_logging.INFO, logger="src.preprocessing.nlu_processor"):
-        processor.process("kaam chahiye", "", "", llm)
+        proc.process("kaam chahiye", "", "")
     matches = [r for r in caplog.records if r.message == "nlu_processor.process"]
     assert matches, "no nlu_processor.process log record found"
     rec = matches[-1]
@@ -738,23 +879,26 @@ def test_cache_usage_tokens_logged_on_success(processor, caplog):
     assert getattr(rec, "prompt_cache_enabled", None) is True
 
 
-def test_cache_marker_is_stable_across_turns(processor):
-    """Cache key = static text before the cache_control marker. Two calls with
+def test_cache_marker_is_stable_across_turns():
+    """Cache key = static text before the cache_hint marker. Two calls with
     different per-turn inputs must produce the EXACT same cached block text."""
-    llm1 = make_llm_returning(intent="evaluate_option")
-    processor.process(
+    provider1 = make_provider_returning(intent="evaluate_option")
+    proc = NLUProcessor(CONFIG, chat_provider=provider1)
+    proc.process(
         "turn 1 input", current_question="q1", current_subagent_id="sub_a",
-        llm=llm1, existing_profile_keys=["a"], previous_user_state="fog",
+        existing_profile_keys=["a"], previous_user_state="fog",
     )
-    llm2 = make_llm_returning(intent="evaluate_option")
-    processor.process(
+
+    provider2 = make_provider_returning(intent="evaluate_option")
+    proc2 = NLUProcessor(CONFIG, chat_provider=provider2)
+    proc2.process(
         "turn 2 input", current_question="q2", current_subagent_id="sub_a",
-        llm=llm2, existing_profile_keys=["a", "b", "c"], previous_user_state="orientation",
+        existing_profile_keys=["a", "b", "c"], previous_user_state="orientation",
     )
-    sys1 = llm1.call.call_args.kwargs["system"]
-    sys2 = llm2.call.call_args.kwargs["system"]
-    # Same subagent → same allowed_intents → cached block must be byte-identical.
-    assert sys1 == sys2
+    req1: ChatRequest = provider1.call.call_args.args[0]
+    req2: ChatRequest = provider2.call.call_args.args[0]
+    # Same subagent → same allowed_intents → cached block text must be byte-identical.
+    assert _system_text(req1) == _system_text(req2)
 
 
 # ---------------------------------------------------------------------------
@@ -762,14 +906,14 @@ def test_cache_marker_is_stable_across_turns(processor):
 # ---------------------------------------------------------------------------
 
 
-def test_triage_log_emits_safe_summary_by_default(processor, caplog):
+def test_triage_log_emits_safe_summary_by_default(processor, mock_provider, caplog):
     """Default (log_raw_response=False) → triage log present, no raw fields."""
-    llm = make_llm_returning(
+    mock_provider.call.return_value = _make_chat_response(
         intent="market_truth_query",
         entities={"location": "Hubli", "trade": "electrician"},
     )
     with caplog.at_level("INFO"):
-        processor.process("kaam chahiye Hubli", "what trade?", "enquiry", llm)
+        processor.process("kaam chahiye Hubli", "what trade?", "enquiry")
     triage = [r for r in caplog.records if r.message == "nlu_processor.triage"]
     assert len(triage) == 1, "expected exactly one triage log line"
     extra = triage[0].__dict__
@@ -794,12 +938,12 @@ def test_triage_log_emits_raw_when_enabled(caplog):
             }
         }
     }
-    proc = NLUProcessor(cfg)
-    llm = make_llm_returning(
+    provider = make_provider_returning(
         intent="market_truth_query", entities={"location": "Hubli"}
     )
+    proc = NLUProcessor(cfg, chat_provider=provider)
     with caplog.at_level("INFO"):
-        proc.process("kaam chahiye Hubli", "what trade?", "enquiry", llm)
+        proc.process("kaam chahiye Hubli", "what trade?", "enquiry")
     triage = [r for r in caplog.records if r.message == "nlu_processor.triage"]
     assert len(triage) == 1
     extra = triage[0].__dict__
@@ -809,24 +953,24 @@ def test_triage_log_emits_raw_when_enabled(caplog):
     assert "kaam chahiye Hubli" in extra["user_message"]
 
 
-def test_triage_log_user_message_hash_is_stable(processor, caplog):
+def test_triage_log_user_message_hash_is_stable(caplog):
     """Same user message text → same sha256 prefix across runs."""
+    provider = make_provider_returning(intent="market_truth_query")
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
     with caplog.at_level("INFO"):
-        processor.process(
+        proc.process(
             "इलेक्ट्रिशियन का काम है",
             current_question="trade?",
             current_subagent_id="enquiry",
-            llm=make_llm_returning(intent="market_truth_query"),
         )
         first = next(r.__dict__["user_message_sha256_prefix"]
                      for r in caplog.records if r.message == "nlu_processor.triage")
     caplog.clear()
     with caplog.at_level("INFO"):
-        processor.process(
+        proc.process(
             "इलेक्ट्रिशियन का काम है",
             current_question="trade?",
             current_subagent_id="enquiry",
-            llm=make_llm_returning(intent="market_truth_query"),
         )
         second = next(r.__dict__["user_message_sha256_prefix"]
                       for r in caplog.records if r.message == "nlu_processor.triage")
@@ -844,13 +988,13 @@ def test_triage_log_truncates_to_max_chars(caplog):
             }
         }
     }
-    proc = NLUProcessor(cfg)
-    llm = make_llm_returning(
+    provider = make_provider_returning(
         intent="market_truth_query",
         entities={"location": "x" * 500},  # forces a long parsed payload
     )
+    proc = NLUProcessor(cfg, chat_provider=provider)
     with caplog.at_level("INFO"):
-        proc.process("a very long user message " * 10, "q", "enquiry", llm)
+        proc.process("a very long user message " * 10, "q", "enquiry")
     triage = next(r.__dict__ for r in caplog.records if r.message == "nlu_processor.triage")
     assert len(triage["parsed_response"]) <= 50
     assert len(triage["user_message"]) <= 50

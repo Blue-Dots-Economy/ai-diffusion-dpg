@@ -65,7 +65,9 @@ services:
     container_name: agent_core
     environment:
       - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
+      - OPENAI_API_KEY                     # required when agent.provider=openai or any helper provider=openai
       - CONFIG_FOLDER=/app/config
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}       # set to DEBUG for chat_provider/orchestrator tracing
     volumes:
       - ../../dev-kit/dpg/agent_core.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-kkb}/agent_core.yaml:/app/config/agent_core.yaml:ro

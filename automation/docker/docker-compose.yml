@@ -95,8 +95,13 @@ services:
     image: sanketikahub/dpg-agent-core:${GIT_SHA:-latest}
     container_name: agent_core
     environment:
+      - OPENAI_API_KEY
       - ANTHROPIC_API_KEY                  # inherited from shell: export ANTHROPIC_API_KEY=sk-...
       - CONFIG_FOLDER=/app/config
+      # LOG_LEVEL controls both Python logging.basicConfig and uvicorn's
+      # access logger. Set to DEBUG for verbose chat_provider / orchestrator
+      # tracing during deploy debugging; reset to INFO for normal operation.
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       - ../../dev-kit/dpg/agent_core.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-kkb}/agent_core.yaml:/app/config/agent_core.yaml:ro
@@ -379,29 +384,29 @@ services:
   # Reach Layer — CLI channel (on-demand REPL, opt-in via `cli` profile)
   #   docker compose run --rm reach_layer_cli
   # ---------------------------------------------------------------------------
-  reach_layer_cli:
-    build:
-      context: ../..
-      dockerfile: reach_layer/cli/Dockerfile
-      platforms:
-        - linux/amd64
-        - linux/arm64
-    image: sanketikahub/dpg-reach-layer-cli:${GIT_SHA:-latest}
-    container_name: reach_layer_cli
-    volumes:
-      # Unified Reach Layer config: DPG defaults + per-domain overrides.
-      # Loader scopes to the cli channel via load_reach_config("cli").
-      - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
-    networks:
-      - dpg_net
-    stdin_open: true
-    tty: true
-    depends_on:
-      agent_core:
-        condition: service_healthy
-    profiles:
-      - cli
+  # reach_layer_cli:
+  #   build:
+  #     context: ../..
+  #     dockerfile: reach_layer/cli/Dockerfile
+  #     platforms:
+  #       - linux/amd64
+  #       - linux/arm64
+  #   image: sanketikahub/dpg-reach-layer-cli:${GIT_SHA:-latest}
+  #   container_name: reach_layer_cli
+  #   volumes:
+  #     # Unified Reach Layer config: DPG defaults + per-domain overrides.
+  #     # Loader scopes to the cli channel via load_reach_config("cli").
+  #     - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
+  #     - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
+  #   networks:
+  #     - dpg_net
+  #   stdin_open: true
+  #   tty: true
+  #   depends_on:
+  #     agent_core:
+  #       condition: service_healthy
+  #   profiles:
+  #     - cli
 
   # ---------------------------------------------------------------------------
   # Reach Layer — Voice channel (port 8006)
@@ -547,25 +552,25 @@ services:
   # Memgraph Lab — graph browser UI (port 3002)
   # Open http://localhost:3002 to explore the Memory Layer's context graph.
   # ---------------------------------------------------------------------------
-  memgraph_lab:
-    image: memgraph/lab:latest
-    container_name: memgraph_lab
-    environment:
-      - QUICK_CONNECT_MG_HOST=memgraph
-      - QUICK_CONNECT_MG_PORT=7687
-    ports:
-      - "3002:3000"
-    networks:
-      - dpg_net
-    deploy:
-      resources:
-        limits:
-          cpus: '0.1'
-          memory: 256M
-    depends_on:
-      memgraph:
-        condition: service_healthy
-    restart: unless-stopped
+  # memgraph_lab:
+  #   image: memgraph/lab:latest
+  #   container_name: memgraph_lab
+  #   environment:
+  #     - QUICK_CONNECT_MG_HOST=memgraph
+  #     - QUICK_CONNECT_MG_PORT=7687
+  #   ports:
+  #     - "3002:3000"
+  #   networks:
+  #     - dpg_net
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         cpus: '0.1'
+  #         memory: 256M
+  #   depends_on:
+  #     memgraph:
+  #       condition: service_healthy
+  #   restart: unless-stopped
 
   memgraph:
     image: memgraph/memgraph
@@ -607,25 +612,25 @@ services:
   #   export PUBLIC_URL=https://abc123.ngrok-free.app
   #   docker compose up -d reach_layer_voice
   # ---------------------------------------------------------------------------
-  ngrok:
-    image: ngrok/ngrok:latest
-    container_name: ngrok
-    command: http reach_layer_voice:8006 --log stdout
-    environment:
-      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
-    ports:
-      - "4040:4040"                          # ngrok local API / inspector UI
-    networks:
-      - dpg_net
-    deploy:
-      resources:
-        limits:
-          cpus: '0.1'
-          memory: 128M
-    depends_on:
-      reach_layer_voice:
-        condition: service_healthy
-    restart: unless-stopped
+  # ngrok:
+  #   image: ngrok/ngrok:latest
+  #   container_name: ngrok
+  #   command: http reach_layer_voice:8006 --log stdout
+  #   environment:
+  #     - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
+  #   ports:
+  #     - "4040:4040"                          # ngrok local API / inspector UI
+  #   networks:
+  #     - dpg_net
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         cpus: '0.1'
+  #         memory: 128M
+  #   depends_on:
+  #     reach_layer_voice:
+  #       condition: service_healthy
+  #   restart: unless-stopped
 
   # ---------------------------------------------------------------------------
   # OTel Collector — receives OTLP, fans out to Jaeger / Prometheus / Loki

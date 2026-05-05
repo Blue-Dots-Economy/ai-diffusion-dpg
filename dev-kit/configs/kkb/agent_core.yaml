@@ -2,6 +2,12 @@
 # In Docker/Kubernetes this file is replaced by dev-kit/configs/kkb/agent_core.yaml.
 
 agent:
+  # Provider selection (#287). Defaults to anthropic on the schema; making
+  # the choice explicit so deployments are auditable.
+  # provider: openai
+  # primary_model: gpt-4.1-2025-04-14
+  # fallback_model: gpt-5.4-mini-2026-03-17
+  provider: anthropic
   primary_model: claude-haiku-4-5-20251001
   fallback_model: claude-haiku-4-5-20251001
   ask_for_consent: true
@@ -407,6 +413,9 @@ preprocessing:
     # call was a cold read (~1.8 s). Sonnet's 1024-token minimum means the
     # same prompt is cached from turn 2 onward, dropping NLU latency to
     # ~500–800 ms once warm.
+    # provider: openai
+    # model: gpt-4.1-2025-04-14
+    provider: anthropic
     model: claude-sonnet-4-5-20250929
     confidence_threshold: 0.5
     user_state_confidence_threshold: 0.4  # (GH-139) below this, state classification stays sticky

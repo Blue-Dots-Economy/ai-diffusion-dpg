@@ -19,7 +19,16 @@ from src.models import (
     TurnInput,
 )
 from src.orchestrator import AgentCore, _split_sentences
-from src.exceptions import ToolUseRequested
+from src.chat_provider.base import ChatProviderBase
+from src.chat_provider.base import ToolUseRequested as ChatToolUseRequested
+from src.chat_provider.types import (
+    ChatResponse,
+    Message,
+    SystemPrompt,
+    TextBlock,
+    TokenUsage,
+    ToolUseBlock,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -145,13 +154,13 @@ def _make_agent_core(**overrides):
         },
         "preprocessing": {
             "language_normalisation": {"default_language": "english"},
-            "nlu_processor": {"model_override": "haiku", "model": "haiku"},
+            "nlu_processor": {},
         },
         "entity_persistence": {"scope": "persistent"},
         "entity_to_profile_field": {},
     }
 
-    llm = MagicMock()
+    llm = MagicMock(spec=ChatProviderBase)
     llm.get_active_model.return_value = "test-model"
 
     memory = MagicMock()
@@ -160,8 +169,8 @@ def _make_agent_core(**overrides):
     tool_registry = MagicMock()
     tool_registry.get_route.return_value = None
     manager_agent = MagicMock()
-    manager_agent.build_system_prompt.return_value = "System prompt"
-    manager_agent.build_messages.return_value = [{"role": "user", "content": "Hello"}]
+    manager_agent.build_system_prompt.return_value = SystemPrompt(blocks=[TextBlock(text="System prompt")])
+    manager_agent.build_messages.return_value = [Message(role="user", content=[TextBlock(text="Hello")])]
     learning = MagicMock()
     workflow = _make_workflow()
 
@@ -184,7 +193,7 @@ def _make_agent_core(**overrides):
 
     defaults = dict(
         config=config,
-        llm_wrapper=llm,
+        chat_provider=llm,
         memory=memory,
         trust=trust,
         knowledge_engine=ke,
@@ -222,7 +231,7 @@ class TestStreamTurnBasic:
             yield "Hello. "
             yield "How can I help? "
 
-        agent._llm.stream_call = mock_stream
+        agent._llm.stream = mock_stream
         # Patch NLU to return a simple result
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("Hello", "english")
@@ -327,13 +336,13 @@ class TestStreamTurnToolUse:
             call_count += 1
             if call_count == 1:
                 yield "I'll look that up"
-                raise ToolUseRequested([
-                    ToolCall(tool_name="search", tool_use_id="tu_1", input_params={"q": "test"})
+                raise ChatToolUseRequested([
+                    ToolUseBlock(tool_name="search", tool_use_id="tu_1", input={"q": "test"})
                 ])
             else:
                 yield "Here's what I found. "
 
-        agent._llm.stream_call = mock_stream
+        agent._llm.stream = mock_stream
         agent._async_gateway.execute.return_value = ToolResult(
             tool_use_id="tu_1", tool_name="search",
             result={"answer": "42"}, success=True, result_text="42"
@@ -367,7 +376,7 @@ class TestStreamTurnTrustOutput:
         async def mock_stream(*args, **kwargs):
             yield "Bad content here. "
 
-        agent._llm.stream_call = mock_stream
+        agent._llm.stream = mock_stream
         agent._async_trust.check_output.return_value = TrustCheckResult(
             passed=False, action="block", reason="unsafe"
         )
@@ -394,7 +403,7 @@ class TestStreamTurnTrustOutput:
         async def mock_stream(*args, **kwargs):
             yield "Normal content. "
 
-        agent._llm.stream_call = mock_stream
+        agent._llm.stream = mock_stream
         agent._async_trust.check_output.side_effect = Exception("Connection refused")
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("msg", "english")
@@ -441,7 +450,7 @@ class TestStreamTurnChannelValidation:
         async def mock_stream(*args, **kwargs):
             yield "Hello. "
 
-        agent._llm.stream_call = mock_stream
+        agent._llm.stream = mock_stream
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("Hello", "english")
         agent._nlu_processor = MagicMock()
@@ -502,17 +511,17 @@ class TestStreamTurnEndSession:
             call_count += 1
             if call_count == 1:
                 yield "Goodbye"
-                raise ToolUseRequested([
-                    ToolCall(
+                raise ChatToolUseRequested([
+                    ToolUseBlock(
                         tool_name="end_session",
                         tool_use_id="tu_end",
-                        input_params={"reason": "user_said_bye"},
+                        input={"reason": "user_said_bye"},
                     )
                 ])
             else:
                 yield "Take care. "
 
-        agent._llm.stream_call = mock_stream
+        agent._llm.stream = mock_stream
 
         # Action Gateway must NOT be invoked for end_session — fail loud if it is.
         agent._async_gateway.execute = AsyncMock(
@@ -533,9 +542,9 @@ class TestStreamTurnEndSession:
 
         async def first_stream(*args, **kwargs):
             yield "Bye"
-            raise ToolUseRequested([
-                ToolCall(
-                    tool_name="end_session", tool_use_id="tu_end", input_params={}
+            raise ChatToolUseRequested([
+                ToolUseBlock(
+                    tool_name="end_session", tool_use_id="tu_end", input={}
                 )
             ])
 
@@ -555,7 +564,7 @@ class TestStreamTurnEndSession:
             async for tok in gen:
                 yield tok
 
-        agent._llm.stream_call = dispatch
+        agent._llm.stream = dispatch
         agent._async_gateway.execute = AsyncMock(
             side_effect=AssertionError("end_session must not be routed to Action Gateway")
         )
@@ -595,17 +604,17 @@ class TestStreamTurnRecentToolExchanges:
             call_count += 1
             if call_count == 1:
                 yield "Looking that up"
-                raise ToolUseRequested([
-                    ToolCall(
+                raise ChatToolUseRequested([
+                    ToolUseBlock(
                         tool_name="onest_market_lookup",
                         tool_use_id="tu_t1",
-                        input_params={"trade": "welder"},
+                        input={"trade": "welder"},
                     )
                 ])
             else:
                 yield "Here are the results. "
 
-        agent._llm.stream_call = mock_stream
+        agent._llm.stream = mock_stream
         agent._async_gateway.execute.return_value = ToolResult(
             tool_use_id="tu_t1",
             tool_name="onest_market_lookup",
@@ -666,13 +675,13 @@ class TestStreamTurnRecentToolExchanges:
             profile={},
         )
 
-        captured_messages: list = []
+        captured_requests: list = []
 
-        async def mock_stream(*args, **kwargs):
-            captured_messages.append(kwargs.get("messages") or args[0])
+        async def mock_stream(request, *, abort_event=None):
+            captured_requests.append(request)
             yield "Reusing prior data. "
 
-        agent._llm.stream_call = mock_stream
+        agent._llm.stream = mock_stream
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("msg", "english")
         agent._nlu_processor = MagicMock()
@@ -682,15 +691,15 @@ class TestStreamTurnRecentToolExchanges:
 
         await _collect_events(agent, _make_turn_input(user_message="What was the wage?"))
 
-        assert captured_messages, "stream_call should have been invoked"
-        msgs = captured_messages[0]
+        assert captured_requests, "stream should have been invoked"
+        msgs = captured_requests[0].messages
         # First two messages should be the replayed assistant tool_use + user tool_result.
-        assert msgs[0]["role"] == "assistant"
-        assert msgs[0]["content"][0]["type"] == "tool_use"
-        assert msgs[0]["content"][0]["name"] == "onest_market_lookup"
-        assert msgs[1]["role"] == "user"
-        assert msgs[1]["content"][0]["type"] == "tool_result"
-        assert msgs[1]["content"][0]["tool_use_id"] == "tu_prev"
+        assert msgs[0].role == "assistant"
+        assert msgs[0].content[0].type == "tool_use"
+        assert msgs[0].content[0].tool_name == "onest_market_lookup"
+        assert msgs[1].role == "user"
+        assert msgs[1].content[0].type == "tool_result"
+        assert msgs[1].content[0].tool_use_id == "tu_prev"
         # Tool gateway must NOT have been invoked again for the same params.
         assert agent._async_gateway.execute.await_count == 0
 
@@ -725,13 +734,13 @@ class TestStreamTurnRecentToolExchanges:
             call_count += 1
             if call_count == 1:
                 yield "ok"
-                raise ToolUseRequested([
-                    ToolCall(tool_name="lookup", tool_use_id="tu_new", input_params={"i": 99})
+                raise ChatToolUseRequested([
+                    ToolUseBlock(tool_name="lookup", tool_use_id="tu_new", input={"i": 99})
                 ])
             else:
                 yield "Done. "
 
-        agent._llm.stream_call = mock_stream
+        agent._llm.stream = mock_stream
         agent._async_gateway.execute.return_value = ToolResult(
             tool_use_id="tu_new",
             tool_name="lookup",
@@ -786,13 +795,13 @@ class TestStreamTurnRecentToolExchanges:
             profile={},
         )
 
-        captured_messages: list = []
+        captured_requests: list = []
 
-        async def mock_stream(*args, **kwargs):
-            captured_messages.append(kwargs.get("messages") or args[0])
+        async def mock_stream(request, *, abort_event=None):
+            captured_requests.append(request)
             yield "Hi. "
 
-        agent._llm.stream_call = mock_stream
+        agent._llm.stream = mock_stream
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("msg", "english")
         agent._nlu_processor = MagicMock()
@@ -802,13 +811,14 @@ class TestStreamTurnRecentToolExchanges:
 
         await _collect_events(agent, _make_turn_input())
 
-        assert captured_messages
+        assert captured_requests, "stream should have been invoked"
         # No replayed messages — first message should be the user turn directly.
-        assert captured_messages[0][0]["role"] == "user"
+        first_msg = captured_requests[0].messages[0]
+        assert first_msg.role == "user"
+        # No tool_use blocks in the content (no replay when max_items=0)
         assert all(
-            isinstance(c, str) or c.get("type") != "tool_use"
-            for c in (captured_messages[0][0].get("content") or [])
-            if isinstance(c, dict)
+            not hasattr(block, "tool_name")
+            for block in first_msg.content
         )
 
 
@@ -827,8 +837,8 @@ class TestRecentToolExchangesHelpers:
             },
         ])
         assert len(msgs) == 2
-        assert msgs[0]["role"] == "assistant"
-        assert msgs[1]["role"] == "user"
+        assert msgs[0].role == "assistant"
+        assert msgs[1].role == "user"
 
     def test_truncate_tool_result_content(self):
         agent = _make_agent_core()

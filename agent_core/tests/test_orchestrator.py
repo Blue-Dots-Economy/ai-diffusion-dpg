@@ -33,12 +33,11 @@ from __future__ import annotations
 import asyncio
 import time
 import pytest
-from unittest.mock import MagicMock, AsyncMock, ANY
+from unittest.mock import MagicMock, AsyncMock, ANY, patch
 
 from src.orchestrator import AgentCore
 from src.models import (
     ContextBundle,
-    LLMResponse,
     NLUResult,
     TrustCheckResult,
     TurnInput,
@@ -46,6 +45,16 @@ from src.models import (
     SignalEvent,
     SentenceEvent,
     DoneEvent,
+)
+from src.chat_provider.base import ChatProviderBase
+from src.chat_provider.types import (
+    ChatResponse,
+    Message,
+    SystemPrompt,
+    TextBlock,
+    TokenUsage,
+    ToolDefinition,
+    ToolUseBlock,
 )
 
 
@@ -71,7 +80,6 @@ VALID_CONFIG = {
     },
     "preprocessing": {
         "nlu_processor": {
-            "model": "claude-haiku-test",
             "confidence_threshold": 0.5,
         },
         "language_normalisation": {
@@ -187,22 +195,22 @@ def _make_agent(
 
     knowledge_engine = MagicMock()
 
-    llm = MagicMock()
-    llm.call.return_value = LLMResponse(
-        content=llm_content,
-        tool_calls=[],
+    llm = MagicMock(spec=ChatProviderBase)
+    llm.call.return_value = ChatResponse(
+        content=[TextBlock(text=llm_content)],
         stop_reason="end_turn",
         model_used="claude-primary",
+        usage=TokenUsage(input_tokens=10, output_tokens=5),
     )
 
     tool_registry = MagicMock()
     tool_registry.get_tool_definitions.return_value = []
 
     manager = MagicMock()
-    manager.build_system_prompt.return_value = ""
+    manager.build_system_prompt.return_value = SystemPrompt(blocks=[TextBlock(text="")])
     manager.build_messages.return_value = (
         prompt_messages if prompt_messages is not None
-        else [{"role": "user", "content": "Hello"}]
+        else [Message(role="user", content=[TextBlock(text="Hello")])]
     )
     manager.run_turn.return_value = (
         manager_text,
@@ -217,7 +225,7 @@ def _make_agent(
 
     agent = AgentCore(
         config=VALID_CONFIG,
-        llm_wrapper=llm,
+        chat_provider=llm,
         memory=memory,
         trust=trust,
         knowledge_engine=knowledge_engine,
@@ -251,7 +259,7 @@ def test_raises_on_none_workflow():
     with pytest.raises(ValueError, match="workflow must not be None"):
         AgentCore(
             config={},
-            llm_wrapper=MagicMock(),
+            chat_provider=MagicMock(spec=ChatProviderBase),
             memory=MagicMock(),
             trust=MagicMock(),
             knowledge_engine=MagicMock(),
@@ -260,6 +268,87 @@ def test_raises_on_none_workflow():
             learning=MagicMock(),
             workflow=None,
         )
+
+
+class TestHelperProviderConstruction:
+    """Per-helper provider override (NLU + language_normalisation can run on
+    a different provider than agent.provider) — see #287 follow-up."""
+
+    def _build_agent_core(self, config: dict):
+        return AgentCore(
+            config=config,
+            chat_provider=MagicMock(spec=ChatProviderBase),
+            memory=MagicMock(),
+            trust=MagicMock(),
+            knowledge_engine=MagicMock(),
+            tool_registry=MagicMock(),
+            manager_agent=MagicMock(),
+            learning=MagicMock(),
+            workflow=_make_workflow(),
+        )
+
+    def _agent_block(self, **overrides) -> dict:
+        return {
+            "primary_model": "gpt-4o-2024-08-06",
+            "timeout_ms": 5000,
+            "retry_attempts": 2,
+            "provider": "openai",
+            **overrides,
+        }
+
+    def test_helper_with_no_model_reuses_primary(self):
+        agent = self._build_agent_core({"agent": self._agent_block(), "preprocessing": {}})
+        assert agent._nlu_chat_provider is agent._llm
+        assert agent._lang_chat_provider is agent._llm
+
+    def test_helper_with_matching_provider_and_model_reuses_primary(self):
+        cfg = {
+            "agent": self._agent_block(),
+            "preprocessing": {
+                "nlu_processor": {
+                    "provider": "openai",
+                    "model": "gpt-4o-2024-08-06",
+                },
+            },
+        }
+        agent = self._build_agent_core(cfg)
+        assert agent._nlu_chat_provider is agent._llm
+
+    def test_helper_with_different_provider_builds_dedicated_provider(self):
+        """Regression: the production bug where deployment had agent.provider=openai
+        but nlu_processor.model was a Claude model — without per-helper provider
+        override, build_chat_provider would build an OpenAI provider with a Claude
+        model name and fail at SDK call time.
+        """
+        cfg = {
+            "agent": self._agent_block(),  # agent.provider=openai, primary_model=gpt-4o
+            "preprocessing": {
+                "nlu_processor": {
+                    "provider": "anthropic",
+                    "model": "claude-haiku-4-5-20251001",
+                },
+            },
+        }
+        with patch("anthropic.Anthropic"), patch("anthropic.AsyncAnthropic"):
+            agent = self._build_agent_core(cfg)
+        # Different provider class → different instance (not self._llm).
+        assert agent._nlu_chat_provider is not agent._llm
+        assert type(agent._nlu_chat_provider).__name__ == "AnthropicChatProvider"
+        assert agent._nlu_chat_provider.get_active_model() == "claude-haiku-4-5-20251001"
+
+    def test_helper_with_only_model_override_inherits_agent_provider(self):
+        cfg = {
+            "agent": self._agent_block(),  # agent.provider=openai
+            "preprocessing": {
+                # provider omitted → inherit agent.provider=openai
+                "nlu_processor": {"model": "gpt-4o-mini-2024-07-18"},
+            },
+        }
+        with patch("openai.OpenAI"), patch("openai.AsyncOpenAI"):
+            agent = self._build_agent_core(cfg)
+        assert agent._nlu_chat_provider is not agent._llm
+        assert type(agent._nlu_chat_provider).__name__ == "OpenAIChatProvider"
+        assert agent._nlu_chat_provider.get_active_model() == "gpt-4o-mini-2024-07-18"
 
 
 def test_raises_on_none_turn_input():
@@ -693,25 +782,24 @@ def _make_agent_with_consent(
     trust.verify_consent.return_value = verify_consent_result
 
     knowledge_engine = MagicMock()
-    llm = MagicMock()
-    from src.models import LLMResponse
-    llm.call.return_value = LLMResponse(
-        content="LLM response.",
-        tool_calls=[],
+    llm = MagicMock(spec=ChatProviderBase)
+    llm.call.return_value = ChatResponse(
+        content=[TextBlock(text="LLM response.")],
         stop_reason="end_turn",
         model_used="claude-primary",
+        usage=TokenUsage(input_tokens=10, output_tokens=5),
     )
     tool_registry = MagicMock()
     tool_registry.get_tool_definitions.return_value = []
     manager = MagicMock()
-    manager.build_system_prompt.return_value = ""
-    manager.build_messages.return_value = [{"role": "user", "content": "Hello"}]
+    manager.build_system_prompt.return_value = SystemPrompt(blocks=[TextBlock(text="")])
+    manager.build_messages.return_value = [Message(role="user", content=[TextBlock(text="Hello")])]
     manager.run_turn.return_value = ("Final response.", [], [])
     learning = MagicMock()
 
     agent = AgentCore(
         config=config,
-        llm_wrapper=llm,
+        chat_provider=llm,
         memory=memory,
         trust=trust,
         knowledge_engine=knowledge_engine,
@@ -765,12 +853,11 @@ def test_consent_gate_turn1_translated_to_detected_language():
         session_data={"current_subagent_id": None, "turn_count": 0},
     )
     agent._language_normaliser.normalise.return_value = ("namaskara", "kannada")
-    from src.models import LLMResponse
-    agent._llm.call.return_value = LLMResponse(
-        content=translated_text,
-        tool_calls=[],
+    agent._llm.call.return_value = ChatResponse(
+        content=[TextBlock(text=translated_text)],
         stop_reason="end_turn",
         model_used="claude-primary",
+        usage=TokenUsage(input_tokens=10, output_tokens=5),
     )
     result = agent.process_turn(_turn_input("namaskara"))
     assert result.response_text == translated_text
@@ -927,7 +1014,7 @@ async def test_termination_short_circuit_skips_llm_when_confident():
     assert dones[0].session_ended is True
     assert dones[0].was_tool_used is False
 
-    agent._llm.stream_call.assert_not_called()
+    agent._llm.stream.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -954,7 +1041,7 @@ async def test_termination_short_circuit_below_threshold_falls_through():
     async for ev in agent.stream_turn(_turn_input("maybe bye"), turn_id="t-low"):
         events.append(ev)
 
-    agent._llm.stream_call.assert_called()
+    agent._llm.stream.assert_called()
 
 
 @pytest.mark.asyncio
@@ -977,7 +1064,7 @@ async def test_termination_short_circuit_skipped_on_first_turn():
     async for ev in agent.stream_turn(_turn_input("bye"), turn_id="t-first"):
         events.append(ev)
 
-    agent._llm.stream_call.assert_called()
+    agent._llm.stream.assert_called()
 
 
 @pytest.mark.asyncio
@@ -998,7 +1085,7 @@ async def test_termination_short_circuit_disabled_falls_through():
     async for ev in agent.stream_turn(_turn_input("bye"), turn_id="t-disabled"):
         events.append(ev)
 
-    agent._llm.stream_call.assert_called()
+    agent._llm.stream.assert_called()
 
 
 def test_consent_gate_skipped_when_storage_mode_set():
@@ -1269,7 +1356,7 @@ def test_agentcore_init_user_state_enabled_caches_guidance():
     config = _make_usm_config(enabled=True)
     agent = AgentCore(
         config=config,
-        llm_wrapper=MagicMock(),
+        chat_provider=MagicMock(spec=ChatProviderBase),
         memory=MagicMock(),
         trust=MagicMock(),
         knowledge_engine=MagicMock(),
@@ -1290,7 +1377,7 @@ def test_agentcore_init_user_state_disabled_empty_cache():
     config = _make_usm_config(enabled=False)
     agent = AgentCore(
         config=config,
-        llm_wrapper=MagicMock(),
+        chat_provider=MagicMock(spec=ChatProviderBase),
         memory=MagicMock(),
         trust=MagicMock(),
         knowledge_engine=MagicMock(),
@@ -1329,17 +1416,19 @@ def _make_agent_with_config(config: dict, workflow: MagicMock = None) -> AgentCo
     trust.check_input.return_value = ALLOW
     trust.check_output.return_value = ALLOW
     knowledge_engine = MagicMock()
-    llm = MagicMock()
-    llm.call.return_value = LLMResponse(
-        content="LLM response.", tool_calls=[], stop_reason="end_turn",
+    llm = MagicMock(spec=ChatProviderBase)
+    llm.call.return_value = ChatResponse(
+        content=[TextBlock(text="LLM response.")],
+        stop_reason="end_turn",
         model_used="claude-primary",
+        usage=TokenUsage(input_tokens=10, output_tokens=5),
     )
     tool_registry = MagicMock()
     tool_registry.get_tool_definitions.return_value = []
     # Record register_internal calls so tests can assert on them.
     manager = MagicMock()
-    manager.build_system_prompt.return_value = ""
-    manager.build_messages.return_value = [{"role": "user", "content": "Hello"}]
+    manager.build_system_prompt.return_value = SystemPrompt(blocks=[TextBlock(text="")])
+    manager.build_messages.return_value = [Message(role="user", content=[TextBlock(text="Hello")])]
     manager.run_turn.return_value = ("Final response.", [], [])
     manager.session_ended = False
     learning = MagicMock()
@@ -1348,7 +1437,7 @@ def _make_agent_with_config(config: dict, workflow: MagicMock = None) -> AgentCo
 
     agent = AgentCore(
         config=config,
-        llm_wrapper=llm,
+        chat_provider=llm,
         memory=memory,
         trust=trust,
         knowledge_engine=knowledge_engine,
@@ -1467,8 +1556,8 @@ def test_active_tools_use_global_tool_defs_when_set():
     workflow.resolve_tools_for.return_value = global_tools
     agent = _make_agent(workflow=workflow)
     agent.process_turn(_turn_input())
-    call_kwargs = agent._llm.call.call_args.kwargs
-    tool_names = [t["name"] for t in call_kwargs["tools"]]
+    request = agent._llm.call.call_args.args[0]
+    tool_names = [t.name for t in request.tools]
     assert tool_names == ["shared_tool"]
 
 
@@ -1480,8 +1569,8 @@ def test_active_tools_fall_back_to_subagent_tool_defs_when_global_empty():
     workflow.resolve_tools_for.return_value = []
     agent = _make_agent(workflow=workflow)
     agent.process_turn(_turn_input())
-    call_kwargs = agent._llm.call.call_args.kwargs
-    assert call_kwargs["tools"] == []
+    request = agent._llm.call.call_args.args[0]
+    assert request.tools == []
 
 
 # ---------------------------------------------------------------------------
@@ -1582,21 +1671,21 @@ def _make_stream_agent(
     async_trust.verify_consent = AsyncMock(return_value=True)
 
     # Synchronous LLM for NLU / lang-norm (runs in asyncio.to_thread)
-    llm = MagicMock()
-    llm.call.return_value = LLMResponse(
-        content="",
-        tool_calls=[],
+    llm = MagicMock(spec=ChatProviderBase)
+    llm.call.return_value = ChatResponse(
+        content=[TextBlock(text="")],
         stop_reason="end_turn",
         model_used="claude-test",
+        usage=TokenUsage(input_tokens=0, output_tokens=0),
     )
     llm.get_active_model.return_value = "claude-test"
 
-    # async generator for stream_call
-    async def _stream_gen(*args, **kwargs):
+    # async generator for stream
+    async def _stream_gen(request, *, abort_event=None):
         for tok in tokens:
             yield tok
 
-    llm.stream_call = MagicMock(side_effect=_stream_gen)
+    llm.stream = MagicMock(side_effect=_stream_gen)
 
     trust = MagicMock()
     trust.check_input.return_value = TrustCheckResult(passed=True, action="allow")
@@ -1611,8 +1700,8 @@ def _make_stream_agent(
     tool_registry.get_tool_definitions.return_value = []
 
     manager = MagicMock()
-    manager.build_system_prompt.return_value = ""
-    manager.build_messages.return_value = [{"role": "user", "content": "Hello"}]
+    manager.build_system_prompt.return_value = SystemPrompt(blocks=[TextBlock(text="")])
+    manager.build_messages.return_value = [Message(role="user", content=[TextBlock(text="Hello")])]
     manager.run_turn.return_value = ("Hello world.", [], [])
 
     learning = MagicMock()
@@ -1621,7 +1710,7 @@ def _make_stream_agent(
 
     agent = AgentCore(
         config=VALID_CONFIG,
-        llm_wrapper=llm,
+        chat_provider=llm,
         memory=memory,
         trust=trust,
         knowledge_engine=knowledge_engine,
@@ -1707,7 +1796,7 @@ async def test_stream_turn_aborts_before_llm_call_when_event_preset():
         "SentenceEvent yielded despite abort_event being set before stream_turn ran"
     )
     # The wrapper's stream_call must not have been called
-    agent._llm.stream_call.assert_not_called()
+    agent._llm.stream.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -21,6 +21,25 @@ agent:
     max_items: 3            # Cap on prior tool_use/tool_result pairs replayed across turns (#193).
     max_chars: 4000         # Per-result content cap; mirrors action_gateway max_size_chars default.
 
+  # Provider selection (#289). Switching this away from 'anthropic' requires the
+  # corresponding API key in the environment (OPENAI_API_KEY for openai).
+  # Capabilities are intrinsic to the provider; this YAML can only tighten
+  # optional feature flags via agent.features below.
+  provider: anthropic
+
+  # Optional per-deployment feature toggles. Each defaults to "use the
+  # provider's intrinsic capability" when omitted. Setting a flag to
+  # true against a provider that lacks the capability fails at startup
+  # with a ProviderConfigError.
+  #
+  # The block uses an explicit empty mapping `{}` so YAML never parses it
+  # as null when every sub-key is commented out — agent.features must be
+  # a mapping or absent, never null.
+  features: {}
+    # prompt_cache: true   # Anthropic: enabled by capability. OpenAI: not supported (yet).
+    # streaming: true      # Both providers support streaming natively.
+    # image_input: true    # Both providers support image input.
+
 # conversation.* is domain-specific (blocked_message, escalation_message,
 # output_blocked_message, persona text). All fields must be set in domain.yaml.
 # The block intentionally lives only in domain configs.

@@ -23,7 +23,8 @@ import re
 import time
 from typing import Any
 
-from src.llm_wrapper.base import LLMWrapperBase
+from src.chat_provider.base import ChatProviderBase
+from src.chat_provider.types import ChatRequest, Message, SystemPrompt, TextBlock
 from src.models import NLUResult, UserStateClassification
 from src.exceptions import ConfigurationError
 
@@ -101,20 +102,23 @@ class NLUProcessor:
     and reused across all sessions. Config section: preprocessing.nlu_processor
     """
 
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict, chat_provider: ChatProviderBase) -> None:
         """
         Parse and cache NLU config values at startup.
 
         Args:
             config: Full agent_core config dict. Config is read once here and
                     never re-parsed during request processing.
+            chat_provider: Pre-configured ChatProviderBase instance used for
+                           all NLU LLM calls. The model is determined by the
+                           provider's configuration, not overridden per-call.
         """
         nlu_config = (config or {}).get("preprocessing", {}).get("nlu_processor", {})
+        # Retained for telemetry/logging only — the actual model used is
+        # determined by the injected chat_provider (which is pre-configured
+        # by build_chat_provider with the matching model id).
         self._model: str = nlu_config.get("model", "")
-        if not self._model:
-            raise ConfigurationError(
-                "preprocessing.nlu_processor.model is missing in domain configuration."
-            )
+        self._chat_provider = chat_provider
 
         self._domain_instruction: str = nlu_config.get(
             "domain_instruction", "You are an NLU (Natural Language Understanding) classifier."
@@ -204,7 +208,6 @@ class NLUProcessor:
         normalised_input: str,
         current_question: str,
         current_subagent_id: str,
-        llm: LLMWrapperBase,
         allowed_intents: list[str] | None = None,
         existing_profile_keys: list[str] | None = None,
         previous_user_state: str | None = None,
@@ -219,7 +222,6 @@ class NLUProcessor:
                               short follow-up answers like "welder" or "Hubli".
             current_subagent_id: Current subagent ID (from session["current_node"]).
                                  Helps classify answers that are only meaningful in context.
-            llm:              LLM wrapper for direct LLM calls.
             allowed_intents:  Optional list of allowed intents to use for the LLM system
                               prompt and validation. If provided (not None and not empty),
                               overrides the intents from config. If None or empty, falls
@@ -288,20 +290,22 @@ class NLUProcessor:
                 user_state_section=user_state_section,
             )
 
-            # Wrap the static prompt as an Anthropic cache-control block.
-            # Passing a list with an explicit cache_control marker avoids
-            # depending on the wrapper's implicit size-threshold behaviour
-            # and makes the intent visible at the call site.
-            if self._prompt_cache_enabled:
-                system_payload: str | list[dict] = [
-                    {
-                        "type": "text",
-                        "text": system_prompt_text,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ]
+            # Wrap the static prompt with a cache hint so the provider can
+            # activate prompt caching from turn 2 onward. The hint is set only
+            # when (a) the deployment opted in via prompt_cache_enabled AND
+            # (b) the active provider can honour it. The capability check
+            # avoids _validate_request raising on providers that don't support
+            # prompt caching (e.g. OpenAI today; #304 will flip the flag).
+            if (
+                self._prompt_cache_enabled
+                and self._chat_provider.capabilities.supports_prompt_cache
+            ):
+                cache_hint: str | None = "session"
             else:
-                system_payload = system_prompt_text
+                cache_hint = None
+            system_payload = SystemPrompt(blocks=[
+                TextBlock(text=system_prompt_text, cache_hint=cache_hint),
+            ])
 
             # Build NLU context message with workflow, last-question grounding,
             # and the per-turn dynamic values that previously lived in the
@@ -325,18 +329,17 @@ class NLUProcessor:
             context_parts.append(f"User message: {normalised_input}")
 
             user_message_text: str = "\n".join(context_parts)
-            messages: list[dict] = [
-                {"role": "user", "content": user_message_text}
+            neutral_messages = [
+                Message(role="user", content=[TextBlock(text=user_message_text)])
             ]
-
-            llm_response = llm.call(
-                messages=messages,
-                tools=[],
+            request = ChatRequest(
+                messages=neutral_messages,
                 system=system_payload,
-                model_override=self._model,
             )
+            llm_response = self._chat_provider.call(request)
 
-            if llm_response.stop_reason == "error" or not llm_response.content:
+            text = next((b.text for b in llm_response.content if b.type == "text"), None)
+            if llm_response.stop_reason == "error" or not text:
                 logger.warning(
                     "nlu_processor.llm_failure",
                     extra={
@@ -348,7 +351,7 @@ class NLUProcessor:
                 )
                 return _fallback_nlu_result()
 
-            parsed = self._parse_nlu_json(llm_response.content)
+            parsed = self._parse_nlu_json(text)
 
             # Validate intent is in allowed list
             intent = parsed.get("intent", "unknown")
@@ -440,7 +443,7 @@ class NLUProcessor:
                 "user_state_confidence": user_state_conf,
                 "user_message_chars": len(user_message_text),
                 "user_message_sha256_prefix": user_msg_sha12,
-                "raw_response_chars": len(llm_response.content or ""),
+                "raw_response_chars": len(text or ""),
                 "current_subagent_id": current_subagent_id or None,
             }
             if self._log_raw_response:
@@ -468,11 +471,11 @@ class NLUProcessor:
                     "latency_ms": int((time.time() - start) * 1000),
                     # GH-195 — surface prompt-cache usage so ops can verify the
                     # fix is effective (cache_read_input_tokens > 0 from turn 2).
-                    "cache_read_input_tokens": getattr(
-                        llm_response, "cache_read_input_tokens", 0
+                    "cache_read_input_tokens": (
+                        llm_response.usage.cache_read_tokens or 0
                     ),
-                    "cache_creation_input_tokens": getattr(
-                        llm_response, "cache_creation_input_tokens", 0
+                    "cache_creation_input_tokens": (
+                        llm_response.usage.cache_creation_tokens or 0
                     ),
                     "prompt_cache_enabled": self._prompt_cache_enabled,
                 },

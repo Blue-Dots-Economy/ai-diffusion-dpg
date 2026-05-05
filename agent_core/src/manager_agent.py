@@ -7,7 +7,7 @@ enforces the consent gate for write/identity connectors, and returns the
 final response text once the loop is complete.
 
 ManagerAgent never calls the LLM or external systems autonomously —
-it always acts on an initial LLMResponse passed in by the orchestrator.
+it always acts on an initial ChatResponse passed in by the orchestrator.
 """
 
 from __future__ import annotations
@@ -16,12 +16,23 @@ import logging
 import time
 from typing import Optional
 
+from src.chat_provider.base import ChatProviderBase
+from src.chat_provider.types import (
+    ChatRequest,
+    ChatResponse,
+    Message,
+    OutputFormat,
+    SystemPrompt,
+    TextBlock,
+    ToolDefinition,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 from src.exceptions import ConsentRequiredError
 from src.interfaces.action_gateway import ActionGatewayBase
 from src.interfaces.knowledge_engine import KnowledgeEngineBase
 from src.interfaces.trust_layer import TrustLayerBase
-from src.llm_wrapper.base import LLMWrapperBase
-from src.models import LLMResponse, RetrievalChunk, ToolCall, ToolResult
+from src.models import RetrievalChunk, ToolCall, ToolResult
 from src.tool_registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -32,7 +43,7 @@ class ManagerAgent:
     Drives the tool-use loop for one conversation turn.
 
     Args:
-        llm_wrapper:      Used for the second (and any subsequent) LLM call after tool results.
+        chat_provider:    Used for the second (and any subsequent) LLM call after tool results.
         tool_registry:    Used to check which tools require consent.
         action_gateway:   Executes tool calls against external connectors.
         knowledge_engine: Called when the LLM invokes the knowledge_retrieval tool.
@@ -43,15 +54,15 @@ class ManagerAgent:
 
     def __init__(
         self,
-        llm_wrapper: LLMWrapperBase,
+        chat_provider: ChatProviderBase,
         tool_registry: ToolRegistry,
         action_gateway: ActionGatewayBase,
         knowledge_engine: KnowledgeEngineBase,
         trust_layer: TrustLayerBase,
         max_tool_rounds: int = 1,
     ) -> None:
-        if llm_wrapper is None:
-            raise ValueError("llm_wrapper must not be None")
+        if chat_provider is None:
+            raise ValueError("chat_provider must not be None")
         if tool_registry is None:
             raise ValueError("tool_registry must not be None")
         if action_gateway is None:
@@ -61,7 +72,7 @@ class ManagerAgent:
         if trust_layer is None:
             raise ValueError("trust_layer must not be None")
 
-        self._llm = llm_wrapper
+        self._llm = chat_provider
         self._registry = tool_registry
         self._gateway = action_gateway
         self._ke = knowledge_engine
@@ -76,10 +87,10 @@ class ManagerAgent:
 
     def run_turn(
         self,
-        messages: list[dict],
+        messages: list[Message],
         session_id: str,
-        initial_llm_response: LLMResponse,
-        system: str | list[dict] = "",
+        initial_response: ChatResponse,
+        system: SystemPrompt | None = None,
         active_tools: list[dict] | None = None,
         ke_context: dict | None = None,
     ) -> tuple[str, list[ToolCall], list[ToolResult]]:
@@ -91,22 +102,23 @@ class ManagerAgent:
         Action Gateway's consent gate and execution path.
 
         Args:
-            messages:             The messages list that produced initial_llm_response.
-                                  Extended in-place with tool_use and tool_result blocks.
-            session_id:           Used for consent checks and gateway calls.
-            initial_llm_response: First LLM response from orchestrator's LLM call #1.
-            system:               System prompt passed to follow-up LLM calls so language
-                                  and persona instructions are preserved after tool use.
-            active_tools:         Scoped tool definitions for the current subagent. Only
-                                  these are passed to follow-up LLM calls. If None, falls
-                                  back to self._registry.get_tool_definitions() for
-                                  backward compatibility.
-            ke_context:           Dict with context required to call the Knowledge Engine
-                                  when knowledge_retrieval is invoked. Expected fields:
-                                  session_id, user_message, profile, session, intent,
-                                  entities, sentiment, confidence, normalised_input,
-                                  detected_language. If None, knowledge_retrieval calls
-                                  return an empty tool_result.
+            messages:         The messages list (neutral chat_provider types) that produced
+                              initial_response. Extended in-place with tool_use and
+                              tool_result blocks as Message objects.
+            session_id:       Used for consent checks and gateway calls.
+            initial_response: First LLM response from orchestrator's LLM call #1.
+            system:           System prompt passed to follow-up LLM calls so language
+                              and persona instructions are preserved after tool use.
+            active_tools:     Scoped tool definitions for the current subagent (legacy
+                              dict shape). Only these are passed to follow-up LLM calls.
+                              If None, falls back to self._registry.get_tool_definitions()
+                              for backward compatibility.
+            ke_context:       Dict with context required to call the Knowledge Engine
+                              when knowledge_retrieval is invoked. Expected fields:
+                              session_id, user_message, profile, session, intent,
+                              entities, sentiment, confidence, normalised_input,
+                              detected_language. If None, knowledge_retrieval calls
+                              return an empty tool_result.
 
         Returns:
             (final_response_text, list_of_all_tool_calls_executed, list_of_all_tool_results)
@@ -115,19 +127,32 @@ class ManagerAgent:
         """
         if session_id is None:
             raise ValueError("session_id must not be None")
-        if initial_llm_response is None:
-            raise ValueError("initial_llm_response must not be None")
+        if initial_response is None:
+            raise ValueError("initial_response must not be None")
 
         # GH-137: Reset per-turn flags before driving the tool loop.
         self._reset_turn_flags()
 
-        current_response = initial_llm_response
+        current_response = initial_response
         all_tool_calls: list[ToolCall] = []
         all_tool_results: list[ToolResult] = []
         rounds = 0
 
         while current_response.stop_reason == "tool_use" and rounds < self._max_tool_rounds:
-            if not current_response.tool_calls:
+            response_tool_calls = [
+                ToolCall(
+                    tool_name=b.tool_name,
+                    tool_use_id=b.tool_use_id,
+                    input_params=b.input,
+                )
+                for b in current_response.content if b.type == "tool_use"
+            ]
+            response_text = next(
+                (b.text for b in current_response.content if b.type == "text"),
+                None,
+            )
+
+            if not response_tool_calls:
                 logger.warning(
                     "manager_agent.tool_use_no_calls",
                     extra={
@@ -139,15 +164,13 @@ class ManagerAgent:
                 )
                 break
 
-            # Build a single assistant message with all content blocks
-            # (text + tool_use) from the LLM response, then a single user
-            # message with all tool_result blocks.
-            assistant_content: list[dict] = []
-            if current_response.content:
-                assistant_content.append({"type": "text", "text": current_response.content})
-            tool_results_content: list[dict] = []
+            # Build neutral content blocks for the assistant message and tool-result message.
+            assistant_content: list = []
+            if response_text:
+                assistant_content.append(TextBlock(text=response_text))
+            tool_results_content: list[ToolResultBlock] = []
 
-            for tool_call in current_response.tool_calls:
+            for tool_call in response_tool_calls:
                 if tool_call.tool_name == "end_session":
                     # GH-137: internal signal — no external execution, just mark the flag.
                     self._session_ended_flag = True
@@ -170,18 +193,17 @@ class ManagerAgent:
                     )
                     all_tool_calls.append(tool_call)
                     all_tool_results.append(tool_result)
-                    assistant_content.append({
-                        "type": "tool_use",
-                        "id": tool_call.tool_use_id,
-                        "name": tool_call.tool_name,
-                        "input": tool_call.input_params,
-                    })
-                    tool_results_content.append({
-                        "type": "tool_result",
-                        "tool_use_id": tool_call.tool_use_id,
-                        "content": "Session end acknowledged.",
-                    })
+                    assistant_content.append(ToolUseBlock(
+                        tool_use_id=tool_call.tool_use_id,
+                        tool_name=tool_call.tool_name,
+                        input=tool_call.input_params or {},
+                    ))
+                    tool_results_content.append(ToolResultBlock(
+                        tool_use_id=tool_call.tool_use_id,
+                        content="Session end acknowledged.",
+                    ))
                     continue
+
                 if self._registry.get_route(tool_call.tool_name) == "knowledge_engine":
                     tool_result = self._execute_knowledge_retrieval(tool_call, ke_context)
                 else:
@@ -189,12 +211,11 @@ class ManagerAgent:
                 all_tool_calls.append(tool_call)
                 all_tool_results.append(tool_result)
 
-                assistant_content.append({
-                    "type": "tool_use",
-                    "id": tool_call.tool_use_id,
-                    "name": tool_call.tool_name,
-                    "input": tool_call.input_params,
-                })
+                assistant_content.append(ToolUseBlock(
+                    tool_use_id=tool_call.tool_use_id,
+                    tool_name=tool_call.tool_name,
+                    input=tool_call.input_params or {},
+                ))
 
                 result_text = ""
                 if not tool_result.success and tool_result.error:
@@ -202,24 +223,33 @@ class ManagerAgent:
                 else:
                     result_text = tool_result.result_text or str(tool_result.result)
 
-                tool_results_content.append({
-                    "type": "tool_result",
-                    "tool_use_id": tool_call.tool_use_id,
-                    "content": result_text,
-                })
+                tool_results_content.append(ToolResultBlock(
+                    tool_use_id=tool_call.tool_use_id,
+                    content=result_text,
+                ))
 
-            messages.append({"role": "assistant", "content": assistant_content})
-            messages.append({"role": "user", "content": tool_results_content})
+            messages.append(Message(role="assistant", content=assistant_content))
+            messages.append(Message(role="user", content=tool_results_content))
 
             rounds += 1
 
-            follow_up_tools = active_tools if active_tools is not None else self._registry.get_tool_definitions()
-            start = time.time()
-            current_response = self._llm.call(
+            follow_up_tools_legacy = active_tools if active_tools is not None else self._registry.get_tool_definitions()
+            follow_up_tools = [
+                ToolDefinition(
+                    name=t["name"],
+                    description=t.get("description", ""),
+                    input_schema=t.get("input_schema", {}),
+                )
+                for t in follow_up_tools_legacy
+            ]
+
+            request = ChatRequest(
                 messages=messages,
-                tools=follow_up_tools,
                 system=system,
+                tools=follow_up_tools,
             )
+            start = time.time()
+            current_response = self._llm.call(request)
             logger.info(
                 "manager_agent.llm_followup",
                 extra={
@@ -232,7 +262,11 @@ class ManagerAgent:
                 },
             )
 
-        final_text = current_response.content or ""
+        # Final text: first TextBlock from the last response, or "".
+        final_text = next(
+            (b.text for b in current_response.content if b.type == "text"),
+            "",
+        )
         return final_text, all_tool_calls, all_tool_results
 
     @property
@@ -263,28 +297,29 @@ class ManagerAgent:
         guardrail_constraints: dict | None = None,
         user_state_guidance: str | None = None,
         session_end_eval_prompt: str | None = None,
-    ) -> list[dict]:
-        """Build an Anthropic system prompt as a list of content blocks.
+    ) -> SystemPrompt:
+        """Build a neutral SystemPrompt with TextBlock entries for one LLM call.
 
         Assembles three cache-volatility tiers:
 
-        Tier 1 (session-stable — cache_control: ephemeral):
+        Tier 1 (session-stable — cache_hint="session"):
             <persona>             agent_system_prompt
             <channel_rules>       channel_config.system_prompt_suffix
             <session_end_policy>  session_end_eval_prompt
 
-        Tier 2 (state-stable — cache_control: ephemeral):
+        Tier 2 (state-stable — cache_hint="session"):
             <subagent>            subagent_system_prompt
             <user_state_guidance> user_state_guidance
 
-        Tier 3 (dynamic — no cache marker):
+        Tier 3 (dynamic — no cache_hint):
             <channel_context>     channel + detected_language line
             <resumption>          resumption note (first turn after adoption)
             <known_profile>       profile grounding
             <active_guardrails>   guardrail constraints + required disclosures
 
         Empty inputs elide their section entirely; empty tiers are not
-        appended to the output list.
+        appended to the output list. The Anthropic provider translates
+        session-tier blocks into cache_control markers.
 
         Args:
             agent_system_prompt:    Workflow-level persona + cross-cutting safety.
@@ -304,9 +339,9 @@ class ManagerAgent:
                                     departure.
 
         Returns:
-            List of Anthropic content-block dicts ready to pass to
-            ``llm.call(system=...)``. Length 0–3 depending on which tiers are
-            populated.
+            Neutral SystemPrompt with TextBlock entries; the Anthropic provider
+            translates session-tier blocks into cache_control markers.
+            Contains 0–3 blocks depending on which tiers are populated.
         """
 
         def xml(tag: str, body: str | None) -> str:
@@ -390,30 +425,27 @@ class ManagerAgent:
         ])
 
         # ── Assemble blocks ───────────────────────────────────────────
-        blocks: list[dict] = []
+        # cache_hint only when the active provider can honour it. OpenAI's
+        # capability is False today (#304 will flip it). Without this gate,
+        # _validate_request raises UnsupportedFeatureError on every turn for
+        # providers that don't support prompt caching.
+        cache_hint = "session" if self._llm.capabilities.supports_prompt_cache else None
+        blocks: list[TextBlock] = []
         if tier1:
-            blocks.append({
-                "type": "text",
-                "text": tier1,
-                "cache_control": {"type": "ephemeral"},
-            })
+            blocks.append(TextBlock(text=tier1, cache_hint=cache_hint))
         if tier2:
-            blocks.append({
-                "type": "text",
-                "text": tier2,
-                "cache_control": {"type": "ephemeral"},
-            })
+            blocks.append(TextBlock(text=tier2, cache_hint=cache_hint))
         if tier3:
-            blocks.append({"type": "text", "text": tier3})
-        return blocks
+            blocks.append(TextBlock(text=tier3))
+        return SystemPrompt(blocks=blocks)
 
     def build_messages(
         self,
         user_message: str,
         current_question: str,
-    ) -> list[dict]:
+    ) -> list[Message]:
         """
-        Build the Anthropic messages array for one LLM call.
+        Build the neutral messages list for one LLM call.
 
         No RAG chunks injected here — knowledge retrieval is now tool-driven.
         The LLM calls knowledge_retrieval tool when it needs context; chunks
@@ -424,7 +456,7 @@ class ManagerAgent:
             current_question: The last question the agent asked (from session). Empty string if first turn.
 
         Returns:
-            Single-turn Anthropic messages list.
+            Single-turn messages list with one user Message.
         """
         # If user_message is empty (e.g. cold-start resumption), use a placeholder
         # so the LLM has a "turn" to generate the resumption prompt.
@@ -435,7 +467,8 @@ class ManagerAgent:
             content_parts.append(f"[Last question asked: {current_question}]")
         content_parts.append(input_text)
 
-        return [{"role": "user", "content": "\n\n".join(content_parts)}]
+        full_text = "\n\n".join(content_parts)
+        return [Message(role="user", content=[TextBlock(text=full_text)])]
 
     # ------------------------------------------------------------------
     # Private helpers

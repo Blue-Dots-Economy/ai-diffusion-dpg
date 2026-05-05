@@ -182,30 +182,6 @@ class ToolResult:
 
 
 # ---------------------------------------------------------------------------
-# LLM
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class LLMResponse:
-    """
-    Normalised response from the LLM wrapper.
-    Never raises — failures are expressed via stop_reason="error".
-    """
-
-    content: Optional[str]
-    tool_calls: list[ToolCall]        = field(default_factory=list)
-    stop_reason: str                  = "end_turn"   # "end_turn" | "tool_use" | "max_tokens" | "error"
-    model_used: str                   = ""
-    input_tokens: int                 = 0
-    output_tokens: int                = 0
-    # Anthropic prompt-caching telemetry (GH-151 #1). Zero when caching is
-    # disabled or the system prompt is below Anthropic's caching threshold.
-    cache_read_input_tokens: int      = 0
-    cache_creation_input_tokens: int  = 0
-
-
-# ---------------------------------------------------------------------------
 # Turn output
 # ---------------------------------------------------------------------------
 

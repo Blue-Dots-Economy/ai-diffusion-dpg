@@ -2,7 +2,7 @@
 agent_core/tests/test_manager_agent.py
 
 Unit tests for ManagerAgent.
-LLMWrapper, ToolRegistry, ActionGateway, and TrustLayer are all mocked.
+ChatProvider, ToolRegistry, ActionGateway, and TrustLayer are all mocked.
 
 Coverage:
 - Normal: LLM returns end_turn on first call — no tools executed
@@ -18,15 +18,28 @@ from __future__ import annotations
 import pytest
 from unittest.mock import MagicMock
 
+from src.chat_provider.base import ChatProviderBase
+from src.chat_provider.types import (
+    ChatResponse,
+    Message,
+    SystemPrompt,
+    TextBlock,
+    TokenUsage,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 from src.manager_agent import ManagerAgent
-from src.models import LLMResponse, ToolCall, ToolResult
+from src.models import ToolCall, ToolResult
 
 
-def _flat(blocks):
-    """Concatenate all content blocks into a single string for legacy assertions."""
-    if isinstance(blocks, str):
-        return blocks  # tolerate string returns during migration
-    return "\n\n".join(b["text"] for b in blocks)
+def _flat(prompt) -> str:
+    """Concatenate all TextBlock text values into a single string."""
+    if isinstance(prompt, SystemPrompt):
+        return "\n\n".join(b.text for b in prompt.blocks)
+    if isinstance(prompt, str):
+        return prompt
+    # legacy fallback during migration
+    return "\n\n".join(b["text"] for b in prompt)
 
 
 # ---------------------------------------------------------------------------
@@ -35,11 +48,11 @@ def _flat(blocks):
 
 SESSION_ID = "sess_test_001"
 
-MESSAGES = [{"role": "user", "content": "What is my balance?"}]
+MESSAGES = [Message(role="user", content=[TextBlock(text="What is my balance?")])]
 
 
 def _make_manager(
-    llm_responses: list[LLMResponse],
+    llm_responses: list[ChatResponse],
     tool_result: ToolResult = None,
     consent_granted: bool = True,
     requires_consent: bool = False,
@@ -62,7 +75,7 @@ def _make_manager(
     trust.check_consent.return_value = consent_granted
 
     agent = ManagerAgent(
-        llm_wrapper=llm,
+        chat_provider=llm,
         tool_registry=registry,
         action_gateway=gateway,
         knowledge_engine=ke,
@@ -80,46 +93,58 @@ def _tool_call() -> ToolCall:
     )
 
 
-def _tool_response_llm(tool_call: ToolCall) -> LLMResponse:
-    return LLMResponse(
-        content=None,
-        tool_calls=[tool_call],
+def _tool_response(tool_call: ToolCall) -> ChatResponse:
+    return ChatResponse(
+        content=[
+            ToolUseBlock(
+                tool_use_id=tool_call.tool_use_id,
+                tool_name=tool_call.tool_name,
+                input=tool_call.input_params or {},
+            ),
+        ],
         stop_reason="tool_use",
         model_used="claude-primary",
+        usage=TokenUsage(input_tokens=1, output_tokens=1),
     )
 
 
-def _text_llm_response(text: str = "Your balance is 100.") -> LLMResponse:
-    return LLMResponse(
-        content=text,
-        tool_calls=[],
+def _text_response(text: str = "Your balance is 100.") -> ChatResponse:
+    return ChatResponse(
+        content=[TextBlock(text=text)],
         stop_reason="end_turn",
         model_used="claude-primary",
+        usage=TokenUsage(input_tokens=1, output_tokens=1),
     )
+
+
+# Keep legacy aliases so existing test call-sites don't need mass renaming
+_tool_response_llm = _tool_response
+_text_llm_response = _text_response
 
 
 # ---------------------------------------------------------------------------
 # Init validation
 # ---------------------------------------------------------------------------
 
-def test_raises_on_none_llm_wrapper():
+def test_raises_on_none_chat_provider():
     registry = MagicMock()
     gateway = MagicMock()
     ke = MagicMock()
     trust = MagicMock()
-    with pytest.raises(ValueError, match="llm_wrapper must not be None"):
-        ManagerAgent(None, registry, gateway, ke, trust)
+    with pytest.raises(ValueError, match="chat_provider must not be None"):
+        ManagerAgent(chat_provider=None, tool_registry=registry, action_gateway=gateway,
+                     knowledge_engine=ke, trust_layer=trust)
 
 
 def test_raises_on_none_session_id():
-    agent, *_ = _make_manager([_text_llm_response()])
+    agent, *_ = _make_manager([_text_response()])
     with pytest.raises(ValueError, match="session_id must not be None"):
-        agent.run_turn(MESSAGES, None, _text_llm_response())
+        agent.run_turn(MESSAGES, None, _text_response())
 
 
 def test_raises_on_none_initial_response():
-    agent, *_ = _make_manager([_text_llm_response()])
-    with pytest.raises(ValueError, match="initial_llm_response must not be None"):
+    agent, *_ = _make_manager([_text_response()])
+    with pytest.raises(ValueError, match="initial_response must not be None"):
         agent.run_turn(MESSAGES, SESSION_ID, None)
 
 
@@ -184,11 +209,11 @@ def test_tool_calls_list_populated_correctly():
 # ---------------------------------------------------------------------------
 
 def test_tool_use_stop_reason_with_empty_tool_calls_exits_safely():
-    initial = LLMResponse(
-        content=None,
-        tool_calls=[],
+    initial = ChatResponse(
+        content=[],
         stop_reason="tool_use",
         model_used="claude-primary",
+        usage=TokenUsage(input_tokens=1, output_tokens=1),
     )
     agent, llm, *_ = _make_manager([initial])
 
@@ -199,7 +224,12 @@ def test_tool_use_stop_reason_with_empty_tool_calls_exits_safely():
 
 
 def test_llm_error_response_returns_empty_string():
-    initial = LLMResponse(content=None, tool_calls=[], stop_reason="error")
+    initial = ChatResponse(
+        content=[],
+        stop_reason="error",
+        model_used="claude-primary",
+        usage=TokenUsage(input_tokens=1, output_tokens=1),
+    )
     agent, *_ = _make_manager([initial])
 
     text, tool_calls, _ = agent.run_turn(MESSAGES, SESSION_ID, initial)
@@ -230,10 +260,10 @@ def test_consent_denied_returns_consent_required_tool_result():
 
     # LLM should still be called with tool_result containing consent_required error
     llm.call.assert_called_once()
-    call_messages = llm.call.call_args.kwargs["messages"]
-    tool_result_msg = call_messages[-1]
-    assert tool_result_msg["role"] == "user"
-    assert "consent_required" in str(tool_result_msg["content"])
+    request = llm.call.call_args.args[0]   # ChatRequest is a positional arg
+    tool_result_msg = request.messages[-1]
+    assert tool_result_msg.role == "user"
+    assert "consent_required" in str(tool_result_msg.content)
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +302,8 @@ def test_build_system_prompt_includes_profile_fields():
 def test_build_system_prompt_empty_args_returns_empty_list():
     agent = _make_manager_for_prompt()
     result = agent.build_system_prompt("", "", "", "", {})
-    assert result == []
+    assert isinstance(result, SystemPrompt)
+    assert result.blocks == []
 
 
 def test_build_system_prompt_guardrails_in_agent_prompt_included():
@@ -380,6 +411,62 @@ def test_build_system_prompt_none_channel_config_no_suffix():
     assert without == with_none
 
 
+def test_build_system_prompt_omits_cache_hint_when_provider_lacks_caching():
+    """Regression: a provider with supports_prompt_cache=False (e.g. OpenAI today)
+    must not receive cache_hint='session' on tier-1/tier-2 blocks. Otherwise
+    _validate_request raises UnsupportedFeatureError on every Step-8 LLM call.
+    """
+    from src.chat_provider.base import Capabilities
+
+    no_cache_caps = Capabilities(
+        supports_tools=True,
+        supports_streaming=True,
+        supports_prompt_cache=False,
+        supports_image_input=True,
+        supports_audio_input=False,
+        supports_structured_output=True,
+        supports_force_tool_choice=True,
+    )
+    agent, *_ = _make_manager([_text_llm_response()])
+    agent._llm.capabilities = no_cache_caps
+
+    prompt = agent.build_system_prompt(
+        agent_system_prompt="You are helpful.",
+        subagent_system_prompt="Help with jobs.",
+        detected_language="hindi", channel="cli", profile={},
+    )
+    for block in prompt.blocks:
+        assert block.cache_hint is None
+
+
+def test_build_system_prompt_sets_cache_hint_when_provider_supports_caching():
+    """Anthropic-shaped capabilities → tier-1 + tier-2 blocks carry cache_hint='session'."""
+    from src.chat_provider.base import Capabilities
+
+    cache_caps = Capabilities(
+        supports_tools=True,
+        supports_streaming=True,
+        supports_prompt_cache=True,
+        supports_image_input=True,
+        supports_audio_input=False,
+        supports_structured_output=True,
+        supports_force_tool_choice=True,
+    )
+    agent, *_ = _make_manager([_text_llm_response()])
+    agent._llm.capabilities = cache_caps
+
+    prompt = agent.build_system_prompt(
+        agent_system_prompt="You are helpful.",
+        subagent_system_prompt="Help with jobs.",
+        detected_language="hindi", channel="cli", profile={},
+    )
+    # First two blocks (tier 1 + tier 2) carry cache_hint; tier 3 does not.
+    assert prompt.blocks[0].cache_hint == "session"
+    assert prompt.blocks[1].cache_hint == "session"
+    if len(prompt.blocks) >= 3:
+        assert prompt.blocks[2].cache_hint is None
+
+
 def test_build_system_prompt_user_state_guidance_none_no_section():
     """user_state_guidance=None does not inject a section."""
     agent = _make_manager_for_prompt()
@@ -440,7 +527,8 @@ def test_build_messages_returns_single_user_message():
     agent = _make_manager_for_prompt()
     msgs = agent.build_messages("kaam chahiye", "")
     assert len(msgs) == 1
-    assert msgs[0]["role"] == "user"
+    assert msgs[0].role == "user"
+    assert isinstance(msgs[0].content[0], TextBlock)
 
 
 def test_build_messages_empty_user_message_returns_resumption_placeholder():
@@ -448,13 +536,13 @@ def test_build_messages_empty_user_message_returns_resumption_placeholder():
     agent = _make_manager_for_prompt()
     msgs = agent.build_messages("", "")
     assert len(msgs) == 1
-    assert "Resuming" in msgs[0]["content"]
+    assert "Resuming" in msgs[0].content[0].text
 
 
 def test_build_messages_current_question_prepended():
     agent = _make_manager_for_prompt()
     msgs = agent.build_messages("welder", "Aap kaun sa kaam karte hain?")
-    content = msgs[0]["content"]
+    content = msgs[0].content[0].text
     assert "Aap kaun sa kaam karte hain?" in content
     assert "welder" in content
 
@@ -462,7 +550,7 @@ def test_build_messages_current_question_prepended():
 def test_build_messages_no_current_question_no_prefix():
     agent = _make_manager_for_prompt()
     msgs = agent.build_messages("hello", "")
-    content = msgs[0]["content"]
+    content = msgs[0].content[0].text
     assert "Last question asked" not in content
 
 
@@ -596,13 +684,19 @@ def test_end_session_tool_sets_session_ended_and_skips_executor():
         tool_use_id="tu_end_1",
         input_params={"reason": "user_goodbye"},
     )
-    first = LLMResponse(
-        content=None,
-        tool_calls=[end_session_call],
+    first = ChatResponse(
+        content=[
+            ToolUseBlock(
+                tool_use_id="tu_end_1",
+                tool_name="end_session",
+                input={"reason": "user_goodbye"},
+            ),
+        ],
         stop_reason="tool_use",
         model_used="claude-primary",
+        usage=TokenUsage(input_tokens=1, output_tokens=1),
     )
-    final = _text_llm_response("Goodbye.")
+    final = _text_response("Goodbye.")
     agent, llm, _registry, gateway, _trust = _make_manager([first, final])
 
     text, tool_calls, tool_results = agent.run_turn(MESSAGES, SESSION_ID, first)
@@ -638,85 +732,85 @@ def test_run_turn_resets_session_ended_flag_each_turn():
 #   Each populated section is wrapped in a single XML tag; empty inputs elide sections.
 
 
-def test_build_system_prompt_returns_list_of_dicts():
+def test_build_system_prompt_returns_system_prompt():
     agent = _make_manager_for_prompt()
     result = agent.build_system_prompt("Persona.", "Subagent.", "hindi", "cli", {})
-    assert isinstance(result, list)
-    assert all(isinstance(b, dict) and b.get("type") == "text" for b in result)
+    assert isinstance(result, SystemPrompt)
+    assert all(isinstance(b, TextBlock) for b in result.blocks)
 
 
-def test_build_system_prompt_tier1_has_cache_control():
+def test_build_system_prompt_tier1_has_cache_hint():
     agent = _make_manager_for_prompt()
     result = agent.build_system_prompt(
         "Persona text.", "Subagent text.", "hindi", "cli", {},
         channel_config={"system_prompt_suffix": "Voice rules."},
         session_end_eval_prompt="End eval.",
     )
-    tier1 = result[0]
-    assert tier1.get("cache_control") == {"type": "ephemeral"}
-    assert "<persona>" in tier1["text"]
-    assert "Persona text." in tier1["text"]
-    assert "<channel_rules>" in tier1["text"]
-    assert "Voice rules." in tier1["text"]
-    assert "<session_end_policy>" in tier1["text"]
-    assert "End eval." in tier1["text"]
+    tier1 = result.blocks[0]
+    assert tier1.cache_hint == "session"
+    assert "<persona>" in tier1.text
+    assert "Persona text." in tier1.text
+    assert "<channel_rules>" in tier1.text
+    assert "Voice rules." in tier1.text
+    assert "<session_end_policy>" in tier1.text
+    assert "End eval." in tier1.text
 
 
-def test_build_system_prompt_tier2_has_cache_control():
+def test_build_system_prompt_tier2_has_cache_hint():
     agent = _make_manager_for_prompt()
     result = agent.build_system_prompt(
         "Persona.", "Subagent body.", "hindi", "cli", {},
         user_state_guidance="User-state body.",
     )
     # tier 2 is second block when tier 1 is present
-    tier2 = result[1]
-    assert tier2.get("cache_control") == {"type": "ephemeral"}
-    assert "<subagent>" in tier2["text"]
-    assert "Subagent body." in tier2["text"]
-    assert "<user_state_guidance>" in tier2["text"]
-    assert "User-state body." in tier2["text"]
+    tier2 = result.blocks[1]
+    assert tier2.cache_hint == "session"
+    assert "<subagent>" in tier2.text
+    assert "Subagent body." in tier2.text
+    assert "<user_state_guidance>" in tier2.text
+    assert "User-state body." in tier2.text
 
 
-def test_build_system_prompt_tier3_has_no_cache_control():
+def test_build_system_prompt_tier3_has_no_cache_hint():
     agent = _make_manager_for_prompt()
     result = agent.build_system_prompt(
         "P.", "S.", "hindi", "cli", {"name": "Rahul"},
         guardrail_constraints={"prompt_constraints": ["Be honest."]},
     )
     # tier 3 is the last block; it exists because profile is non-empty
-    tier3 = result[-1]
-    assert "cache_control" not in tier3
-    assert "<known_profile>" in tier3["text"]
-    assert "Rahul" in tier3["text"]
-    assert "<active_guardrails>" in tier3["text"]
-    assert "Be honest." in tier3["text"]
+    tier3 = result.blocks[-1]
+    assert tier3.cache_hint is None
+    assert "<known_profile>" in tier3.text
+    assert "Rahul" in tier3.text
+    assert "<active_guardrails>" in tier3.text
+    assert "Be honest." in tier3.text
 
 
 def test_build_system_prompt_elides_empty_sections():
     agent = _make_manager_for_prompt()
     # only persona — no channel suffix, no subagent, no profile, no guardrails
     result = agent.build_system_prompt("Persona only.", "", "", "", {})
-    assert len(result) == 1  # only tier 1 with persona
-    assert "<channel_rules>" not in result[0]["text"]
-    assert "<session_end_policy>" not in result[0]["text"]
+    assert len(result.blocks) == 1  # only tier 1 with persona
+    assert "<channel_rules>" not in result.blocks[0].text
+    assert "<session_end_policy>" not in result.blocks[0].text
 
 
 def test_build_system_prompt_resumption_lives_in_tier3():
     agent = _make_manager_for_prompt()
     result = agent.build_system_prompt("P.", "S.", "hindi", "cli", {}, is_resumption=True)
-    tier3 = result[-1]
-    assert "cache_control" not in tier3
-    assert "<resumption>" in tier3["text"]
+    tier3 = result.blocks[-1]
+    assert tier3.cache_hint is None
+    assert "<resumption>" in tier3.text
 
 
 def test_build_system_prompt_channel_context_lives_in_tier3():
     agent = _make_manager_for_prompt()
     result = agent.build_system_prompt("P.", "S.", "hindi", "cli", {})
-    tier3_text = result[-1]["text"]
-    assert "cache_control" not in result[-1]
-    assert "<channel_context>" in tier3_text
-    assert "cli" in tier3_text
-    assert "hindi" in tier3_text
+    tier3 = result.blocks[-1]
+    assert tier3.cache_hint is None
+    assert "<channel_context>" in tier3.text
+    assert "cli" in tier3.text
+    assert "hindi" in tier3.text
 
 
 def test_build_system_prompt_xml_tags_are_balanced():
@@ -729,7 +823,7 @@ def test_build_system_prompt_xml_tags_are_balanced():
         is_resumption=True,
         guardrail_constraints={"prompt_constraints": ["x"], "required_disclosures": ["y"]},
     )
-    full_text = "\n".join(b["text"] for b in result)
+    full_text = "\n".join(b.text for b in result.blocks)
     for tag in ("persona", "channel_rules", "session_end_policy",
                 "subagent", "user_state_guidance",
                 "channel_context", "resumption", "known_profile", "active_guardrails"):

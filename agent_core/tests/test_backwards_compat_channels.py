@@ -4,8 +4,14 @@ the new top-level `channels:` path must load and instantiate without error.
 """
 import yaml
 from pathlib import Path
+from unittest.mock import MagicMock
 
+from src.chat_provider.base import ChatProviderBase
 from src.preprocessing.nlu_processor import NLUProcessor
+
+
+def _mock_provider():
+    return MagicMock(spec=ChatProviderBase)
 
 
 def _load_merged_domain_config(domain: str) -> dict:
@@ -38,11 +44,11 @@ def test_obsrv_docs_assistant_has_no_legacy_channels():
 
 def test_kkb_nlu_processor_instantiates():
     cfg = _load_merged_domain_config("kkb")
-    p = NLUProcessor(cfg)
+    p = NLUProcessor(cfg, chat_provider=_mock_provider())
     assert p is not None
 
 
 def test_obsrv_docs_assistant_nlu_processor_instantiates():
     cfg = _load_merged_domain_config("obsrv-docs-assistant")
-    p = NLUProcessor(cfg)
+    p = NLUProcessor(cfg, chat_provider=_mock_provider())
     assert p is not None

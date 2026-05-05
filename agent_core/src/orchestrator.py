@@ -28,7 +28,19 @@ from collections.abc import AsyncGenerator
 from typing import Any, Optional
 
 from src.base import AgentCoreBase
-from src.exceptions import ToolUseRequested
+from src.chat_provider import build_chat_provider
+from src.chat_provider.base import ChatProviderBase, ToolUseRequested
+from src.chat_provider.types import (
+    ChatRequest,
+    ChatResponse,
+    Message,
+    OutputFormat,
+    SystemPrompt,
+    TextBlock,
+    ToolDefinition,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 from src.interfaces.action_gateway import ActionGatewayBase
 from src.interfaces.async_.action_gateway import AsyncActionGatewayBase
 from src.interfaces.async_.knowledge_engine import AsyncKnowledgeEngineBase
@@ -42,11 +54,9 @@ from src.interfaces.reach_layer import ReachLayerBase
 from src.interfaces.trust_layer import TrustLayerBase
 from src.http_clients.trust_layer import TrustLayerConstraintError
 from src.preprocessing.language_normalisation import LanguageNormaliser
-from src.llm_wrapper.base import LLMWrapperBase
 from src.manager_agent import ManagerAgent
 from src.models import (
     DoneEvent,
-    LLMResponse,
     NLUResult,
     SentenceEvent,
     SignalEvent,
@@ -70,6 +80,39 @@ logger = logging.getLogger(__name__)
 _HTTPX_INSTRUMENTED = False
 
 
+def _text_of(resp: ChatResponse) -> str | None:
+    """Return the first TextBlock's text from a ChatResponse, or None."""
+    for b in resp.content:
+        if b.type == "text":
+            return b.text
+    return None
+
+
+def _tool_calls_of(resp: ChatResponse) -> list:
+    """Convert ChatResponse tool_use blocks to legacy ToolCall list."""
+    from src.models import ToolCall  # local import avoids circular at module level
+    return [
+        ToolCall(
+            tool_name=b.tool_name,
+            tool_use_id=b.tool_use_id,
+            input_params=b.input,
+        )
+        for b in resp.content if b.type == "tool_use"
+    ]
+
+
+def _legacy_tools_to_neutral(tools: list[dict]) -> list[ToolDefinition]:
+    """Convert legacy Anthropic-shape tool dicts to neutral ToolDefinition."""
+    return [
+        ToolDefinition(
+            name=t["name"],
+            description=t.get("description", ""),
+            input_schema=t.get("input_schema", {}),
+        )
+        for t in (tools or [])
+    ]
+
+
 class AgentCore(AgentCoreBase):
     """
     Stateless orchestrator. Holds references to injected components only —
@@ -80,7 +123,7 @@ class AgentCore(AgentCoreBase):
 
     Args:
         config:           Domain configuration dict.
-        llm_wrapper:      LLM inferencing interface.
+        chat_provider:    ChatProviderBase implementation; the sole LLM caller.
         memory:           Memory Layer interface.
         trust:            Trust Layer interface.
         knowledge_engine: Knowledge Engine interface.
@@ -93,7 +136,7 @@ class AgentCore(AgentCoreBase):
     def __init__(
         self,
         config: dict,
-        llm_wrapper: LLMWrapperBase,
+        chat_provider: ChatProviderBase,
         memory: MemoryLayerBase,
         trust: TrustLayerBase,
         knowledge_engine: KnowledgeEngineBase,
@@ -113,7 +156,7 @@ class AgentCore(AgentCoreBase):
             raise ValueError("workflow must not be None")
 
         self._config = config
-        self._llm = llm_wrapper
+        self._llm = chat_provider
         self._memory = memory
         self._trust = trust
         self._knowledge_engine = knowledge_engine
@@ -196,9 +239,34 @@ class AgentCore(AgentCoreBase):
         self._async_learning = async_learning
 
         # Language Normalisation and NLU run directly in Agent Core.
-        # Stateless — instantiated once, reused across all sessions.
-        self._language_normaliser = LanguageNormaliser()
-        self._nlu_processor = NLUProcessor(self._config)
+        # Each helper gets its own ChatProvider — when the configured
+        # provider+model differs from the primary, a dedicated provider is
+        # built; otherwise the shared primary provider is reused to avoid
+        # extra client connections. Each helper may override BOTH the
+        # provider and the model independently of agent.provider, so a
+        # deployment can run primary chat on OpenAI while keeping NLU on
+        # Anthropic (or vice versa) — see #287 follow-up.
+        agent_block = self._config.get("agent", {}) or {}
+        primary_model = agent_block.get("primary_model", "")
+        primary_provider = agent_block.get("provider", "anthropic")
+
+        self._lang_chat_provider = self._build_helper_provider(
+            block=(self._config.get("preprocessing", {}) or {}).get(
+                "language_normalisation", {}
+            ) or {},
+            primary_model=primary_model,
+            primary_provider=primary_provider,
+        )
+        self._nlu_chat_provider = self._build_helper_provider(
+            block=(self._config.get("preprocessing", {}) or {}).get(
+                "nlu_processor", {}
+            ) or {},
+            primary_model=primary_model,
+            primary_provider=primary_provider,
+        )
+
+        self._language_normaliser = LanguageNormaliser(chat_provider=self._lang_chat_provider)
+        self._nlu_processor = NLUProcessor(self._config, chat_provider=self._nlu_chat_provider)
 
         # User-state model (GH-139) — cached lookup for per-turn guidance injection.
         usm = (self._config or {}).get("conversation", {}).get("user_state_model", {}) or {}
@@ -262,6 +330,36 @@ class AgentCore(AgentCoreBase):
         _tracer = otel_trace.get_tracer(__name__)
         with _tracer.start_as_current_span("orchestrator.turn") as _span:
             return self._process_turn_inner(turn_input, _span)
+
+    def _build_helper_provider(
+        self,
+        *,
+        block: dict,
+        primary_model: str,
+        primary_provider: str,
+    ) -> ChatProviderBase:
+        """Build (or reuse) a ChatProviderBase for a preprocessing helper.
+
+        Each helper (language_normalisation, nlu_processor) may declare its
+        own ``provider`` and ``model`` independently of ``agent.*``. When
+        either differs from the primary, a dedicated ChatProviderBase is
+        constructed with those values; when both match, the main provider
+        (``self._llm``) is reused.
+
+        ProviderConfigError is intentionally not caught — a misconfigured
+        helper override fails loud at startup per spec §6 Layer 2.
+        """
+        helper_provider = block.get("provider") or primary_provider
+        helper_model = block.get("model") or ""
+        if not helper_model:
+            return self._llm
+        if helper_provider == primary_provider and helper_model == primary_model:
+            return self._llm
+        return build_chat_provider({
+            **self._config.get("agent", {}),
+            "provider": helper_provider,
+            "primary_model": helper_model,
+        })
 
     def _process_turn_inner(self, turn_input: TurnInput, _span: otel_trace.Span) -> TurnResult:
         """Execute the instrumented turn body inside the orchestrator.turn span.
@@ -335,20 +433,14 @@ class AgentCore(AgentCoreBase):
         # ── Step 4: Language Normalisation ───────────────────────────
         # Runs before the consent gate so the detected language is available
         # to translate the consent prompt on Turn 1.
-        lang_model = (
-            self._config.get("preprocessing", {})
-            .get("language_normalisation", {})
-            .get("model_override", "haiku")
-        )
         logger.info(
-            "  [STEP 4] Language Normalisation  →  LLM call (model_override=%s)",
-            lang_model,
+            "  [STEP 4] Language Normalisation  →  LLM call (model=%s)",
+            self._lang_chat_provider.get_active_model(),
         )
         t4 = time.time()
         normalised_input, turn_language = self._language_normaliser.normalise(
             raw_input=turn_input.user_message,
             config=self._config,
-            llm=self._llm,
         )
 
         # Determine language preference — lock it in if not already set
@@ -569,11 +661,6 @@ class AgentCore(AgentCoreBase):
 
         # ── Step 5: NLU Processor ─────────────────────────────────────
         allowed_intents = self._workflow.nlu_intent_set.get(current_subagent_id, [])
-        nlu_model = (
-            self._config.get("preprocessing", {})
-            .get("nlu_processor", {})
-            .get("model_override", "haiku")
-        )
 
         # Collect existing profile keys (declared + ad-hoc) so the NLU prompt
         # can instruct the LLM to reuse them instead of inventing synonyms.
@@ -597,10 +684,10 @@ class AgentCore(AgentCoreBase):
                 previous_user_state_id = self._user_state_default
 
         logger.info(
-            "  [STEP 5] NLU Processor  →  LLM call (model_override=%s)"
+            "  [STEP 5] NLU Processor  →  LLM call (model=%s)"
             "  current_subagent_id=%s  allowed_intents=%d  current_question=%r"
             "  existing_profile_keys=%d",
-            nlu_model, current_subagent_id, len(allowed_intents),
+            self._nlu_chat_provider.get_active_model(), current_subagent_id, len(allowed_intents),
             current_question[:60] if current_question else "",
             len(existing_profile_keys),
         )
@@ -609,7 +696,6 @@ class AgentCore(AgentCoreBase):
             normalised_input=normalised_input,
             current_question=current_question,
             current_subagent_id=current_subagent_id,
-            llm=self._llm,
             allowed_intents=allowed_intents,
             existing_profile_keys=existing_profile_keys,
             previous_user_state=previous_user_state_id,
@@ -931,25 +1017,31 @@ class AgentCore(AgentCoreBase):
         # ── Step 8: LLM call #1 with scoped tools ────────────────────
         active_tools = self._workflow.resolve_tools_for(next_subagent_id)
         output_format = next_subagent.output_format
-        primary_model = self._config.get("agent", {}).get("primary_model", "unknown")
+        primary_model = self._llm.get_active_model()
+        primary_provider = self._config.get("agent", {}).get("provider", "anthropic")
         logger.info(
-            "  [STEP 8] LLM Call #1  →  Anthropic API (model=%s)"
+            "  [STEP 8] LLM Call #1  →  provider=%s  model=%s"
             "  tools_available=%d  message_count=%d  output_format=%s",
-            primary_model, len(active_tools), len(messages),
+            primary_provider, primary_model, len(active_tools), len(messages),
             "structured" if output_format else "free-form",
         )
         t8 = time.time()
-        llm_response = self._llm.call(
-            messages=messages,
-            tools=active_tools,
-            system=system,
-            output_format=output_format,
+        neutral_of = (
+            OutputFormat(schema=output_format.get("schema", output_format))
+            if output_format else None
         )
+        request = ChatRequest(
+            messages=messages,
+            system=system,
+            tools=_legacy_tools_to_neutral(active_tools),
+            output_format=neutral_of,
+        )
+        llm_response = self._llm.call(request)
         logger.info(
             "  [STEP 8] LLM Call #1  ✓  stop_reason=%s  model_used=%s"
             "  input_tokens=%d  output_tokens=%d  latency=%dms",
             llm_response.stop_reason, llm_response.model_used,
-            llm_response.input_tokens, llm_response.output_tokens,
+            (llm_response.usage.input_tokens or 0), (llm_response.usage.output_tokens or 0),
             int((time.time() - t8) * 1000),
         )
         if llm_response.stop_reason == "tool_use":
@@ -975,7 +1067,7 @@ class AgentCore(AgentCoreBase):
         final_text, tool_calls, tool_results = self._manager_agent.run_turn(
             messages=messages,
             session_id=session_id,
-            initial_llm_response=llm_response,
+            initial_response=llm_response,
             system=system,
             active_tools=active_tools,
             ke_context=ke_context,
@@ -1584,23 +1676,23 @@ class AgentCore(AgentCoreBase):
     @staticmethod
     def _build_tool_exchange_messages(
         exchanges: list[dict],
-    ) -> list[dict]:
-        """Convert persisted tool exchange records into Anthropic messages.
+    ) -> list[Message]:
+        """Convert persisted tool exchange records into neutral Message objects.
 
-        Each exchange is rendered as one ``assistant`` message containing
-        all of its ``tool_use`` blocks followed by one ``user`` message
-        containing the matching ``tool_result`` blocks, exactly as the
-        Anthropic tool-use protocol requires.
+        Each exchange is rendered as one ``assistant`` Message containing
+        all of its ``ToolUseBlock`` blocks followed by one ``user`` Message
+        containing the matching ``ToolResultBlock`` blocks, exactly as the
+        tool-use protocol requires.
 
         Args:
             exchanges: Ordered list of exchange dicts as persisted by
                 ``_capture_tool_exchange``. Malformed entries are skipped.
 
         Returns:
-            Flat list of ``messages`` dicts ready to prepend to a turn's
-            ``messages`` array.
+            Flat list of ``Message`` objects ready to prepend to a turn's
+            ``messages`` list.
         """
-        out: list[dict] = []
+        out: list[Message] = []
         if not exchanges:
             return out
         for ex in exchanges:
@@ -1610,8 +1702,33 @@ class AgentCore(AgentCoreBase):
             results = ex.get("tool_results") or []
             if not uses or not results:
                 continue
-            out.append({"role": "assistant", "content": list(uses)})
-            out.append({"role": "user", "content": list(results)})
+            use_blocks: list[ToolUseBlock] = []
+            for u in uses:
+                if not isinstance(u, dict):
+                    continue
+                try:
+                    use_blocks.append(ToolUseBlock(
+                        tool_use_id=u.get("id", ""),
+                        tool_name=u.get("name", ""),
+                        input=u.get("input") or {},
+                    ))
+                except Exception:
+                    continue
+            result_blocks: list[ToolResultBlock] = []
+            for r in results:
+                if not isinstance(r, dict):
+                    continue
+                try:
+                    result_blocks.append(ToolResultBlock(
+                        tool_use_id=r.get("tool_use_id", ""),
+                        content=r.get("content", ""),
+                    ))
+                except Exception:
+                    continue
+            if not use_blocks or not result_blocks:
+                continue
+            out.append(Message(role="assistant", content=use_blocks))
+            out.append(Message(role="user", content=result_blocks))
         return out
 
     @staticmethod
@@ -2169,15 +2286,17 @@ class AgentCore(AgentCoreBase):
             return message
         t_translate = time.time()
         try:
-            response = self._llm.call(
-                messages=[{"role": "user", "content": message}],
-                tools=[],
-                system=(
-                    f"Translate the user message to {target_language}. "
-                    "Return ONLY the translated text, no explanation."
-                ),
+            sys_text = (
+                f"Translate the user message to {target_language}. "
+                "Return ONLY the translated text, no explanation."
             )
-            if response.stop_reason != "error" and response.content:
+            request = ChatRequest(
+                messages=[Message(role="user", content=[TextBlock(text=message)])],
+                system=SystemPrompt(blocks=[TextBlock(text=sys_text)]),
+            )
+            response = self._llm.call(request)
+            text_content = _text_of(response)
+            if response.stop_reason != "error" and text_content:
                 logger.info(
                     "orchestrator.consent_translation_success",
                     extra={
@@ -2187,7 +2306,7 @@ class AgentCore(AgentCoreBase):
                         "latency_ms": int((time.time() - t_translate) * 1000),
                     },
                 )
-                return response.content.strip()
+                return text_content.strip()
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "orchestrator.consent_translation_failed",
@@ -2557,23 +2676,21 @@ class AgentCore(AgentCoreBase):
             t45 = time.time()
             yield _stamp(SignalEvent(stage="nlu", status="start"))
 
-            # asyncio.to_thread offloads each sync llm.call onto the default
-            # thread pool so the two Anthropic round-trips overlap in wall
-            # clock. They never race on shared state — each uses its own
-            # LLMResponse.
+            # asyncio.to_thread offloads each sync provider.call() onto the
+            # default thread pool so the two LLM round-trips overlap in wall
+            # clock. They never race on shared state — each receives its own
+            # ChatResponse.
             (normalised_input, turn_language), early_nlu_result = await asyncio.gather(
                 asyncio.to_thread(
                     self._language_normaliser.normalise,
                     turn_input.user_message,
                     self._config,
-                    self._llm,
                 ),
                 asyncio.to_thread(
                     self._nlu_processor.process,
                     turn_input.user_message,
                     current_question,
                     current_subagent_id,
-                    self._llm,
                     pre_allowed_intents,
                     pre_existing_profile_keys,
                     pre_previous_user_state_id,
@@ -2678,7 +2795,6 @@ class AgentCore(AgentCoreBase):
                             pending_msg,
                             current_question,
                             current_subagent_id,
-                            self._llm,
                             pre_allowed_intents,
                             pre_existing_profile_keys,
                             pre_previous_user_state_id,
@@ -3112,7 +3228,8 @@ class AgentCore(AgentCoreBase):
             active_tools = self._workflow.resolve_tools_for(next_subagent_id)
             sentence_index = 0
             token_buffer = ""
-            primary_model = self._config.get("agent", {}).get("primary_model", "unknown")
+            primary_model = self._llm.get_active_model()
+            primary_provider = self._config.get("agent", {}).get("provider", "anthropic")
 
             # GH-196 — Trust /check/output batcher (config-driven).
             _batch_cfg = (
@@ -3128,9 +3245,9 @@ class AgentCore(AgentCoreBase):
                 enabled=bool(_batch_cfg.get("enabled", True)),
             )
             logger.info(
-                "  [STEP 8] LLM Stream Call #1  →  Anthropic API (model=%s)"
+                "  [STEP 8] LLM Stream Call #1  →  provider=%s  model=%s"
                 "  tools_available=%d  message_count=%d",
-                primary_model, len(active_tools), len(messages),
+                primary_provider, primary_model, len(active_tools), len(messages),
             )
             t8 = time.time()
 
@@ -3138,13 +3255,13 @@ class AgentCore(AgentCoreBase):
             channel_max_tokens = channel_config.get("max_tokens")
 
             try:
-                async for token in self._llm.stream_call(
+                request = ChatRequest(
                     messages=messages,
-                    tools=active_tools if active_tools else None,
                     system=system,
-                    max_tokens=channel_max_tokens,
-                    abort_event=abort_event,
-                ):
+                    tools=_legacy_tools_to_neutral(active_tools) if active_tools else [],
+                    max_tokens=channel_max_tokens or 4096,
+                )
+                async for token in self._llm.stream(request, abort_event=abort_event):
                     if _aborted():
                         return
                     token_buffer += token
@@ -3187,8 +3304,15 @@ class AgentCore(AgentCoreBase):
             except ToolUseRequested as e:
                 # ── Step 9: Tool use ───────────────────────────────────
                 was_tool_used = True
-                all_tool_calls = e.tool_calls
-                tool_names = [tc.tool_name for tc in e.tool_calls]
+                all_tool_calls = [
+                    ToolCall(
+                        tool_name=tu.tool_name,
+                        tool_use_id=tu.tool_use_id,
+                        input_params=tu.input,
+                    )
+                    for tu in e.tool_calls
+                ]
+                tool_names = [tc.tool_name for tc in all_tool_calls]
                 logger.info(
                     "  [STEP 8] LLM Stream Call #1  ✓  stop_reason=tool_use  tools=%s  latency=%dms",
                     tool_names, int((time.time() - t8) * 1000),
@@ -3212,7 +3336,7 @@ class AgentCore(AgentCoreBase):
                     "normalised_input": normalised_input,
                     "detected_language": detected_language,
                 }
-                for tc in e.tool_calls:
+                for tc in all_tool_calls:
                     # GH-191: ``end_session`` is an internal signal. Mirror the
                     # sync path (manager_agent.run_turn): never dispatch it to
                     # Action Gateway; just flip the flag so the DoneEvent below
@@ -3267,24 +3391,41 @@ class AgentCore(AgentCoreBase):
                     tool_names, int((time.time() - t9) * 1000),
                 )
                 logger.info(
-                    "  [STEP 8] LLM Stream Call #2  →  Anthropic API (model=%s)"
+                    "  [STEP 8] LLM Stream Call #2  →  provider=%s  model=%s"
                     "  message_count=%d",
-                    primary_model, len(messages) + 2,
+                    primary_provider, primary_model, len(messages) + 2,
                 )
                 t8b = time.time()
 
                 # Resume streaming with tool results — loop handles multi-step tool chains
                 _MAX_TOOL_ROUNDS: int = self._config.get("agent", {}).get("max_tool_rounds", 3)
-                _current_tool_calls = e.tool_calls
+                _current_tool_calls = all_tool_calls
                 _current_tool_results = tool_results_for_llm
                 _tool_round = 1
 
                 while True:
-                    messages.append({"role": "assistant", "content": [
-                        {"type": "tool_use", "id": tc.tool_use_id, "name": tc.tool_name, "input": tc.input_params}
-                        for tc in _current_tool_calls
-                    ]})
-                    messages.append({"role": "user", "content": _current_tool_results})
+                    messages.append(Message(
+                        role="assistant",
+                        content=[
+                            ToolUseBlock(
+                                tool_use_id=tc.tool_use_id,
+                                tool_name=tc.tool_name,
+                                input=tc.input_params or {},
+                            )
+                            for tc in _current_tool_calls
+                        ],
+                    ))
+                    messages.append(Message(
+                        role="user",
+                        content=[
+                            ToolResultBlock(
+                                tool_use_id=tr["tool_use_id"],
+                                content=tr.get("content", ""),
+                                is_error=tr.get("is_error", False),
+                            )
+                            for tr in _current_tool_results
+                        ],
+                    ))
 
                     # #193: snapshot this round so it can be replayed next turn.
                     _ex = self._capture_tool_exchange(
@@ -3296,13 +3437,13 @@ class AgentCore(AgentCoreBase):
                     if _aborted():
                         return
                     try:
-                        async for token in self._llm.stream_call(
+                        request = ChatRequest(
                             messages=messages,
-                            tools=active_tools if active_tools else None,
                             system=system,
-                            max_tokens=channel_max_tokens,
-                            abort_event=abort_event,
-                        ):
+                            tools=_legacy_tools_to_neutral(active_tools) if active_tools else [],
+                            max_tokens=channel_max_tokens or 4096,
+                        )
+                        async for token in self._llm.stream(request, abort_event=abort_event):
                             if _aborted():
                                 return
                             token_buffer += token
@@ -3341,14 +3482,22 @@ class AgentCore(AgentCoreBase):
                             )
                             break
 
-                        _nested_tool_names = [tc.tool_name for tc in nested_e.tool_calls]
+                        _nested_tool_calls = [
+                            ToolCall(
+                                tool_name=tu.tool_name,
+                                tool_use_id=tu.tool_use_id,
+                                input_params=tu.input,
+                            )
+                            for tu in nested_e.tool_calls
+                        ]
+                        _nested_tool_names = [tc.tool_name for tc in _nested_tool_calls]
                         logger.info(
                             "  [STEP 9] Tool-Use Loop (round %d)  →  executing tools=%s",
                             _tool_round, _nested_tool_names,
                         )
                         yield _stamp(SignalEvent(stage="tool_start", status="start"))
                         _nested_results = []
-                        for tc in nested_e.tool_calls:
+                        for tc in _nested_tool_calls:
                             # GH-191: intercept end_session in nested rounds too.
                             if tc.tool_name == "end_session":
                                 session_ended = True
@@ -3392,7 +3541,7 @@ class AgentCore(AgentCoreBase):
                             "  [STEP 9] Tool-Use Loop (round %d)  ✓  tools=%s",
                             _tool_round, _nested_tool_names,
                         )
-                        _current_tool_calls = nested_e.tool_calls
+                        _current_tool_calls = _nested_tool_calls
                         _current_tool_results = _nested_results
 
                 model_used = self._llm.get_active_model()
