@@ -19,7 +19,61 @@ from dev_kit.schemas.domain import (
     reach_layer as rl_domain,
     trust_layer as tl_domain,
 )
+from dev_kit.schemas.enums import (
+    ANTHROPIC_MODELS,
+    EMBEDDING_PROVIDERS,
+    LANGUAGES,
+    OPENAI_MODELS,
+    RAYA_VOICES,
+)
 from dev_kit.schemas.validation import get_valid_sections
+
+
+_RAYA_LANGUAGE_DISPLAY_NAMES = {
+    "mr": "Marathi", "hi": "Hindi", "te": "Telugu", "kn": "Kannada",
+    "bn": "Bengali", "as": "Assamese", "gu": "Gujarati",
+    "en-in": "English India", "en-us": "English US",
+    "ml": "Malayalam", "ne": "Nepali", "ta": "Tamil",
+}
+
+
+def _bullet_list(values: list[str]) -> str:
+    """Render a list of allowed enum values as backtick-quoted markdown bullets.
+
+    Generated dynamically from enums_config.yaml so adding or removing a value
+    in YAML automatically updates what the LLM sees.
+
+    Args:
+        values: List of valid string values for an open enum
+            (e.g. ANTHROPIC_MODELS, OPENAI_MODELS, LANGUAGES,
+            EMBEDDING_PROVIDERS).
+
+    Returns:
+        Markdown bullets, one per value.
+    """
+    return "\n".join(f"- `{v}`" for v in values)
+
+
+def _raya_voice_table() -> str:
+    """Render the Raya voice lookup table from enums_config.yaml.
+
+    Generated dynamically so adding a voice to enums_config.yaml automatically
+    surfaces it in the language-phase prompt.
+
+    Returns:
+        Markdown table with one row per voice (language code + display name,
+        voice name, voice_id).
+    """
+    rows = [
+        f"| {v['language']} ({_RAYA_LANGUAGE_DISPLAY_NAMES.get(v['language'], v['language'])}) "
+        f"| {v['name']} | `{v['voice_id']}` |"
+        for v in RAYA_VOICES
+    ]
+    return (
+        "| Language | Voice Name | voice_id |\n"
+        "|----------|-----------|----------|\n"
+        + "\n".join(rows)
+    )
 
 
 def _schema_source(*classes) -> str:
@@ -210,7 +264,9 @@ def get_phase_addition(phase: str, available_tools: list[str] | None = None) -> 
             "speak raw numbers, dates, or Roman-script Hindi; you must specify rules "
             "the LLM follows before responses reach TTS.\n\n"
             "### What to include (from guide §2.10 Language & TTS Rules)\n"
-            "- Primary and fallback Claude model IDs (agent.primary_model, fallback_model)\n"
+            "- LLM provider (`anthropic` or `openai`) and primary + fallback model IDs "
+            "(agent.provider, agent.primary_model, agent.fallback_model). Both models "
+            "must belong to the chosen provider.\n"
             "- Default language + supported languages for language normalisation\n"
             "- NLU classifier model + intents/entities/sentiment classes\n"
             "- Conversation-level messages (blocked_message, consent_message, etc.) in "
@@ -226,8 +282,9 @@ def get_phase_addition(phase: str, available_tools: list[str] | None = None) -> 
             "the LLM takes >1.5 s to produce the first sentence (e.g. \"एक सेकंड\", "
             "\"one moment\"). Empty string disables.\n\n"
             "### How the dev-kit captures this\n"
-            "- Set models + consent: `update_config(block=agent_core, section=agent, "
-            "values={primary_model: ..., fallback_model: ..., ask_for_consent: ..., "
+            "- Set provider + models + consent: `update_config(block=agent_core, "
+            "section=agent, values={provider: 'anthropic' | 'openai', "
+            "primary_model: ..., fallback_model: ..., ask_for_consent: ..., "
             "consent_prompt: ...})`\n"
             "- Set language normalisation: `section=preprocessing.language_normalisation`\n"
             "- Set NLU: `section=preprocessing.nlu_processor`\n"
@@ -269,27 +326,52 @@ def get_phase_addition(phase: str, available_tools: list[str] | None = None) -> 
             "system_prompt_suffix covered in Group 3 below. turn_assembler defaults: "
             "silence_ms: 600, max_wait_ms: 8000 (good for Hindi/regional voice cadence).\n\n"
             "Do NOT skip any channel that is in selected_channels, and always include web.\n\n"
-            "### Available Claude model IDs (use ONLY these)\n"
-            "| Model | API ID | Best for | Price (input/output per MTok) |\n"
-            "|-------|--------|----------|-------------------------------|\n"
-            "| Haiku 4.5 | `claude-haiku-4-5-20251001` | Fast, cost-effective | $1 / $5 |\n"
-            "| Sonnet 4.6 | `claude-sonnet-4-6` | Speed + intelligence | $3 / $15 |\n"
-            "| Opus 4.7 | `claude-opus-4-7` | Most capable, complex reasoning | $5 / $25 |\n\n"
-            "**Model selection guidance — choose based on use case:**\n"
-            "- Simple Q&A / FAQ bots → Haiku primary, Sonnet fallback\n"
-            "- Multi-step reasoning, complex domains → Sonnet primary, Haiku fallback\n"
-            "- High-stakes / critical accuracy → Opus primary, Sonnet fallback\n"
-            "Use your judgement based on the agent's domain and complexity.\n\n"
-            "⚠️ Primary and fallback MUST be different models. The fallback exists to handle "
-            "failures on the primary — using the same model for both defeats the purpose. "
-            "NEVER set both to the same model unless the user explicitly requests it.\n"
-            "⚠️ NEVER suggest old model IDs like claude-3-5-sonnet, claude-3-haiku, etc.\n\n"
+            "### LLM provider — ASK THE USER FIRST\n"
+            "Two providers are supported. Ask which one the user wants BEFORE "
+            "recommending specific models, because the model list and pricing differ.\n\n"
+            "| Provider | Strengths | Trade-offs |\n"
+            "|----------|-----------|------------|\n"
+            "| `anthropic` | Strong long-context reasoning, Claude family | Premium pricing |\n"
+            "| `openai` | Lower cost on smaller tasks, GPT family | Shorter context on some models |\n\n"
+            "After the user picks a provider, recommend `primary_model` and "
+            "`fallback_model` from that provider's allowed list only. The schema's "
+            "`models_must_match_provider` validator rejects cross-provider configs.\n\n"
+            "### Anthropic models (use ONLY when provider=anthropic)\n"
+            + _bullet_list(ANTHROPIC_MODELS) + "\n\n"
+            "### OpenAI models (use ONLY when provider=openai)\n"
+            + _bullet_list(OPENAI_MODELS) + "\n\n"
+            "**Model selection guidance:**\n"
+            "Use your training knowledge of each model's capability tier, context "
+            "window, and price to pick `primary_model` and `fallback_model` based on "
+            "the agent's use case:\n"
+            "- Simple Q&A / FAQ bots → smaller/cheaper model primary, mid-tier fallback\n"
+            "- Multi-step reasoning, complex domains → mid-tier primary, smaller fallback\n"
+            "- High-stakes / critical accuracy → top-tier primary, mid-tier fallback\n\n"
+            "⚠️ Primary and fallback MUST be different models AND from the same provider. "
+            "The fallback exists to handle primary failures — using the same model for both "
+            "defeats the purpose, and mixing providers is rejected by the schema.\n"
+            "⚠️ Pick model IDs ONLY from the lists above. Any other ID — older Claude "
+            "versions, GPT-3.5, GPT-4-turbo, hypothetical future models — will be rejected "
+            "by the schema's `ChatModelField` validator.\n\n"
+            "### Valid languages (use ONLY these for default_language and supported_languages)\n"
+            + _bullet_list(LANGUAGES) + "\n\n"
+            "These are the only values the schema's `LanguageField` accepts. Pick the "
+            "subset that matches the user's customer base. Any other value — including "
+            "language codes (`en`, `hi-IN`) or display names (`English`, `Hindi`) — will "
+            "be rejected.\n\n"
             "### Conversation style for this phase\n"
-            "Split this phase into **2 groups** and present each as a block with defaults:\n\n"
-            "**Group 1 — Models & Language setup:**\n"
-            "Present the primary model, fallback model, consent setting, default language, "
-            "and supported languages together. Use the model table above to suggest "
-            "appropriate defaults. Ask the user to confirm or edit.\n\n"
+            "Walk through the groups below in order, presenting each as a single block "
+            "with defaults rather than asking field-by-field:\n\n"
+            "**Group 1A — Provider choice (ASK FIRST, before models):**\n"
+            "Ask the user: 'Which LLM provider do you want — `anthropic` (Claude) or "
+            "`openai` (GPT)? Both are supported; the available models and pricing differ.'\n"
+            "Wait for the user's answer before proposing any model IDs. Default lean: "
+            "anthropic, but always ask explicitly.\n\n"
+            "**Group 1B — Models & Language setup:**\n"
+            "Once the provider is chosen, present `primary_model`, `fallback_model`, "
+            "consent setting, default language, and supported languages together. Use the "
+            "matching provider's model table above to suggest defaults. Ask the user to "
+            "confirm or edit.\n\n"
             "**Group 2 — Conversation messages (all at once):**\n"
             "Present ALL conversation messages together with suggested defaults based on "
             "the agent's domain. Include: consent_message, consent_declined_message, "
@@ -383,7 +465,12 @@ def get_phase_addition(phase: str, available_tools: list[str] | None = None) -> 
             "  Use the Slug shown in the '## Project' section. Do NOT ask the user.\n\n"
             "**CRITICAL — exact section paths to use, no substitutions:**\n"
             "- RAG config: section=`knowledge.blocks.static_knowledge_base`\n"
-            "  Keys: `collection_name`, `top_k`, `similarity_threshold`, `default_doc_type`, `intent_filters` (dict)\n"
+            "  Keys: `collection_name`, `top_k`, `similarity_threshold`, `default_doc_type`, "
+            "`embedding_provider`, `intent_filters` (dict)\n"
+            "  Valid `embedding_provider` values (schema's `EmbeddingProviderField`):\n"
+            + _bullet_list(EMBEDDING_PROVIDERS) + "\n"
+            "  Default `chroma_default` works for most deployments — only ask the user "
+            "if they have a specific reason to override.\n"
             "  ❌ NEVER write `vector_store` — this key does not exist in the schema.\n"
             "  ❌ NEVER write `sources` — documents are uploaded post-deploy, not configured here.\n"
             "  ❌ NEVER write `conversation`, `persona`, or `language_instruction` — these do not exist in knowledge_engine.\n"
@@ -1025,20 +1112,7 @@ def get_phase_addition(phase: str, available_tools: list[str] | None = None) -> 
             "which language the bot should speak in, then auto-select the correct voice "
             "from the table below. Present all settings as one block for confirmation.\n\n"
             "**Raya voice lookup table (use ONLY these voice IDs):**\n"
-            "| Language | Voice Name | voice_id |\n"
-            "|----------|-----------|----------|\n"
-            "| mr (Marathi) | Sneha | `c849b31b-b0ba-488f-b97d-3fd12f2656f4` |\n"
-            "| hi (Hindi) | Priyanka | `d6a002d0-230c-49b1-a137-b8a7d564b1ae` |\n"
-            "| te (Telugu) | Tanvi | `25a7c7d9-57b3-488a-a880-33edf6642902` |\n"
-            "| kn (Kannada) | Meera | `6a897d02-83ab-43ea-b17f-a8cc2d96a279` |\n"
-            "| bn (Bengali) | Aishwarya | `a1b2c3d4-e5f6-4789-a012-b3c4d5e6f789` |\n"
-            "| as (Assamese) | Priti | `d4e5f6a7-b8c9-4a01-d345-e6f7a8b9c012` |\n"
-            "| gu (Gujarati) | Jignesh | `9a01bcde-2345-6789-abc1-123456abcdef` |\n"
-            "| en-in (English India) | Nayra | `0f24fb66-e495-4781-9e84-1224aa7dacde` |\n"
-            "| en-us (English US) | Solene | `90534e23-8bcb-4b1c-a16b-b9a4be646321` |\n"
-            "| ml (Malayalam) | Devika | `57a1e849-8e0f-43ee-adab-b4b74a9d79e1` |\n"
-            "| ne (Nepali) | Ritu | `5d6c7ee4-2563-4dab-9c8a-c3269e22cba9` |\n"
-            "| ta (Tamil) | Abirami | `fed6231c-7e35-4fbe-bbca-254f566e5dd5` |\n\n"
+            + _raya_voice_table() + "\n\n"
             "**How to configure voice:**\n"
             "1. Ask: 'Which language should the bot speak in over voice?' Show the "
             "available languages from the table above.\n"
