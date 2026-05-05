@@ -2,12 +2,48 @@
 dev-kit/dev_kit/agent/prompts/phases.py
 
 Phase-specific additions to the system prompt. Each phase injects the
-relevant YAML template sections so Claude sees the exact valid field names
-and fills in values only — never inventing or renaming keys.
+relevant Pydantic section schemas as source code so Claude sees real
+constraints (ge=1, le=20, model_validator, enums) directly in its
+context — never inventing or renaming keys.
 """
 from __future__ import annotations
 
+import inspect
+
+from dev_kit.schemas.domain import (
+    action_gateway as ag_domain,
+    agent_core as ac_domain,
+    knowledge_engine as ke_domain,
+    memory_layer as ml_domain,
+    observability_layer as obs_domain,
+    reach_layer as rl_domain,
+    trust_layer as tl_domain,
+)
 from dev_kit.schemas.loader import get_valid_sections, load_template_text
+
+
+def _schema_source(*classes) -> str:
+    """Render multiple Pydantic classes as a single code block.
+
+    Used in phase prompts to inject real schema source (with constraints,
+    validators, enums) instead of blank YAML templates.
+
+    Args:
+        *classes: Pydantic model classes to render.
+
+    Returns:
+        Concatenated Python source for each class, separated by blank lines.
+    """
+    return "\n\n".join(inspect.getsource(c) for c in classes)
+
+
+_SCHEMA_PREAMBLE = (
+    "### Schema for sections you will configure in this phase\n\n"
+    "All update_config calls must produce values that conform to these "
+    "Pydantic models. Constraints (ge, le, enum, model_validator) are "
+    "enforced by the tool handler — the call will fail if you violate "
+    "them.\n\n"
+)
 
 _WORKFLOW_EXAMPLE = """
 Example subagent (condensed from KKB reference):
@@ -294,14 +330,18 @@ def get_phase_addition(phase: str, available_tools: list[str] | None = None) -> 
             "signal to the context graph?'\n"
             "- `user_state_confidence_threshold` (GH-139) — set only for "
             "Conversational agents during the user_state phase; default 0.4 works.\n\n"
-            "Use EXACTLY the key names shown in the template below:\n\n"
-            "```yaml\n"
-            + _extract_template_sections(
-                "agent_core",
-                ["agent", "preprocessing", "conversation", "entity_to_profile_field",
-                 "hitl", "observability", "channels"],
+            + _SCHEMA_PREAMBLE
+            + "```python\n"
+            + _schema_source(
+                ac_domain.AgentSection,
+                ac_domain.LanguageNormalisationSection,
+                ac_domain.NLUProcessorSection,
+                ac_domain.PreprocessingSection,
+                ac_domain.ConversationSection,
+                ac_domain.ChannelsSection,
+                ac_domain.HitlSection,
             )
-            + "```\n\n"
+            + "\n```\n\n"
             "➡️ When models, language normalisation, NLU, conversation messages, "
             "entity_to_profile_field, hitl.response_message, and (if voice is in "
             "selected_channels) agent_core.channels.voice.tts_rules + "
@@ -424,10 +464,16 @@ def get_phase_addition(phase: str, available_tools: list[str] | None = None) -> 
             "- Document file sizes or formats\n"
             "- Document filenames or paths\n"
             "- Where documents are stored (handled by Azure question separately)\n\n"
-            "Use EXACTLY the key names shown in the template below:\n\n"
-            "```yaml\n"
-            + load_template_text("knowledge_engine")
-            + "```\n\n"
+            + _SCHEMA_PREAMBLE
+            + "```python\n"
+            + _schema_source(
+                ke_domain.StaticKnowledgeBaseSection,
+                ke_domain.KnowledgeBlocksSection,
+                ke_domain.KnowledgeSection,
+                ac_domain.InternalConnectorDef,
+                ac_domain.ConnectorsSection,
+            )
+            + "\n```\n\n"
             "➡️ When collection_name, intent_filters, and default_doc_type are set "
             "(and declare_azure_storage called if applicable), call `set_phase('memory')`."
         )
@@ -476,10 +522,18 @@ def get_phase_addition(phase: str, available_tools: list[str] | None = None) -> 
             "'Here is the suggested memory configuration — do these look good, or would "
             "you like to change any?' Only ask about re-engagement triggers separately if "
             "the agent type requires outbound follow-up.\n\n"
-            "Use EXACTLY the key names shown in the template below:\n\n"
-            "```yaml\n"
-            + load_template_text("memory_layer")
-            + "```\n\n"
+            + _SCHEMA_PREAMBLE
+            + "```python\n"
+            + _schema_source(
+                ml_domain.SessionFieldDefinition,
+                ml_domain.SessionStateConfig,
+                ml_domain.GraphConfig,
+                ml_domain.PersistentStateConfig,
+                ml_domain.StateSection,
+                ml_domain.UserDataPersistenceSection,
+                ml_domain.ReengagementSection,
+            )
+            + "\n```\n\n"
             "➡️ When session schema, persistent graph, user_data_persistence, and "
             "reengagement (if needed) are set, call `set_phase('user_state')`."
         )
@@ -509,9 +563,13 @@ def get_phase_addition(phase: str, available_tools: list[str] | None = None) -> 
             "- Sticky fallback on low-confidence classification is a DPG-specific "
             "mechanism (GH-139) — the guide describes the state model but not how "
             "confidence-thresholded classification handles ambiguous turns.\n\n"
-            "```yaml\n"
-            + _extract_template_sections("agent_core", ["conversation"])
-            + "```\n\n"
+            + _SCHEMA_PREAMBLE
+            + "```python\n"
+            + _schema_source(
+                ac_domain.UserStateDefinition,
+                ac_domain.UserStateModel,
+            )
+            + "\n```\n\n"
             "➡️ When the model is declared, call `set_phase('trust')`."
         )
 
@@ -580,9 +638,13 @@ def get_phase_addition(phase: str, available_tools: list[str] | None = None) -> 
             "**Block 2 (Conversational only) — Dignity check:**\n"
             "Present the 5 canonical dignity check questions together and ask for "
             "confirmation. Do NOT ask about each question individually.\n\n"
-            "```yaml\n"
-            + load_template_text("trust_layer")
-            + "```\n\n"
+            + _SCHEMA_PREAMBLE
+            + "```python\n"
+            + _schema_source(
+                tl_domain.TrustSection,
+                tl_domain.DignityCheckSection,
+            )
+            + "\n```\n\n"
             "➡️ Before calling `set_phase('tools')`, run this self-check:\n"
             "1. Content rules and blocked phrases are non-empty.\n"
             "2. For Conversational agents: `dignity_check.enabled: true`, `questions` has "
@@ -682,10 +744,19 @@ def get_phase_addition(phase: str, available_tools: list[str] | None = None) -> 
             "MCP tools (`add_mcp_tool`) do NOT create connectors — tool schemas come from\n"
             "the server at runtime. Subagents reference MCP tools by their namespaced names\n"
             "(e.g. 'obsrv_docs__searchDocumentation'), not the bare adapter id.\n\n"
-            "Use EXACTLY the key names shown in the template below:\n\n"
-            "```yaml\n"
-            + _extract_template_sections("agent_core", ["connectors"])
-            + "```\n\n"
+            + _SCHEMA_PREAMBLE
+            + "```python\n"
+            + _schema_source(
+                ag_domain.ToolDefinition,
+                ag_domain.EndpointDefinition,
+                ag_domain.ParamDefinition,
+                ag_domain.AuthConfig,
+                ag_domain.ToolsSection,
+                ac_domain.InvocationRules,
+                ac_domain.ConnectorDef,
+                ac_domain.ConnectorsSection,
+            )
+            + "\n```\n\n"
             "➡️ When all external tools are declared with all six invocation_rules "
             "fields populated, call `set_phase('workflow')`."
         )
@@ -837,9 +908,14 @@ def get_phase_addition(phase: str, available_tools: list[str] | None = None) -> 
             "- The guide describes 5 'opening branches' as a single prompt-level "
             "conditional; we represent them via the subagent graph + `opening_phrase` "
             "field, because our subagent abstraction is richer than the guide assumes.\n\n"
-            "```yaml\n"
-            + _extract_template_sections("agent_core", ["agent_workflow"])
-            + "```"
+            + _SCHEMA_PREAMBLE
+            + "```python\n"
+            + _schema_source(
+                ac_domain.RoutingRule,
+                ac_domain.SubAgent,
+                ac_domain.AgentWorkflowSection,
+            )
+            + "\n```"
             + connector_note
             + "\n\n➡️ Before calling `set_phase('observability')`, run this self-check:\n"
             "1. `workflow_id`, `version`, `agent_system_prompt` are all non-empty.\n"
@@ -880,9 +956,15 @@ def get_phase_addition(phase: str, available_tools: list[str] | None = None) -> 
             "domain-appropriate outcome lifecycle states and quality signals based on "
             "the use case, then ask: 'Here is the suggested observability setup — do "
             "these look good, or would you like to change any?'\n\n"
-            "```yaml\n"
-            + load_template_text("observability_layer")
-            + "```\n\n"
+            + _SCHEMA_PREAMBLE
+            + "```python\n"
+            + _schema_source(
+                obs_domain.LifecycleState,
+                obs_domain.MetricDefinition,
+                obs_domain.OutcomesConfig,
+                obs_domain.ObservabilitySection,
+            )
+            + "\n```\n\n"
             "➡️ When outcomes and quality signals are set, call `set_phase('reach')`."
         )
 
@@ -968,9 +1050,18 @@ def get_phase_addition(phase: str, available_tools: list[str] | None = None) -> 
             "4. Ask for confirmation.\n\n"
             "⚠️ NEVER invent voice IDs. Schema validation will reject any ID not in "
             "the table above.\n\n"
-            "```yaml\n"
-            + load_template_text("reach_layer")
-            + "```\n\n"
+            + _SCHEMA_PREAMBLE
+            + "```python\n"
+            + _schema_source(
+                rl_domain.WebUiConfig,
+                rl_domain.WebChannelSection,
+                rl_domain.RayaVoiceConfig,
+                rl_domain.VoiceAgentCoreClient,
+                rl_domain.VoiceChannelSection,
+                rl_domain.ChannelsSection,
+                rl_domain.ReachLayerSection,
+            )
+            + "\n```\n\n"
             "➡️ Before calling `set_phase('review')`, run this self-check:\n"
             "1. `agent_core.channels.web` is configured (always required).\n"
             "2. `agent_core.channels.<X>` is configured for every channel in selected_channels.\n"
