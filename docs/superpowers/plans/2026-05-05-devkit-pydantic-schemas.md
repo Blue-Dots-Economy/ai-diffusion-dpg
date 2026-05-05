@@ -14,6 +14,56 @@
 
 ---
 
+## Plan update notes (2026-05-05 — post-merge of multi-provider work)
+
+After this plan was first written, main was merged in carrying the multi-provider chat redesign (`anthropic` + `openai`). The spec was updated accordingly. **Where this plan and the spec disagree, the spec wins.** Key changes affecting implementation:
+
+1. **Enums are config-driven** (`dev-kit/dev_kit/schemas/enums_config.yaml`) for: `providers`, `anthropic_models`, `openai_models`, `languages`, `raya_voices`, `embedding_providers`. Adding a new model is a YAML edit, not a Python edit.
+
+2. **New closed enums** (Python `Enum` classes in `enums.py`): `SpecialHandler`, `AuthType` (no `oauth2` — adapter doesn't support it), `HttpMethod`, `ParamSource`, `ParamType`, `McpTransport` (no `stdio` — adapter doesn't support it), `ReengagementChannel`, `RoutingOperator`, `InternalRoute`. Every value verified against runtime code.
+
+3. **`AgentSection`** gets `provider: ProviderField`, `features: FeaturesSection` (with `prompt_cache`/`streaming`/`image_input`), and a `models_must_match_provider` cross-field validator. `primary_model`/`fallback_model` become `ChatModelField` (Annotated[str, AfterValidator]).
+
+4. **`LanguageNormalisationSection`** and **`NLUProcessorSection`** get optional `provider`. Per-helper validation (option A) — section validates its own provider+model standalone.
+
+5. **`SubAgent.special_handler`** → `Optional[SpecialHandler]` enum.
+
+6. **`RoutingCondition`** is a NEW typed model with `operator: RoutingOperator`. **`RoutingRule.conditions`** changes from `list[dict]` → `list[RoutingCondition]`.
+
+7. **`InternalConnectorDef.route`** → `InternalRoute` enum (only valid value is `knowledge_engine`).
+
+8. **`ParamDefinition`** gets `items: Optional[dict]`. `source` → `ParamSource` enum, `type` → `ParamType` enum.
+
+9. **`EndpointDefinition.method`** → `HttpMethod` enum.
+
+10. **`AuthConfig.type`** → `AuthType` enum (no oauth2).
+
+11. **`ToolDefinition.transport`** → `Optional[McpTransport]` (no stdio).
+
+12. **`ReengagementTrigger.channel`** → `Optional[ReengagementChannel]` enum.
+
+13. **`StaticKnowledgeBaseSection.embedding_provider`** → `EmbeddingProviderField`.
+
+14. **`RayaVoiceConfig`**: `stt_language`/`tts_language` → `RayaLanguageField`, `voice_id` → `RayaVoiceIdField`. Adds `voice_id_matches_language` cross-field validator (the chosen voice's language must match stt/tts language).
+
+15. **DPG `AgentDpgDefaults`** gets `provider: ProviderField` and `features: FeaturesDpg`.
+
+16. **Phase prompts** inject **two** things now: Pydantic source AND a textual list of allowed values for fields backed by `Annotated[str, AfterValidator(...)]` (since the source code doesn't show the list). See spec section 8.3 for the helper.
+
+**Implementation impact per task:**
+- **Task 1** — substantially rewritten below. Loads from `enums_config.yaml`, adds 9 new closed enums.
+- **Task 2** — `embedding_provider` uses `EmbeddingProviderField` (was `Literal[...]`).
+- **Task 5** — `AuthConfig`/`ParamDefinition`/`EndpointDefinition`/`ToolDefinition` use new enums; `ParamDefinition` gets `items`. Drop `oauth2` from auth tests, drop `stdio` from transport tests.
+- **Task 6** — `ReengagementTrigger.channel` uses `ReengagementChannel` enum.
+- **Task 7** — `RayaVoiceConfig` uses `RayaVoiceIdField`/`RayaLanguageField`; tests need a `voice_id_matches_language` test case.
+- **Task 8** — `AgentSection` adds `provider`/`features`/`models_must_match_provider` validator. Helpers add optional `provider`. `SubAgent.special_handler` enum. `RoutingCondition` typed model. `InternalConnectorDef.route` enum.
+- **Task 9** — `AgentDpgDefaults` adds `provider`/`features`. DPG schema tests cover both new fields.
+- **Task 16** — phase prompt injection now also calls `_format_allowed_values(...)` per phase.
+
+Where the inline test code below references types that no longer exist (e.g., `ClaudeModel`), **read the spec for the current type and adjust the test accordingly**. The TDD discipline (write failing test, run, implement, run, commit) is unchanged.
+
+---
+
 ## File structure
 
 Files to create:
@@ -87,12 +137,13 @@ dev-kit/dev_kit/schema.py                       ← replaced by dev_kit/schemas/
 
 ## Tasks
 
-### Task 1: Bootstrap — directory structure, shared enums, and __init__ files
+### Task 1: Bootstrap — directory structure, config-driven enums, closed enums
 
 **Files:**
 - Create: `dev-kit/dev_kit/schemas/__init__.py`
 - Create: `dev-kit/dev_kit/schemas/domain/__init__.py`
 - Create: `dev-kit/dev_kit/schemas/dpg/__init__.py`
+- Create: `dev-kit/dev_kit/schemas/enums_config.yaml`
 - Create: `dev-kit/dev_kit/schemas/enums.py`
 - Create: `dev-kit/tests/schemas/__init__.py`
 - Create: `dev-kit/tests/schemas/test_enums.py`
@@ -102,78 +153,166 @@ dev-kit/dev_kit/schema.py                       ← replaced by dev_kit/schemas/
 Create `dev-kit/tests/schemas/test_enums.py`:
 
 ```python
-"""Tests for shared enum types used across domain and DPG schemas."""
+"""Tests for shared enums (closed code Enums + config-driven open enums)."""
+import pytest
+from pydantic import BaseModel, ValidationError
+
 from dev_kit.schemas.enums import (
-    AgentType,
-    ClaudeModel,
-    DignityFailAction,
-    InstrumentType,
-    LanguageCode,
-    MetricsAttribute,
-    PersistentBackend,
-    RayaVoiceId,
-    SessionFieldType,
-    StorageMode,
-    ToolCategory,
-    ToolType,
-    TrustQueueBackend,
+    # Closed code enums
+    AgentType, AuthType, DignityFailAction, HttpMethod, InstrumentType,
+    InternalRoute, McpTransport, ParamSource, ParamType, PersistentBackend,
+    ReengagementChannel, RoutingOperator, SessionFieldType, SpecialHandler,
+    StorageMode, ToolCategory, ToolType, TrustQueueBackend,
+    # Config-driven values
+    ANTHROPIC_MODELS, OPENAI_MODELS, ALL_CHAT_MODELS, LANGUAGES,
+    PROVIDERS, RAYA_VOICES, RAYA_VOICE_IDS, RAYA_LANGUAGES,
+    RAYA_VOICE_LANGUAGE, EMBEDDING_PROVIDERS,
+    # Annotated field types
+    ChatModelField, EmbeddingProviderField, LanguageField,
+    ProviderField, RayaLanguageField, RayaVoiceIdField,
 )
 
+
+# -- Closed code enums (verified against runtime code) -----------------------
 
 def test_agent_type_values():
     assert {a.value for a in AgentType} == {
         "transactional", "informational", "agentic", "conversational"
     }
 
-
 def test_trust_queue_backend_excludes_memory():
-    """'memory' is intentionally excluded — runtime crashes on it (#GH issue)."""
-    assert "memory" not in {b.value for b in TrustQueueBackend}
     assert {b.value for b in TrustQueueBackend} == {"log", "redis", "webhook"}
 
-
-def test_claude_model_literal_has_three_models():
-    """Sanity check: Haiku, Sonnet, Opus."""
-    from typing import get_args
-    models = get_args(ClaudeModel)
-    assert "claude-haiku-4-5-20251001" in models
-    assert "claude-sonnet-4-6" in models
-    assert "claude-opus-4-7" in models
-    assert len(models) == 3
-
-
-def test_raya_voice_id_has_twelve_voices():
-    """Twelve language → voice mappings per spec section 6.1."""
-    from typing import get_args
-    assert len(get_args(RayaVoiceId)) == 12
-
+def test_dignity_fail_action_values():
+    assert {a.value for a in DignityFailAction} == {"rewrite", "flag", "skip"}
 
 def test_tool_type_values():
     assert {t.value for t in ToolType} == {"rest_api", "mcp"}
 
-
 def test_tool_category_values():
     assert {c.value for c in ToolCategory} == {"read", "write", "identity"}
-
 
 def test_storage_mode_values():
     assert {m.value for m in StorageMode} == {"saved", "anonymous"}
 
-
 def test_persistent_backend_values():
     assert {b.value for b in PersistentBackend} == {"memgraph", "neo4j"}
-
 
 def test_session_field_type_values():
     assert {t.value for t in SessionFieldType} == {"enum", "string", "int", "list"}
 
-
 def test_instrument_type_values():
     assert {i.value for i in InstrumentType} == {"counter", "gauge", "histogram"}
 
+def test_special_handler_values():
+    assert {h.value for h in SpecialHandler} == {"hitl", "whatsapp_handoff"}
 
-def test_dignity_fail_action_values():
-    assert {a.value for a in DignityFailAction} == {"rewrite", "flag", "skip"}
+def test_auth_type_excludes_oauth2():
+    """oauth2 deliberately excluded — adapter has no oauth2 branch."""
+    assert "oauth2" not in {a.value for a in AuthType}
+    assert {a.value for a in AuthType} == {"none", "api_key", "bearer"}
+
+def test_http_method_values():
+    assert {m.value for m in HttpMethod} == {"GET", "POST", "PUT", "DELETE", "PATCH"}
+
+def test_param_source_values():
+    assert {s.value for s in ParamSource} == {"agent", "static"}
+
+def test_param_type_values():
+    assert {p.value for p in ParamType} == {
+        "string", "integer", "number", "boolean", "array", "object"
+    }
+
+def test_mcp_transport_excludes_stdio():
+    """stdio not in _SUPPORTED_TRANSPORTS in mcp.py — must be excluded."""
+    assert "stdio" not in {t.value for t in McpTransport}
+    assert {t.value for t in McpTransport} == {"sse", "streamable_http"}
+
+def test_reengagement_channel_values():
+    assert {c.value for c in ReengagementChannel} == {"outbound_call", "whatsapp", "sms"}
+
+def test_routing_operator_values():
+    assert {o.value for o in RoutingOperator} == {"eq", "not_eq", "gt", "lt", "in"}
+
+def test_internal_route_values():
+    assert {r.value for r in InternalRoute} == {"knowledge_engine"}
+
+
+# -- Config-driven values (loaded from enums_config.yaml) --------------------
+
+def test_providers_loaded_from_config():
+    assert "anthropic" in PROVIDERS
+    assert "openai" in PROVIDERS
+
+def test_anthropic_models_present():
+    """Default config ships with at least Haiku, Sonnet, Opus."""
+    assert "claude-haiku-4-5-20251001" in ANTHROPIC_MODELS
+    assert "claude-sonnet-4-6" in ANTHROPIC_MODELS
+    assert "claude-opus-4-7" in ANTHROPIC_MODELS
+
+def test_openai_models_present():
+    assert any(m.startswith("gpt-") for m in OPENAI_MODELS)
+
+def test_all_chat_models_is_union():
+    assert set(ALL_CHAT_MODELS) == set(ANTHROPIC_MODELS) | set(OPENAI_MODELS)
+
+def test_raya_voices_have_required_fields():
+    for v in RAYA_VOICES:
+        assert "voice_id" in v and "language" in v and "name" in v
+
+def test_raya_voice_language_map_consistent():
+    """Every voice_id maps to its declared language."""
+    for v in RAYA_VOICES:
+        assert RAYA_VOICE_LANGUAGE[v["voice_id"]] == v["language"]
+
+def test_raya_languages_derived_from_voices():
+    """RAYA_LANGUAGES = unique languages across all voices, sorted."""
+    assert RAYA_LANGUAGES == sorted({v["language"] for v in RAYA_VOICES})
+
+
+# -- Annotated field types reject invalid values -----------------------------
+
+def _wrap(t):
+    """Helper: build a model with one field of the given annotated type."""
+    class M(BaseModel):
+        x: t
+    return M
+
+def test_provider_field_rejects_unknown():
+    M = _wrap(ProviderField)
+    M(x="anthropic")
+    with pytest.raises(ValidationError):
+        M(x="cohere")
+
+def test_chat_model_field_rejects_unknown():
+    M = _wrap(ChatModelField)
+    M(x=ANTHROPIC_MODELS[0])
+    with pytest.raises(ValidationError):
+        M(x="not-a-real-model")
+
+def test_language_field_rejects_unknown():
+    M = _wrap(LanguageField)
+    M(x="english")
+    with pytest.raises(ValidationError):
+        M(x="klingon")
+
+def test_raya_voice_id_field_rejects_unknown():
+    M = _wrap(RayaVoiceIdField)
+    M(x=RAYA_VOICE_IDS[0])
+    with pytest.raises(ValidationError):
+        M(x="not-a-uuid")
+
+def test_raya_language_field_rejects_unknown():
+    M = _wrap(RayaLanguageField)
+    M(x=RAYA_LANGUAGES[0])
+    with pytest.raises(ValidationError):
+        M(x="es")  # Spanish not in raya_voices
+
+def test_embedding_provider_field_rejects_unknown():
+    M = _wrap(EmbeddingProviderField)
+    M(x="chroma_default")
+    with pytest.raises(ValidationError):
+        M(x="not-an-embedding")
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -192,52 +331,119 @@ touch dev-kit/dev_kit/schemas/dpg/__init__.py
 touch dev-kit/tests/schemas/__init__.py
 ```
 
-- [ ] **Step 4: Implement `dev-kit/dev_kit/schemas/enums.py`**
+- [ ] **Step 4: Create `dev-kit/dev_kit/schemas/enums_config.yaml`**
+
+```yaml
+# Edit this file to add a new model, voice, or language without code changes.
+# enums.py reads it at import time.
+providers:
+  - anthropic
+  - openai
+
+# Both providers' chat_provider implementations accept any string and pass it
+# to the API. The list below is "models we have tested or document as valid."
+anthropic_models:
+  - claude-haiku-4-5-20251001
+  - claude-sonnet-4-6
+  - claude-opus-4-7
+  - claude-sonnet-4-5-20250929   # used by KKB NLU helper
+
+openai_models:
+  - gpt-4o-2024-08-06            # documented in openai_provider.py
+  - gpt-4.1-2025-04-14           # referenced in kkb domain config
+  - gpt-5.4-mini-2026-03-17      # referenced in kkb domain config
+
+languages:
+  - english
+  - hindi
+  - marathi
+  - telugu
+  - kannada
+  - bengali
+  - assamese
+  - gujarati
+  - malayalam
+  - nepali
+  - tamil
+
+# Each voice tagged with its language. RAYA_LANGUAGES is derived at module load.
+raya_voices:
+  - {voice_id: "c849b31b-b0ba-488f-b97d-3fd12f2656f4", language: "mr",    name: "Sneha"}
+  - {voice_id: "d6a002d0-230c-49b1-a137-b8a7d564b1ae", language: "hi",    name: "Priyanka"}
+  - {voice_id: "25a7c7d9-57b3-488a-a880-33edf6642902", language: "te",    name: "Tanvi"}
+  - {voice_id: "6a897d02-83ab-43ea-b17f-a8cc2d96a279", language: "kn",    name: "Meera"}
+  - {voice_id: "a1b2c3d4-e5f6-4789-a012-b3c4d5e6f789", language: "bn",    name: "Aishwarya"}
+  - {voice_id: "d4e5f6a7-b8c9-4a01-d345-e6f7a8b9c012", language: "as",    name: "Priti"}
+  - {voice_id: "9a01bcde-2345-6789-abc1-123456abcdef", language: "gu",    name: "Jignesh"}
+  - {voice_id: "0f24fb66-e495-4781-9e84-1224aa7dacde", language: "en-in", name: "Nayra"}
+  - {voice_id: "90534e23-8bcb-4b1c-a16b-b9a4be646321", language: "en-us", name: "Solene"}
+  - {voice_id: "57a1e849-8e0f-43ee-adab-b4b74a9d79e1", language: "ml",    name: "Devika"}
+  - {voice_id: "5d6c7ee4-2563-4dab-9c8a-c3269e22cba9", language: "ne",    name: "Ritu"}
+  - {voice_id: "fed6231c-7e35-4fbe-bbca-254f566e5dd5", language: "ta",    name: "Abirami"}
+
+embedding_providers:
+  - chroma_default
+  - openai
+  - sentence_transformers
+```
+
+- [ ] **Step 5: Implement `dev-kit/dev_kit/schemas/enums.py`**
 
 ```python
-"""Shared enum types used by domain and DPG schemas.
+"""Shared enum types loaded from enums_config.yaml + closed code enums.
 
-Centralised here so both schema sets reference the same Literal/Enum.
-Changing a value here propagates to every schema that uses it.
+Open enums (provider/model/language/voice) are loaded from YAML so a new
+model or voice can be added without touching Python. Closed enums are
+declared as Python Enum classes — every value verified against runtime code.
 """
 from __future__ import annotations
 from enum import Enum
-from typing import Literal
+from pathlib import Path
+from typing import Annotated
+
+import yaml
+from pydantic import AfterValidator
+
+# ---------------------------------------------------------------------------
+# Load open-enum values from config
+# ---------------------------------------------------------------------------
+
+_CFG_PATH = Path(__file__).parent / "enums_config.yaml"
+_CFG: dict = yaml.safe_load(_CFG_PATH.read_text())
+
+PROVIDERS: list[str] = _CFG["providers"]
+ANTHROPIC_MODELS: list[str] = _CFG["anthropic_models"]
+OPENAI_MODELS: list[str] = _CFG["openai_models"]
+ALL_CHAT_MODELS: list[str] = ANTHROPIC_MODELS + OPENAI_MODELS
+
+LANGUAGES: list[str] = _CFG["languages"]
+
+RAYA_VOICES: list[dict] = _CFG["raya_voices"]
+RAYA_VOICE_IDS: list[str] = [v["voice_id"] for v in RAYA_VOICES]
+RAYA_VOICE_LANGUAGE: dict[str, str] = {v["voice_id"]: v["language"] for v in RAYA_VOICES}
+RAYA_LANGUAGES: list[str] = sorted({v["language"] for v in RAYA_VOICES})
+
+EMBEDDING_PROVIDERS: list[str] = _CFG["embedding_providers"]
+
+
+def _make_validator(allowed: list[str], label: str):
+    def check(v: str) -> str:
+        if v not in allowed:
+            raise ValueError(f"{label} must be one of {allowed}, got {v!r}")
+        return v
+    return check
+
+
+ProviderField           = Annotated[str, AfterValidator(_make_validator(PROVIDERS, "provider"))]
+ChatModelField          = Annotated[str, AfterValidator(_make_validator(ALL_CHAT_MODELS, "model"))]
+LanguageField           = Annotated[str, AfterValidator(_make_validator(LANGUAGES, "language"))]
+RayaVoiceIdField        = Annotated[str, AfterValidator(_make_validator(RAYA_VOICE_IDS, "voice_id"))]
+RayaLanguageField       = Annotated[str, AfterValidator(_make_validator(RAYA_LANGUAGES, "raya_language"))]
+EmbeddingProviderField  = Annotated[str, AfterValidator(_make_validator(EMBEDDING_PROVIDERS, "embedding_provider"))]
 
 
 # ---------------------------------------------------------------------------
-# Literal types — for Pydantic Field with enum constraint
-# ---------------------------------------------------------------------------
-
-ClaudeModel = Literal[
-    "claude-haiku-4-5-20251001",
-    "claude-sonnet-4-6",
-    "claude-opus-4-7",
-]
-
-RayaVoiceId = Literal[
-    "c849b31b-b0ba-488f-b97d-3fd12f2656f4",   # Sneha (mr)
-    "d6a002d0-230c-49b1-a137-b8a7d564b1ae",   # Priyanka (hi)
-    "25a7c7d9-57b3-488a-a880-33edf6642902",   # Tanvi (te)
-    "6a897d02-83ab-43ea-b17f-a8cc2d96a279",   # Meera (kn)
-    "a1b2c3d4-e5f6-4789-a012-b3c4d5e6f789",   # Aishwarya (bn)
-    "d4e5f6a7-b8c9-4a01-d345-e6f7a8b9c012",   # Priti (as)
-    "9a01bcde-2345-6789-abc1-123456abcdef",   # Jignesh (gu)
-    "0f24fb66-e495-4781-9e84-1224aa7dacde",   # Nayra (en-in)
-    "90534e23-8bcb-4b1c-a16b-b9a4be646321",   # Solene (en-us)
-    "57a1e849-8e0f-43ee-adab-b4b74a9d79e1",   # Devika (ml)
-    "5d6c7ee4-2563-4dab-9c8a-c3269e22cba9",   # Ritu (ne)
-    "fed6231c-7e35-4fbe-bbca-254f566e5dd5",   # Abirami (ta)
-]
-
-LanguageCode = Literal[
-    "english", "hindi", "marathi", "telugu", "kannada", "bengali",
-    "assamese", "gujarati", "malayalam", "nepali", "tamil",
-]
-
-
-# ---------------------------------------------------------------------------
-# Enum classes — for re-use as Field types
+# Closed code enums — every value verified against runtime code support.
 # ---------------------------------------------------------------------------
 
 class AgentType(str, Enum):
@@ -248,7 +454,7 @@ class AgentType(str, Enum):
 
 
 class TrustQueueBackend(str, Enum):
-    """Valid HiTL queue backends. 'memory' is intentionally excluded — runtime crashes on it."""
+    """'memory' intentionally excluded — runtime crashes on it."""
     log = "log"
     redis = "redis"
     webhook = "webhook"
@@ -284,7 +490,7 @@ class PersistentBackend(str, Enum):
 class SessionFieldType(str, Enum):
     enum = "enum"
     string = "string"
-    int_ = "int"   # name suffixed because `int` is a keyword
+    int_ = "int"
     list_ = "list"
 
 
@@ -294,29 +500,84 @@ class InstrumentType(str, Enum):
     histogram = "histogram"
 
 
-class MetricsAttribute(str, Enum):
-    """Common metric attribute keys (extensible; not enforced as exhaustive)."""
-    intent = "intent"
-    state = "state"
+class SpecialHandler(str, Enum):
+    """Wired in agent_core/src/orchestrator.py."""
+    hitl = "hitl"
+    whatsapp_handoff = "whatsapp_handoff"
+
+
+class AuthType(str, Enum):
+    """'oauth2' excluded — adapter has no oauth2 branch in rest_api.py."""
+    none = "none"
+    api_key = "api_key"
+    bearer = "bearer"
+
+
+class HttpMethod(str, Enum):
+    GET = "GET"
+    POST = "POST"
+    PUT = "PUT"
+    DELETE = "DELETE"
+    PATCH = "PATCH"
+
+
+class ParamSource(str, Enum):
+    agent = "agent"
+    static = "static"
+
+
+class ParamType(str, Enum):
+    string = "string"
+    integer = "integer"
+    number = "number"
+    boolean = "boolean"
+    array = "array"
+    object = "object"
+
+
+class McpTransport(str, Enum):
+    """'stdio' excluded — _SUPPORTED_TRANSPORTS in mcp.py is {sse, streamable_http}."""
+    sse = "sse"
+    streamable_http = "streamable_http"
+
+
+class ReengagementChannel(str, Enum):
+    """Schema-declared; runtime impl deferred (GH-168)."""
+    outbound_call = "outbound_call"
+    whatsapp = "whatsapp"
+    sms = "sms"
+
+
+class RoutingOperator(str, Enum):
+    eq = "eq"
+    not_eq = "not_eq"
+    gt = "gt"
+    lt = "lt"
+    in_ = "in"
+
+
+class InternalRoute(str, Enum):
+    knowledge_engine = "knowledge_engine"
 ```
 
-- [ ] **Step 5: Run test to verify pass**
+- [ ] **Step 6: Run test to verify pass**
 
 ```
 cd dev-kit && uv run pytest tests/schemas/test_enums.py -v
 ```
-Expected: 10 passed
+Expected: ~37 passed
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add dev-kit/dev_kit/schemas/__init__.py \
         dev-kit/dev_kit/schemas/domain/__init__.py \
         dev-kit/dev_kit/schemas/dpg/__init__.py \
+        dev-kit/dev_kit/schemas/enums_config.yaml \
         dev-kit/dev_kit/schemas/enums.py \
         dev-kit/tests/schemas/__init__.py \
         dev-kit/tests/schemas/test_enums.py
-git commit -m "feat(devkit): add schemas package with shared enums"
+git commit -m "feat(devkit): add schemas package with config-driven and closed enums"
 ```
 
 ---

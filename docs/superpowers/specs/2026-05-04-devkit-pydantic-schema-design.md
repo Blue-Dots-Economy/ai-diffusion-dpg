@@ -180,72 +180,179 @@ This determines which section schemas are injected into which phase's system pro
 >
 > All Literal lists (model IDs, voice IDs, language codes) are factored into `dev-kit/dev_kit/schemas/enums.py` and imported.
 
-### 6.1 `dev-kit/dev_kit/schemas/enums.py`
+### 6.1 Enum strategy — config-driven open enums + code-defined closed enums
+
+Two categories:
+
+**Open enums** — values change over time (new models, new voices, new languages). These are loaded at module import from `dev-kit/dev_kit/schemas/enums_config.yaml`. Adding a new value is a config edit, no Python change.
+
+**Closed enums** — system-defined sets that change only with code changes (tool types, HTTP methods, routing operators). These are regular `class Enum` declarations.
+
+Every value listed below has been verified against the runtime code — no value is included unless the corresponding feature is implemented (e.g., `oauth2` is excluded from `AuthType` because `rest_api.py` only handles `api_key` and `bearer`; `stdio` is excluded from `McpTransport` because the MCP adapter rejects it).
+
+#### `dev-kit/dev_kit/schemas/enums_config.yaml`
+
+```yaml
+# Edit this file to add a new model, voice, or language without code changes.
+# enums.py reads it at import time.
+providers:
+  - anthropic
+  - openai
+
+# Both providers' chat_provider implementations accept any string and pass it
+# to the API. The list below is "models we have tested or document as valid."
+# Add a new model here when it's verified to work.
+anthropic_models:
+  - claude-haiku-4-5-20251001
+  - claude-sonnet-4-6
+  - claude-opus-4-7
+  - claude-sonnet-4-5-20250929   # used by KKB NLU helper
+
+openai_models:
+  - gpt-4o-2024-08-06            # documented in openai_provider.py
+  - gpt-4.1-2025-04-14           # referenced in kkb domain config
+  - gpt-5.4-mini-2026-03-17      # referenced in kkb domain config
+
+# Languages used in language_normalisation. Free to extend.
+languages:
+  - english
+  - hindi
+  - marathi
+  - telugu
+  - kannada
+  - bengali
+  - assamese
+  - gujarati
+  - malayalam
+  - nepali
+  - tamil
+
+# Each Raya voice is tagged with its language. RAYA_LANGUAGES is derived from
+# this list at module load — there is no separate raya_languages list.
+raya_voices:
+  - {voice_id: "c849b31b-b0ba-488f-b97d-3fd12f2656f4", language: "mr",    name: "Sneha"}
+  - {voice_id: "d6a002d0-230c-49b1-a137-b8a7d564b1ae", language: "hi",    name: "Priyanka"}
+  - {voice_id: "25a7c7d9-57b3-488a-a880-33edf6642902", language: "te",    name: "Tanvi"}
+  - {voice_id: "6a897d02-83ab-43ea-b17f-a8cc2d96a279", language: "kn",    name: "Meera"}
+  - {voice_id: "a1b2c3d4-e5f6-4789-a012-b3c4d5e6f789", language: "bn",    name: "Aishwarya"}
+  - {voice_id: "d4e5f6a7-b8c9-4a01-d345-e6f7a8b9c012", language: "as",    name: "Priti"}
+  - {voice_id: "9a01bcde-2345-6789-abc1-123456abcdef", language: "gu",    name: "Jignesh"}
+  - {voice_id: "0f24fb66-e495-4781-9e84-1224aa7dacde", language: "en-in", name: "Nayra"}
+  - {voice_id: "90534e23-8bcb-4b1c-a16b-b9a4be646321", language: "en-us", name: "Solene"}
+  - {voice_id: "57a1e849-8e0f-43ee-adab-b4b74a9d79e1", language: "ml",    name: "Devika"}
+  - {voice_id: "5d6c7ee4-2563-4dab-9c8a-c3269e22cba9", language: "ne",    name: "Ritu"}
+  - {voice_id: "fed6231c-7e35-4fbe-bbca-254f566e5dd5", language: "ta",    name: "Abirami"}
+
+embedding_providers:
+  - chroma_default
+  - openai
+  - sentence_transformers
+```
+
+#### `dev-kit/dev_kit/schemas/enums.py`
 
 ```python
+"""Shared enum types loaded from enums_config.yaml + closed code enums.
+
+Open enums (provider/model/language/voice) are loaded from YAML so a new
+model or voice can be added without touching Python. Closed enums are
+declared as Python Enum classes.
+"""
+from __future__ import annotations
 from enum import Enum
-from typing import Literal
+from pathlib import Path
+from typing import Annotated
 
-ClaudeModel = Literal[
-    "claude-haiku-4-5-20251001",
-    "claude-sonnet-4-6",
-    "claude-opus-4-7",
-]
+import yaml
+from pydantic import AfterValidator
 
-# 12 Raya voices, fixed list — see phases.py reach phase
-RayaVoiceId = Literal[
-    "c849b31b-b0ba-488f-b97d-3fd12f2656f4",   # Sneha (mr)
-    "d6a002d0-230c-49b1-a137-b8a7d564b1ae",   # Priyanka (hi)
-    "25a7c7d9-57b3-488a-a880-33edf6642902",   # Tanvi (te)
-    "6a897d02-83ab-43ea-b17f-a8cc2d96a279",   # Meera (kn)
-    "a1b2c3d4-e5f6-4789-a012-b3c4d5e6f789",   # Aishwarya (bn)
-    "d4e5f6a7-b8c9-4a01-d345-e6f7a8b9c012",   # Priti (as)
-    "9a01bcde-2345-6789-abc1-123456abcdef",   # Jignesh (gu)
-    "0f24fb66-e495-4781-9e84-1224aa7dacde",   # Nayra (en-in)
-    "90534e23-8bcb-4b1c-a16b-b9a4be646321",   # Solene (en-us)
-    "57a1e849-8e0f-43ee-adab-b4b74a9d79e1",   # Devika (ml)
-    "5d6c7ee4-2563-4dab-9c8a-c3269e22cba9",   # Ritu (ne)
-    "fed6231c-7e35-4fbe-bbca-254f566e5dd5",   # Abirami (ta)
-]
+# ---------------------------------------------------------------------------
+# Load open-enum values from config
+# ---------------------------------------------------------------------------
 
-LanguageCode = Literal[
-    "english", "hindi", "marathi", "telugu", "kannada", "bengali",
-    "assamese", "gujarati", "malayalam", "nepali", "tamil",
-]
+_CFG_PATH = Path(__file__).parent / "enums_config.yaml"
+_CFG: dict = yaml.safe_load(_CFG_PATH.read_text())
+
+PROVIDERS: list[str] = _CFG["providers"]
+ANTHROPIC_MODELS: list[str] = _CFG["anthropic_models"]
+OPENAI_MODELS: list[str] = _CFG["openai_models"]
+ALL_CHAT_MODELS: list[str] = ANTHROPIC_MODELS + OPENAI_MODELS
+
+LANGUAGES: list[str] = _CFG["languages"]
+
+RAYA_VOICES: list[dict] = _CFG["raya_voices"]
+RAYA_VOICE_IDS: list[str] = [v["voice_id"] for v in RAYA_VOICES]
+RAYA_VOICE_LANGUAGE: dict[str, str] = {v["voice_id"]: v["language"] for v in RAYA_VOICES}
+RAYA_LANGUAGES: list[str] = sorted({v["language"] for v in RAYA_VOICES})
+
+EMBEDDING_PROVIDERS: list[str] = _CFG["embedding_providers"]
+
+
+def _make_validator(allowed: list[str], label: str):
+    def check(v: str) -> str:
+        if v not in allowed:
+            raise ValueError(f"{label} must be one of {allowed}, got {v!r}")
+        return v
+    return check
+
+
+# Pydantic-friendly field types (plain str + AfterValidator).
+# When a value is needed against the runtime list, it's checked against the
+# YAML-loaded list at validate time — no class regeneration required.
+ProviderField           = Annotated[str, AfterValidator(_make_validator(PROVIDERS, "provider"))]
+ChatModelField          = Annotated[str, AfterValidator(_make_validator(ALL_CHAT_MODELS, "model"))]
+LanguageField           = Annotated[str, AfterValidator(_make_validator(LANGUAGES, "language"))]
+RayaVoiceIdField        = Annotated[str, AfterValidator(_make_validator(RAYA_VOICE_IDS, "voice_id"))]
+RayaLanguageField       = Annotated[str, AfterValidator(_make_validator(RAYA_LANGUAGES, "raya_language"))]
+EmbeddingProviderField  = Annotated[str, AfterValidator(_make_validator(EMBEDDING_PROVIDERS, "embedding_provider"))]
+
+
+# ---------------------------------------------------------------------------
+# Closed code enums — system-defined sets that change only with code changes.
+# Every value below has been verified against runtime code support.
+# ---------------------------------------------------------------------------
 
 class AgentType(str, Enum):
+    """Agent classification driven by the tier-phase decision tree."""
     transactional = "transactional"
     informational = "informational"
     agentic = "agentic"
     conversational = "conversational"
 
+
 class TrustQueueBackend(str, Enum):
+    """Valid HiTL queue backends. 'memory' intentionally excluded — runtime crashes on it."""
     log = "log"
     redis = "redis"
     webhook = "webhook"
-    # NB: 'memory' is intentionally excluded — runtime crashes on it
+
 
 class DignityFailAction(str, Enum):
     rewrite = "rewrite"
     flag = "flag"
     skip = "skip"
 
+
 class ToolType(str, Enum):
     rest_api = "rest_api"
     mcp = "mcp"
+
 
 class ToolCategory(str, Enum):
     read = "read"
     write = "write"
     identity = "identity"
 
+
 class StorageMode(str, Enum):
     saved = "saved"
     anonymous = "anonymous"
 
+
 class PersistentBackend(str, Enum):
     memgraph = "memgraph"
     neo4j = "neo4j"
+
 
 class SessionFieldType(str, Enum):
     enum = "enum"
@@ -253,15 +360,90 @@ class SessionFieldType(str, Enum):
     int_ = "int"
     list_ = "list"
 
+
 class InstrumentType(str, Enum):
     counter = "counter"
     gauge = "gauge"
     histogram = "histogram"
 
-class MetricsAttribute(str, Enum):
-    intent = "intent"
-    state = "state"
-    # extend as needed
+
+class SpecialHandler(str, Enum):
+    """Framework-level subagent handlers that bypass normal LLM flow.
+
+    Both wired in agent_core/src/orchestrator.py (handler == 'hitl' / 'whatsapp_handoff').
+    """
+    hitl = "hitl"
+    whatsapp_handoff = "whatsapp_handoff"
+
+
+class AuthType(str, Enum):
+    """REST API auth schemes implemented in action_gateway/src/adapters/rest_api.py.
+
+    'oauth2' is intentionally excluded — schema declares it but the adapter has no
+    oauth2 branch (no token_url usage). Adding it here would let the LLM produce
+    configs that pass schema validation but fail at first request.
+    """
+    none = "none"
+    api_key = "api_key"
+    bearer = "bearer"
+
+
+class HttpMethod(str, Enum):
+    GET = "GET"
+    POST = "POST"
+    PUT = "PUT"
+    DELETE = "DELETE"
+    PATCH = "PATCH"
+
+
+class ParamSource(str, Enum):
+    """REST endpoint param source. agent=LLM-supplied, static=baked into config."""
+    agent = "agent"
+    static = "static"
+
+
+class ParamType(str, Enum):
+    """JSON-schema param type. 'number' is accepted but phases.py guidance prefers 'string'."""
+    string = "string"
+    integer = "integer"
+    number = "number"
+    boolean = "boolean"
+    array = "array"
+    object = "object"
+
+
+class McpTransport(str, Enum):
+    """MCP client transports supported by mcp.py.
+
+    'stdio' intentionally excluded — _SUPPORTED_TRANSPORTS in mcp.py is {sse, streamable_http}.
+    """
+    sse = "sse"
+    streamable_http = "streamable_http"
+
+
+class ReengagementChannel(str, Enum):
+    """Re-engagement delivery channels.
+
+    NOTE: declared by memory_layer schema but feature is GH-168 (deferred).
+    Schema accepts these values; runtime ignores until implementation lands.
+    """
+    outbound_call = "outbound_call"
+    whatsapp = "whatsapp"
+    sms = "sms"
+
+
+class RoutingOperator(str, Enum):
+    """Comparison operators for routing conditions."""
+    eq = "eq"
+    not_eq = "not_eq"
+    gt = "gt"
+    lt = "lt"
+    in_ = "in"
+
+
+class InternalRoute(str, Enum):
+    """Valid internal connector routes. Currently only knowledge_engine."""
+    knowledge_engine = "knowledge_engine"
 ```
 
 ---
@@ -279,17 +461,36 @@ from __future__ import annotations
 from typing import Optional, Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from dev_kit.schemas.enums import ClaudeModel, LanguageCode
+from dev_kit.schemas.enums import (
+    ANTHROPIC_MODELS, OPENAI_MODELS,
+    ChatModelField, LanguageField, ProviderField,
+    SpecialHandler, RoutingOperator, InternalRoute,
+)
 
 
 # -- agent_core.agent (language phase) ---------------------------------------
 
+class FeaturesSection(BaseModel):
+    """Per-deployment chat-provider feature toggles.
+
+    None means "use the provider's intrinsic capability." A bool tightens the
+    effective feature for this deployment. Cannot widen — chat_provider factory
+    rejects True against a False capability.
+    """
+    model_config = ConfigDict(extra="forbid")
+    prompt_cache: Optional[bool] = None
+    streaming: Optional[bool] = None
+    image_input: Optional[bool] = None
+
+
 class AgentSection(BaseModel):
-    """LLM model selection + retry/timeout policy. Required: primary_model, fallback_model."""
+    """LLM model selection + retry/timeout policy. Required: provider, primary_model, fallback_model."""
     model_config = ConfigDict(extra="forbid")
 
-    primary_model: ClaudeModel = Field(..., description="Primary LLM")
-    fallback_model: ClaudeModel = Field(..., description="Fallback LLM (must differ from primary)")
+    provider: ProviderField = "anthropic"
+    primary_model: ChatModelField = Field(..., description="Primary LLM (must match provider)")
+    fallback_model: ChatModelField = Field(..., description="Fallback LLM (must match provider, must differ from primary)")
+    features: FeaturesSection = Field(default_factory=FeaturesSection)
     timeout_ms: int = Field(default=10000, gt=0, le=60000)
     retry_attempts: int = Field(default=2, ge=0, le=5)
     retry_backoff_seconds: list[float] = Field(default_factory=lambda: [0, 0.5, 1.0])
@@ -306,22 +507,60 @@ class AgentSection(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def models_must_match_provider(self) -> "AgentSection":
+        valid = ANTHROPIC_MODELS if self.provider == "anthropic" else OPENAI_MODELS
+        if self.primary_model not in valid:
+            raise ValueError(
+                f"primary_model {self.primary_model!r} is not valid for provider "
+                f"{self.provider!r}. Valid options: {valid}"
+            )
+        if self.fallback_model not in valid:
+            raise ValueError(
+                f"fallback_model {self.fallback_model!r} is not valid for provider "
+                f"{self.provider!r}. Valid options: {valid}"
+            )
+        return self
+
 
 # -- agent_core.preprocessing (language phase) -------------------------------
 
+def _validate_helper_provider_model(provider: Optional[str], model: str) -> None:
+    """If a helper provider is set, its model must be in that provider's list.
+
+    When provider is None the helper inherits agent.provider — no per-helper
+    validation here (cross-section validation is out of scope; spec section 6.2).
+    """
+    if provider is None:
+        # Still verify model is in the union of known models — caught by ChatModelField AfterValidator.
+        return
+    valid = ANTHROPIC_MODELS if provider == "anthropic" else OPENAI_MODELS
+    if model not in valid:
+        raise ValueError(
+            f"model {model!r} is not valid for provider {provider!r}. Valid options: {valid}"
+        )
+
+
 class LanguageNormalisationSection(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    model: str = Field(..., min_length=1)
-    default_language: LanguageCode
-    supported_languages: list[LanguageCode] = Field(..., min_length=1)
+    provider: Optional[ProviderField] = None   # None → inherit agent.provider at runtime
+    model: ChatModelField = Field(..., min_length=1)
+    default_language: LanguageField
+    supported_languages: list[LanguageField] = Field(..., min_length=1)
     min_detection_tokens: int = Field(default=3, gt=0)
     transliteration: bool = True
     code_switching: bool = True
 
+    @model_validator(mode="after")
+    def model_must_match_helper_provider(self) -> "LanguageNormalisationSection":
+        _validate_helper_provider_model(self.provider, self.model)
+        return self
+
 
 class NLUProcessorSection(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    model: ClaudeModel
+    provider: Optional[ProviderField] = None   # None → inherit agent.provider at runtime
+    model: ChatModelField
     confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     user_state_confidence_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
     domain_instruction: str = ""
@@ -331,6 +570,11 @@ class NLUProcessorSection(BaseModel):
         default_factory=lambda: ["neutral", "positive", "distressed", "frustrated"]
     )
     signal_intents: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def model_must_match_helper_provider(self) -> "NLUProcessorSection":
+        _validate_helper_provider_model(self.provider, self.model)
+        return self
 
 
 class PreprocessingSection(BaseModel):
@@ -440,7 +684,7 @@ class ConnectorDef(BaseModel):
 
 class InternalConnectorDef(ConnectorDef):
     """Routes to an internal block (e.g. knowledge_retrieval → knowledge_engine)."""
-    route: str = Field(..., min_length=1)
+    route: InternalRoute = InternalRoute.knowledge_engine
 
 
 class ConnectorsSection(BaseModel):
@@ -453,11 +697,19 @@ class ConnectorsSection(BaseModel):
 
 # -- agent_core.agent_workflow (workflow phase) ------------------------------
 
+class RoutingCondition(BaseModel):
+    """Typed condition on a routing rule. Mirrors agent_core's runtime RoutingCondition."""
+    model_config = ConfigDict(extra="forbid")
+    field: str = Field(..., min_length=1)
+    operator: RoutingOperator
+    value: Any = None
+
+
 class RoutingRule(BaseModel):
     model_config = ConfigDict(extra="forbid")
     intent: str = Field(..., min_length=1)
     next_subagent_id: str = Field(..., min_length=1)
-    conditions: list[dict] = Field(default_factory=list)
+    conditions: list[RoutingCondition] = Field(default_factory=list)
     session_writes: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -468,7 +720,7 @@ class SubAgent(BaseModel):
     description: str = ""
     is_start: bool = False
     is_terminal: bool = False
-    special_handler: Optional[str] = None
+    special_handler: Optional[SpecialHandler] = None
     valid_intents: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
     system_prompt: str = Field(..., min_length=1)
@@ -586,8 +838,7 @@ class ObservabilitySection(BaseModel):
 from typing import Optional, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-
-EmbeddingProvider = Literal["chroma_default", "openai", "sentence_transformers"]
+from dev_kit.schemas.enums import EmbeddingProviderField
 
 
 class MetadataFiltersConfig(BaseModel):
@@ -602,7 +853,7 @@ class StaticKnowledgeBaseSection(BaseModel):
     collection_name: str = Field(..., min_length=1, pattern=r"^[a-z][a-z0-9_]*$")
     top_k: int = Field(default=3, gt=0, le=50)
     similarity_threshold: float = Field(default=0.65, ge=0.0, le=1.0)
-    embedding_provider: EmbeddingProvider = "chroma_default"
+    embedding_provider: EmbeddingProviderField = "chroma_default"
     embedding_model: str = ""
     default_doc_type: str = Field(..., min_length=1)
     metadata_filters: MetadataFiltersConfig = Field(default_factory=MetadataFiltersConfig)
@@ -656,7 +907,9 @@ class ObservabilitySection(BaseModel):
 ```python
 from typing import Optional, Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from dev_kit.schemas.enums import StorageMode, PersistentBackend, SessionFieldType
+from dev_kit.schemas.enums import (
+    StorageMode, PersistentBackend, SessionFieldType, ReengagementChannel,
+)
 
 
 class SessionFieldDefinition(BaseModel):
@@ -731,7 +984,7 @@ class ReengagementTrigger(BaseModel):
     model_config = ConfigDict(extra="forbid")
     event: str = Field(..., min_length=1)
     delay_hours: Optional[int] = Field(default=None, gt=0)
-    channel: Optional[str] = None
+    channel: Optional[ReengagementChannel] = None   # GH-168: declared, runtime not yet wired
     message_template: Optional[str] = None
     loop_threshold: Optional[int] = Field(default=None, gt=0)
     action: Optional[str] = None
@@ -825,32 +1078,37 @@ class ObservabilitySection(BaseModel):
 ```python
 from typing import Optional, Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from dev_kit.schemas.enums import ToolType, ToolCategory
+from dev_kit.schemas.enums import (
+    ToolType, ToolCategory, AuthType, HttpMethod,
+    ParamSource, ParamType, McpTransport,
+)
 
 
 class AuthConfig(BaseModel):
+    """REST auth block. type=oauth2 NOT supported by adapter (excluded from AuthType)."""
     model_config = ConfigDict(extra="forbid")
-    type: str = "none"   # none | api_key | bearer | oauth2
+    type: AuthType = AuthType.none
     header: str = ""
     secret_env: str = ""
-    token_url: str = ""
+    token_url: str = ""    # reserved (no oauth2 support today)
 
 
 class ParamDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(..., min_length=1)
-    source: str = "agent"   # agent | static
-    type: str = "string"    # NB: 'number' valid in runtime but devkit prompts steer to 'string'
+    source: ParamSource = ParamSource.agent
+    type: ParamType = ParamType.string
     required: bool = False
     description: str = ""
     value: Optional[Any] = None
     default: Optional[Any] = None
+    items: Optional[dict] = None   # JSON schema for array elements when type=array (OpenAI)
 
 
 class EndpointDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(..., min_length=1)
-    method: str = "POST"   # GET | POST | PUT | DELETE | PATCH
+    method: HttpMethod = HttpMethod.POST
     path: str = ""
     params: list[ParamDefinition] = Field(default_factory=list)
 
@@ -875,9 +1133,9 @@ class ToolDefinition(BaseModel):
     endpoints: Optional[list[EndpointDefinition]] = None
     response: Optional[ResponseConfig] = None
 
-    # MCP-only
+    # MCP-only — McpTransport excludes 'stdio' (not supported by adapter)
     server_url: Optional[str] = None
-    transport: Optional[str] = None  # sse | streamable_http | stdio
+    transport: Optional[McpTransport] = None
     namespace: Optional[str] = None
 
     @model_validator(mode="after")
@@ -914,8 +1172,10 @@ class ObservabilitySection(BaseModel):
 
 ```python
 from typing import Optional
-from pydantic import BaseModel, ConfigDict, Field
-from dev_kit.schemas.enums import RayaVoiceId
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from dev_kit.schemas.enums import (
+    RayaVoiceIdField, RayaLanguageField, RAYA_VOICE_LANGUAGE,
+)
 
 
 class WebUiConfig(BaseModel):
@@ -946,9 +1206,23 @@ class WebChannelSection(BaseModel):
 
 class RayaVoiceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    stt_language: str = Field(..., min_length=2, max_length=10)
-    tts_language: str = Field(..., min_length=2, max_length=10)
-    voice_id: RayaVoiceId
+    stt_language: RayaLanguageField
+    tts_language: RayaLanguageField
+    voice_id: RayaVoiceIdField
+
+    @model_validator(mode="after")
+    def voice_id_matches_language(self) -> "RayaVoiceConfig":
+        """The chosen voice_id must be for a language that matches stt/tts_language."""
+        voice_lang = RAYA_VOICE_LANGUAGE[self.voice_id]
+        if voice_lang != self.stt_language:
+            raise ValueError(
+                f"voice_id is for language {voice_lang!r}, but stt_language is {self.stt_language!r}"
+            )
+        if voice_lang != self.tts_language:
+            raise ValueError(
+                f"voice_id is for language {voice_lang!r}, but tts_language is {self.tts_language!r}"
+            )
+        return self
 
 
 class VoiceAgentCoreClient(BaseModel):
@@ -1037,7 +1311,10 @@ class ObservabilitySection(BaseModel):
 ### 7.1 `dev-kit/dev_kit/schemas/dpg/agent_core.py`
 
 ```python
+from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field
+
+from dev_kit.schemas.enums import ProviderField
 
 class ServerConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -1068,8 +1345,18 @@ class RecentToolExchanges(BaseModel):
     max_items: int = Field(default=3, ge=0, le=20)
     max_chars: int = Field(default=4000, ge=0, le=50000)
 
+class FeaturesDpg(BaseModel):
+    """Per-deployment chat-provider feature toggles (DPG defaults)."""
+    model_config = ConfigDict(extra="forbid")
+    prompt_cache: Optional[bool] = None
+    streaming: Optional[bool] = None
+    image_input: Optional[bool] = None
+
+
 class AgentDpgDefaults(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    provider: ProviderField = "anthropic"
+    features: FeaturesDpg = Field(default_factory=FeaturesDpg)
     ask_for_consent: bool = False
     consent_prompt: str = ""
     timeout_ms: int = Field(default=10000, gt=0, le=60000)
@@ -1574,17 +1861,41 @@ def reset_validation_attempts(self) -> None:
 
 `ConversationEngine.chat()` calls `self.accumulator.reset_validation_attempts()` immediately after appending the new user message to history.
 
-### 8.3 `phases.py` changes — schema injection
+### 8.3 `phases.py` changes — schema + allowed-values injection
 
-Replace the existing `load_template_text(block)` injection with relevant section schemas:
+Replace the existing `load_template_text(block)` injection with two pieces:
+1. **Pydantic class source** for the relevant section schemas (constraints visible in code)
+2. **Allowed-values list** for any `Annotated[str, AfterValidator(...)]` fields (LLM can't infer from source alone)
 
 ```python
 import inspect
 from dev_kit.schemas.domain import agent_core as ac_domain
+from dev_kit.schemas import enums
 
 def _schema_source(*classes) -> str:
     """Render multiple Pydantic classes as a single code block."""
     return "\n\n".join(inspect.getsource(c) for c in classes)
+
+
+def _format_allowed_values(*field_names: str) -> str:
+    """Render the allowed-values list for fields backed by config-driven enums.
+
+    Pydantic's Annotated[str, AfterValidator(...)] doesn't show its allowed
+    values when inspect.getsource() runs on the class. This helper produces
+    a textual list keyed by the field name so the LLM sees the full set.
+    """
+    sections: dict[str, str] = {
+        "provider": ", ".join(enums.PROVIDERS),
+        "anthropic_models": ", ".join(enums.ANTHROPIC_MODELS),
+        "openai_models": ", ".join(enums.OPENAI_MODELS),
+        "languages": ", ".join(enums.LANGUAGES),
+        "raya_voices": "\n  ".join(
+            f"- {v['voice_id']} ({v['language']}, {v['name']})" for v in enums.RAYA_VOICES
+        ),
+        "embedding_providers": ", ".join(enums.EMBEDDING_PROVIDERS),
+    }
+    lines = [f"- **{name}**: {sections[name]}" for name in field_names if name in sections]
+    return "\n".join(lines)
 
 
 # Example — language phase injection:
@@ -1602,8 +1913,15 @@ def _schema_source(*classes) -> str:
     ac_domain.ChannelsSection,
     ac_domain.HitlSection,
 )
-+ "\n```\n"
++ "\n```\n\n"
++ "### Allowed values for enum fields (loaded from enums_config.yaml; may grow over time)\n\n"
++ "When `provider=anthropic`, primary_model and fallback_model must be from `anthropic_models` below.\n"
++ "When `provider=openai`, they must be from `openai_models` below.\n\n"
++ _format_allowed_values("provider", "anthropic_models", "openai_models", "languages")
++ "\n"
 ```
+
+Each phase calls `_format_allowed_values(...)` with the subset relevant to that phase's schemas (e.g., reach phase passes `"raya_voices"`, knowledge phase passes `"embedding_providers"`).
 
 ### 8.4 `app.py` `update_dpg_value` changes
 
