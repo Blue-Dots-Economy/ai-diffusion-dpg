@@ -5,8 +5,12 @@ Two main functions:
 - validate_dpg_block(block, parsed_yaml) — for operator edits in deploy wizard
 """
 from __future__ import annotations
+import logging
+import time
 from typing import Optional
 from pydantic import ValidationError
+
+logger = logging.getLogger(__name__)
 
 from dev_kit.schemas.domain import (
     agent_core,
@@ -75,15 +79,48 @@ def validate_domain_section(block: str, section: str, merged_data: dict) -> Opti
     Returns:
         None if valid; a formatted error string if invalid.
     """
+    start = time.time()
     top_level = section.split(".", 1)[0]
     schema = DOMAIN_SECTION_SCHEMAS.get((block, top_level))
     if schema is None:
+        logger.warning(
+            "validation_unknown_section",
+            extra={
+                "operation": "validate_domain_section",
+                "status": "skipped",
+                "block": block,
+                "section": section,
+                "latency_ms": int((time.time() - start) * 1000),
+            },
+        )
         return f"Unknown section '{section}' for block '{block}'"
     try:
         schema.model_validate(merged_data)
+        logger.info(
+            "validation_success",
+            extra={
+                "operation": "validate_domain_section",
+                "status": "success",
+                "block": block,
+                "section": top_level,
+                "latency_ms": int((time.time() - start) * 1000),
+            },
+        )
         return None
     except ValidationError as e:
-        return _format_pydantic_error(e)
+        formatted = _format_pydantic_error(e)
+        logger.warning(
+            "validation_failed",
+            extra={
+                "operation": "validate_domain_section",
+                "status": "failure",
+                "block": block,
+                "section": top_level,
+                "error_count": len(e.errors()),
+                "latency_ms": int((time.time() - start) * 1000),
+            },
+        )
+        return formatted
 
 
 def validate_dpg_block(block: str, parsed_yaml: dict) -> Optional[str]:
@@ -96,14 +133,44 @@ def validate_dpg_block(block: str, parsed_yaml: dict) -> Optional[str]:
     Returns:
         None if valid; a formatted error string if invalid.
     """
+    start = time.time()
     schema = DPG_BLOCK_SCHEMAS.get(block)
     if schema is None:
+        logger.warning(
+            "dpg_validation_unknown_block",
+            extra={
+                "operation": "validate_dpg_block",
+                "status": "skipped",
+                "block": block,
+                "latency_ms": int((time.time() - start) * 1000),
+            },
+        )
         return f"Unknown block '{block}'"
     try:
         schema.model_validate(parsed_yaml)
+        logger.info(
+            "dpg_validation_success",
+            extra={
+                "operation": "validate_dpg_block",
+                "status": "success",
+                "block": block,
+                "latency_ms": int((time.time() - start) * 1000),
+            },
+        )
         return None
     except ValidationError as e:
-        return _format_pydantic_error(e)
+        formatted = _format_pydantic_error(e)
+        logger.warning(
+            "dpg_validation_failed",
+            extra={
+                "operation": "validate_dpg_block",
+                "status": "failure",
+                "block": block,
+                "error_count": len(e.errors()),
+                "latency_ms": int((time.time() - start) * 1000),
+            },
+        )
+        return formatted
 
 
 def _format_pydantic_error(err: ValidationError) -> str:

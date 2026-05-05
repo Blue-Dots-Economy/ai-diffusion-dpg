@@ -146,3 +146,29 @@ def test_error_format_root_path_handled():
     """Errors at the root level should show '<root>' instead of empty path."""
     err = validate_domain_section("agent_core", "agent", "not_a_dict")
     assert err is not None
+
+
+def test_error_format_handles_repr_exception():
+    """If offending value's repr() raises, still emit the rest of the error."""
+    class BrokenRepr:
+        def __repr__(self):
+            raise RuntimeError("repr failed")
+
+    err = validate_domain_section(
+        "agent_core", "agent",
+        {"primary_model": BrokenRepr(), "fallback_model": "claude-haiku-4-5-20251001"},
+    )
+    assert err is not None
+    # Path/type still present; "you sent:" silently dropped on repr failure.
+    assert "[" in err and "]" in err
+
+
+def test_error_format_truncates_long_values():
+    """Values whose repr exceeds 200 chars render with the truncation marker."""
+    long_value = "x" * 500
+    err = validate_domain_section(
+        "agent_core", "agent",
+        {"primary_model": long_value, "fallback_model": "claude-haiku-4-5-20251001"},
+    )
+    assert err is not None
+    assert "...<truncated>" in err
