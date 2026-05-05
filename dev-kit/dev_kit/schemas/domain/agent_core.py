@@ -57,6 +57,7 @@ class AgentSection(BaseModel):
     ask_for_consent: bool = False
     consent_prompt: str = ""
 
+    # Pydantic 2 field validator: coerce YAML's empty mapping (None) to default FeaturesSection.
     # Null-coercion: YAML's empty mapping `features:` parses as None.
     # Mirror runtime behaviour so domain configs with commented-out features
     # don't fail validation.
@@ -66,6 +67,7 @@ class AgentSection(BaseModel):
 
     @model_validator(mode="after")
     def primary_fallback_must_differ(self) -> "AgentSection":
+        """Reject identical primary/fallback model IDs — fallback exists to handle primary failures."""
         if self.primary_model == self.fallback_model:
             raise ValueError(
                 "primary_model and fallback_model must be different — fallback exists "
@@ -75,6 +77,7 @@ class AgentSection(BaseModel):
 
     @model_validator(mode="after")
     def models_must_match_provider(self) -> "AgentSection":
+        """Reject configs where primary or fallback model isn't in the chosen provider's model list."""
         valid = ANTHROPIC_MODELS if self.provider == "anthropic" else OPENAI_MODELS
         if self.primary_model not in valid:
             raise ValueError(
@@ -108,6 +111,7 @@ def _validate_helper_provider_model(provider: Optional[str], model: str) -> None
 
 
 class LanguageNormalisationSection(BaseModel):
+    """Language detection / normalisation helper config. provider=None inherits agent.provider."""
     model_config = ConfigDict(extra="forbid")
     provider: Optional[ProviderField] = None   # None → inherit agent.provider at runtime
     model: ChatModelField = Field(..., min_length=1)
@@ -119,11 +123,13 @@ class LanguageNormalisationSection(BaseModel):
 
     @model_validator(mode="after")
     def model_must_match_helper_provider(self) -> "LanguageNormalisationSection":
+        """When provider is set, the helper's model must be in that provider's list."""
         _validate_helper_provider_model(self.provider, self.model)
         return self
 
 
 class NLUProcessorSection(BaseModel):
+    """NLU classifier helper config. provider=None inherits agent.provider; intents must be non-empty."""
     model_config = ConfigDict(extra="forbid")
     provider: Optional[ProviderField] = None   # None → inherit agent.provider at runtime
     model: ChatModelField
@@ -139,11 +145,13 @@ class NLUProcessorSection(BaseModel):
 
     @model_validator(mode="after")
     def model_must_match_helper_provider(self) -> "NLUProcessorSection":
+        """When provider is set, the helper's model must be in that provider's list."""
         _validate_helper_provider_model(self.provider, self.model)
         return self
 
 
 class PreprocessingSection(BaseModel):
+    """Container for the language_normalisation + nlu_processor helpers."""
     model_config = ConfigDict(extra="forbid")
     language_normalisation: LanguageNormalisationSection
     nlu_processor: NLUProcessorSection
@@ -152,6 +160,7 @@ class PreprocessingSection(BaseModel):
 # -- agent_core.conversation (language, trust, memory phases) ----------------
 
 class UserStateDefinition(BaseModel):
+    """One state in the conversation user-state model (e.g., 'fog', 'orientation')."""
     model_config = ConfigDict(extra="forbid")
     id: str = Field(..., min_length=1)
     signals: list[str] = Field(default_factory=list)
@@ -159,6 +168,7 @@ class UserStateDefinition(BaseModel):
 
 
 class UserStateModel(BaseModel):
+    """Conversational-agent user-state model. When enabled, default_state must be one of declared states."""
     model_config = ConfigDict(extra="forbid")
     enabled: bool = False
     default_state: str = ""
@@ -166,6 +176,7 @@ class UserStateModel(BaseModel):
 
     @model_validator(mode="after")
     def default_must_be_in_states(self) -> "UserStateModel":
+        """When enabled, default_state must reference an id in the declared states list."""
         if self.enabled:
             ids = {s.id for s in self.states}
             if not self.default_state or self.default_state not in ids:
@@ -194,6 +205,7 @@ class ConversationSection(BaseModel):
 # -- agent_core.channels (language, reach phases) ----------------------------
 
 class TtsRulesConfig(BaseModel):
+    """Voice-channel TTS-rendering rules per data type (numbers, dates, etc.)."""
     model_config = ConfigDict(extra="forbid")
     numbers: str = ""
     money: str = ""
@@ -208,6 +220,7 @@ class TtsRulesConfig(BaseModel):
 
 
 class TurnAssemblerConfig(BaseModel):
+    """TurnAssembler policy stack — semantic gate + silence trigger + max-wait ceiling."""
     model_config = ConfigDict(extra="forbid")
     semantic_gate: dict = Field(default_factory=lambda: {"enabled": False, "confidence_threshold": 0.75})
     silence_trigger: dict = Field(default_factory=lambda: {"silence_ms": 0})
@@ -215,6 +228,7 @@ class TurnAssemblerConfig(BaseModel):
 
 
 class ChannelEntry(BaseModel):
+    """One channel-specific entry under agent_core.channels (web/voice/cli)."""
     model_config = ConfigDict(extra="forbid")
     system_prompt_suffix: str = ""
     tts_rules: Optional[TtsRulesConfig] = None
@@ -224,6 +238,7 @@ class ChannelEntry(BaseModel):
 
 
 class ChannelsSection(BaseModel):
+    """agent_core.channels — at most one entry per channel type."""
     model_config = ConfigDict(extra="forbid")
     web: Optional[ChannelEntry] = None
     voice: Optional[ChannelEntry] = None
@@ -266,6 +281,7 @@ class InvocationRules(BaseModel):
 
 
 class ConnectorDef(BaseModel):
+    """External tool/connector exposed to the LLM (REST API, identity, write actions)."""
     model_config = ConfigDict(extra="forbid")
     name: str = Field(..., min_length=1)
     description: str = Field(..., min_length=1)
@@ -279,6 +295,7 @@ class InternalConnectorDef(ConnectorDef):
 
 
 class ConnectorsSection(BaseModel):
+    """agent_core.connectors — internal/read/write/identity connector lists."""
     model_config = ConfigDict(extra="forbid")
     internal: list[InternalConnectorDef] = Field(default_factory=list)
     read: list[ConnectorDef] = Field(default_factory=list)
@@ -297,6 +314,7 @@ class RoutingCondition(BaseModel):
 
 
 class RoutingRule(BaseModel):
+    """One routing rule on a subagent or in global_routing — fires on a matched intent."""
     model_config = ConfigDict(extra="forbid")
     intent: str = Field(..., min_length=1)
     next_subagent_id: str = Field(..., min_length=1)
@@ -344,6 +362,7 @@ class SubAgent(BaseModel):
 
 
 class AgentWorkflowSection(BaseModel):
+    """Top-level workflow definition: subagents, routing, fallback. 4 cross-field validators enforce graph integrity."""
     model_config = ConfigDict(extra="forbid")
     workflow_id: str = Field(..., pattern=r"^[a-z][a-z0-9_]+$")
     version: str = Field(..., pattern=r"^\d+\.\d+\.\d+$")
@@ -356,6 +375,7 @@ class AgentWorkflowSection(BaseModel):
 
     @model_validator(mode="after")
     def fallback_must_be_declared(self) -> "AgentWorkflowSection":
+        """default_fallback_subagent_id must reference a declared subagent id."""
         ids = {s.id for s in self.subagents}
         if self.default_fallback_subagent_id not in ids:
             raise ValueError(
@@ -366,6 +386,7 @@ class AgentWorkflowSection(BaseModel):
 
     @model_validator(mode="after")
     def routing_targets_must_be_declared(self) -> "AgentWorkflowSection":
+        """Every next_subagent_id (in subagent.routing or global_routing) must reference a declared subagent."""
         ids = {s.id for s in self.subagents}
         for sa in self.subagents:
             for rule in sa.routing:
@@ -384,6 +405,7 @@ class AgentWorkflowSection(BaseModel):
 
     @model_validator(mode="after")
     def global_intents_must_not_overlap_subagent_intents(self) -> "AgentWorkflowSection":
+        """An intent cannot appear in both global_intents and any subagent's valid_intents — runtime crashes on overlap."""
         global_set = set(self.global_intents)
         for sa in self.subagents:
             overlap = global_set & set(sa.valid_intents)
@@ -396,6 +418,7 @@ class AgentWorkflowSection(BaseModel):
 
     @model_validator(mode="after")
     def exactly_one_start_subagent(self) -> "AgentWorkflowSection":
+        """Exactly one subagent must have is_start=True (entry point of the workflow)."""
         starts = [s for s in self.subagents if s.is_start]
         if len(starts) != 1:
             raise ValueError(
@@ -414,6 +437,7 @@ class EntityToProfileFieldSection(BaseModel):
 # -- agent_core.hitl (language phase) ----------------------------------------
 
 class HitlSection(BaseModel):
+    """HiTL handoff section — `response_message` is what the agent says when escalating."""
     model_config = ConfigDict(extra="forbid")
     response_message: str = Field(..., min_length=1)
 
@@ -421,5 +445,6 @@ class HitlSection(BaseModel):
 # -- agent_core.observability (observability phase) --------------------------
 
 class ObservabilitySection(BaseModel):
+    """agent_core.observability — domain identifier (slug pattern)."""
     model_config = ConfigDict(extra="forbid")
     domain: str = Field(..., min_length=1, pattern=r"^[a-z][a-z0-9-]*$")
