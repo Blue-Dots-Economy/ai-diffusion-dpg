@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 from dev_kit.agent.accumulator import BLOCKS, PHASES, ConfigAccumulator, ConfigStatus
 from dev_kit.agent.prompts.base import AGENT_TYPES, SHEET_REQUIREMENTS
+from dev_kit.schemas.cross_block_validation import validate_cross_block
 from dev_kit.schemas.validation import get_valid_sections
 
 # ---------------------------------------------------------------------------
@@ -772,6 +773,41 @@ class ToolHandler:
             SHEET_REQUIREMENTS.get(requested, {}).get(agent_type, "optional")
             if agent_type else "required"
         )
+
+        # Cross-block consistency check before advancing. Catches mistakes
+        # that span 2+ blocks (e.g. knowledge_engine.intent_filters keys
+        # missing from agent_core's NLU intents) at the moment the LLM tries
+        # to leave the phase that produced them — not at deploy time. The
+        # invariants self-guard against incomplete data, so checks irrelevant
+        # to the current phase silently pass.
+        #
+        # Use the EXPLICIT selection (no ['web'] fallback) so channel-related
+        # invariants only fire after the LLM has actually called
+        # set_reach_channels — earlier phases have nothing to validate yet.
+        blocks_state = {b: self._acc.get_block(b) for b in BLOCKS}
+        selected_channels = self._acc.get_reach_channel_selection()
+        cross_errors = validate_cross_block(blocks_state, selected_channels)
+        if cross_errors:
+            error_lines = "\n".join(f"  - {e}" for e in cross_errors)
+            logger.warning(
+                "devkit.tool.set_phase.cross_block_blocked",
+                extra={
+                    "operation": "tool.set_phase",
+                    "status": "phase_advance_blocked",
+                    "current_phase": current,
+                    "requested_phase": requested,
+                    "violation_count": len(cross_errors),
+                },
+            )
+            return (
+                f"PHASE_ADVANCE_BLOCKED — cross-block consistency check failed "
+                f"for the leaving phase '{current}'. Fix these before advancing "
+                f"to '{requested}':\n{error_lines}\n\n"
+                f"Each violation spans two or more blocks (e.g. an intent "
+                f"declared in one block but missing from another). Make the "
+                f"corresponding update_config calls to bring the blocks back "
+                f"in sync, then call set_phase('{requested}') again."
+            )
 
         if status == "skip":
             # Auto-advance past this phase; record the decision for audit.
