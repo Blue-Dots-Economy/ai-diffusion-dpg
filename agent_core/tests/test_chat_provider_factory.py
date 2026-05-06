@@ -90,7 +90,9 @@ class TestCapabilityReconciliation:
         with patch("anthropic.Anthropic"), patch("anthropic.AsyncAnthropic"):
             build_chat_provider(cfg)  # no exception
 
-    def test_openai_features_prompt_cache_true_raises(self):
+    def test_openai_features_prompt_cache_true_passes(self):
+        # OpenAI now declares supports_prompt_cache=True (#304); the
+        # Layer-2 reconciliation must accept the matrix entry.
         cfg = {
             "provider": "openai",
             "primary_model": "gpt-4o-2024-08-06",
@@ -98,8 +100,8 @@ class TestCapabilityReconciliation:
             "retry_attempts": 2,
             "features": {"prompt_cache": True},
         }
-        with pytest.raises(ProviderConfigError, match="prompt_cache"):
-            build_chat_provider(cfg)
+        with patch("openai.OpenAI"), patch("openai.AsyncOpenAI"):
+            build_chat_provider(cfg)  # no exception
 
     def test_openai_features_image_input_true_passes(self):
         cfg = {

@@ -165,6 +165,14 @@ class TokenUsage(BaseModel):
     None means "the provider does not report this", not "zero".
     Concrete providers populate the fields they have; everything else
     stays None so dashboards can distinguish missing from zero.
+
+    Provider asymmetry on cache fields:
+      - Anthropic reports cache_creation_input_tokens and
+        cache_read_input_tokens as disjoint counters; both populate.
+      - OpenAI's prompt caching is automatic — there is no separate
+        creation event, only a `cached_tokens` hit count. OpenAI
+        therefore populates cache_read_tokens only and leaves
+        cache_creation_tokens permanently None.
     """
 
     input_tokens: int | None = None

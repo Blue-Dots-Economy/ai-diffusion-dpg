@@ -27,7 +27,7 @@ VALID_CONFIG = {
     "retry_attempts": 2,
     "retry_backoff_seconds": [0, 0.0, 0.0],
     "features": {
-        "prompt_cache": False,   # OpenAI cap is False; matching here is a no-op.
+        "prompt_cache": True,
         "streaming": True,
         "image_input": True,
     },
@@ -42,7 +42,7 @@ class TestInit:
         assert isinstance(caps, Capabilities)
         assert caps.supports_tools is True
         assert caps.supports_streaming is True
-        assert caps.supports_prompt_cache is False
+        assert caps.supports_prompt_cache is True
         assert caps.supports_image_input is True
         assert caps.supports_audio_input is False
         assert caps.supports_structured_output is True
@@ -55,7 +55,7 @@ class TestInit:
             p = OpenAIChatProvider(cfg)
         assert p._features["streaming"] is True
         assert p._features["image_input"] is True
-        assert p._features["prompt_cache"] is False  # capability is False
+        assert p._features["prompt_cache"] is True  # capability is True
 
     def test_empty_config_raises(self):
         with pytest.raises(ProviderConfigError):
@@ -305,6 +305,9 @@ def _mk_openai_completion(
 
     raw.usage.prompt_tokens = prompt_tokens
     raw.usage.completion_tokens = completion_tokens
+    # Default: SDK / model that does not report cached_tokens. Tests that
+    # exercise the cache path replace this with an explicit object.
+    raw.usage.prompt_tokens_details = None
     return raw
 
 
@@ -370,6 +373,49 @@ class TestFromWire:
         assert resp.parsed_output == {"answer": "42"}
         assert resp.stop_reason == "end_turn"
 
+    def test_cache_read_tokens_populated_from_prompt_tokens_details(self):
+        p = _make_provider()
+        raw = _mk_openai_completion(text="ok", prompt_tokens=2000, completion_tokens=10)
+        details = MagicMock()
+        details.cached_tokens = 1536
+        raw.usage.prompt_tokens_details = details
+
+        resp = p._from_wire(raw, output_format=None)
+        assert resp.usage.input_tokens == 2000
+        assert resp.usage.cache_read_tokens == 1536
+        # OpenAI never reports a creation event.
+        assert resp.usage.cache_creation_tokens is None
+
+    def test_cache_read_tokens_zero_when_field_present_but_no_hit(self):
+        p = _make_provider()
+        raw = _mk_openai_completion(text="ok")
+        details = MagicMock()
+        details.cached_tokens = 0
+        raw.usage.prompt_tokens_details = details
+
+        resp = p._from_wire(raw, output_format=None)
+        assert resp.usage.cache_read_tokens == 0  # reported, no hit
+        assert resp.usage.cache_creation_tokens is None
+
+    def test_cache_read_tokens_none_when_field_missing(self):
+        # Older SDK / model that does not surface prompt_tokens_details.
+        p = _make_provider()
+        raw = _mk_openai_completion(text="ok")
+        # _mk_openai_completion already sets prompt_tokens_details=None.
+        resp = p._from_wire(raw, output_format=None)
+        assert resp.usage.cache_read_tokens is None
+        assert resp.usage.cache_creation_tokens is None
+
+    def test_cache_read_tokens_none_when_cached_tokens_missing(self):
+        p = _make_provider()
+        raw = _mk_openai_completion(text="ok")
+        details = MagicMock()
+        details.cached_tokens = None  # field on object, but not populated
+        raw.usage.prompt_tokens_details = details
+
+        resp = p._from_wire(raw, output_format=None)
+        assert resp.usage.cache_read_tokens is None
+
     def test_output_format_with_invalid_json_marks_error(self):
         p = _make_provider()
         of = OutputFormat(schema={})
@@ -412,15 +458,29 @@ class TestCall:
         with pytest.raises(ValueError, match="messages must not be empty"):
             p.call(req)
 
-    def test_unsupported_feature_raises(self):
-        # OpenAI capability for prompt_cache is False; cache_hint should raise.
+    def test_cache_hint_is_tolerated(self):
+        # OpenAI now declares supports_prompt_cache=True. Per-block
+        # cache_hint markers must be accepted by the validator and
+        # must NOT alter the wire payload (caching is automatic on
+        # OpenAI's side).
         p = _make_provider()
+        raw = _mk_openai_completion(text="ok")
+        p._client.chat.completions.create = MagicMock(return_value=raw)
+
         req = ChatRequest(
             messages=[Message(role="user", content=[TextBlock(text="hi")])],
             system=SystemPrompt(blocks=[TextBlock(text="x" * 3500, cache_hint="session")]),
         )
-        with pytest.raises(UnsupportedFeatureError):
-            p.call(req)
+        resp = p.call(req)
+        assert resp.stop_reason == "end_turn"
+
+        kwargs = p._client.chat.completions.create.call_args.kwargs
+        # No cache marker is emitted on the request — only system + user msgs.
+        for m in kwargs["messages"]:
+            assert "cache_control" not in m
+            if isinstance(m["content"], list):
+                for part in m["content"]:
+                    assert "cache_control" not in part
 
     def test_retry_on_rate_limit_then_success(self):
         p = _make_provider()
@@ -487,6 +547,13 @@ class _FakeOpenAIChunk:
             u = MagicMock()
             u.prompt_tokens = usage.get("prompt_tokens", 0)
             u.completion_tokens = usage.get("completion_tokens", 0)
+            cached = usage.get("cached_tokens")
+            if cached is None:
+                u.prompt_tokens_details = None
+            else:
+                details = MagicMock()
+                details.cached_tokens = cached
+                u.prompt_tokens_details = details
             self.usage = u
         else:
             self.usage = None
@@ -554,6 +621,35 @@ class TestStream:
         with pytest.raises(ValueError, match="messages must not be empty"):
             async for _ in p.stream(req):
                 pass
+
+    @pytest.mark.asyncio
+    async def test_stream_propagates_cached_tokens_to_metrics(self):
+        # Streaming usage frame surfaces cached_tokens — verify it ends up
+        # in the synth response that drives record_call_metrics().
+        captured = {}
+
+        def _capture(**kwargs):
+            captured.update(kwargs)
+
+        p = _make_provider()
+        chunks = [
+            _FakeOpenAIChunk(content="hi"),
+            _FakeOpenAIChunk(
+                finish_reason="stop",
+                usage={"prompt_tokens": 1500, "completion_tokens": 4, "cached_tokens": 1200},
+            ),
+        ]
+        _install_async_stream(p, chunks)
+
+        with patch("src.chat_provider.openai_provider.record_call_metrics", side_effect=_capture):
+            req = ChatRequest(messages=[Message(role="user", content=[TextBlock(text="hi")])])
+            async for _ in p.stream(req):
+                pass
+
+        usage = captured["response"].usage
+        assert usage.input_tokens == 1500
+        assert usage.cache_read_tokens == 1200
+        assert usage.cache_creation_tokens is None
 
     @pytest.mark.asyncio
     async def test_output_format_on_stream_raises(self):

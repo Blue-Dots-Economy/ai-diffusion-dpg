@@ -6,9 +6,14 @@ declared on the class, init validates required config, _to_wire and
 _from_wire handle every translation, retry loops live in private
 helpers.
 
-OpenAI does not currently report cache hit/miss information through the
-SDK, so TokenUsage.cache_read_tokens / cache_creation_tokens stay None
-to preserve the "None means not supported" contract.
+OpenAI exposes automatic prompt caching: prefixes ≥1024 tokens on
+supported models are cached transparently, and the response usage
+block surfaces the hit count under
+`prompt_tokens_details.cached_tokens`. _from_wire reads that field
+into TokenUsage.cache_read_tokens. There is no creation-vs-read
+split — caching is implicit — so cache_creation_tokens stays None on
+this provider, and per-block cache_hint markers are accepted by the
+validator but not emitted on the wire.
 """
 
 from __future__ import annotations
@@ -61,6 +66,24 @@ def _safe_int(value) -> int:
     return 0
 
 
+def _extract_cached_tokens(usage_obj) -> int | None:
+    """Read OpenAI's prompt_tokens_details.cached_tokens with safe fall-through.
+
+    Returns None when the SDK / model does not report the field
+    (preserving the "None means provider does not report this"
+    contract); returns an int (possibly 0) when the field is present.
+    """
+    if usage_obj is None:
+        return None
+    details = getattr(usage_obj, "prompt_tokens_details", None)
+    if details is None:
+        return None
+    raw = getattr(details, "cached_tokens", None)
+    if raw is None:
+        return None
+    return _safe_int(raw)
+
+
 class _RetryableExhausted(Exception):
     """Internal: all retry attempts on transient errors were consumed.
 
@@ -87,7 +110,7 @@ class OpenAIChatProvider(ChatProviderBase):
     capabilities = Capabilities(
         supports_tools=True,
         supports_streaming=True,
-        supports_prompt_cache=False,
+        supports_prompt_cache=True,
         supports_image_input=True,
         supports_audio_input=False,
         supports_structured_output=True,
@@ -383,6 +406,7 @@ class OpenAIChatProvider(ChatProviderBase):
                 stop_reason: str | None = None
                 input_tokens = 0
                 output_tokens = 0
+                cache_read_tokens: int | None = None
 
                 with tracer.start_as_current_span("llm.call") as span:
                     span.set_attribute("gen_ai.system", "openai")
@@ -421,6 +445,7 @@ class OpenAIChatProvider(ChatProviderBase):
                         if getattr(chunk, "usage", None) is not None:
                             input_tokens = _safe_int(getattr(chunk.usage, "prompt_tokens", 0))
                             output_tokens = _safe_int(getattr(chunk.usage, "completion_tokens", 0))
+                            cache_read_tokens = _extract_cached_tokens(chunk.usage)
 
                     span.set_attribute("gen_ai.usage.input_tokens", input_tokens)
                     span.set_attribute("gen_ai.usage.output_tokens", output_tokens)
@@ -436,7 +461,12 @@ class OpenAIChatProvider(ChatProviderBase):
                         else "end_turn"
                     ),
                     model_used=self._active_model,
-                    usage=TokenUsage(input_tokens=input_tokens, output_tokens=output_tokens),
+                    usage=TokenUsage(
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cache_read_tokens=cache_read_tokens,
+                        cache_creation_tokens=None,
+                    ),
                 )
                 record_call_metrics(
                     model=self._active_model,
@@ -765,7 +795,7 @@ class OpenAIChatProvider(ChatProviderBase):
         usage = TokenUsage(
             input_tokens=_safe_int(getattr(raw.usage, "prompt_tokens", 0)),
             output_tokens=_safe_int(getattr(raw.usage, "completion_tokens", 0)),
-            cache_read_tokens=None,
+            cache_read_tokens=_extract_cached_tokens(raw.usage),
             cache_creation_tokens=None,
         )
 
