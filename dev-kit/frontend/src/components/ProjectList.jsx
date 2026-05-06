@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../api'
 import ConfirmModal from './ConfirmModal'
+import ThemeToggle from './shared/ThemeToggle'
 
 export default function ProjectList({ onOpen }) {
   const [projects, setProjects] = useState([])
@@ -57,7 +58,12 @@ export default function ProjectList({ onOpen }) {
     phase ? phase.charAt(0).toUpperCase() + phase.slice(1) : 'Not started'
 
   return (
-    <div className="min-h-screen bg-gray-950 text-gray-100 flex flex-col items-center pt-16 px-4">
+    <div className="min-h-screen bg-gray-950 text-gray-100 flex flex-col items-center pt-16 px-4 relative">
+      {/* Theme toggle (top-right) — present on every view so the user can flip
+          themes from anywhere in the flow. */}
+      <div className="absolute top-4 right-4">
+        <ThemeToggle />
+      </div>
       {/* Hero */}
       <div className="text-center mb-10">
         <h1 className="text-3xl font-bold mb-2">DPG Configuration Agent</h1>

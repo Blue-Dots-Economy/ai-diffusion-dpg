@@ -11,6 +11,7 @@ import DeployTargetStep from './DeployTargetStep'
 import PreviewStep from './PreviewStep'
 import DeployStatusStep from './DeployStatusStep'
 import IngestDocumentsStep from './IngestDocumentsStep'
+import ThemeToggle from '../shared/ThemeToggle'
 
 const ALL_STEPS_BEFORE_INGEST = [1, 2, 3, 4, 5, 6, 7, 8]
 
@@ -208,6 +209,7 @@ export default function DeployWizard({ slug, onBack }) {
           </button>
           <h1 className="text-lg font-semibold">Deploy Configuration</h1>
         </div>
+        <ThemeToggle />
       </div>
 
       <StepIndicator currentStep={step} completedSteps={effectiveCompleted} onStepClick={handleStepClick} />

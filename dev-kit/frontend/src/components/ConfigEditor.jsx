@@ -7,6 +7,7 @@ import { oneDark } from '@codemirror/theme-one-dark'
 import { api } from '../api'
 import { useTheme } from '../ThemeContext'
 import ConfirmModal from './ConfirmModal'
+import ThemeToggle from './shared/ThemeToggle'
 
 const STATUS_PILL = {
   complete: 'bg-green-900 text-green-300 border-green-700',
@@ -214,6 +215,7 @@ export default function ConfigEditor({ slug, block, onBack }) {
               </button>
             </>
           )}
+          <ThemeToggle />
         </div>
       </div>
 

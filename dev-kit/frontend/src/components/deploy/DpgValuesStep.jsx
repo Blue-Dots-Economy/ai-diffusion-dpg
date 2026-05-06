@@ -55,12 +55,20 @@ function YamlTab({ slug, block, content }) {
           )}
         </div>
       </div>
-      <div ref={containerRef} className="border border-gray-700 rounded-xl overflow-hidden min-h-[300px]" />
+      {/* Error banner above the editor so users see it without scrolling past long YAML. */}
       {saveError && (
-        <div className="mt-2 p-2 bg-red-900/30 border border-red-700 rounded text-red-300 text-sm">
+        <div role="alert" className="p-3 bg-red-900/30 border border-red-700 rounded text-red-300 text-sm whitespace-pre-wrap">
+          <div className="font-semibold mb-1">Save failed — validation error</div>
           {saveError}
         </div>
       )}
+      {/* Fixed-height editor window. CodeMirror's .cm-editor / .cm-scroller fill the
+          container and handle internal scrolling, so long YAML stays inside a
+          predictable viewport instead of pushing controls off-screen. */}
+      <div
+        ref={containerRef}
+        className="border border-gray-700 rounded-xl overflow-hidden h-[500px] [&_.cm-editor]:h-full [&_.cm-scroller]:overflow-auto"
+      />
     </div>
   )
 }

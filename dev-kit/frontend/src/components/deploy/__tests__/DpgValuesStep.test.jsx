@@ -80,4 +80,18 @@ describe('DpgValuesStep', () => {
       expect(api.updateDpgValue).toHaveBeenCalledWith('test-proj', 'agent_core', 'edited content')
     )
   })
+
+  it('shows the validation error banner above the editor when save fails', async () => {
+    api.updateDpgValue.mockRejectedValueOnce({
+      response: { data: { detail: 'agent.primary_model: not a valid model id' } },
+    })
+    render(<DpgValuesStep slug="test-proj" />)
+    await waitFor(() => screen.getByRole('button', { name: /^edit$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(/save failed/i)
+    expect(alert).toHaveTextContent(/not a valid model id/i)
+  })
 })

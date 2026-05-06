@@ -40,3 +40,91 @@ body {
 .light .text-blue-200 { color: #1e3a8a !important; }
 .light .text-blue-300 { color: #1d4ed8 !important; }
 .light .ring-blue-500\/50 { --tw-ring-color: rgba(59, 130, 246, 0.5) !important; }
+
+/* ── Gray opacity variants ────────────────────────────── */
+.light .bg-gray-800\/50 { background-color: rgba(226, 232, 240, 0.7) !important; }
+.light .bg-gray-900\/50 { background-color: rgba(241, 245, 249, 0.7) !important; }
+.light .border-gray-800\/50 { border-color: rgba(203, 213, 225, 0.7) !important; }
+.light .text-gray-600 { color: #475569 !important; }
+
+/* ── Solid action button colors ───────────────────────── */
+/* Blue buttons (primary actions) — keep blue but slightly deeper for AA contrast on light bg. */
+.light .bg-blue-500 { background-color: #2563eb !important; }
+.light .bg-blue-600 { background-color: #1d4ed8 !important; }
+.light .bg-blue-700 { background-color: #1e40af !important; }
+.light .bg-blue-400 { background-color: #3b82f6 !important; }
+.light .text-blue-500 { color: #1d4ed8 !important; }
+.light .border-blue-500 { border-color: #2563eb !important; }
+.light .border-blue-800 { border-color: #93c5fd !important; }
+/* Green (status complete / deploy success) */
+.light .bg-green-600 { background-color: #16a34a !important; }
+.light .bg-green-700 { background-color: #15803d !important; }
+.light .bg-green-400 { background-color: #22c55e !important; }
+.light .text-green-400 { color: #15803d !important; }
+.light .bg-green-950,
+.light .bg-green-950\/40 { background-color: #f0fdf4 !important; }
+.light .border-green-800 { border-color: #86efac !important; }
+/* Red (errors, destructive) */
+.light .bg-red-400 { background-color: #ef4444 !important; }
+.light .bg-red-600 { background-color: #dc2626 !important; }
+.light .bg-red-700 { background-color: #b91c1c !important; }
+.light .bg-red-800 { background-color: #991b1b !important; }
+.light .text-red-400 { color: #b91c1c !important; }
+.light .border-red-500 { border-color: #ef4444 !important; }
+.light .bg-red-900\/30,
+.light .bg-red-900\/40,
+.light .bg-red-900\/50,
+.light .bg-red-950\/20,
+.light .bg-red-950\/30,
+.light .bg-red-950\/40 { background-color: #fef2f2 !important; }
+/* Yellow (warning / draft) */
+.light .text-yellow-200 { color: #854d0e !important; }
+.light .text-yellow-400 { color: #a16207 !important; }
+.light .border-yellow-600 { border-color: #ca8a04 !important; }
+.light .border-yellow-800 { border-color: #fde047 !important; }
+.light .bg-yellow-900\/30,
+.light .bg-yellow-900\/40,
+.light .bg-yellow-950\/30 { background-color: #fefce8 !important; }
+/* Orange (warnings) */
+.light .bg-orange-400 { background-color: #fb923c !important; }
+.light .bg-orange-950\/20 { background-color: #fff7ed !important; }
+.light .text-orange-300 { color: #c2410c !important; }
+.light .text-orange-400 { color: #ea580c !important; }
+.light .border-orange-800 { border-color: #fed7aa !important; }
+/* Indigo (secondary accents) */
+.light .bg-indigo-900\/30 { background-color: #eef2ff !important; }
+.light .text-indigo-200 { color: #312e81 !important; }
+.light .text-indigo-300 { color: #4338ca !important; }
+.light .border-indigo-800 { border-color: #c7d2fe !important; }
+/* Purple (status pills / accents) */
+.light .bg-purple-400 { background-color: #c084fc !important; }
+/* Gray solid greys for spinner dots etc. */
+.light .bg-gray-500 { background-color: #94a3b8 !important; }
+.light .bg-gray-600 { background-color: #94a3b8 !important; }
+.light .border-gray-500 { border-color: #94a3b8 !important; }
+.light .border-gray-600 { border-color: #94a3b8 !important; }
+
+/* ── Keep white text on saturated colored buttons in light mode ───────────
+   The blanket `.light .text-white` override (line above) flips white→dark for
+   readability on light backgrounds. But action buttons (Save/Deploy/Cancel/
+   Retry) use a colored bg + `text-white` and need their text to stay white,
+   otherwise they get dark text on a saturated background. Mirror the
+   `.bg-indigo-700 *` pattern for every solid action color. */
+.light .bg-blue-500 *,
+.light .bg-blue-600 *,
+.light .bg-blue-700 *,
+.light .bg-green-600 *,
+.light .bg-green-700 *,
+.light .bg-red-600 *,
+.light .bg-red-700 *,
+.light .bg-red-800 * { color: #ffffff !important; }
+/* And the buttons themselves when they carry text-white directly. */
+.light .bg-blue-500.text-white,
+.light .bg-blue-600.text-white,
+.light .bg-blue-700.text-white,
+.light .bg-green-600.text-white,
+.light .bg-green-700.text-white,
+.light .bg-red-600.text-white,
+.light .bg-red-700.text-white,
+.light .bg-red-800.text-white,
+.light .bg-indigo-700.text-white { color: #ffffff !important; }

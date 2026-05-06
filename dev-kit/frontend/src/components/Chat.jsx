@@ -7,10 +7,9 @@ import PhaseBar from './PhaseBar'
 import FlowGraph from './FlowGraph'
 import YamlPanel from './YamlPanel'
 import DiffModal from './DiffModal'
-import { useTheme } from '../ThemeContext'
+import ThemeToggle from './shared/ThemeToggle'
 
 export default function Chat({ slug, onDashboard, onBack }) {
-  const { theme, toggle: toggleTheme } = useTheme()
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -23,6 +22,59 @@ export default function Chat({ slug, onDashboard, onBack }) {
   const [diffModal, setDiffModal] = useState(null)  // null | {phase, currentConfigs, previewConfigs}
   const bottomRef = useRef(null)
   const textareaRef = useRef(null)
+
+  // Side-panel resizer. YAML and Graph panels share the same width state since
+  // they are mutually exclusive. The handle on the panel's left edge starts a
+  // drag; movement updates yamlWidth, which is clamped between MIN_PANEL_WIDTH
+  // and (container width − MIN_CHAT_WIDTH) so neither column collapses. The
+  // last value is persisted so the user's preference survives reloads.
+  const PANEL_WIDTH_STORAGE_KEY = 'devkit:chat_side_panel_width'
+  const MIN_PANEL_WIDTH = 320
+  const MIN_CHAT_WIDTH = 320
+  const layoutRef = useRef(null)
+  const [panelWidth, setPanelWidth] = useState(() => {
+    try {
+      const saved = parseInt(localStorage.getItem(PANEL_WIDTH_STORAGE_KEY) || '', 10)
+      if (Number.isFinite(saved) && saved >= MIN_PANEL_WIDTH) return saved
+    } catch {}
+    if (typeof window !== 'undefined') {
+      return Math.max(MIN_PANEL_WIDTH, Math.floor(window.innerWidth * 0.45))
+    }
+    return 600
+  })
+  const [resizing, setResizing] = useState(false)
+
+  useEffect(() => {
+    try { localStorage.setItem(PANEL_WIDTH_STORAGE_KEY, String(panelWidth)) } catch {}
+  }, [panelWidth])
+
+  function startPanelResize(e) {
+    if (!layoutRef.current) return
+    e.preventDefault()
+    const containerWidth = layoutRef.current.getBoundingClientRect().width
+    const startX = e.clientX
+    const startWidth = panelWidth
+    const maxWidth = Math.max(MIN_PANEL_WIDTH, containerWidth - MIN_CHAT_WIDTH)
+
+    function onMove(ev) {
+      // Panel sits on the right; dragging left grows it.
+      const dx = startX - ev.clientX
+      const next = Math.min(Math.max(startWidth + dx, MIN_PANEL_WIDTH), maxWidth)
+      setPanelWidth(next)
+    }
+    function onUp() {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      setResizing(false)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    setResizing(true)
+  }
 
   useEffect(() => {
     api.getProject(slug).then(p => setPhase(p.current_phase || 'tier')).catch(() => {})
@@ -161,8 +213,6 @@ export default function Chat({ slug, onDashboard, onBack }) {
     reader.readAsText(file)
   }
 
-  const showSidePanel = showGraph || showYaml
-
   return (
     <div className="flex flex-col h-screen bg-gray-950 text-gray-100">
       {/* Top bar */}
@@ -184,13 +234,7 @@ export default function Chat({ slug, onDashboard, onBack }) {
           >
             {showYaml ? 'Hide YAML' : 'YAML'}
           </button>
-          <button
-            onClick={toggleTheme}
-            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-            className="text-xs px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors"
-          >
-            {theme === 'dark' ? '☀' : '☾'}
-          </button>
+          <ThemeToggle />
           <button
             onClick={onDashboard}
             className="text-xs bg-blue-600 hover:bg-blue-500 px-3 py-1.5 rounded-lg transition-colors font-medium text-white"
@@ -200,12 +244,12 @@ export default function Chat({ slug, onDashboard, onBack }) {
         </div>
       </div>
 
-      <div className="flex flex-1 overflow-hidden min-h-0">
+      <div ref={layoutRef} className="flex flex-1 overflow-hidden min-h-0">
         {/* Phase sidebar */}
         <PhaseBar currentPhase={phase} checkpoints={checkpoints} onRestoreCheckpoint={handleRestoreCheckpoint} />
 
-        {/* Chat column */}
-        <div className={`flex flex-col ${showSidePanel ? 'w-1/2' : 'flex-1'} overflow-hidden min-w-0`}>
+        {/* Chat column — always flexes to fill space the side panel doesn't take. */}
+        <div className="flex flex-col flex-1 overflow-hidden min-w-0">
           <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
             {messages.length === 0 && (
               <p className="text-gray-500 text-center text-sm mt-12">
@@ -332,16 +376,37 @@ export default function Chat({ slug, onDashboard, onBack }) {
           </form>
         </div>
 
-        {/* Side panels (mutually exclusive) */}
-        {showGraph && (
-          <div className="w-1/2 border-l border-gray-800 bg-gray-950">
-            <FlowGraph graph={graph} />
-          </div>
-        )}
-        {showYaml && (
-          <div className="w-1/2 border-l border-gray-800 min-h-0 flex flex-col">
-            <YamlPanel slug={slug} configs={configs} onSaved={handleConfigSaved} />
-          </div>
+        {/* Side panels (mutually exclusive). Both share the same draggable
+            width so the user's resize preference carries between Graph and
+            YAML views. */}
+        {(showGraph || showYaml) && (
+          <>
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize side panel"
+              onMouseDown={startPanelResize}
+              className={`w-1 shrink-0 cursor-col-resize bg-gray-800 hover:bg-blue-500/60 active:bg-blue-500 transition-colors ${
+                resizing ? 'bg-blue-500' : ''
+              }`}
+            />
+            {showGraph && (
+              <div
+                style={{ width: panelWidth }}
+                className="border-l border-gray-800 bg-gray-950 shrink-0 min-h-0"
+              >
+                <FlowGraph graph={graph} />
+              </div>
+            )}
+            {showYaml && (
+              <div
+                style={{ width: panelWidth }}
+                className="border-l border-gray-800 min-h-0 flex flex-col shrink-0"
+              >
+                <YamlPanel slug={slug} configs={configs} onSaved={handleConfigSaved} />
+              </div>
+            )}
+          </>
         )}
       </div>
 

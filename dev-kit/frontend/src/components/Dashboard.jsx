@@ -3,6 +3,7 @@ import React, { useEffect, useState } from 'react'
 import { api } from '../api'
 import { BLOCKS, BLOCK_LABELS, BLOCK_DESC, STATUS_COLORS } from '../constants'
 import StatusBadge from './shared/StatusBadge'
+import ThemeToggle from './shared/ThemeToggle'
 
 function HealthBanner({ configs, onDeploy }) {
   const counts = { complete: 0, draft: 0, stale: 0, pending: 0 }
@@ -97,6 +98,7 @@ export default function Dashboard({ slug, onChat, onEditConfig, onBack, onDeploy
           >
             {exporting ? 'Exporting…' : '↓ Export ZIP'}
           </button>
+          <ThemeToggle className="px-3 py-2" />
         </div>
       </div>
 
