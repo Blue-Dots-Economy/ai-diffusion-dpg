@@ -161,6 +161,96 @@ def test_set_phase_blocks_advance_when_intent_filters_drift():
     assert state["phase_changed"] is None  # phase did NOT advance
 
 
+def test_connector_param_renamed_from_tool_is_flagged():
+    """Check 14 — renaming `name` → `city_name` in the connector breaks runtime."""
+    blocks = _empty_blocks()
+    blocks["agent_core"] = {
+        "connectors": {
+            "read": [{
+                "name": "geocode",
+                "input_schema": {"properties": {"city_name": {"type": "string"}}},
+            }],
+        },
+    }
+    blocks["action_gateway"] = {
+        "tools": [{
+            "id": "geocode",
+            "type": "rest_api",
+            "endpoints": [{
+                "params": [{"name": "name", "source": "agent", "required": True}],
+            }],
+        }],
+    }
+    errors = validate_cross_block(blocks, selected_channels=[])
+    # Connector exposes `city_name` not in the tool's agent params
+    assert any("city_name" in e and "verbatim" in e for e in errors)
+    # Tool requires `name` but the connector doesn't expose it
+    assert any("missing required tool params" in e and "'name'" in e for e in errors)
+
+
+def test_connector_matching_tool_passes():
+    """Connector and tool agree on the agent-source param name → no error."""
+    blocks = _empty_blocks()
+    blocks["agent_core"] = {
+        "connectors": {
+            "read": [{
+                "name": "geocode",
+                "input_schema": {"properties": {"name": {"type": "string"}}},
+            }],
+        },
+    }
+    blocks["action_gateway"] = {
+        "tools": [{
+            "id": "geocode",
+            "type": "rest_api",
+            "endpoints": [{
+                "params": [
+                    {"name": "name", "source": "agent", "required": True},
+                    {"name": "count", "source": "static", "value": 1},  # static, not in connector
+                ],
+            }],
+        }],
+    }
+    assert validate_cross_block(blocks, selected_channels=[]) == []
+
+
+def test_workflow_intent_not_in_nlu_is_flagged():
+    """Check 15 — subagent valid_intents that aren't in NLU = silent expansion."""
+    blocks = _empty_blocks()
+    blocks["agent_core"] = {
+        "preprocessing": {"nlu_processor": {"intents": ["unknown", "booking_inquiry"]}},
+        "agent_workflow": _minimal_workflow(
+            subagents=[{
+                "id": "main",
+                "is_terminal": True,
+                "valid_intents": ["booking_inquiry", "tour_selected", "package_inquiry"],
+            }],
+        ),
+    }
+    errors = validate_cross_block(blocks, selected_channels=[])
+    assert any(
+        "tour_selected" in e
+        and "package_inquiry" in e
+        and "silent expansion" in e
+        for e in errors
+    )
+
+
+def test_workflow_intents_subset_of_nlu_passes():
+    blocks = _empty_blocks()
+    blocks["agent_core"] = {
+        "preprocessing": {"nlu_processor": {"intents": ["unknown", "booking_inquiry", "tour_selected"]}},
+        "agent_workflow": _minimal_workflow(
+            subagents=[{
+                "id": "main",
+                "is_terminal": True,
+                "valid_intents": ["booking_inquiry", "tour_selected"],
+            }],
+        ),
+    }
+    assert validate_cross_block(blocks, selected_channels=[]) == []
+
+
 def test_set_phase_advances_when_consistent():
     """When everything is consistent, set_phase advances normally."""
     from dev_kit.agent.accumulator import ConfigAccumulator

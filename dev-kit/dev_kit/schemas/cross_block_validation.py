@@ -240,4 +240,86 @@ def validate_cross_block(
             "'Does it sound like a script instead of a human call?']"
         )
 
+    # 14. Connector input_schema property names MUST match the action_gateway
+    # tool's agent-source param names. The REST adapter passes the LLM's
+    # parameters verbatim into the HTTP request — if the connector exposes
+    # `city_name` but the tool's API param is `name`, the LLM's call sends
+    # `?city_name=...` to the API, which silently fails or 4xxs.
+    ag_tools_by_id: dict[str, dict] = {
+        t["id"]: t
+        for t in (blocks.get("action_gateway") or {}).get("tools") or []
+        if isinstance(t, dict) and t.get("id") and t.get("type") == "rest_api"
+    }
+    for category in ("read", "write", "identity"):
+        for c in connectors.get(category) or []:
+            if not isinstance(c, dict):
+                continue
+            name = c.get("name")
+            if not name or name not in ag_tools_by_id:
+                # Connector with no matching action_gateway tool — out of scope
+                # for this check (might be an internal route handled elsewhere).
+                continue
+            tool = ag_tools_by_id[name]
+            connector_props: set[str] = set(
+                ((c.get("input_schema") or {}).get("properties") or {}).keys()
+            )
+            tool_agent_params: set[str] = set()
+            for endpoint in tool.get("endpoints") or []:
+                for p in endpoint.get("params") or []:
+                    if isinstance(p, dict) and p.get("source") == "agent" and p.get("name"):
+                        tool_agent_params.add(p["name"])
+            extra_in_connector = connector_props - tool_agent_params
+            missing_from_connector = {
+                p for p in tool_agent_params
+                if p not in connector_props
+                and any(
+                    isinstance(ep.get("params"), list)
+                    and any(
+                        pp.get("name") == p and pp.get("required")
+                        for pp in ep.get("params") or []
+                        if isinstance(pp, dict)
+                    )
+                    for ep in tool.get("endpoints") or []
+                )
+            }
+            if extra_in_connector:
+                errors.append(
+                    f"agent_core.connectors.{category}[name={name!r}].input_schema.properties "
+                    f"has keys {sorted(extra_in_connector)} that are NOT declared as "
+                    f"agent-source params in action_gateway.tools[id={name!r}]. The REST "
+                    f"adapter forwards the LLM's params verbatim to the HTTP API, so a "
+                    f"renamed connector key (e.g. `city_name` instead of the tool's "
+                    f"`name`) will be sent as `?city_name=...` and the API will not "
+                    f"recognise it. Either rename the connector key to match the tool, "
+                    f"or rename the tool's agent-source param to match the connector."
+                )
+            if missing_from_connector:
+                errors.append(
+                    f"agent_core.connectors.{category}[name={name!r}].input_schema.properties "
+                    f"is missing required tool params {sorted(missing_from_connector)} "
+                    f"declared with source=agent in action_gateway.tools[id={name!r}]. "
+                    f"The LLM cannot supply these via the connector."
+                )
+
+    # 15. Every intent referenced by the workflow MUST already be declared in
+    # nlu_processor.intents. Without this check, the renderer silently unions
+    # subagent valid_intents into the NLU intents list — which means new
+    # intents enter the config without the user ever approving them.
+    if workflow:
+        workflow_intents: set[str] = set(global_intents) | all_subagent_intents
+        workflow_intents.discard("other")
+        workflow_intents.discard("*")
+        missing_from_nlu = workflow_intents - nlu_intents
+        if missing_from_nlu:
+            errors.append(
+                f"agent_core.agent_workflow references intents {sorted(missing_from_nlu)} "
+                f"that are NOT declared in agent_core.preprocessing.nlu_processor.intents. "
+                f"NLU intents are signed off by the user in the language phase; introducing "
+                f"new ones in the workflow phase is silent expansion. If you genuinely need "
+                f"a new intent, ask the user first, then add it to "
+                f"preprocessing.nlu_processor.intents AND the subagent's valid_intents in "
+                f"the same response. Otherwise, rename the subagent intent to match an "
+                f"existing NLU intent."
+            )
+
     return errors
