@@ -47,8 +47,14 @@ async def run_compose_up(
     if domain:
         env["DOMAIN"] = domain
     if secrets:
+        # Pass through whichever LLM provider key(s) the user supplied.
+        # Agent Core only consults the one matching agent.provider at
+        # runtime, so injecting both when both are set is harmless and
+        # lets a config switch providers without reconfiguring secrets.
         if secrets.get("anthropic_api_key"):
             env["ANTHROPIC_API_KEY"] = secrets["anthropic_api_key"]
+        if secrets.get("openai_api_key"):
+            env["OPENAI_API_KEY"] = secrets["openai_api_key"]
         if secrets.get("memgraph_password"):
             env["MEMGRAPH_PASSWORD"] = secrets["memgraph_password"]
         if secrets.get("redis_password"):

@@ -740,12 +740,22 @@ class SessionStateConfig(BaseModel):
 
 
 class UserNodeConfig(BaseModel):
-    label: str = Field(default="User", description="Memgraph node label for the root user node, e.g. 'User'")
-    key: str = Field(default="user_id", description="Property used as the unique user identifier, e.g. 'user_id'")
+    # `label` and `key` are required at runtime (memory_layer/src/schema/config.py
+    # declares them with no defaults). The dev-kit schema previously supplied
+    # defaults here, which masked LLM-generated configs that left user_node
+    # empty — those configs passed deploy review and then crashed at startup
+    # with "Field required" on label/key. Removed the defaults so deploy
+    # review surfaces the gap before deploy.
+    label: str = Field(..., min_length=1, description="Memgraph node label for the root user node, e.g. 'User'")
+    key: str = Field(..., min_length=1, description="Property used as the unique user identifier, e.g. 'user_id'")
 
 
 class GraphConfig(BaseModel):
-    user_node: UserNodeConfig = Field(default_factory=UserNodeConfig)
+    # user_node is required at runtime (memory_layer GraphConfig declares it
+    # without a default). Removed the default_factory here for the same reason
+    # as UserNodeConfig above — keep dev-kit deploy review at least as strict
+    # as runtime so missing required fields fail at the wizard, not in prod.
+    user_node: UserNodeConfig
     subnodes: dict[str, Any] = Field(
         default_factory=dict,
         description="Named subnode definitions attached to the user node. "

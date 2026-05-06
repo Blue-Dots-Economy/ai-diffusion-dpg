@@ -251,6 +251,60 @@ def test_workflow_intents_subset_of_nlu_passes():
     assert validate_cross_block(blocks, selected_channels=[]) == []
 
 
+def test_channel_check_does_not_fire_before_language_phase():
+    """Leaving overview with web/voice selected but channels not yet
+    configured should NOT block phase advance — channels are configured
+    during language/reach, not overview."""
+    blocks = _empty_blocks()
+    # selected_channels is set in overview, but ac.channels and rl.channels
+    # haven't been touched yet — that's expected.
+    assert validate_cross_block(blocks, selected_channels=["web", "voice"], current_phase="overview") == []
+
+
+def test_channel_check_fires_when_leaving_language():
+    """Once the LLM is leaving the language phase, missing
+    agent_core.channels.<x> entries should be flagged."""
+    blocks = _empty_blocks()
+    errors = validate_cross_block(blocks, selected_channels=["web", "voice"], current_phase="language")
+    assert any("agent_core.channels.web is missing" in e for e in errors)
+    assert any("agent_core.channels.voice is missing" in e for e in errors)
+    # Reach checks still gated until reach phase
+    assert not any("reach_layer.channels.web" in e for e in errors)
+
+
+def test_voice_raya_check_fires_only_from_reach_phase():
+    blocks = _empty_blocks()
+    blocks["agent_core"] = {"channels": {"web": {}, "voice": {}}}  # satisfy check #7
+    blocks["reach_layer"] = {"reach_layer": {"channels": {"web": {}, "voice": {}}}}  # satisfy check #8
+    errors = validate_cross_block(blocks, selected_channels=["voice"], current_phase="memory")
+    # voice raya completeness shouldn't fire yet — leaving memory, not reach.
+    assert not any("raya" in e for e in errors)
+    errors = validate_cross_block(blocks, selected_channels=["voice"], current_phase="reach")
+    assert any("raya" in e for e in errors)
+
+
+def test_intent_filter_check_only_after_knowledge():
+    blocks = _empty_blocks()
+    blocks["agent_core"] = {"preprocessing": {"nlu_processor": {"intents": ["unknown"]}}}
+    blocks["knowledge_engine"] = {
+        "knowledge": {"blocks": {"static_knowledge_base": {"intent_filters": {"ask_x": ["doc"]}}}},
+    }
+    # Before knowledge phase: skip
+    assert validate_cross_block(blocks, selected_channels=[], current_phase="language") == []
+    # Knowledge phase or later: fire
+    errors = validate_cross_block(blocks, selected_channels=[], current_phase="knowledge")
+    assert any("ask_x" in e and "not declared" in e for e in errors)
+
+
+def test_no_phase_context_runs_every_check():
+    """At deploy time (current_phase=None), every invariant runs."""
+    blocks = _empty_blocks()
+    errors = validate_cross_block(blocks, selected_channels=["voice"], current_phase=None)
+    # Channel + voice raya checks both fire at deploy time
+    assert any("agent_core.channels.voice is missing" in e for e in errors)
+    assert any("reach_layer.channels.voice" in e for e in errors)
+
+
 def test_set_phase_advances_when_consistent():
     """When everything is consistent, set_phase advances normally."""
     from dev_kit.agent.accumulator import ConfigAccumulator

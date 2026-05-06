@@ -786,7 +786,11 @@ class ToolHandler:
         # set_reach_channels — earlier phases have nothing to validate yet.
         blocks_state = {b: self._acc.get_block(b) for b in BLOCKS}
         selected_channels = self._acc.get_reach_channel_selection()
-        cross_errors = validate_cross_block(blocks_state, selected_channels)
+        # Pass the phase the LLM is leaving so phase-tied invariants only
+        # fire once the LLM is past the phase that's supposed to populate
+        # the relevant fields. e.g. channel-shape checks require the
+        # language phase to have run; raya completeness requires reach.
+        cross_errors = validate_cross_block(blocks_state, selected_channels, current_phase=current)
         if cross_errors:
             error_lines = "\n".join(f"  - {e}" for e in cross_errors)
             logger.warning(
@@ -799,6 +803,20 @@ class ToolHandler:
                     "violation_count": len(cross_errors),
                 },
             )
+            stale_blocks = sorted(
+                {b for b in BLOCKS if self._acc.get_status(b) == ConfigStatus.STALE}
+            )
+            stale_hint = ""
+            if stale_blocks:
+                stale_hint = (
+                    f"\n\n⚠️ The following block(s) are STALE — they already exhausted "
+                    f"the per-section retry budget this turn: {stale_blocks}. "
+                    f"update_config will return VALIDATION_SECTION_STALE on those "
+                    f"sections, so further tool calls cannot resolve this. STOP "
+                    f"calling tools and reply to the user as text: explain the "
+                    f"violations above and ask them how to proceed (correct a value, "
+                    f"skip the section, or rollback to a checkpoint)."
+                )
             return (
                 f"PHASE_ADVANCE_BLOCKED — cross-block consistency check failed "
                 f"for the leaving phase '{current}'. Fix these before advancing "
@@ -807,6 +825,7 @@ class ToolHandler:
                 f"declared in one block but missing from another). Make the "
                 f"corresponding update_config calls to bring the blocks back "
                 f"in sync, then call set_phase('{requested}') again."
+                f"{stale_hint}"
             )
 
         if status == "skip":

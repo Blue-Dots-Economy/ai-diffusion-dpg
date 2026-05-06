@@ -530,6 +530,14 @@ def get_project(slug: str) -> dict:
     # Knowledge base presence — used by the deploy wizard to skip the ingest step
     meta["has_knowledge_base"] = engine.accumulator.has_knowledge_base()
 
+    # LLM provider chosen during the language phase. The deploy wizard's
+    # MandatoryInputsStep uses this to ask for the matching API key
+    # (ANTHROPIC_API_KEY vs OPENAI_API_KEY) instead of always prompting for
+    # Anthropic. Defaults to "anthropic" when the agent block hasn't been
+    # configured yet (matches the schema default).
+    agent_cfg = engine.accumulator.get_block("agent_core").get("agent", {}) or {}
+    meta["llm_provider"] = agent_cfg.get("provider") or "anthropic"
+
     return meta
 
 
@@ -1358,6 +1366,8 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
             set_files["domainConfig"] = str(domain_file)
         if secrets.get("anthropic_api_key"):
             set_values["anthropicApiKey"] = secrets["anthropic_api_key"]
+        if secrets.get("openai_api_key"):
+            set_values["openaiApiKey"] = secrets["openai_api_key"]
 
         # Inject infra secrets into DPG blocks that connect to them
         if block_name == "memory_layer":
@@ -1747,6 +1757,8 @@ async def _run_k8s_deploy(slug: str, state, secrets: dict, resources: dict, kube
                         set_files["domainConfig"] = str(domain_file)
                     if secrets.get("anthropic_api_key"):
                         set_values["anthropicApiKey"] = secrets["anthropic_api_key"]
+                    if secrets.get("openai_api_key"):
+                        set_values["openaiApiKey"] = secrets["openai_api_key"]
 
                     # Inject infra secrets into DPG blocks that connect to them
                     if svc_name == "memory_layer":

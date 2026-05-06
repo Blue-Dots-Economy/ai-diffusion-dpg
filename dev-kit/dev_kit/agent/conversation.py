@@ -31,6 +31,39 @@ _HISTORY_WINDOW = int(_os.environ.get("DEVKIT_HISTORY_WINDOW", "20"))  # Max rec
 # (e.g. LLM ignores VALIDATION_SECTION_STALE and keeps retrying).
 _MAX_TOOL_ROUNDS = int(_os.environ.get("DEVKIT_MAX_TOOL_ROUNDS", "50"))
 
+# Stalled-progress early-exit. Once the per-section retry counter caps and
+# both update_config (returns SECTION_STALE) and set_phase (returns
+# PHASE_ADVANCE_BLOCKED) are rejecting, the LLM has only one valid move —
+# produce a text response asking the user. If it keeps calling tools
+# instead, every round returns a rejection. Detect that pattern and break
+# out so the user isn't waiting for the absolute 50-round ceiling.
+_STALLED_ROUNDS_THRESHOLD = int(_os.environ.get("DEVKIT_STALLED_ROUNDS_THRESHOLD", "4"))
+
+_REJECTION_PREFIXES = (
+    "VALIDATION_ERROR",
+    "VALIDATION_FAILED_AFTER",
+    "VALIDATION_SECTION_STALE",
+    "PHASE_ADVANCE_BLOCKED",
+    "ERROR ",
+    "ERROR:",
+    "ERROR—",  # em dash
+    "ERROR —",
+)
+
+
+def _is_rejection(result: str) -> bool:
+    """Return True if a tool_result string is a structured rejection.
+
+    Used by the conversation loop to detect "no-progress" rounds where
+    every tool call comes back as a validation error, a STALE rejection,
+    a blocked phase advance, or a generic ERROR. Successful writes
+    ("ok: updated …") and free-form tool successes return False.
+    """
+    if not isinstance(result, str):
+        return False
+    head = result.lstrip()
+    return any(head.startswith(p) for p in _REJECTION_PREFIXES)
+
 logger = logging.getLogger(__name__)
 
 _llm_retry = retry(
@@ -301,6 +334,7 @@ class ConversationEngine:
             raise
 
         tool_rounds = 0
+        stalled_rounds = 0   # consecutive rounds with all-rejection tool_results
         while response.stop_reason == "tool_use":
             tool_rounds += 1
             if tool_rounds > _MAX_TOOL_ROUNDS:
@@ -330,8 +364,11 @@ class ConversationEngine:
                 break
 
             tool_results = []
+            round_all_rejected = True
+            round_had_tool_use = False
             for block in response.content:
                 if block.type == "tool_use":
+                    round_had_tool_use = True
                     result_text = self._tool_handler.dispatch(block.name, block.input)
                     tool_results.append({
                         "type": "tool_result",
@@ -339,6 +376,52 @@ class ConversationEngine:
                         "content": result_text,
                     })
                     config_updates.append({"tool": block.name, "input": block.input})
+                    if not _is_rejection(result_text):
+                        round_all_rejected = False
+
+            # Stalled-progress detector: when the per-section caps are hit
+            # AND set_phase is also blocked, every tool call comes back as
+            # a rejection and the LLM's only valid move is a text response.
+            # If it keeps calling tools anyway, break out early instead of
+            # letting the loop drift to _MAX_TOOL_ROUNDS.
+            if round_had_tool_use and round_all_rejected:
+                stalled_rounds += 1
+            else:
+                stalled_rounds = 0
+            if stalled_rounds >= _STALLED_ROUNDS_THRESHOLD:
+                logger.warning(
+                    "devkit.conversation.stalled_loop_break",
+                    extra={
+                        "operation": "conversation.chat",
+                        "status": "stalled_loop_break",
+                        "rounds": tool_rounds,
+                        "stalled_rounds": stalled_rounds,
+                        "phase": self._state.get("phase"),
+                    },
+                )
+                # Persist the assistant + tool_results from THIS round so
+                # the next LLM call sees the same context, then inject the
+                # system instruction and force a text response.
+                serialized_content = [
+                    blk.model_dump() if hasattr(blk, "model_dump") else blk
+                    for blk in response.content
+                ]
+                self._history.append({"role": "assistant", "content": serialized_content})
+                self._history.append({"role": "user", "content": tool_results})
+                self._history.append({
+                    "role": "user",
+                    "content": (
+                        f"SYSTEM: detected {stalled_rounds} consecutive tool-call "
+                        f"rounds with only validation/STALE/BLOCKED rejections — no "
+                        f"successful writes. Stop calling tools and reply to the user "
+                        f"as text. Explain which fields couldn't be auto-configured "
+                        f"and ask the user to either change values, choose a different "
+                        f"option, or skip the affected section. The user must guide "
+                        f"the next step."
+                    ),
+                })
+                response = await _call_llm(system, self._history[-_HISTORY_WINDOW:])
+                break
 
             serialized_content = [
                 block.model_dump() if hasattr(block, "model_dump") else block

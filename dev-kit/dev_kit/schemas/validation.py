@@ -117,26 +117,61 @@ def validate_domain_section(block: str, section: str, merged_data: dict) -> Opti
         return None
     except ValidationError as e:
         formatted = _format_pydantic_error(e)
-        logger.warning(
-            "validation_failed",
-            extra={
-                "operation": "validate_domain_section",
-                "status": "failure",
-                "block": block,
-                "section": top_level,
-                "error_count": len(e.errors()),
-                "field_errors": [
-                    {
-                        "loc": ".".join(str(p) for p in err["loc"]) or "<root>",
-                        "type": err.get("type", "unknown"),
-                        "msg": err.get("msg", ""),
-                        "input": _truncate_input(err.get("input")),
-                    }
-                    for err in e.errors()
-                ],
-                "latency_ms": int((time.time() - start) * 1000),
-            },
-        )
+        all_errors = e.errors()
+        # Partial drafts naturally trigger [missing] errors (required fields
+        # not yet supplied) — both validate_partial and acc.update filter
+        # those before reporting. Log at DEBUG when ONLY missing-field
+        # errors are present so partial-mode validation doesn't drown the
+        # console in false-WARNING noise. Real errors (value_error,
+        # extra_forbidden, type_error, etc.) keep the WARNING level and
+        # carry a one-line summary in the message string itself, so the
+        # default Python log formatter (which shows only %(message)s)
+        # surfaces what failed without requiring a structured handler.
+        non_missing_errors = [err for err in all_errors if err.get("type") != "missing"]
+        field_errors = [
+            {
+                "loc": ".".join(str(p) for p in err["loc"]) or "<root>",
+                "type": err.get("type", "unknown"),
+                "msg": err.get("msg", ""),
+                "input": _truncate_input(err.get("input")),
+            }
+            for err in all_errors
+        ]
+        latency_ms = int((time.time() - start) * 1000)
+
+        if not non_missing_errors:
+            logger.debug(
+                "validation_partial_missing_only block=%s section=%s missing=%d",
+                block, top_level, len(all_errors),
+                extra={
+                    "operation": "validate_domain_section",
+                    "status": "partial_missing_only",
+                    "block": block,
+                    "section": top_level,
+                    "error_count": len(all_errors),
+                    "field_errors": field_errors,
+                    "latency_ms": latency_ms,
+                },
+            )
+        else:
+            sample = " | ".join(
+                f"{e['loc']}[{e['type']}]: {e['msg'][:80]}"
+                for e in field_errors if e["type"] != "missing"
+            )
+            logger.warning(
+                "validation_failed block=%s section=%s errors=%d :: %s",
+                block, top_level, len(non_missing_errors), sample,
+                extra={
+                    "operation": "validate_domain_section",
+                    "status": "failure",
+                    "block": block,
+                    "section": top_level,
+                    "error_count": len(all_errors),
+                    "non_missing_count": len(non_missing_errors),
+                    "field_errors": field_errors,
+                    "latency_ms": latency_ms,
+                },
+            )
         return formatted
 
 

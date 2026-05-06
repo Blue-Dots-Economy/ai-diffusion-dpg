@@ -169,8 +169,13 @@ class ConfigAccumulator:
             return (
                 f"VALIDATION_SECTION_STALE for {block}.{top_level}: "
                 f"already failed {self._max_validation_attempts} times this turn. "
-                f"DO NOT call update_config for this section again. "
-                f"Either ask the user for guidance or call set_phase to advance."
+                f"DO NOT call update_config for this section again — repeated calls "
+                f"will keep returning this same rejection. set_phase may also be "
+                f"blocked because the merged state is still inconsistent. Your "
+                f"correct next action is to STOP calling tools and reply to the "
+                f"user as a text message: tell them which field could not be "
+                f"auto-configured, what value(s) you tried, and ask them to either "
+                f"provide a corrected value or instruct you to skip the section."
             )
 
         # Build the would-be merged result without touching self._data.
@@ -471,15 +476,28 @@ class ConfigAccumulator:
         return bool(self._data.get("azure_storage", {}).get("needed"))
 
     def has_knowledge_base(self) -> bool:
-        """Return True if the knowledge_engine config has a static_knowledge_base enabled.
+        """Return True if the knowledge_engine config has a static_knowledge_base configured.
+
+        The schema's ``StaticKnowledgeBaseSection.enabled`` defaults to ``True``,
+        so a YAML with the section populated but no explicit ``enabled`` key
+        still means "this agent uses a KB." Treat the section as a KB when:
+
+        * the ``static_knowledge_base`` block is present and non-empty, AND
+        * ``enabled`` is not explicitly set to ``False``.
+
+        The previous implementation defaulted ``enabled`` to ``False`` when
+        absent — opposite of the runtime schema — so projects that omitted
+        the redundant flag (most of them) had the deploy wizard mark them as
+        "no KB" and skip the ingest step.
 
         Returns:
-            True if ``knowledge_engine.knowledge.blocks.static_knowledge_base.enabled`` is True,
-            False if absent or disabled.
+            True when the agent uses a KB, False otherwise.
         """
         ke = self._data.get("knowledge_engine", {})
         skb = ke.get("knowledge", {}).get("blocks", {}).get("static_knowledge_base", {})
-        return bool(skb.get("enabled", False))
+        if not skb:
+            return False
+        return skb.get("enabled", True) is not False
 
     def get_required_secrets(self) -> list[dict]:
         """Return the list of API key secrets required by configured tools.
@@ -730,7 +748,22 @@ class ConfigAccumulator:
     # ------------------------------------------------------------------
 
     def summary(self) -> str:
-        """Return a human-readable summary of current config state for system prompts."""
+        """Return a human-readable summary of current config state for system prompts.
+
+        Renders two sections:
+
+        1. **Per-block top-level keys** — block-by-block snapshot of which
+           top-level sections exist, plus the block's status. Quick visual
+           index of what's been touched.
+        2. **Cross-phase references** — the actual values for fields that
+           later phases must read and reuse character-for-character (NLU
+           intents, supported languages, connector names, intent_filters
+           keys, etc.). The system prompt tells the LLM to ``read these
+           directly``; this is where they become readable.
+
+        Both sections are truncated to keep the prompt compact, but the
+        cross-phase block prints values in full when set, never just keys.
+        """
         lines = ["Current config state:"]
         for block in BLOCKS:
             data = self._data[block]
@@ -752,7 +785,70 @@ class ConfigAccumulator:
             lines.append(f"  selected_channels: {', '.join(selected_channels)}")
         else:
             lines.append("  selected_channels: not yet set")
+
+        # ---- Cross-phase references ----------------------------------
+        # Surface the actual values for paths that later phases must
+        # reference. Without this the LLM can see "preprocessing" exists
+        # under agent_core but cannot read the intents inside it.
+        ref_lines = self._render_cross_phase_references()
+        if ref_lines:
+            lines.append("")
+            lines.append("Cross-phase references (signed-off values — read these directly, do NOT re-ask the user):")
+            lines.extend(ref_lines)
+
         return "\n".join(lines)
+
+    def _render_cross_phase_references(self) -> list[str]:
+        """Build the cross-phase reference block for ``summary()``.
+
+        Returns a list of indented strings, one per populated reference
+        path. Returns an empty list when nothing has been set yet (e.g.
+        in tier/overview phase before the language phase runs).
+
+        The reference set is the closure of fields that downstream phase
+        prompts tell the LLM to "use the value from <path>". If you add
+        a new cross-phase reference rule in phases.py, add the path here
+        too — otherwise the LLM is told to read something it can't see.
+        """
+        refs: list[str] = []
+        ac = self._data.get("agent_core") or {}
+        ke = self._data.get("knowledge_engine") or {}
+
+        agent = ac.get("agent") or {}
+        for field in ("provider", "primary_model", "fallback_model"):
+            val = agent.get(field)
+            if val:
+                refs.append(f"  agent_core.agent.{field}: {val}")
+
+        preprocessing = ac.get("preprocessing") or {}
+        lang_norm = preprocessing.get("language_normalisation") or {}
+        if lang_norm.get("default_language"):
+            refs.append(f"  agent_core.preprocessing.language_normalisation.default_language: {lang_norm['default_language']}")
+        supported = lang_norm.get("supported_languages")
+        if supported:
+            refs.append(f"  agent_core.preprocessing.language_normalisation.supported_languages: {supported}")
+
+        nlu = preprocessing.get("nlu_processor") or {}
+        intents = nlu.get("intents")
+        if intents:
+            refs.append(f"  agent_core.preprocessing.nlu_processor.intents: {intents}")
+        entities = nlu.get("entities")
+        if entities:
+            refs.append(f"  agent_core.preprocessing.nlu_processor.entities: {entities}")
+
+        connectors = ac.get("connectors") or {}
+        for category in ("read", "write", "identity", "internal"):
+            entries = connectors.get(category) or []
+            names = [c.get("name") for c in entries if isinstance(c, dict) and c.get("name")]
+            if names:
+                refs.append(f"  agent_core.connectors.{category} names: {names}")
+
+        kb = ((ke.get("knowledge") or {}).get("blocks") or {}).get("static_knowledge_base") or {}
+        intent_filters = kb.get("intent_filters")
+        if intent_filters:
+            refs.append(f"  knowledge_engine.intent_filters keys: {sorted(intent_filters.keys())}")
+
+        return refs
 
     def to_dict(self) -> dict:
         """Serialise to a JSON-compatible dict for checkpoint storage.

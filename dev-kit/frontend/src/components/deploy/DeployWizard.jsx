@@ -29,6 +29,7 @@ export default function DeployWizard({ slug, onBack }) {
     resources: {},
     secrets: {
       anthropic_api_key: '',
+      openai_api_key: '',
       namespace_prefix: 'dpg',
       memgraph_password: '',
       redis_password: '',
@@ -105,9 +106,20 @@ export default function DeployWizard({ slug, onBack }) {
     // Step 5: Required secrets must be filled — always enforced even on revisit,
     // because SecretInput clears the stored value when the user clicks "Change".
     if (step === 5) {
-      if (!data.secrets?.anthropic_api_key?.trim()) {
-        setValidationError('Anthropic API Key is required.')
-        return
+      // Require the API key for whichever provider was chosen during the
+      // language phase. Default to anthropic when project meta doesn't
+      // include llm_provider yet (e.g. legacy projects).
+      const provider = project?.llm_provider || 'anthropic'
+      if (provider === 'openai') {
+        if (!data.secrets?.openai_api_key?.trim()) {
+          setValidationError('OpenAI API Key is required (the agent_core config selected provider=openai).')
+          return
+        }
+      } else {
+        if (!data.secrets?.anthropic_api_key?.trim()) {
+          setValidationError('Anthropic API Key is required (the agent_core config selected provider=anthropic).')
+          return
+        }
       }
       const requiredSecrets = project?.required_secrets || []
       for (const { env_var } of requiredSecrets) {
