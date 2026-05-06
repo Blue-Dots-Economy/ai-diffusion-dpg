@@ -290,7 +290,7 @@ Mandatory safety gate. Stateless. Runs on every turn — never skipped. Structur
 
 ---
 
-### Action Gateway ✅
+### Action Gateway 🟡
 
 Sole interface with external systems. Executes tool calls expressed by the LLM. LLM never calls APIs directly. Write/identity connectors require Trust Layer consent before execution.
 
@@ -332,7 +332,7 @@ Sole interface with external systems. Executes tool calls expressed by the LLM. 
 
 ---
 
-### Reach Layer 🟡
+### Reach Layer ✅
 
 Normalises inbound channels and delivers responses. Ships as **three independently-deployable services** sharing a common `reach_layer/base/` package.
 
@@ -366,7 +366,7 @@ A channel is therefore *not* identified by its mode — Web can run in either mo
 |---------|--------|-------|
 | CLI (`reach_layer/cli/`) | ✅ | `CLIReach` — direct mode, readline loop, port-free. No TurnAssembler. |
 | Web (`reach_layer/web/`) | ✅ | FastAPI + React 19 SPA, port 8005. `POST /chat`, `GET /user-history/{user_id}`, `GET /app-config`. Direct mode by default; session mode is supported. Google Sign-In optional. |
-| Voice (`reach_layer/voice/`) | 🟡 | `VobizAdapter` on pipecat pipeline (VAD → Raya STT → AgentCoreLLM → Raya TTS → SIP), port 8006. Session mode (required by VAD-driven input). Barge-in supported. 166 tests. |
+| Voice (`reach_layer/voice/`) | ✅ | `VobizAdapter` on pipecat pipeline (VAD → Raya STT → AgentCoreLLM → Raya TTS → SIP), port 8006. Session mode (required by VAD-driven input). Barge-in supported. 166 tests. |
 | Production SIP/PSTN | ❌ | Out of scope — VOIP via pipecat/Vobiz is the production path |
 | WhatsApp | ⏳ | Gupshup/Twilio webhook — pending |
 | Mobile SDK | ⏳ | Pending |
@@ -682,9 +682,9 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 | Knowledge Engine | ✅ | Glossary, ChromaDB RAG, HTTP server (`POST /retrieve`). 192 tests, 13 files, ≥70% coverage. |
 | Memory Layer | ✅ | Redis (session) + Memgraph (user/journey/context graph) + SQLite (audit). 10 HTTP endpoints. 226 tests. |
 | Trust Layer | 🟡 | All 4 sub-blocks implemented. Fail-closed. HiTL: log backend only. Consent: in-process SQLite. 138 tests. |
-| Action Gateway | ✅ | Generic adapter framework (RestApiAdapter + McpAdapter). Config-driven via `tools:[]`. OTel instrumented. 173 tests. |
-| Reach Layer | 🟡 | 3 channels: CLI (✅) + Web/React 19 SPA (✅, with `routing_only` mode for voice-only deployments) + Voice/pipecat (🟡 166 tests). 308 Python + 143 UI tests. |
-| Observability Layer | 🟡 | OTel instrumentation functional. Audit = Loki+Jaeger via OTel Collector. Grafana dashboards pending. 101 tests. |
+| Action Gateway | 🟡 | Generic adapter framework (RestApiAdapter + McpAdapter). Response caching is pending Config-driven via `tools:[]`. OTel instrumented. 173 tests. |
+| Reach Layer | ✅ | 3 channels: CLI (✅) + Web/React 19 SPA (✅, with `routing_only` mode for voice-only deployments) + Voice/pipecat (✅ 166 tests). 308 Python + 143 UI tests. |
+| Observability Layer | ✅ | OTel instrumentation functional. Audit = Loki+Jaeger via OTel Collector. Grafana dashboards pending. 101 tests. |
 
 ### By feature
 
@@ -717,10 +717,10 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 | Action Gateway adapter framework | ✅ | RestApiAdapter + McpAdapter; config-driven via `tools:[]`; OTel instrumented |
 | Reach Layer restructure (3 channels) | ✅ | `reach_layer/base/` + `cli/` + `web/` + `voice/` as independent deployables |
 | Web UI React SPA | ✅ | React 19 + Vite 6 + Tailwind; dark/light theme; Markdown; Google Sign-In optional |
-| Voice channel (pipecat) | 🟡 | VobizAdapter wired; TTS barge-in stop pending (#98) |
+| Voice channel (pipecat) | ✅ | VobizAdapter wired |
 | Real ONEST connector | ⏳ | Add ONEST tool entry to `action_gateway.yaml` once live API is available |
 | Browser-side SSE streaming | ⏳ | `POST /chat/stream` endpoint — typewriter animation (#99) |
-| TTS stop on barge-in | ⏳ | In-flight Raya TTS audio does not stop mid-utterance on barge-in (#98) |
+| TTS stop on barge-in | ✅ | In-flight Raya TTS audio does not stop mid-utterance on barge-in (#98) |
 | WhatsApp/Mobile channels | ⏳ | Pending |
 | Grafana dashboard provisioning | ⏳ | `automation/docker/grafana/provisioning/` not yet implemented |
 | Configuration Agent (Tier 1) | ✅ | FastAPI + React SPA; conversation-driven YAML generation for all 7 DPGs |

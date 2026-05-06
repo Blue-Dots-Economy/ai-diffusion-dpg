@@ -15,7 +15,7 @@ Reference domain: **KKB (Kaam Ki Baat)** — a labour-market assistant for infor
 | **Memory Layer** | State | 8002 | ✅ | Redis (session/profile) + Memgraph (context graph) + SQLite (audit). 3-scope state management. 10 HTTP endpoints. |
 | **Observability Layer** | Learning | 8004 | ✅ | OTel instrumentation + Loki/Jaeger audit trail functional via shared `dpg_telemetry` package. OutcomeTracker. Grafana dashboards pending. |
 | **Trust Layer** | Trust | 8003 | 🟡 | 4 sub-blocks: ContentBlock, GuardrailsBlock, ConsentBlock, HiTLBlock(todo). Fail-closed. 7 endpoints. |
-| **Reach Layer** | Channels | 8005 | 🟡 | CLI (stdin/stdout) + Web adapter (port 8005). Outbound channels (voice) pending. |
+| **Reach Layer** | Channels | 8005 | ✅ | CLI (stdin/stdout) + Web adapter (port 8005). Outbound channels (voice). |
 | **Action Gateway** | Integration | 9999 | 🟡 | Mock ONEST API: market lookup + job apply. 10 fixture trades. No real connectors yet. |
 
 ---

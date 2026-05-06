@@ -129,7 +129,7 @@ Other blocks may call each other directly **only under the approved scopes liste
 
 Full implementations: **Agent Core** (818 tests — sync + async streaming + TurnAssembler + multi-provider chat_provider), **Knowledge Engine** (192 tests), **Memory Layer** (226 tests, Redis + Memgraph + SQLite), **Action Gateway** (173 tests — RestApiAdapter + McpAdapter), **Domain Configuration Kit** (365 tests).
 
-Partial implementations (correct interface, some gaps): **Trust Layer** (138 tests — all 4 sub-blocks; HiTL log backend only, consent store in-process), **Reach Layer** (308 Python + 143 UI tests — CLI ✅, Web/React SPA ✅ (with `routing_only` mode for voice-only deployments), Voice/pipecat 🟡), **Observability Layer** (101 tests — OTel functional; Grafana dashboards pending).
+Partial implementations (correct interface, some gaps): **Trust Layer** (138 tests — all 4 sub-blocks; HiTL log backend only, consent store in-process), **Reach Layer** (308 Python + 143 UI tests — CLI ✅, Web/React SPA ✅ (with `routing_only` mode for voice-only deployments), Voice/pipecat ✅), **Observability Layer** (101 tests — OTel functional; Grafana dashboards pending).
 
 **Stub interfaces must exactly match the real interface** — they must be replaceable without changing Agent Core or other modules.
 
