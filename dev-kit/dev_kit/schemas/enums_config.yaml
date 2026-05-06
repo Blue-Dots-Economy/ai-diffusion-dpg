@@ -20,7 +20,7 @@ openai_models:
 languages:
   - english
   - hindi
-  - hinglish        # English + Hindi code-switching, used by healthbot/kisanseva/obsrv-docs
+  - hinglish        # English + Hindi code-switching, 
   - marathi
   - telugu
   - kannada
