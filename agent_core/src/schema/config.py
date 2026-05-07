@@ -399,6 +399,11 @@ class LanguageNormalisationConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    # GH-313: when False the leading LLM call is skipped; the main LLM mirrors
+    # the user's language via a directive in build_system_prompt(). Defaults to
+    # True for backward compatibility; KKB sets False.
+    enabled: bool = True
+
     # Per-helper provider override (#287 follow-up). When set, build_chat_provider
     # uses this provider for the language-norm helper instead of inheriting
     # agent.provider. Lets a deployment run primary chat on OpenAI while
