@@ -424,12 +424,49 @@ def test_language_normaliser_called_with_raw_input():
     assert call_args[1].get("raw_input") == "kaam chahiye"
 
 
+def test_language_normaliser_skipped_when_disabled():
+    """When preprocessing.language_normalisation.enabled=false, no LN call is made (#313)."""
+    config = {
+        **VALID_CONFIG,
+        "preprocessing": {
+            **VALID_CONFIG["preprocessing"],
+            "language_normalisation": {
+                "enabled": False,
+                "default_language": "hindi",
+            },
+        },
+    }
+    agent = _make_agent()
+    agent._config = config
+    agent.process_turn(_turn_input("kaam chahiye"))
+    agent._language_normaliser.normalise.assert_not_called()
+
+
 def test_nlu_processor_called_with_normalised_input():
     agent = _make_agent()
     agent._language_normaliser.normalise.return_value = ("kaam chahiye normalised", "hinglish")
     agent.process_turn(_turn_input("kaam chahiye"))
     call_args = agent._nlu_processor.process.call_args
     assert call_args[1].get("normalised_input") == "kaam chahiye normalised"
+
+
+def test_nlu_processor_called_with_raw_input_when_ln_disabled():
+    """When LN is disabled, NLU receives the raw user message (#313)."""
+    config = {
+        **VALID_CONFIG,
+        "preprocessing": {
+            **VALID_CONFIG["preprocessing"],
+            "language_normalisation": {
+                "enabled": False,
+                "default_language": "hindi",
+            },
+        },
+    }
+    agent = _make_agent()
+    agent._config = config
+    agent.process_turn(_turn_input("kaam chahiye"))
+    call_args = agent._nlu_processor.process.call_args
+    assert call_args[1].get("normalised_input") == "kaam chahiye"
 
 
 def test_manager_run_turn_called_with_ke_context():
@@ -643,7 +680,7 @@ def test_blocked_output_still_calls_trust_output():
 # ---------------------------------------------------------------------------
 
 def test_default_language_from_config_used_when_no_preference():
-    """When no language_preference is in profile or session, config default_language is used."""
+    """When LN is enabled and no preference is in profile/session, config default_language is locked in."""
     agent = _make_agent(session_data={"current_subagent_id": "market_truth"})
     agent._language_normaliser.normalise.return_value = ("Hello", None)  # no detected language
     agent.process_turn(_turn_input())
@@ -651,6 +688,29 @@ def test_default_language_from_config_used_when_no_preference():
     agent._memory.write.assert_any_call(
         SESSION_ID, SESSION_ID, "persistent", "language_preference", "hindi"
     )
+
+
+def test_language_preference_not_written_when_ln_disabled_and_no_prior_preference():
+    """When LN is disabled and no prior preference exists, language_preference is NOT locked in on turn 1 (#313)."""
+    config = {
+        **VALID_CONFIG,
+        "preprocessing": {
+            **VALID_CONFIG["preprocessing"],
+            "language_normalisation": {
+                "enabled": False,
+                "default_language": "hindi",
+            },
+        },
+    }
+    agent = _make_agent(session_data={"current_subagent_id": "market_truth"})
+    agent._config = config
+    agent.process_turn(_turn_input())
+    # language_preference must NOT be written with the default when language is genuinely unknown
+    write_calls = [
+        call for call in agent._memory.write.call_args_list
+        if len(call.args) >= 5 and call.args[3] == "language_preference"
+    ]
+    assert not write_calls, "language_preference must not be locked in when LN is disabled and no prior preference"
 
 
 # ---------------------------------------------------------------------------

@@ -433,36 +433,47 @@ class AgentCore(AgentCoreBase):
         # ── Step 4: Language Normalisation ───────────────────────────
         # Runs before the consent gate so the detected language is available
         # to translate the consent prompt on Turn 1.
-        logger.info(
-            "  [STEP 4] Language Normalisation  →  LLM call (model=%s)",
-            self._lang_chat_provider.get_active_model(),
+        # When preprocessing.language_normalisation.enabled=false the LLM call
+        # is skipped; the main LLM mirrors the user's language via a directive
+        # injected by build_system_prompt() (#313).
+        _ln_cfg = (
+            self._config.get("preprocessing", {})
+            .get("language_normalisation", {})
         )
+        _ln_enabled = bool(_ln_cfg.get("enabled", True))
         t4 = time.time()
-        normalised_input, turn_language = self._language_normaliser.normalise(
-            raw_input=turn_input.user_message,
-            config=self._config,
-        )
+        if _ln_enabled:
+            logger.info(
+                "  [STEP 4] Language Normalisation  →  LLM call (model=%s)",
+                self._lang_chat_provider.get_active_model(),
+            )
+            normalised_input, turn_language = self._language_normaliser.normalise(
+                raw_input=turn_input.user_message,
+                config=self._config,
+            )
+        else:
+            logger.info("  [STEP 4] Language Normalisation  →  skipped (enabled=false)")
+            normalised_input = turn_input.user_message
+            turn_language = ""
 
         # Determine language preference — lock it in if not already set
         profile_data = bundle.profile if bundle.profile is not None else {}
         session_data = bundle.session if bundle.session is not None else {}
 
-        default_language = (
-            self._config.get("preprocessing", {})
-            .get("language_normalisation", {})
-            .get("default_language", "hindi")
-        )
+        default_language = _ln_cfg.get("default_language", "hindi")
         language_preference = (
             profile_data.get("language_preference") or
             session_data.get("language_preference") or
             turn_language or
-            default_language
+            (default_language if _ln_enabled else "")
         )
 
         # Lock in language_preference on the first turn only.
+        # Skip when LN is disabled and we have no real language signal yet —
+        # the main LLM will infer it from the first turn via the mirror directive.
         # Explicit user switches are handled after NLU (Step 5 → language_switch_request).
         saved_preference = session_data.get("language_preference") or profile_data.get("language_preference")
-        if not saved_preference:
+        if not saved_preference and language_preference:
             pref_scope: str = self._config.get("entity_persistence", {}).get("scope", "persistent")
             self._write_memory_sync(session_id, user_id, pref_scope, "language_preference", language_preference)
             bundle.session["language_preference"] = language_preference
@@ -470,7 +481,7 @@ class AgentCore(AgentCoreBase):
         logger.info(
             "  [STEP 4] Language Normalisation  ✓  detected=%s  preference=%s  normalised=%r  latency=%dms",
             turn_language or "—",
-            language_preference,
+            language_preference or "—",
             (normalised_input or turn_input.user_message)[:100],
             int((time.time() - t4) * 1000),
         )
@@ -2670,23 +2681,44 @@ class AgentCore(AgentCoreBase):
                 if pre_previous_user_state_id is None:
                     pre_previous_user_state_id = self._user_state_default
 
+            _ln_cfg_s = (
+                self._config.get("preprocessing", {})
+                .get("language_normalisation", {})
+            )
+            _ln_enabled_s = bool(_ln_cfg_s.get("enabled", True))
             logger.info(
-                "  [STEP 4+5] Language Norm + NLU  →  (session=%s, parallel)", session_id
+                "  [STEP 4+5] Language Norm + NLU  →  (session=%s, ln_enabled=%s)",
+                session_id, _ln_enabled_s,
             )
             t45 = time.time()
             yield _stamp(SignalEvent(stage="nlu", status="start"))
 
-            # asyncio.to_thread offloads each sync provider.call() onto the
-            # default thread pool so the two LLM round-trips overlap in wall
-            # clock. They never race on shared state — each receives its own
-            # ChatResponse.
-            (normalised_input, turn_language), early_nlu_result = await asyncio.gather(
-                asyncio.to_thread(
-                    self._language_normaliser.normalise,
-                    turn_input.user_message,
-                    self._config,
-                ),
-                asyncio.to_thread(
+            if _ln_enabled_s:
+                # asyncio.to_thread offloads each sync provider.call() onto the
+                # default thread pool so the two LLM round-trips overlap in wall
+                # clock. They never race on shared state — each receives its own
+                # ChatResponse.
+                (normalised_input, turn_language), early_nlu_result = await asyncio.gather(
+                    asyncio.to_thread(
+                        self._language_normaliser.normalise,
+                        turn_input.user_message,
+                        self._config,
+                    ),
+                    asyncio.to_thread(
+                        self._nlu_processor.process,
+                        turn_input.user_message,
+                        current_question,
+                        current_subagent_id,
+                        pre_allowed_intents,
+                        pre_existing_profile_keys,
+                        pre_previous_user_state_id,
+                    ),
+                )
+            else:
+                # LN disabled (#313): skip the leading LLM call; main LLM mirrors language.
+                normalised_input = turn_input.user_message
+                turn_language = ""
+                early_nlu_result = await asyncio.to_thread(
                     self._nlu_processor.process,
                     turn_input.user_message,
                     current_question,
@@ -2694,10 +2726,9 @@ class AgentCore(AgentCoreBase):
                     pre_allowed_intents,
                     pre_existing_profile_keys,
                     pre_previous_user_state_id,
-                ),
-            )
+                )
             logger.info(
-                "  [STEP 4+5] Lang-Norm + NLU (parallel)  ✓  detected=%s  intent=%s  total_latency=%dms",
+                "  [STEP 4+5] Lang-Norm + NLU  ✓  detected=%s  intent=%s  total_latency=%dms",
                 turn_language or "—",
                 early_nlu_result.intent,
                 int((time.time() - t45) * 1000),
@@ -2705,22 +2736,20 @@ class AgentCore(AgentCoreBase):
 
             profile_data = bundle.profile if bundle.profile is not None else {}
             session_data = bundle.session if bundle.session is not None else {}
-            default_language = (
-                self._config.get("preprocessing", {})
-                .get("language_normalisation", {})
-                .get("default_language", "hindi")
-            )
+            default_language = _ln_cfg_s.get("default_language", "hindi")
             language_preference = (
                 profile_data.get("language_preference")
                 or session_data.get("language_preference")
                 or turn_language
-                or default_language
+                or (_ln_cfg_s.get("default_language", "hindi") if _ln_enabled_s else "")
             )
 
             # Lock in language_preference on the first turn only.
+            # Skip when LN is disabled and we have no real language signal yet —
+            # the main LLM will infer it from the first turn via the mirror directive.
             # Explicit user switches are handled after NLU (Step 5 → language_switch_request).
             saved_preference = session_data.get("language_preference") or profile_data.get("language_preference")
-            if not saved_preference:
+            if not saved_preference and language_preference:
                 pref_scope: str = self._config.get("entity_persistence", {}).get("scope", "persistent")
                 await self._async_memory.write(session_id, user_id, pref_scope, "language_preference", language_preference)
                 bundle.session["language_preference"] = language_preference

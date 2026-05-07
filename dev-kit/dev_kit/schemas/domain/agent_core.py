@@ -147,8 +147,12 @@ class LanguageNormalisationSection(BaseModel):
     `model` defaults to "" — the runtime LanguageNormalisationConfig accepts
     an empty model (the helper inherits agent.primary_model in that case),
     so existing domain configs that omit the field round-trip cleanly.
+
+    Set `enabled: false` to skip the leading LLM call; the main LLM will mirror
+    the user's language via a system-prompt directive instead (#313).
     """
     model_config = ConfigDict(extra="forbid")
+    enabled: bool = True
     provider: Optional[ProviderField] = None   # None → inherit agent.provider at runtime
     model: str = ""   # empty allowed — helper inherits agent.primary_model at runtime
     default_language: LanguageField

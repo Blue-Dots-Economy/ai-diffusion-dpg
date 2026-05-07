@@ -375,6 +375,13 @@ class ManagerAgent:
             channel_ctx_parts.append(
                 f"User's language: {detected_language}. Respond in {detected_language}."
             )
+        else:
+            channel_ctx_parts.append(
+                "Detect the user's language and script from their most recent message "
+                "and reply in the same language and script. If the user mixes languages "
+                "or uses a romanised script (e.g. Hinglish, Kanglish), mirror their mix "
+                "and script exactly."
+            )
         channel_ctx = "\n".join(channel_ctx_parts)
 
         resumption_note = (

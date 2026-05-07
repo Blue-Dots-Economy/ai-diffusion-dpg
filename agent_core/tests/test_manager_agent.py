@@ -299,11 +299,22 @@ def test_build_system_prompt_includes_profile_fields():
     assert "Hubli" in result
 
 
-def test_build_system_prompt_empty_args_returns_empty_list():
+def test_build_system_prompt_empty_args_returns_mirror_directive():
+    # When all content args are empty and no detected_language is set,
+    # the mirror directive (GH-313) is injected so the LLM still receives
+    # language guidance even without a prior LN call.
     agent = _make_manager_for_prompt()
     result = agent.build_system_prompt("", "", "", "", {})
     assert isinstance(result, SystemPrompt)
-    assert result.blocks == []
+    flat = _flat(result)
+    assert "mirror" in flat.lower() or "detect" in flat.lower()
+
+
+def test_build_system_prompt_mirror_directive_when_no_detected_language():
+    """Mirror directive is injected when detected_language is empty (#313)."""
+    agent = _make_manager_for_prompt()
+    result = _flat(agent.build_system_prompt("", "", "", "cli", {}))
+    assert "mirror" in result.lower() or "detect" in result.lower()
 
 
 def test_build_system_prompt_guardrails_in_agent_prompt_included():
@@ -788,11 +799,12 @@ def test_build_system_prompt_tier3_has_no_cache_hint():
 
 def test_build_system_prompt_elides_empty_sections():
     agent = _make_manager_for_prompt()
-    # only persona — no channel suffix, no subagent, no profile, no guardrails
+    # persona + mirror directive (GH-313) — no channel suffix, no subagent, no profile, no guardrails
     result = agent.build_system_prompt("Persona only.", "", "", "", {})
-    assert len(result.blocks) == 1  # only tier 1 with persona
-    assert "<channel_rules>" not in result.blocks[0].text
-    assert "<session_end_policy>" not in result.blocks[0].text
+    flat = _flat(result)
+    assert "Persona only." in flat
+    assert "<channel_rules>" not in flat
+    assert "<session_end_policy>" not in flat
 
 
 def test_build_system_prompt_resumption_lives_in_tier3():
