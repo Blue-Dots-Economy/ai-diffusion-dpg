@@ -18,7 +18,7 @@ from .config_loader import (
     load_reach_config,
     load_yaml,
 )
-from .events import DoneEvent, SentenceEvent, SignalEvent, StreamEvent
+from .events import ConsentEvent, DoneEvent, SentenceEvent, SignalEvent, StreamEvent
 from .reach_layer_base import ReachLayerBase
 from .text_channel import TextChannelBase
 from .voice_channel import VADEvent, VoiceChannelBase
@@ -28,6 +28,7 @@ __all__ = [
     "TextChannelBase",
     "VoiceChannelBase",
     "VADEvent",
+    "ConsentEvent",
     "SignalEvent",
     "SentenceEvent",
     "DoneEvent",
