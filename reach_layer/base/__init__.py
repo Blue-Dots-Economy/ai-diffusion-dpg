@@ -6,7 +6,7 @@ Exports:
     TextChannelBase  — text-based channels (CLI, Web)
     VoiceChannelBase — voice/telephony channels
     VADEvent         — Voice Activity Detection event
-    SignalEvent, SentenceEvent, DoneEvent, StreamEvent — SSE event types
+    SignalEvent, SentenceEvent, DoneEvent, ConsentEvent, StreamEvent — SSE event types
     load_reach_config, load_config, load_yaml, deep_merge, ChannelDisabledError
         — unified config loader shared by cli/web/voice services
 """

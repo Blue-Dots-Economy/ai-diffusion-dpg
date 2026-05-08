@@ -412,7 +412,7 @@ class ReachLayerBase(ABC):
                 turn_id=payload.get("turn_id", ""),
                 session_ended=payload.get("session_ended", False),
             )
-        if event_type == "consent":
+        elif event_type == "consent":
             return ConsentEvent(
                 purpose=str(payload.get("purpose", "")),
                 granted=bool(payload.get("granted", False)),
