@@ -142,7 +142,7 @@ reach_layer:
       recording:
         source: disabled
         consent_purpose: recording
-        webhook_timeout_s: 30
+        webhook_timeout_s: 300
         fetch_timeout_s: 60
         min_duration_ms: 500
         caller_id_hash_salt: ""

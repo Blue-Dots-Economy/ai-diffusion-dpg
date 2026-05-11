@@ -292,7 +292,11 @@ class RecordingConfig(BaseModel):
 
     source: Literal["disabled", "vobiz", "pipeline"] = "disabled"
     consent_purpose: str = "recording"
-    webhook_timeout_s: float = 30.0
+    # Vobiz can take a few minutes between recording stop and firing the
+    # callback (the MP3 has to upload to their CDN first). 30 s was too
+    # aggressive — observed in #322 manual testing — so the default is now
+    # 5 minutes. Operators can tune via reach_layer.channels.voice.recording.
+    webhook_timeout_s: float = 300.0
     fetch_timeout_s: float = 60.0
     min_duration_ms: int = 500
     caller_id_hash_salt: str = ""

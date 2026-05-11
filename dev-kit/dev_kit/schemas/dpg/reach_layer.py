@@ -175,7 +175,9 @@ class RecordingDpg(BaseModel):
     model_config = ConfigDict(extra="forbid")
     source: Literal["disabled", "vobiz", "pipeline"] = "disabled"
     consent_purpose: str = "recording"
-    webhook_timeout_s: float = 30.0
+    # See reach_layer_base.schema.config.RecordingConfig — Vobiz's recording
+    # callback can take a few minutes after stop. Default raised to 5 min.
+    webhook_timeout_s: float = 300.0
     fetch_timeout_s: float = 60.0
     min_duration_ms: int = 500
     caller_id_hash_salt: str = ""
