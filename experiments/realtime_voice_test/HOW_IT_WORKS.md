@@ -174,13 +174,6 @@ is dominated by worst-case latency.
 
 These are not blockers — items to verify with the first end-to-end call.
 
-- **Does the model reliably reply in Hindi without a prompt instruction?**
-  We set `input_audio_transcription.language="hi"` (the standard
-  language hint), but OpenAI Realtime has no separate output-language
-  parameter. The model's reply language depends on it mirroring the
-  user's Hindi audio + transcript. If it drifts to English on real
-  calls, add a one-line `"Reply in the user's language"` instruction
-  to `prompts.py`.
 - **Does Pipecat surface OpenAI's `response.done` token-usage payload
   to our observer?** If yes: cost calculation is straightforward. If
   no: hook directly into the Realtime service's raw event callback,

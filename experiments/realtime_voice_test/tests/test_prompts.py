@@ -8,13 +8,13 @@ def test_default_prompt_is_nonempty_string():
     assert len(DEFAULT_PROMPT) > 20
 
 
-def test_default_prompt_does_not_force_language():
-    """Language enforcement is the LANGUAGE env var's job, not the prompt's.
+def test_default_prompt_pins_hindi_output():
+    """The prompt explicitly tells the model to reply in Hindi.
 
-    If this test starts failing we've reintroduced a language directive in
-    the prompt — fine if intentional (e.g., the model drifted to English
-    on real calls), but the test should be updated to reflect the new
-    intent.
+    Reason: `input_audio_transcription.language="hi"` is a STT hint only —
+    OpenAI Realtime has no separate output-language parameter, so the only
+    way to ensure the bot replies in Hindi (regardless of what language the
+    user opens with) is via an explicit instruction in the system prompt.
+    This was verified on real test calls.
     """
-    assert "Hindi" not in DEFAULT_PROMPT
-    assert "हिन्दी" not in DEFAULT_PROMPT
+    assert "Hindi" in DEFAULT_PROMPT
