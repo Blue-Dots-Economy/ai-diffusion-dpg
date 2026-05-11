@@ -79,6 +79,17 @@ class TurnAccumulator:
         etype = event.get("type", "")
 
         if etype == "input_audio_buffer.speech_started":
+            if self._cur:
+                logger.warning(
+                    "bridge.turn_abandoned",
+                    extra={
+                        "operation": "TurnAccumulator.observe",
+                        "status": "skipped",
+                        "call_sid": self._call_sid,
+                        "abandoned_turn": self._cur.get("turn"),
+                        "had_speech_stopped": "t_speech_stopped_ms" in self._cur,
+                    },
+                )
             self._turn_num += 1
             self._cur = {
                 "call_sid": self._call_sid,
@@ -379,9 +390,45 @@ async def run(
             )
             stop_event.set()
 
+    vobiz_task = asyncio.create_task(vobiz_to_openai())
+    openai_task = asyncio.create_task(openai_to_vobiz())
     try:
-        await asyncio.gather(vobiz_to_openai(), openai_to_vobiz())
+        done, pending = await asyncio.wait(
+            {vobiz_task, openai_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        # Signal the survivor + close OpenAI WS to unblock its event iterator.
+        stop_event.set()
+        await openai.aclose()
+        # Give survivor a bounded window to exit cleanly, then cancel.
+        for task in pending:
+            try:
+                await asyncio.wait_for(task, timeout=2.0)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "bridge.shutdown_timeout",
+                    extra={
+                        "operation": "bridge.run",
+                        "status": "failure",
+                        "call_sid": call_sid,
+                    },
+                )
+                task.cancel()
+        # Log any exceptions from completed tasks.
+        for task in done:
+            exc = task.exception()
+            if exc is not None:
+                logger.warning(
+                    "bridge.task_exception",
+                    extra={
+                        "operation": "bridge.run",
+                        "status": "failure",
+                        "call_sid": call_sid,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                )
     finally:
+        # Idempotent — RealtimeClient.aclose sets _ws = None, so a second call no-ops.
         await openai.aclose()
         logger.info(
             "bridge.call_complete",

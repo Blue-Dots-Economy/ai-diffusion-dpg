@@ -135,3 +135,42 @@ def test_pop_finished_turn_returns_none_when_no_complete_turn():
     acc = TurnAccumulator(call_sid="c", session_id="s", model="m",
                           voice="v", prompt_name="p")
     assert acc.pop_finished_turn() is None
+
+
+def test_speech_started_during_active_turn_starts_new_turn():
+    """A second speech_started mid-turn abandons the first and starts turn 2.
+
+    The spec says no barge-in — the partial first turn is silently discarded.
+    The second turn completes normally and is pop-able as turn 2.
+    """
+    acc = TurnAccumulator(call_sid="c", session_id="s", model="m",
+                          voice="v", prompt_name="p")
+
+    # Start turn 1 but never finish it.
+    acc.observe(100, {"type": "input_audio_buffer.speech_started"})
+    acc.observe(200, {"type": "input_audio_buffer.speech_stopped"})
+    # No response.done — turn 1 is left incomplete.
+
+    # A second speech_started fires while turn 1 is still active.
+    acc.observe(2000, {"type": "input_audio_buffer.speech_started"})
+
+    # Turn 1 was abandoned — nothing should be pop-able yet.
+    assert acc.pop_finished_turn() is None
+
+    # Complete turn 2 normally.
+    acc.observe(2500, {"type": "input_audio_buffer.speech_stopped"})
+    acc.observe(2700, {"type": "response.created"})
+    acc.observe(2900, {"type": "response.audio.delta", "delta": "AA"})
+    acc.observe(3500, {
+        "type": "response.done",
+        "response": {"usage": {
+            "input_token_details": {"text_tokens": 1},
+            "output_token_details": {"audio_tokens": 1},
+        }},
+    })
+
+    turn = acc.pop_finished_turn()
+    assert turn is not None
+    assert turn["turn"] == 2
+    # Confirm the first abandoned turn was never queued.
+    assert acc.pop_finished_turn() is None
