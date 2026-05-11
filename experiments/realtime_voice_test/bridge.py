@@ -12,6 +12,7 @@ phone calls.
 from __future__ import annotations
 
 import asyncio
+import base64
 import datetime as dt
 import json
 import logging
@@ -179,3 +180,214 @@ class TurnAccumulator:
 
         self._finished.append(cur)
         self._cur = {}
+
+
+def _now_ms_factory():
+    """Return a monotonic-clock function that yields ms since first call."""
+    start = time.monotonic_ns()
+
+    def now_ms() -> int:
+        return int((time.monotonic_ns() - start) / 1_000_000)
+
+    return now_ms
+
+
+def _write_jsonl(path: Path, row: dict[str, Any]) -> None:
+    """Append one JSON row to the file and flush. Failures are logged, not raised."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            f.flush()
+    except Exception as exc:
+        logger.error(
+            "bridge.jsonl_write_failed",
+            extra={
+                "operation": "bridge._write_jsonl",
+                "status": "failure",
+                "path": str(path),
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+        )
+
+
+async def run(
+    vobiz_ws,
+    *,
+    call_sid: str,
+    api_key: str,
+    model: str,
+    voice: str,
+    prompt_name: str,
+    instructions: str,
+    vad_silence_ms: int,
+    results_dir: Path,
+) -> None:
+    """Run the per-call bridge until either side disconnects.
+
+    Args:
+        vobiz_ws: FastAPI WebSocket already accepted from Vobiz.
+        call_sid: Vobiz call identifier (used for the JSONL filename).
+        api_key: OpenAI API key.
+        model: OpenAI model id (e.g. 'gpt-realtime-mini').
+        voice: OpenAI voice name (e.g. 'alloy').
+        prompt_name: Name of the prompt registered in prompts.py.
+        instructions: The system prompt text to send to OpenAI.
+        vad_silence_ms: server_vad silence_duration_ms config.
+        results_dir: Folder where the per-call JSONL is written.
+    """
+    now_ms = _now_ms_factory()
+    out_path = results_dir / f"call_{call_sid}.jsonl"
+
+    openai = RealtimeClient(api_key=api_key, model=model)
+    await openai.connect()
+    await openai.send_session_update(
+        instructions=instructions,
+        voice=voice,
+        vad_silence_ms=vad_silence_ms,
+    )
+
+    accumulator = TurnAccumulator(
+        call_sid=call_sid,
+        session_id="",  # filled in when session.created arrives
+        model=model,
+        voice=voice,
+        prompt_name=prompt_name,
+    )
+
+    # State shared between the two tasks.
+    stream_id: str = ""
+    stop_event = asyncio.Event()
+
+    async def vobiz_to_openai() -> None:
+        """Read Vobiz frames; forward audio bytes to OpenAI."""
+        nonlocal stream_id
+        try:
+            while not stop_event.is_set():
+                raw = await vobiz_ws.receive_text()
+                frame = parse_frame(raw)
+                if isinstance(frame, StartFrame):
+                    stream_id = frame.stream_id
+                    logger.info(
+                        "bridge.vobiz_start",
+                        extra={
+                            "operation": "bridge.vobiz_to_openai",
+                            "status": "success",
+                            "call_sid": call_sid,
+                            "stream_id": frame.stream_id,
+                            "vobiz_call_id": frame.call_id,
+                        },
+                    )
+                elif isinstance(frame, MediaFrame):
+                    await openai.send_audio(frame.audio_bytes)
+                    accumulator.note_audio_in_bytes(len(frame.audio_bytes))
+                elif isinstance(frame, StopFrame):
+                    logger.info(
+                        "bridge.vobiz_stop",
+                        extra={
+                            "operation": "bridge.vobiz_to_openai",
+                            "status": "success",
+                            "call_sid": call_sid,
+                        },
+                    )
+                    stop_event.set()
+                    return
+                elif isinstance(frame, UnknownFrame):
+                    logger.debug(
+                        "bridge.vobiz_unknown",
+                        extra={
+                            "operation": "bridge.vobiz_to_openai",
+                            "status": "skipped",
+                            "call_sid": call_sid,
+                            "event": frame.event,
+                        },
+                    )
+        except Exception as exc:
+            logger.warning(
+                "bridge.vobiz_loop_error",
+                extra={
+                    "operation": "bridge.vobiz_to_openai",
+                    "status": "failure",
+                    "call_sid": call_sid,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
+            stop_event.set()
+
+    async def openai_to_vobiz() -> None:
+        """Read OpenAI events; forward response audio to Vobiz; capture markers."""
+        try:
+            async for event in openai.events():
+                if stop_event.is_set():
+                    return
+                etype = event.get("type", "")
+
+                # Capture session_id on first session.created
+                if etype == "session.created":
+                    sess = event.get("session") or {}
+                    sid = str(sess.get("id", ""))
+                    accumulator._session_id = sid  # injected once
+                    logger.info(
+                        "bridge.openai_session",
+                        extra={
+                            "operation": "bridge.openai_to_vobiz",
+                            "status": "success",
+                            "call_sid": call_sid,
+                            "session_id": sid,
+                        },
+                    )
+
+                # Forward audio bytes back to the phone caller.
+                if etype == "response.audio.delta":
+                    b64 = event.get("delta", "") or ""
+                    try:
+                        audio_bytes = base64.b64decode(b64) if b64 else b""
+                    except Exception:
+                        audio_bytes = b""
+                    if audio_bytes and stream_id:
+                        await vobiz_ws.send_text(build_play_audio(stream_id, audio_bytes))
+                        accumulator.note_audio_out_bytes(len(audio_bytes))
+
+                # Latency-marker capture.
+                accumulator.observe(now_ms(), event)
+
+                # Flush any finished turns to disk.
+                while True:
+                    finished = accumulator.pop_finished_turn()
+                    if finished is None:
+                        break
+                    _write_jsonl(out_path, finished)
+                    logger.info(
+                        "bridge.turn_finished",
+                        extra={
+                            "operation": "bridge.openai_to_vobiz",
+                            "status": "success",
+                            "call_sid": call_sid,
+                            "turn": finished.get("turn"),
+                            "ttft_ms": finished.get("ttft_ms"),
+                        },
+                    )
+        except Exception as exc:
+            logger.warning(
+                "bridge.openai_loop_error",
+                extra={
+                    "operation": "bridge.openai_to_vobiz",
+                    "status": "failure",
+                    "call_sid": call_sid,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
+            stop_event.set()
+
+    try:
+        await asyncio.gather(vobiz_to_openai(), openai_to_vobiz())
+    finally:
+        await openai.aclose()
+        logger.info(
+            "bridge.call_complete",
+            extra={
+                "operation": "bridge.run",
+                "status": "success",
+                "call_sid": call_sid,
+            },
+        )
