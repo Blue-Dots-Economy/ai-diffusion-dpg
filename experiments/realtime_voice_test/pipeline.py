@@ -34,6 +34,7 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from latency_observer import LatencyObserverProcessor
 from prompts import DEFAULT_PROMPT
+from recording_tap import RecordingTapProcessor
 
 
 # Silero VAD requires 16 kHz pcm16 input; all pipeline audio is resampled to this rate.
@@ -50,6 +51,7 @@ def build_pipeline_task(
     voice: str,
     language: str,
     vad_silence_ms: int,
+    recording_tap: RecordingTapProcessor | None = None,
 ) -> PipelineTask:
     """Assemble the Pipecat pipeline + PipelineTask for one call.
 
@@ -64,6 +66,11 @@ def build_pipeline_task(
         language: Language hint for input audio transcription (e.g. "hi").
         vad_silence_ms: Silence threshold in milliseconds for the
             user-turn-stop strategy.
+        recording_tap: Optional RecordingTapProcessor spliced into the
+            pipeline just before transport.output() to capture both
+            inbound (caller) and outbound (bot) audio into a WAV buffer.
+            Caller is responsible for activate()/close() and writing
+            buffer_value to disk.
 
     Returns:
         A PipelineTask ready to be passed to PipelineRunner.run().
@@ -117,14 +124,21 @@ def build_pipeline_task(
         language=language,
     )
 
-    pipeline = Pipeline([
+    # The recording tap, if provided, is spliced just before transport.output()
+    # — same placement used by reach_layer/voice. At that position it sees both
+    # InputAudioRawFrame (caller audio flowing downstream) and OutputAudioRawFrame
+    # (bot audio about to leave), so the WAV captures both sides of the call.
+    stages = [
         transport.input(),
         VADProcessor(vad_analyzer=vad),
         user_turn,
         llm,
         observer,
-        transport.output(),
-    ])
+    ]
+    if recording_tap is not None:
+        stages.append(recording_tap)
+    stages.append(transport.output())
+    pipeline = Pipeline(stages)
 
     return PipelineTask(
         pipeline,

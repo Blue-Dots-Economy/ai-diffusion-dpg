@@ -24,7 +24,8 @@ from pipecat.transports.websocket.fastapi import (
     FastAPIWebsocketTransport,
 )
 
-from pipeline import build_pipeline_task
+from pipeline import PIPELINE_SAMPLE_RATE, build_pipeline_task
+from recording_tap import RecordingTapProcessor
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -161,7 +162,15 @@ def create_app() -> FastAPI:
         )
 
         ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        out_path = RESULTS_DIR / f"{ts}_{call_sid}" / "turns.jsonl"
+        call_dir = RESULTS_DIR / f"{ts}_{call_sid}"
+        out_path = call_dir / "turns.jsonl"
+        recording_path = call_dir / "recording.wav"
+
+        # Pipeline-tap audio recorder (ported from reach_layer/voice). Captures
+        # both caller and bot audio into an in-memory WAV buffer that we flush
+        # to recording.wav on call end.
+        recording_tap = RecordingTapProcessor(sample_rate=PIPELINE_SAMPLE_RATE)
+        recording_tap.activate()
 
         task = build_pipeline_task(
             transport=transport,
@@ -172,6 +181,7 @@ def create_app() -> FastAPI:
             voice=cfg["voice"],
             language=cfg["language"],
             vad_silence_ms=cfg["vad_silence_ms"],
+            recording_tap=recording_tap,
         )
 
         @transport.event_handler("on_client_disconnected")
@@ -200,6 +210,35 @@ def create_app() -> FastAPI:
                 },
             )
         finally:
+            # Flush the recording before logging session end. close() finalises
+            # the WAV header; subsequent frames (if any) are silently dropped.
+            recording_tap.close()
+            wav_bytes = recording_tap.buffer_value
+            if wav_bytes:
+                try:
+                    recording_path.parent.mkdir(parents=True, exist_ok=True)
+                    with recording_path.open("wb") as f:
+                        f.write(wav_bytes)
+                    logger.info(
+                        "server.recording_written",
+                        extra={
+                            "operation": "server.ws_endpoint",
+                            "status": "success",
+                            "call_sid": call_sid,
+                            "path": str(recording_path),
+                            "bytes": len(wav_bytes),
+                        },
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "server.recording_write_failed",
+                        extra={
+                            "operation": "server.ws_endpoint",
+                            "status": "failure",
+                            "call_sid": call_sid,
+                            "error": f"{type(exc).__name__}: {exc}",
+                        },
+                    )
             logger.info(
                 "server.session_ended",
                 extra={

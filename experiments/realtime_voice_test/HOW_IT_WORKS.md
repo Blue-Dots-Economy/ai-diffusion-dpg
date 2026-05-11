@@ -83,12 +83,19 @@ serving the latency-measurement goal of this experiment.
 
 ## Output layout
 
-One subdirectory per call, one JSONL row per user turn:
+One subdirectory per call. Each contains:
+- `turns.jsonl` — one JSON row per user turn.
+- `recording.wav` — 16 kHz mono PCM capture of both caller and bot audio
+  (ported from reach_layer/voice's `RecordingTapProcessor`).
 
 ```
 results/
-├── 20260512T103045Z_<call_id>/turns.jsonl
-├── 20260512T110212Z_<call_id>/turns.jsonl
+├── 20260512T103045Z_<call_id>/
+│   ├── turns.jsonl
+│   └── recording.wav
+├── 20260512T110212Z_<call_id>/
+│   ├── turns.jsonl
+│   └── recording.wav
 └── ...
 ```
 
@@ -121,6 +128,7 @@ is dominated by worst-case latency.
 | `prompts.py` | Default system prompt (short, non-language-specific — language is set via `LANGUAGE` env var) |
 | `pricing.py` | Per-1M token rates + per-turn cost calc |
 | `aggregate.py` | Read all JSONL → p50/p99 summary |
+| `recording_tap.py` | Pipecat FrameProcessor (ported from reach_layer/voice) — captures both audio directions into a WAV buffer for the per-call `recording.wav` |
 
 ## Prerequisites
 

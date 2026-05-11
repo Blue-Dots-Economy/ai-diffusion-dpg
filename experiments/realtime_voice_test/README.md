@@ -77,14 +77,19 @@ Your phone rings → answer → speak Hindi → hear the model reply → hang up
 ## What you get
 
 Per call, one subdirectory is written under `results/`, named
-`{YYYYmmddTHHMMSSZ}_{vobiz_call_uuid}/`, containing `turns.jsonl` —
-one JSON row per user turn:
+`{YYYYmmddTHHMMSSZ}_{vobiz_call_uuid}/`, containing:
+- `turns.jsonl` — one JSON row per user turn.
+- `recording.wav` — 16 kHz mono PCM audio of both caller and bot (use
+  any media player to review by ear).
 
 ```
 results/
-├── 20260512T103045Z_abc123/turns.jsonl
-├── 20260512T110212Z_def456/turns.jsonl
-└── 20260512T142800Z_ghi789/turns.jsonl
+├── 20260512T103045Z_abc123/
+│   ├── turns.jsonl
+│   └── recording.wav
+├── 20260512T110212Z_def456/
+│   ├── turns.jsonl
+│   └── recording.wav
 ```
 
 ```json
@@ -125,4 +130,5 @@ Prints headline p50 / p99 TTFT, total response, and average cost.
 - `prompts.py` — Default system prompt
 - `pricing.py` — Per-1M token rates + per-turn cost calc
 - `aggregate.py` — Reads all JSONL → p50/p99 summary
-- `results/` — per-call JSONL files (subdirectories: `{timestamp}_{call_sid}/turns.jsonl`)
+- `recording_tap.py` — Pipecat FrameProcessor (ported from reach_layer/voice) for per-call audio capture
+- `results/` — per-call output (subdirectories: `{timestamp}_{call_sid}/turns.jsonl` + `recording.wav`)
