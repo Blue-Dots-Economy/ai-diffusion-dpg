@@ -20,7 +20,6 @@ from pipecat.services.openai.realtime.events import (
     AudioConfiguration,
     AudioInput,
     AudioOutput,
-    InputAudioTranscription,
     PCMAudioFormat,
     SessionProperties,
 )
@@ -84,15 +83,12 @@ def build_pipeline_task(
             model=model,
             session_properties=SessionProperties(
                 instructions=DEFAULT_PROMPT,
-                output_modalities=["audio", "text"],
+                # Audio-only modality — skip the side-channel text transcript
+                # of the bot's reply (we don't capture it, and dropping it
+                # avoids the per-turn output text-token cost).
+                output_modalities=["audio"],
                 audio=AudioConfiguration(
-                    input=AudioInput(
-                        format=PCMAudioFormat(),
-                        transcription=InputAudioTranscription(
-                            language=language,
-                            model="gpt-4o-transcribe",
-                        ),
-                    ),
+                    input=AudioInput(format=PCMAudioFormat()),
                     output=AudioOutput(format=PCMAudioFormat()),
                 ),
                 voice=voice,

@@ -71,12 +71,15 @@ them with a per-call monotonic clock and derive:
 | `user_speech_duration_ms` | derived | `t_user_stop − t_user_start` |
 
 Plus per turn:
-- `transcript_in` — from Pipecat's `TranscriptionFrame` (Hindi-tuned).
-- `transcript_out` — from the model's response text.
 - Token usage (input_text / input_audio / input_cached / output_text /
   output_audio) — from the OpenAI Realtime `response.done` event,
   surfaced by Pipecat.
 - `cost_usd` — sum of (tokens × per-1M rate from `pricing.py`).
+
+We intentionally do **not** capture `transcript_in` / `transcript_out`.
+Both would require extra OpenAI work (side-channel STT for the user
+audio, text-modality output for the bot reply) that adds cost without
+serving the latency-measurement goal of this experiment.
 
 ## Output layout
 
@@ -93,8 +96,7 @@ results/
 {"call_sid":"abc-123","turn":1,
  "ttft_ms":743,"silence_to_ttft_ms":2940,"total_response_ms":2843,
  "tpot_ms":34,"bot_speaking_ms":1900,
- "transcript_in":"नमस्ते, मुझे काम चाहिए",
- "transcript_out":"नमस्ते। आप किस तरह का काम ढूंढ रहे हैं?",
+ "user_speech_duration_ms":2222,
  "input_audio_tokens":125,"output_audio_tokens":95,"cost_usd":0.0034}
 ```
 

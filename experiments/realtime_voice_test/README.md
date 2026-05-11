@@ -90,10 +90,13 @@ results/
 ```json
 {"call_sid": "abc123", "turn": 1, "ttft_ms": 743, "silence_to_ttft_ms": 2940,
  "total_response_ms": 2843, "tpot_ms": 34, "bot_speaking_ms": 1900,
- "transcript_in": "नमस्ते, मुझे काम चाहिए",
- "transcript_out": "नमस्ते। आप किस तरह का काम ढूंढ रहे हैं?",
+ "user_speech_duration_ms": 2222,
  "input_audio_tokens": 125, "output_audio_tokens": 95, "cost_usd": 0.0034}
 ```
+
+Transcripts are intentionally not captured — they would require extra
+OpenAI work (side-channel STT + text-modality output) that costs more
+without serving the latency-measurement goal.
 
 ## Summarise collected data
 
