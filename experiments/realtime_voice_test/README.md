@@ -9,10 +9,10 @@ Design spec: [`docs/superpowers/specs/2026-05-08-realtime-voice-test-design.md`]
 ## Prerequisites
 
 - An OpenAI API key with access to `gpt-realtime-mini`.
-- A Vobiz account with auth credentials (`X-Auth-ID`, `X-Auth-Token`).
-- ngrok installed and authenticated (`ngrok authtoken ...`) for exposing
-  the local server to Vobiz.
-- `uv` installed.
+- A Vobiz account with auth credentials (`auth_id`, `auth_token`) and a phone number with sufficient balance.
+- ngrok installed and authenticated (`ngrok authtoken ...`) for exposing the local server to Vobiz.
+- Python 3.11+, `uv` installed.
+- Pipecat (auto-installed via `uv sync`).
 
 ## Setup
 
@@ -29,10 +29,12 @@ uv sync
 ```bash
 cd experiments/realtime_voice_test
 export OPENAI_API_KEY=sk-...
+export VOBIZ_AUTH_ID=...
+export VOBIZ_AUTH_TOKEN=...
 export PUBLIC_URL=https://<your-ngrok-subdomain>.ngrok-free.app
-export PROMPT_NAME=SHORT_HINDI          # SHORT_HINDI | KKB_PERSONA | STRICT_HINDI_ONLY
-export VOICE=alloy                       # alloy | nova | sage | etc.
 export MODEL=gpt-realtime-mini
+export VOICE=alloy                       # alloy | nova | sage | etc.
+export LANGUAGE=hi                       # transcription language hint
 export VAD_SILENCE_MS=600
 unset VIRTUAL_ENV
 
@@ -86,10 +88,11 @@ results/
 ```
 
 ```json
-{"call_sid": "abc123", "turn": 1, "ttft_ms": 743, "total_response_ms": 2107,
+{"call_sid": "abc123", "turn": 1, "ttft_ms": 743, "silence_to_ttft_ms": 2940,
+ "total_response_ms": 2843, "tpot_ms": 34, "bot_speaking_ms": 1900,
  "transcript_in": "नमस्ते, मुझे काम चाहिए",
  "transcript_out": "नमस्ते। आप किस तरह का काम ढूंढ रहे हैं?",
- "input_audio_tokens": 125, "output_audio_tokens": 95, "cost_usd": 0.0034, ...}
+ "input_audio_tokens": 125, "output_audio_tokens": 95, "cost_usd": 0.0034}
 ```
 
 ## Summarise collected data
@@ -97,29 +100,26 @@ results/
 ```bash
 uv run python aggregate.py                  # all calls in results/
 uv run python aggregate.py --latest         # most recent call only
-uv run python aggregate.py --prompt-name KKB_PERSONA   # filter
 ```
 
-Prints headline p50 / p99 TTFT, total response, and average cost. Combine
-flags freely (e.g. `--latest --prompt-name STRICT_HINDI_ONLY`).
+Prints headline p50 / p99 TTFT, total response, and average cost.
 
 ## Troubleshooting
 
 | Symptom | What to try |
 |---|---|
 | Phone rings then immediately hangs up | Check ngrok inspector (`http://localhost:4040`) — did `/answer` return 200 with the right XML? If not, `PUBLIC_URL` is stale. |
-| User audio reaches Vobiz but no response audio plays | Check server logs for `bridge.openai_loop_error`. Likely `OPENAI_API_KEY` is wrong or the model name isn't `gpt-realtime-mini`. |
-| Response is in English instead of Hindi | The selected prompt isn't strict enough. Set `PROMPT_NAME=STRICT_HINDI_ONLY` and restart. |
+| User audio reaches Vobiz but no response audio plays | Check server logs for errors. Likely `OPENAI_API_KEY` is wrong or the model name isn't `gpt-realtime-mini`. |
+| Response is in English instead of Hindi | The model should mirror the user's input language. If it drifts, the fallback is to add a one-line `"Reply in the user's language."` instruction to `prompts.py` and restart. |
 | Model cuts the user off mid-Hindi-sentence | Bump `VAD_SILENCE_MS=900` or `1000` and restart. Hindi has longer mid-clause pauses than English. |
-| JSONL is empty after a call | Check `bridge.turn_finished` log lines — if you don't see any, the model didn't complete a turn. Often the call was too short or the user didn't speak. |
+| JSONL is empty after a call | Check the server logs — if no turns were recorded, the model didn't complete a turn. Often the call was too short or the user didn't speak. |
 
 ## Files
 
-- `server.py` — FastAPI entry point
-- `bridge.py` — per-call coordinator + state machine
-- `vobiz_protocol.py` — Vobiz WebSocket frame codec
-- `openai_realtime.py` — OpenAI Realtime WebSocket wrapper
-- `prompts.py` — Hindi system prompts
-- `pricing.py` — cost computation
-- `aggregate.py` — summary report
-- `results/` — per-call JSONL files
+- `server.py` — FastAPI entry point (`/answer` webhook + `/ws/{call_sid}` accepts the WebSocket and runs the Pipecat pipeline)
+- `pipeline.py` — Assembles the Pipecat pipeline for one call
+- `latency_observer.py` — Custom Pipecat FrameProcessor — captures per-turn metrics and writes JSONL
+- `prompts.py` — Default system prompt
+- `pricing.py` — Per-1M token rates + per-turn cost calc
+- `aggregate.py` — Reads all JSONL → p50/p99 summary
+- `results/` — per-call JSONL files (subdirectories: `{timestamp}_{call_sid}/turns.jsonl`)
