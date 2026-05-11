@@ -1,0 +1,20 @@
+[project]
+name = "realtime-voice-test"
+version = "0.1.0"
+description = "Vobiz ↔ gpt-realtime-mini bridge for voice-model latency benchmarking."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "websockets>=13.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
