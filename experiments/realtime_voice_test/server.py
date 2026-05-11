@@ -24,7 +24,7 @@ from pipecat.transports.websocket.fastapi import (
     FastAPIWebsocketTransport,
 )
 
-from pipeline import PIPELINE_SAMPLE_RATE, build_pipeline_task
+from pipeline import build_pipeline_task
 from recording_tap import RecordingTapProcessor
 
 logging.basicConfig(
@@ -164,12 +164,14 @@ def create_app() -> FastAPI:
         ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         call_dir = RESULTS_DIR / f"{ts}_{call_sid}"
         out_path = call_dir / "turns.jsonl"
-        recording_path = call_dir / "recording.wav"
+        recording_input_path = call_dir / "recording_input.wav"
+        recording_output_path = call_dir / "recording_output.wav"
 
-        # Pipeline-tap audio recorder (ported from reach_layer/voice). Captures
-        # both caller and bot audio into an in-memory WAV buffer that we flush
-        # to recording.wav on call end.
-        recording_tap = RecordingTapProcessor(sample_rate=PIPELINE_SAMPLE_RATE)
+        # Pipeline-tap audio recorder. Caller and bot audio can arrive at
+        # different sample rates (e.g., OpenAI Realtime emits at 24 kHz
+        # while the rest of the pipeline runs at 16 kHz), so we write two
+        # WAV files — each using the native rate of the frames it captures.
+        recording_tap = RecordingTapProcessor()
         recording_tap.activate()
 
         task = build_pipeline_task(
@@ -210,14 +212,18 @@ def create_app() -> FastAPI:
                 },
             )
         finally:
-            # Flush the recording before logging session end. close() finalises
-            # the WAV header; subsequent frames (if any) are silently dropped.
+            # Flush recordings before logging session end. close() finalises
+            # both WAV headers; subsequent frames (if any) are silently dropped.
             recording_tap.close()
-            wav_bytes = recording_tap.buffer_value
-            if wav_bytes:
+            for label, path, wav_bytes in (
+                ("input",  recording_input_path,  recording_tap.input_buffer_value),
+                ("output", recording_output_path, recording_tap.output_buffer_value),
+            ):
+                if not wav_bytes:
+                    continue
                 try:
-                    recording_path.parent.mkdir(parents=True, exist_ok=True)
-                    with recording_path.open("wb") as f:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    with path.open("wb") as f:
                         f.write(wav_bytes)
                     logger.info(
                         "server.recording_written",
@@ -225,7 +231,8 @@ def create_app() -> FastAPI:
                             "operation": "server.ws_endpoint",
                             "status": "success",
                             "call_sid": call_sid,
-                            "path": str(recording_path),
+                            "direction": label,
+                            "path": str(path),
                             "bytes": len(wav_bytes),
                         },
                     )
@@ -236,6 +243,7 @@ def create_app() -> FastAPI:
                             "operation": "server.ws_endpoint",
                             "status": "failure",
                             "call_sid": call_sid,
+                            "direction": label,
                             "error": f"{type(exc).__name__}: {exc}",
                         },
                     )

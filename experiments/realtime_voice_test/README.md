@@ -79,17 +79,20 @@ Your phone rings → answer → speak Hindi → hear the model reply → hang up
 Per call, one subdirectory is written under `results/`, named
 `{YYYYmmddTHHMMSSZ}_{vobiz_call_uuid}/`, containing:
 - `turns.jsonl` — one JSON row per user turn.
-- `recording.wav` — 16 kHz mono PCM audio of both caller and bot (use
-  any media player to review by ear).
+- `recording_input.wav` — caller audio (mono PCM at the caller's native
+  sample rate — 16 kHz).
+- `recording_output.wav` — bot audio (mono PCM at OpenAI's native rate
+  — 24 kHz). Separate file from caller audio because the two sides have
+  different sample rates; a single fixed-rate WAV would play one
+  direction at the wrong speed.
 
 ```
 results/
 ├── 20260512T103045Z_abc123/
 │   ├── turns.jsonl
-│   └── recording.wav
-├── 20260512T110212Z_def456/
-│   ├── turns.jsonl
-│   └── recording.wav
+│   ├── recording_input.wav
+│   └── recording_output.wav
+└── ...
 ```
 
 ```json
