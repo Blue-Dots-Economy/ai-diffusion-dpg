@@ -85,23 +85,19 @@ serving the latency-measurement goal of this experiment.
 
 One subdirectory per call. Each contains:
 - `turns.jsonl` — one JSON row per user turn.
-- `recording_input.wav` — caller audio (mono PCM, frame-native rate —
-  16 kHz from Pipecat's upsample of Vobiz mu-law 8 kHz).
-- `recording_output.wav` — bot audio (mono PCM, frame-native rate —
-  24 kHz from OpenAI Realtime).
+- `recording.wav` — mono PCM 16 kHz, both caller and bot audio.
 
-Two files instead of one because OpenAI Realtime's bot audio is 24 kHz
-while the rest of the pipeline runs at 16 kHz. A single fixed-rate WAV
-would play one direction at the wrong speed; per-direction files let each
-play at its native rate. Open both in any audio editor to mix into a
-single stereo file if needed.
+OpenAI Realtime emits bot audio at 24 kHz while the rest of the pipeline
+runs at 16 kHz. The recording tap resamples bot audio to 16 kHz on the
+fly (numpy linear interpolation — speech-band only, sub-µs per chunk),
+so the output is a single WAV at one rate that plays both directions at
+correct speed.
 
 ```
 results/
 ├── 20260512T103045Z_<call_id>/
 │   ├── turns.jsonl
-│   ├── recording_input.wav
-│   └── recording_output.wav
+│   └── recording.wav
 └── ...
 ```
 

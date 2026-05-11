@@ -1,14 +1,16 @@
-"""RecordingTapProcessor — passive Pipecat processor that writes per-direction WAVs.
+"""RecordingTapProcessor — passive Pipecat processor that writes a single WAV.
 
-Based on reach_layer/voice/src/pipecat_services/recording_tap.py — but adapted
-for OpenAI Realtime, where caller audio (16 kHz at the tap) and bot audio
-(24 kHz, OpenAI's native rate) arrive at different sample rates. Production's
-single-fixed-rate WAV plays the bot voice at the wrong speed.
+Adapted from reach_layer/voice/src/pipecat_services/recording_tap.py to
+handle the case where caller and bot audio arrive at different sample
+rates (e.g. OpenAI Realtime emits at 24 kHz while Pipecat's pipeline
+runs at 16 kHz). On each audio frame we resample to the configured
+target rate via numpy linear interpolation before writing, so the output
+is a single WAV file that plays both directions at correct speed.
 
-We solve this by writing TWO separate WAV files, one per direction, each at
-the native sample rate of the frames it contains. The pipeline's transport
-layer resamples for Vobiz output independently; both copies on disk are
-self-described and play correctly in any media player.
+Production's tap can use a fixed sample rate without resampling because
+its pipeline is internally uniform (TTS provider runs at the pipeline
+rate). We can't get that with OpenAI Realtime, so we resample at the
+recording write step only — the pipeline itself is untouched.
 """
 from __future__ import annotations
 
@@ -17,132 +19,146 @@ import logging
 import wave
 from typing import IO, Optional
 
+import numpy as np
+
 from pipecat.frames.frames import InputAudioRawFrame, OutputAudioRawFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 logger = logging.getLogger(__name__)
 
 
+def _resample_pcm16(audio_bytes: bytes, src_rate: int, dst_rate: int) -> bytes:
+    """Resample PCM16 mono audio via linear interpolation.
+
+    Quality is fine for telephony-band speech (sub-4 kHz signal content) — the
+    interpolation artefacts sit above the speech band and aren't perceptible
+    by ear. Not appropriate for music or wideband fidelity work. For our
+    verification recording it's the right trade — single dep (numpy, already
+    a transitive Pipecat dep), tiny code, no listenable artefacts.
+
+    Args:
+        audio_bytes: Raw PCM16 mono samples.
+        src_rate: Source sample rate in Hz.
+        dst_rate: Target sample rate in Hz.
+
+    Returns:
+        Resampled PCM16 mono samples as bytes.
+    """
+    if src_rate == dst_rate or not audio_bytes:
+        return audio_bytes
+    samples = np.frombuffer(audio_bytes, dtype=np.int16)
+    if len(samples) == 0:
+        return audio_bytes
+    n_out = int(round(len(samples) * dst_rate / src_rate))
+    if n_out <= 0:
+        return b""
+    indices = np.linspace(0, len(samples) - 1, n_out)
+    resampled = np.interp(indices, np.arange(len(samples)), samples).astype(np.int16)
+    return resampled.tobytes()
+
+
 class RecordingTapProcessor(FrameProcessor):
-    """Captures inbound and outbound audio frames into TWO WAV buffers.
+    """Captures inbound and outbound audio frames into a single WAV buffer.
+
+    Frames may arrive at different sample rates (caller audio at the pipeline
+    rate, bot audio at OpenAI Realtime's native 24 kHz). Each frame's audio
+    bytes are resampled to ``target_sample_rate`` before writing, so the
+    output WAV is uniform and plays both directions at correct speed.
 
     Inactive by default; call activate() to begin capturing, close() to
-    finalise both WAV headers and stop further writes. Inbound and outbound
-    audio go to separate sinks because their sample rates can differ — each
-    WAV is initialised lazily on the first frame of that direction and uses
-    `frame.sample_rate` as the WAV's frame rate.
+    finalise the WAV header and stop further writes.
     """
 
-    def __init__(self) -> None:
-        """Initialise the tap with two empty BytesIO sinks (one per direction)."""
+    def __init__(self, target_sample_rate: int, sink: Optional[IO[bytes]] = None) -> None:
+        """Initialise the tap processor.
+
+        Args:
+            target_sample_rate: PCM sample rate (Hz) the output WAV will be
+                encoded at. All incoming frames are resampled to this rate
+                before being written.
+            sink: Writable binary stream for WAV output; defaults to an
+                in-memory BytesIO.
+        """
         super().__init__()
-        self._input_sink: IO[bytes] = io.BytesIO()
-        self._output_sink: IO[bytes] = io.BytesIO()
-        self._input_wav: Optional[wave.Wave_write] = None
-        self._output_wav: Optional[wave.Wave_write] = None
+        self._target_sample_rate = int(target_sample_rate)
+        self._sink: IO[bytes] = sink if sink is not None else io.BytesIO()
+        self._wav: Optional[wave.Wave_write] = None
         self._active: bool = False
         self._closed: bool = False
 
     def activate(self) -> None:
-        """Start capturing audio frames. Idempotent."""
+        """Start capturing audio frames into the WAV sink. Idempotent."""
         if self._closed:
             return
+        if self._wav is None:
+            self._wav = wave.open(self._sink, "wb")
+            self._wav.setnchannels(1)
+            self._wav.setsampwidth(2)  # 16-bit PCM
+            self._wav.setframerate(self._target_sample_rate)
         self._active = True
 
     def deactivate(self) -> None:
-        """Pause capturing without finalising WAV headers."""
+        """Pause capturing without finalising the WAV header."""
         self._active = False
 
     def close(self) -> None:
-        """Finalise both WAV headers and permanently stop capturing."""
+        """Finalise the WAV header and permanently stop capturing.
+
+        Safe to call multiple times; subsequent audio frames are silently dropped.
+        """
         self.deactivate()
-        for direction, wav in (("input", self._input_wav), ("output", self._output_wav)):
-            if wav is None or self._closed:
-                continue
+        if self._wav is not None and not self._closed:
             try:
-                wav.close()
+                self._wav.close()
             except Exception as exc:
                 logger.warning(
                     "recording_tap_close_failed",
                     extra={
                         "operation": "recording_tap.close",
                         "status": "failure",
-                        "direction": direction,
                         "error": f"{type(exc).__name__}: {exc}",
                     },
                 )
         self._closed = True
 
     @property
-    def input_buffer_value(self) -> bytes:
-        """WAV bytes for caller (inbound) audio."""
-        if hasattr(self._input_sink, "getvalue"):
-            return self._input_sink.getvalue()  # type: ignore[no-any-return]
-        return b""
-
-    @property
-    def output_buffer_value(self) -> bytes:
-        """WAV bytes for bot (outbound) audio."""
-        if hasattr(self._output_sink, "getvalue"):
-            return self._output_sink.getvalue()  # type: ignore[no-any-return]
+    def buffer_value(self) -> bytes:
+        """Return the accumulated WAV bytes from the in-memory sink."""
+        if hasattr(self._sink, "getvalue"):
+            return self._sink.getvalue()  # type: ignore[no-any-return]
         return b""
 
     async def process_frame(self, frame, direction: FrameDirection) -> None:
-        """Intercept audio frames and write each direction to its own WAV."""
-        # Required: FrameProcessor.process_frame() handles StartFrame/EndFrame
-        # bookkeeping. Without this, subsequent frames are rejected.
+        """Intercept audio frames, resample to the target rate, write to WAV.
+
+        Args:
+            frame: Any Pipecat frame; only InputAudioRawFrame and
+                OutputAudioRawFrame are captured; all frames forwarded unchanged.
+            direction: Pipeline direction (upstream / downstream); passed through.
+        """
+        # FrameProcessor.process_frame() handles StartFrame / EndFrame /
+        # CancelFrame bookkeeping. Without this super call every subsequent
+        # frame is rejected with "Trying to process X but StartFrame not
+        # received yet" and downstream push_frame() is dropped.
         await super().process_frame(frame, direction)
-
-        if self._active and not self._closed:
-            if isinstance(frame, InputAudioRawFrame):
-                self._write(frame, is_input=True)
-            elif isinstance(frame, OutputAudioRawFrame):
-                self._write(frame, is_input=False)
-
+        if self._active and self._wav is not None and not self._closed:
+            if isinstance(frame, (InputAudioRawFrame, OutputAudioRawFrame)):
+                try:
+                    audio = _resample_pcm16(
+                        frame.audio,
+                        int(frame.sample_rate),
+                        self._target_sample_rate,
+                    )
+                    self._wav.writeframes(audio)
+                except Exception as exc:
+                    logger.warning(
+                        "recording_tap_write_failed",
+                        extra={
+                            "operation": "recording_tap.write",
+                            "status": "failure",
+                            "frame_rate": getattr(frame, "sample_rate", None),
+                            "target_rate": self._target_sample_rate,
+                            "error": f"{type(exc).__name__}: {exc}",
+                        },
+                    )
         await self.push_frame(frame, direction)
-
-    def _write(self, frame, *, is_input: bool) -> None:
-        """Lazy-init the correct WAV (using the frame's native sample rate) and write."""
-        wav_attr = "_input_wav" if is_input else "_output_wav"
-        sink_attr = "_input_sink" if is_input else "_output_sink"
-        wav = getattr(self, wav_attr)
-        if wav is None:
-            sink = getattr(self, sink_attr)
-            try:
-                wav = wave.open(sink, "wb")
-                wav.setnchannels(1)
-                wav.setsampwidth(2)  # 16-bit PCM
-                wav.setframerate(int(frame.sample_rate))
-            except Exception as exc:
-                logger.warning(
-                    "recording_tap_open_failed",
-                    extra={
-                        "operation": "recording_tap.open",
-                        "status": "failure",
-                        "direction": "input" if is_input else "output",
-                        "error": f"{type(exc).__name__}: {exc}",
-                    },
-                )
-                return
-            setattr(self, wav_attr, wav)
-            logger.info(
-                "recording_tap_opened",
-                extra={
-                    "operation": "recording_tap.open",
-                    "status": "success",
-                    "direction": "input" if is_input else "output",
-                    "sample_rate": int(frame.sample_rate),
-                },
-            )
-        try:
-            wav.writeframes(frame.audio)
-        except Exception as exc:
-            logger.warning(
-                "recording_tap_write_failed",
-                extra={
-                    "operation": "recording_tap.write",
-                    "status": "failure",
-                    "direction": "input" if is_input else "output",
-                    "error": f"{type(exc).__name__}: {exc}",
-                },
-            )
