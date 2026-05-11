@@ -13,6 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.audio.vad_processor import VADProcessor
@@ -79,7 +80,20 @@ def build_pipeline_task(
     Returns:
         A PipelineTask ready to be passed to PipelineRunner.run().
     """
-    vad = SileroVADAnalyzer()
+    # Telephony-tuned VAD parameters — matches reach_layer/voice's
+    # SileroVADWrapper defaults. Pipecat's out-of-the-box defaults
+    # (confidence=0.7, start_secs=0.2, stop_secs=0.2, min_volume=0.6) are
+    # too sensitive for 8 kHz telephony audio: short hiss / echo bursts
+    # trigger false UserStartedSpeakingFrame events that broadcast
+    # interruptions through the pipeline and cancel in-flight bot replies.
+    vad = SileroVADAnalyzer(
+        params=VADParams(
+            confidence=0.75,
+            start_secs=0.25,
+            stop_secs=0.4,
+            min_volume=0.7,
+        )
+    )
     user_turn = UserTurnProcessor(
         user_turn_strategies=UserTurnStrategies(
             start=[VADUserTurnStartStrategy()],
