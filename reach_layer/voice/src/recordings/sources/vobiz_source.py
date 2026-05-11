@@ -1,16 +1,21 @@
-"""VobizRecordingSource — Vobiz REST start/stop with synchronous URL capture.
+"""VobizRecordingSource — Vobiz REST start/stop, webhook delivers the URL.
 
-Per the Vobiz docs (/call/record-calls/start-recording and /stop-recording):
+Per the Vobiz API (verified against a live tenant — note the published docs
+disagree with observed behaviour on the start response):
 
 - ``POST /Account/{auth_id}/Call/{call_uuid}/Record/`` returns
-  ``{"api_id": ..., "message": ..., "recording_id": ..., "url": "..."}``.
-  The ``url`` is the canonical recording URL — it's the same URL the callback
-  will eventually deliver, captured here without waiting for the webhook.
+  ``{"api_id": ..., "message": "recording started"}``. The docs imply a
+  ``url`` field exists in this response but production responses do not
+  include it. The recording URL is delivered only via the callback POST
+  to ``callback_url`` once the recording finalises.
 - ``DELETE /Account/{auth_id}/Call/{call_uuid}/Record/`` stops recording.
   Returns HTTP 204 No Content on success.
-- The ``callback_url`` we register receives a Plivo-style form POST when the
-  recording finalises. We use it purely as a "ready to download" signal —
-  the URL we use was already captured from the start response.
+- The callback POST is form-encoded with Plivo-style PascalCase fields
+  (``CallUUID``, ``RecordUrl``, ``RecordingID``, …). The reach_layer/voice
+  server.py handler resolves the registry future with that URL.
+
+The start response's ``url`` field is captured opportunistically if Vobiz
+ever starts returning one; otherwise we fall back to the webhook.
 
 Belongs to the Reach Layer / Voice channel in the DPG framework.
 """
@@ -153,23 +158,10 @@ class VobizRecordingSource(RecordingSourceBase):
                 f"call_id={vobiz_call_id!r}"
             )
 
+        # Opportunistic: capture URL if Vobiz ever returns one synchronously.
+        # In practice the production response only contains `api_id` and
+        # `message`, so we rely on the callback to deliver the URL.
         self._recording_url = str(resp_json.get("url") or "")
-        if not self._recording_url:
-            logger.error(
-                "vobiz_source.begin_no_url",
-                extra={
-                    "operation": "vobiz_source.begin",
-                    "status": "failure",
-                    "call_sid": call_sid,
-                    "vobiz_call_id": vobiz_call_id,
-                    "response_keys": sorted(resp_json.keys()),
-                },
-            )
-            raise RuntimeError(
-                f"vobiz Record/ start did not return a url field; "
-                f"got keys {sorted(resp_json.keys())}"
-            )
-
         logger.info(
             "vobiz_source.begin",
             extra={
@@ -180,6 +172,7 @@ class VobizRecordingSource(RecordingSourceBase):
                 "latency_ms": int((time.time() - start) * 1000),
                 "recording_id": resp_json.get("recording_id", ""),
                 "recording_url": self._recording_url,
+                "url_source": "start_response" if self._recording_url else "pending_webhook",
                 "file_format": self._file_format,
                 "time_limit_s": self._time_limit_s,
             },
@@ -225,51 +218,75 @@ class VobizRecordingSource(RecordingSourceBase):
             )
 
     async def end(self) -> RecordingPayload:
-        """Stop recording, wait briefly for finalisation, fetch the MP3.
+        """Stop recording, await the callback URL, fetch the MP3.
 
-        We DELETE the recording, then await the readiness webhook (resolved
-        via the registry future by ``/recording-ready``) so Vobiz has time to
-        finalise the file in storage. If the webhook never fires within
-        ``webhook_timeout_s`` we proceed anyway — the URL was captured from
-        the start response and the MP3 may already be downloadable.
+        Sequence:
+          1. ``DELETE /Record/`` to finalise the Vobiz-side recording.
+          2. Await the readiness future on the shared registry — the
+             ``/recording-ready`` webhook handler resolves it with the URL
+             (Vobiz's callback POSTs a Plivo-style form payload containing
+             ``RecordUrl``).
+          3. If the start response already carried a URL we use that and
+             treat the webhook as a no-op signal; otherwise the webhook URL
+             becomes the canonical recording_url.
+          4. ``GET`` the URL and return the bytes.
 
         Returns:
             RecordingPayload with bytes_data populated.
 
         Raises:
-            RuntimeError: If begin() was not called before end(), or if the
-                          start response carried no URL.
+            RuntimeError: If begin() was not called or the source never got
+                          a vobiz_call_id.
+            asyncio.TimeoutError: If neither start-response nor webhook
+                                  delivered a URL within webhook_timeout_s.
             aiohttp.ClientError: If the MP3 download fails.
         """
-        if not self._recording_url:
+        if not self._vobiz_call_id:
             raise RuntimeError(
                 "vobiz_source.end called before a successful begin "
-                "(no recording_url captured)"
+                "(no vobiz_call_id known)"
             )
         await self._stop_record()
 
-        # Best-effort wait for the readiness webhook. Timeouts are downgraded
-        # to a logged warning — the start-response URL is canonical, so we
-        # still attempt the download.
         fut = self._registry.get(self._vobiz_call_id)
-        if fut is not None:
-            try:
-                await asyncio.wait_for(fut, timeout=self._webhook_timeout_s)
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "vobiz_source.webhook_timeout",
+        if fut is None:
+            raise RuntimeError(
+                f"vobiz recording future missing for call_id={self._vobiz_call_id!r}; "
+                "ensure begin() was called first"
+            )
+
+        webhook_url = ""
+        try:
+            webhook_url = await asyncio.wait_for(
+                fut, timeout=self._webhook_timeout_s
+            )
+        except asyncio.TimeoutError:
+            if not self._recording_url:
+                # No URL anywhere — webhook never fired and start didn't
+                # return one. Re-raise so the manager can record a failed
+                # state with a clear reason.
+                logger.error(
+                    "vobiz_source.url_unavailable",
                     extra={
                         "operation": "vobiz_source.end",
-                        "status": "skipped",
+                        "status": "failure",
                         "vobiz_call_id": self._vobiz_call_id,
                         "webhook_timeout_s": self._webhook_timeout_s,
-                        "reason": "proceeding with start-response URL",
+                        "reason": "no url from start response and no callback received",
                     },
                 )
+                raise
+
+        url = self._recording_url or webhook_url
+        if not url:
+            raise RuntimeError(
+                "vobiz_source.end resolved webhook but the URL was empty; "
+                "callback payload may use an unrecognised field name"
+            )
 
         timeout = aiohttp.ClientTimeout(total=self._fetch_timeout_s)
         async with aiohttp.ClientSession(timeout=timeout) as s:
-            async with s.get(self._recording_url, headers=self._headers()) as resp:
+            async with s.get(url, headers=self._headers()) as resp:
                 resp.raise_for_status()
                 data = await resp.read()
         self._registry.pop(self._vobiz_call_id, None)
@@ -279,7 +296,8 @@ class VobizRecordingSource(RecordingSourceBase):
                 "operation": "vobiz_source.end",
                 "status": "success",
                 "vobiz_call_id": self._vobiz_call_id,
-                "recording_url": self._recording_url,
+                "recording_url": url,
+                "url_source": "start_response" if self._recording_url else "webhook",
                 "bytes": len(data),
             },
         )
