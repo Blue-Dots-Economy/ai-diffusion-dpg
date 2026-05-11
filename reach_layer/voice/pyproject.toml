@@ -49,3 +49,8 @@ show_missing = true
 [tool.uv.sources]
 reach-layer-base = { path = "../base" }
 observability-layer = { path = "../../observability_layer" }
+
+[dependency-groups]
+dev = [
+    "aioresponses>=0.7.8",
+]

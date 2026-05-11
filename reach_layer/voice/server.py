@@ -153,6 +153,9 @@ def create_app(config: dict | None = None) -> FastAPI:
         description="DPG Reach Layer telephony channel adapter — Vobiz + Raya + Agent Core.",
         version="0.1.0",
     )
+    # Shared registry: vobiz_call_id → asyncio.Future[str]
+    # Populated by VobizRecordingSource.begin(); resolved by /recording-ready webhook.
+    app.state.recording_url_registry = {}
     try:
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
         FastAPIInstrumentor.instrument_app(app)
@@ -292,18 +295,25 @@ def create_app(config: dict | None = None) -> FastAPI:
     async def recording_ready(body: RecordingWebhook) -> dict:
         """Handle Vobiz webhook when recording MP3 is ready.
 
+        Resolves the asyncio.Future registered by VobizRecordingSource.begin()
+        so that VobizRecordingSource.end() can proceed to fetch the MP3.
+
         Args:
             body: Webhook payload containing callSid and recordingUrl.
 
         Returns:
             Dict with status ok.
         """
+        fut = app.state.recording_url_registry.pop(body.callSid, None)
+        if fut is not None and not fut.done():
+            fut.set_result(body.recordingUrl)
         logger.info(
             "server.recording_ready",
             extra={
                 "operation": "server.recording_ready",
                 "status": "success",
                 "call_sid": body.callSid,
+                "had_future": fut is not None,
             },
         )
         return {"status": "ok"}
