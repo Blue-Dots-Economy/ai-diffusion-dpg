@@ -95,8 +95,4 @@ latency.
 
 This experiment captures the **voice model's own latency** in
 isolation — no DPG framework, no Memory/Trust/NLU, no Raya STT/TTS.
-A matching production-side test (full production stack with
-`gpt-4.1-mini` swapped in as the LLM, captured the same way) lives in
-a separate spec; we compare the two p99 numbers to decide whether
-replacing Raya STT + Raya TTS with a single voice-native model is
-worth integrating.
+
