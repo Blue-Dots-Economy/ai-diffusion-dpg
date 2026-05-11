@@ -2860,7 +2860,7 @@ class AgentCore(AgentCoreBase):
                     )
                     emit_consent_event_if_recording(
                         queue=_consent_evt_queue,
-                        purpose=_configured_consent_purpose,
+                        purpose="storage",
                         granted=granted,
                         configured_purpose=_configured_consent_purpose,
                         turn_id=turn_id,
