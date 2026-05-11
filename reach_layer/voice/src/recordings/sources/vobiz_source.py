@@ -1,21 +1,24 @@
-"""VobizRecordingSource — Vobiz REST start/stop, webhook delivers the URL.
+"""VobizRecordingSource — Vobiz REST start/stop, recording-list polling for URL.
 
-Per the Vobiz API (verified against a live tenant — note the published docs
-disagree with observed behaviour on the start response):
+Vobiz's behaviour (observed against a live tenant):
 
-- ``POST /Account/{auth_id}/Call/{call_uuid}/Record/`` returns
-  ``{"api_id": ..., "message": "recording started"}``. The docs imply a
-  ``url`` field exists in this response but production responses do not
-  include it. The recording URL is delivered only via the callback POST
-  to ``callback_url`` once the recording finalises.
+- ``POST /Account/{auth_id}/Call/{call_uuid}/Record/`` starts recording. The
+  production response is ``{"api_id": ..., "message": "recording started"}``
+  — no ``url`` field, despite what the published docs imply.
 - ``DELETE /Account/{auth_id}/Call/{call_uuid}/Record/`` stops recording.
-  Returns HTTP 204 No Content on success.
-- The callback POST is form-encoded with Plivo-style PascalCase fields
-  (``CallUUID``, ``RecordUrl``, ``RecordingID``, …). The reach_layer/voice
-  server.py handler resolves the registry future with that URL.
+  Returns 204 No Content.
+- The promised ``callback_url`` POST is unreliable in practice (it fires for
+  naturally-ended calls but not always for DELETE-stopped ones, and can take
+  minutes to arrive when it does).
+- ``GET /Account/{auth_id}/Recording/`` returns the recordings list. Each
+  entry includes ``call_uuid``, ``recording_id``, ``recording_url`` (an
+  ``https://media.vobiz.ai/...`` MP3 URL the API can authenticate against)
+  and timing metadata. This is the authoritative source of the URL.
 
-The start response's ``url`` field is captured opportunistically if Vobiz
-ever starts returning one; otherwise we fall back to the webhook.
+Strategy: after stopping, poll the recording list, filtering by our known
+``call_uuid``, with brief backoff until the entry appears or timeout. The
+inbound webhook is still wired (``server.py`` resolves the registry future)
+so when it does arrive it short-circuits the poll loop.
 
 Belongs to the Reach Layer / Voice channel in the DPG framework.
 """
@@ -24,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Dict
+from typing import Dict, Optional
 
 import aiohttp
 
@@ -48,6 +51,8 @@ class VobizRecordingSource(RecordingSourceBase):
         registry: Dict[str, "asyncio.Future[str]"],
         file_format: str = "mp3",
         time_limit_s: int = 3600,
+        poll_interval_s: float = 2.0,
+        poll_max_s: Optional[float] = None,
     ) -> None:
         """Initialise the source with Vobiz credentials and shared registry.
 
@@ -55,16 +60,17 @@ class VobizRecordingSource(RecordingSourceBase):
             auth_id: Vobiz account auth ID.
             auth_token: Vobiz account auth token.
             callback_url: URL Vobiz will POST to when the recording finalises.
-                          Used as a readiness signal only.
-            webhook_timeout_s: Seconds to wait for the readiness webhook before
-                               attempting to download anyway.
+                          Fast-path signal only; the recording-list endpoint is
+                          the authoritative URL source.
+            webhook_timeout_s: Total budget (seconds) for the poll loop and
+                               webhook race. ``poll_max_s`` defaults to this.
             fetch_timeout_s: Seconds allowed to download the MP3 bytes.
             registry: Shared dict mapping vobiz_call_id → asyncio.Future[str].
                       Populated by begin(); resolved by the /recording-ready handler.
             file_format: Vobiz file_format parameter — "mp3" (default) or "wav".
-            time_limit_s: Vobiz time_limit parameter, in seconds. Vobiz defaults
-                          to 60s; this default of 3600s prevents short calls
-                          from being truncated. Capped at 4 hours per docs.
+            time_limit_s: Vobiz time_limit parameter, in seconds. Capped at 4 h.
+            poll_interval_s: Seconds between recording-list polls.
+            poll_max_s: Maximum total polling time. Defaults to webhook_timeout_s.
         """
         self._auth_id = auth_id
         self._auth_token = auth_token
@@ -74,8 +80,12 @@ class VobizRecordingSource(RecordingSourceBase):
         self._registry = registry
         self._file_format = file_format
         self._time_limit_s = max(1, min(int(time_limit_s), 4 * 3600))
+        self._poll_interval_s = max(0.5, float(poll_interval_s))
+        self._poll_max_s = float(
+            poll_max_s if poll_max_s is not None else webhook_timeout_s
+        )
         self._vobiz_call_id: str = ""
-        # Canonical recording URL captured from POST /Record/ response body.
+        # Canonical recording URL: from list-API or webhook, whichever arrives first.
         self._recording_url: str = ""
 
     @property
@@ -88,7 +98,7 @@ class VobizRecordingSource(RecordingSourceBase):
         return {"X-Auth-ID": self._auth_id, "X-Auth-Token": self._auth_token}
 
     async def begin(self, *, call_sid: str, vobiz_call_id: str) -> None:
-        """Start server-side recording and capture the canonical URL.
+        """Start server-side recording.
 
         Args:
             call_sid: Telephony platform call SID (used for logging).
@@ -96,7 +106,7 @@ class VobizRecordingSource(RecordingSourceBase):
 
         Raises:
             aiohttp.ClientError: If the start request fails.
-            RuntimeError: If Vobiz returns a non-success status or no URL.
+            RuntimeError: If Vobiz returns a non-success status.
         """
         self._vobiz_call_id = vobiz_call_id
         endpoint = (
@@ -104,8 +114,8 @@ class VobizRecordingSource(RecordingSourceBase):
             f"/Call/{vobiz_call_id}/Record/"
         )
         loop = asyncio.get_running_loop()
-        # The webhook future signals "ready to download"; it does NOT carry the
-        # URL we use (the URL came back synchronously in the start response).
+        # Webhook future: fast-path signal when (if) Vobiz fires the callback.
+        # If it never fires, the poll loop will discover the URL itself.
         self._registry[vobiz_call_id] = loop.create_future()
         body = {
             "time_limit": self._time_limit_s,
@@ -158,9 +168,7 @@ class VobizRecordingSource(RecordingSourceBase):
                 f"call_id={vobiz_call_id!r}"
             )
 
-        # Opportunistic: capture URL if Vobiz ever returns one synchronously.
-        # In practice the production response only contains `api_id` and
-        # `message`, so we rely on the callback to deliver the URL.
+        # Opportunistic: if Vobiz ever returns a url synchronously, capture it.
         self._recording_url = str(resp_json.get("url") or "")
         logger.info(
             "vobiz_source.begin",
@@ -172,19 +180,14 @@ class VobizRecordingSource(RecordingSourceBase):
                 "latency_ms": int((time.time() - start) * 1000),
                 "recording_id": resp_json.get("recording_id", ""),
                 "recording_url": self._recording_url,
-                "url_source": "start_response" if self._recording_url else "pending_webhook",
+                "url_source": "start_response" if self._recording_url else "pending",
                 "file_format": self._file_format,
                 "time_limit_s": self._time_limit_s,
             },
         )
 
     async def _stop_record(self) -> None:
-        """DELETE the recording on Vobiz to finalise it.
-
-        Per the docs: ``DELETE /Account/{auth_id}/Call/{call_uuid}/Record/``
-        returns 204 No Content on success. With no body, all ongoing recordings
-        on the call are stopped.
-        """
+        """DELETE /Account/{auth_id}/Call/{call_uuid}/Record/ — finalise recording."""
         endpoint = (
             f"https://api.vobiz.ai/api/v1/Account/{self._auth_id}"
             f"/Call/{self._vobiz_call_id}/Record/"
@@ -217,28 +220,101 @@ class VobizRecordingSource(RecordingSourceBase):
                 },
             )
 
+    async def _list_recording_for_call(self) -> Optional[dict]:
+        """Return the recording-list entry whose call_uuid matches this call.
+
+        Vobiz's ``GET /Account/{auth_id}/Recording/`` returns the most recent
+        recordings (newest first). We list a generous page and filter
+        client-side rather than guess query-parameter syntax.
+
+        Returns:
+            The matching recording dict (with ``recording_url`` populated), or
+            None if no match was found.
+        """
+        endpoint = (
+            f"https://api.vobiz.ai/api/v1/Account/{self._auth_id}/Recording/"
+            f"?limit=20"
+        )
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as s:
+            async with s.get(endpoint, headers=self._headers()) as resp:
+                if resp.status != 200:
+                    logger.warning(
+                        "vobiz_source.list_bad_status",
+                        extra={
+                            "operation": "vobiz_source._list_recording_for_call",
+                            "status": "failure",
+                            "http_status": resp.status,
+                            "vobiz_call_id": self._vobiz_call_id,
+                        },
+                    )
+                    return None
+                payload = await resp.json()
+        objects = payload.get("objects") or []
+        for entry in objects:
+            if str(entry.get("call_uuid", "")) == self._vobiz_call_id:
+                return entry
+        return None
+
+    async def _poll_for_recording_url(self) -> Optional[str]:
+        """Poll the recording-list endpoint until our recording appears.
+
+        Honours ``self._poll_max_s`` as the overall budget; sleeps
+        ``self._poll_interval_s`` between attempts. Races against the webhook
+        future so the first signal wins.
+
+        Returns:
+            The recording URL if found, otherwise None on timeout.
+        """
+        deadline = time.time() + self._poll_max_s
+        attempt = 0
+        while time.time() < deadline:
+            attempt += 1
+            entry = await self._list_recording_for_call()
+            if entry:
+                url = str(entry.get("recording_url", ""))
+                logger.info(
+                    "vobiz_source.list_hit",
+                    extra={
+                        "operation": "vobiz_source._poll_for_recording_url",
+                        "status": "success",
+                        "vobiz_call_id": self._vobiz_call_id,
+                        "recording_id": entry.get("recording_id", ""),
+                        "recording_url": url,
+                        "duration_ms": entry.get("recording_duration_ms", ""),
+                        "attempt": attempt,
+                    },
+                )
+                if url:
+                    return url
+            await asyncio.sleep(self._poll_interval_s)
+        logger.warning(
+            "vobiz_source.list_timeout",
+            extra={
+                "operation": "vobiz_source._poll_for_recording_url",
+                "status": "failure",
+                "vobiz_call_id": self._vobiz_call_id,
+                "poll_max_s": self._poll_max_s,
+                "attempts": attempt,
+            },
+        )
+        return None
+
     async def end(self) -> RecordingPayload:
-        """Stop recording, await the callback URL, fetch the MP3.
+        """Stop recording, find the URL via list or webhook, fetch the MP3.
 
         Sequence:
-          1. ``DELETE /Record/`` to finalise the Vobiz-side recording.
-          2. Await the readiness future on the shared registry — the
-             ``/recording-ready`` webhook handler resolves it with the URL
-             (Vobiz's callback POSTs a Plivo-style form payload containing
-             ``RecordUrl``).
-          3. If the start response already carried a URL we use that and
-             treat the webhook as a no-op signal; otherwise the webhook URL
-             becomes the canonical recording_url.
-          4. ``GET`` the URL and return the bytes.
+          1. DELETE /Record/ to ask Vobiz to finalise.
+          2. Race the inbound webhook future against the recording-list poll.
+          3. Whichever produces a URL first wins.
+          4. GET the URL with auth headers and return the bytes.
 
         Returns:
             RecordingPayload with bytes_data populated.
 
         Raises:
-            RuntimeError: If begin() was not called or the source never got
-                          a vobiz_call_id.
-            asyncio.TimeoutError: If neither start-response nor webhook
-                                  delivered a URL within webhook_timeout_s.
+            RuntimeError: If begin() was not called, or no URL is discoverable
+                          within poll_max_s / webhook_timeout_s.
             aiohttp.ClientError: If the MP3 download fails.
         """
         if not self._vobiz_call_id:
@@ -248,40 +324,50 @@ class VobizRecordingSource(RecordingSourceBase):
             )
         await self._stop_record()
 
-        fut = self._registry.get(self._vobiz_call_id)
-        if fut is None:
-            raise RuntimeError(
-                f"vobiz recording future missing for call_id={self._vobiz_call_id!r}; "
-                "ensure begin() was called first"
-            )
-
-        webhook_url = ""
-        try:
-            webhook_url = await asyncio.wait_for(
-                fut, timeout=self._webhook_timeout_s
-            )
-        except asyncio.TimeoutError:
-            if not self._recording_url:
-                # No URL anywhere — webhook never fired and start didn't
-                # return one. Re-raise so the manager can record a failed
-                # state with a clear reason.
-                logger.error(
-                    "vobiz_source.url_unavailable",
-                    extra={
-                        "operation": "vobiz_source.end",
-                        "status": "failure",
-                        "vobiz_call_id": self._vobiz_call_id,
-                        "webhook_timeout_s": self._webhook_timeout_s,
-                        "reason": "no url from start response and no callback received",
-                    },
-                )
-                raise
-
-        url = self._recording_url or webhook_url
+        url = self._recording_url  # in case start_response gave us one
         if not url:
+            # Race the webhook against the polling probe. Whichever wins.
+            fut = self._registry.get(self._vobiz_call_id)
+            wait_tasks: list[asyncio.Task] = []
+            if fut is not None:
+                wait_tasks.append(asyncio.ensure_future(
+                    asyncio.wait_for(fut, timeout=self._webhook_timeout_s)
+                ))
+            wait_tasks.append(asyncio.ensure_future(self._poll_for_recording_url()))
+            try:
+                done, pending = await asyncio.wait(
+                    wait_tasks, return_when=asyncio.FIRST_COMPLETED
+                )
+                for t in pending:
+                    t.cancel()
+                for t in done:
+                    try:
+                        result = t.result()
+                    except Exception:
+                        result = None
+                    if result:
+                        url = str(result)
+                        break
+            finally:
+                for t in wait_tasks:
+                    if not t.done():
+                        t.cancel()
+
+        if not url:
+            logger.error(
+                "vobiz_source.url_unavailable",
+                extra={
+                    "operation": "vobiz_source.end",
+                    "status": "failure",
+                    "vobiz_call_id": self._vobiz_call_id,
+                    "webhook_timeout_s": self._webhook_timeout_s,
+                    "poll_max_s": self._poll_max_s,
+                    "reason": "neither webhook nor recording-list produced a URL",
+                },
+            )
             raise RuntimeError(
-                "vobiz_source.end resolved webhook but the URL was empty; "
-                "callback payload may use an unrecognised field name"
+                f"vobiz recording URL not discoverable for "
+                f"call_id={self._vobiz_call_id!r}"
             )
 
         timeout = aiohttp.ClientTimeout(total=self._fetch_timeout_s)
@@ -297,7 +383,6 @@ class VobizRecordingSource(RecordingSourceBase):
                 "status": "success",
                 "vobiz_call_id": self._vobiz_call_id,
                 "recording_url": url,
-                "url_source": "start_response" if self._recording_url else "webhook",
                 "bytes": len(data),
             },
         )
