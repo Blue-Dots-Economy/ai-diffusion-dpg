@@ -54,6 +54,40 @@ def _phase_index(phase: Optional[str]) -> int:
         return len(_PHASES)
 
 
+def _validate_recording(reach_layer_block: dict) -> list[str]:
+    """Recording-specific cross-block rules.
+
+    - recording.caller_id_hash_salt must be set when source != disabled
+    - recording.store.s3.bucket must be set when store.backend == 's3'
+
+    Args:
+        reach_layer_block: The reach_layer domain config dict (top-level key
+            ``reach_layer`` wrapping ``channels.voice.recording``).
+
+    Returns:
+        List of human-readable error strings, empty when all rules pass.
+    """
+    errors: list[str] = []
+    rec = (reach_layer_block.get("reach_layer", {})
+                            .get("channels", {})
+                            .get("voice", {})
+                            .get("recording", {}))
+    if rec.get("source", "disabled") == "disabled":
+        return errors
+    if not rec.get("caller_id_hash_salt"):
+        errors.append(
+            "reach_layer.channels.voice.recording.caller_id_hash_salt must be set "
+            "when recording.source is enabled"
+        )
+    store = rec.get("store", {})
+    if store.get("backend") == "s3" and not (store.get("s3") or {}).get("bucket"):
+        errors.append(
+            "reach_layer.channels.voice.recording.store.s3.bucket must be set "
+            "when store.backend == 's3'"
+        )
+    return errors
+
+
 def validate_cross_block(
     blocks: dict[str, dict],
     selected_channels: Iterable[str],
@@ -372,6 +406,10 @@ def validate_cross_block(
                     f"declared with source=agent in action_gateway.tools[id={name!r}]. "
                     f"The LLM cannot supply these via the connector."
                 )
+
+    # 16. Recording cross-block rules (tied to the reach phase).
+    if applicable_after("reach"):
+        errors.extend(_validate_recording(rl))
 
     # 15. Every intent referenced by the workflow MUST already be declared in
     # nlu_processor.intents. Without this check, the renderer silently unions

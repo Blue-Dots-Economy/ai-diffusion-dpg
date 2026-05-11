@@ -319,3 +319,46 @@ def test_set_phase_advances_when_consistent():
 
     assert "PHASE_ADVANCE_BLOCKED" not in result
     assert state["phase_changed"] == "overview"
+
+
+# -- Recording cross-block rules ---------------------------------------------
+
+
+def _blocks_with_recording(recording_override: dict) -> dict[str, dict]:
+    """Return a blocks dict with the given recording config merged into voice."""
+    blocks = _empty_blocks()
+    blocks["reach_layer"] = {
+        "reach_layer": {
+            "channels": {
+                "voice": {
+                    "recording": recording_override,
+                },
+            },
+        },
+    }
+    return blocks
+
+
+def test_recording_disabled_passes():
+    """Default recording config (source=disabled) should pass validation."""
+    blocks = _blocks_with_recording({"source": "disabled"})
+    errors = validate_cross_block(blocks, selected_channels=[])
+    assert not any("recording" in e for e in errors)
+
+
+def test_recording_enabled_without_salt_fails():
+    """source=vobiz without caller_id_hash_salt set must produce an error."""
+    blocks = _blocks_with_recording({"source": "vobiz", "caller_id_hash_salt": ""})
+    errors = validate_cross_block(blocks, selected_channels=[])
+    assert any("caller_id_hash_salt" in e for e in errors)
+
+
+def test_recording_s3_backend_without_bucket_fails():
+    """source=vobiz with store.backend=s3 but empty bucket must produce an error."""
+    blocks = _blocks_with_recording({
+        "source": "vobiz",
+        "caller_id_hash_salt": "somesalt",
+        "store": {"backend": "s3", "s3": {"bucket": ""}},
+    })
+    errors = validate_cross_block(blocks, selected_channels=[])
+    assert any("bucket" in e for e in errors)

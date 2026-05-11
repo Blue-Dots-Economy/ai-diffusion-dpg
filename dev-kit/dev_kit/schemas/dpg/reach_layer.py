@@ -143,6 +143,45 @@ class VoiceObservabilityDpg(BaseModel):
     heartbeat_interval_s: float = Field(default=10.0, ge=0.0)
 
 
+class RecordingLocalDpg(BaseModel):
+    """Local-disk storage settings for voice recording artifacts."""
+
+    model_config = ConfigDict(extra="forbid")
+    base_path: str = "/var/recordings"
+
+
+class RecordingS3Dpg(BaseModel):
+    """S3-compatible storage settings for voice recording artifacts."""
+
+    model_config = ConfigDict(extra="forbid")
+    bucket: str = ""
+    prefix: str = "recordings/"
+    region: str = "ap-south-1"
+    kms_key_id: str = ""
+
+
+class RecordingStoreDpg(BaseModel):
+    """Pluggable storage backend selection for voice recording artifacts."""
+
+    model_config = ConfigDict(extra="forbid")
+    backend: Literal["local", "s3"] = "local"
+    local: RecordingLocalDpg = Field(default_factory=RecordingLocalDpg)
+    s3: RecordingS3Dpg = Field(default_factory=RecordingS3Dpg)
+
+
+class RecordingDpg(BaseModel):
+    """Voice channel recording defaults. ``source=disabled`` is a no-op."""
+
+    model_config = ConfigDict(extra="forbid")
+    source: Literal["disabled", "vobiz", "pipeline"] = "disabled"
+    consent_purpose: str = "recording"
+    webhook_timeout_s: float = 30.0
+    fetch_timeout_s: float = 60.0
+    min_duration_ms: int = 500
+    caller_id_hash_salt: str = ""
+    store: RecordingStoreDpg = Field(default_factory=RecordingStoreDpg)
+
+
 class VoiceDpg(BaseModel):
     """Defaults for the Voice channel adapter (telephony + STT/TTS)."""
 
@@ -159,6 +198,7 @@ class VoiceDpg(BaseModel):
     filler_threshold_ms: Optional[int] = None
     filler_phrase: str = ""
     terminal_word: Optional[str] = None
+    recording: RecordingDpg = Field(default_factory=RecordingDpg)
 
 
 class ChannelsDpg(BaseModel):
