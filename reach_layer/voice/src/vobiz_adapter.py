@@ -462,13 +462,15 @@ class VobizAdapter(TelephonyAdapterBase):
         Args:
             call_sid: The telephony call identifier for log correlation.
         """
+        # TODO(#330): replace _NoopObservability with the adapter's real
+        # ObservabilityLayerBase client so recording.* signals land in audit.
         emitter = SignalEmitter(_NoopObservability())
         link = None
         if self._inbound_span_context is not None:
             link = otel_trace.Link(self._inbound_span_context)
         try:
-            caller_id_hash = getattr(self._recording_manager, "_caller_id_hash", "")
-            source_name = getattr(self._recording_manager, "_source_name", "disabled")
+            caller_id_hash = self._recording_manager.caller_id_hash
+            source_name = self._recording_manager.source_name
             with recording_lifecycle_span(
                 call_sid=call_sid,
                 session_id=self._session_id_cache,

@@ -40,6 +40,14 @@ class NullRecordingManager(RecordingManagerBase):
     def pipeline_processors(self) -> list:
         return []
 
+    @property
+    def caller_id_hash(self) -> str:
+        return ""
+
+    @property
+    def source_name(self) -> str:
+        return "disabled"
+
 
 class RecordingManager(RecordingManagerBase):
     """Concrete recording manager with an idle→recording→stopped→finalized|failed state machine.
@@ -102,6 +110,16 @@ class RecordingManager(RecordingManagerBase):
     def pipeline_processors(self) -> list:
         """Return the source's pipeline processor list for pipecat wiring."""
         return self._source.pipeline_processors
+
+    @property
+    def caller_id_hash(self) -> str:
+        """Return the caller ID hash for audit logs."""
+        return self._caller_id_hash
+
+    @property
+    def source_name(self) -> str:
+        """Return the recording source identifier."""
+        return self._source_name
 
     def attach_trace_id(self, trace_id: str) -> None:
         """Attach an OTel trace ID to be included in the stored artifact's extra dict.

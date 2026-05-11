@@ -116,3 +116,10 @@ async def test_pipeline_processors_passthrough():
     # Pipeline source has 1 processor (RecordingTapProcessor), but our stub returns [].
     # Use stubbed list to verify passthrough.
     assert m.pipeline_processors == src.pipeline_processors == []
+
+
+@pytest.mark.asyncio
+async def test_recording_manager_exposes_metadata_properties():
+    m, _, _ = _mgr()
+    assert m.caller_id_hash == "h"  # matches the _mgr() helper's caller_id_hash="h"
+    assert m.source_name == "pipeline"

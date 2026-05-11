@@ -52,3 +52,10 @@ async def test_null_recording_manager_idle_forever():
     assert m.state == "idle"
     assert await m.finalize() is None
     assert m.pipeline_processors == []
+
+
+@pytest.mark.asyncio
+async def test_null_manager_metadata_defaults():
+    m = NullRecordingManager()
+    assert m.caller_id_hash == ""
+    assert m.source_name == "disabled"

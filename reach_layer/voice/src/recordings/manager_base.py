@@ -57,3 +57,13 @@ class RecordingManagerBase(ABC):
     @abstractmethod
     def pipeline_processors(self) -> list:
         """Pipecat processors to splice into the call pipeline; [] for vobiz/null."""
+
+    @property
+    @abstractmethod
+    def caller_id_hash(self) -> str:
+        """16-hex SHA256 of (salt + caller_id). Empty string when disabled."""
+
+    @property
+    @abstractmethod
+    def source_name(self) -> str:
+        """Source identifier — 'vobiz' | 'pipeline' | 'disabled'."""
