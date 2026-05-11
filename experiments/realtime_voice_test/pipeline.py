@@ -22,6 +22,7 @@ from pipecat.services.openai.realtime.events import (
     AudioOutput,
     PCMAudioFormat,
     SessionProperties,
+    TurnDetection,
 )
 from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMService
 from pipecat.turns.user_start.vad_user_turn_start_strategy import VADUserTurnStartStrategy
@@ -88,7 +89,18 @@ def build_pipeline_task(
                 # avoids the per-turn output text-token cost).
                 output_modalities=["audio"],
                 audio=AudioConfiguration(
-                    input=AudioInput(format=PCMAudioFormat()),
+                    input=AudioInput(
+                        format=PCMAudioFormat(),
+                        # Align OpenAI's server VAD with our local Silero
+                        # threshold so the two endpoint detectors agree.
+                        # OpenAI's default is ~500 ms which is too short
+                        # for Hindi multi-clause utterances and produces
+                        # mid-utterance bot replies.
+                        turn_detection=TurnDetection(
+                            type="server_vad",
+                            silence_duration_ms=vad_silence_ms,
+                        ),
+                    ),
                     output=AudioOutput(format=PCMAudioFormat()),
                 ),
                 voice=voice,

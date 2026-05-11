@@ -115,7 +115,13 @@ class LatencyObserverProcessor(FrameProcessor):
                 self._chunk_times = []
 
         elif isinstance(frame, UserStoppedSpeakingFrame) and self._cur:
-            self._cur["t_user_stop_ms"] = _ms()
+            # Lock t_user_stop_ms once the bot has started replying.
+            # A late UserStoppedSpeakingFrame from local Silero VAD
+            # (which can lag OpenAI's server VAD on long utterances)
+            # would otherwise overwrite with a later timestamp and
+            # produce negative ttft_ms readings.
+            if "t_bot_start_ms" not in self._cur:
+                self._cur["t_user_stop_ms"] = _ms()
 
         elif isinstance(frame, TTSAudioRawFrame) and self._cur:
             now = _ms()

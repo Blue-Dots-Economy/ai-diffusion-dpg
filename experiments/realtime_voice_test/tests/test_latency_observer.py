@@ -135,6 +135,38 @@ async def test_vad_multi_fire_within_one_turn(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_late_user_stop_after_bot_start_is_ignored(tmp_path):
+    """A UserStoppedSpeakingFrame arriving after the first TTSAudioRawFrame is ignored.
+
+    Two VADs run in parallel: OpenAI's server VAD (triggers the bot reply
+    when it thinks the user is done) and Pipecat's local Silero VAD (drives
+    UserStoppedSpeakingFrame). For long utterances with mid-clause pauses
+    the OpenAI side can fire first, the bot can start replying, and a
+    delayed local UserStoppedSpeakingFrame can arrive later. Without this
+    guard, that late frame would overwrite t_user_stop_ms with a later
+    value and produce a negative ttft_ms.
+    """
+    obs = make_observer(tmp_path)
+    await obs.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await asyncio.sleep(0.005)
+    # Early user_stop (e.g., from OpenAI server VAD perception)
+    await obs.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    early_user_stop = obs._cur["t_user_stop_ms"]
+    await asyncio.sleep(0.005)
+    # Bot starts replying
+    await obs.process_frame(fake_chunk(), FrameDirection.DOWNSTREAM)
+    await asyncio.sleep(0.02)
+    # Late UserStoppedSpeakingFrame arrives (Silero finally noticed silence)
+    await obs.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    assert obs._cur["t_user_stop_ms"] == early_user_stop  # NOT overwritten
+    await obs.process_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+
+    row = json.loads((tmp_path / "turns.jsonl").read_text().splitlines()[0])
+    assert row["ttft_ms"] >= 0  # the bug produced negative values
+    assert row["t_user_stop_ms"] == early_user_stop
+
+
+@pytest.mark.asyncio
 async def test_observer_passes_frames_through(tmp_path):
     """The observer is passive — it must call push_frame on every frame."""
     obs = make_observer(tmp_path)
