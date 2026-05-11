@@ -1,0 +1,120 @@
+"""Tests for LatencyObserverProcessor — per-turn JSONL writing.
+
+The observer is a Pipecat FrameProcessor. Tests feed it synthetic frames
+in the order Pipecat would emit them and verify the JSONL output.
+"""
+import asyncio
+import json
+from pathlib import Path
+
+import pytest
+
+from pipecat.frames.frames import (
+    BotStoppedSpeakingFrame,
+    TTSAudioRawFrame,
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
+)
+from pipecat.processors.frame_processor import FrameDirection
+
+from latency_observer import LatencyObserverProcessor
+
+
+def make_observer(tmp_path: Path) -> LatencyObserverProcessor:
+    return LatencyObserverProcessor(
+        call_sid="test-call-123",
+        out_path=tmp_path / "turns.jsonl",
+        model="gpt-realtime-mini",
+        voice="alloy",
+        language="hi",
+    )
+
+
+def fake_chunk(n_bytes: int = 100) -> TTSAudioRawFrame:
+    return TTSAudioRawFrame(audio=b"\x00" * n_bytes, sample_rate=16000, num_channels=1)
+
+
+@pytest.mark.asyncio
+async def test_one_turn_writes_one_row(tmp_path):
+    """A standard speech_started → ... → bot_stopped sequence writes one row."""
+    obs = make_observer(tmp_path)
+    await obs.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await asyncio.sleep(0.01)
+    await obs.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await asyncio.sleep(0.01)
+    for _ in range(3):
+        await obs.process_frame(fake_chunk(), FrameDirection.DOWNSTREAM)
+        await asyncio.sleep(0.005)
+    await obs.process_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+
+    out = tmp_path / "turns.jsonl"
+    assert out.exists()
+    lines = [l for l in out.read_text().splitlines() if l.strip()]
+    assert len(lines) == 1
+    row = json.loads(lines[0])
+    assert row["call_sid"] == "test-call-123"
+    assert row["turn"] == 1
+    assert row["model"] == "gpt-realtime-mini"
+    assert row["voice"] == "alloy"
+    assert row["language"] == "hi"
+    assert row["ttft_ms"] >= 0
+    assert row["total_response_ms"] >= 0
+    assert row["bot_speaking_ms"] >= 0
+    assert row["user_speech_duration_ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_two_turns_write_two_rows(tmp_path):
+    """Two consecutive turns each write a row, with incrementing turn index."""
+    obs = make_observer(tmp_path)
+    # Turn 1
+    for f in [UserStartedSpeakingFrame(), UserStoppedSpeakingFrame(),
+              fake_chunk(), BotStoppedSpeakingFrame()]:
+        await obs.process_frame(f, FrameDirection.DOWNSTREAM)
+        await asyncio.sleep(0.005)
+    # Turn 2
+    for f in [UserStartedSpeakingFrame(), UserStoppedSpeakingFrame(),
+              fake_chunk(), BotStoppedSpeakingFrame()]:
+        await obs.process_frame(f, FrameDirection.DOWNSTREAM)
+        await asyncio.sleep(0.005)
+
+    out = tmp_path / "turns.jsonl"
+    lines = [l for l in out.read_text().splitlines() if l.strip()]
+    assert len(lines) == 2
+    assert json.loads(lines[0])["turn"] == 1
+    assert json.loads(lines[1])["turn"] == 2
+
+
+@pytest.mark.asyncio
+async def test_tpot_computed_when_multiple_chunks(tmp_path):
+    """tpot_ms is the mean inter-chunk gap across all TTSAudioRawFrames."""
+    obs = make_observer(tmp_path)
+    await obs.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await obs.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    for _ in range(5):
+        await obs.process_frame(fake_chunk(), FrameDirection.DOWNSTREAM)
+        await asyncio.sleep(0.01)
+    await obs.process_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+
+    row = json.loads((tmp_path / "turns.jsonl").read_text().splitlines()[0])
+    assert row["tpot_ms"] is not None
+    assert row["tpot_ms"] > 0
+
+
+@pytest.mark.asyncio
+async def test_observer_passes_frames_through(tmp_path):
+    """The observer is passive — it must call push_frame on every frame."""
+    obs = make_observer(tmp_path)
+    seen = []
+
+    async def fake_push_frame(frame, direction):
+        seen.append(type(frame).__name__)
+
+    obs.push_frame = fake_push_frame  # monkeypatch
+
+    frames = [UserStartedSpeakingFrame(), UserStoppedSpeakingFrame(),
+              fake_chunk(), BotStoppedSpeakingFrame()]
+    for f in frames:
+        await obs.process_frame(f, FrameDirection.DOWNSTREAM)
+
+    assert len(seen) == len(frames)
