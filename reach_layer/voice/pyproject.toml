@@ -21,6 +21,7 @@ dependencies = [
     "pipecat-ai[websocket,silero]>=0.0.108",
     "pipecat-vobiz>=0.0.2",
     "numpy>=1.26",
+    "aiobotocore>=3.7.0",
 ]
 
 [project.optional-dependencies]
