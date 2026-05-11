@@ -1,10 +1,8 @@
-"""Smoke tests for server.py: HTTP endpoints only.
+"""Smoke tests for server.py — HTTP endpoints only.
 
-The WebSocket /ws/{call_sid} endpoint requires real Vobiz + OpenAI
-connections, so it's exercised by manual end-to-end calls (Task 9).
+The WebSocket endpoint requires real Vobiz + OpenAI connections, so it
+is exercised by manual end-to-end calls.
 """
-import os
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -13,7 +11,10 @@ from fastapi.testclient import TestClient
 def client(monkeypatch):
     """Build the FastAPI app with required env vars stubbed."""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-stub")
+    monkeypatch.setenv("VOBIZ_AUTH_ID", "test-auth-id")
+    monkeypatch.setenv("VOBIZ_AUTH_TOKEN", "test-auth-token")
     monkeypatch.setenv("PUBLIC_URL", "https://test.ngrok-free.app")
+    monkeypatch.setenv("LANGUAGE", "hi")
     from server import create_app
     return TestClient(create_app())
 
