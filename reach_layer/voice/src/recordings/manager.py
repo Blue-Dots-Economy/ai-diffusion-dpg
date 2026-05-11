@@ -185,7 +185,7 @@ class RecordingManager(RecordingManagerBase):
             self._end_ts = time.time()
         duration_ms = max(0, int((self._end_ts - self._start_ts) * 1000))
         size = len(payload.bytes_data or b"")
-        skip = size == 0
+        skip = duration_ms < self._min_duration_ms or size == 0
         if skip:
             self._state = "finalized"
             logger.info(

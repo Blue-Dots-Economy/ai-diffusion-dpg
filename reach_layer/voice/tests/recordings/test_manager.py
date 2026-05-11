@@ -29,7 +29,7 @@ class _StubStore:
         return "file:///tmp/x.wav"
 
 
-def _mgr(payload=RecordingPayload(bytes_data=b"x" * 320), min_ms=10) -> tuple:
+def _mgr(payload=RecordingPayload(bytes_data=b"x" * 320), min_ms=0) -> tuple:
     src, store = _StubSource(payload), _StubStore()
     m = RecordingManager(
         source=src, store=store, call_sid="CA1", session_id="s",
@@ -64,8 +64,25 @@ async def test_finalize_without_start_returns_none():
 
 
 @pytest.mark.asyncio
-async def test_min_duration_short_circuits_with_empty():
+async def test_zero_bytes_short_circuits_with_empty():
     m, _, store = _mgr(payload=RecordingPayload(bytes_data=b""))
+    await m.start(consent_granted_ts=1.0)
+    await m.stop()
+    art = await m.finalize()
+    assert art is None
+    assert m.state == "finalized"
+    assert store.last is None
+
+
+@pytest.mark.asyncio
+async def test_short_duration_short_circuits_with_empty():
+    """duration_ms below min_duration_ms must skip storage as empty."""
+    src, store = _StubSource(RecordingPayload(bytes_data=b"x" * 320)), _StubStore()
+    m = RecordingManager(
+        source=src, store=store, call_sid="CA1", session_id="s",
+        caller_id_hash="h", source_name="pipeline", fmt="wav",
+        sample_rate=8000, min_duration_ms=10_000, vobiz_call_id="",
+    )
     await m.start(consent_granted_ts=1.0)
     await m.stop()
     art = await m.finalize()
