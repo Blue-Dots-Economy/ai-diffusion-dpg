@@ -8,40 +8,44 @@ per-turn token usage, transcripts, and cost.
 
 ## Architecture
 
+Vobiz routes each call to OpenAI directly via SIP. Audio never passes
+through our server. We sit on the **control plane only**: one
+WebSocket to OpenAI for session configuration and event capture.
+
 ```
 Phone caller
    │ PSTN
    ▼
 Vobiz (telephony provider)
-   │ WS #1: Vobiz ⇄ our server   (g711_ulaw audio)
+   │ SIP / RTP   (audio direct, does not touch us)
+   ▼
+OpenAI SIP endpoint  (proj_<id>@sip.api.openai.com:5061)
+   │ HTTP POST  (incoming-call webhook)
    ▼
 our FastAPI server  (server.py + bridge.py)
-   │ WS #2: our server ⇄ OpenAI Realtime   (g711_ulaw audio)
+   │ ONE WebSocket  (control + per-turn events, no audio)
    ▼
 gpt-realtime-mini
 ```
 
-Two WebSockets per call:
-
-- **WS #1** — Vobiz opens it to our `/ws/{call_sid}` endpoint. The URL
-  is handed to Vobiz in the XML response from `/answer`. ngrok is just
-  a public tunnel so Vobiz can reach our laptop.
-- **WS #2** — our server opens it to OpenAI's Realtime API.
-
-Both legs use the same `g711_ulaw` codec at 8 kHz, so audio passes
-through with no resampling. The bridge runs two concurrent async tasks
-— one forwarding caller audio into OpenAI, the other forwarding
-OpenAI's response audio back to the caller and reading OpenAI's event
-stream for latency markers.
+- **SIP/RTP leg** — Vobiz dials `proj_<id>@sip.api.openai.com:5061`.
+  RTP carries the audio both ways. ngrok is not in this path.
+- **Webhook** — OpenAI POSTs to `/webhook/incoming` on call start
+  (with HMAC signature). Our server validates the signature, then
+  opens the control WebSocket for that call.
+- **Control WebSocket** — we send `session.update` (prompt, voice,
+  `g711_ulaw` audio format, VAD, transcription language) and listen
+  for the per-turn event stream.
 
 ## What we capture per turn
 
-OpenAI emits specific events at known moments. We timestamp them with
-a per-call monotonic clock and derive:
+OpenAI emits per-turn control events over the WebSocket whether the
+audio flows over WS or SIP. We timestamp them with a per-call
+monotonic clock and derive:
 
 | Metric | Definition |
 |---|---|
-| `ttft_ms` | first `response.audio.delta` − `speech_stopped` — user-perceived "thinking" time |
+| `ttft_ms` | first `response.audio.delta` − `speech_stopped` |
 | `total_response_ms` | `response.done` − `speech_stopped` |
 | `response_decision_ms` | `response.created` − `speech_stopped` |
 | `user_speech_duration_ms` | `speech_stopped` − `speech_started` |
@@ -56,8 +60,8 @@ One subdirectory per call, one JSONL row per user turn:
 
 ```
 results/
-├── 20260512T103045Z_abc-123/turns.jsonl
-├── 20260512T110212Z_def-456/turns.jsonl
+├── 20260512T103045Z_<call_id>/turns.jsonl
+├── 20260512T110212Z_<call_id>/turns.jsonl
 └── ...
 ```
 
@@ -75,24 +79,64 @@ uv run python aggregate.py            # all calls so far
 uv run python aggregate.py --latest   # most recent call only
 ```
 
-Prints p50/p99 of `ttft_ms` and `total_response_ms`, plus average cost
-per turn. p99 is the headline — voice UX is dominated by worst-case
-latency.
+Prints p50/p99 of `ttft_ms` and `total_response_ms`, plus average
+cost per turn. p99 is the headline — voice UX is dominated by
+worst-case latency.
 
 ## Module map
 
 | File | Responsibility |
 |---|---|
-| `server.py` | FastAPI: `/answer` webhook + `/ws/{call_sid}` endpoint |
-| `bridge.py` | Per-call coordinator: two WS tasks + `TurnAccumulator` state machine + JSONL writer |
-| `vobiz_protocol.py` | Pure codec — Vobiz JSON frames ↔ Python dataclasses |
-| `openai_realtime.py` | Async wrapper around OpenAI Realtime WebSocket |
+| `server.py` | FastAPI: `/webhook/incoming` — validates OpenAI HMAC, kicks off the per-call WS handler |
+| `bridge.py` | Per-call WS event loop + `TurnAccumulator` state machine + JSONL writer |
+| `openai_realtime.py` | Async wrapper around the OpenAI Realtime control WebSocket |
 | `prompts.py` | Three Hindi system-prompt variants |
 | `pricing.py` | Per-1M token rates + per-turn cost calc |
 | `aggregate.py` | Read all JSONL → p50/p99 summary |
+
+## One-time provider setup
+
+1. **Vobiz** — configure the SIP trunk to dial
+   `proj_<your-project-id>@sip.api.openai.com:5061`.
+2. **OpenAI platform** — register the webhook URL
+   `https://<your-ngrok-subdomain>.ngrok-free.app/webhook/incoming`.
+   Save the webhook secret it generates.
+
+## Environment variables
+
+| Var | Purpose |
+|---|---|
+| `OPENAI_API_KEY` | Auth for the OpenAI Realtime WebSocket |
+| `OPENAI_PROJECT_ID` | SIP routing target |
+| `OPENAI_WEBHOOK_SECRET` | HMAC validation of incoming webhooks |
+| `PUBLIC_URL` | ngrok URL OpenAI reaches the webhook on |
+| `PROMPT_NAME` | `SHORT_HINDI` / `KKB_PERSONA` / `STRICT_HINDI_ONLY` |
+| `MODEL` | `gpt-realtime-mini` |
+| `VOICE` | `alloy`, `nova`, `sage`, etc. |
+| `VAD_SILENCE_MS` | server_vad silence threshold (default 600) |
+
+## Open questions to confirm on first test call
+
+These are not blockers — they're items to verify with the first end-to-end call. The plan adjusts if any of them surprise us.
+
+- **Does `response.audio.delta` arrive on the control WS in SIP mode?**
+  If yes: TTFT is measured exactly as defined above. If no: we fall
+  back to `response.created` − `speech_stopped` as a proxy and
+  document the change. Worst case is a small definitional shift, not
+  a missing metric.
+- **Does OpenAI emit `input_audio_buffer.speech_started` /
+  `speech_stopped` in SIP mode?** Expected yes — these come from the
+  model's server VAD, which runs regardless of transport. Confirm on
+  the first call.
+- **Webhook signature scheme** — OpenAI uses HMAC; verify the exact
+  header name and signing-payload shape on the first webhook.
 
 ## Scope
 
 This experiment captures the **voice model's own latency** in
 isolation — no DPG framework, no Memory/Trust/NLU, no Raya STT/TTS.
-
+A matching production-side test (full production stack with
+`gpt-4.1-mini` swapped in as the LLM, captured the same way) lives
+in a separate spec; we compare the two p99 numbers to decide whether
+replacing Raya STT/TTS with a single voice-native model is worth
+integrating.
