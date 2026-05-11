@@ -223,9 +223,12 @@ class VobizRecordingSource(RecordingSourceBase):
     async def _list_recording_for_call(self) -> Optional[dict]:
         """Return the recording-list entry whose call_uuid matches this call.
 
-        Vobiz's ``GET /Account/{auth_id}/Recording/`` returns the most recent
-        recordings (newest first). We list a generous page and filter
-        client-side rather than guess query-parameter syntax.
+        Calls ``GET /Account/{auth_id}/Recording/?call_uuid=<uuid>&limit=5``.
+        Vobiz supports server-side ``call_uuid`` filtering on the list endpoint
+        per the published Recording API docs ("List all recordings with
+        extensive filtering options"). If a future tenant ignores the filter
+        and returns unrelated entries, the client-side match below remains as
+        a safety net.
 
         Returns:
             The matching recording dict (with ``recording_url`` populated), or
@@ -233,7 +236,7 @@ class VobizRecordingSource(RecordingSourceBase):
         """
         endpoint = (
             f"https://api.vobiz.ai/api/v1/Account/{self._auth_id}/Recording/"
-            f"?limit=20"
+            f"?call_uuid={self._vobiz_call_id}&limit=5"
         )
         timeout = aiohttp.ClientTimeout(total=10)
         async with aiohttp.ClientSession(timeout=timeout) as s:

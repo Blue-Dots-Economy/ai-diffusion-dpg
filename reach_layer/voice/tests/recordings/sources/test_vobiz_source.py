@@ -76,7 +76,7 @@ async def test_end_finds_url_via_recording_list(registry):
         )
         m.delete("https://api.vobiz.ai/api/v1/Account/A/Call/CALL1/Record/", status=204)
         m.get(
-            "https://api.vobiz.ai/api/v1/Account/A/Recording/?limit=20",
+            "https://api.vobiz.ai/api/v1/Account/A/Recording/?call_uuid=CALL1&limit=5",
             status=200, payload=_list_payload("CALL1", list_url),
         )
         m.get(list_url, body=b"FAKEMP3", status=200)
@@ -125,7 +125,7 @@ async def test_end_skips_list_entries_for_other_calls(registry):
         )
         m.delete("https://api.vobiz.ai/api/v1/Account/A/Call/CALL1/Record/", status=204)
         m.get(
-            "https://api.vobiz.ai/api/v1/Account/A/Recording/?limit=20",
+            "https://api.vobiz.ai/api/v1/Account/A/Recording/?call_uuid=CALL1&limit=5",
             status=200, payload=payload,
         )
         m.get(target_url, body=b"TARGET", status=200)
@@ -145,7 +145,7 @@ async def test_end_raises_when_no_url_discoverable(registry):
         )
         m.delete("https://api.vobiz.ai/api/v1/Account/A/Call/CALL1/Record/", status=204)
         m.get(
-            "https://api.vobiz.ai/api/v1/Account/A/Recording/?limit=20",
+            "https://api.vobiz.ai/api/v1/Account/A/Recording/?call_uuid=CALL1&limit=5",
             status=200, payload={"objects": []},
             repeat=True,
         )
