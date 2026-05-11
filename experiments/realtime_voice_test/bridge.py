@@ -245,10 +245,15 @@ async def run(
         prompt_name: Name of the prompt registered in prompts.py.
         instructions: The system prompt text to send to OpenAI.
         vad_silence_ms: server_vad silence_duration_ms config.
-        results_dir: Folder where the per-call JSONL is written.
+        results_dir: Folder where the per-call JSONL is written. Each
+            call gets its own subdirectory named
+            ``{YYYYmmddTHHMMSSZ}_{call_sid}`` so the lexicographic order
+            of subdirectories matches chronological order — used by
+            ``aggregate.py --latest``.
     """
     now_ms = _now_ms_factory()
-    out_path = results_dir / f"call_{call_sid}.jsonl"
+    call_ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out_path = results_dir / f"{call_ts}_{call_sid}" / "turns.jsonl"
 
     openai = RealtimeClient(api_key=api_key, model=model)
     await openai.connect()

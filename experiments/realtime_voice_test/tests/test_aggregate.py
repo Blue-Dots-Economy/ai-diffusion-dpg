@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 
-from aggregate import collect_rows, percentile, summarise
+from aggregate import collect_rows, find_latest_call_dir, percentile, summarise
 
 
 def test_percentile_basic():
@@ -48,3 +48,34 @@ def test_summarise_empty():
     assert s["count_turns"] == 0
     assert s["count_calls"] == 0
     assert s["ttft_p50"] == 0.0
+
+
+def test_collect_rows_walks_per_call_subdirs(tmp_path: Path):
+    """collect_rows finds .jsonl inside per-call subdirectories."""
+    call_a = tmp_path / "20260512T100000Z_call-a"
+    call_a.mkdir()
+    (call_a / "turns.jsonl").write_text(
+        json.dumps({"turn": 1, "ttft_ms": 100}) + "\n", encoding="utf-8"
+    )
+    call_b = tmp_path / "20260512T110000Z_call-b"
+    call_b.mkdir()
+    (call_b / "turns.jsonl").write_text(
+        json.dumps({"turn": 1, "ttft_ms": 250}) + "\n", encoding="utf-8"
+    )
+    rows = collect_rows(tmp_path)
+    assert sorted(r["ttft_ms"] for r in rows) == [100, 250]
+
+
+def test_find_latest_call_dir_picks_newest(tmp_path: Path):
+    """find_latest_call_dir returns the lexicographically last subdir."""
+    (tmp_path / "20260512T100000Z_call-a").mkdir()
+    (tmp_path / "20260512T110000Z_call-b").mkdir()
+    (tmp_path / "20260511T235959Z_call-old").mkdir()
+    latest = find_latest_call_dir(tmp_path)
+    assert latest is not None
+    assert latest.name == "20260512T110000Z_call-b"
+
+
+def test_find_latest_call_dir_returns_none_when_empty(tmp_path: Path):
+    """find_latest_call_dir returns None if there are no subdirectories."""
+    assert find_latest_call_dir(tmp_path) is None

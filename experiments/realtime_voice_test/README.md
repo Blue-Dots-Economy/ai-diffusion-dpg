@@ -74,8 +74,16 @@ Your phone rings → answer → speak Hindi → hear the model reply → hang up
 
 ## What you get
 
-Per call, one JSONL file is written to `results/call_{vobiz_call_uuid}.jsonl`
-with one row per user turn:
+Per call, one subdirectory is written under `results/`, named
+`{YYYYmmddTHHMMSSZ}_{vobiz_call_uuid}/`, containing `turns.jsonl` —
+one JSON row per user turn:
+
+```
+results/
+├── 20260512T103045Z_abc123/turns.jsonl
+├── 20260512T110212Z_def456/turns.jsonl
+└── 20260512T142800Z_ghi789/turns.jsonl
+```
 
 ```json
 {"call_sid": "abc123", "turn": 1, "ttft_ms": 743, "total_response_ms": 2107,
@@ -86,14 +94,14 @@ with one row per user turn:
 
 ## Summarise collected data
 
-After a few calls:
-
 ```bash
-uv run python aggregate.py
+uv run python aggregate.py                  # all calls in results/
+uv run python aggregate.py --latest         # most recent call only
+uv run python aggregate.py --prompt-name KKB_PERSONA   # filter
 ```
 
-Prints headline p50 / p99 TTFT, total response, cost. Use `--prompt-name`
-to filter to one prompt variant.
+Prints headline p50 / p99 TTFT, total response, and average cost. Combine
+flags freely (e.g. `--latest --prompt-name STRICT_HINDI_ONLY`).
 
 ## Troubleshooting
 

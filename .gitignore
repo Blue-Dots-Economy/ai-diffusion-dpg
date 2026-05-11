@@ -158,4 +158,4 @@ experiments/cache_compare/results
 experiments/voice_audio_test/samples/
 
 # Realtime voice test - per-call recordings contain PII
-experiments/realtime_voice_test/results/call_*.jsonl
+experiments/realtime_voice_test/results/**/*.jsonl
