@@ -260,6 +260,30 @@ reach_layer:
 
 ---
 
+## Recording
+
+Per-call audio recording is available behind the `reach_layer.channels.voice.recording.source` config switch. Default is `disabled`.
+
+| Source | Mechanism | Output format |
+|---|---|---|
+| `disabled` (default) | No recording. | — |
+| `pipeline` | A `RecordingTapProcessor` inserted into the Pipecat pipeline captures inbound + outbound audio into a single-channel WAV. | `wav` |
+| `vobiz` | Vobiz's REST `Record/` API records server-side; the MP3 URL is fed back via the `/recording-ready` webhook and fetched. | `mp3` |
+
+Recording starts ONLY after Trust Layer consent is granted for `purpose = recording.consent_purpose` (default `"recording"`). The greeting/consent prompt is NOT included.
+
+Each finalised recording produces:
+- An audio file under `{base_path}/YYYY/MM/DD/{call_sid}.{ext}` (local) or `s3://{bucket}/{prefix}YYYY/MM/DD/{call_sid}.{ext}` (S3).
+- A sidecar JSON manifest next to it (same path with `.json`) carrying `call_sid`, `session_id`, `caller_id_hash` (16-hex SHA256 of salt+caller_id, never raw), `source`, `format`, `duration_ms`, `bytes`, `sha256`, `recording_uri`, `consent_granted_ts`, `start_ts`, `end_ts`, `trace_id`.
+- A `recording.started` / `recording.stored` / `recording.empty` / `recording.failed` signal emitted to the Observability Layer.
+- An OTel `recording.lifecycle` span linked to the inbound call's span, with child spans per stage.
+
+Retention is delegated to the storage backend (S3 lifecycle rules, ops cron, etc.) — the app does not delete files itself.
+
+Design doc: `docs/superpowers/specs/2026-05-08-voice-call-recording-design.md`.
+
+---
+
 ## Dependencies
 
 | Package | Purpose |
