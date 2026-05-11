@@ -116,7 +116,7 @@ is dominated by worst-case latency.
 | `server.py` | FastAPI: `/answer` (Vobiz webhook) + `/ws/{call_sid}` (accepts the WS and starts the pipeline) |
 | `pipeline.py` | Builds the Pipecat pipeline for one call: transport, VAD, user-turn processor, LLM service, latency observer |
 | `latency_observer.py` | Custom Pipecat `FrameProcessor` — captures per-turn metrics and writes JSONL |
-| `prompts.py` | Three Hindi system-prompt variants |
+| `prompts.py` | Default system prompt (short, non-language-specific — language is set via `LANGUAGE` env var) |
 | `pricing.py` | Per-1M token rates + per-turn cost calc |
 | `aggregate.py` | Read all JSONL → p50/p99 summary |
 
@@ -149,15 +149,22 @@ is dominated by worst-case latency.
 | `VOBIZ_AUTH_ID` | Vobiz REST API auth (Pipecat uses this for hangup) |
 | `VOBIZ_AUTH_TOKEN` | Vobiz REST API auth |
 | `PUBLIC_URL` | ngrok HTTPS URL that Vobiz will reach `/answer` on |
-| `PROMPT_NAME` | `SHORT_HINDI` / `KKB_PERSONA` / `STRICT_HINDI_ONLY` |
 | `MODEL` | `gpt-realtime-mini` |
 | `VOICE` | `alloy`, `nova`, `sage`, etc. |
+| `LANGUAGE` | Transcription language hint (`hi` for Hindi). Passed to OpenAI as `input_audio_transcription.language` |
 | `VAD_SILENCE_MS` | VAD silence threshold (default 600 ms — tuned for Hindi pauses) |
 
 ## Open questions to confirm on first test call
 
 These are not blockers — items to verify with the first end-to-end call.
 
+- **Does the model reliably reply in Hindi without a prompt instruction?**
+  We set `input_audio_transcription.language="hi"` (the standard
+  language hint), but OpenAI Realtime has no separate output-language
+  parameter. The model's reply language depends on it mirroring the
+  user's Hindi audio + transcript. If it drifts to English on real
+  calls, add a one-line `"Reply in the user's language"` instruction
+  to `prompts.py`.
 - **Does Pipecat surface OpenAI's `response.done` token-usage payload
   to our observer?** If yes: cost calculation is straightforward. If
   no: hook directly into the Realtime service's raw event callback,
