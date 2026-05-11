@@ -14,12 +14,9 @@ Belongs to the Reach Layer / Voice channel in the DPG framework.
 from __future__ import annotations
 
 import asyncio
-import datetime as dt
 import logging
-import os
 import time
 import uuid
-from pathlib import Path
 
 from fastapi import WebSocket
 from opentelemetry import trace as otel_trace
@@ -45,7 +42,6 @@ from src.recordings.factory import build_recording_manager
 from src.recordings.manager_base import RecordingManagerBase
 from src.recordings.telemetry import SignalEmitter, recording_lifecycle_span
 from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
-from src.pipecat_services.latency_observer import LatencyObserverProcessor
 from src.pipecat_services.raya_stt import RayaSTTService
 from src.pipecat_services.raya_tts import RayaTTSService
 from src.pipecat_services.tts_sanitizer import TTSTextSanitizerProcessor
@@ -275,59 +271,20 @@ class VobizAdapter(TelephonyAdapterBase):
             session_id=session_id, call_sid=call_sid
         )
 
-        # experiment/realtime-voice-test: per-turn latency capture for the
-        # gpt-realtime-mini vs production-stack comparison. Sits at the end
-        # of the pipeline (just before the recording manager) so all upstream
-        # frame types — transcription, agent text, TTS audio, bot-stop —
-        # pass through it on their way out. Output JSONL goes alongside the
-        # gpt-realtime-mini experiment's results for direct comparison via
-        # `aggregate.py`. Activated only when LATENCY_OBSERVER_DIR is set,
-        # so production deployments are unaffected.
-        latency_observer: LatencyObserverProcessor | None = None
-        latency_dir_env = os.environ.get("LATENCY_OBSERVER_DIR", "").strip()
-        if latency_dir_env:
-            agent_cfg = self._config.get("agent_core", {}).get("agent", {})
-            model_name = str(agent_cfg.get("primary_model", "unknown"))
-            language_hint = str(
-                self._config.get("reach_layer", {})
-                .get("channels", {})
-                .get("voice", {})
-                .get("language", "hi")
-            )
-            ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            jsonl_path = Path(latency_dir_env) / f"{ts}_{call_sid}" / "turns.jsonl"
-            latency_observer = LatencyObserverProcessor(
-                call_sid=call_sid,
-                out_path=jsonl_path,
-                model=model_name,
-                language=language_hint,
-            )
-            logger.info(
-                "latency_observer.enabled",
-                extra={
-                    "operation": "vobiz_adapter.latency_observer",
-                    "status": "success",
-                    "call_sid": call_sid,
-                    "path": str(jsonl_path),
-                    "model": model_name,
-                },
-            )
-
-        pipeline_stages = [
-            transport.input(),
-            VADProcessor(vad_analyzer=vad_analyzer),
-            user_turn_processor,
-            stt,
-            vad_observer,
-            agent,
-            sanitizer,
-            tts,
-        ]
-        if latency_observer is not None:
-            pipeline_stages.append(latency_observer)
-        pipeline_stages.extend(self._recording_manager.pipeline_processors)
-        pipeline_stages.append(transport.output())
-        pipeline = Pipeline(pipeline_stages)
+        pipeline = Pipeline(
+            [
+                transport.input(),
+                VADProcessor(vad_analyzer=vad_analyzer),
+                user_turn_processor,
+                stt,
+                vad_observer,
+                agent,
+                sanitizer,
+                tts,
+                *self._recording_manager.pipeline_processors,
+                transport.output(),
+            ]
+        )
 
         task = PipelineTask(
             pipeline,
