@@ -48,6 +48,9 @@ def test_summarise_empty():
     assert s["count_turns"] == 0
     assert s["count_calls"] == 0
     assert s["ttft_p50"] == 0.0
+    assert s["silence_to_ttft_p50"] == 0.0
+    assert s["tpot_mean_ms"] == 0.0
+    assert s["bot_speaking_p50"] == 0.0
 
 
 def test_collect_rows_walks_per_call_subdirs(tmp_path: Path):
@@ -79,3 +82,40 @@ def test_find_latest_call_dir_picks_newest(tmp_path: Path):
 def test_find_latest_call_dir_returns_none_when_empty(tmp_path: Path):
     """find_latest_call_dir returns None if there are no subdirectories."""
     assert find_latest_call_dir(tmp_path) is None
+
+
+def test_summarise_includes_new_pipecat_metrics():
+    """summarise returns the Pipecat-only metrics added in the migration."""
+    rows = [
+        {
+            "ttft_ms": 100, "total_response_ms": 500, "cost_usd": 0.001,
+            "silence_to_ttft_ms": 2500, "tpot_ms": 30, "bot_speaking_ms": 1000,
+            "user_speech_duration_ms": 2000,
+            "turn": 1, "call_sid": "a",
+        },
+        {
+            "ttft_ms": 200, "total_response_ms": 800, "cost_usd": 0.002,
+            "silence_to_ttft_ms": 3000, "tpot_ms": 35, "bot_speaking_ms": 1500,
+            "user_speech_duration_ms": 2200,
+            "turn": 2, "call_sid": "a",
+        },
+    ]
+    s = summarise(rows)
+    assert "silence_to_ttft_p50" in s
+    assert "silence_to_ttft_p99" in s
+    assert "tpot_mean_ms" in s
+    assert "bot_speaking_p50" in s
+    assert s["silence_to_ttft_p50"] > 0
+    assert s["tpot_mean_ms"] == round((30 + 35) / 2, 1)
+    assert s["bot_speaking_p50"] > 0
+
+
+def test_summarise_handles_null_tpot():
+    """Rows with tpot_ms=None (1-chunk turns) are excluded from tpot_mean."""
+    rows = [
+        {"ttft_ms": 100, "tpot_ms": None, "cost_usd": 0.0, "call_sid": "a"},
+        {"ttft_ms": 200, "tpot_ms": 30, "cost_usd": 0.0, "call_sid": "a"},
+    ]
+    s = summarise(rows)
+    # Only the one row with non-None tpot contributes
+    assert s["tpot_mean_ms"] == 30.0

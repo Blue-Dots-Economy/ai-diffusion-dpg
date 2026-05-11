@@ -70,12 +70,19 @@ def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "total_response_p50": 0.0, "total_response_p99": 0.0,
             "avg_cost_usd": 0.0,
             "avg_user_speech_duration_ms": 0.0,
+            "silence_to_ttft_p50": 0.0,
+            "silence_to_ttft_p99": 0.0,
+            "tpot_mean_ms": 0.0,
+            "bot_speaking_p50": 0.0,
         }
     ttfts = [float(r["ttft_ms"]) for r in rows if "ttft_ms" in r]
     totals = [float(r["total_response_ms"]) for r in rows if "total_response_ms" in r]
     costs = [float(r["cost_usd"]) for r in rows if "cost_usd" in r]
     speech = [float(r["user_speech_duration_ms"]) for r in rows
               if "user_speech_duration_ms" in r]
+    silences = [float(r["silence_to_ttft_ms"]) for r in rows if "silence_to_ttft_ms" in r]
+    tpots = [float(r["tpot_ms"]) for r in rows if r.get("tpot_ms") is not None]
+    bot_dur = [float(r["bot_speaking_ms"]) for r in rows if "bot_speaking_ms" in r]
     call_sids = {r.get("call_sid") for r in rows if r.get("call_sid")}
     return {
         "count_turns": len(rows),
@@ -87,6 +94,10 @@ def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "avg_cost_usd": round(sum(costs) / len(costs), 8) if costs else 0.0,
         "avg_user_speech_duration_ms":
             round(sum(speech) / len(speech), 1) if speech else 0.0,
+        "silence_to_ttft_p50": round(percentile(silences, 50), 1),
+        "silence_to_ttft_p99": round(percentile(silences, 99), 1),
+        "tpot_mean_ms": round(sum(tpots) / len(tpots), 1) if tpots else 0.0,
+        "bot_speaking_p50": round(percentile(bot_dur, 50), 1),
     }
 
 
@@ -123,6 +134,10 @@ def main() -> None:
     print(f"  ttft_ms p99:              {s['ttft_p99']:>8.1f}")
     print(f"  total_response_ms p50:    {s['total_response_p50']:>8.1f}")
     print(f"  total_response_ms p99:    {s['total_response_p99']:>8.1f}")
+    print(f"  silence→ttft p50:         {s['silence_to_ttft_p50']:>8.1f}")
+    print(f"  silence→ttft p99:         {s['silence_to_ttft_p99']:>8.1f}")
+    print(f"  tpot mean ms:             {s['tpot_mean_ms']:>8.1f}")
+    print(f"  bot speaking p50:         {s['bot_speaking_p50']:>8.1f}")
     print(f"  avg cost/turn:            ${s['avg_cost_usd']:>10.6f}")
     print(f"  avg user_speech_dur ms:   {s['avg_user_speech_duration_ms']:>8.1f}")
 
