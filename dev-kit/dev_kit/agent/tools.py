@@ -452,6 +452,98 @@ TOOL_DEFINITIONS: list[dict] = [
 ]
 
 # ---------------------------------------------------------------------------
+# Recording wizard helper
+# ---------------------------------------------------------------------------
+
+
+def collect_recording_settings(existing: dict) -> dict:
+    """Assemble a recording configuration dict for the voice channel.
+
+    Accepts an ``existing`` dict containing whatever the operator has already
+    provided (e.g. from a previous wizard turn or from a pre-filled form).
+    Missing or blank values are filled in with safe defaults. When ``source``
+    is ``"disabled"`` (the default) only the ``source`` key is kept — no
+    further recording fields are needed and the block is effectively a no-op.
+
+    The function never prompts interactively; it is designed to be called
+    from both the schema-driven Configuration Agent wizard (which collects
+    values via the React UI and passes them as ``existing``) and from unit
+    tests.
+
+    Caller-ID hash salt auto-generation: if ``caller_id_hash_salt`` is absent
+    or blank in ``existing``, a 64-character hex token is generated via
+    ``secrets.token_hex(32)``.  The minimum required length is 32 chars.
+
+    Args:
+        existing: Dict of recording settings already collected.  Any key may
+                  be absent or set to ``None`` / ``""``; all are handled
+                  gracefully.
+
+    Returns:
+        Fully-populated recording config dict ready to be merged into the
+        ``reach_layer.channels.voice.recording`` path via ``update_config``.
+
+    Raises:
+        ValueError: If ``existing`` is not a dict.
+    """
+    import secrets as _secrets
+
+    if not isinstance(existing, dict):
+        raise ValueError(f"existing must be a dict, got {type(existing).__name__!r}")
+
+    source = existing.get("source") or "disabled"
+
+    # Disabled path — return minimal dict; framework YAML defaults cover the rest.
+    if source == "disabled":
+        return {"source": "disabled"}
+
+    # Opted-in path — fill in all required fields.
+    salt = existing.get("caller_id_hash_salt") or ""
+    if not salt or len(salt) < 32:
+        salt = _secrets.token_hex(32)  # 64 hex chars
+
+    # Store defaults.
+    store_in = existing.get("store") or {}
+    if not isinstance(store_in, dict):
+        store_in = {}
+
+    backend = store_in.get("backend") or "local"
+
+    local_cfg = store_in.get("local") or {}
+    if not isinstance(local_cfg, dict):
+        local_cfg = {}
+    local_section = {
+        "base_path": local_cfg.get("base_path") or "/var/recordings",
+    }
+
+    s3_in = store_in.get("s3") or {}
+    if not isinstance(s3_in, dict):
+        s3_in = {}
+    s3_section = {
+        "bucket": s3_in.get("bucket") or "",
+        "prefix": s3_in.get("prefix") or "recordings/",
+        "region": s3_in.get("region") or "ap-south-1",
+        "kms_key_id": s3_in.get("kms_key_id") or "",
+    }
+
+    store_out: dict = {
+        "backend": backend,
+        "local": local_section,
+        "s3": s3_section,
+    }
+
+    return {
+        "source": source,
+        "consent_purpose": existing.get("consent_purpose") or "recording",
+        "webhook_timeout_s": existing.get("webhook_timeout_s") or 30,
+        "fetch_timeout_s": existing.get("fetch_timeout_s") or 60,
+        "min_duration_ms": existing.get("min_duration_ms") or 500,
+        "caller_id_hash_salt": salt,
+        "store": store_out,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Transport helpers
 # ---------------------------------------------------------------------------
 

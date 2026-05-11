@@ -80,3 +80,63 @@ class TestGetRequiredChannelSecrets:
         result[0]["env_var"] = "MUTATED"
         fresh = acc.get_required_channel_secrets()
         assert fresh[0]["env_var"] == "GOOGLE_CLIENT_ID"
+
+
+class TestRecordingSecretsInChannelSecrets:
+    """caller_id_hash_salt (and S3 KMS key) must surface as secrets when recording is opted in."""
+
+    def _acc_with_recording(self, source: str, backend: str = "local") -> "ConfigAccumulator":
+        """Build an accumulator that has voice selected and recording configured."""
+        acc = ConfigAccumulator()
+        acc.set_reach_channel_selection(["voice"])
+        # Directly plant the recording config into the internal data structure the
+        # way the wizard would via update_config (after deep-merge through reach_layer).
+        acc._data["reach_layer"].setdefault("reach_layer", {}).setdefault(
+            "channels", {}
+        ).setdefault("voice", {})["recording"] = {
+            "source": source,
+            "store": {"backend": backend},
+        }
+        return acc
+
+    def test_recording_salt_is_marked_as_secret(self):
+        """caller_id_hash_salt under recording must be treated as a secret."""
+        acc = self._acc_with_recording(source="vobiz")
+        result = acc.get_required_channel_secrets()
+        env_vars = [d["env_var"] for d in result]
+        assert "RECORDING_CALLER_ID_HASH_SALT" in env_vars
+        cred = next(d for d in result if d["env_var"] == "RECORDING_CALLER_ID_HASH_SALT")
+        assert cred["secret"] is True
+        assert cred["section"] == "voice"
+
+    def test_disabled_recording_omits_salt_secret(self):
+        """When source=disabled, no recording-specific secrets are returned."""
+        acc = self._acc_with_recording(source="disabled")
+        result = acc.get_required_channel_secrets()
+        env_vars = [d["env_var"] for d in result]
+        assert "RECORDING_CALLER_ID_HASH_SALT" not in env_vars
+
+    def test_s3_backend_adds_kms_secret(self):
+        """S3 store backend must add the KMS key ID secret entry."""
+        acc = self._acc_with_recording(source="vobiz", backend="s3")
+        result = acc.get_required_channel_secrets()
+        env_vars = [d["env_var"] for d in result]
+        assert "RECORDING_S3_KMS_KEY_ID" in env_vars
+        cred = next(d for d in result if d["env_var"] == "RECORDING_S3_KMS_KEY_ID")
+        assert cred["secret"] is True
+        assert cred["required"] is False  # optional — bucket-default encryption is fine
+
+    def test_local_backend_omits_kms_secret(self):
+        """Local store backend must NOT add the KMS key ID secret entry."""
+        acc = self._acc_with_recording(source="vobiz", backend="local")
+        result = acc.get_required_channel_secrets()
+        env_vars = [d["env_var"] for d in result]
+        assert "RECORDING_S3_KMS_KEY_ID" not in env_vars
+
+    def test_no_voice_channel_omits_recording_secrets(self):
+        """Without voice channel selected, no recording secrets are added."""
+        acc = ConfigAccumulator()
+        acc.set_reach_channel_selection(["web"])
+        result = acc.get_required_channel_secrets()
+        env_vars = [d["env_var"] for d in result]
+        assert "RECORDING_CALLER_ID_HASH_SALT" not in env_vars
