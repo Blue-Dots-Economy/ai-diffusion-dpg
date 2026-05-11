@@ -102,6 +102,12 @@ class RecordingTapProcessor(FrameProcessor):
                 are captured; all frames are forwarded unchanged.
             direction: Pipeline direction (upstream / downstream); passed through.
         """
+        # FrameProcessor.process_frame() handles StartFrame / EndFrame /
+        # CancelFrame bookkeeping and toggles the _started flag. Without
+        # this super call every subsequent frame is rejected with
+        # "Trying to process X but StartFrame not received yet" and
+        # downstream push_frame() is dropped.
+        await super().process_frame(frame, direction)
         if self._active and self._wav is not None and not self._closed:
             if isinstance(frame, (InputAudioRawFrame, OutputAudioRawFrame)):
                 try:

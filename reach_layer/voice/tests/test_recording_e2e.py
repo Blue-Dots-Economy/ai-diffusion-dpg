@@ -37,6 +37,10 @@ async def test_pipeline_local_full_lifecycle(tmp_path: Path):
     # Feed audio frames through the tap processor.
     proc = manager.pipeline_processors[0]
     from pipecat.frames.frames import InputAudioRawFrame
+    # Pipecat FrameProcessor.process_frame() refuses frames until _started
+    # is True (normally set by the StartFrame the runner emits). Bypass the
+    # runner machinery for this unit-level e2e.
+    proc._started = True  # noqa: SLF001 — intentional test shortcut
     for _ in range(20):
         await proc.process_frame(
             InputAudioRawFrame(audio=b"\x00\x01" * 80, sample_rate=8000, num_channels=1),
