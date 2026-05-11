@@ -44,7 +44,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from reach_layer_base import DoneEvent, ReachLayerBase, SentenceEvent, SignalEvent
+from reach_layer_base import ConsentEvent, DoneEvent, ReachLayerBase, SentenceEvent, SignalEvent
 
 logger = logging.getLogger(__name__)
 
@@ -626,6 +626,11 @@ class AgentCoreLLMProcessor(FrameProcessor):
                             )
                         await self.push_frame(TTSSpeakFrame(text=event.text))
                         sentences_pushed += 1
+                elif isinstance(event, ConsentEvent):
+                    if self._telephony is not None and hasattr(
+                        self._telephony, "_on_consent_event"
+                    ):
+                        await self._telephony._on_consent_event(event)
                 elif isinstance(event, SignalEvent):
                     logger.debug(
                         "agent_core_llm.signal",
