@@ -115,6 +115,12 @@ class VobizAdapter(TelephonyAdapterBase):
         self._recording_consent_purpose: str = rec_cfg.get(
             "consent_purpose", "recording"
         )
+        # Testing/disclosure-based deployments: start recording the moment the
+        # websocket connects, bypassing the consent gate. Default False so
+        # production stays consent-gated. See issue #332 for context.
+        self._recording_start_on_connect: bool = bool(
+            rec_cfg.get("start_on_connect", False)
+        )
         # Placeholder manager rebuilt with call-specific identifiers inside
         # handle_call(); NullRecordingManager until the call is known.
         self._recording_manager: RecordingManagerBase = build_recording_manager(
@@ -325,6 +331,23 @@ class VobizAdapter(TelephonyAdapterBase):
                 self._play_opening_phrase(task, session_id, caller_id, call_sid)
             )
             agent.set_opening_phrase_task(opening_phrase_task)
+            # Testing/disclosure path (#332): start the recorder immediately on
+            # connect, bypassing the consent gate. Triggered by
+            # reach_layer.channels.voice.recording.start_on_connect = true.
+            if self._recording_start_on_connect:
+                logger.info(
+                    "vobiz_adapter.recording_start_on_connect",
+                    extra={
+                        "operation": "vobiz_adapter.handle_call",
+                        "status": "invoked",
+                        "call_sid": call_sid,
+                        "session_id": session_id,
+                        "reason": "start_on_connect=true",
+                    },
+                )
+                asyncio.create_task(
+                    self._recording_manager.start(consent_granted_ts=time.time())
+                )
 
         @transport.event_handler("on_client_disconnected")
         async def _on_disconnected(transport, client):

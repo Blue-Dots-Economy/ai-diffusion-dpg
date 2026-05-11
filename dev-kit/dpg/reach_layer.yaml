@@ -146,6 +146,9 @@ reach_layer:
         fetch_timeout_s: 60
         min_duration_ms: 500
         caller_id_hash_salt: ""
+        # Testing/disclosure escape hatch (#332): start recording on websocket
+        # connect, bypassing the Trust Layer consent gate.
+        start_on_connect: false
         store:
           backend: local
           local:

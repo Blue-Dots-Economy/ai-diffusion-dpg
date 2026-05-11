@@ -179,6 +179,9 @@ class RecordingDpg(BaseModel):
     fetch_timeout_s: float = 60.0
     min_duration_ms: int = 500
     caller_id_hash_salt: str = ""
+    # Testing/disclosure escape hatch (#332): start recording on websocket
+    # connect, bypassing the Trust Layer consent gate.
+    start_on_connect: bool = False
     store: RecordingStoreDpg = Field(default_factory=RecordingStoreDpg)
 
 
