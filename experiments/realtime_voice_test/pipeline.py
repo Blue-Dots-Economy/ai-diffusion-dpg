@@ -13,7 +13,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.audio.vad_processor import VADProcessor
@@ -21,7 +20,7 @@ from pipecat.services.openai.realtime.events import (
     AudioConfiguration,
     AudioInput,
     AudioOutput,
-    PCMUAudioFormat,
+    PCMAudioFormat,
     SessionProperties,
     TurnDetection,
 )
@@ -38,12 +37,8 @@ from prompts import DEFAULT_PROMPT
 from recording_tap import RecordingTapProcessor
 
 
-# Run the whole pipeline at Vobiz's native 8 kHz rate (matches reach_layer/voice
-# production setup). Silero VAD operates fine at 8 kHz on telephony audio. Using
-# 8 kHz end-to-end means no internal resampling between transport, VAD, OpenAI's
-# mu-law audio, and the recording tap — frames are uniform so the single-WAV
-# tap design works (no slowdown / pitch shift in the recording).
-PIPELINE_SAMPLE_RATE = 8000
+# Silero VAD requires 16 kHz pcm16 input; all pipeline audio is resampled to this rate.
+PIPELINE_SAMPLE_RATE = 16000
 
 
 def build_pipeline_task(
@@ -80,20 +75,7 @@ def build_pipeline_task(
     Returns:
         A PipelineTask ready to be passed to PipelineRunner.run().
     """
-    # Telephony-tuned VAD parameters — matches reach_layer/voice's
-    # SileroVADWrapper defaults. Pipecat's out-of-the-box defaults
-    # (confidence=0.7, start_secs=0.2, stop_secs=0.2, min_volume=0.6) are
-    # too sensitive for 8 kHz telephony audio: short hiss / echo bursts
-    # trigger false UserStartedSpeakingFrame events that broadcast
-    # interruptions through the pipeline and cancel in-flight bot replies.
-    vad = SileroVADAnalyzer(
-        params=VADParams(
-            confidence=0.75,
-            start_secs=0.25,
-            stop_secs=0.4,
-            min_volume=0.7,
-        )
-    )
+    vad = SileroVADAnalyzer()
     user_turn = UserTurnProcessor(
         user_turn_strategies=UserTurnStrategies(
             start=[VADUserTurnStartStrategy()],
@@ -115,9 +97,7 @@ def build_pipeline_task(
                 output_modalities=["audio"],
                 audio=AudioConfiguration(
                     input=AudioInput(
-                        # g711 mu-law @ 8 kHz — matches the pipeline rate and
-                        # Vobiz wire format, eliminating any resampling.
-                        format=PCMUAudioFormat(),
+                        format=PCMAudioFormat(),
                         # Align OpenAI's server VAD with our local Silero
                         # threshold so the two endpoint detectors agree.
                         # OpenAI's default is ~500 ms which is too short
@@ -128,7 +108,7 @@ def build_pipeline_task(
                             silence_duration_ms=vad_silence_ms,
                         ),
                     ),
-                    output=AudioOutput(format=PCMUAudioFormat()),
+                    output=AudioOutput(format=PCMAudioFormat()),
                 ),
                 voice=voice,
                 tool_choice="auto",

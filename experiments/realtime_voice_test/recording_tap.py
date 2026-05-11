@@ -1,11 +1,14 @@
-"""RecordingTapProcessor — passive Pipecat processor that writes audio to WAV.
+"""RecordingTapProcessor — passive Pipecat processor that writes per-direction WAVs.
 
-Ported verbatim from reach_layer/voice/src/pipecat_services/recording_tap.py
-(the production Voice channel's recording feature, added in PR #322/#331).
-We keep it local to the experiment so the test harness doesn't depend on the
-reach_layer Python package. Single WAV at a fixed sample rate works here
-because we configure the rest of the pipeline (pipeline rate + OpenAI audio
-format) to match production's uniform 8 kHz approach.
+Based on reach_layer/voice/src/pipecat_services/recording_tap.py — but adapted
+for OpenAI Realtime, where caller audio (16 kHz at the tap) and bot audio
+(24 kHz, OpenAI's native rate) arrive at different sample rates. Production's
+single-fixed-rate WAV plays the bot voice at the wrong speed.
+
+We solve this by writing TWO separate WAV files, one per direction, each at
+the native sample rate of the frames it contains. The pipeline's transport
+layer resamples for Vobiz output independently; both copies on disk are
+self-described and play correctly in any media player.
 """
 from __future__ import annotations
 
@@ -21,100 +24,125 @@ logger = logging.getLogger(__name__)
 
 
 class RecordingTapProcessor(FrameProcessor):
-    """Captures inbound and outbound audio frames into a WAV buffer when active.
+    """Captures inbound and outbound audio frames into TWO WAV buffers.
 
-    Inactive by default; call activate() to begin capturing, close() to finalise
-    the WAV header and stop further writes.
+    Inactive by default; call activate() to begin capturing, close() to
+    finalise both WAV headers and stop further writes. Inbound and outbound
+    audio go to separate sinks because their sample rates can differ — each
+    WAV is initialised lazily on the first frame of that direction and uses
+    `frame.sample_rate` as the WAV's frame rate.
     """
 
-    def __init__(self, sample_rate: int, sink: Optional[IO[bytes]] = None) -> None:
-        """Initialise the tap processor.
-
-        Args:
-            sample_rate: PCM sample rate in Hz (e.g. 8000, 16000).
-            sink: Writable binary stream for WAV output; defaults to an in-memory
-                BytesIO if not provided.
-        """
+    def __init__(self) -> None:
+        """Initialise the tap with two empty BytesIO sinks (one per direction)."""
         super().__init__()
-        self._sample_rate = int(sample_rate)
-        self._sink: IO[bytes] = sink if sink is not None else io.BytesIO()
-        self._wav: Optional[wave.Wave_write] = None
+        self._input_sink: IO[bytes] = io.BytesIO()
+        self._output_sink: IO[bytes] = io.BytesIO()
+        self._input_wav: Optional[wave.Wave_write] = None
+        self._output_wav: Optional[wave.Wave_write] = None
         self._active: bool = False
         self._closed: bool = False
 
     def activate(self) -> None:
-        """Start capturing audio frames into the WAV sink.
-
-        Idempotent: safe to call multiple times. No-op if already closed.
-        """
+        """Start capturing audio frames. Idempotent."""
         if self._closed:
             return
-        if self._wav is None:
-            self._wav = wave.open(self._sink, "wb")
-            self._wav.setnchannels(1)
-            self._wav.setsampwidth(2)  # 16-bit PCM
-            self._wav.setframerate(self._sample_rate)
         self._active = True
 
     def deactivate(self) -> None:
-        """Pause capturing without finalising the WAV header."""
+        """Pause capturing without finalising WAV headers."""
         self._active = False
 
     def close(self) -> None:
-        """Finalise the WAV header and permanently stop capturing.
-
-        Safe to call multiple times; subsequent audio frames are silently dropped.
-        """
+        """Finalise both WAV headers and permanently stop capturing."""
         self.deactivate()
-        if self._wav is not None and not self._closed:
+        for direction, wav in (("input", self._input_wav), ("output", self._output_wav)):
+            if wav is None or self._closed:
+                continue
             try:
-                self._wav.close()
+                wav.close()
             except Exception as exc:
                 logger.warning(
                     "recording_tap_close_failed",
                     extra={
                         "operation": "recording_tap.close",
                         "status": "failure",
+                        "direction": direction,
                         "error": f"{type(exc).__name__}: {exc}",
                     },
                 )
         self._closed = True
 
     @property
-    def buffer_value(self) -> bytes:
-        """Return the accumulated WAV bytes from the in-memory sink.
+    def input_buffer_value(self) -> bytes:
+        """WAV bytes for caller (inbound) audio."""
+        if hasattr(self._input_sink, "getvalue"):
+            return self._input_sink.getvalue()  # type: ignore[no-any-return]
+        return b""
 
-        Returns:
-            Bytes of the WAV data, or empty bytes if the sink has no getvalue().
-        """
-        if hasattr(self._sink, "getvalue"):
-            return self._sink.getvalue()  # type: ignore[no-any-return]
+    @property
+    def output_buffer_value(self) -> bytes:
+        """WAV bytes for bot (outbound) audio."""
+        if hasattr(self._output_sink, "getvalue"):
+            return self._output_sink.getvalue()  # type: ignore[no-any-return]
         return b""
 
     async def process_frame(self, frame, direction: FrameDirection) -> None:
-        """Intercept audio frames and write PCM data to the WAV sink when active.
-
-        Args:
-            frame: Any Pipecat frame; only InputAudioRawFrame and
-                OutputAudioRawFrame are captured; all frames forwarded unchanged.
-            direction: Pipeline direction (upstream / downstream); passed through.
-        """
-        # FrameProcessor.process_frame() handles StartFrame / EndFrame /
-        # CancelFrame bookkeeping. Without this super call every subsequent
-        # frame is rejected with "Trying to process X but StartFrame not
-        # received yet" and downstream push_frame() is dropped.
+        """Intercept audio frames and write each direction to its own WAV."""
+        # Required: FrameProcessor.process_frame() handles StartFrame/EndFrame
+        # bookkeeping. Without this, subsequent frames are rejected.
         await super().process_frame(frame, direction)
-        if self._active and self._wav is not None and not self._closed:
-            if isinstance(frame, (InputAudioRawFrame, OutputAudioRawFrame)):
-                try:
-                    self._wav.writeframes(frame.audio)
-                except Exception as exc:
-                    logger.warning(
-                        "recording_tap_write_failed",
-                        extra={
-                            "operation": "recording_tap.write",
-                            "status": "failure",
-                            "error": f"{type(exc).__name__}: {exc}",
-                        },
-                    )
+
+        if self._active and not self._closed:
+            if isinstance(frame, InputAudioRawFrame):
+                self._write(frame, is_input=True)
+            elif isinstance(frame, OutputAudioRawFrame):
+                self._write(frame, is_input=False)
+
         await self.push_frame(frame, direction)
+
+    def _write(self, frame, *, is_input: bool) -> None:
+        """Lazy-init the correct WAV (using the frame's native sample rate) and write."""
+        wav_attr = "_input_wav" if is_input else "_output_wav"
+        sink_attr = "_input_sink" if is_input else "_output_sink"
+        wav = getattr(self, wav_attr)
+        if wav is None:
+            sink = getattr(self, sink_attr)
+            try:
+                wav = wave.open(sink, "wb")
+                wav.setnchannels(1)
+                wav.setsampwidth(2)  # 16-bit PCM
+                wav.setframerate(int(frame.sample_rate))
+            except Exception as exc:
+                logger.warning(
+                    "recording_tap_open_failed",
+                    extra={
+                        "operation": "recording_tap.open",
+                        "status": "failure",
+                        "direction": "input" if is_input else "output",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                )
+                return
+            setattr(self, wav_attr, wav)
+            logger.info(
+                "recording_tap_opened",
+                extra={
+                    "operation": "recording_tap.open",
+                    "status": "success",
+                    "direction": "input" if is_input else "output",
+                    "sample_rate": int(frame.sample_rate),
+                },
+            )
+        try:
+            wav.writeframes(frame.audio)
+        except Exception as exc:
+            logger.warning(
+                "recording_tap_write_failed",
+                extra={
+                    "operation": "recording_tap.write",
+                    "status": "failure",
+                    "direction": "input" if is_input else "output",
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
