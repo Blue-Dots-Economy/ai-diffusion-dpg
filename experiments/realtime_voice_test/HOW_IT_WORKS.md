@@ -8,51 +8,75 @@ per-turn token usage, transcripts, and cost.
 
 ## Architecture
 
-Vobiz routes each call to OpenAI directly via SIP. Audio never passes
-through our server. We sit on the **control plane only**: one
-WebSocket to OpenAI for session configuration and event capture.
+Built on **Pipecat**, a Python framework for voice pipelines. Vobiz
+streams call audio to our server; our server runs a Pipecat pipeline
+that detects voice activity, sends audio to OpenAI Realtime, and
+streams the model's reply back to Vobiz. Pipecat handles the
+transport plumbing on both sides; we plug in a custom processor to
+capture per-turn metrics.
 
 ```
 Phone caller
    │ PSTN
    ▼
 Vobiz (telephony provider)
-   │ SIP / RTP   (audio direct, does not touch us)
+   │ Vobiz protocol, mu-law @ 8 kHz
    ▼
-OpenAI SIP endpoint  (proj_<id>@sip.api.openai.com:5061)
-   │ HTTP POST  (incoming-call webhook)
+our FastAPI server
+   │ ┌──────────────── Pipecat pipeline ────────────────┐
+   │ │ transport.input()                                │
+   │ │       ▼                                          │
+   │ │ VADProcessor              (Silero VAD)           │
+   │ │       ▼                                          │
+   │ │ UserTurnProcessor         (turn boundaries)      │
+   │ │       ▼                                          │
+   │ │ OpenAIRealtimeLLMService ───────────┐            │
+   │ │       ▼                             │            │
+   │ │ LatencyObserverProcessor            └────────────┼─► OpenAI Realtime
+   │ │       ▼                                          │   (Pipecat opens
+   │ │ transport.output()                               │    this internally)
+   │ └──────────────────────────────────────────────────┘
    ▼
-our FastAPI server  (server.py + bridge.py)
-   │ ONE WebSocket  (control + per-turn events, no audio)
-   ▼
-gpt-realtime-mini
+back to Vobiz → caller hears the reply
 ```
 
-- **SIP/RTP leg** — Vobiz dials `proj_<id>@sip.api.openai.com:5061`.
-  RTP carries the audio both ways. ngrok is not in this path.
-- **Webhook** — OpenAI POSTs to `/webhook/incoming` on call start
-  (with HMAC signature). Our server validates the signature, then
-  opens the control WebSocket for that call.
-- **Control WebSocket** — we send `session.update` (prompt, voice,
-  `g711_ulaw` audio format, VAD, transcription language) and listen
-  for the per-turn event stream.
+- **Vobiz → our server** — On call answer, Vobiz opens a connection
+  to our `/ws/{call_sid}` endpoint. Pipecat's
+  `FastAPIWebsocketTransport` + `VobizFrameSerializer` handle the
+  Vobiz JSON protocol and the mu-law audio codec for us.
+- **Our server → OpenAI** — Pipecat's `OpenAIRealtimeLLMService`
+  connects to OpenAI Realtime when the pipeline starts. It sends the
+  session config (system prompt, voice, audio format, VAD,
+  transcription language) and streams audio bidirectionally.
+- **LatencyObserverProcessor** — our custom Pipecat processor sits in
+  the pipeline, observes specific frames going past, timestamps them,
+  and writes one JSONL row per turn.
 
 ## What we capture per turn
 
-OpenAI emits per-turn control events over the WebSocket whether the
-audio flows over WS or SIP. We timestamp them with a per-call
-monotonic clock and derive:
+The Pipecat pipeline emits typed frames at known moments. We timestamp
+them with a per-call monotonic clock and derive:
 
-| Metric | Definition |
-|---|---|
-| `ttft_ms` | first `response.audio.delta` − `speech_stopped` |
-| `total_response_ms` | `response.done` − `speech_stopped` |
-| `response_decision_ms` | `response.created` − `speech_stopped` |
-| `user_speech_duration_ms` | `speech_stopped` − `speech_started` |
+| Metric | Source frame | Definition |
+|---|---|---|
+| `t_user_start_ms` | `UserStartedSpeakingFrame` | Caller started speaking |
+| `t_user_stop_ms` | `UserStoppedSpeakingFrame` | Caller stopped speaking |
+| `t_bot_start_ms` | first `TTSAudioRawFrame` | First bot audio chunk |
+| `t_bot_stop_ms` | `BotStoppedSpeakingFrame` | Bot finished speaking |
+| `ttft_ms` | derived | `t_bot_start − t_user_stop` — **headline metric** |
+| `silence_to_ttft_ms` | derived | `t_bot_start − t_user_start` — full silence gap as caller perceives it |
+| `total_response_ms` | derived | `t_bot_stop − t_user_stop` |
+| `tpot_ms` | derived | mean inter-chunk gap across all `TTSAudioRawFrame`s — sustained throughput |
+| `bot_speaking_ms` | derived | `t_bot_stop − t_bot_start` |
+| `user_speech_duration_ms` | derived | `t_user_stop − t_user_start` |
 
-Token usage (input_text / input_audio / input_cached / output_text /
-output_audio) comes from `response.done`. Cost = sum of (tokens ×
-per-1M rate from `pricing.py`).
+Plus per turn:
+- `transcript_in` — from Pipecat's `TranscriptionFrame` (Hindi-tuned).
+- `transcript_out` — from the model's response text.
+- Token usage (input_text / input_audio / input_cached / output_text /
+  output_audio) — from the OpenAI Realtime `response.done` event,
+  surfaced by Pipecat.
+- `cost_usd` — sum of (tokens × per-1M rate from `pricing.py`).
 
 ## Output layout
 
@@ -66,7 +90,9 @@ results/
 ```
 
 ```json
-{"call_sid":"abc-123","turn":1,"ttft_ms":743,"total_response_ms":2107,
+{"call_sid":"abc-123","turn":1,
+ "ttft_ms":743,"silence_to_ttft_ms":2940,"total_response_ms":2843,
+ "tpot_ms":34,"bot_speaking_ms":1900,
  "transcript_in":"नमस्ते, मुझे काम चाहिए",
  "transcript_out":"नमस्ते। आप किस तरह का काम ढूंढ रहे हैं?",
  "input_audio_tokens":125,"output_audio_tokens":95,"cost_usd":0.0034}
@@ -80,58 +106,69 @@ uv run python aggregate.py --latest   # most recent call only
 ```
 
 Prints p50/p99 of `ttft_ms` and `total_response_ms`, plus average
-cost per turn. p99 is the headline — voice UX is dominated by
-worst-case latency.
+`tpot_ms` and average cost per turn. p99 is the headline — voice UX
+is dominated by worst-case latency.
 
 ## Module map
 
 | File | Responsibility |
 |---|---|
-| `server.py` | FastAPI: `/webhook/incoming` — validates OpenAI HMAC, kicks off the per-call WS handler |
-| `bridge.py` | Per-call WS event loop + `TurnAccumulator` state machine + JSONL writer |
-| `openai_realtime.py` | Async wrapper around the OpenAI Realtime control WebSocket |
+| `server.py` | FastAPI: `/answer` (Vobiz webhook) + `/ws/{call_sid}` (accepts the WS and starts the pipeline) |
+| `pipeline.py` | Builds the Pipecat pipeline for one call: transport, VAD, user-turn processor, LLM service, latency observer |
+| `latency_observer.py` | Custom Pipecat `FrameProcessor` — captures per-turn metrics and writes JSONL |
 | `prompts.py` | Three Hindi system-prompt variants |
 | `pricing.py` | Per-1M token rates + per-turn cost calc |
 | `aggregate.py` | Read all JSONL → p50/p99 summary |
 
-## One-time provider setup
+## Prerequisites
 
-1. **Vobiz** — configure the SIP trunk to dial
-   `proj_<your-project-id>@sip.api.openai.com:5061`.
-2. **OpenAI platform** — register the webhook URL
-   `https://<your-ngrok-subdomain>.ngrok-free.app/webhook/incoming`.
-   Save the webhook secret it generates.
+**OpenAI account:**
+- API Key
+- `gpt-realtime-mini` enabled in your project
+- Account has active billing
+
+**Vobiz account:**
+- Phone number assigned
+- Auth credentials (`auth_id`, `auth_token`)
+- Account funded for test calls
+
+**Dev environment:**
+- Python 3.11+
+- `uv` installed
+- `ngrok` installed (free tier works; the random subdomain changes
+  each restart, so you'll re-update Vobiz's answer-URL each time —
+  paid ngrok / Cloudflare Tunnel give a stable subdomain)
+- Pipecat installed (`pipecat-ai` with the `silero`, `openai`, and
+  Vobiz transport extras)
 
 ## Environment variables
 
 | Var | Purpose |
 |---|---|
-| `OPENAI_API_KEY` | Auth for the OpenAI Realtime WebSocket |
-| `OPENAI_PROJECT_ID` | SIP routing target |
-| `OPENAI_WEBHOOK_SECRET` | HMAC validation of incoming webhooks |
-| `PUBLIC_URL` | ngrok URL OpenAI reaches the webhook on |
+| `OPENAI_API_KEY` | Auth for OpenAI Realtime |
+| `VOBIZ_AUTH_ID` | Vobiz REST API auth (Pipecat uses this for hangup) |
+| `VOBIZ_AUTH_TOKEN` | Vobiz REST API auth |
+| `PUBLIC_URL` | ngrok HTTPS URL that Vobiz will reach `/answer` on |
 | `PROMPT_NAME` | `SHORT_HINDI` / `KKB_PERSONA` / `STRICT_HINDI_ONLY` |
 | `MODEL` | `gpt-realtime-mini` |
 | `VOICE` | `alloy`, `nova`, `sage`, etc. |
-| `VAD_SILENCE_MS` | server_vad silence threshold (default 600) |
+| `VAD_SILENCE_MS` | VAD silence threshold (default 600 ms — tuned for Hindi pauses) |
 
 ## Open questions to confirm on first test call
 
-These are not blockers — they're items to verify with the first end-to-end call. The plan adjusts if any of them surprise us.
+These are not blockers — items to verify with the first end-to-end call.
 
-- **Does `response.audio.delta` arrive on the control WS in SIP mode?**
-  If yes: TTFT is measured exactly as defined above. If no: we fall
-  back to `response.created` − `speech_stopped` as a proxy and
-  document the change. Worst case is a small definitional shift, not
-  a missing metric.
-- **Does OpenAI emit `input_audio_buffer.speech_started` /
-  `speech_stopped` in SIP mode?** Expected yes — these come from the
-  model's server VAD, which runs regardless of transport. Confirm on
-  the first call.
-- **Webhook signature scheme** — OpenAI uses HMAC; verify the exact
-  header name and signing-payload shape on the first webhook.
+- **Does Pipecat surface OpenAI's `response.done` token-usage payload
+  to our observer?** If yes: cost calculation is straightforward. If
+  no: hook directly into the Realtime service's raw event callback,
+  or omit `cost_usd` until the integration is wired.
+- **TPOT semantics** — `tpot_ms` is measured as mean wall-clock gap
+  between chunks delivered to our observer, which includes any network
+  jitter between OpenAI and our server. Useful as a relative number
+  across runs; not an absolute measure of OpenAI's generation speed.
 
 ## Scope
 
-This experiment captures the **voice model's own latency** in
-isolation — no DPG framework, no Memory/Trust/NLU, no Raya STT/TTS.
+This experiment captures the **voice model's own latency** through a
+clean Pipecat pipeline — no DPG framework, no Memory / Trust / NLU,
+no Raya STT/TTS.
