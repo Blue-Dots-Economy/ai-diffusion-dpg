@@ -309,3 +309,33 @@ def test_recording_ready_unknown_call_sid_still_200(client):
         json={"callSid": "UNKNOWN", "recordingUrl": "https://x/y.mp3"},
     )
     assert response.status_code == 200
+
+
+def test_recording_ready_accepts_plivo_form_payload(client, app):
+    """Vobiz/Plivo POSTs application/x-www-form-urlencoded with CallUUID + RecordUrl."""
+    import asyncio
+    loop = asyncio.new_event_loop()
+    fut: asyncio.Future = loop.create_future()
+    app.state.recording_url_registry["VOBIZ-CALL-1"] = fut
+    response = client.post(
+        "/recording-ready",
+        data={
+            "CallUUID": "VOBIZ-CALL-1",
+            "RecordUrl": "https://cdn.vobiz/VOBIZ-CALL-1.mp3",
+            "RecordingID": "rec-1",
+            "RecordingDuration": "12",
+        },
+    )
+    assert response.status_code == 200
+    assert fut.done()
+    assert fut.result() == "https://cdn.vobiz/VOBIZ-CALL-1.mp3"
+    loop.close()
+
+
+def test_recording_finished_accepts_plivo_form_payload(client):
+    """The /recording-finished webhook must also accept Plivo-style form data."""
+    response = client.post(
+        "/recording-finished",
+        data={"CallUUID": "VOBIZ-CALL-2", "RecordUrl": "https://x"},
+    )
+    assert response.status_code == 200
