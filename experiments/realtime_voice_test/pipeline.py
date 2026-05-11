@@ -20,7 +20,7 @@ from pipecat.services.openai.realtime.events import (
     AudioConfiguration,
     AudioInput,
     AudioOutput,
-    PCMAudioFormat,
+    PCMUAudioFormat,
     SessionProperties,
     TurnDetection,
 )
@@ -37,8 +37,12 @@ from prompts import DEFAULT_PROMPT
 from recording_tap import RecordingTapProcessor
 
 
-# Silero VAD requires 16 kHz pcm16 input; all pipeline audio is resampled to this rate.
-PIPELINE_SAMPLE_RATE = 16000
+# Run the whole pipeline at Vobiz's native 8 kHz rate (matches reach_layer/voice
+# production setup). Silero VAD operates fine at 8 kHz on telephony audio. Using
+# 8 kHz end-to-end means no internal resampling between transport, VAD, OpenAI's
+# mu-law audio, and the recording tap — frames are uniform so the single-WAV
+# tap design works (no slowdown / pitch shift in the recording).
+PIPELINE_SAMPLE_RATE = 8000
 
 
 def build_pipeline_task(
@@ -97,7 +101,9 @@ def build_pipeline_task(
                 output_modalities=["audio"],
                 audio=AudioConfiguration(
                     input=AudioInput(
-                        format=PCMAudioFormat(),
+                        # g711 mu-law @ 8 kHz — matches the pipeline rate and
+                        # Vobiz wire format, eliminating any resampling.
+                        format=PCMUAudioFormat(),
                         # Align OpenAI's server VAD with our local Silero
                         # threshold so the two endpoint detectors agree.
                         # OpenAI's default is ~500 ms which is too short
@@ -108,7 +114,7 @@ def build_pipeline_task(
                             silence_duration_ms=vad_silence_ms,
                         ),
                     ),
-                    output=AudioOutput(format=PCMAudioFormat()),
+                    output=AudioOutput(format=PCMUAudioFormat()),
                 ),
                 voice=voice,
                 tool_choice="auto",
