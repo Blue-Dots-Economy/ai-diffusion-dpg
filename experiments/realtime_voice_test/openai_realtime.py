@@ -34,6 +34,12 @@ class RealtimeClient:
     """
 
     def __init__(self, api_key: str, model: str = "gpt-realtime-mini") -> None:
+        """Initialize a RealtimeClient.
+
+        Args:
+            api_key: OpenAI API key for authentication.
+            model: OpenAI Realtime model name (default: gpt-realtime-mini).
+        """
         self._api_key = api_key
         self._model = model
         self._ws: websockets.WebSocketClientProtocol | None = None
@@ -46,7 +52,7 @@ class RealtimeClient:
             "OpenAI-Beta": "realtime=v1",
         }
         self._ws = await websockets.connect(url, additional_headers=headers)
-        logger.info("openai_realtime.connected", extra={"model": self._model})
+        logger.info("openai_realtime.connected", extra={"operation": "openai_realtime.connect", "status": "success", "model": self._model})
 
     async def send_session_update(
         self,
@@ -120,9 +126,9 @@ class RealtimeClient:
                     yield json.loads(raw)
                 except (json.JSONDecodeError, ValueError):
                     logger.warning("openai_realtime.malformed_event",
-                                   extra={"raw": raw[:200]})
+                                   extra={"operation": "openai_realtime.events", "status": "failure", "error": "malformed_json", "raw": raw[:200]})
         except websockets.ConnectionClosed:
-            logger.info("openai_realtime.disconnected")
+            logger.info("openai_realtime.disconnected", extra={"operation": "openai_realtime.events", "status": "success"})
 
     async def aclose(self) -> None:
         """Close the WebSocket if open.
@@ -134,5 +140,5 @@ class RealtimeClient:
                 await self._ws.close()
             except Exception as exc:
                 logger.warning("openai_realtime.close_error",
-                               extra={"error": str(exc)})
+                               extra={"operation": "openai_realtime.aclose", "status": "failure", "error": str(exc)})
             self._ws = None
