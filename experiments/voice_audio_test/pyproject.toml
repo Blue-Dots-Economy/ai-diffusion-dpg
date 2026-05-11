@@ -1,0 +1,10 @@
+[project]
+name = "voice-audio-test"
+version = "0.1.0"
+description = "End-to-end voice loop test against OpenAI's gpt-audio-mini."
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.50",
+    "sounddevice>=0.4.7",
+    "numpy>=1.26",
+]

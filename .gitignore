@@ -154,5 +154,8 @@ automation/docker/docker-compose.local.yml
 automation/docker/docker-compose.local.*.yml
 experiments/cache_compare/results
 
+# Voice audio test - generated/recorded audio samples
+experiments/voice_audio_test/samples/
+
 # Realtime voice test - per-call recordings contain PII
 experiments/realtime_voice_test/results/call_*.jsonl
