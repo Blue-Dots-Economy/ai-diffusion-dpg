@@ -80,6 +80,38 @@ logger = logging.getLogger(__name__)
 _HTTPX_INSTRUMENTED = False
 
 
+def emit_consent_event_if_recording(
+    *,
+    queue: list,
+    purpose: str,
+    granted: bool,
+    configured_purpose: str,
+    turn_id: str,
+) -> None:
+    """Append a 'consent' SSE event to ``queue`` iff this is the configured
+    recording purpose and consent was granted.
+
+    Args:
+        queue: Event queue (list of dicts) the SSE writer drains.
+        purpose: The consent purpose just verified.
+        granted: True iff Trust Layer returned granted.
+        configured_purpose: Value of
+            ``reach_layer.channels.voice.recording.consent_purpose``.
+        turn_id: Current turn identifier for correlation.
+    """
+    if not granted:
+        return
+    if purpose != configured_purpose:
+        return
+    queue.append({
+        "type": "consent",
+        "purpose": purpose,
+        "granted": True,
+        "consent_granted_ts": time.time(),
+        "turn_id": turn_id,
+    })
+
+
 def _text_of(resp: ChatResponse) -> str | None:
     """Return the first TextBlock's text from a ChatResponse, or None."""
     for b in resp.content:
@@ -549,6 +581,17 @@ class AgentCore(AgentCoreBase):
                         "session_id": session_id,
                         "granted": granted,
                         "user_storage_mode": new_storage_mode,
+                    },
+                )
+                # Sync path has no SSE queue; voice always uses the streaming path.
+                # Consent event emission is intentionally skipped here.
+                logger.info(
+                    "orchestrator.consent_event",
+                    extra={
+                        "operation": "orchestrator.consent_gate",
+                        "status": "skipped",
+                        "session_id": session_id,
+                        "emission": "skipped_sync_path",
                     },
                 )
                 self._write_memory_sync(session_id, user_id, "session", "user_storage_mode", new_storage_mode)
@@ -2806,6 +2849,24 @@ class AgentCore(AgentCoreBase):
                     new_storage_mode = "saved" if granted else "anonymous"
                     await self._async_memory.write(session_id, user_id, "session", "user_storage_mode", new_storage_mode)
                     bundle.session["user_storage_mode"] = new_storage_mode
+                    # Emit consent SSE event if this is the configured recording purpose.
+                    _consent_evt_queue: list = []
+                    _configured_consent_purpose: str = (
+                        self._config.get("reach_layer", {})
+                        .get("channels", {})
+                        .get("voice", {})
+                        .get("recording", {})
+                        .get("consent_purpose", "recording")
+                    )
+                    emit_consent_event_if_recording(
+                        queue=_consent_evt_queue,
+                        purpose="storage",
+                        granted=granted,
+                        configured_purpose=_configured_consent_purpose,
+                        turn_id=turn_id,
+                    )
+                    for _cevt in _consent_evt_queue:
+                        yield _cevt
 
                     # Replay the stashed first-turn message as this turn's real
                     # input. The parallel NLU above ran against the consent reply

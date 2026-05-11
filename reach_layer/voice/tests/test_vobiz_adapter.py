@@ -1,4 +1,5 @@
 """Tests for VobizAdapter — concrete TelephonyAdapterBase implementation."""
+import asyncio
 import logging
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -143,3 +144,100 @@ async def test_close_call_with_active_ws_close_raises_logs_failure(config, caplo
     rec = next(r for r in caplog.records if r.message == "vobiz_adapter.close_call_failed")
     assert rec.outcome == "failure"
     assert "RuntimeError" in rec.error
+
+
+# ---------------------------------------------------------------------------
+# Recording wiring tests (Tasks 12 + 13)
+# ---------------------------------------------------------------------------
+
+def _voice_cfg(source: str = "disabled", salt: str = "") -> dict:
+    """Return a minimal voice config dict for recording tests."""
+    return {
+        "reach_layer": {
+            "channels": {
+                "voice": {
+                    "vobiz": {
+                        "auth_id": "A",
+                        "auth_token": "T",
+                        "sample_rate": 8000,
+                    },
+                    "vad": {
+                        "start_secs": 0.2,
+                        "stop_secs": 0.6,
+                        "min_volume": 0.6,
+                    },
+                    "raya": {"endpoint": "http://raya:9090"},
+                    "agent_core": {
+                        "base_url": "http://agent:8000",
+                        "submit_path": "/process_turn",
+                        "events_path": "/sessions/{session_id}/events",
+                        "cancel_path": "/sessions/{session_id}/cancel",
+                        "request_timeout_s": 30,
+                    },
+                    "recording": {
+                        "source": source,
+                        "consent_purpose": "recording",
+                        "webhook_timeout_s": 5.0,
+                        "fetch_timeout_s": 5.0,
+                        "min_duration_ms": 10,
+                        "caller_id_hash_salt": salt,
+                        "store": {
+                            "backend": "local",
+                            "local": {"base_path": "/tmp/x"},
+                            "s3": {
+                                "bucket": "",
+                                "prefix": "rec/",
+                                "region": "ap-south-1",
+                                "kms_key_id": "",
+                            },
+                        },
+                    },
+                }
+            }
+        }
+    }
+
+
+def test_vobiz_adapter_exposes_null_manager_when_disabled():
+    """recording_manager must return a non-None RecordingManagerBase in idle state."""
+    from src.recordings.manager_base import RecordingManagerBase
+
+    a = VobizAdapter(_voice_cfg())
+    assert isinstance(a.recording_manager, RecordingManagerBase)
+    assert a.recording_manager.state == "idle"
+
+
+@pytest.mark.asyncio
+async def test_consent_event_triggers_manager_start():
+    """_on_consent_event must call start() when purpose matches and granted=True."""
+    from reach_layer_base import ConsentEvent
+
+    a = VobizAdapter(_voice_cfg(source="pipeline", salt="s" * 32))
+    a._recording_manager.start = AsyncMock()
+    evt = ConsentEvent(purpose="recording", granted=True, consent_granted_ts=1.0, turn_id="t-1")
+    await a._on_consent_event(evt)
+    a._recording_manager.start.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_consent_event_for_other_purpose_ignored():
+    """_on_consent_event must not call start() when purpose does not match."""
+    from reach_layer_base import ConsentEvent
+
+    a = VobizAdapter(_voice_cfg(source="pipeline", salt="s" * 32))
+    a._recording_manager.start = AsyncMock()
+    evt = ConsentEvent(purpose="data_share", granted=True, consent_granted_ts=1.0)
+    await a._on_consent_event(evt)
+    a._recording_manager.start.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_consent_event_denied_ignored():
+    """_on_consent_event must not call start() when granted=False."""
+    from reach_layer_base import ConsentEvent
+
+    a = VobizAdapter(_voice_cfg(source="pipeline", salt="s" * 32))
+    a._recording_manager.start = AsyncMock()
+    evt = ConsentEvent(purpose="recording", granted=False)
+    await a._on_consent_event(evt)
+    a._recording_manager.start.assert_not_called()

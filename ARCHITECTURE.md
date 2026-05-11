@@ -366,7 +366,7 @@ A channel is therefore *not* identified by its mode — Web can run in either mo
 |---------|--------|-------|
 | CLI (`reach_layer/cli/`) | ✅ | `CLIReach` — direct mode, readline loop, port-free. No TurnAssembler. |
 | Web (`reach_layer/web/`) | ✅ | FastAPI + React 19 SPA, port 8005. `POST /chat`, `GET /user-history/{user_id}`, `GET /app-config`. Direct mode by default; session mode is supported. Google Sign-In optional. |
-| Voice (`reach_layer/voice/`) | ✅ | `VobizAdapter` on pipecat pipeline (VAD → Raya STT → AgentCoreLLM → Raya TTS → SIP), port 8006. Session mode (required by VAD-driven input). Barge-in supported. 166 tests. |
+| Voice (`reach_layer/voice/`) | ✅ | `VobizAdapter` on pipecat pipeline (VAD → Raya STT → AgentCoreLLM → Raya TTS → SIP), port 8006. Session mode (required by VAD-driven input). Barge-in supported. 166 tests. Call recording (audit) — ✅ behind `reach_layer.channels.voice.recording.source` config switch (default: disabled). Sources: vobiz native + Pipecat pipeline tap. Stores: local + S3. Sidecar JSON manifest + Observability signals + OTel `recording.lifecycle` span. |
 | Production SIP/PSTN | ❌ | Out of scope — VOIP via pipecat/Vobiz is the production path |
 | WhatsApp | ⏳ | Gupshup/Twilio webhook — pending |
 | Mobile SDK | ⏳ | Pending |

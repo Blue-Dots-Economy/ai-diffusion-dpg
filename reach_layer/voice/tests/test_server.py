@@ -7,8 +7,8 @@ from fastapi.testclient import TestClient
 
 
 @pytest.fixture
-def client():
-    with patch("src.bot.run_bot", new_callable=AsyncMock) as mock_bot, \
+def app():
+    with patch("src.bot.run_bot", new_callable=AsyncMock), \
          patch("server.CampaignManager"), \
          patch("server.load_reach_config", return_value={
              "reach_layer": {"channels": {"voice": {
@@ -35,8 +35,12 @@ def client():
          }), \
          patch("server.init_otel"):
         from server import create_app
-        app = create_app()
-        yield TestClient(app)
+        yield create_app()
+
+
+@pytest.fixture
+def client(app):
+    yield TestClient(app)
 
 
 def test_health_returns_ok(client):
@@ -276,3 +280,62 @@ async def test_websocket_span_records_exception():
 
     assert len(recorded_exceptions) == 1
     assert isinstance(recorded_exceptions[0], RuntimeError)
+
+
+# ---------------------------------------------------------------------------
+# /recording-ready webhook future registry tests
+# ---------------------------------------------------------------------------
+
+def test_recording_ready_resolves_registered_future(client, app):
+    """POST /recording-ready must resolve the matching future in app.state.recording_url_registry."""
+    import asyncio
+    loop = asyncio.new_event_loop()
+    fut: asyncio.Future = loop.create_future()
+    app.state.recording_url_registry["CA9"] = fut
+    response = client.post(
+        "/recording-ready",
+        json={"callSid": "CA9", "recordingUrl": "https://x/y.mp3"},
+    )
+    assert response.status_code == 200
+    assert fut.done()
+    assert fut.result() == "https://x/y.mp3"
+    loop.close()
+
+
+def test_recording_ready_unknown_call_sid_still_200(client):
+    """POST /recording-ready with an unknown callSid must return 200 without error."""
+    response = client.post(
+        "/recording-ready",
+        json={"callSid": "UNKNOWN", "recordingUrl": "https://x/y.mp3"},
+    )
+    assert response.status_code == 200
+
+
+def test_recording_ready_accepts_plivo_form_payload(client, app):
+    """Vobiz/Plivo POSTs application/x-www-form-urlencoded with CallUUID + RecordUrl."""
+    import asyncio
+    loop = asyncio.new_event_loop()
+    fut: asyncio.Future = loop.create_future()
+    app.state.recording_url_registry["VOBIZ-CALL-1"] = fut
+    response = client.post(
+        "/recording-ready",
+        data={
+            "CallUUID": "VOBIZ-CALL-1",
+            "RecordUrl": "https://cdn.vobiz/VOBIZ-CALL-1.mp3",
+            "RecordingID": "rec-1",
+            "RecordingDuration": "12",
+        },
+    )
+    assert response.status_code == 200
+    assert fut.done()
+    assert fut.result() == "https://cdn.vobiz/VOBIZ-CALL-1.mp3"
+    loop.close()
+
+
+def test_recording_finished_accepts_plivo_form_payload(client):
+    """The /recording-finished webhook must also accept Plivo-style form data."""
+    response = client.post(
+        "/recording-finished",
+        data={"CallUUID": "VOBIZ-CALL-2", "RecordUrl": "https://x"},
+    )
+    assert response.status_code == 200

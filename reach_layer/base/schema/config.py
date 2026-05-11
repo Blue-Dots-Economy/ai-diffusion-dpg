@@ -19,7 +19,7 @@ Belongs to the Reach Layer DPG block.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -256,6 +256,57 @@ class VoiceObservabilityConfig(BaseModel):
     heartbeat_interval_s: float = Field(default=10.0)
 
 
+class RecordingLocalConfig(BaseModel):
+    """Local-disk storage settings for voice recording artifacts."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    base_path: str = "/var/recordings"
+
+
+class RecordingS3Config(BaseModel):
+    """S3-compatible storage settings for voice recording artifacts."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    bucket: str = ""
+    prefix: str = "recordings/"
+    region: str = "ap-south-1"
+    kms_key_id: str = ""
+
+
+class RecordingStoreConfig(BaseModel):
+    """Pluggable storage backend selection for voice recording artifacts."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    backend: Literal["local", "s3"] = "local"
+    local: RecordingLocalConfig = Field(default_factory=RecordingLocalConfig)
+    s3: RecordingS3Config = Field(default_factory=RecordingS3Config)
+
+
+class RecordingConfig(BaseModel):
+    """Voice channel recording defaults. ``source=disabled`` is a no-op."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    source: Literal["disabled", "vobiz", "pipeline"] = "disabled"
+    consent_purpose: str = "recording"
+    # Vobiz can take a few minutes between recording stop and firing the
+    # callback (the MP3 has to upload to their CDN first). 30 s was too
+    # aggressive — observed in #322 manual testing — so the default is now
+    # 5 minutes. Operators can tune via reach_layer.channels.voice.recording.
+    webhook_timeout_s: float = 300.0
+    fetch_timeout_s: float = 60.0
+    min_duration_ms: int = 500
+    caller_id_hash_salt: str = ""
+    # Testing/disclosure escape hatch (#332): start recording on websocket
+    # connect, bypassing the Trust Layer consent gate. Default False so
+    # production stays consent-gated.
+    start_on_connect: bool = False
+    store: RecordingStoreConfig = Field(default_factory=RecordingStoreConfig)
+
+
 class VoiceChannelConfig(BaseModel):
     """Voice channel service config (pipecat + Raya + Vobiz)."""
 
@@ -284,6 +335,7 @@ class VoiceChannelConfig(BaseModel):
     barge_in_recency_ms: Optional[int] = Field(default=None, gt=0)
     # GH-202: max seconds to wait for the opening-phrase task to unwind.
     opening_phrase_join_timeout_ms: Optional[int] = Field(default=None, gt=0)
+    recording: RecordingConfig = Field(default_factory=RecordingConfig)
 
 
 # ---------------------------------------------------------------------------

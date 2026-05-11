@@ -82,3 +82,13 @@ reach_layer:
       # GH-137: spoken just before WebSocket close on bot-initiated hangup
       # (DoneEvent.session_ended=true).
       terminal_word: "धन्यवाद"
+      recording:                                                                                                                                                                                           
+        source: pipeline              # or 'vobiz'                                                                                                                                                                                   
+        consent_purpose: storage      # piggy-backs on the existing storage-consent grant from the orchestrator (per Task 2 wiring)                                                                      
+        min_duration_ms: 500
+        caller_id_hash_salt: "kkb-local-test-salt-change-me-32chars+"   # any non-empty string, length ≥ 32 recommended
+        store:
+          backend: local
+          local:
+            base_path: /var/recordings
+        start_on_connect: true            # ← NEW: bypass consent, start at connect

@@ -256,3 +256,36 @@ def test_observability_layer_dpg_sli_latency_positive():
     base["observability"]["sli"] = {"turn_latency_p99_ms": 0}
     with pytest.raises(ValidationError):
         ObservabilityLayerDpgConfig.model_validate(base)
+
+
+# -- RecordingDpg / VoiceDpg recording field ---------------------------------
+
+from dev_kit.schemas.dpg.reach_layer import RecordingDpg, VoiceDpg  # noqa: E402
+
+
+def test_recording_dpg_defaults_to_disabled():
+    rec = RecordingDpg()
+    assert rec.source == "disabled"
+    assert rec.consent_purpose == "recording"
+    assert rec.store.backend == "local"
+    assert rec.store.local.base_path == "/var/recordings"
+
+
+def test_recording_dpg_rejects_unknown_keys():
+    with pytest.raises(ValidationError):
+        RecordingDpg(source="disabled", surprise="x")
+
+
+def test_recording_source_literal_enforced():
+    with pytest.raises(ValidationError):
+        RecordingDpg(source="ftp")
+
+
+def test_recording_store_backend_literal_enforced():
+    with pytest.raises(ValidationError):
+        RecordingDpg(store={"backend": "azure"})
+
+
+def test_voice_dpg_default_factory_includes_recording():
+    rec_default = VoiceDpg.model_fields["recording"].default_factory()  # type: ignore[misc]
+    assert rec_default.source == "disabled"

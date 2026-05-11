@@ -153,6 +153,9 @@ def create_app(config: dict | None = None) -> FastAPI:
         description="DPG Reach Layer telephony channel adapter — Vobiz + Raya + Agent Core.",
         version="0.1.0",
     )
+    # Shared registry: vobiz_call_id → asyncio.Future[str]
+    # Populated by VobizRecordingSource.begin(); resolved by /recording-ready webhook.
+    app.state.recording_url_registry = {}
     try:
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
         FastAPIInstrumentor.instrument_app(app)
@@ -268,42 +271,85 @@ def create_app(config: dict | None = None) -> FastAPI:
         result = await _campaign_manager.initiate_call(to_number=body.to_number)
         return result
 
+    async def _parse_recording_webhook(request: Request) -> tuple[str, str, dict]:
+        """Extract (call_id, recording_url, raw_fields) from a Vobiz webhook.
+
+        Vobiz inherits Plivo's recording-callback shape — fields are POSTed as
+        application/x-www-form-urlencoded with PascalCase names (CallUUID,
+        RecordUrl, RecordingID, RecordingDuration, …). The earlier strict JSON
+        model (`callSid` / `recordingUrl`) returned 422 for the real payload.
+        This helper accepts either form or JSON and aliases the common variants.
+        """
+        content_type = (request.headers.get("content-type") or "").lower()
+        raw: dict = {}
+        try:
+            if "application/json" in content_type:
+                raw = await request.json()
+            else:
+                form = await request.form()
+                raw = dict(form)
+        except Exception as exc:
+            logger.warning(
+                "server.recording_webhook_parse_failed",
+                extra={"operation": "server._parse_recording_webhook",
+                       "status": "failure",
+                       "error": f"{type(exc).__name__}: {exc}"},
+            )
+            raw = {}
+        call_id = (
+            raw.get("CallUUID") or raw.get("CallSid") or raw.get("callSid")
+            or raw.get("call_uuid") or raw.get("call_sid") or ""
+        )
+        recording_url = (
+            raw.get("RecordUrl") or raw.get("RecordingUrl")
+            or raw.get("recordingUrl") or raw.get("record_url")
+            or raw.get("recording_url") or ""
+        )
+        return str(call_id), str(recording_url), raw
+
     @app.post("/recording-finished")
-    async def recording_finished(body: RecordingWebhook) -> dict:
+    async def recording_finished(request: Request) -> dict:
         """Handle Vobiz webhook when recording has stopped.
 
-        Args:
-            body: Webhook payload containing callSid and recordingUrl.
-
-        Returns:
-            Dict with status ok.
+        Body is parsed flexibly (form or JSON) — Vobiz sends Plivo-style form
+        fields. We log the resolved fields plus the raw field-name set so any
+        unrecognised vendor variant is visible.
         """
+        call_id, recording_url, raw = await _parse_recording_webhook(request)
         logger.info(
             "server.recording_finished",
             extra={
                 "operation": "server.recording_finished",
                 "status": "success",
-                "call_sid": body.callSid,
+                "call_sid": call_id,
+                "recording_url": recording_url,
+                "raw_field_keys": sorted(raw.keys()),
             },
         )
         return {"status": "ok"}
 
     @app.post("/recording-ready")
-    async def recording_ready(body: RecordingWebhook) -> dict:
+    async def recording_ready(request: Request) -> dict:
         """Handle Vobiz webhook when recording MP3 is ready.
 
-        Args:
-            body: Webhook payload containing callSid and recordingUrl.
-
-        Returns:
-            Dict with status ok.
+        Resolves the asyncio.Future registered by VobizRecordingSource.begin()
+        so that VobizRecordingSource.end() can proceed to fetch the MP3.
+        Accepts either form or JSON payload; aliases CallUUID/CallSid/callSid
+        and RecordUrl/RecordingUrl/recordingUrl variants.
         """
+        call_id, recording_url, raw = await _parse_recording_webhook(request)
+        fut = app.state.recording_url_registry.pop(call_id, None) if call_id else None
+        if fut is not None and not fut.done():
+            fut.set_result(recording_url)
         logger.info(
             "server.recording_ready",
             extra={
                 "operation": "server.recording_ready",
                 "status": "success",
-                "call_sid": body.callSid,
+                "call_sid": call_id,
+                "recording_url": recording_url,
+                "had_future": fut is not None,
+                "raw_field_keys": sorted(raw.keys()),
             },
         )
         return {"status": "ok"}

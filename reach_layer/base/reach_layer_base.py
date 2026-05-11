@@ -43,7 +43,7 @@ from urllib.parse import quote, urlparse
 
 import httpx
 
-from .events import DoneEvent, SentenceEvent, SignalEvent, StreamEvent
+from .events import ConsentEvent, DoneEvent, SentenceEvent, SignalEvent, StreamEvent
 
 logger = logging.getLogger(__name__)
 
@@ -411,6 +411,13 @@ class ReachLayerBase(ABC):
                 latency_ms=payload.get("latency_ms", 0),
                 turn_id=payload.get("turn_id", ""),
                 session_ended=payload.get("session_ended", False),
+            )
+        elif event_type == "consent":
+            return ConsentEvent(
+                purpose=str(payload.get("purpose", "")),
+                granted=bool(payload.get("granted", False)),
+                consent_granted_ts=float(payload.get("consent_granted_ts", 0.0)),
+                turn_id=str(payload.get("turn_id", "")),
             )
         else:
             return None

@@ -22,3 +22,8 @@ packages = ["reach_layer_base", "reach_layer_base.schema"]
 [tool.setuptools.package-dir]
 reach_layer_base = "."
 "reach_layer_base.schema" = "schema"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]

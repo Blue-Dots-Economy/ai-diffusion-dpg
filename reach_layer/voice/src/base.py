@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from reach_layer_base import VoiceChannelBase
+from src.recordings.manager_base import RecordingManagerBase
 
 
 class TelephonyError(Exception):
@@ -90,4 +91,13 @@ class TelephonyAdapterBase(VoiceChannelBase):
 
         Args:
             call_sid: The call SID whose resources should be released.
+        """
+
+    @property
+    @abstractmethod
+    def recording_manager(self) -> RecordingManagerBase:
+        """The RecordingManagerBase instance owning this call's recording.
+
+        Adapters that do not support recording must return a NullRecordingManager —
+        never None — so callers can dispatch unconditionally.
         """

@@ -49,5 +49,21 @@ class DoneEvent:
     type: str = "done"
 
 
+@dataclass
+class ConsentEvent:
+    """Trust Layer consent decision streamed back to Reach Layer.
+
+    Emitted by Agent Core after ``/consent/verify`` succeeds for a tracked
+    purpose. Reach Layer adapters use it to gate channel-side behaviour
+    (e.g. start the call recorder when purpose=recording is granted).
+    """
+
+    purpose: str
+    granted: bool
+    consent_granted_ts: float = 0.0
+    turn_id: str = ""
+    type: str = "consent"
+
+
 # Union type matching Agent Core's StreamEvent
-StreamEvent = Union[SignalEvent, SentenceEvent, DoneEvent]
+StreamEvent = Union[SignalEvent, SentenceEvent, DoneEvent, ConsentEvent]

@@ -19,8 +19,9 @@ import time
 import uuid
 
 from fastapi import WebSocket
+from opentelemetry import trace as otel_trace
 from pipecat.frames.frames import TTSSpeakFrame
-from reach_layer_base import DoneEvent, SentenceEvent
+from reach_layer_base import ConsentEvent, DoneEvent, SentenceEvent
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -37,6 +38,9 @@ from reach_layer_base import VADEvent
 
 from src.base import TelephonyAdapterBase, TelephonyError
 from src.operators.vobiz_operator import VobizOperator
+from src.recordings.factory import build_recording_manager
+from src.recordings.manager_base import RecordingManagerBase
+from src.recordings.telemetry import SignalEmitter, recording_lifecycle_span
 from src.pipecat_services.agent_core_llm import AgentCoreLLMProcessor
 from src.pipecat_services.raya_stt import RayaSTTService
 from src.pipecat_services.raya_tts import RayaTTSService
@@ -45,6 +49,27 @@ from src.pipecat_services.vad_observer import VADObserverProcessor, run_voice_he
 from src.vad.silero_vad import SileroVADWrapper
 
 logger = logging.getLogger(__name__)
+
+
+class _NoopObservability:
+    """Fallback observability backend that logs signals without a real OBS instance."""
+
+    def emit_signal(self, signal_type: str, data: dict) -> None:
+        """Log the signal as a structured info record.
+
+        Args:
+            signal_type: The observability signal type string.
+            data: Signal payload forwarded verbatim to the log record.
+        """
+        logger.info(
+            "noop_observability.emit_signal",
+            extra={
+                "operation": "observability.emit_signal",
+                "status": "skipped",
+                "signal_type": signal_type,
+                **data,
+            },
+        )
 
 
 class VobizAdapter(TelephonyAdapterBase):
@@ -78,6 +103,42 @@ class VobizAdapter(TelephonyAdapterBase):
         # handle_call(). Used by close_call() to terminate the call when Agent
         # Core signals a session end (DoneEvent.session_ended=True).
         self._active_websocket: WebSocket | None = None
+
+        # Recording wiring — per-call state
+        self._recording_url_registry: dict = {}
+        rec_cfg = (
+            self._config.get("reach_layer", {})
+            .get("channels", {})
+            .get("voice", {})
+            .get("recording", {})
+        )
+        self._recording_consent_purpose: str = rec_cfg.get(
+            "consent_purpose", "recording"
+        )
+        # Testing/disclosure-based deployments: start recording the moment the
+        # websocket connects, bypassing the consent gate. Default False so
+        # production stays consent-gated. See issue #332 for context.
+        self._recording_start_on_connect: bool = bool(
+            rec_cfg.get("start_on_connect", False)
+        )
+        # Placeholder manager rebuilt with call-specific identifiers inside
+        # handle_call(); NullRecordingManager until the call is known.
+        self._recording_manager: RecordingManagerBase = build_recording_manager(
+            self._config,
+            telephony=self,
+            registry=self._recording_url_registry,
+        )
+        # OTel span context captured at handle_call() start for lifecycle link.
+        self._inbound_span_context = None
+        self._session_id_cache: str = ""
+
+    @property
+    def recording_manager(self) -> RecordingManagerBase:
+        """The RecordingManagerBase instance for the current call.
+
+        Returns NullRecordingManager when recording is disabled; never None.
+        """
+        return self._recording_manager
 
     async def handle_call(self, call_sid: str, caller_id: str, websocket: WebSocket) -> None:
         """Handle the full lifecycle of one Vobiz inbound call.
@@ -131,6 +192,32 @@ class VobizAdapter(TelephonyAdapterBase):
         )
         vad_analyzer = self._vad_wrapper.create_analyzer(self._config)
         session_id = str(uuid.uuid4())
+        self._session_id_cache = session_id
+
+        # Rebuild the recording manager keyed to this specific call so
+        # call_sid / session_id / caller_id are baked in from the start.
+        public_url = (
+            self._config.get("reach_layer", {})
+            .get("channels", {})
+            .get("voice", {})
+            .get("public_url", "")
+        )
+        callback_url = (
+            f"{public_url.rstrip('/')}/recording-ready" if public_url else ""
+        )
+        self._recording_manager = build_recording_manager(
+            self._config,
+            telephony=self,
+            registry=self._recording_url_registry,
+            call_sid=call_sid,
+            session_id=session_id,
+            caller_id=caller_id,
+            vobiz_call_id=call_id or "",
+            callback_url=callback_url,
+        )
+        current_span = otel_trace.get_current_span()
+        if current_span is not None:
+            self._inbound_span_context = current_span.get_span_context()
 
         stt = RayaSTTService(self._config)
         # GH-137 / GH-242: pass the voice channel config (terminal_word,
@@ -194,6 +281,7 @@ class VobizAdapter(TelephonyAdapterBase):
                 agent,
                 sanitizer,
                 tts,
+                *self._recording_manager.pipeline_processors,
                 transport.output(),
             ]
         )
@@ -243,6 +331,23 @@ class VobizAdapter(TelephonyAdapterBase):
                 self._play_opening_phrase(task, session_id, caller_id, call_sid)
             )
             agent.set_opening_phrase_task(opening_phrase_task)
+            # Testing/disclosure path (#332): start the recorder immediately on
+            # connect, bypassing the consent gate. Triggered by
+            # reach_layer.channels.voice.recording.start_on_connect = true.
+            if self._recording_start_on_connect:
+                logger.info(
+                    "vobiz_adapter.recording_start_on_connect",
+                    extra={
+                        "operation": "vobiz_adapter.handle_call",
+                        "status": "invoked",
+                        "call_sid": call_sid,
+                        "session_id": session_id,
+                        "reason": "start_on_connect=true",
+                    },
+                )
+                asyncio.create_task(
+                    self._recording_manager.start(consent_granted_ts=time.time())
+                )
 
         @transport.event_handler("on_client_disconnected")
         async def _on_disconnected(transport, client):
@@ -319,6 +424,8 @@ class VobizAdapter(TelephonyAdapterBase):
             ):
                 if isinstance(event, SentenceEvent) and event.text:
                     await pipeline_task.queue_frame(TTSSpeakFrame(text=event.text))
+                elif isinstance(event, ConsentEvent):
+                    await self._on_consent_event(event)
                 elif isinstance(event, DoneEvent):
                     break
         except Exception as exc:  # noqa: BLE001
@@ -334,7 +441,10 @@ class VobizAdapter(TelephonyAdapterBase):
             )
 
     async def teardown(self, call_sid: str) -> None:
-        """Log call completion. Pipecat handles WebSocket resource cleanup.
+        """Log call completion and spawn recording finalize task.
+
+        Pipecat handles WebSocket resource cleanup. Recording finalization
+        runs as a background asyncio.Task so call teardown is never blocked.
 
         Args:
             call_sid: The call SID whose resources should be released.
@@ -347,6 +457,97 @@ class VobizAdapter(TelephonyAdapterBase):
                 "call_sid": call_sid,
             },
         )
+        asyncio.create_task(self._finalize_and_store(call_sid))
+
+    async def _on_consent_event(self, evt: ConsentEvent) -> None:
+        """Start the recording manager when the user grants recording consent.
+
+        No-op when ``evt.purpose`` does not match the configured
+        ``recording.consent_purpose`` or when consent was not granted.
+
+        Args:
+            evt: The ConsentEvent received from the Agent Core SSE stream.
+        """
+        if evt.purpose != self._recording_consent_purpose or not evt.granted:
+            return
+        await self._recording_manager.start(
+            consent_granted_ts=evt.consent_granted_ts or time.time()
+        )
+
+    async def _finalize_and_store(self, call_sid: str) -> None:
+        """Finalize and persist the recording after call teardown.
+
+        Wraps the full lifecycle in a ``recording.lifecycle`` OTel span linked
+        to the inbound call span. Emits ``recording.stored``, ``recording.empty``,
+        or ``recording.failed`` signals via SignalEmitter. All exceptions are
+        caught and logged so call teardown is never disrupted.
+
+        Args:
+            call_sid: The telephony call identifier for log correlation.
+        """
+        # TODO(#330): replace _NoopObservability with the adapter's real
+        # ObservabilityLayerBase client so recording.* signals land in audit.
+        emitter = SignalEmitter(_NoopObservability())
+        link = None
+        if self._inbound_span_context is not None:
+            link = otel_trace.Link(self._inbound_span_context)
+        try:
+            caller_id_hash = self._recording_manager.caller_id_hash
+            source_name = self._recording_manager.source_name
+            with recording_lifecycle_span(
+                call_sid=call_sid,
+                session_id=self._session_id_cache,
+                caller_id_hash=caller_id_hash,
+                source=source_name,
+                link=link,
+            ) as span:
+                trace_id = format(span.get_span_context().trace_id, "032x")
+                if hasattr(self._recording_manager, "attach_trace_id"):
+                    self._recording_manager.attach_trace_id(trace_id)
+                await self._recording_manager.stop()
+                artifact = await self._recording_manager.finalize()
+                if artifact is None:
+                    if self._recording_manager.state == "failed":
+                        emitter.failed(
+                            call_sid=call_sid,
+                            session_id=self._session_id_cache,
+                            source=source_name,
+                            stage="finalize",
+                            error_type="",
+                            error_message="",
+                        )
+                    else:
+                        emitter.empty(
+                            call_sid=call_sid,
+                            session_id=self._session_id_cache,
+                            source=source_name,
+                            duration_ms=0,
+                            reason="empty_or_idle",
+                        )
+                    return
+                emitter.stored(
+                    call_sid=call_sid,
+                    session_id=artifact.session_id,
+                    caller_id_hash=artifact.caller_id_hash,
+                    source=artifact.source,
+                    format=artifact.format,
+                    duration_ms=artifact.duration_ms,
+                    bytes=len(artifact.payload.bytes_data or b""),
+                    sha256=artifact.sha256,
+                    consent_granted_ts=artifact.consent_granted_ts,
+                    start_ts=artifact.start_ts,
+                    end_ts=artifact.end_ts,
+                )
+        except Exception as exc:
+            logger.error(
+                "vobiz_adapter.recording_pipeline_failed",
+                extra={
+                    "operation": "vobiz_adapter._finalize_and_store",
+                    "status": "failure",
+                    "call_sid": call_sid,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
 
     # ------------------------------------------------------------------
     # ReachLayerBase / VoiceChannelBase lifecycle hooks
