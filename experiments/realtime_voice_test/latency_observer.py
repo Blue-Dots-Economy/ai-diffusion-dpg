@@ -96,16 +96,23 @@ class LatencyObserverProcessor(FrameProcessor):
         await super().process_frame(frame, direction)
 
         if isinstance(frame, UserStartedSpeakingFrame):
-            self._turn_idx += 1
-            self._cur = {
-                "call_sid": self._call_sid,
-                "turn": self._turn_idx,
-                "model": self._model,
-                "voice": self._voice,
-                "language": self._language,
-                "t_user_start_ms": _ms(),
-            }
-            self._chunk_times = []
+            # Pipecat's VAD can fire UserStartedSpeakingFrame multiple times
+            # within one real conversational turn (the user pauses briefly
+            # mid-sentence). Only start a new turn when _cur is empty —
+            # i.e., the previous turn's BotStoppedSpeakingFrame has arrived.
+            # Otherwise we'd overwrite an in-flight turn's timestamps and
+            # produce negative ttft_ms readings.
+            if not self._cur:
+                self._turn_idx += 1
+                self._cur = {
+                    "call_sid": self._call_sid,
+                    "turn": self._turn_idx,
+                    "model": self._model,
+                    "voice": self._voice,
+                    "language": self._language,
+                    "t_user_start_ms": _ms(),
+                }
+                self._chunk_times = []
 
         elif isinstance(frame, UserStoppedSpeakingFrame) and self._cur:
             self._cur["t_user_stop_ms"] = _ms()

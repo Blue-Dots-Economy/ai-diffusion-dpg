@@ -102,6 +102,39 @@ async def test_tpot_computed_when_multiple_chunks(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_vad_multi_fire_within_one_turn(tmp_path):
+    """A second UserStartedSpeakingFrame mid-turn is ignored.
+
+    Pipecat's VAD can fire UserStartedSpeakingFrame multiple times within
+    one real conversational turn (the user pauses briefly mid-sentence).
+    The observer must NOT overwrite the in-flight turn — doing so produces
+    bot_start < user_stop (negative ttft_ms) which was the bug seen on
+    the first real test call. Only one row should be written, with the
+    first t_user_start_ms preserved.
+    """
+    obs = make_observer(tmp_path)
+    await obs.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    first_user_start = obs._cur["t_user_start_ms"]
+    await asyncio.sleep(0.02)
+    # VAD re-fires mid-turn (user paused briefly, then resumed)
+    await obs.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    assert obs._cur["t_user_start_ms"] == first_user_start  # unchanged
+    assert obs._turn_idx == 1                                # turn counter unchanged
+    # Rest of the turn unfolds normally
+    await obs.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await obs.process_frame(fake_chunk(), FrameDirection.DOWNSTREAM)
+    await obs.process_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+
+    lines = [l for l in (tmp_path / "turns.jsonl").read_text().splitlines() if l.strip()]
+    assert len(lines) == 1
+    row = json.loads(lines[0])
+    assert row["turn"] == 1
+    # ttft must be non-negative (the original bug produced negative values)
+    assert row["ttft_ms"] >= 0
+    assert row["t_user_start_ms"] == first_user_start
+
+
+@pytest.mark.asyncio
 async def test_observer_passes_frames_through(tmp_path):
     """The observer is passive — it must call push_frame on every frame."""
     obs = make_observer(tmp_path)
