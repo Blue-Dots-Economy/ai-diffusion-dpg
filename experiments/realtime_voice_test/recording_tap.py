@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import io
 import logging
-import time
 import wave
 from typing import IO, Optional
 
@@ -26,15 +25,6 @@ from pipecat.frames.frames import InputAudioRawFrame, OutputAudioRawFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 logger = logging.getLogger(__name__)
-
-
-# When OutputAudioRawFrame arrives, treat the bot as "actively speaking" for
-# this many milliseconds. Caller (InputAudioRawFrame) frames received while
-# the bot is active are dropped from the recording — otherwise the caller's
-# continuous silent audio (Vobiz streams ~50 fps regardless of whether the
-# user is speaking) gets concatenated AFTER the bot's audio in the mono WAV
-# and you hear ~10 seconds of blank trailing each bot reply.
-_BOT_ACTIVE_WINDOW_MS = 300
 
 
 def _resample_pcm16(audio_bytes: bytes, src_rate: int, dst_rate: int) -> bytes:
@@ -95,10 +85,6 @@ class RecordingTapProcessor(FrameProcessor):
         self._wav: Optional[wave.Wave_write] = None
         self._active: bool = False
         self._closed: bool = False
-        # Wall-clock (monotonic ms) until which the bot is considered actively
-        # speaking. Used to suppress caller frames during bot speech so the
-        # mono WAV doesn't concatenate parallel streams into double-length.
-        self._bot_active_until_ms: float = 0.0
 
     def activate(self) -> None:
         """Start capturing audio frames into the WAV sink. Idempotent."""
@@ -156,22 +142,7 @@ class RecordingTapProcessor(FrameProcessor):
         # received yet" and downstream push_frame() is dropped.
         await super().process_frame(frame, direction)
         if self._active and self._wav is not None and not self._closed:
-            now_ms = time.monotonic() * 1000.0
-            should_write = False
-            if isinstance(frame, OutputAudioRawFrame):
-                # Bot audio always writes; extend the "bot active" window so
-                # caller frames received in the next _BOT_ACTIVE_WINDOW_MS
-                # are skipped.
-                should_write = True
-                self._bot_active_until_ms = now_ms + _BOT_ACTIVE_WINDOW_MS
-            elif isinstance(frame, InputAudioRawFrame):
-                # Caller audio writes only when bot isn't currently speaking.
-                # Otherwise the WAV gets caller-silence-in-parallel-with-bot
-                # appended, doubling the playback length and producing the
-                # "blank after each turn" artefact.
-                should_write = now_ms >= self._bot_active_until_ms
-
-            if should_write:
+            if isinstance(frame, (InputAudioRawFrame, OutputAudioRawFrame)):
                 try:
                     audio = _resample_pcm16(
                         frame.audio,

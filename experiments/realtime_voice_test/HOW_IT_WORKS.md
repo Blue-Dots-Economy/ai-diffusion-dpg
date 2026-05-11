@@ -93,15 +93,6 @@ fly (numpy linear interpolation — speech-band only, sub-µs per chunk),
 so the output is a single WAV at one rate that plays both directions at
 correct speed.
 
-To avoid the WAV becoming 2× real-call length, the tap also **suppresses
-caller frames while the bot is speaking** (300 ms window after the last
-`OutputAudioRawFrame`). Without this, the caller's continuous silent
-audio (Vobiz streams ~50 fps regardless of whether the user is talking)
-would get concatenated after each bot reply, producing ~N seconds of
-"blank" trailing every N-second bot response. Trade-off: user
-interruptions over bot speech are not captured in the recording — fine
-for our verification use case.
-
 ```
 results/
 ├── 20260512T103045Z_<call_id>/
