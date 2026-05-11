@@ -148,3 +148,11 @@ dev-kit/dev_kit/agent/static/
 dev-kit/configs/**/_meta/
 .worktrees/
 test-fixtures/
+
+# Local-only Compose overlays (host-shell secret passthrough, dev-only services, etc.)
+automation/docker/docker-compose.local.yml
+automation/docker/docker-compose.local.*.yml
+experiments/cache_compare/results
+
+# Realtime voice test - per-call recordings contain PII
+experiments/realtime_voice_test/results/call_*.jsonl
