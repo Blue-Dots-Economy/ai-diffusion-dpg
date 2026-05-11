@@ -1,30 +1,20 @@
-"""Tests for prompts.py: prompt registry + lookup."""
-import pytest
-
-from prompts import PROMPTS, get_prompt
+"""Tests for prompts.py."""
+from prompts import DEFAULT_PROMPT
 
 
-def test_three_prompts_registered():
-    """The registry exposes the three named Hindi prompts."""
-    assert set(PROMPTS.keys()) == {"SHORT_HINDI", "KKB_PERSONA", "STRICT_HINDI_ONLY"}
+def test_default_prompt_is_nonempty_string():
+    """DEFAULT_PROMPT is a usable string."""
+    assert isinstance(DEFAULT_PROMPT, str)
+    assert len(DEFAULT_PROMPT) > 20
 
 
-def test_each_prompt_is_nonempty_string():
-    """Every registered prompt is a non-empty string."""
-    for name, text in PROMPTS.items():
-        assert isinstance(text, str)
-        assert len(text) > 20, f"prompt {name} suspiciously short"
+def test_default_prompt_does_not_force_language():
+    """Language enforcement is the LANGUAGE env var's job, not the prompt's.
 
-
-def test_get_prompt_returns_named_prompt():
-    """get_prompt('SHORT_HINDI') returns the SHORT_HINDI string."""
-    assert get_prompt("SHORT_HINDI") == PROMPTS["SHORT_HINDI"]
-
-
-def test_get_prompt_unknown_raises():
-    """Unknown prompt name raises KeyError with available names listed."""
-    with pytest.raises(KeyError) as exc:
-        get_prompt("NOT_A_REAL_PROMPT")
-    msg = str(exc.value)
-    assert "SHORT_HINDI" in msg
-    assert "KKB_PERSONA" in msg
+    If this test starts failing we've reintroduced a language directive in
+    the prompt — fine if intentional (e.g., the model drifted to English
+    on real calls), but the test should be updated to reflect the new
+    intent.
+    """
+    assert "Hindi" not in DEFAULT_PROMPT
+    assert "हिन्दी" not in DEFAULT_PROMPT
