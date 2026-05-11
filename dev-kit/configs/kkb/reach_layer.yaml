@@ -83,7 +83,7 @@ reach_layer:
       # (DoneEvent.session_ended=true).
       terminal_word: "धन्यवाद"
       recording:                                                                                                                                                                                           
-        source: pipeline                                                                                                                                                                                   
+        source: pipeline              # or 'vobiz'                                                                                                                                                                                   
         consent_purpose: storage      # piggy-backs on the existing storage-consent grant from the orchestrator (per Task 2 wiring)                                                                      
         min_duration_ms: 500
         caller_id_hash_salt: "kkb-local-test-salt-change-me-32chars+"   # any non-empty string, length ≥ 32 recommended

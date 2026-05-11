@@ -437,6 +437,7 @@ services:
       # Loader scopes to the voice channel via load_reach_config("voice").
       - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
+      - ./recordings:/var/recordings
     ports:
       - "8006:8006"
     networks:
