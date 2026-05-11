@@ -160,3 +160,5 @@ experiments/voice_audio_test/samples/
 # Realtime voice test - per-call recordings + audio contain PII
 experiments/realtime_voice_test/results/**/*.jsonl
 experiments/realtime_voice_test/results/**/*.wav
+experiments/realtime_voice_test/results_production/**/*.jsonl
+experiments/realtime_voice_test/results_production/**/*.wav
