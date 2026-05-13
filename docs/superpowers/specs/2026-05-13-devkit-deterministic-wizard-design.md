@@ -9,7 +9,7 @@
 The current dev-kit wizard is LLM-driven end to end. The LLM decides what to ask, when to advance phases, and what fields to write. This produces three classes of failure:
 
 1. **Pre-deploy validation errors** — required fields the LLM forgot (`trust:` key missing, `input_schema` empty, `user_node` partial, etc.).
-2. **Runtime crashes** — fields the dev-kit schema accepts but the runtime silently drops or requires (`tool_registry.py:155` silent-drop class of bugs).
+2. **Runtime crashes** — fields the dev-kit schema accepts but the runtime silently drops or requires (`tool_registry.py:155` silent-drop class of bugs). Today's validation only goes through dev-kit's own hand-written mirror schemas at `dev-kit/dev_kit/schemas/`; it never imports the runtime block's actual Pydantic class (e.g., `agent_core/src/schema/config.py`) to dry-run the generated YAML. Whenever the mirror drifts from the runtime schema, the wizard produces YAML that passes dev-kit validation but the runtime rejects at boot — and the user only finds out when the container fails to start.
 3. **Brittle state changes** — when a user mid-conversation changes their mind ("actually we have a KB"), today's wizard has no model for figuring out which earlier phases are now invalidated. The LLM either misses the change entirely or re-asks everything.
 
 Root cause: the LLM is asked to be both the conversationalist AND the state machine. We separate those.
@@ -39,24 +39,24 @@ Result: every project starts with a complete-by-default config; the LLM only wri
 │         │     ┌────────────┴───────────────────────┘               │
 │         │     │                                                    │
 │         ▼     ▼                                                    │
-│  ┌──────────────────┐    ┌─────────────────────────────────────┐  │
-│  │  PHASE DRIVER    │◀──▶│             ROUTER                  │  │
-│  │  - reads PHASES  │    │  - on update_intake → mark fields   │  │
-│  │  - calls LLM     │    │    invalidated using FIELD_RULES    │  │
-│  │  - parses tool   │    │  - decides next phase at end-of-    │  │
-│  │    calls         │    │    turn                             │  │
-│  └──────────────────┘    └─────────────────────────────────────┘  │
+│  ┌──────────────────┐    ┌─────────────────────────────────────┐   │
+│  │  PHASE DRIVER    │◀──▶│             ROUTER                  │   │
+│  │  - reads PHASES  │    │  - on update_intake → mark fields   │   │
+│  │  - calls LLM     │    │    invalidated using FIELD_RULES    │   │
+│  │  - parses tool   │    │  - decides next phase at end-of-    │   │
+│  │    calls         │    │    turn                             │   │
+│  └──────────────────┘    └─────────────────────────────────────┘   │
 │         │                                                          │
 │         ▼                                                          │
-│  ┌──────────────────────────────────────────────────────────────┐ │
-│  │           ACCUMULATOR  (current YAML state per block)         │ │
-│  │  - holds skeleton + answered fields + invalidations           │ │
-│  └──────────────────────────────────────────────────────────────┘ │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │           ACCUMULATOR  (current YAML state per block)        │  │
+│  │  - holds skeleton + answered fields + invalidations          │  │
+│  └──────────────────────────────────────────────────────────────┘  │
 │         │                                                          │
 │         ▼ at deploy time                                           │
-│  ┌──────────────────────────────────────────────────────────────┐ │
-│  │  RENDERER  → applies derived fields + deploy overlay → YAML  │ │
-│  └──────────────────────────────────────────────────────────────┘ │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │  RENDERER  → applies derived fields + deploy overlay → YAML  │  │
+│  └──────────────────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────────┘
                                   │
                                   ▼
@@ -73,6 +73,63 @@ Result: every project starts with a complete-by-default config; the LLM only wri
 | Phase driver | `dev-kit/dev_kit/agent/phase_driver.py` | Single shared module that runs all phases; filters fields, builds prompts, calls LLM, processes tool calls |
 | Router | `dev-kit/dev_kit/agent/router.py` | On `update_intake`: walks FIELD_RULES, marks invalidations, recomputes predetermined values. At end-of-turn: decides next phase |
 
+### Framework defaults vs domain YAML — the split
+
+Each runtime block reads its config from **two files** at startup, deep-merged in this order:
+
+1. `dev-kit/dpg/<block>.yaml` — framework defaults. Identical for every project. Contains all operational tuning (timeouts, retry attempts, embedding provider, otel collector endpoint, server host/port, etc.) and the safe defaults for opt-in features (e.g., `dignity_check.enabled: false`).
+2. `dev-kit/configs/<slug>/<block>.yaml` — domain-specific overrides. **Should be 100% domain-specific.** The skeleton writes here; the LLM writes here; nothing else.
+
+**Anything that's identical across all projects belongs in `dpg/<block>.yaml`, NOT in the domain YAML.** The wizard does NOT touch `dpg/<block>.yaml` — it's framework state, edited only by framework maintainers.
+
+Concrete evidence from `dev-kit/dpg/trust_layer.yaml`:
+
+```yaml
+server:
+  host: "0.0.0.0"
+  port: 8003
+observability:
+  otel:
+    collector_endpoint: "http://otelcol:4317"
+    sample_rate: 1.0
+    export_interval_ms: 5000
+dignity_check:
+  enabled: false        # opt-in; flipped to true in domain YAML for Conversational
+  questions: []
+  fail_action: "rewrite"
+```
+
+And from `dev-kit/dpg/agent_core.yaml`:
+
+```yaml
+agent:
+  timeout_ms: 10000
+  retry_attempts: 2
+  retry_backoff_seconds: [0, 0.5, 1.0]
+  max_tool_rounds: 3
+  provider: anthropic    # default; deploy overlay may override
+  termination_short_circuit: {enabled: true, confidence_threshold: 0.7}
+  recent_tool_exchanges: {max_items: 3, max_chars: 4000}
+ke_client: {endpoint: "http://knowledge_engine:8001/retrieve", timeout_ms: 30000}
+memory_client: {endpoint: "http://memory_layer:8002", timeout_ms: 3000}
+```
+
+None of these belong in a domain YAML. The skeleton will not emit them.
+
+Existing configs sometimes carry redundant fields (e.g., `obsrv-docs-assistant/trust_layer.yaml` has `trust.hitl.queue_backend: log` — which is already the Pydantic default; `kkb/knowledge_engine.yaml` has `chroma_persist_dir: /app/chroma_db` — which is operational). These are legacy quirks from before the dpg/domain split was clean. Going forward, the skeleton will not emit any field whose value equals the dpg.yaml or Pydantic default — a "no redundancy" rule enforced by CI.
+
+### What `FIELD_RULES` covers
+
+`FIELD_RULES` covers **only fields that legitimately appear in the domain YAML**:
+
+- Predetermined fields whose value depends on intake state (e.g., `dignity_check.enabled` flips to true for Conversational — overrides the dpg.yaml default of false)
+- Slug-derived fields (e.g., `observability.domain`, `static_knowledge_base.collection_name`)
+- Chat fields the LLM writes (e.g., `trust.input_rules.blocked_phrases`, intents, subagents)
+- Deploy-overridable fields (e.g., `agent.provider` — defaulted in dpg.yaml, overridable per-deploy via the deploy form)
+- Derived fields (e.g., `agent_workflow.global_tools` computed from connectors)
+
+Pure framework defaults like `agent.timeout_ms: 10000`, `ke_client.endpoint: "http://..."`, `knowledge_engine.server.port: 8001` are NOT in `FIELD_RULES`. They're not the wizard's concern — they live in `dpg/<block>.yaml`.
+
 ### Pydantic schemas — single source of truth used in four places
 
 | Use | How |
@@ -81,6 +138,62 @@ Result: every project starts with a complete-by-default config; the LLM only wri
 | Skeleton construction | `build_skeleton()` reads Pydantic field defaults, applies `predetermined` rules, fills `chat` defaults — produces a valid-by-default YAML. |
 | `update_config` validation | Every call goes through `validate_partial(block, partial)` — the Pydantic validator gates every write. |
 | Pre-deploy dry-run | At write time, the renderer imports each runtime block's `MergedConfig` Pydantic class and calls `model_validate()` on the rendered YAML — catches anything the dev-kit schema accepted but the runtime would crash on. |
+
+### Two Pydantic schema sets: dev-kit vs runtime
+
+The codebase already maintains **two parallel Pydantic schema sets** today, and this design keeps both. They describe different things and run at different times.
+
+**1. Dev-kit schemas** at `dev-kit/dev_kit/schemas/`:
+
+- `dpg/<block>.py` — shape of the framework-default `dpg/<block>.yaml`
+- `domain/<block>.py` — shape of the domain `configs/<slug>/<block>.yaml` (what `update_config` validates)
+
+These are the **wizard's working schemas**. They power: LLM prompt schema injection, `build_skeleton`, `update_config` validation, and the `pydantic_class` lookup in `FIELD_RULES`. They are deliberately **lenient about mid-chat states** — for example, they may accept a sentinel like `"[NEEDS_TRANSLATION]"` or an empty list while the user is still filling in earlier phases.
+
+**2. Runtime block schemas** owned by each block:
+
+- `agent_core/src/schema/config.py`
+- `trust_layer/src/models.py`
+- `knowledge_engine/src/models.py`
+- `action_gateway/src/models.py`
+- `memory_layer/src/models.py`
+- (etc.)
+
+These define what each running service will accept at boot. They are **strict** — they validate the *fully-merged* config (`dpg/<block>.yaml` deep-merged with `configs/<slug>/<block>.yaml`) and reject sentinels.
+
+**Which is used where:**
+
+| Stage | Schema set used | Why |
+|---|---|---|
+| LLM prompt injection (every phase) | dev-kit `schemas/domain/<block>.py` | LLM only ever writes domain-specific values |
+| `update_config` tool validation during chat | dev-kit `schemas/domain/<block>.py` | Permits in-progress sentinels |
+| `build_skeleton()` reads field defaults | dev-kit `schemas/domain/<block>.py` | Domain-YAML shape only |
+| Pre-deploy dry-run (`renderer.py` step 4) | **Runtime block's own** schema | Final hard gate: would the running service actually accept this? |
+
+**Why two schema sets instead of one shared import:**
+
+- **Different strictness levels.** The dev-kit chat schema may legitimately accept sentinels and partial states the LLM hasn't filled yet. The runtime schema is strict — every required field must be real.
+- **Different shapes.** Dev-kit's `schemas/domain/` describes the *domain half* of the config. The runtime's schema describes the *merged result* (framework defaults + domain overrides). Sharing one class would force one of those to be wrong.
+- **Direction of dependency.** Importing runtime schemas into the dev-kit at chat time would couple the wizard to every runtime block's internal model — a tight coupling we want only at deploy time, not at every keystroke.
+
+**How the two stay in sync — CI guard:**
+
+A test walks every Pydantic field in the runtime block's `MergedConfig` schema and asserts each field is either:
+
+- represented in the dev-kit's `FIELD_RULES` (so the wizard knows how to fill it), or
+- on a `framework_default_only` allowlist (so it's intentionally only in `dpg/<block>.yaml`)
+
+This catches the case where a runtime block adds a new required field without telling the dev-kit. See §5 *CI guards* and §10 *Coverage gate*.
+
+**Why the dry-run matters:**
+
+The dry-run at deploy time is the bridge between the two schema sets. The dev-kit can be as lenient as it likes during chat; the dry-run still imports the runtime's own `MergedConfig` and refuses to deploy a YAML the runtime would crash on. So the wizard can never produce a config that breaks a running service — the runtime schema is the final source of truth at deploy time.
+
+**Today vs new design (this is the gap):**
+
+Today's validation pipeline (`dev-kit/dev_kit/schemas/validation.py`) only uses the dev-kit's mirror schemas: `validate_partial`, `validate_domain_section`, and `validate_dpg_block` all dispatch into `DOMAIN_SECTION_SCHEMAS` and `DPG_BLOCK_SCHEMAS`, both of which are populated entirely from `dev-kit/dev_kit/schemas/`. A `grep` for imports from `agent_core/src`, `trust_layer/src`, `knowledge_engine/src`, etc. inside the dev-kit returns zero results. The runtime block's own Pydantic classes are never loaded.
+
+The new design adds the runtime-schema dry-run as a hard step in `render_all` (see §8 step 4): the renderer imports each block's actual `MergedConfig` (e.g., `from agent_core.src.schema.config import MergedConfig`) and runs `model_validate()` on the rendered YAML before any file is written. If the runtime would reject the config, the deploy is blocked and the wizard surfaces the error inline. This is the change that closes the "passes dev-kit, crashes runtime" failure mode #2 from §1.
 
 ### Three things the system does NOT do
 
@@ -92,7 +205,9 @@ Result: every project starts with a complete-by-default config; the LLM only wri
 
 ### Replacement for today's "tier" phase
 
-Today's tier phase asks 4 yes/no questions to set `agent_type` only. The new intake phase asks all 11 routing-relevant values up front. This produces the typed `IntakeState` that every downstream phase reads from for branching decisions.
+Today's tier phase asks 4 yes/no questions to set `agent_type` (one of `transactional` / `informational` / `agentic` / `conversational`). **The new intake phase drops `agent_type` entirely** and replaces it with orthogonal capability + conversation-pattern flags. See "Why we removed `agent_type`" below for the rationale.
+
+The new intake phase captures 12 typed fields up front. This produces the `IntakeState` that every downstream phase reads from for branching decisions.
 
 ### `IntakeState` shape
 
@@ -100,43 +215,81 @@ Today's tier phase asks 4 yes/no questions to set `agent_type` only. The new int
 from dataclasses import dataclass
 from typing import Literal
 
-AgentType = Literal["transactional", "informational", "automation", "conversational"]
-Channel   = Literal["web", "voice"]
+Channel = Literal["web", "voice"]
 
 @dataclass
 class IntakeState:
-    # Routing decisions
-    agent_type: AgentType
-    has_kb: bool
-    has_external_tools: bool
-    needs_persistent_user_data: bool
-    needs_consent: bool
-    has_hitl: bool
+    # ── Capabilities (what the agent has access to)
+    has_kb: bool                          # → deploy KE, enable static_knowledge_base, add knowledge_retrieval connector
+    has_external_tools: bool              # → deploy AG, ask Tools phase, connectors.read/write
 
-    # Channels & languages
-    selected_channels: list[Channel]
-    default_language: str
-    supported_languages: list[str]
+    # ── Conversation pattern (how the agent talks to users)
+    is_multi_turn: bool                   # multi-turn dialogue vs single-shot Q&A
+                                          # → drives workflow phase complexity, session TTL relevance
+    needs_persistent_user_data: bool      # remembers user across sessions
+                                          # → memory_layer.state.persistent populated; default_mode=saved
+    is_companion_style: bool              # emotionally-sensitive, dignity-aware long-running conversation
+                                          # → dignity_check.enabled, user_state_model.enabled
 
-    # Context (not used for routing — LLM context only)
-    domain_description: str
-    project_name: str
+    # ── Operational
+    needs_consent: bool                   # → agent.ask_for_consent, consent flow in conversation messages
+    has_hitl: bool                        # → meaningful trust HITL fields vs sentinels
+
+    # ── Channels and languages
+    selected_channels: list[Channel]      # → which channels.<x> entries; deploy form credentials
+    default_language: str                 # → language_normalisation.default_language
+    supported_languages: list[str]        # → multiplexing of messages and TTS rules
+
+    # ── Context (LLM-only)
+    domain_description: str               # used as LLM context in every phase prompt
+    project_name: str                     # drives slug, observability domain, KE collection name
 
     # Bookkeeping
     completed: bool = False
     updated_at: str = ""
 ```
 
-Note: `agentic` was renamed to `automation`. The four agent types remain conceptually unchanged.
+12 typed fields. No `agent_type` enum.
+
+### Why we removed `agent_type`
+
+Today's framework uses a 4-way `agent_type` classification (`transactional` / `informational` / `agentic` / `conversational`). Each project picks one. The wizard uses it to gate phase skipping (`user_state` is conversational-only) and toggle features (`dignity_check.enabled`). However the boundaries between the 4 categories are leaky in practice:
+
+- **`transactional`** is defined as "takes an action — API call / form submission" — that's just `has_external_tools=true`. It says nothing about whether the workflow has a clear end state or is single vs multi-turn. A transactional bot may have a KB; a transactional bot may run for 20 turns gathering inputs.
+- **`informational`** is defined as "answers questions from a defined knowledge source" — but real informational bots also call external tools (kkb is technically informational AND has the ONEST job lookup). The boundary is fuzzy.
+- **`agentic` / `automation`** is "multi-step decision-making with tools" — but multi-step is true for almost any agent except trivial single-tool calls.
+- **`conversational`** bundles three independent attributes (multi-turn + persistent-user-data + emotional-dignity-aware) into one label. A career counsellor and a mental-health companion are both `conversational` today but need different behaviour.
+
+Picking one bucket forces the user to fit their bot into a pre-defined shape that may not match what they're actually building. The new design captures the same dimensions as **orthogonal flags**, so any combination is expressible:
+
+| Today's `agent_type` | What it actually encoded | Replaced by |
+|---|---|---|
+| `transactional` | `has_external_tools=true` | `has_external_tools` |
+| `informational` | `has_kb=true` AND typically `has_external_tools=false` | `has_kb` (and `has_external_tools` separately) |
+| `agentic` / `automation` | `has_external_tools=true` AND multi-step workflow | `has_external_tools=true`, `is_multi_turn=true` |
+| `conversational` | multi-turn + persistent + emotional | `is_multi_turn=true`, `needs_persistent_user_data=true`, `is_companion_style=true` |
+
+Behaviours that today key off `agent_type`:
+
+| Old check | New check |
+|---|---|
+| `dignity_check.enabled = (agent_type == "conversational")` | `dignity_check.enabled = is_companion_style` |
+| `user_state_model.enabled = (agent_type == "conversational")` | `user_state_model.enabled = is_companion_style` |
+| `user_state` phase relevant only when `agent_type == "conversational"` | relevant only when `is_companion_style=true` |
+| `needs_persistent_user_data` auto-true for conversational | user answers the flag directly; no auto-derivation needed |
+| Workflow phase prompt framing (transactional vs automation vs conversational) | derived from `(has_external_tools, is_multi_turn)` combination |
+
+Every behaviour that read `agent_type` has a clean flag-based replacement. The flags are stricter (no fuzzy buckets) and more expressive (any combination is valid).
 
 ### Why each field lives in intake
 
 | Field | Why in intake | What it decides downstream |
 |---|---|---|
-| `agent_type` | Determines which phases run (user_state is conversational-only) and which behaviours toggle. Must be known before phase-skip routing. | `dignity_check.enabled`, `user_state_model.enabled`, phase gating |
-| `has_kb` | Decides "ask the knowledge phase or skip it". Also drives whether the `knowledge_retrieval` connector exists in agent_core, which the workflow phase needs to know to wire subagents. | Deploy KE yes/no; `static_knowledge_base.enabled`; `connectors.internal.knowledge_retrieval`; whether knowledge phase runs; `agent_workflow.global_tools` inclusion |
+| `has_kb` | Decides "ask the knowledge phase or skip it". Drives whether the `knowledge_retrieval` connector exists, which the workflow phase needs to know to wire subagents. | Deploy KE yes/no; `static_knowledge_base.enabled`; `connectors.internal.knowledge_retrieval`; whether knowledge phase runs; `agent_workflow.global_tools` inclusion |
 | `has_external_tools` | The tools phase only runs if this is true; workflow phase needs to know which tools subagents can use. | Deploy AG yes/no; whether tools phase runs; `connectors.read/write/identity`; subagent tool wiring |
+| `is_multi_turn` | Affects workflow phase prompt framing (single happy path vs multi-step orchestration) and session TTL relevance. Single-shot Q&A bots don't need session state at all. | Workflow phase prompt framing; subagent count expectations; session TTL setting |
 | `needs_persistent_user_data` | The memory phase asks different questions depending on this. Knowing upfront avoids the dead-end branch. | `memory_layer.state.persistent` populated or `null`; `user_data_persistence.default_mode` = saved or anonymous |
+| `is_companion_style` | Captures the "dignity-aware long-running conversation" bundle (the meaningful part of today's `conversational` type). Drives dignity check and user state model — both conversational-bot-specific. | `dignity_check.enabled`; `user_state_model.enabled`; `user_state` phase relevance |
 | `needs_consent` | The consent flow touches multiple phases (language asks consent_prompt; trust enables ConsentBlock; conversation messages add consent_message/consent_decline_ack). | `agent.ask_for_consent`; consent prompt and acknowledgement messages; Trust Layer ConsentBlock activation |
 | `has_hitl` | Trust phase asks meaningful HITL questions vs leaves sentinels. Knowing upfront avoids dead questions. | `trust.hitl.holding_message` content vs sentinel; whether `escalation_topics` is asked; HITL queue backend exposure in deploy form |
 | `selected_channels` | Cascades into many phases (language TTS rules only if voice; trust scope; reach configures active channels; deploy form needs right credentials). | Which `agent_core.channels.<x>` and `reach_layer.channels.<x>` entries exist; voice TTS rules asked or not; voice credentials required at deploy |
@@ -152,8 +305,9 @@ The LLM has exactly one tool to change intake values:
 ```python
 class UpdateIntakeArgs(BaseModel):
     field: Literal[
-        "agent_type", "has_kb", "has_external_tools",
-        "needs_persistent_user_data", "needs_consent", "has_hitl",
+        "has_kb", "has_external_tools",
+        "is_multi_turn", "needs_persistent_user_data", "is_companion_style",
+        "needs_consent", "has_hitl",
         "selected_channels", "default_language", "supported_languages",
         "domain_description", "project_name",
     ]
@@ -175,15 +329,59 @@ The handler validates type, writes to `IntakeState`, walks `FIELD_RULES` to find
 
 The LLM uses this to write a natural-language acknowledgment for the user.
 
-### Intake phase prompt style
+### What's captured before chat (project creation form)
 
-The intake phase asks all 11 fields in a guided sequence. The LLM bundles related ones rather than asking one at a time. Example bundling:
+5 of the 12 fields don't fit a yes/no chat conversation — they're better as form inputs. The project creation form (already part of the dev-kit UI today, extended) captures these before chat starts:
 
-- Turn 1: "What does the agent do? Who are the users?" → captures `project_name`, `domain_description`, derives `agent_type` (from the 4 classification questions)
-- Turn 2: "Does the agent need a knowledge base or external APIs? Will it remember users across sessions? Does it handle PII or escalate to humans?" → captures `has_kb`, `has_external_tools`, `needs_persistent_user_data`, `needs_consent`, `has_hitl`
-- Turn 3: "Which channels (web, voice, or both)? What languages?" → captures `selected_channels`, `default_language`, `supported_languages`
+| Field | Form input |
+|---|---|
+| `project_name` | text |
+| `domain_description` | textarea (1–2 sentences) |
+| `selected_channels` | multi-select checkboxes: web, voice |
+| `default_language` | dropdown (english, hindi, etc.) |
+| `supported_languages` | multi-select picker |
 
-The driver enforces completeness — the intake phase is not complete until all 11 fields are set. The LLM has latitude on the bundling.
+When the form is submitted, the dev-kit calls `update_intake(field=..., value=...)` server-side for each of these 5 fields. Chat starts with them already populated. `IntakeState.completed` stays false because the 7 binary flags haven't been captured yet.
+
+### Chat intake — 4 yes/no turns
+
+The chat intake phase asks the remaining 7 binary flags in **4 turns**. Each turn has a clear theme. Follow-up questions in turn 3 are conditional on the answer to `is_multi_turn`.
+
+**Turn 1 — Knowledge.** Single yes/no.
+
+> "Does your agent need to answer questions from a knowledge base (reference docs / FAQ / domain content)?"
+
+→ captures `has_kb`
+
+**Turn 2 — External tools.** Single yes/no.
+
+> "Does your agent need to call external APIs or services? (Looking up jobs, placing orders, fetching weather, etc.)"
+
+→ captures `has_external_tools`
+
+**Turn 3 — Conversation style.** Yes/no plus 2 conditional follow-ups.
+
+> "Is this a multi-turn back-and-forth conversation, or single Q&A?"
+
+→ captures `is_multi_turn`. If yes, the LLM follows up in the same turn:
+
+> "Two quick follow-ups since it's multi-turn:
+>  1. Should it remember users across sessions (pick up where they left off next time)?
+>  2. Is this a sensitive companion bot (mental health, distressed users, vulnerable populations)?"
+
+→ captures `needs_persistent_user_data` and `is_companion_style`. If `is_multi_turn` was no, both auto-set to false and the follow-ups are skipped.
+
+**Turn 4 — Operational sensitivity.** Two yes/no in one turn.
+
+> "Two more:
+>  1. Does the agent collect personal information (name, location, ID — anything covered by privacy rules)?
+>  2. Should it be able to escalate to a human agent when needed?"
+
+→ captures `needs_consent` and `has_hitl`
+
+Each LLM response that contains the user's binary answer maps to one or more `update_intake` calls. Driver enforces completeness — intake phase is not complete until all 7 binary flags are captured. The driver advances to the language phase automatically when complete.
+
+Total chat turns to complete intake: **4**. Total binary answers: 5 (single-shot bot) or 7 (multi-turn bot).
 
 ## 5. `FIELD_RULES` — per-field rules
 
@@ -203,7 +401,7 @@ Category = Literal["predetermined", "chat", "deploy", "derived"]
 class FieldRule:
     category:        Category
     # For predetermined: Python-expression string referencing intake state
-    #   e.g. "set: ${needs_consent}", "set: (agent_type == 'conversational')"
+    #   e.g. "set: ${needs_consent}", "set: is_companion_style"
     rule:            Optional[str] = None
     # For chat
     phase:           Optional[str] = None        # which phase asks this
@@ -226,7 +424,7 @@ class FieldRule:
 |---|---|
 | `predetermined` | Set by an intake-state rule. Never asked. Value re-computed whenever any field in `invalidated_by` changes. |
 | `chat` | Asked in chat, in a specific phase. Bot-builder sees the field, with `default` pre-filled if present, and can edit. **No "hidden defaults"** — every chat field surfaces to the user. |
-| `deploy` | Captured by the deploy form (separate concern). May be marked `advanced` to live in a collapsible section. Skeleton seeds a default value into the YAML so the runtime always has a value present; deploy form overrides at deploy time. |
+| `deploy` | Captured by the deploy form (separate concern). May be marked `advanced` to live in a collapsible section. The runtime gets its baseline from `dpg/<block>.yaml`; deploy form (if used) overrides via the deploy-time overlay. Skeleton does NOT write to the domain YAML for these fields. |
 | `derived` | Computed from other fields by the renderer at write time. No status tracked; no user input. |
 
 A field has exactly one category — categories are mutually exclusive.
@@ -248,11 +446,11 @@ FIELD_RULES = {
     # PREDETERMINED — set by intake state
     "dignity_check.enabled": FieldRule(
         category="predetermined",
-        rule="set: (agent_type == 'conversational')",
+        rule="set: is_companion_style",
     ),
     "dignity_check.questions": FieldRule(
         category="predetermined",
-        rule=f"set: {_CANONICAL_DIGNITY_QUESTIONS} if agent_type == 'conversational' else []",
+        rule=f"set: {_CANONICAL_DIGNITY_QUESTIONS} if is_companion_style else []",
     ),
 
     # CHAT — asked with optional default
@@ -281,11 +479,12 @@ FIELD_RULES = {
         pydantic_class="InputRulesConfig",
     ),
 
-    # DEPLOY — captured by deploy form
+    # DEPLOY — overridable per-deployment via the deploy form.
+    # No `default` here: "log" is already the runtime default from dpg.yaml
+    # / Pydantic. Writing default="log" in domain YAML would be redundant.
     "trust.hitl.queue_backend": FieldRule(
         category="deploy",
         advanced=True,
-        default="log",
     ),
 }
 ```
@@ -294,14 +493,18 @@ FIELD_RULES = {
 
 | Consumer | Operation |
 |---|---|
-| `build_skeleton()` | For every field where `category == "predetermined"`: run `rule` against current `IntakeState`. For `chat` and `deploy`: write `default` if present. For `derived`: skip. |
+| `build_skeleton()` | For every field where `category == "predetermined"`: run `rule` against current `IntakeState`; write the resulting value to the domain YAML **only if it differs from the dpg.yaml / Pydantic default**. For `chat`: write `default` if present (this seeds an English sentinel the LLM later overrides). For `deploy`: write nothing to the domain YAML — the deploy overlay applies at deploy time. For `derived`: skip. |
 | Phase driver | For phase X: filter rules to `category == "chat" AND phase == X AND (applies_if is None OR applies_if(state) is True)`. Of those, take fields with status `pending` or `needs_re_asking`. Render in the phase prompt. |
-| Router on `update_intake(F, V)` | For every rule where `F in rule.invalidated_by`: if `predetermined`, re-run rule and write to accumulator; if `chat`, mark status `needs_re_asking`; if `derived`, flag for renderer recompute. |
+| Router on `update_intake(F, V)` | For every rule where `F in rule.invalidated_by`: if `predetermined`, re-run rule and write to accumulator (or remove the override if value equals dpg default); if `chat`, mark status `needs_re_asking`; if `derived`, flag for renderer recompute. |
 | Renderer | At write time: for every `category == "derived"` rule, run `compute` and write to YAML. |
 
-### CI guard
+### CI guards
 
-A test asserts: every Pydantic field in every runtime block's `MergedConfig` schema has a corresponding entry in `FIELD_RULES` (or is explicitly listed in a `not_exposed_intentionally` allowlist). This prevents new Pydantic fields being added later without a rule.
+Two guards:
+
+1. **Coverage** — every Pydantic field in every runtime block's `MergedConfig` schema either has a corresponding entry in `FIELD_RULES` OR is explicitly listed in a `framework_default_only` allowlist (operational fields that live in dpg.yaml and are never project-specific). Prevents new Pydantic fields being added later without an explicit decision.
+
+2. **No redundancy** — for every generated domain YAML in `dev-kit/configs/<slug>/<block>.yaml`, no field's value equals the corresponding dpg.yaml / Pydantic default. If equal, the entry is redundant and must be removed. Catches the legacy quirks (`queue_backend: log`, `chroma_persist_dir: /app/chroma_db`, etc.) and prevents new ones.
 
 ## 6. `PHASES` config & phase driver
 
@@ -333,7 +536,7 @@ PHASES = {
                                        is_relevant=lambda s: s.has_kb),
     "memory":         PhaseDefinition("memory", "Memory & sessions", memory.build, "user_state"),
     "user_state":     PhaseDefinition("user_state", "User state", user_state.build, "trust",
-                                       is_relevant=lambda s: s.agent_type == "conversational"),
+                                       is_relevant=lambda s: s.is_companion_style),
     "trust":          PhaseDefinition("trust", "Trust & safety", trust.build, "tools"),
     "tools":          PhaseDefinition("tools", "External tools", tools.build, "workflow",
                                        is_relevant=lambda s: s.has_external_tools),
@@ -572,7 +775,7 @@ def decide_next_phase(current_phase, intake_state, accumulator, field_status):
 
 ### Worked example — mid-conversation KB addition
 
-**Setup:** User builds a transactional bot, intake captured `has_kb=false`. Wizard ran intake → language → memory → trust → tools → workflow. Currently in **workflow** defining first subagent.
+**Setup:** User builds a bot with `has_kb=false`, `has_external_tools=true`, `is_multi_turn=true` (a multi-turn API-calling bot). Wizard ran intake → language → memory → trust → tools → workflow. Currently in **workflow** defining first subagent.
 
 **Turn N — user says "Actually wait — we do have a small FAQ doc the bot should reference."**
 
@@ -625,7 +828,7 @@ def decide_next_phase(current_phase, intake_state, accumulator, field_status):
     - `knowledge` is relevant (has_kb=true) and has `needs_re_asking` → go there.
     - User answers `default_doc_type` and `intent_filters` for the new intent.
     - Knowledge phase complete.
-    - Router walks `memory` (complete), `user_state` (irrelevant — transactional, skip), `trust` (complete), `tools` (irrelevant — has_external_tools=false, skip), `workflow` (has incomplete fields).
+    - Router walks `memory` (complete), `user_state` (irrelevant — `is_companion_style=false`, skip), `trust` (complete), `tools` (relevant — `has_external_tools=true`, but already complete), `workflow` (has incomplete fields).
 11. User is back where they were in workflow.
 
 Re-asking happens **passively** — the driver naturally filters fields each turn based on status. There's no explicit "re-ask this list now" loop. The LLM never sees "needs_re_asking" or "answered" — those are internal status flags. It sees the prompt the driver built, which lists exactly the fields that need attention this turn.
@@ -644,7 +847,12 @@ Pure function at `dev-kit/dev_kit/agent/skeleton.py`. Runs when intake completes
 
 ```python
 def build_skeleton(intake_state: IntakeState) -> tuple[dict[str, dict], dict[str, str]]:
-    """Walk FIELD_RULES, produce valid-by-default accumulator + initial field statuses."""
+    """Walk FIELD_RULES, produce a domain-specific-only accumulator + initial field statuses.
+
+    Writes ONLY domain-specific values to the accumulator. Framework defaults that live
+    in dpg/<block>.yaml are never written here — they merge in at runtime. The
+    no-redundancy CI guard enforces this.
+    """
     accumulator = {block: {} for block in BLOCKS}
     field_status: dict[str, str] = {}
 
@@ -656,7 +864,10 @@ def build_skeleton(intake_state: IntakeState) -> tuple[dict[str, dict], dict[str
 
         if rule.category == "predetermined":
             value = eval_rule(rule.rule, intake_state)
-            set_path(accumulator, path, value)
+            # Only write if it differs from the framework default. Skeleton never
+            # duplicates dpg.yaml values into the domain YAML.
+            if value != get_framework_default(path):
+                set_path(accumulator, path, value)
 
         elif rule.category == "chat":
             if rule.default is not None:
@@ -664,8 +875,9 @@ def build_skeleton(intake_state: IntakeState) -> tuple[dict[str, dict], dict[str
             field_status[path] = "pending"
 
         elif rule.category == "deploy":
-            if rule.default is not None:
-                set_path(accumulator, path, rule.default)
+            # Deploy fields are NOT written to the domain YAML. The deploy overlay
+            # applies them at deploy time; the dpg.yaml provides the baseline.
+            pass
 
         elif rule.category == "derived":
             pass  # renderer computes at write time
@@ -673,7 +885,7 @@ def build_skeleton(intake_state: IntakeState) -> tuple[dict[str, dict], dict[str
     return accumulator, field_status
 ```
 
-Output is a complete-by-default config dict that validates against every block's runtime Pydantic schema (enforced by CI test), has every required field present with either a real value or a sentinel, and lists every chat field's initial status.
+Output is a domain-specific accumulator that, when deep-merged with `dpg/<block>.yaml`, validates against every block's runtime Pydantic schema (enforced by CI test) and has every required field present with either a real value or a sentinel.
 
 ### Renderer
 
@@ -744,25 +956,43 @@ Net: ~+1700 lines new, ~-2500 lines deleted/rewritten, net **–800 lines** with
 
 ### Existing projects
 
-Existing projects under `dev-kit/configs/<slug>/` were authored without intake or field_status. When the wizard opens an existing project:
+Existing projects under `dev-kit/configs/<slug>/` were authored without intake or field_status, and used the old `agent_type` taxonomy in their project metadata. When the wizard opens an existing project:
 
-1. **If `_meta/intake_state.json` is missing**, reverse-engineer intake values from the existing YAML files (e.g., `has_kb = (knowledge_engine.knowledge.blocks.static_knowledge_base.enabled == True)`). Write the result to `intake_state.json` as if intake just completed.
+1. **If `_meta/intake_state.json` is missing**, reverse-engineer intake values from the existing YAML + project metadata:
+
+    | New intake field | Reverse-engineered from |
+    |---|---|
+    | `has_kb` | `knowledge_engine.knowledge.blocks.static_knowledge_base.enabled` |
+    | `has_external_tools` | `agent_core.connectors.read` / `write` / `identity` non-empty |
+    | `is_multi_turn` | `len(agent_core.agent_workflow.subagents) > 1` OR project meta's `agent_type` in `["agentic", "conversational"]` |
+    | `needs_persistent_user_data` | `memory_layer.state.persistent` is not null |
+    | `is_companion_style` | `trust_layer.dignity_check.enabled` is true (which today only happens for `agent_type == "conversational"`) |
+    | `needs_consent` | `agent_core.agent.ask_for_consent` is true |
+    | `has_hitl` | non-empty `trust.input_rules.escalation_topics` OR non-default `trust.hitl.holding_message` |
+    | `selected_channels` | derived from `agent_core.channels.<x>` keys |
+    | `default_language` | `agent_core.preprocessing.language_normalisation.default_language` |
+    | `supported_languages` | `agent_core.preprocessing.language_normalisation.supported_languages` |
+    | `domain_description` | from `_meta/project.json` `description` |
+    | `project_name` | from `_meta/project.json` `name` |
+
+    The old `agent_type` value is discarded after this mapping completes — the new flags capture everything it encoded.
+
 2. **If `_meta/field_status.json` is missing**, mark every chat field as `answered` (best effort — trusts what's on disk). User can edit individual fields through the YAML editor or re-open phases to revise.
 3. Existing projects load with `current_phase = "review"` and the user can selectively re-enter a phase to modify.
 
-This gives existing projects a smooth upgrade path without forcing a regenerate.
+This gives existing projects a smooth upgrade path without forcing a regenerate. Each of the 5 existing projects (kkb, employ-bot, youth-schemes, blue-dots-assistant, obsrv-docs-assistant) maps cleanly to a flag combination via the table above.
 
 ## 10. Testing approach
 
 ### Per-block tests
 
 - **`test_field_rules_<block>.py`**: every Pydantic field in the runtime `MergedConfig` schema has a corresponding `FIELD_RULES` entry (or is in the `not_exposed_intentionally` allowlist).
-- **`test_skeleton_validates.py`**: for every combination of `(agent_type, has_kb, has_external_tools, ...)`, the skeleton output validates against the runtime's Pydantic schemas.
+- **`test_skeleton_validates.py`**: for every meaningful combination of `(has_kb, has_external_tools, is_multi_turn, needs_persistent_user_data, is_companion_style)`, the skeleton output validates against the runtime's Pydantic schemas.
 - **`test_intake_updates.py`**: changing each intake field marks the documented affected fields as `needs_re_asking` / re-runs predetermined rules / flags derived fields.
 
 ### End-to-end tests
 
-- **`test_wizard_flow.py`**: simulates a full conversation through the wizard for each `agent_type`. Asserts the final YAML matches a golden file for a fixed input transcript.
+- **`test_wizard_flow.py`**: simulates a full conversation through the wizard for each canonical intake combination (single-shot KB-only, transactional multi-turn with tools, conversational companion, etc.). Asserts the final YAML matches a golden file for a fixed input transcript.
 - **`test_backtracking.py`**: simulates the "user changes their mind mid-conversation" cases and asserts the router lands in the correct phase.
 
 ### Coverage gate
@@ -779,6 +1009,4 @@ CI fails if a new Pydantic field is added without a corresponding `FIELD_RULES` 
 
 ## 12. Cross-references
 
-- **Schema gaps and prompt issues per block**: `docs/superpowers/specs/2026-05-13-runtime-schema-prompt-audit.md` enumerates field-level issues and concrete fixes.
-- **Deploy-time overlay & UI revamp**: `docs/superpowers/specs/2026-05-12-devkit-ui-revamp-design.md`.
 - **Earlier (now superseded) plan**: `docs/superpowers/specs/2026-05-13-devkit-config-generation-revamp-design.md` describes the LLM-with-skeleton model. This document extends it with the deterministic state machine.
