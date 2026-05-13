@@ -67,7 +67,7 @@ Result: every project starts with a complete-by-default config; the LLM only wri
 
 | Component | Lives at | What it does |
 |---|---|---|
-| `IntakeState` | `dev-kit/dev_kit/agent/intake_state.py` | Typed dataclass; 11 fields captured in the intake phase; persisted to `_meta/intake_state.json` |
+| `IntakeState` | `dev-kit/dev_kit/agent/intake_state.py` | Typed dataclass; 12 fields captured in the intake phase (5 via project creation form, 7 binary flags via chat); persisted to `_meta/intake_state.json` |
 | `FIELD_RULES` | `dev-kit/dev_kit/agent/field_rules/<block>.py` | Per-field rules: category, phase, default, invalidation triggers, applies_if expressions, derived-compute expressions |
 | `PHASES` | `dev-kit/dev_kit/agent/phases_config.py` | Declarative phase definitions: id, label, prompt function, next-phase pointer, is_relevant predicate |
 | Phase driver | `dev-kit/dev_kit/agent/phase_driver.py` | Single shared module that runs all phases; filters fields, builds prompts, calls LLM, processes tool calls |
@@ -99,7 +99,7 @@ dignity_check:
   fail_action: "rewrite"
 ```
 
-And from `dev-kit/dpg/agent_core.yaml`:
+And from `dev-kit/dpg/agent_core.yaml` (abridged — the full file also sets `ask_for_consent`, `consent_prompt`, `features`, etc.):
 
 ```yaml
 agent:
@@ -116,7 +116,12 @@ memory_client: {endpoint: "http://memory_layer:8002", timeout_ms: 3000}
 
 None of these belong in a domain YAML. The skeleton will not emit them.
 
-Existing configs sometimes carry redundant fields (e.g., `obsrv-docs-assistant/trust_layer.yaml` has `trust.hitl.queue_backend: log` — which is already the Pydantic default; `kkb/knowledge_engine.yaml` has `chroma_persist_dir: /app/chroma_db` — which is operational). These are legacy quirks from before the dpg/domain split was clean. Going forward, the skeleton will not emit any field whose value equals the dpg.yaml or Pydantic default — a "no redundancy" rule enforced by CI.
+Existing configs sometimes carry fields that belong in the framework layer:
+
+- **Truly redundant** — value equals the Pydantic default. Example: a project's `trust_layer.yaml` setting `trust.hitl.queue_backend: log` when `log` is already the Pydantic default. Pure noise; remove.
+- **Operational override of a Pydantic default that ought to live in `dpg/<block>.yaml`** — value differs from the Pydantic default but is operational (same across projects). Example: `kkb/knowledge_engine.yaml` sets `chroma_persist_dir: /app/chroma_db`, which differs from the Pydantic default `./data/chroma_db` but is the Docker volume path used by every project. The fix is to move the override to `dpg/knowledge_engine.yaml` and remove it from domain YAML.
+
+Both classes are legacy quirks from before the dpg/domain split was clean. Going forward, the skeleton will not emit any field whose value equals the corresponding dpg.yaml-merged-with-Pydantic default — a "no redundancy" rule enforced by CI. The operational-overrides class is handled by relocating those fields to `dpg/<block>.yaml` once and for all (separate cleanup; not in scope for the wizard itself).
 
 ### What `FIELD_RULES` covers
 
@@ -150,14 +155,17 @@ The codebase already maintains **two parallel Pydantic schema sets** today, and 
 
 These are the **wizard's working schemas**. They power: LLM prompt schema injection, `build_skeleton`, `update_config` validation, and the `pydantic_class` lookup in `FIELD_RULES`. They are deliberately **lenient about mid-chat states** — for example, they may accept a sentinel like `"[NEEDS_TRANSLATION]"` or an empty list while the user is still filling in earlier phases.
 
-**2. Runtime block schemas** owned by each block:
+**2. Runtime block schemas** owned by each block. Every block exposes a top-level `MergedConfig` Pydantic class at `<block>/src/schema/config.py`, except Reach Layer which lives at `reach_layer/base/schema/config.py`:
 
-- `agent_core/src/schema/config.py`
-- `trust_layer/src/models.py`
-- `knowledge_engine/src/models.py`
-- `action_gateway/src/models.py`
-- `memory_layer/src/models.py`
-- (etc.)
+- `agent_core/src/schema/config.py` — `MergedConfig`
+- `trust_layer/src/schema/config.py` — `MergedConfig`
+- `knowledge_engine/src/schema/config.py` — `MergedConfig`
+- `action_gateway/src/schema/config.py` — `MergedConfig`
+- `memory_layer/src/schema/config.py` — `MergedConfig`
+- `observability_layer/src/schema/config.py` — `MergedConfig`
+- `reach_layer/base/schema/config.py` — `MergedConfig`
+
+(Note: each block also has a `src/models.py`, but those hold HTTP request/response dataclasses, **not** the config schema. The config schema is always under `src/schema/config.py`.)
 
 These define what each running service will accept at boot. They are **strict** — they validate the *fully-merged* config (`dpg/<block>.yaml` deep-merged with `configs/<slug>/<block>.yaml`) and reject sentinels.
 
@@ -193,7 +201,82 @@ The dry-run at deploy time is the bridge between the two schema sets. The dev-ki
 
 Today's validation pipeline (`dev-kit/dev_kit/schemas/validation.py`) only uses the dev-kit's mirror schemas: `validate_partial`, `validate_domain_section`, and `validate_dpg_block` all dispatch into `DOMAIN_SECTION_SCHEMAS` and `DPG_BLOCK_SCHEMAS`, both of which are populated entirely from `dev-kit/dev_kit/schemas/`. A `grep` for imports from `agent_core/src`, `trust_layer/src`, `knowledge_engine/src`, etc. inside the dev-kit returns zero results. The runtime block's own Pydantic classes are never loaded.
 
-The new design adds the runtime-schema dry-run as a hard step in `render_all` (see §8 step 4): the renderer imports each block's actual `MergedConfig` (e.g., `from agent_core.src.schema.config import MergedConfig`) and runs `model_validate()` on the rendered YAML before any file is written. If the runtime would reject the config, the deploy is blocked and the wizard surfaces the error inline. This is the change that closes the "passes dev-kit, crashes runtime" failure mode #2 from §1.
+The new design adds the runtime-schema dry-run as a hard step in `render_all` (see §8 step 4). The dev-kit container has no access to runtime block source at runtime — its Docker image only `COPY`s `dev-kit/` and `automation/` (see `dev-kit/Dockerfile`). So a subprocess-into-the-block-directory approach doesn't work in production. Instead, the dry-run uses **schemas baked into the dev-kit image at Docker build time**.
+
+**Why bake-in works here:**
+
+Every runtime block's `src/schema/config.py` is **self-contained** — it only imports from `pydantic`, `enum`, `typing`, and `__future__`. No relative imports, no other block-internal modules. This makes each schema file safe to copy verbatim into the dev-kit image; once copied, the dev-kit can import it as a normal Python module.
+
+**dev-kit Dockerfile additions:**
+
+```dockerfile
+# After "COPY dev-kit/ ." in dev-kit/Dockerfile, add:
+COPY agent_core/src/schema/config.py           /app/dpg_runtime_schemas/agent_core/config.py
+COPY trust_layer/src/schema/config.py          /app/dpg_runtime_schemas/trust_layer/config.py
+COPY knowledge_engine/src/schema/config.py     /app/dpg_runtime_schemas/knowledge_engine/config.py
+COPY action_gateway/src/schema/config.py       /app/dpg_runtime_schemas/action_gateway/config.py
+COPY memory_layer/src/schema/config.py         /app/dpg_runtime_schemas/memory_layer/config.py
+COPY observability_layer/src/schema/config.py  /app/dpg_runtime_schemas/observability_layer/config.py
+COPY reach_layer/base/schema/config.py         /app/dpg_runtime_schemas/reach_layer/config.py
+RUN find /app/dpg_runtime_schemas -type d -exec touch {}/__init__.py \;
+```
+
+The Docker build context is already the repo root (`../..` per `automation/docker/docker-compose.yml`), so the source paths above resolve correctly.
+
+**Renderer code:**
+
+```python
+# dev-kit/dev_kit/agent/renderer.py
+from dpg_runtime_schemas.agent_core.config          import MergedConfig as AgentCoreMergedConfig
+from dpg_runtime_schemas.trust_layer.config         import MergedConfig as TrustLayerMergedConfig
+from dpg_runtime_schemas.knowledge_engine.config    import MergedConfig as KnowledgeEngineMergedConfig
+from dpg_runtime_schemas.action_gateway.config      import MergedConfig as ActionGatewayMergedConfig
+from dpg_runtime_schemas.memory_layer.config        import MergedConfig as MemoryLayerMergedConfig
+from dpg_runtime_schemas.observability_layer.config import MergedConfig as ObservabilityLayerMergedConfig
+from dpg_runtime_schemas.reach_layer.config         import MergedConfig as ReachLayerMergedConfig
+
+RUNTIME_SCHEMAS = {
+    "agent_core":          AgentCoreMergedConfig,
+    "trust_layer":         TrustLayerMergedConfig,
+    "knowledge_engine":    KnowledgeEngineMergedConfig,
+    "action_gateway":      ActionGatewayMergedConfig,
+    "memory_layer":        MemoryLayerMergedConfig,
+    "observability_layer": ObservabilityLayerMergedConfig,
+    "reach_layer":         ReachLayerMergedConfig,
+}
+
+def runtime_validate(block: str, data: dict) -> None:
+    """In-process validation against the runtime block's own MergedConfig.
+
+    Raises pydantic.ValidationError on failure; the renderer surfaces this
+    to the wizard so the user sees the offending field before deploy.
+    """
+    RUNTIME_SCHEMAS[block].model_validate(data)
+```
+
+In-process, sub-millisecond per block, no subprocesses, no network dependency.
+
+**Why bake-in over the alternatives:**
+
+| Alternative | Why we rejected it |
+|---|---|
+| Subprocess into the block's directory | Dev-kit container has no access to other blocks' source at runtime |
+| Fetch schemas from `raw.githubusercontent.com` at deploy | Network dependency at deploy; token/rate-limit issues; version-skew risk between fetched ref and deployed image |
+| Shared `dpg-schemas` package | Real refactor across 7 blocks; bigger blast radius than the bake-in |
+
+**Build-time coordination is the guarantee.**
+
+The release process already builds all images at the same `${GIT_SHA}` (per `automation/docker/docker-compose.yml`). When `agent_core/src/schema/config.py` changes, both the agent_core image and the dev-kit image are rebuilt; the schema baked into the dev-kit always matches the schema the deployed agent_core container will use. The bake-in only works because of this existing discipline.
+
+**Mirror schemas are not affected.**
+
+The dev-kit's mirror schemas at `dev-kit/dev_kit/schemas/domain/` are kept as-is — they continue to power LLM prompt injection, `update_config` validation during chat, skeleton defaults, and `pydantic_class` lookup. The bake-in adds a **separate** in-process source used only by the pre-deploy dry-run. The two schema sets remain decoupled (the mirror is intentionally lenient and shaped by FIELD_RULES + IntakeState; the runtime schema is strict and orthogonal). See "Two Pydantic schema sets" above.
+
+**Pre-condition for bake-in.**
+
+Every `<block>/src/schema/config.py` must stay self-contained — only `pydantic`, `enum`, `typing`, `__future__` imports. A future CI guard will enforce this at PR time (see §5). Until then, the project-level Claude rule at `.claude/rules/runtime-devkit-sync.md` documents the requirement.
+
+This is the change that closes the "passes dev-kit, crashes runtime" failure mode #2 from §1.
 
 ### Three things the system does NOT do
 
@@ -205,7 +288,7 @@ The new design adds the runtime-schema dry-run as a hard step in `render_all` (s
 
 ### Replacement for today's "tier" phase
 
-Today's tier phase asks 4 yes/no questions to set `agent_type` (one of `transactional` / `informational` / `agentic` / `conversational`). **The new intake phase drops `agent_type` entirely** and replaces it with orthogonal capability + conversation-pattern flags. See "Why we removed `agent_type`" below for the rationale.
+Today's tier phase asks up to 4 yes/no questions in a branching decision tree (typically 2–3 questions per user) to set `agent_type` (one of `transactional` / `informational` / `agentic` / `conversational`). **The new intake phase drops `agent_type` entirely** and replaces it with orthogonal capability + conversation-pattern flags. See "Why we removed `agent_type`" below for the rationale.
 
 The new intake phase captures 12 typed fields up front. This produces the `IntakeState` that every downstream phase reads from for branching decisions.
 
@@ -215,7 +298,7 @@ The new intake phase captures 12 typed fields up front. This produces the `Intak
 from dataclasses import dataclass
 from typing import Literal
 
-Channel = Literal["web", "voice"]
+Channel = Literal["web", "voice"]   # CLI channel intentionally excluded — see note below
 
 @dataclass
 class IntakeState:
@@ -251,6 +334,8 @@ class IntakeState:
 
 12 typed fields. No `agent_type` enum.
 
+**CLI channel deprecation.** The runtime today still has a `cli` channel in `ChannelsConfig` (`agent_core/src/schema/config.py:599-606`, `reach_layer/base/schema/config.py:346-353`), but it is dev-only — never user-selectable — and is being phased out. This design supports only `web` and `voice`. The skeleton continues to emit the framework-default `cli` block (so existing tests and developer CLI workflows keep working) but `selected_channels` never includes `cli`, no FIELD_RULES entry exists for it, and the project creation form does not offer it as a choice.
+
 ### Why we removed `agent_type`
 
 Today's framework uses a 4-way `agent_type` classification (`transactional` / `informational` / `agentic` / `conversational`). Each project picks one. The wizard uses it to gate phase skipping (`user_state` is conversational-only) and toggle features (`dignity_check.enabled`). However the boundaries between the 4 categories are leaky in practice:
@@ -285,7 +370,7 @@ Every behaviour that read `agent_type` has a clean flag-based replacement. The f
 
 | Field | Why in intake | What it decides downstream |
 |---|---|---|
-| `has_kb` | Decides "ask the knowledge phase or skip it". Drives whether the `knowledge_retrieval` connector exists, which the workflow phase needs to know to wire subagents. | Deploy KE yes/no; `static_knowledge_base.enabled`; `connectors.internal.knowledge_retrieval`; whether knowledge phase runs; `agent_workflow.global_tools` inclusion |
+| `has_kb` | Decides "ask the knowledge phase or skip it". Drives whether the `knowledge_retrieval` connector exists, which the workflow phase needs to know to wire subagents. | Deploy KE yes/no; `static_knowledge_base.enabled`; `connectors.internal[name=knowledge_retrieval]`; whether knowledge phase runs; `agent_workflow.global_tools` inclusion |
 | `has_external_tools` | The tools phase only runs if this is true; workflow phase needs to know which tools subagents can use. | Deploy AG yes/no; whether tools phase runs; `connectors.read/write/identity`; subagent tool wiring |
 | `is_multi_turn` | Affects workflow phase prompt framing (single happy path vs multi-step orchestration) and session TTL relevance. Single-shot Q&A bots don't need session state at all. | Workflow phase prompt framing; subagent count expectations; session TTL setting |
 | `needs_persistent_user_data` | The memory phase asks different questions depending on this. Knowing upfront avoids the dead-end branch. | `memory_layer.state.persistent` populated or `null`; `user_data_persistence.default_mode` = saved or anonymous |
@@ -342,6 +427,8 @@ The LLM uses this to write a natural-language acknowledgment for the user.
 | `supported_languages` | multi-select picker |
 
 When the form is submitted, the dev-kit calls `update_intake(field=..., value=...)` server-side for each of these 5 fields. Chat starts with them already populated. `IntakeState.completed` stays false because the 7 binary flags haven't been captured yet.
+
+**Replaces today's `overview` phase.** Today the wizard has 12 phases — the first one (`overview`, defined in `dev-kit/dev_kit/agent/prompts/phases.py`) captures problem statement, target users, languages, channels, and knowledge domain via chat. In the new design that content moves to the project creation form (the 5 fields above), so the chat starts with this context already on disk and the `overview` phase is removed. The new design has 11 chat phases: the project form replaces phase 1; phases 2–12 become the 11 entries in `PHASES`.
 
 ### Chat intake — 4 yes/no turns
 
@@ -489,6 +576,11 @@ FIELD_RULES = {
 }
 ```
 
+**Notes on the example:**
+
+- `pydantic_class` values reference exports from the dev-kit's `schemas/domain/<block>.py`. Top-level orchestration classes use the `*Section` suffix (e.g., `TrustSection`); nested classes use `*Config` (e.g., `HitlConfig`, `InputRulesConfig`). Implementers should grep the dev-kit's domain module to confirm the exact name.
+- The `dignity_check.questions` rule returns `[]` when `is_companion_style=false`, which equals the framework default. The skeleton's "only write if differs from default" guard (§8) then writes nothing — by design.
+
 ### Where the categories drive behaviour
 
 | Consumer | Operation |
@@ -498,13 +590,33 @@ FIELD_RULES = {
 | Router on `update_intake(F, V)` | For every rule where `F in rule.invalidated_by`: if `predetermined`, re-run rule and write to accumulator (or remove the override if value equals dpg default); if `chat`, mark status `needs_re_asking`; if `derived`, flag for renderer recompute. |
 | Renderer | At write time: for every `category == "derived"` rule, run `compute` and write to YAML. |
 
-### CI guards
+### Path syntax (including list-of-objects)
 
-Two guards:
+Field paths in `FIELD_RULES` keys, `field_status.json` keys, and tool arguments use dotted notation rooted at the block. Most paths are plain dotted attribute walks (`trust.hitl.holding_message`, `agent.timeout_ms`).
 
-1. **Coverage** — every Pydantic field in every runtime block's `MergedConfig` schema either has a corresponding entry in `FIELD_RULES` OR is explicitly listed in a `framework_default_only` allowlist (operational fields that live in dpg.yaml and are never project-specific). Prevents new Pydantic fields being added later without an explicit decision.
+Some runtime fields are **lists of named objects** rather than mappings. The most common case is `agent_core.connectors.internal`, which is `list[InternalConnectorDef]` (`agent_core/src/schema/config.py:389`) — each entry has a `name` attribute and is addressed by that name. For these paths the syntax is `<list_attr>[name=<value>]`:
 
-2. **No redundancy** — for every generated domain YAML in `dev-kit/configs/<slug>/<block>.yaml`, no field's value equals the corresponding dpg.yaml / Pydantic default. If equal, the entry is redundant and must be removed. Catches the legacy quirks (`queue_backend: log`, `chroma_persist_dir: /app/chroma_db`, etc.) and prevents new ones.
+- `connectors.internal[name=knowledge_retrieval]` — the internal connector whose `name=="knowledge_retrieval"`
+- `connectors.read[name=lookup_jobs]` — the read connector named `lookup_jobs`
+- `agent_workflow.subagents[id=intake]` — list-of-objects keyed by `id`
+
+The resolver:
+
+- **Reading** a `[name=X]` segment finds the matching list element by attribute. Missing match returns `None`.
+- **Writing** a `[name=X]` segment finds-or-appends — if no element matches, a new element is appended with the given key.
+- **Clearing** a `[name=X]` segment removes the matching element from the list.
+
+A small `path_ops.py` helper (~80 lines) implements `get_path`, `set_path`, `clear_path` with this syntax. `FIELD_RULES` keys and `field_status.json` keys both use the same syntax so the two stay aligned.
+
+### CI guards (future hardening)
+
+The dev-kit has no CI guards today; the pre-deploy dry-run (§3, §8) is the primary safety net for runtime-schema drift. Three guards are planned as follow-up hardening — each makes drift surface at PR time rather than deploy time:
+
+1. **Self-contained schema** — every `<block>/src/schema/config.py` may only import from `pydantic`, `enum`, `typing`, and `__future__`. The bake-in approach (§3) depends on this; any other import would fail at dev-kit Docker build. CI flags the violation at PR time. Until this guard exists, the rule is enforced by code review and the project-level Claude rule at `.claude/rules/runtime-devkit-sync.md`.
+
+2. **Coverage** — every Pydantic field in every runtime block's `MergedConfig` schema either has a corresponding entry in `FIELD_RULES` OR is explicitly listed in a `framework_default_only` allowlist (operational fields that live in dpg.yaml and are never project-specific). Prevents new Pydantic fields being added later without an explicit decision. For list-of-objects fields, the guard checks that at least one canonical `[name=X]` entry is declared per known consumer (e.g., `knowledge_retrieval` in `connectors.internal`).
+
+3. **No redundancy** — for every generated domain YAML in `dev-kit/configs/<slug>/<block>.yaml`, no field's value equals the corresponding dpg.yaml / Pydantic default. If equal, the entry is redundant and must be removed. Catches legacy quirks (`queue_backend: log` duplicating the Pydantic default; operational fields like `chroma_persist_dir` that should move to dpg.yaml) and prevents new ones.
 
 ## 6. `PHASES` config & phase driver
 
@@ -675,7 +787,7 @@ Three files per project under `dev-kit/configs/<slug>/_meta/`:
 
 ```
 _meta/
-  intake_state.json       # the 11 intake fields + completed flag
+  intake_state.json       # the 12 intake fields + completed flag
   field_status.json       # status per category=chat field
   current_phase.json      # which phase the wizard is in
 ```
@@ -690,7 +802,7 @@ Plus the existing accumulator persisted as `<block>.yaml` files (unchanged).
   "agent_core.preprocessing.nlu_processor.entities": "answered",
   "agent_core.conversation.blocked_message": "answered",
   "knowledge_engine.knowledge.blocks.static_knowledge_base.collection_name": "not_applicable",
-  "agent_core.connectors.internal.knowledge_retrieval": "not_applicable",
+  "agent_core.connectors.internal[name=knowledge_retrieval]": "not_applicable",
   "trust_layer.trust.hitl.holding_message": "answered",
   "...": "..."
 }
@@ -789,7 +901,7 @@ def decide_next_phase(current_phase, intake_state, accumulator, field_status):
      - `knowledge_engine.knowledge.blocks.static_knowledge_base.collection_name` (predetermined) → re-run → slug-derived value
      - `knowledge_engine.knowledge.blocks.static_knowledge_base.intent_filters` (chat) → was `not_applicable`, now `needs_re_asking`
      - `knowledge_engine.knowledge.blocks.static_knowledge_base.default_doc_type` (chat) → `not_applicable` → `needs_re_asking`
-     - `agent_core.connectors.internal.knowledge_retrieval` (predetermined) → skeleton structure written
+     - `agent_core.connectors.internal[name=knowledge_retrieval]` (predetermined) → skeleton structure written
      - `agent_core.agent_workflow.global_tools` (derived) → `derived_stale`
    - Returns `{ "earliest_affected_phase": "language", "affected_count": 8 }`.
 3. LLM writes user-facing reply: "Got it — adding a knowledge base. I'll need to revisit a couple of earlier questions to get the KB wired up properly."
@@ -907,9 +1019,10 @@ def render_all(project_path, accumulator, intake_state):
         validate_partial(block, data)
     validate_cross_block_invariants(overlaid)
 
-    # 4. Pre-deploy dry-run — validate through runtime's own schemas
+    # 4. Pre-deploy dry-run — validate through runtime's own schemas baked
+    # into the dev-kit image at Docker build time (see §3 "How the dry-run runs").
     for block, data in overlaid.items():
-        runtime_validate(block, data)   # imports runtime's MergedConfig, calls model_validate
+        runtime_validate(block, data)   # in-process: RUNTIME_SCHEMAS[block].model_validate(data)
 
     # 5. Write YAML files
     for block, data in overlaid.items():
@@ -933,17 +1046,75 @@ For omitted services:
 
 A no-KB / no-tools poem bot deploys **9 services** instead of **12**.
 
-## 9. Migration & backward compatibility
+### Post-deployment reconfiguration
 
-### Files & line counts
+Scenario: a user deploys an agent today with `has_kb=false, selected_channels=["voice"]`. A week later they want to add a knowledge base and switch on the web channel. **The current design supports this without conceptual changes** — the same machinery that handles mid-conversation backtracking handles post-deploy edits.
+
+**What already works (by construction):**
+
+| Concern | How it's handled today |
+|---|---|
+| Loading existing state | `IntakeState`, `accumulator`, `field_status`, `current_phase` are all persisted to `_meta/`. Re-opening the project deserialises them; the wizard starts in `current_phase = "review"` with everything previously answered marked `answered`. |
+| User changes intake mid-session | `update_intake(field="has_kb", value=True)` triggers the same FIELD_RULES walk described in §7. Affected fields get `needs_re_asking`; router lands the wizard in the earliest affected phase (`language` for intents, then `knowledge` for KE config). |
+| Selective service add | The compose generator at deploy time reads the updated `intake_state` and now includes `knowledge_engine`. New service starts on next `docker compose up`. |
+| Selective service remove | Same generator omits the no-longer-needed service. The user re-runs deploy. |
+| Schema validation across the new shape | Dry-run revalidates the full merged config against runtime schemas before bind-mount. |
+
+**What needs explicit follow-up work (out of scope for this spec, listed for awareness):**
+
+1. **UI affordance to re-open a deployed project.** The dev-kit web UI today has a project list; "edit & redeploy" needs to be a first-class action with a clear "your changes will trigger a redeploy" warning.
+2. **Data-preserving service removal.** Removing `memory_layer` (hypothetically) would orphan Redis volumes. The compose flow needs an explicit data-retention policy — most likely: never auto-remove data-bearing services without confirmation; offer "stop but preserve volumes" as the default.
+3. **Adding voice to a previously web-only deploy.** Requires new credentials (voice provider, ngrok auth) at deploy form. The form already supports conditional credential capture based on `selected_channels`, so this is mostly a UX question of when to prompt.
+4. **Live reconfigure (no redeploy).** Out of scope. Today's design requires redeploy for any config change. Live config reload is a future enhancement separate from this design.
+
+The architectural invariant that makes post-deploy reconfiguration cheap: **the wizard is stateless across deploys; all wizard memory is on disk in `_meta/`.** A re-opened session sees the exact same state the first deploy used, so the only new code is the "open existing project" entry point and the redeploy UX.
+
+### Decision logging
+
+Every dev-kit decision that changes state, skips work, or branches the flow emits a structured log entry. This makes "why did the wizard do X?" answerable from logs alone, without re-running the session.
+
+Logs follow the project-wide `.claude/rules/logging-observability.md` format — every entry carries `operation`, `status`, and (where applicable) `latency_ms` and `error`. Additional context fields are listed below per decision point.
+
+| Decision point | Where | Required log fields (in addition to operation/status) |
+|---|---|---|
+| Intake field updated | `on_intake_update` handler | `field`, `old_value`, `new_value`, `affected_count`, `earliest_affected_phase` |
+| Config field updated | `on_config_update` handler | `block`, `section`, `paths_written`, `validation_errors` (empty list on success) |
+| Field marked `needs_re_asking` | Router on intake change | `path`, `triggered_by` (the intake field name), `reason` (`applies_if_changed` / `default_stale` / `chat_field_invalidated`) |
+| Predetermined field recomputed | Router on intake change | `path`, `triggered_by`, `old_value`, `new_value` |
+| Phase transition (forward) | End-of-turn router | `from_phase`, `to_phase`, `reason="phase_complete"` |
+| Phase transition (backtrack) | End-of-turn router | `from_phase`, `to_phase`, `reason="invalidated"`, `triggered_by` (intake field that caused backtrack) |
+| Phase skipped via `is_relevant` | `_next_relevant_phase` | `skipped_phase`, `reason` (e.g., `"has_external_tools=false"`) |
+| Skeleton field written | `build_skeleton` | `path`, `category`, `value_kind` (`predetermined_value` / `chat_default` / `derived`) |
+| Skeleton field skipped (equals framework default) | `build_skeleton` | `path`, `reason="equals_dpg_default"` |
+| Renderer derived-field computation | `render_all` step 2 | `path`, `computed_value` |
+| Pre-deploy dry-run per block | `runtime_validate` | `block`, `status`, `latency_ms`, `validation_errors` (full Pydantic error tree on failure) |
+| LLM call per turn | Phase driver | `phase`, `model`, `latency_ms`, `input_tokens`, `output_tokens`, `tool_calls` (count + names) |
+| Tool call rejected (invalid path / type) | Tool dispatcher | `tool`, `args`, `error`, `error_type` |
+| Selective service include / exclude | Compose generator | `service`, `included` (bool), `reason` (e.g., `"has_kb=true"`, `"voice not in selected_channels"`) |
+
+**Never logged:**
+
+- User-typed chat content (PII risk — covered by `.claude/rules/logging-observability.md`)
+- LLM-generated user-facing replies
+- Secret values from the deploy form (API keys, voice credentials, ngrok auth)
+
+**Log levels:**
+
+- `INFO` — normal decisions (phase transitions, fields updated, skeleton writes).
+- `WARNING` — anything that surfaces a deferred error to the user (validation failures the user must resolve, phases invalidated by intake change).
+- `ERROR` — dry-run failure, LLM tool-call validation failure, renderer exception.
+
+A future Grafana dashboard can pivot off these to answer: average turns per project, % of sessions with backtracks, which fields trigger the most invalidations, dry-run pass rate by block. Out of scope for this design; the logging surface is what enables the dashboard.
+
+## 9. Files & line counts
 
 | Today | New design |
 |---|---|
-| `prompts/phases.py` (~1400 lines, all phases as concatenated strings) | `phase_prompts/<phase>.py` × 11 files (~50-100 lines each) + `phases_config.py` (~200 lines) |
+| `prompts/phases.py` (1334 lines, all phases as concatenated strings) | `phase_prompts/<phase>.py` × 11 files (~50-100 lines each) + `phases_config.py` (~200 lines) |
 | `prompts/base.py` (`build_system_prompt`) | Replaced by `phase_driver.py` (~200 lines) |
-| `tools.py` (20 tools, ~1000 lines) | Trimmed to 8 tools, ~300 lines |
+| `tools.py` (20 tools, 1527 lines) | Trimmed to 8 tools, ~300 lines |
 | `accumulator.py` (config dict + ConfigStatus enum) | Kept; add `field_status` dict + helpers |
-| `schemas/domain/*.py` (Pydantic models) | Kept; lightly tightened where the audit doc flagged gaps |
+| `schemas/domain/*.py` (Pydantic models) | Kept; lightly tightened where the runtime schema requires |
 | `conversation.py` (turn handler) | Kept; updated to call `phase_driver.run_turn()` |
 | `renderer.py` (YAML writer) | Kept; add derived-field pass + runtime dry-run |
 | `deployer/compose.py` | Updated for intake-driven service inclusion |
@@ -951,36 +1122,14 @@ A no-KB / no-tools poem bot deploys **9 services** instead of **12**.
 | **New**: `field_rules/*.py` × 7 files (~700-900 lines total) | |
 | **New**: `router.py` (~200 lines) | |
 | **New**: `skeleton.py` (~100 lines) | |
+| **New**: `path_ops.py` (~80 lines) | |
+| `dev-kit/Dockerfile` | +8 lines: COPY each block's `src/schema/config.py` into `/app/dpg_runtime_schemas/<block>/`; create `__init__.py` files. Zero changes to any runtime block. |
 
-Net: ~+1700 lines new, ~-2500 lines deleted/rewritten, net **–800 lines** with much higher determinism and testability.
+Roughly: ~+2300 lines new (phase prompts + new modules), ~-2900 lines deleted (today's `phases.py` + most of today's `tools.py`). Net is close to neutral; the gain is structural, not size — every file is smaller, single-purpose, and individually testable.
 
-### Existing projects
+### Migration of existing projects
 
-Existing projects under `dev-kit/configs/<slug>/` were authored without intake or field_status, and used the old `agent_type` taxonomy in their project metadata. When the wizard opens an existing project:
-
-1. **If `_meta/intake_state.json` is missing**, reverse-engineer intake values from the existing YAML + project metadata:
-
-    | New intake field | Reverse-engineered from |
-    |---|---|
-    | `has_kb` | `knowledge_engine.knowledge.blocks.static_knowledge_base.enabled` |
-    | `has_external_tools` | `agent_core.connectors.read` / `write` / `identity` non-empty |
-    | `is_multi_turn` | `len(agent_core.agent_workflow.subagents) > 1` OR project meta's `agent_type` in `["agentic", "conversational"]` |
-    | `needs_persistent_user_data` | `memory_layer.state.persistent` is not null |
-    | `is_companion_style` | `trust_layer.dignity_check.enabled` is true (which today only happens for `agent_type == "conversational"`) |
-    | `needs_consent` | `agent_core.agent.ask_for_consent` is true |
-    | `has_hitl` | non-empty `trust.input_rules.escalation_topics` OR non-default `trust.hitl.holding_message` |
-    | `selected_channels` | derived from `agent_core.channels.<x>` keys |
-    | `default_language` | `agent_core.preprocessing.language_normalisation.default_language` |
-    | `supported_languages` | `agent_core.preprocessing.language_normalisation.supported_languages` |
-    | `domain_description` | from `_meta/project.json` `description` |
-    | `project_name` | from `_meta/project.json` `name` |
-
-    The old `agent_type` value is discarded after this mapping completes — the new flags capture everything it encoded.
-
-2. **If `_meta/field_status.json` is missing**, mark every chat field as `answered` (best effort — trusts what's on disk). User can edit individual fields through the YAML editor or re-open phases to revise.
-3. Existing projects load with `current_phase = "review"` and the user can selectively re-enter a phase to modify.
-
-This gives existing projects a smooth upgrade path without forcing a regenerate. Each of the 5 existing projects (kkb, employ-bot, youth-schemes, blue-dots-assistant, obsrv-docs-assistant) maps cleanly to a flag combination via the table above.
+**Deferred.** The current dev-kit is not yet stable enough for production projects, so the design treats migration of pre-existing project configs as an out-of-scope, future concern. The new wizard will be developed alongside a fresh set of test projects; once stable, a separate spec will define a reverse-engineering migration that maps legacy YAML + `_meta/project.json` (where present) onto the new `IntakeState`. Until then, projects authored under the old wizard can be re-created from scratch in the new wizard.
 
 ## 10. Testing approach
 
