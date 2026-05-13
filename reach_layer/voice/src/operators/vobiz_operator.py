@@ -10,6 +10,7 @@ Belongs to the Reach Layer / Telephony Adapter block in the DPG framework.
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 
@@ -34,6 +35,21 @@ class LoggingVobizFrameSerializer(VobizFrameSerializer):
     rest of the framework's ``operation`` / ``status`` / ``latency_ms``
     convention. No behavioural divergence from the upstream serializer.
     """
+
+    async def deserialize(self, data: str | bytes):
+        """Skip outbound-track media events so the bot's own TTS audio is never fed into VAD.
+
+        Vobiz reflects the bot's outbound audio back on the same bidirectional WebSocket
+        with ``"track": "outbound"``. Without this filter those frames enter the VAD,
+        fire an InterruptionFrame, and flush the TTS queue before the caller hears anything.
+        """
+        try:
+            msg = json.loads(data) if isinstance(data, (str, bytes)) else {}
+            if msg.get("event") == "media" and msg.get("media", {}).get("track") == "outbound":
+                return None
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        return await super().deserialize(data)
 
     async def _hang_up_call(self):
         """Call upstream hangup and emit a single structured log entry."""
