@@ -1253,7 +1253,23 @@ def update_config_file(slug: str, block: str, body: UpdateConfigRequest) -> dict
     errors = validate_partial(block, parsed)
 
     # Derive status from field_status only (not from validation result).
-    field_status = load_field_status(meta_dir / "field_status.json")
+    try:
+        field_status = load_field_status(meta_dir / "field_status.json")
+    except ValueError as exc:
+        logger.error(
+            "devkit.project.state_corrupt",
+            extra={
+                "operation": "api.update_config_file",
+                "status": "failure",
+                "error": str(exc),
+                "slug": slug,
+            },
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Corrupt field_status.json for '{slug}': {exc}",
+        )
     status = block_completion_status(block, field_status)
 
     return {"block": block, "status": status, "validation_errors": errors}
@@ -1291,7 +1307,23 @@ def reload_configs(slug: str) -> dict[str, Any]:
     # participates in any migrated endpoint after Task C.2).
     _engines.pop(slug, None)
 
-    field_status = load_field_status(meta_dir / "field_status.json")
+    try:
+        field_status = load_field_status(meta_dir / "field_status.json")
+    except ValueError as exc:
+        logger.error(
+            "devkit.project.state_corrupt",
+            extra={
+                "operation": "api.reload_configs",
+                "status": "failure",
+                "error": str(exc),
+                "slug": slug,
+            },
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Corrupt field_status.json for '{slug}': {exc}",
+        )
     return {
         "reloaded": True,
         "slug": slug,
@@ -1619,7 +1651,23 @@ def get_field_status(slug: str) -> dict:
     """
     _load_project_meta(slug)  # raises 404 if project not found
     project_path = _get_project_path(slug)
-    status = load_field_status(project_path / "_meta" / "field_status.json")
+    try:
+        status = load_field_status(project_path / "_meta" / "field_status.json")
+    except ValueError as exc:
+        logger.error(
+            "devkit.project.state_corrupt",
+            extra={
+                "operation": "api.get_field_status",
+                "status": "failure",
+                "error": str(exc),
+                "slug": slug,
+            },
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Corrupt field_status.json for '{slug}': {exc}",
+        )
     logger.info(
         "devkit.field_status.read",
         extra={

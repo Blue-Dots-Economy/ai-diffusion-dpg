@@ -338,6 +338,17 @@ class TestUpdateConfig:
         assert "status" in data
         assert data["status"] in ("complete", "incomplete")
 
+    def test_put_config_500_on_corrupt_field_status(self, client):
+        """PUT /configs/{block} returns 500 when field_status.json contains corrupt JSON."""
+        c, configs = client
+        slug, project_path = _create_project(c, configs)
+        (project_path / "_meta" / "field_status.json").write_text("{not valid json {")
+
+        res = c.put(f"/api/projects/{slug}/configs/agent_core",
+                    json={"content": "agent:\n  persona: hi\n"})
+        assert res.status_code == 500
+        assert res.json()["detail"].startswith("Corrupt field_status.json")
+
 
 # ---------------------------------------------------------------------------
 # POST /api/projects/{slug}/configs/reload
@@ -386,6 +397,16 @@ class TestReloadConfigs:
         if "block_statuses" in data:
             assert isinstance(data["block_statuses"], dict)
             assert set(data["block_statuses"].keys()) == set(BLOCKS)
+
+    def test_reload_500_on_corrupt_field_status(self, client):
+        """POST /configs/reload returns 500 when field_status.json contains corrupt JSON."""
+        c, configs = client
+        slug, project_path = _create_project(c, configs)
+        (project_path / "_meta" / "field_status.json").write_text("{not valid json {")
+
+        res = c.post(f"/api/projects/{slug}/configs/reload")
+        assert res.status_code == 500
+        assert res.json()["detail"].startswith("Corrupt field_status.json")
 
 
 # ---------------------------------------------------------------------------
