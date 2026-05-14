@@ -33,7 +33,6 @@ from pydantic import BaseModel
 from dev_kit.agent.accumulator import BLOCKS, ConfigAccumulator
 from dev_kit.agent.auth import verify_api_key as _verify_api_key
 from dev_kit.agent.block_status import all_block_statuses
-from dev_kit.agent.checkpoints import list_checkpoints, restore_checkpoint
 from dev_kit.agent.conversation import ConversationEngine
 from dev_kit.agent.crypto import decrypt_secrets_dict, get_public_key_spki_b64
 from dev_kit.agent.field_status import load_field_status
@@ -1048,93 +1047,6 @@ def get_history(slug: str) -> list[dict]:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
     entries = load_history(project_path)
     return [{"role": e.role, "content": e.content} for e in entries]
-
-
-# ---------------------------------------------------------------------------
-# Checkpoint routes
-# ---------------------------------------------------------------------------
-
-
-@app.get("/api/projects/{slug}/checkpoints")
-def get_checkpoints(slug: str) -> list[dict]:
-    """List all saved checkpoints for a project."""
-    project_path = _get_project_path(slug)
-    if not project_path.exists():
-        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
-    return list_checkpoints(project_path)
-
-
-@app.post("/api/projects/{slug}/checkpoints/{phase}/restore")
-def restore_checkpoint_route(slug: str, phase: str) -> dict:
-    """Restore the project to a previous checkpoint."""
-    project_path = _get_project_path(slug)
-    try:
-        restored_acc, summary = restore_checkpoint(project_path, phase)
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail=f"Checkpoint '{phase}' not found")
-    engine = _get_engine(slug)
-    engine.accumulator = restored_acc
-    engine._state["phase"] = phase.split("_", 1)[-1] if "_" in phase else phase
-    engine._history = engine._load_history_from_checkpoints()
-    render_all(project_path, restored_acc)
-    engine._save_accumulator()
-    logger.info(
-        "devkit.conversation.checkpoint_restored",
-        extra={
-            "operation": "conversation.checkpoint_restore",
-            "status": "success",
-            "slug": slug,
-            "phase": phase,
-        },
-    )
-    return {"restored": phase, "summary": summary}
-
-
-@app.get("/api/projects/{slug}/checkpoints/{phase}/preview")
-def preview_checkpoint(slug: str, phase: str) -> list[dict]:
-    """Return what configs would look like after restoring a checkpoint, without restoring.
-
-    Loads the checkpoint accumulator from disk and returns a list of
-    ``{block, status, content}`` dicts — the same shape as
-    ``GET /api/projects/{slug}/configs`` — so the frontend can diff the
-    current state against the checkpoint before committing to a restore.
-
-    Args:
-        slug: Project slug.
-        phase: Checkpoint phase directory name, e.g. ``01_overview``.
-
-    Returns:
-        List of dicts with ``block``, ``status``, and ``content`` keys.
-
-    Raises:
-        HTTPException: 404 if the checkpoint directory does not exist.
-    """
-    project_path = _get_project_path(slug)
-    cp_dir = project_path / "_meta" / "checkpoints" / phase
-    if not cp_dir.exists():
-        raise HTTPException(status_code=404, detail=f"Checkpoint '{phase}' not found")
-
-    acc_file = cp_dir / "accumulator.json"
-    try:
-        acc = ConfigAccumulator.from_dict(json.loads(acc_file.read_text()))
-    except (FileNotFoundError, json.JSONDecodeError) as exc:
-        logger.error(
-            "checkpoint_preview_corrupt",
-            extra={"operation": "preview_checkpoint", "status": "failure", "error": str(exc), "latency_ms": 0},
-            exc_info=True,
-        )
-        raise HTTPException(status_code=404, detail=f"Checkpoint '{phase}' accumulator unreadable") from exc
-
-    result = []
-    for block in BLOCKS:
-        data = acc.get_block(block)
-        content = yaml.dump(data, allow_unicode=True, default_flow_style=False) if data else ""
-        result.append({
-            "block": block,
-            "status": acc.get_status(block).value,
-            "content": content,
-        })
-    return result
 
 
 # ---------------------------------------------------------------------------
