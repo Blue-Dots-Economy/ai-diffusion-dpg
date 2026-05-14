@@ -13,7 +13,9 @@ dev-kit/frontend/node_modules
 .venv
 venv
 
-# Unrelated source modules (not needed in the dev-kit image)
+# Unrelated source modules (not needed in the dev-kit image) — exclude by
+# default, then re-include only each block's MergedConfig schema for the
+# pre-deploy dry-run bake-in (see Dockerfile + design doc §3).
 agent_core/
 knowledge_engine/
 memory_layer/
@@ -21,6 +23,17 @@ trust_layer/
 action_gateway/
 reach_layer/
 observability_layer/
+
+# Re-include each block's runtime schema file (and parent dirs) so the
+# COPY statements in dev-kit/Dockerfile resolve. Each schema is
+# self-contained (only imports pydantic/enum/typing/__future__).
+!agent_core/src/schema/config.py
+!trust_layer/src/schema/config.py
+!knowledge_engine/src/schema/config.py
+!action_gateway/src/schema/config.py
+!memory_layer/src/schema/config.py
+!observability_layer/src/schema/config.py
+!reach_layer/base/schema/config.py
 
 # CI/CD and tooling
 .git
