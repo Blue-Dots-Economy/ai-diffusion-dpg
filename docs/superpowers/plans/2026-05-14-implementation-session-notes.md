@@ -401,3 +401,135 @@ When a future session runs out of context and stops, it should:
    - Where to pick up
 3. Commit this file.
 4. Tell the user to start a fresh session with the prompt template above.
+
+---
+
+## Session 2 notes (2026-05-14)
+
+**Branch:** `docs/devkit-config-generation-revamp-design`
+
+**Tasks completed this session:** 10 (Tasks 2.3, 3.1–3.8, 4.1, 4.2) plus 2 code-review cleanup commits.
+
+**Commit log this session (newest first):**
+```
+f908908 feat(dev-kit): add field_status.json read/write helpers
+ce66f3c feat(dev-kit): add build_skeleton walking FIELD_RULES → accumulator + field_status
+ffd2766 chore(dev-kit): clean up Phase 3 FIELD_RULES per code review
+ebdbf21 feat(dev-kit): wire per-block FIELD_RULES modules into aggregate registry
+2918246 feat(dev-kit): encode observability_layer FIELD_RULES from catalogue §7.7
+23be3f7 feat(dev-kit): encode reach_layer FIELD_RULES from catalogue §7.3
+4494935 feat(dev-kit): encode action_gateway FIELD_RULES from catalogue §7.4
+f9e25c5 feat(dev-kit): encode memory_layer FIELD_RULES from catalogue §7.6
+ec3689f feat(dev-kit): encode knowledge_engine FIELD_RULES from catalogue §7.5
+5529224 feat(dev-kit): encode trust_layer FIELD_RULES from catalogue §7.2
+d02386a feat(dev-kit): encode agent_core FIELD_RULES from catalogue §7.1
+0711528 fix(dev-kit): tighten render_all dry-run docs + delay mkdir until validation passes
+be1df52 feat(dev-kit): wire runtime dry-run into render_all before YAML writes
+```
+
+**Aggregate state:**
+- 145 entries across all 7 blocks in `AGGREGATED_FIELD_RULES`
+  (agent_core=73, reach_layer=35, trust_layer=15, memory_layer=10, knowledge_engine=7, observability_layer=3, action_gateway=2)
+- Host suite: 109 passed, 3 skipped (docker-only + Task 2.3 fixture placeholder), 0 fail
+- No regressions outside of the changes themselves
+
+**Next task to pick up:** **Task 5.1 — `on_intake_update` handler** (plan lines 1944-2156).
+
+---
+
+### Session 2 execution discoveries (NOT in plan)
+
+#### 1. The Phase 4 `_eval_rule` needs to be tolerant of placeholder rules
+
+When `build_skeleton` was first implemented, several `predetermined` rules across blocks raised `SyntaxError` or `NameError` from Python's `eval`:
+- `InternalConnectorDef(...)` — Phase 5 renderer helper class, doesn't exist yet
+- `PersistentStateConfig(...)` — same
+- `lang_code(<lang>)` — Phase 5 helper function
+- `f"{slug}_knowledge"` — `slug` undefined in eval namespace
+- `_CANONICAL_DIGNITY_QUESTIONS` — must be imported into the eval namespace
+
+The implementer chose two complementary mitigations in [`skeleton.py`](dev-kit/dev_kit/agent/skeleton.py):
+- `_eval_rule` catches any `Exception` and returns a `_SKIP` sentinel + logs at DEBUG (so a typo isn't completely invisible).
+- `_RULE_EXTRAS` puts `_CANONICAL_DIGNITY_QUESTIONS` into the eval namespace.
+
+**Phase 5 implication:** When the renderer-helper namespace (`slug`, `lang_code`, `project_slug`, `InternalConnectorDef`, `PersistentStateConfig`) gets defined, **add those to `_RULE_EXTRAS` in `skeleton.py`** so the `_SKIP` count drops to zero. Until then, rule typos in field_rules/* will be DEBUG-logged-and-silenced rather than failing loudly.
+
+#### 2. Three latent bugs in Phase 3 FIELD_RULES surfaced via Phase 4 evaluation
+
+The Phase 4 implementer fixed these during Task 4.1 — verified by spec review. All three were genuine bugs the per-block tests didn't catch (the tests assert presence of paths and category metadata, not that the rule expressions parse cleanly):
+
+- `agent_core.py` — `connectors.internal[name=knowledge_retrieval].{name,route,input_schema}` predetermined rules were not gated by `applies_if="has_kb"`, so `set_path` would create the connector even when KB is off. Fixed.
+- `memory_layer.py` — two `applies_if` expressions used uppercase `AND` (Python `eval` treats it as a name → silent skip). Fixed to lowercase `and`.
+- `reach_layer.py` — `voice.recording.consent_purpose` `applies_if` referenced `recording.source` (not an IntakeState field → NameError). Simplified to `'"voice" in selected_channels'`. **Known semantic widening**: this field will now be asked whenever voice is selected, regardless of whether recording is enabled. To fully restore the catalogue intent, either add a `has_recording` IntakeState field or recategorise the field as `deploy`. Tracking as a follow-up.
+
+**Lesson:** Add a Phase 5 (or earlier) test that does `_eval_expr(rule.applies_if, intake_state)` for every FIELD_RULE — would have surfaced all 3 bugs at commit time rather than at Phase 4. Recommend adding an aggregate-test that constructs every plausible IntakeState combination and asserts no FIELD_RULE rule/applies_if raises.
+
+#### 3. `render_all` mkdir-after-validate trade-off
+
+Task 2.3's code-quality review pointed out that `project_path.mkdir` ran *before* the dry-run loop, meaning a failed validation left an empty project directory. Fixed inline in commit `0711528`: `mkdir` moved to after the dry-run pass.
+
+**Side effect to remember in Phase 12 integration:** Any caller that previously could rely on the directory existing after a failed `render_all` will now find it missing. The single caller (`conversation.py:522`) doesn't depend on this; the app.py mounts use the path differently. Confirmed no regressions.
+
+#### 4. `RUNTIME_VALIDATE` empty-payload behaviour confirmed
+
+Session 1 note #3 said `{}` validates against every MergedConfig because every section has a `default_factory`. Confirmed again here — `runtime_validate(block, {})` is a no-op success for all 7 blocks; **`extra="forbid"` rejection of unknown keys is the only host-portable failure path** for the renderer dry-run test. The Task 2.3 placeholder (`test_render_all_fails_when_runtime_rejects`) is correctly skipped pending Phase 4 fixture availability.
+
+#### 5. Phase 3 transcription batch worked well
+
+One implementer dispatch handled all 7 blocks + aggregate in sequence (per session note optimisation in §"Phase 3"). Saved ~30 subagent dispatches. The 3 transcription bugs found later (see #2) were not specific to the batched approach — they were missed by the test shape, not by depth of review.
+
+**Recommendation for future bulk phases (e.g., Phase 6 = 11 phase prompts):** Batched dispatch is fine if (a) the catalogue/source-of-truth file is complete, (b) the test asserts more than presence-of-key, and (c) at least an eval/exec smoke test exists.
+
+#### 6. Inert `pydantic_class` references caught at code review
+
+Three reach_layer deploy entries (`voice.public_url`, `voice.vobiz`, `voice.recording`) listed `pydantic_class="VoiceChannelSection"` for fields that aren't actually in `VoiceChannelSection.model_fields`. Since `pydantic_class` only matters at chat-time prompt injection (deploy fields skip the chat phase), the references were inert but misleading. Cleaned up inline in `ffd2766` — these entries no longer carry `pydantic_class`.
+
+#### 7. `derived` field `compute` expressions use mixed variable names
+
+The catalogue (and now FIELD_RULES) mixes three forms in `compute` strings:
+- `slug(project_name)` — function call
+- `f"{slug}_user_id"` — `slug` as a bare variable
+- `f"{project_slug}_workflow"` — `project_slug` as a bare variable
+
+This is fine as a *declarative* hint, but Phase 9 (Task 9.1, renderer derived-field pass) will need to define exactly which names/functions are injected into the eval namespace. Either normalise the FIELD_RULES `compute` strings to one form at that time, or extend `_RULE_EXTRAS`-style binding for derived fields too. No fix needed now.
+
+#### 8. `field_status.py` hardened beyond the plan
+
+Plan-spec did not require `json.JSONDecodeError` handling on `load_field_status`. The implementer matched the IntakeState pattern (Session 1 note #4) and added it anyway. Two extra tests cover corrupt and non-dict JSON. The contract change is zero risk because both failure modes already returned the same value (empty dict) as the "missing file" case.
+
+---
+
+### Status snapshot for next session
+
+**Completed:** 17 of the plan's tasks (Phase 0.1–0.2, 1.1–1.3, 2.1–2.3, 3.1–3.8, 4.1, 4.2)
+
+**Next:** Phase 5 — Router + intake/config mutation handlers
+
+- Task 5.1: `on_intake_update` handler (plan lines 1944-2156) — the cascade engine; non-trivial
+- Task 5.2: `decide_next_phase` end-of-turn router (plan lines 2158-2311)
+- Task 5.3: `on_config_update` handler (plan lines 2313-2322)
+
+After Phase 5, Phase 6 has 11 phase-prompt modules (consider batching per session-note optimisation) + a phase_driver.
+
+**No blockers.** All Phase 4 tests green; FIELD_RULES population is correct; the Task 2.3 integration test is still placeholder-skipped (will be fleshed out in Task 12.3 per the plan).
+
+**Pickup prompt — paste into a fresh Claude Code session:**
+
+```
+Continue executing the implementation plan at:
+docs/superpowers/plans/2026-05-14-devkit-deterministic-wizard-implementation.md
+
+READ THIS FIRST (execution discoveries through Session 2):
+docs/superpowers/plans/2026-05-14-implementation-session-notes.md
+(scroll to the "Session 2 notes" section)
+
+Status: 17 tasks complete on branch docs/devkit-config-generation-revamp-design
+(through Task 4.2). Pick up at Task 5.1 (on_intake_update handler).
+
+Use the superpowers:subagent-driven-development skill. Dispatch a fresh
+subagent per task, two-stage review (spec → code quality) after each.
+
+When this session's context starts getting tight, stop at the next clean
+phase boundary, commit, and append a "Session 3" section to the session
+notes file describing where to pick up next.
+```
