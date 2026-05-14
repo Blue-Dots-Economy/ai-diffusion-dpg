@@ -151,17 +151,20 @@ dev-kit/dev_kit/agent/
 ├── skeleton.py                  # build_skeleton — accumulator + field_status from FIELD_RULES
 ├── path_ops.py                  # set_path / get_path / clear_path with [name=X] syntax
 ├── field_status.py              # field_status.json read/write
+├── project_state.py             # BLOCKS + empty_accumulator / load_accumulator / save_accumulator
+├── block_status.py              # block_completion_status — derive complete/incomplete from field_status
+├── history.py                   # append/read history.jsonl (replaces ConversationEngine state)
 ├── phase_driver.py              # run_turn — single shared per-turn orchestrator + TOOL_HANDLERS
 ├── tools.py                     # 8 canonical tools (update_intake, update_config, add_subagent...)
 ├── derived_fields.py            # apply_derived_fields — slug-based renderer pass
-├── renderer.py                  # render_all + runtime_validate (dry-run against baked schemas)
+├── renderer.py                  # render_all(project, dict, intake) + runtime_validate (dry-run against baked schemas)
 ├── deployer/compose_generator.py # Per-IntakeState selective compose generation
-├── conversation.py              # Async chat endpoint — delegates to phase_driver.run_turn
+├── conversation.py              # Thin wrapper — chat_turn / get_history (delegates to phase_driver + history)
 └── app.py                       # FastAPI endpoints
 ```
 
 Per-project state is persisted under `dev-kit/configs/<slug>/_meta/`:
-- `intake_state.json`, `current_phase.txt`, `accumulator.json`, `field_status.json`, `deploy_settings.json`
+- `intake_state.json`, `current_phase.json`, `accumulator.json`, `field_status.json`, `history.jsonl`, `deploy_settings.json`
 
 When changing a runtime block's `<block>/src/schema/config.py`, also update the dev-kit mirror at `dev-kit/dev_kit/schemas/domain/<block>.py` and the `FIELD_RULES` entry in `dev-kit/dev_kit/agent/field_rules/<block>.py` per [`.claude/rules/runtime-devkit-sync.md`](.claude/rules/runtime-devkit-sync.md).
 

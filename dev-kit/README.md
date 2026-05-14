@@ -18,15 +18,16 @@ Tier 3 — Live Tuning Dashboard      ⏳ Not yet built
 
 A fully implemented AI agent (powered by Claude) that interviews a domain expert through a structured conversation and generates the complete set of domain YAML files. The agent runs as a FastAPI server with a React + Vite SPA frontend.
 
-**Conversation phases:** overview → language → knowledge → memory → trust → connectors → workflow → review
+**Conversation phases:** tier → overview → language → knowledge → memory → user_state → trust → tools → workflow → observability → reach → review (11 declarative phases, gated by `IntakeState`).
 
 **Key capabilities:**
-- Project creation with slug-based persistence (`configs/<slug>/_meta/project.json` + block YAML files)
-- Phase checkpoint save/restore for rollback to any earlier phase
-- Live YAML editing with CodeMirror-based ConfigEditor and validation
-- Workflow DAG visualisation with @xyflow (FlowGraph component)
-- 10 Claude tools: `set_project_meta`, `update_config`, `set_phase`, `create_subagent`, `update_subagent`, `add_routing_rule`, `update_routing_rule`, `remove_subagent`, `finalize_config`, `rollback_to_checkpoint`
-- 14 REST endpoints on the FastAPI server
+- Deterministic wizard: an `IntakeState` captured up front decides which phases run; `FIELD_RULES` decide each field's category; the router cascades intake changes through dependent fields.
+- Stateless on-disk state model: every project's wizard state lives in `configs/<slug>/_meta/` (`intake_state.json`, `accumulator.json`, `field_status.json`, `current_phase.json`, `history.jsonl`, `deploy_settings.json`). No in-memory `ConversationEngine` or `ConfigAccumulator`.
+- Per-block completion derived on demand from `field_status.json` via `block_status.block_completion_status` (`complete` / `incomplete`).
+- Live YAML editing with CodeMirror-based ConfigEditor and validation.
+- Workflow DAG visualisation with @xyflow (FlowGraph component).
+- 8 canonical tools route every LLM mutation through Pydantic-validated handlers: `update_intake`, `update_config`, `add_subagent`, `update_subagent`, `remove_subagent`, `add_routing_rule`, `update_routing_rule`, `finalize_config`.
+- Pre-deploy dry-run validates every block's merged config against the runtime block's own `MergedConfig` schema (baked into the dev-kit Docker image) before writing any YAML to disk.
 
 **Run the Configuration Agent:**
 ```bash
@@ -86,14 +87,26 @@ dev-kit/
 ├── dev_kit/                      # Python package
 │   ├── loader.py                 # Deep-merge loader (7 typed load functions + validate_all + build_all)
 │   ├── schema.py                 # Pydantic v2 models for all 7 block configs
-│   └── agent/                    # Configuration Agent (Tier 1) — fully implemented
-│       ├── app.py                # FastAPI server (14 REST endpoints)
-│       ├── conversation.py       # ConversationEngine — async Claude chat loop
-│       ├── accumulator.py        # ConfigAccumulator — in-memory config state (dot-notation updates, subagent CRUD)
-│       ├── tools.py              # 10 Claude tool definitions and handlers
-│       ├── checkpoints.py        # Phase checkpoint save/restore
-│       ├── renderer.py           # YAML output writer
-│       └── prompts/              # System prompt builder + per-phase instructions
+│   ├── schemas/                  # Per-block domain mirrors used by the wizard at chat time
+│   └── agent/                    # Configuration Agent (Tier 1) — deterministic wizard
+│       ├── app.py                # FastAPI server (REST endpoints)
+│       ├── conversation.py       # Thin wrapper — chat_turn / get_history
+│       ├── project_state.py     # BLOCKS + empty_accumulator / load_accumulator / save_accumulator
+│       ├── block_status.py      # block_completion_status — derive complete/incomplete from field_status
+│       ├── history.py            # history.jsonl append/read
+│       ├── intake_state.py       # IntakeState dataclass + persistence
+│       ├── field_rules/          # Per-block FIELD_RULES + AGGREGATED_FIELD_RULES registry
+│       ├── phases_config.py      # 11 declarative phase definitions
+│       ├── phase_prompts/        # One module per phase, each exports build()
+│       ├── phase_driver.py       # Per-turn orchestrator + TOOL_HANDLERS
+│       ├── tools.py              # 8 canonical tools (Pydantic-validated handlers)
+│       ├── router.py             # on_intake_update / on_config_update / decide_next_phase
+│       ├── skeleton.py           # build_skeleton — accumulator + field_status from FIELD_RULES
+│       ├── path_ops.py           # set_path / get_path / clear_path with [name=X] syntax
+│       ├── field_status.py       # field_status.json read/write
+│       ├── derived_fields.py     # apply_derived_fields — slug-based renderer pass
+│       ├── renderer.py           # render_all(project, dict, intake) + runtime_validate dry-run
+│       └── deployer/             # Per-IntakeState selective compose generation
 ├── frontend/                     # React + Vite SPA
 │   │                             #   Chat — conversation with the Configuration Agent
 │   │                             #   Dashboard — project overview
