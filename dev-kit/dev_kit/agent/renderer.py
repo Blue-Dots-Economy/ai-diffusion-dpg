@@ -28,8 +28,8 @@ from dev_kit.schemas.validation import validate_partial
 # Path helpers — replicates the _KIT_ROOT pattern from dev_kit/loader.py so
 # this module can find dpg/<block>.yaml without importing private internals.
 # ---------------------------------------------------------------------------
-# renderer.py lives at dev_kit/agent/renderer.py; go up two levels to reach
-# the dev-kit package root (where dpg/ lives).
+# renderer.py lives at dev_kit/agent/renderer.py; go up three levels to reach
+# the dev-kit root (where dpg/ lives).
 _KIT_ROOT: Path = Path(__file__).parent.parent.parent
 
 # ---------------------------------------------------------------------------
@@ -100,11 +100,19 @@ def _load_dpg_defaults(block: str) -> dict[str, Any]:
     rather than raising — the dry-run will then validate the domain data
     alone, which is still better than no validation.
 
+    The framework default YAML files are part of the codebase, so a malformed
+    file is a setup bug; ``yaml.YAMLError`` is allowed to propagate so the
+    operator sees the parser's error directly.
+
     Args:
         block: Block name, e.g. ``"agent_core"``.
 
     Returns:
         Parsed YAML dict, or empty dict if the file is absent or empty.
+
+    Raises:
+        yaml.YAMLError: If the framework defaults file exists but cannot be
+            parsed.
     """
     dpg_path = _KIT_ROOT / "dpg" / f"{block}.yaml"
     if not dpg_path.exists():
@@ -119,8 +127,10 @@ def _prepare_block_data(block: str, accumulator: ConfigAccumulator) -> dict[str,
     Applies all agent_core-specific cleanups (NLU intent sync, subagent
     routing guard, voice-TTS suffix merge, max_tool_rounds clamp) so that
     both ``render_block`` and the pre-deploy dry-run validate exactly the
-    same data that would be written to disk.  This function is **pure** —
-    it does not mutate the accumulator or any shared state.
+    same data that would be written to disk.  Does not mutate accumulator
+    state: ``accumulator.get_block`` returns a fresh deep copy, so the
+    in-place ``setdefault`` calls inside the cleanups stay local to the
+    returned dict.
 
     Args:
         block: Block name.
@@ -234,8 +244,8 @@ def render_all(project_path: Path, accumulator: ConfigAccumulator) -> dict[str, 
     ``None``).  Each block's cleaned domain data is deep-merged with the
     DPG framework defaults from ``dpg/<block>.yaml`` and validated against
     the baked-in ``MergedConfig`` Pydantic schema.  If any block fails
-    validation, a ``RuntimeValidationError`` is raised immediately and
-    **no** YAML files are written.
+    validation, a ``RuntimeValidationError`` is raised on the first failure
+    (subsequent blocks are not validated) and **no** YAML files are written.
 
     On the host (where ``RUNTIME_SCHEMAS`` is ``None``), the dry-run pass is
     skipped entirely and the function behaves as before.
@@ -251,8 +261,6 @@ def render_all(project_path: Path, accumulator: ConfigAccumulator) -> dict[str, 
         RuntimeValidationError: If any block's merged config fails runtime
             schema validation (Docker image only).
     """
-    project_path.mkdir(parents=True, exist_ok=True)
-
     # ------------------------------------------------------------------
     # Step 1 (new): Pre-deploy dry-run — validate each block through the
     # runtime's own baked-in MergedConfig schema before writing any file.
@@ -273,8 +281,11 @@ def render_all(project_path: Path, accumulator: ConfigAccumulator) -> dict[str, 
             runtime_validate(block, merged)
 
     # ------------------------------------------------------------------
-    # Step 2: Write YAML files (only reached when dry-run passes).
+    # Step 2: Write YAML files (only reached when dry-run passes).  The
+    # project directory is created here, after validation, so a failed
+    # dry-run leaves no on-disk side effects for a fresh project.
     # ------------------------------------------------------------------
+    project_path.mkdir(parents=True, exist_ok=True)
     statuses: dict[str, ConfigStatus] = {}
     for block in BLOCKS:
         render_block(project_path, block, accumulator)
