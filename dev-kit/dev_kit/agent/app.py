@@ -716,7 +716,6 @@ def restore_checkpoint_route(slug: str, phase: str) -> dict:
         raise HTTPException(status_code=404, detail=f"Checkpoint '{phase}' not found")
     engine = _get_engine(slug)
     engine.accumulator = restored_acc
-    engine._tool_handler._acc = restored_acc
     engine._state["phase"] = phase.split("_", 1)[-1] if "_" in phase else phase
     engine._history = engine._load_history_from_checkpoints()
     render_all(project_path, restored_acc)

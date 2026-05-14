@@ -80,39 +80,17 @@ def test_chat_with_intake_state_delegates_to_phase_driver(
     assert callable(captured["llm_call"])
 
 
-def test_chat_without_intake_state_uses_legacy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_chat_without_intake_state_raises_conversation_error(
+    tmp_path: Path,
 ) -> None:
-    """When intake_state.json is absent, chat() does NOT call phase_driver.run_turn."""
+    """When intake_state.json is absent, chat() raises ConversationError (legacy projects unsupported)."""
+    from dev_kit.agent.errors import ConversationError
+
     engine = _make_engine(tmp_path)
-    # No intake_state.json written — legacy path should activate.
+    # No intake_state.json written — should raise immediately.
 
-    run_turn_called = {"value": False}
-
-    def _fake_run_turn(*args, **kwargs):
-        run_turn_called["value"] = True
-        return "should-not-be-used"
-
-    monkeypatch.setattr(phase_driver, "run_turn", _fake_run_turn)
-
-    # Patch the legacy LLM call path to avoid touching Anthropic and to short-circuit
-    # the loop quickly. We mock the whole _chat_legacy helper to ensure the dispatch
-    # decision is what we assert on (not the legacy body's internals).
-    async def _legacy_stub(self, user_message):
-        return {
-            "reply": "legacy-reply",
-            "phase": "tier",
-            "config_updates": [],
-            "checkpoint_created": None,
-            "graph": {},
-        }
-
-    monkeypatch.setattr(ConversationEngine, "_chat_legacy", _legacy_stub)
-
-    result = asyncio.run(engine.chat("hello"))
-
-    assert run_turn_called["value"] is False
-    assert result["reply"] == "legacy-reply"
+    with pytest.raises(ConversationError, match="older version"):
+        asyncio.run(engine.chat("hello"))
 
 
 def test_chat_appends_to_history_in_new_path(

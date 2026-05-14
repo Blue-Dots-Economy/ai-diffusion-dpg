@@ -136,14 +136,11 @@ def test_dignity_check_requires_questions_when_enabled():
     assert any("dignity_check" in e and "questions is empty" in e for e in errors)
 
 
-def test_set_phase_blocks_advance_when_intent_filters_drift():
-    """End-to-end: set_phase via tool dispatch must reject phase advance on cross-block error."""
-    from dev_kit.agent.accumulator import ConfigAccumulator
-    from dev_kit.agent.tools import ToolHandler
+def test_intent_filter_drift_detected_by_cross_block_validation():
+    """Cross-block validation must flag KE intent_filters that reference undeclared NLU intents."""
+    from dev_kit.agent.accumulator import BLOCKS, ConfigAccumulator
 
     acc = ConfigAccumulator()
-    # Skip strict per-block validation here so we can plant the inconsistency
-    # without needing to satisfy every required field for both blocks.
     acc._strict_mode = False
     acc.update("agent_core", "preprocessing.nlu_processor", {"intents": ["greeting"]})
     acc.update(
@@ -151,14 +148,12 @@ def test_set_phase_blocks_advance_when_intent_filters_drift():
         "knowledge.blocks.static_knowledge_base",
         {"intent_filters": {"ask_packages": ["info"]}},  # not in NLU intents
     )
-    state = {"phase": "knowledge", "phase_changed": None, "rollback_to": None,
-             "project_meta": {"agent_type": "informational", "slug": "t"}}
-    handler = ToolHandler(acc, state)
-    result = handler.dispatch("set_phase", {"phase": "memory"})
+    blocks = {block: acc.get_block(block) for block in BLOCKS}
+    errors = validate_cross_block(blocks, selected_channels=[], current_phase="knowledge")
 
-    assert "PHASE_ADVANCE_BLOCKED" in result
-    assert "ask_packages" in result
-    assert state["phase_changed"] is None  # phase did NOT advance
+    assert any("ask_packages" in e for e in errors), (
+        "Expected intent-filter drift error to be detected. Got: " + str(errors)
+    )
 
 
 def test_connector_param_renamed_from_tool_is_flagged():
@@ -305,20 +300,18 @@ def test_no_phase_context_runs_every_check():
     assert any("reach_layer.channels.voice" in e for e in errors)
 
 
-def test_set_phase_advances_when_consistent():
-    """When everything is consistent, set_phase advances normally."""
-    from dev_kit.agent.accumulator import ConfigAccumulator
-    from dev_kit.agent.tools import ToolHandler
+def test_no_errors_when_blocks_are_consistent():
+    """When all block configs are consistent, cross-block validation returns no errors."""
+    from dev_kit.agent.accumulator import BLOCKS, ConfigAccumulator
 
     acc = ConfigAccumulator()
     acc._strict_mode = False
-    state = {"phase": "tier", "phase_changed": None, "rollback_to": None,
-             "project_meta": {"agent_type": "informational", "slug": "t"}}
-    handler = ToolHandler(acc, state)
-    result = handler.dispatch("set_phase", {"phase": "overview"})
+    blocks = {block: acc.get_block(block) for block in BLOCKS}
+    errors = validate_cross_block(blocks, selected_channels=[])
 
-    assert "PHASE_ADVANCE_BLOCKED" not in result
-    assert state["phase_changed"] == "overview"
+    assert errors == [], (
+        "Expected no cross-block errors for empty/default accumulator. Got: " + str(errors)
+    )
 
 
 # -- Recording cross-block rules ---------------------------------------------
