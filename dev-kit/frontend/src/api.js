@@ -27,11 +27,6 @@ export const api = {
   chat: (slug, message) => request('POST', `/projects/${slug}/chat`, { message }),
   getHistory: (slug) => request('GET', `/projects/${slug}/history`),
 
-  // Checkpoints
-  getCheckpoints: (slug) => request('GET', `/projects/${slug}/checkpoints`),
-  restoreCheckpoint: (slug, phase) => request('POST', `/projects/${slug}/checkpoints/${phase}/restore`),
-  getCheckpointPreview: (slug, phase) => request('GET', `/projects/${slug}/checkpoints/${phase}/preview`),
-
   // Configs
   getConfigs: (slug) => request('GET', `/projects/${slug}/configs`),
   getConfig: (slug, block) => request('GET', `/projects/${slug}/configs/${block}`),

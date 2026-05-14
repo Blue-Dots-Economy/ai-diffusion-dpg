@@ -6,7 +6,6 @@ import { api } from '../api'
 import PhaseBar from './PhaseBar'
 import FlowGraph from './FlowGraph'
 import YamlPanel from './YamlPanel'
-import DiffModal from './DiffModal'
 import ThemeToggle from './shared/ThemeToggle'
 
 export default function Chat({ slug, onDashboard, onBack }) {
@@ -15,12 +14,10 @@ export default function Chat({ slug, onDashboard, onBack }) {
   const [loading, setLoading] = useState(false)
   const [phase, setPhase] = useState('tier')
   const [graph, setGraph] = useState({ nodes: [], edges: [] })
-  const [checkpoints, setCheckpoints] = useState([])
   const [configs, setConfigs] = useState([])
   const [fieldStatus, setFieldStatus] = useState({})
   const [showGraph, setShowGraph] = useState(false)
   const [showYaml, setShowYaml] = useState(false)
-  const [diffModal, setDiffModal] = useState(null)  // null | {phase, currentConfigs, previewConfigs}
   const bottomRef = useRef(null)
   const textareaRef = useRef(null)
 
@@ -82,7 +79,6 @@ export default function Chat({ slug, onDashboard, onBack }) {
     api.getHistory(slug).then(history => {
       setMessages(history.map(m => ({ role: m.role, text: m.content })))
     }).catch(() => {})
-    api.getCheckpoints(slug).then(setCheckpoints).catch(() => {})
     api.getGraph(slug).then(setGraph).catch(() => {})
     api.getConfigs(slug).then(setConfigs).catch(() => {})
     api.getFieldStatus(slug).then(setFieldStatus).catch(() => {})
@@ -110,9 +106,6 @@ export default function Chat({ slug, onDashboard, onBack }) {
       }
       setPhase(res.phase)
       if (res.graph) setGraph(res.graph)
-      if (res.checkpoint_created) {
-        api.getCheckpoints(slug).then(setCheckpoints).catch(() => {})
-      }
       // Refresh configs after every agent turn
       api.getConfigs(slug).then(setConfigs).catch(() => {})
     } catch (err) {
@@ -120,41 +113,6 @@ export default function Chat({ slug, onDashboard, onBack }) {
     } finally {
       setLoading(false)
       setTimeout(() => textareaRef.current?.focus(), 0)
-    }
-  }
-
-  async function handleRestoreCheckpoint(checkpointPhase) {
-    try {
-      const [currentConfigs, previewConfigs] = await Promise.all([
-        api.getConfigs(slug),
-        api.getCheckpointPreview(slug, checkpointPhase),
-      ])
-      setDiffModal({ phase: checkpointPhase, currentConfigs, previewConfigs })
-    } catch (err) {
-      alert(`Failed to load checkpoint preview: ${err.message}`)
-    }
-  }
-
-  async function confirmRestore() {
-    if (!diffModal) return
-    const checkpointPhase = diffModal.phase
-    setDiffModal(null)
-    try {
-      await api.restoreCheckpoint(slug, checkpointPhase)
-      const [history, project, newGraph, newCheckpoints, newConfigs] = await Promise.all([
-        api.getHistory(slug),
-        api.getProject(slug),
-        api.getGraph(slug),
-        api.getCheckpoints(slug),
-        api.getConfigs(slug),
-      ])
-      setMessages(history.map(m => ({ role: m.role, text: m.content })))
-      setPhase(project.current_phase)
-      setGraph(newGraph)
-      setCheckpoints(newCheckpoints)
-      setConfigs(newConfigs)
-    } catch (err) {
-      alert(`Failed to restore: ${err.message}`)
     }
   }
 
@@ -198,9 +156,6 @@ export default function Chat({ slug, onDashboard, onBack }) {
         }
         setPhase(res.phase)
         if (res.graph) setGraph(res.graph)
-        if (res.checkpoint_created) {
-          api.getCheckpoints(slug).then(setCheckpoints).catch(() => {})
-        }
         api.getConfigs(slug).then(setConfigs).catch(() => {})
       } catch (err) {
         setMessages(m => [...m, { role: 'error', text: `Error: ${err.message}` }])
@@ -248,7 +203,7 @@ export default function Chat({ slug, onDashboard, onBack }) {
 
       <div ref={layoutRef} className="flex flex-1 overflow-hidden min-h-0">
         {/* Phase sidebar */}
-        <PhaseBar currentPhase={phase} checkpoints={checkpoints} onRestoreCheckpoint={handleRestoreCheckpoint} />
+        <PhaseBar currentPhase={phase} />
 
         {/* Chat column — always flexes to fill space the side panel doesn't take. */}
         <div className="flex flex-col flex-1 overflow-hidden min-w-0">
@@ -424,17 +379,6 @@ export default function Chat({ slug, onDashboard, onBack }) {
           </>
         )}
       </div>
-
-      {/* Diff modal — shown before checkpoint restore */}
-      {diffModal && (
-        <DiffModal
-          currentConfigs={diffModal.currentConfigs}
-          previewConfigs={diffModal.previewConfigs}
-          checkpointPhase={diffModal.phase}
-          onConfirm={confirmRestore}
-          onCancel={() => setDiffModal(null)}
-        />
-      )}
     </div>
   )
 }

@@ -7,7 +7,7 @@ const PHASE_LABELS = {
   workflow: 'Workflow', observability: 'Observability', reach: 'Reach Layer', review: 'Review',
 }
 
-export default function PhaseBar({ currentPhase, checkpoints, onRestoreCheckpoint }) {
+export default function PhaseBar({ currentPhase }) {
   const [collapsed, setCollapsed] = useState(false)
   const currentIdx = PHASES.indexOf(currentPhase)
 
@@ -27,27 +27,23 @@ export default function PhaseBar({ currentPhase, checkpoints, onRestoreCheckpoin
           {PHASES.map((phase, i) => {
             const isDone = i < currentIdx
             const isCurrent = phase === currentPhase
-            const checkpoint = checkpoints?.find((cp) => cp.phase.endsWith(phase))
-            const hasCheckpoint = !!checkpoint
 
             return (
-              <button
+              <div
                 key={phase}
-                onClick={() => hasCheckpoint && onRestoreCheckpoint && onRestoreCheckpoint(checkpoint.phase)}
-                disabled={!hasCheckpoint}
-                title={hasCheckpoint ? `Restore to ${PHASE_LABELS[phase]} checkpoint` : PHASE_LABELS[phase]}
+                title={PHASE_LABELS[phase]}
                 className={[
-                  'flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs font-medium text-left whitespace-nowrap transition-colors w-full',
+                  'flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs font-medium text-left whitespace-nowrap w-full',
                   isCurrent ? 'bg-blue-600 text-white' : '',
-                  isDone && !isCurrent ? 'text-gray-300 hover:bg-gray-800 cursor-pointer' : '',
-                  !isDone && !isCurrent ? 'text-gray-600 cursor-default' : '',
+                  isDone && !isCurrent ? 'text-gray-300' : '',
+                  !isDone && !isCurrent ? 'text-gray-600' : '',
                 ].filter(Boolean).join(' ')}
               >
                 <span className="shrink-0 w-3.5 text-center text-[10px]">
                   {isDone ? '✓' : isCurrent ? '●' : '○'}
                 </span>
                 {PHASE_LABELS[phase]}
-              </button>
+              </div>
             )
           })}
         </div>

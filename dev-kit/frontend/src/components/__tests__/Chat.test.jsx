@@ -6,10 +6,9 @@ vi.mock('../../api', () => ({
   api: {
     getProject: vi.fn().mockResolvedValue({ current_phase: 'tools' }),
     getHistory: vi.fn().mockResolvedValue([]),
-    getCheckpoints: vi.fn().mockResolvedValue([]),
     getGraph: vi.fn().mockResolvedValue({ nodes: [], edges: [] }),
     getConfigs: vi.fn().mockResolvedValue([]),
-    chat: vi.fn().mockResolvedValue({ reply: 'ok', phase: 'tools', graph: null, checkpoint_created: null }),
+    chat: vi.fn().mockResolvedValue({ reply: 'ok', phase: 'tools', graph: null }),
   },
 }))
 
@@ -22,7 +21,6 @@ vi.mock('../../ThemeContext', () => ({
 vi.mock('../PhaseBar', () => ({ default: () => null }))
 vi.mock('../FlowGraph', () => ({ default: () => null }))
 vi.mock('../YamlPanel', () => ({ default: () => null }))
-vi.mock('../DiffModal', () => ({ default: () => null }))
 
 import Chat from '../Chat'
 import { api } from '../../api'
