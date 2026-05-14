@@ -277,10 +277,9 @@ class ConfigAccumulator:
     def reset_validation_attempts(self) -> None:
         """Clear all per-section retry counters.
 
-        Called by the ConversationEngine at the start of each new user turn
-        so the retry budget resets between turns. Within a single tool-call
-        loop the counters keep climbing until the LLM produces a valid value
-        or hits the cap.
+        Called at the start of each new user turn so the retry budget resets
+        between turns. Within a single tool-call loop the counters keep
+        climbing until the LLM produces a valid value or hits the cap.
         """
         self._validation_attempts.clear()
 

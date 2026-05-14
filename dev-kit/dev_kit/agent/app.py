@@ -4,8 +4,7 @@ dev-kit/dev_kit/agent/app.py
 FastAPI application for the DPG conversation agent.
 
 Serves the conversation API and the React SPA (built frontend output
-mounted at agent/static/). Manages an in-memory registry of
-ConversationEngine instances keyed by project slug.
+mounted at agent/static/).
 """
 from __future__ import annotations
 
@@ -33,7 +32,6 @@ from pydantic import BaseModel
 from dev_kit.agent.accumulator import BLOCKS, ConfigAccumulator
 from dev_kit.agent.auth import verify_api_key as _verify_api_key
 from dev_kit.agent.block_status import all_block_statuses, block_completion_status
-from dev_kit.agent.conversation import ConversationEngine
 from dev_kit.agent.crypto import decrypt_secrets_dict, get_public_key_spki_b64
 from dev_kit.agent.field_status import load_field_status
 from dev_kit.agent.history import load_history
@@ -81,7 +79,6 @@ if not _api_key:
         "Set it before starting the server."
     )
 _anthropic_client = anthropic.AsyncAnthropic(api_key=_api_key)
-_engines: dict[str, ConversationEngine] = {}
 
 logger = logging.getLogger(__name__)
 
@@ -480,15 +477,6 @@ def _load_project_meta(slug: str) -> dict:
         raise HTTPException(status_code=500, detail="Project metadata is corrupt") from exc
 
 
-def _get_engine(slug: str) -> ConversationEngine:
-    if slug not in _engines:
-        project_path = _get_project_path(slug)
-        if not project_path.exists():
-            raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
-        _engines[slug] = ConversationEngine(project_path, _anthropic_client)
-    return _engines[slug]
-
-
 # ---------------------------------------------------------------------------
 # Dev-kit LLM call builder (used by the migrated /chat endpoint)
 # ---------------------------------------------------------------------------
@@ -545,6 +533,65 @@ def _build_devkit_llm_call():
 # ---------------------------------------------------------------------------
 # Project-route helpers (stateless, per-request)
 # ---------------------------------------------------------------------------
+
+
+def _reach_channels_from_accumulator(accumulator: dict[str, dict]) -> list[str]:
+    """Return the channels configured in reach_layer YAML; fall back to ['web'].
+
+    Used as a fallback when the project predates the deterministic wizard and
+    has no intake_state.json.  Mirrors the logic of
+    ``ConfigAccumulator.get_reach_channel_selection_or_default``.
+
+    Args:
+        accumulator: The full accumulator dict (one entry per block).
+
+    Returns:
+        List of non-null channel names from ``reach_layer.reach_layer.channels``,
+        or ``['web']`` when none are configured.
+    """
+    channels_cfg = (
+        accumulator.get("reach_layer", {})
+        .get("reach_layer", {})
+        .get("channels", {})
+    )
+    inferred = [ch for ch, cfg in channels_cfg.items() if cfg is not None]
+    return inferred if inferred else ["web"]
+
+
+def _workflow_graph(accumulator: dict[str, dict]) -> dict:
+    """Return the subagent workflow as nodes and edges for the frontend graph.
+
+    Mirrors ``ConfigAccumulator.get_workflow_graph`` so the workflow endpoint
+    can operate directly on the raw accumulator dict without constructing a
+    ``ConfigAccumulator`` instance.
+
+    Args:
+        accumulator: The full accumulator dict (one entry per block).
+
+    Returns:
+        Dict with ``nodes`` (list of ``{id, name, type}``) and
+        ``edges`` (list of ``{from, to, intent}``).
+    """
+    subagents = (
+        accumulator.get("agent_core", {})
+        .get("agent_workflow", {})
+        .get("subagents", [])
+    )
+    nodes = []
+    edges = []
+    for sa in subagents:
+        node_type = (
+            "start" if sa.get("is_start")
+            else ("end" if sa.get("is_terminal") else "normal")
+        )
+        nodes.append({"id": sa["id"], "name": sa.get("name", sa["id"]), "type": node_type})
+        for rule in sa.get("routing", []):
+            edges.append({
+                "from": sa["id"],
+                "to": rule.get("next_subagent_id", ""),
+                "intent": rule.get("intent", ""),
+            })
+    return {"nodes": nodes, "edges": edges}
 
 
 def _required_secrets_from_accumulator(accumulator: dict[str, dict]) -> list[dict]:
@@ -817,9 +864,8 @@ def get_project(slug: str) -> dict:
     """Get project metadata and config statuses.
 
     Loads all state per-request from disk (accumulator, field_status,
-    intake_state) rather than via the legacy ConversationEngine registry.
-    Legacy projects without intake_state.json return partial metadata without
-    crashing.
+    intake_state). Legacy projects without intake_state.json return partial
+    metadata without crashing.
 
     Args:
         slug: Project slug.
@@ -956,10 +1002,9 @@ def delete_project(slug: str) -> dict:
 async def chat(slug: str, body: ChatRequest) -> dict:
     """Send a user message and receive the agent response.
 
-    Delegates to ``phase_driver.run_turn`` directly without going through
-    ``ConversationEngine``. The phase_driver appends user/assistant entries
-    to ``_meta/history.jsonl`` and persists all state (intake, accumulator,
-    field_status, current_phase) on success.
+    Delegates to ``phase_driver.run_turn``. The phase_driver appends
+    user/assistant entries to ``_meta/history.jsonl`` and persists all state
+    (intake, accumulator, field_status, current_phase) on success.
 
     Args:
         slug: Project slug.
@@ -1035,8 +1080,7 @@ async def chat(slug: str, body: ChatRequest) -> dict:
 def get_history(slug: str) -> list[dict]:
     """Return the chat history for the project.
 
-    Reads ``_meta/history.jsonl`` directly; does not consult the legacy
-    ConversationEngine cache.
+    Reads ``_meta/history.jsonl`` directly.
 
     Args:
         slug: Project slug.
@@ -1286,7 +1330,6 @@ def reload_configs(slug: str) -> dict[str, Any]:
     Reads each block's ``.yaml`` file from disk via ``load_block_from_file``
     and writes a fresh ``accumulator.json``.  Useful after the operator
     hand-edits YAML files outside the UI (e.g. via an editor or ``git pull``).
-    Also evicts any cached legacy ConversationEngine to prevent stale state.
 
     Args:
         slug: Project slug.
@@ -1308,10 +1351,6 @@ def reload_configs(slug: str) -> dict[str, Any]:
     for block in BLOCKS:
         accumulator[block] = load_block_from_file(project_path, block)
     _save_accumulator_path(meta_dir / "accumulator.json", accumulator)
-
-    # Evict any cached legacy engine (defensive; legacy registry no longer
-    # participates in any migrated endpoint after Task C.2).
-    _engines.pop(slug, None)
 
     try:
         field_status = load_field_status(meta_dir / "field_status.json")
@@ -1425,7 +1464,24 @@ def pre_deploy_validate(slug: str) -> dict[str, Any]:
         _intake = load_intake_state(_intake_path)
         selected_channels = list(_intake.selected_channels)
     except FileNotFoundError:
-        selected_channels = _get_engine(slug).accumulator.get_reach_channel_selection_or_default()
+        try:
+            legacy_acc = load_accumulator(CONFIGS_DIR / slug / "_meta" / "accumulator.json")
+        except ValueError as exc:
+            logger.error(
+                "devkit.deploy.accumulator_corrupt",
+                extra={
+                    "operation": "api.deploy_validate",
+                    "status": "failure",
+                    "error": str(exc),
+                    "slug": slug,
+                },
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"Corrupt accumulator.json for '{slug}': {exc}",
+            ) from exc
+        selected_channels = _reach_channels_from_accumulator(legacy_acc)
 
     # 1. Full Pydantic validation per block using merged (dpg + domain) config.
     for block, model_cls in _MODELS.items():
@@ -1512,9 +1568,42 @@ def pre_deploy_validate(slug: str) -> dict[str, Any]:
 
 @app.get("/api/projects/{slug}/workflow/graph")
 def get_workflow_graph(slug: str) -> dict:
-    """Return the subagent workflow as nodes and edges for the frontend graph."""
-    engine = _get_engine(slug)
-    return engine.accumulator.get_workflow_graph()
+    """Return the subagent workflow as nodes and edges for the frontend graph.
+
+    Reads the accumulator from disk and builds the workflow graph from the
+    ``agent_core.agent_workflow.subagents`` list.
+
+    Args:
+        slug: Project slug.
+
+    Returns:
+        Dict with ``nodes`` (list of ``{id, name, type}``) and
+        ``edges`` (list of ``{from, to, intent}``).
+
+    Raises:
+        HTTPException 404: If the project does not exist.
+        HTTPException 500: If ``accumulator.json`` is corrupt.
+    """
+    _load_project_meta(slug)  # raises 404 if project not found
+    meta_dir = _get_project_path(slug) / "_meta"
+    try:
+        accumulator = load_accumulator(meta_dir / "accumulator.json")
+    except ValueError as exc:
+        logger.error(
+            "devkit.workflow_graph.accumulator_corrupt",
+            extra={
+                "operation": "api.get_workflow_graph",
+                "status": "failure",
+                "error": str(exc),
+                "slug": slug,
+            },
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Corrupt accumulator.json for '{slug}': {exc}",
+        ) from exc
+    return _workflow_graph(accumulator)
 
 
 # ---------------------------------------------------------------------------
@@ -1550,11 +1639,29 @@ def get_deploy_fields(slug: str) -> dict:
 
     Raises:
         HTTPException: 404 if the project does not exist.
+        HTTPException: 500 if ``accumulator.json`` is corrupt.
     """
     from dev_kit.agent.field_rules import AGGREGATED_FIELD_RULES
 
     _load_project_meta(slug)  # raises 404 if project not found
-    engine = _get_engine(slug)
+    meta_dir = _get_project_path(slug) / "_meta"
+    try:
+        accumulator = load_accumulator(meta_dir / "accumulator.json")
+    except ValueError as exc:
+        logger.error(
+            "devkit.deploy_fields.accumulator_corrupt",
+            extra={
+                "operation": "api.get_deploy_fields",
+                "status": "failure",
+                "error": str(exc),
+                "slug": slug,
+            },
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Corrupt accumulator.json for '{slug}': {exc}",
+        ) from exc
 
     fields = []
     for path, rule in AGGREGATED_FIELD_RULES.items():
@@ -1565,7 +1672,7 @@ def get_deploy_fields(slug: str) -> dict:
         parts = path.split(".", 1)
         block = parts[0]
         field_path = parts[1] if len(parts) > 1 else ""
-        block_data = engine.accumulator.get_block(block) or {}
+        block_data = accumulator.get(block, {}) or {}
         # Walk nested keys using dot notation.
         current_val: Any = block_data
         for key in field_path.split("."):

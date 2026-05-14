@@ -6,7 +6,7 @@ Typed exceptions for the dev-kit agent.
 
 
 class ConversationError(Exception):
-    """Raised when the ConversationEngine chat loop fails unrecoverably."""
+    """Raised when the chat loop or phase_driver fails unrecoverably."""
 
 
 class ConfigurationError(Exception):

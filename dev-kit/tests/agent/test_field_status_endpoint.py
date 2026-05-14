@@ -31,7 +31,6 @@ from dev_kit.agent.field_status import save_field_status
 def tmp_client(tmp_path, monkeypatch):
     """Return a TestClient with CONFIGS_DIR redirected to tmp_path."""
     monkeypatch.setattr(app_module, "CONFIGS_DIR", tmp_path)
-    app_module._engines.clear()
     return TestClient(app_module.app), tmp_path
 
 

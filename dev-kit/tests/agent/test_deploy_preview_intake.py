@@ -94,7 +94,6 @@ def tmp_client(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "CONFIGS_DIR", tmp_path)
     monkeypatch.setattr(app_module, "DPG_DIR", dpg_tmp)
     monkeypatch.setenv("DEVKIT_DPG_SCHEMA_STRICT", "0")
-    app_module._engines.clear()
     return TestClient(app_module.app), tmp_path
 
 

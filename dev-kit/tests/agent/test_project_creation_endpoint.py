@@ -32,7 +32,6 @@ from dev_kit.agent.intake_state import load_intake_state
 def client(tmp_path, monkeypatch):
     """Return a TestClient with CONFIGS_DIR redirected to tmp_path."""
     monkeypatch.setattr(app_module, "CONFIGS_DIR", tmp_path)
-    app_module._engines.clear()
     return TestClient(app_module.app)
 
 

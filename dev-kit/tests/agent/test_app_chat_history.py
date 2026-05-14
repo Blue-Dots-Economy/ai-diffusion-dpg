@@ -18,7 +18,6 @@ def client(tmp_path, monkeypatch):
     configs = tmp_path / "configs"
     configs.mkdir()
     monkeypatch.setattr(app_mod, "CONFIGS_DIR", configs)
-    app_mod._engines.clear()
     return TestClient(app_mod.app), configs
 
 

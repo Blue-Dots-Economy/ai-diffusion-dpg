@@ -25,8 +25,6 @@ def client(tmp_path, monkeypatch):
     configs = tmp_path / "configs"
     configs.mkdir()
     monkeypatch.setattr(app_mod, "CONFIGS_DIR", configs)
-    # Clear engine registry to ensure new state is loaded per request.
-    app_mod._engines.clear()
     return TestClient(app_mod.app), configs
 
 
@@ -60,14 +58,13 @@ def test_create_project_writes_intake_and_accumulator(client):
 
 
 def test_create_project_does_not_seed_engine_registry(client):
-    """POST /api/projects must NOT add an entry to _engines."""
-    import dev_kit.agent.app as app_mod
-
+    """POST /api/projects must NOT add an entry to any engine registry."""
     c, configs = client
     res = c.post("/api/projects", json=_make_create_body())
     assert res.status_code == 200
-    slug = res.json()["slug"]
-    assert slug not in app_mod._engines
+    # No in-memory registry exists anymore; the project endpoint is stateless.
+    # Just assert the create call succeeded.
+    assert res.json()["slug"]
 
 
 def test_create_project_writes_placeholder_yamls(client):
@@ -164,22 +161,13 @@ def test_get_project_azure_storage_defaults_false(client):
 
 
 def test_get_project_does_not_call_get_engine(client, monkeypatch):
-    """GET /api/projects/{slug} does not invoke _get_engine."""
-    import dev_kit.agent.app as app_mod
-
+    """GET /api/projects/{slug} is stateless — no engine registry is consulted."""
     c, configs = client
     slug = c.post("/api/projects", json=_make_create_body()).json()["slug"]
-
-    called = []
-
-    def _mock_get_engine(s):
-        called.append(s)
-        raise AssertionError("_get_engine should not be called by get_project")
-
-    monkeypatch.setattr(app_mod, "_get_engine", _mock_get_engine)
+    # _get_engine no longer exists; just assert the endpoint is stateless
+    # by verifying it works correctly without any in-memory state.
     res = c.get(f"/api/projects/{slug}")
     assert res.status_code == 200
-    assert not called
 
 
 def test_get_project_legacy_project_without_intake_state(client):
