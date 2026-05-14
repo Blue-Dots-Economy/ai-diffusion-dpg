@@ -21,7 +21,7 @@ BLOCKS = (
     "action_gateway", "reach_layer", "observability_layer",
 )
 
-# Sentinel returned by _eval_rule when evaluation fails (e.g. placeholder rule).
+# Sentinel returned by eval_rule when evaluation fails (e.g. placeholder rule).
 _SKIP = object()
 
 # Extra constants available to predetermined rule expressions. These are
