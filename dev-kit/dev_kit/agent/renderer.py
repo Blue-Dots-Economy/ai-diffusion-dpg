@@ -3,16 +3,34 @@ dev-kit/dev_kit/agent/renderer.py
 
 Writes accumulated config values to YAML files in a project directory.
 Computes config status based on data presence and block type.
+
+When running inside the dev-kit Docker image, ``render_all`` performs a
+pre-deploy dry-run before writing any YAML file: each block's domain data is
+deep-merged with the framework defaults from ``dpg/<block>.yaml`` and
+validated against the baked-in ``MergedConfig`` Pydantic class.  This catches
+schema drift between what the wizard generates and what the runtime block would
+accept at boot — well before ``docker compose up`` is attempted.
+
+When running on the host (no baked-in schemas), the dry-run pass is a no-op.
 """
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import yaml
 
 from dev_kit.agent.accumulator import BLOCKS, DRAFT_BLOCKS, ConfigAccumulator, ConfigStatus
 from dev_kit.agent.channel_tts import merge_voice_tts_into_suffix, strip_voice_tts_from_suffix
 from dev_kit.schemas.validation import validate_partial
+
+# ---------------------------------------------------------------------------
+# Path helpers — replicates the _KIT_ROOT pattern from dev_kit/loader.py so
+# this module can find dpg/<block>.yaml without importing private internals.
+# ---------------------------------------------------------------------------
+# renderer.py lives at dev_kit/agent/renderer.py; go up two levels to reach
+# the dev-kit package root (where dpg/ lives).
+_KIT_ROOT: Path = Path(__file__).parent.parent.parent
 
 # ---------------------------------------------------------------------------
 # Baked-in runtime schemas (available only inside the dev-kit Docker image).
@@ -44,6 +62,93 @@ except ImportError:
 
 _DRAFT_HEADER = "# STATUS: draft — block template not yet finalized\n"
 _STALE_HEADER_TPL = "# STATUS: stale — validation errors detected:\n{errors}\n"
+
+
+# ---------------------------------------------------------------------------
+# Deep-merge helper (mirrors dev_kit/loader.py::_deep_merge and
+# dev_kit/agent/accumulator.py::_deep_merge — not imported because both are
+# private; duplication is intentional per the task design notes).
+# ---------------------------------------------------------------------------
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge *override* into *base*, returning a new dict.
+
+    Lists in the override replace lists in the base entirely — the same
+    semantics used by the loader and accumulator helpers.
+
+    Args:
+        base: Base dictionary.
+        override: Dictionary whose values take precedence.
+
+    Returns:
+        New merged dictionary; neither input is mutated.
+    """
+    result = base.copy()
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def _load_dpg_defaults(block: str) -> dict[str, Any]:
+    """Load the DPG framework defaults for a given block.
+
+    Reads ``dpg/<block>.yaml`` relative to the dev-kit root.  If the file
+    does not exist (e.g. during tests on the host), returns an empty dict
+    rather than raising — the dry-run will then validate the domain data
+    alone, which is still better than no validation.
+
+    Args:
+        block: Block name, e.g. ``"agent_core"``.
+
+    Returns:
+        Parsed YAML dict, or empty dict if the file is absent or empty.
+    """
+    dpg_path = _KIT_ROOT / "dpg" / f"{block}.yaml"
+    if not dpg_path.exists():
+        return {}
+    with dpg_path.open("r") as fh:
+        return yaml.safe_load(fh) or {}
+
+
+def _prepare_block_data(block: str, accumulator: ConfigAccumulator) -> dict[str, Any]:
+    """Return the cleaned, render-ready domain data for a single block.
+
+    Applies all agent_core-specific cleanups (NLU intent sync, subagent
+    routing guard, voice-TTS suffix merge, max_tool_rounds clamp) so that
+    both ``render_block`` and the pre-deploy dry-run validate exactly the
+    same data that would be written to disk.  This function is **pure** —
+    it does not mutate the accumulator or any shared state.
+
+    Args:
+        block: Block name.
+        accumulator: Config accumulator to read from.
+
+    Returns:
+        Cleaned domain data dict (internal ``_``-prefixed keys stripped), or
+        an empty dict if the block has no data yet.
+    """
+    data = accumulator.get_block(block)
+    if not data:
+        return {}
+
+    # Strip internal accumulator keys (prefixed with _).
+    data = {k: v for k, v in data.items() if not k.startswith("_")}
+    if not data:
+        return {}
+
+    # agent_core-specific cleanups.
+    if block == "agent_core":
+        data = _sync_agent_core_intents(data)
+        data = _ensure_subagent_routing(data)
+        data = merge_voice_tts_into_suffix(data)
+        agent_cfg = data.get("agent", {})
+        if isinstance(agent_cfg.get("max_tool_rounds"), int) and agent_cfg["max_tool_rounds"] < 1:
+            agent_cfg["max_tool_rounds"] = 1
+
+    return data
 
 
 def _sync_agent_core_intents(data: dict) -> dict:
@@ -124,14 +229,52 @@ def _ensure_subagent_routing(data: dict) -> dict:
 def render_all(project_path: Path, accumulator: ConfigAccumulator) -> dict[str, ConfigStatus]:
     """Write all 7 block config YAML files and return their statuses.
 
+    Before writing any YAML file, performs a pre-deploy dry-run when running
+    inside the dev-kit Docker image (i.e. when ``RUNTIME_SCHEMAS`` is not
+    ``None``).  Each block's cleaned domain data is deep-merged with the
+    DPG framework defaults from ``dpg/<block>.yaml`` and validated against
+    the baked-in ``MergedConfig`` Pydantic schema.  If any block fails
+    validation, a ``RuntimeValidationError`` is raised immediately and
+    **no** YAML files are written.
+
+    On the host (where ``RUNTIME_SCHEMAS`` is ``None``), the dry-run pass is
+    skipped entirely and the function behaves as before.
+
     Args:
         project_path: Absolute path to the project's configs directory.
         accumulator: Current config accumulator.
 
     Returns:
         Dict of block name → ConfigStatus after writing.
+
+    Raises:
+        RuntimeValidationError: If any block's merged config fails runtime
+            schema validation (Docker image only).
     """
     project_path.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Step 1 (new): Pre-deploy dry-run — validate each block through the
+    # runtime's own baked-in MergedConfig schema before writing any file.
+    # This catches anything the dev-kit mirror accepted but the runtime
+    # would reject at boot.  Runs only inside the Docker image where
+    # RUNTIME_SCHEMAS is populated; is a no-op on the host.
+    # ------------------------------------------------------------------
+    if RUNTIME_SCHEMAS is not None:
+        for block in BLOCKS:
+            if block not in RUNTIME_SCHEMAS:
+                continue
+            domain_data = _prepare_block_data(block, accumulator)
+            if not domain_data:
+                # No domain data yet — skip; runtime would use defaults alone.
+                continue
+            dpg_defaults = _load_dpg_defaults(block)
+            merged = _deep_merge(dpg_defaults, domain_data)
+            runtime_validate(block, merged)
+
+    # ------------------------------------------------------------------
+    # Step 2: Write YAML files (only reached when dry-run passes).
+    # ------------------------------------------------------------------
     statuses: dict[str, ConfigStatus] = {}
     for block in BLOCKS:
         render_block(project_path, block, accumulator)
@@ -153,31 +296,16 @@ def render_block(project_path: Path, block: str, accumulator: ConfigAccumulator)
         block: Block name.
         accumulator: Config accumulator to read from and update status in.
     """
-    data = accumulator.get_block(block)
     out_path = project_path / f"{block}.yaml"
 
+    # Delegate all cleanup logic to _prepare_block_data so the dry-run in
+    # render_all and the actual write path always see identical data.
+    data = _prepare_block_data(block, accumulator)
+
     if not data:
         out_path.write_text(f"# {block} — no config generated yet\n")
         accumulator.set_status(block, ConfigStatus.PENDING)
         return
-
-    # Strip internal accumulator keys (prefixed with _) before writing.
-    data = {k: v for k, v in data.items() if not k.startswith("_")}
-    if not data:
-        out_path.write_text(f"# {block} — no config generated yet\n")
-        accumulator.set_status(block, ConfigStatus.PENDING)
-        return
-
-    # For agent_core, ensure NLU intents cover all workflow routing intents
-    # and merge voice TTS rules into the system prompt suffix.
-    if block == "agent_core":
-        data = _sync_agent_core_intents(data)
-        data = _ensure_subagent_routing(data)
-        data = merge_voice_tts_into_suffix(data)
-        # Guard: runtime schema requires max_tool_rounds >= 1; clamp if LLM wrote 0.
-        agent_cfg = data.get("agent", {})
-        if isinstance(agent_cfg.get("max_tool_rounds"), int) and agent_cfg["max_tool_rounds"] < 1:
-            agent_cfg["max_tool_rounds"] = 1
 
     yaml_content = yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
 

@@ -49,3 +49,13 @@ def test_runtime_validation_error_attributes():
     assert err.pydantic_error is cause
     assert "agent_core" in str(err)
     assert "inner" in str(err)
+
+
+def test_render_all_fails_when_runtime_rejects():
+    """If any block's merged YAML is runtime-invalid, render_all raises.
+
+    Skipped at this stage: a full project_path + accumulator + intake_state
+    fixture requires `build_skeleton` (Phase 4). The integration test is
+    completed in Task 12.3 (end-to-end wizard flow).
+    """
+    pytest.skip("integration fixture available after Task 4.1 build_skeleton lands")
