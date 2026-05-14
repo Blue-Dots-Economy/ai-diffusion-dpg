@@ -9,10 +9,13 @@ docs/superpowers/specs/2026-05-13-devkit-deterministic-wizard-design.md §4
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+import logging
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
+
+logger = logging.getLogger(__name__)
 
 Channel = Literal["web", "voice"]
 
@@ -54,6 +57,10 @@ class IntakeState:
 
     def __post_init__(self) -> None:
         # Validate Channel literal manually since dataclass doesn't enforce it.
+        if not self.selected_channels:
+            raise ValueError(
+                "selected_channels must be non-empty; pick at least one of 'web' or 'voice'"
+            )
         for ch in self.selected_channels:
             if ch not in ("web", "voice"):
                 raise ValueError(
@@ -61,7 +68,11 @@ class IntakeState:
                 )
 
     def touch(self) -> None:
-        """Update the modification timestamp."""
+        """Update `updated_at` to the current UTC ISO timestamp.
+
+        Callers must invoke this before `save_intake_state` to record the
+        modification time on disk. Returns None; mutates in-place.
+        """
         self.updated_at = datetime.now(timezone.utc).isoformat()
 
 
@@ -88,8 +99,30 @@ def load_intake_state(path: Path) -> IntakeState:
 
     Raises:
         FileNotFoundError: If the file does not exist.
+        ValueError: If the file contains corrupt JSON or the JSON payload does
+            not match the IntakeState schema (missing or extra fields).
     """
     if not path.exists():
         raise FileNotFoundError(f"intake state not found at {path}")
-    payload = json.loads(path.read_text())
-    return IntakeState(**payload)
+
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        logger.error(
+            "load_intake_state",
+            extra={"operation": "load_intake_state", "status": "failure", "error": str(exc)},
+        )
+        raise ValueError(
+            f"Corrupt JSON in intake state file {path}: {exc}"
+        ) from exc
+
+    try:
+        return IntakeState(**payload)
+    except TypeError as exc:
+        logger.error(
+            "load_intake_state",
+            extra={"operation": "load_intake_state", "status": "failure", "error": str(exc)},
+        )
+        raise ValueError(
+            f"Schema mismatch loading intake state from {path}: {exc}"
+        ) from exc
