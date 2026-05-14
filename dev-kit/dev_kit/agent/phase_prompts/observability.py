@@ -1,7 +1,8 @@
 """Phase prompt builder: observability.
 
 Configures outcome lifecycle states, quality metrics, and the domain tag used
-in all OTel spans for the DPG Observability Layer.
+in all OTel spans for the DPG Observability Layer. Part of the dev-kit
+deterministic wizard's phase-prompt system.
 
 See design §6 of
 docs/superpowers/specs/2026-05-13-devkit-deterministic-wizard-design.md

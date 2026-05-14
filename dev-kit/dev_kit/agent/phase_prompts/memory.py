@@ -1,7 +1,8 @@
 """Phase prompt builder: memory.
 
 Configures Memory Layer session state, persistent graph, user data
-persistence mode, and re-engagement triggers.
+persistence mode, and re-engagement triggers. Part of the dev-kit
+deterministic wizard's phase-prompt system.
 
 See design §6 of
 docs/superpowers/specs/2026-05-13-devkit-deterministic-wizard-design.md

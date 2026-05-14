@@ -2,7 +2,8 @@
 
 Orchestrates the 4-turn yes/no intake chat that captures 7 binary flags
 (has_kb, has_external_tools, is_multi_turn, needs_persistent_user_data,
-is_companion_style, needs_consent, has_hitl).
+is_companion_style, needs_consent, has_hitl). Part of the dev-kit
+deterministic wizard's phase-prompt system.
 
 The 5 form-captured fields (project_name, domain_description,
 selected_channels, default_language, supported_languages) are already set

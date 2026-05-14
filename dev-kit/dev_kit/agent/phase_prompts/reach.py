@@ -1,7 +1,8 @@
 """Phase prompt builder: reach.
 
 Configures the Reach Layer channel adapters — voice (Raya TTS/STT), web UI
-branding, and any other selected channels.
+branding, and any other selected channels. Part of the dev-kit deterministic
+wizard's phase-prompt system.
 
 See design §6 of
 docs/superpowers/specs/2026-05-13-devkit-deterministic-wizard-design.md

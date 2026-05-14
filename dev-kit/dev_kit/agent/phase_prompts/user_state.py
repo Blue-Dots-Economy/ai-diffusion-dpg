@@ -1,7 +1,8 @@
 """Phase prompt builder: user_state.
 
 Defines the user's mental journey — cognitive/emotional states and per-state
-behavioural guidance for the Agent Core's user-state model.
+behavioural guidance for the Agent Core's user-state model. Part of the
+dev-kit deterministic wizard's phase-prompt system.
 
 Required for multi-turn companion-style agents; skipped for others.
 

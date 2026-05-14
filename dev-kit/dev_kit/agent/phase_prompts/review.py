@@ -1,7 +1,7 @@
 """Phase prompt builder: review.
 
-Final phase of the deterministic wizard. Runs a full schema-coverage check
-across all 7 DPG blocks and repairs any empty required fields before the
+Final phase of the dev-kit deterministic wizard. Runs a full schema-coverage
+check across all 7 DPG blocks and repairs any empty required fields before the
 wizard is declared complete.
 
 See design §6 of

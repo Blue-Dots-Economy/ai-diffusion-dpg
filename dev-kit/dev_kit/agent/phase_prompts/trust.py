@@ -2,7 +2,8 @@
 
 Configures the Trust Layer safety gate — blocked content rules, prohibited
 language, topic firewall, escalation rules, and (for companion-style agents)
-the pre-response dignity check.
+the pre-response dignity check. Part of the dev-kit deterministic wizard's
+phase-prompt system.
 
 See design §6 of
 docs/superpowers/specs/2026-05-13-devkit-deterministic-wizard-design.md

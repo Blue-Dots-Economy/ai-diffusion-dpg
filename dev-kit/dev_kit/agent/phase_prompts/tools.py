@@ -1,7 +1,8 @@
 """Phase prompt builder: tools.
 
 Declares every external tool the agent can invoke via the Action Gateway,
-with strict 6-field invocation contracts the LLM must follow.
+with strict 6-field invocation contracts the LLM must follow. Part of the
+dev-kit deterministic wizard's phase-prompt system.
 
 See design §6 of
 docs/superpowers/specs/2026-05-13-devkit-deterministic-wizard-design.md

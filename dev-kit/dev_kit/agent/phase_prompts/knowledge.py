@@ -1,7 +1,8 @@
 """Phase prompt builder: knowledge.
 
 Configures the Knowledge Engine RAG knowledge base — collection name,
-doc_types, intent_filters, and embedding provider.
+doc_types, intent_filters, and embedding provider. Part of the dev-kit
+deterministic wizard's phase-prompt system.
 
 See design §6 of
 docs/superpowers/specs/2026-05-13-devkit-deterministic-wizard-design.md

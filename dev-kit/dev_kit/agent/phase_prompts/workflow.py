@@ -1,7 +1,8 @@
 """Phase prompt builder: workflow.
 
 Designs the subagent state machine — individual conversational sub-flows
-and their NLU-intent-based routing rules for the Agent Core.
+and their NLU-intent-based routing rules for the Agent Core. Part of the
+dev-kit deterministic wizard's phase-prompt system.
 
 See design §6 of
 docs/superpowers/specs/2026-05-13-devkit-deterministic-wizard-design.md

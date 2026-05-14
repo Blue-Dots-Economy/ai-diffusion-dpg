@@ -2,6 +2,7 @@
 
 Configures LLM provider/models, language normalisation, NLU intents/entities,
 conversation messages, and (for voice agents) TTS rules and terminal word.
+Part of the dev-kit deterministic wizard's phase-prompt system.
 
 See design §6 of
 docs/superpowers/specs/2026-05-13-devkit-deterministic-wizard-design.md
