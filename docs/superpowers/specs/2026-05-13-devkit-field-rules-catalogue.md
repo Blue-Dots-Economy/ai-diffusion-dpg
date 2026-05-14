@@ -153,9 +153,9 @@ Phase = `trust`:
 | `trust.policy_packs[name=*]` (open map) | At least one pack must exist if `policy_pack` is set. |
 | `trust.policy_packs[name=*].guardrails[name=*]` (per-guardrail subtree) | Per guardrail: `severity`, `failure_mode`, `prompt_constraints`, `required_disclosures`, `refusal_template`. |
 
-### 3.3 `reach_layer` (always-asked)
+### 3.3 `reach_layer` (asked when `"web" in selected_channels`)
 
-Phase = `reach`. All entries below are conditional on web being in `selected_channels`, but web is always present per design §4.
+Phase = `reach`. `applies_if: "web" in selected_channels`. The reach_layer_web container is always deployed regardless of `selected_channels`, but for voice-only projects it runs in `routing_only` mode (no SPA, no chat UI — just health + ingest proxy to KE). The UI string fields below are only meaningful in `full` mode; the wizard skips them entirely when web is not selected. See §4.8 for the routing_only details.
 
 | Field | Notes |
 |---|---|
@@ -175,7 +175,7 @@ Phase = `reach`. All entries below are conditional on web being in `selected_cha
 | `reach_layer.channels.web.ui.switch_user_confirm` | Confirmation dialog text. |
 | `reach_layer.channels.web.ui.delete_conversation_confirm` | Confirmation dialog text. |
 
-All 15 are language-sensitive (invalidated by `default_language` and `supported_languages`).
+All 15 are language-sensitive (invalidated by `default_language` and `supported_languages`). For voice-only projects (`selected_channels=["voice"]`), all 15 are `not_applicable` — the deploy wizard sets `REACH_LAYER_WEB_MODE=routing_only` and the container runs without a UI.
 
 ### 3.4 `observability_layer` (always-asked)
 
@@ -186,13 +186,14 @@ Phase = `observability`:
 | `observability.outcomes.lifecycle` (list-of-objects, `[state=X]`) | Required by mirror (min_length=1). Per entry: `state`, `trigger_tool` (optional), `trigger_condition` (reserved). Skeleton seeds `[{state: "started", trigger_tool: null}]`. |
 | `observability.outcomes.metrics` (list-of-objects, `[name=X]`) | Optional. Per entry: `name`, `instrument`, `description`, `unit`, `attributes`. |
 
-### 3.5 Blocks with no always-asked chat fields
+### 3.5 Blocks with no truly-always-asked chat fields
 
 - **`knowledge_engine`** — every chat field is gated by `has_kb`.
 - **`memory_layer`** — every chat field is gated by `is_multi_turn` or `needs_persistent_user_data`.
 - **`action_gateway`** — every chat field is gated by `has_external_tools`.
+- **`reach_layer`** — every chat field is gated by `"web" in selected_channels` or `"voice" in selected_channels`. A voice-only project asks no `reach_layer.channels.web.ui.*` strings (web runs in `routing_only` mode); a web-only project asks no voice fields.
 
-These three blocks produce empty (or minimal: only derived `observability.domain`) domain YAMLs for projects whose relevant flag is false.
+All four blocks produce empty (or minimal: only derived `observability.domain`) domain YAMLs for projects whose relevant flag is false.
 
 ## 4. IntakeState-gated fields
 
@@ -376,7 +377,14 @@ Detailed per-field rules (defaults, types, sub-fields) live in §7's per-block c
 
 ### 4.8 `selected_channels`
 
-Web is always present (design §4). Voice toggles the voice subsystem.
+`selected_channels` is a subset of `{"web", "voice"}`. The `reach_layer_web` container is **always deployed** regardless — it runs in one of two modes selected by the env var `REACH_LAYER_WEB_MODE`:
+
+| `selected_channels` | `REACH_LAYER_WEB_MODE` | Web container behaviour |
+|---|---|---|
+| Includes `"web"` | `full` | Serves the React SPA, auth, chat endpoints, ingest proxy. All `reach_layer.channels.web.ui.*` strings are chat-asked. |
+| `["voice"]` only | `routing_only` | Health endpoint + ingest proxy to KE only. No SPA, no auth, no chat UI. Web UI strings are `not_applicable`. |
+
+The mode env var is injected by the deploy wizard's compose generator based on `selected_channels`; it is not in any block's domain YAML. See `reach_layer/web/server.py:1060-1067` for the runtime branch and `automation/docker/docker-compose.yml:347-349` for the env declaration.
 
 **Voice present:**
 
@@ -406,7 +414,7 @@ Web is always present (design §4). Voice toggles the voice subsystem.
 - `reach_layer.channels.voice.*` all `not_applicable`.
 - `reach_layer_voice` + `ngrok` services omitted.
 
-**Web (always present):**
+**Web present (`"web" in selected_channels`):**
 
 - `agent_core.channels.web.system_prompt_suffix` Chat.
 - `agent_core.channels.web.turn_assembler.silence_trigger.silence_ms` Chat (default 0 — web is direct).
@@ -415,6 +423,14 @@ Web is always present (design §4). Voice toggles the voice subsystem.
 - `reach_layer.channels.web.ui.storage_key`, `theme_storage_key` derived from project slug.
 - `reach_layer.channels.web.auth.*` deploy form (default `enabled: true` in dpg.yaml; kkb overrides to `false` for local dev).
 - `reach_layer.channels.web.ke_internal_url` chat — applies only when `has_kb=true`.
+
+**Web absent (`selected_channels=["voice"]`, voice-only deployment):**
+
+- `agent_core.channels.web` block remains as framework default; `system_prompt_suffix` and `turn_assembler` fields are `not_applicable` (no user interaction with web).
+- All 15 `reach_layer.channels.web.ui.*` strings are `not_applicable` (cleared from accumulator).
+- `reach_layer.channels.web.auth.*` deploy form fields suppressed.
+- Compose generator sets `REACH_LAYER_WEB_MODE=routing_only` for the `reach_layer_web` service.
+- Container still deployed (provides health + ingest proxy for KE uploads even on voice-only projects).
 
 ### 4.9 `default_language`
 
@@ -831,13 +847,34 @@ The router lands the wizard in the **earliest affected phase** (lowest phase ind
 - **Deploy:** Voice deploy fields cleared from form view.
 - **Compose:** `reach_layer_voice` + `ngrok` services removed.
 
-### 6.17 `selected_channels`: add `web`
+### 6.17 `selected_channels`: add `web` (`["voice"] → ["web", "voice"]`)
 
-No-op — web is always present in this design (see §4.8).
+Going from voice-only to multi-channel: web UI surfaces become relevant.
 
-### 6.18 `selected_channels`: remove `web`
+- **Predetermined:** none directly.
+- **Chat `needs_re_asking` (flipped from `not_applicable` to `pending`):**
+  - `agent_core.channels.web.system_prompt_suffix`
+  - `agent_core.channels.web.turn_assembler.silence_trigger.silence_ms`
+  - `agent_core.channels.web.turn_assembler.max_wait_ceiling.max_wait_ms`
+  - All 15 `reach_layer.channels.web.ui.*` strings
+- **Derived recomputed:** `reach_layer.channels.web.ui.storage_key`, `theme_storage_key` (already correct if `project_name` unchanged).
+- **Deploy:** `reach_layer.channels.web.auth.*` deploy fields surfaced.
+- **Compose:** `REACH_LAYER_WEB_MODE` flips from `routing_only` to `full` for the next deploy. Container is the same; mode env-var changes.
+- **Earliest affected phase:** `reach`.
 
-Not supported — web is always deployed.
+### 6.18 `selected_channels`: remove `web` (`["web", "voice"] → ["voice"]`)
+
+Voice-only deployment with web container demoted to `routing_only` mode.
+
+- **Predetermined:** none.
+- **Chat cleared (→ `not_applicable`):**
+  - All `agent_core.channels.web.*` chat fields
+  - All 15 `reach_layer.channels.web.ui.*` strings
+- **Deploy:** `reach_layer.channels.web.auth.*` form fields suppressed.
+- **Compose:** `REACH_LAYER_WEB_MODE` flips to `routing_only` for the next deploy. Container still deployed (health + ingest proxy), no SPA/auth/chat.
+- **Earliest affected phase:** none triggered (going backwards just clears).
+
+Note: `selected_channels=[]` is invalid — at least one of `web` or `voice` must be selected (no chat-less deployments). The wizard enforces this at intake.
 
 ### 6.19 `default_language` change (e.g., `english → hindi`)
 
@@ -1028,23 +1065,23 @@ Source: `reach_layer/base/schema/config.py`. Top-level: `reach_layer.common`, `r
 | Path | Category | Phase | applies_if | invalidated_by | Default / rule | Notes |
 |---|---|---|---|---|---|---|
 | `reach_layer.common.observability.domain` | derived | observability | always | `project_name` | `compute: slug` | ⚠️ Path is `reach_layer.common.observability.domain` (NOT `reach_layer.observability.domain`). |
-| `reach_layer.channels.web.ui.app_name` | chat | reach | always | `project_name, domain_description, default_language, supported_languages` | `project_name` | — |
-| `reach_layer.channels.web.ui.app_tagline` | chat | reach | always | `domain_description, default_language, supported_languages` | — | — |
-| `reach_layer.channels.web.ui.app_icon` | chat | reach | always | `domain_description` | — | Path or emoji. |
-| `reach_layer.channels.web.ui.agent_avatar` | chat | reach | always | `domain_description` | — | — |
-| `reach_layer.channels.web.ui.user_avatar` | chat | reach | always | — | — | — |
-| `reach_layer.channels.web.ui.setup_heading` | chat | reach | always | `project_name, default_language, supported_languages` | — | — |
-| `reach_layer.channels.web.ui.setup_subtitle` | chat | reach | always | `default_language, supported_languages` | — | — |
-| `reach_layer.channels.web.ui.user_id_placeholder` | chat | reach | always | `domain_description, default_language, supported_languages` | — | — |
-| `reach_layer.channels.web.ui.user_id_hint` | chat | reach | always | `domain_description, default_language, supported_languages` | — | — |
-| `reach_layer.channels.web.ui.start_btn_label` | chat | reach | always | `default_language, supported_languages` | — | — |
-| `reach_layer.channels.web.ui.new_session_msg` | chat | reach | always | `project_name, domain_description, default_language, supported_languages` | — | Often "Hello! I'm <project_name>…" |
-| `reach_layer.channels.web.ui.returning_user_msg` | chat | reach | always | `default_language, supported_languages` | — | — |
-| `reach_layer.channels.web.ui.sign_out_confirm` | chat | reach | always | `default_language, supported_languages` | — | — |
-| `reach_layer.channels.web.ui.switch_user_confirm` | chat | reach | always | `default_language, supported_languages` | — | — |
-| `reach_layer.channels.web.ui.delete_conversation_confirm` | chat | reach | always | `default_language, supported_languages` | — | — |
-| `reach_layer.channels.web.ui.storage_key` | derived | reach | always | `project_name` | `compute: f"{slug}_user_id"` | — |
-| `reach_layer.channels.web.ui.theme_storage_key` | derived | reach | always | `project_name` | `compute: f"{slug}_theme"` | — |
+| `reach_layer.channels.web.ui.app_name` | chat | reach | `"web" in selected_channels` | `project_name, domain_description, default_language, supported_languages` | `project_name` | — |
+| `reach_layer.channels.web.ui.app_tagline` | chat | reach | `"web" in selected_channels` | `domain_description, default_language, supported_languages` | — | — |
+| `reach_layer.channels.web.ui.app_icon` | chat | reach | `"web" in selected_channels` | `domain_description` | — | Path or emoji. |
+| `reach_layer.channels.web.ui.agent_avatar` | chat | reach | `"web" in selected_channels` | `domain_description` | — | — |
+| `reach_layer.channels.web.ui.user_avatar` | chat | reach | `"web" in selected_channels` | — | — | — |
+| `reach_layer.channels.web.ui.setup_heading` | chat | reach | `"web" in selected_channels` | `project_name, default_language, supported_languages` | — | — |
+| `reach_layer.channels.web.ui.setup_subtitle` | chat | reach | `"web" in selected_channels` | `default_language, supported_languages` | — | — |
+| `reach_layer.channels.web.ui.user_id_placeholder` | chat | reach | `"web" in selected_channels` | `domain_description, default_language, supported_languages` | — | — |
+| `reach_layer.channels.web.ui.user_id_hint` | chat | reach | `"web" in selected_channels` | `domain_description, default_language, supported_languages` | — | — |
+| `reach_layer.channels.web.ui.start_btn_label` | chat | reach | `"web" in selected_channels` | `default_language, supported_languages` | — | — |
+| `reach_layer.channels.web.ui.new_session_msg` | chat | reach | `"web" in selected_channels` | `project_name, domain_description, default_language, supported_languages` | — | Often "Hello! I'm <project_name>…" |
+| `reach_layer.channels.web.ui.returning_user_msg` | chat | reach | `"web" in selected_channels` | `default_language, supported_languages` | — | — |
+| `reach_layer.channels.web.ui.sign_out_confirm` | chat | reach | `"web" in selected_channels` | `default_language, supported_languages` | — | — |
+| `reach_layer.channels.web.ui.switch_user_confirm` | chat | reach | `"web" in selected_channels` | `default_language, supported_languages` | — | — |
+| `reach_layer.channels.web.ui.delete_conversation_confirm` | chat | reach | `"web" in selected_channels` | `default_language, supported_languages` | — | — |
+| `reach_layer.channels.web.ui.storage_key` | derived | reach | `"web" in selected_channels` | `project_name` | `compute: f"{slug}_user_id"` | — |
+| `reach_layer.channels.web.ui.theme_storage_key` | derived | reach | `"web" in selected_channels` | `project_name` | `compute: f"{slug}_theme"` | — |
 | `reach_layer.channels.web.ke_internal_url` | chat | reach | `has_kb` | `has_kb` | None | Used for Reach→KE direct ingest call. |
 | `reach_layer.channels.web.auth.enabled` | deploy | (form) | always | — | true (dpg) | Google SSO toggle. KKB overrides false for dev. |
 | `reach_layer.channels.web.auth.*` other fields | deploy | (form) | `auth.enabled` | — | (dpg defaults) | — |
@@ -1068,6 +1105,10 @@ Source: `reach_layer/base/schema/config.py`. Top-level: `reach_layer.common`, `r
 **Framework-default-only allowlist (reach_layer):**
 
 `reach_layer.common.{agent_core_client.*, memory_layer_client.*, ke_client.*}` (all infra DNS), `reach_layer.common.observability.otel.*`, `reach_layer.channels.cli.*` (entire CLI block — dev-only), `reach_layer.channels.web.{store.*, cookie_secure, server.*, request_timeout_ms}` (operational; some deploy-overridable but not exposed today), `reach_layer.channels.voice.{enabled, transport, server.*, audio.*}` operational defaults.
+
+**Compose-level env var (not a YAML field):**
+
+- `REACH_LAYER_WEB_MODE` — `full` when `"web" in selected_channels`, else `routing_only`. Set by the compose generator (`automation/docker/docker-compose.yml:347-349`) based on intake state. Switches the `reach_layer_web` container between full SPA mode and ingest-proxy-only mode. Not part of FIELD_RULES — handled by the selective-deployment logic in design §8.
 
 **Mirror drift / ambiguities (reach_layer):**
 
