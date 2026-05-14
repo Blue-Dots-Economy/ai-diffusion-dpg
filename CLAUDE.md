@@ -125,6 +125,46 @@ Other blocks may call each other directly **only under the approved scopes liste
 - **Hard routing:** Escalation topics are enforced by Trust Layer before the LLM is called. LLM-driven routing handles everything else via tool selection.
 - **Three-Tier config model:** Tier 1 (Configuration Agent) is implemented as a FastAPI + React app in `dev-kit/dev_kit/agent/`. Tier 2 (YAML) is the runtime source of truth. Tier 3 (Live Tuning Dashboard) is not yet built.
 
+### Dev-Kit deterministic wizard layout
+
+Tier 1 is a **deterministic wizard**: an `IntakeState` captured up front gates which of 11 declarative phases run; `FIELD_RULES` decide each field's category; a router cascades intake changes through dependent fields; 8 canonical tools route the LLM's mutations through Pydantic-validated handlers. The wizard YAML output is dry-run-validated against the runtime block schemas baked into the dev-kit Docker image before being written to disk.
+
+Source-of-truth design + catalogue:
+- [`docs/superpowers/specs/2026-05-13-devkit-deterministic-wizard-design.md`](docs/superpowers/specs/2026-05-13-devkit-deterministic-wizard-design.md)
+- [`docs/superpowers/specs/2026-05-13-devkit-field-rules-catalogue.md`](docs/superpowers/specs/2026-05-13-devkit-field-rules-catalogue.md)
+- [`.claude/rules/runtime-devkit-sync.md`](.claude/rules/runtime-devkit-sync.md) — runtime schema ↔ dev-kit synchronisation discipline
+
+Key files under `dev-kit/dev_kit/agent/`:
+
+```
+dev-kit/dev_kit/agent/
+├── intake_state.py              # 12-field dataclass + JSON persistence (5 from form, 7 from chat)
+├── field_rules/                 # Per-block FIELD_RULES; 145 entries aggregated at import
+│   ├── __init__.py              # FieldRule dataclass + AGGREGATED_FIELD_RULES registry
+│   ├── agent_core.py / trust_layer.py / knowledge_engine.py / ...
+├── phases_config.py             # PHASES dict: 11 declarative phase definitions
+├── phase_prompts/               # One module per phase, each exports build()
+│   ├── _helpers.py              # Shared _render_fields / _path_of / _rule_of
+│   ├── tier.py language.py knowledge.py memory.py user_state.py
+│   ├── trust.py tools.py workflow.py observability.py reach.py review.py
+├── router.py                    # on_intake_update / on_config_update / decide_next_phase
+├── skeleton.py                  # build_skeleton — accumulator + field_status from FIELD_RULES
+├── path_ops.py                  # set_path / get_path / clear_path with [name=X] syntax
+├── field_status.py              # field_status.json read/write
+├── phase_driver.py              # run_turn — single shared per-turn orchestrator + TOOL_HANDLERS
+├── tools.py                     # 8 canonical tools (update_intake, update_config, add_subagent...)
+├── derived_fields.py            # apply_derived_fields — slug-based renderer pass
+├── renderer.py                  # render_all + runtime_validate (dry-run against baked schemas)
+├── deployer/compose_generator.py # Per-IntakeState selective compose generation
+├── conversation.py              # Async chat endpoint — delegates to phase_driver.run_turn
+└── app.py                       # FastAPI endpoints
+```
+
+Per-project state is persisted under `dev-kit/configs/<slug>/_meta/`:
+- `intake_state.json`, `current_phase.txt`, `accumulator.json`, `field_status.json`, `deploy_settings.json`
+
+When changing a runtime block's `<block>/src/schema/config.py`, also update the dev-kit mirror at `dev-kit/dev_kit/schemas/domain/<block>.py` and the `FIELD_RULES` entry in `dev-kit/dev_kit/agent/field_rules/<block>.py` per [`.claude/rules/runtime-devkit-sync.md`](.claude/rules/runtime-devkit-sync.md).
+
 ### PoC scope
 
 Full implementations: **Agent Core** (818 tests — sync + async streaming + TurnAssembler + multi-provider chat_provider), **Knowledge Engine** (192 tests), **Memory Layer** (226 tests, Redis + Memgraph + SQLite), **Action Gateway** (173 tests — RestApiAdapter + McpAdapter), **Domain Configuration Kit** (365 tests).
