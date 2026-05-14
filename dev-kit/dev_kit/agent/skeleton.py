@@ -32,7 +32,7 @@ _RULE_EXTRAS: dict[str, Any] = {
 }
 
 
-def _eval_expr(expr: str | None, state: IntakeState) -> Any:
+def eval_expr(expr: str | None, state: IntakeState) -> Any:
     """Evaluate an applies_if/invalidated_by expression against IntakeState.
 
     Expressions are Python expressions referencing IntakeState attributes by name
@@ -54,7 +54,7 @@ def _eval_expr(expr: str | None, state: IntakeState) -> Any:
     return eval(expr, {"__builtins__": {}}, namespace)
 
 
-def _eval_rule(rule_str: str, state: IntakeState) -> Any:
+def eval_rule(rule_str: str, state: IntakeState) -> Any:
     """Evaluate a `predetermined` rule's `rule` expression.
 
     Rule format: `set: <python_expression>`. The expression is evaluated in the
@@ -84,9 +84,9 @@ def _eval_rule(rule_str: str, state: IntakeState) -> Any:
         return eval(expr, {"__builtins__": {}}, namespace)
     except Exception as exc:  # noqa: BLE001
         logger.debug(
-            "skeleton._eval_rule skip",
+            "skeleton.eval_rule skip",
             extra={
-                "operation": "skeleton._eval_rule",
+                "operation": "skeleton.eval_rule",
                 "status": "skipped",
                 "error": f"{type(exc).__name__}: {exc}",
                 "expr": expr,
@@ -95,7 +95,7 @@ def _eval_rule(rule_str: str, state: IntakeState) -> Any:
         return _SKIP
 
 
-def _get_framework_default(path: str) -> Any:
+def get_framework_default(path: str) -> Any:
     """Return the framework default for a path (from dpg.yaml or Pydantic).
 
     For Phase 4 we use a minimal stub that knows the canonical dpg defaults
@@ -155,7 +155,7 @@ def build_skeleton(
 
     for full_path, rule in AGGREGATED_FIELD_RULES.items():
         block, relative_path = full_path.split(".", 1)
-        applies = _eval_expr(rule.applies_if, intake_state)
+        applies = eval_expr(rule.applies_if, intake_state)
 
         if rule.category == "chat":
             if not applies:
@@ -170,10 +170,10 @@ def build_skeleton(
                 continue
             if not rule.rule:
                 continue
-            value = _eval_rule(rule.rule, intake_state)
+            value = eval_rule(rule.rule, intake_state)
             if value is _SKIP or value is None:
                 continue
-            framework_default = _get_framework_default(full_path)
+            framework_default = get_framework_default(full_path)
             if value != framework_default:
                 set_path(accumulator[block], relative_path, value)
 
@@ -186,4 +186,7 @@ def build_skeleton(
     return accumulator, field_status
 
 
-__all__ = ["build_skeleton", "BLOCKS"]
+__all__ = [
+    "build_skeleton", "BLOCKS",
+    "eval_expr", "eval_rule", "get_framework_default", "_SKIP",
+]
