@@ -28,12 +28,16 @@ def test_runtime_validate_unknown_block_raises_keyerror():
 
 
 def test_runtime_validate_invalid_yaml_raises_validation_error():
-    """When schemas are available, an invalid dict raises RuntimeValidationError."""
+    """When schemas are available, a structurally-invalid dict raises RuntimeValidationError.
+
+    Empty `{}` passes most blocks because every section has a default_factory.
+    We pass an unknown top-level key instead; every MergedConfig sets
+    `extra="forbid"` so unknown keys are rejected.
+    """
     if RUNTIME_SCHEMAS is None:
         pytest.skip("Baked schemas not available on host; this test requires docker")
-    # An empty dict will fail trust_layer's required fields.
     with pytest.raises(RuntimeValidationError) as exc_info:
-        runtime_validate("trust_layer", {})
+        runtime_validate("trust_layer", {"definitely_not_a_real_field": True})
     assert exc_info.value.block == "trust_layer"
 
 
