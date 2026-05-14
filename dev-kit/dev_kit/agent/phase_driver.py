@@ -33,6 +33,7 @@ from dev_kit.agent.router import (
     decide_next_phase,
 )
 from dev_kit.agent.skeleton import BLOCKS, eval_expr
+from dev_kit.agent.history import HistoryEntry, append_turn, utc_now_iso
 from dev_kit.agent.tools import (
     add_routing_rule,
     add_subagent,
@@ -444,6 +445,18 @@ def run_turn(
     field_status = load_field_status(slug_root / _META_DIR / _FIELD_STATUS_FILENAME)
     current_phase = load_current_phase(slug_root)
 
+    # Record the user turn immediately so it is persisted even if the LLM call
+    # fails.  Phase label is the phase that received this message.
+    append_turn(
+        slug_root,
+        HistoryEntry(
+            role="user",
+            content=user_message,
+            phase=current_phase,
+            timestamp=utc_now_iso(),
+        ),
+    )
+
     logger.info(
         "phase_driver.run_turn started",
         extra={
@@ -521,6 +534,18 @@ def run_turn(
 
     # ----- Step 5: end-of-turn router -----
     next_phase = decide_next_phase(current_phase, intake_state, accumulator, field_status)
+
+    # Record the assistant turn; phase label is the phase that produced the
+    # response (current_phase, not next_phase).
+    append_turn(
+        slug_root,
+        HistoryEntry(
+            role="assistant",
+            content=response.text,
+            phase=current_phase,
+            timestamp=utc_now_iso(),
+        ),
+    )
 
     # ----- Step 6: persist all state -----
     save_intake_state(

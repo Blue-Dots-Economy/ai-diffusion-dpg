@@ -534,3 +534,78 @@ def test_load_phase_prompt_raises_when_build_missing(monkeypatch) -> None:
 
     with pytest.raises(AttributeError, match="no 'build' function"):
         phase_driver._load_phase_prompt("tier")
+
+
+# ---------------------------------------------------------------------------
+# History append wiring (Task C.2)
+# ---------------------------------------------------------------------------
+
+
+def test_run_turn_appends_user_and_assistant_to_history(tmp_path: Path) -> None:
+    """run_turn appends a user + assistant entry to _meta/history.jsonl."""
+    projects_root = _setup_project(tmp_path)
+    fake, _ = _fake_llm(text="ack")
+
+    run_turn(
+        "hi",
+        "demo",
+        projects_root=projects_root,
+        llm_call=lambda sp, um: LLMResponse(text="ack", tool_calls=[], model="x"),
+    )
+
+    h_path = projects_root / "demo" / "_meta" / "history.jsonl"
+    assert h_path.exists(), "history.jsonl should be created by run_turn"
+    lines = [json.loads(l) for l in h_path.read_text().splitlines() if l.strip()]
+    assert [(e["role"], e["content"]) for e in lines] == [
+        ("user", "hi"),
+        ("assistant", "ack"),
+    ]
+
+
+def test_run_turn_history_phase_label_matches_active_phase(tmp_path: Path) -> None:
+    """History entries are tagged with the phase that was active when the turn ran."""
+    projects_root = _setup_project(tmp_path, current_phase="trust")
+    fake, _ = _fake_llm(text="noted")
+
+    run_turn(
+        "configure trust",
+        "demo",
+        projects_root=projects_root,
+        llm_call=lambda sp, um: LLMResponse(text="noted", tool_calls=[], model="x"),
+    )
+
+    h_path = projects_root / "demo" / "_meta" / "history.jsonl"
+    lines = [json.loads(l) for l in h_path.read_text().splitlines() if l.strip()]
+    assert all(e["phase"] == "trust" for e in lines), (
+        "Both user and assistant entries should carry the active phase 'trust'"
+    )
+
+
+def test_run_turn_user_entry_written_before_llm_call(tmp_path: Path) -> None:
+    """The user history entry is written before the LLM call, so it is persisted
+    even if the LLM raises."""
+    projects_root = _setup_project(tmp_path)
+
+    h_path = projects_root / "demo" / "_meta" / "history.jsonl"
+
+    def _boom(system_prompt: str, user_message: str) -> LLMResponse:  # type: ignore[return]
+        # Verify that the user entry is already present in history.jsonl when the
+        # LLM call executes (i.e., it was written before this function was called).
+        assert h_path.exists(), "history.jsonl must exist before LLM call"
+        lines = [json.loads(l) for l in h_path.read_text().splitlines() if l.strip()]
+        assert lines and lines[0]["role"] == "user"
+        raise RuntimeError("simulated LLM failure")
+
+    with pytest.raises(RuntimeError, match="simulated LLM failure"):
+        run_turn(
+            "test message",
+            "demo",
+            projects_root=projects_root,
+            llm_call=_boom,
+        )
+
+    # After the exception, only the user entry should exist (no assistant entry).
+    lines = [json.loads(l) for l in h_path.read_text().splitlines() if l.strip()]
+    assert len(lines) == 1
+    assert lines[0]["role"] == "user"
+    assert lines[0]["content"] == "test message"

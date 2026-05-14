@@ -38,9 +38,17 @@ from dev_kit.agent.conversation import ConversationEngine
 from dev_kit.agent.crypto import decrypt_secrets_dict, get_public_key_spki_b64
 from dev_kit.agent.errors import ConversationError
 from dev_kit.agent.field_status import load_field_status
+from dev_kit.agent.history import HistoryEntry, load_history
 from dev_kit.agent.intake_state import IntakeState, load_intake_state, save_intake_state
-from dev_kit.agent.phase_driver import save_accumulator, save_current_phase
+from dev_kit.agent import phase_driver
+from dev_kit.agent.phase_driver import (
+    LLMResponse,
+    ToolCall,
+    save_accumulator,
+    save_current_phase,
+)
 from dev_kit.agent.project_state import empty_accumulator, load_accumulator
+from dev_kit.agent.tools import DEVKIT_TOOL_SCHEMAS
 from dev_kit.agent.renderer import load_block_from_file, render_all
 from dev_kit.config.loader import load_devkit_config as _load_devkit_config
 from dev_kit.schemas.validation import validate_partial
@@ -478,6 +486,53 @@ def _get_engine(slug: str) -> ConversationEngine:
 
 
 # ---------------------------------------------------------------------------
+# Dev-kit LLM call builder (used by the migrated /chat endpoint)
+# ---------------------------------------------------------------------------
+
+_DEVKIT_MODEL = os.environ.get("DEVKIT_MODEL", "claude-haiku-4-5-20251001")
+_DEVKIT_MAX_TOKENS = int(os.environ.get("DEVKIT_MAX_TOKENS", "4096"))
+
+
+def _build_devkit_llm_call():
+    """Return a sync ``(system_prompt, user_message) -> LLMResponse`` callable.
+
+    Each invocation builds a fresh sync Anthropic client (cheap), so the
+    callable is safe to use under ``asyncio.to_thread`` from the chat handler.
+
+    Returns:
+        A callable accepting ``(system_prompt, user_message)`` and returning
+        an ``LLMResponse`` with text, tool_calls, model, and token counts.
+    """
+    def _llm_call(system_prompt: str, user_message: str) -> LLMResponse:
+        sync_client = anthropic.Anthropic()
+        response = sync_client.messages.create(
+            model=_DEVKIT_MODEL,
+            max_tokens=_DEVKIT_MAX_TOKENS,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_message}],
+            tools=DEVKIT_TOOL_SCHEMAS,
+            timeout=30.0,
+        )
+        text_parts: list[str] = []
+        tool_calls: list[ToolCall] = []
+        for block in response.content:
+            if getattr(block, "type", None) == "text":
+                text_parts.append(block.text)
+            elif getattr(block, "type", None) == "tool_use":
+                tool_calls.append(ToolCall(name=block.name, args=dict(block.input)))
+        usage = getattr(response, "usage", None)
+        return LLMResponse(
+            text="\n".join(text_parts),
+            tool_calls=tool_calls,
+            model=getattr(response, "model", None),
+            input_tokens=getattr(usage, "input_tokens", None),
+            output_tokens=getattr(usage, "output_tokens", None),
+        )
+
+    return _llm_call
+
+
+# ---------------------------------------------------------------------------
 # Project-route helpers (stateless, per-request)
 # ---------------------------------------------------------------------------
 
@@ -889,59 +944,105 @@ def delete_project(slug: str) -> dict:
 
 @app.post("/api/projects/{slug}/chat")
 async def chat(slug: str, body: ChatRequest) -> dict:
-    """Send a user message and receive the agent response."""
-    engine = _get_engine(slug)
+    """Send a user message and receive the agent response.
+
+    Delegates to ``phase_driver.run_turn`` directly without going through
+    ``ConversationEngine``. The phase_driver appends user/assistant entries
+    to ``_meta/history.jsonl`` and persists all state (intake, accumulator,
+    field_status, current_phase) on success.
+
+    Args:
+        slug: Project slug.
+        body: ChatRequest with the user message.
+
+    Returns:
+        Dict shaped to preserve the React UI contract: ``reply`` (assistant
+        text), ``phase`` (the phase after the turn), ``config_updates`` ([]),
+        ``checkpoint_created`` (None), ``graph`` ({}).
+
+    Raises:
+        HTTPException 404: If the project directory does not exist.
+        HTTPException 400: If the project predates the deterministic wizard
+            (no ``_meta/intake_state.json``).
+        HTTPException 500: If ``phase_driver.run_turn`` raises.
+    """
     start = time.time()
+    project_path = _get_project_path(slug)
+    if not project_path.exists():
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    if not (project_path / "_meta" / "intake_state.json").exists():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Project '{slug}' was created with an older version of the "
+                "dev-kit. Please create a new project to continue."
+            ),
+        )
     try:
-        result = await engine.chat(body.message)
-        logger.info(
-            "chat_turn",
-            extra={
-                "operation": "app.chat",
-                "status": "success",
-                "latency_ms": int((time.time() - start) * 1000),
-                "slug": slug,
-            },
+        response_text = await asyncio.to_thread(
+            phase_driver.run_turn,
+            body.message,
+            slug,
+            projects_root=project_path.parent,
+            llm_call=_build_devkit_llm_call(),
         )
-        return result
-    except ConversationError as exc:
-        logger.error(
-            "chat_turn_failed",
-            extra={
-                "operation": "app.chat",
-                "status": "failure",
-                "error": str(exc),
-                "latency_ms": int((time.time() - start) * 1000),
-                "slug": slug,
-            },
-            exc_info=True,
-        )
-        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
     except Exception as exc:
-        logger.exception(
-            "chat_turn_unexpected",
+        logger.error(
+            "devkit.chat.failed",
             extra={
-                "operation": "app.chat",
+                "operation": "api.chat",
                 "status": "failure",
                 "error": str(exc),
                 "error_type": type(exc).__name__,
                 "latency_ms": int((time.time() - start) * 1000),
                 "slug": slug,
             },
+            exc_info=True,
         )
         raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+
+    current_phase = phase_driver.load_current_phase(project_path)
+    logger.info(
+        "devkit.chat.success",
+        extra={
+            "operation": "api.chat",
+            "status": "success",
+            "latency_ms": int((time.time() - start) * 1000),
+            "slug": slug,
+            "current_phase": current_phase,
+        },
+    )
+    return {
+        "reply": response_text,
+        "phase": current_phase,
+        "config_updates": [],
+        "checkpoint_created": None,
+        "graph": {},
+    }
 
 
 @app.get("/api/projects/{slug}/history")
 def get_history(slug: str) -> list[dict]:
-    """Return the conversation history for the current phase."""
-    engine = _get_engine(slug)
-    result = []
-    for msg in engine._history:
-        content = msg.get("content", "")
-        if isinstance(content, str):
-            result.append({"role": msg["role"], "content": content})
-    return result
+    """Return the chat history for the project.
+
+    Reads ``_meta/history.jsonl`` directly; does not consult the legacy
+    ConversationEngine cache.
+
+    Args:
+        slug: Project slug.
+
+    Returns:
+        Ordered list of ``{role, content}`` dicts (oldest first). Empty if
+        no history has been recorded yet.
+
+    Raises:
+        HTTPException 404: If the project directory does not exist.
+    """
+    project_path = _get_project_path(slug)
+    if not project_path.exists():
+        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
+    entries = load_history(project_path)
+    return [{"role": e.role, "content": e.content} for e in entries]
 
 
 # ---------------------------------------------------------------------------
