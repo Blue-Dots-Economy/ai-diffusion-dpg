@@ -533,3 +533,86 @@ When this session's context starts getting tight, stop at the next clean
 phase boundary, commit, and append a "Session 3" section to the session
 notes file describing where to pick up next.
 ```
+
+---
+
+### Session 2 — Phase 5 addendum (also 2026-05-14, same conversation)
+
+Continued same session past the original Phase 4 stop point. Phase 5 (3 tasks) completed cleanly.
+
+**Phase 5 commits:**
+```
+350c773 chore(dev-kit): fix stale comment referencing old _eval_rule name
+17c76cb feat(dev-kit): add on_config_update applying chat answers with mirror validation
+f1c32ce feat(dev-kit): add decide_next_phase end-of-turn router
+652496f feat(dev-kit): add on_intake_update cascade through FIELD_RULES
+```
+
+**Aggregate state:**
+- 120 host tests pass, 3 skipped (docker-only + Task 2.3 placeholder), 0 fail
+- 145 FIELD_RULES entries unchanged
+- New `dev-kit/dev_kit/agent/router.py` exposes `on_intake_update`, `decide_next_phase`, `on_config_update`, `PHASE_ORDER`, `PHASE_RELEVANCE`
+
+**Session 2 Phase 5 execution discoveries:**
+
+#### 9. Skeleton private helpers promoted to public
+
+`_eval_expr`, `_eval_rule`, `_get_framework_default` in `skeleton.py` were originally underscore-prefixed but the router needs them too. Cross-module use of `_`-prefixed helpers violates `.claude/rules/base-class-pattern.md`. **Rename applied in commit 652496f:** dropped the underscore prefix, added `eval_expr`, `eval_rule`, `get_framework_default` to `__all__`. `_SKIP` sentinel also exported because the router needs the `value is not _SKIP` guard (intentionally kept underscore — it's an internal sentinel object, not a callable helper).
+
+#### 10. Two plan-vs-test inconsistencies in Task 5.2
+
+The plan's `decide_next_phase` body had two latent bugs that broke its own tests; the implementer fixed both with reasoning that was verified by spec review:
+
+- `PHASE_RELEVANCE["memory"]`: plan said `lambda s: s.is_multi_turn or s.needs_persistent_user_data`. Design spec §6 PHASES dict has no `is_relevant` predicate for `memory` (meaning always-relevant). Implementer used `lambda s: True`. **Side effect of either choice is zero user-facing impact** because every memory chat field is individually gated by `applies_if`, so they all show `not_applicable` when both flags are false. Phase advances either way.
+- `_is_phase_complete` default for missing field_status entries: plan said `"pending"`; implementer used `"answered"`. The plan's own test `test_advances_when_current_complete` passes `field_status = {}` and asserts the wizard advances — that requires `"answered"` default. **In production `build_skeleton` always fully populates `field_status`, so missing entries should never occur.** This is essentially a no-op safety choice.
+
+Both deviations are correct fixes to plan inconsistencies, not new semantic decisions.
+
+#### 11. `on_config_update` revert mechanism
+
+Plan only described `on_config_update` in prose (no code). Controller specified the contract; implementer used `copy.deepcopy(accumulator[block])` to snapshot the block before the write, and on validation failure restores the snapshot. This is stricter than the alternative (`clear_path` on the just-written path) because validation could be invalidated by other in-flight changes too — restoring the whole block is the safest revert. **Pattern to remember when other writers land** (Phase 7 tool add, Phase 11 UI deploy field updates).
+
+#### 12. Memory phase semantic when both flags off
+
+Per #10 above: when `is_multi_turn=false AND needs_persistent_user_data=false`, the wizard still passes through `memory` phase but asks zero questions. That's fine. But if a Phase 6 phase-prompt for memory unconditionally tries to address the user ("Now let's set up memory!"), the user would see an empty/awkward turn. **Phase 6 phase-prompt implementer should check whether any chat field in the phase is `pending` before generating a user-facing prompt.** This is an instruction for future Phase 6 work, not a current bug.
+
+---
+
+### Status snapshot for next session (after Phase 5)
+
+**Completed:** 20 of the plan's tasks (Phase 0.1–0.2, 1.1–1.3, 2.1–2.3, 3.1–3.8, 4.1, 4.2, 5.1–5.3)
+
+**Next:** Phase 6 — Phase prompts + phase driver (3 tasks):
+- Task 6.1: `phases_config.py` — declarative PHASES dict (plan lines 2327-2381)
+- Task 6.2: Per-phase prompt modules × 11 (plan lines 2383-2397; **batched dispatch recommended** per Session 1 optimisation note)
+- Task 6.3: `phase_driver.py` — single shared phase runner (plan lines 2399-2419; **use Opus** per Session 1 note since this is integration logic)
+
+After Phase 6, Phases 7-13 are mostly more independent transcription work and final integration.
+
+**No blockers.** All Phase 5 tests green. The router is fully covered. Skeleton helpers are now public; any future caller can import them cleanly.
+
+**Pickup prompt for next session (paste verbatim):**
+
+```
+Continue executing the implementation plan at:
+docs/superpowers/plans/2026-05-14-devkit-deterministic-wizard-implementation.md
+
+READ THIS FIRST (execution discoveries through Session 2 Phase 5):
+docs/superpowers/plans/2026-05-14-implementation-session-notes.md
+(scroll to the "Session 2 notes" section AND its "Phase 5 addendum")
+
+Status: 20 tasks complete on branch docs/devkit-config-generation-revamp-design
+(through Task 5.3). Pick up at Task 6.1 (phases_config.py).
+
+For Task 6.2 (11 per-phase prompt modules), consider one batched implementer
+dispatch as per the Session 1 note in §"Phase 3 / Phase 6 optimisation".
+
+For Task 6.3 (phase_driver.run_turn), use model=opus — this is integration logic.
+
+Use the superpowers:subagent-driven-development skill. Dispatch a fresh
+subagent per task, two-stage review (spec → code quality) after each.
+
+When this session's context starts getting tight, stop at the next clean
+phase boundary, commit, and append a "Session 3" section to the session
+notes file describing where to pick up next.
+```
