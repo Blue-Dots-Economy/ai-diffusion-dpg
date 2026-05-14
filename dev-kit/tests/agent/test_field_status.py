@@ -34,12 +34,12 @@ def test_save_validates_status_values(tmp_path: Path):
         save_field_status(p, {"foo.bar": "wrong_status"})
 
 
-def test_load_corrupt_json_returns_empty(tmp_path: Path):
-    """Corrupt JSON file should be handled gracefully (returns empty dict)."""
+def test_load_corrupt_json_raises_value_error(tmp_path: Path):
+    """Corrupt JSON file must raise ValueError so callers can propagate as HTTP 500."""
     p = tmp_path / "field_status.json"
     p.write_text("{not valid json")
-    loaded = load_field_status(p)
-    assert loaded == {}
+    with pytest.raises(ValueError, match="Corrupt JSON in field_status file"):
+        load_field_status(p)
 
 
 def test_load_valid_json_non_dict_returns_empty(tmp_path: Path):

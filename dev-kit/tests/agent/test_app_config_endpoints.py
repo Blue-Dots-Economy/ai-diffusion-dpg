@@ -131,6 +131,19 @@ class TestGetConfigs:
         agent_core_item = next(i for i in res.json() if i["block"] == "agent_core")
         assert agent_core_item["content"] == ""
 
+    def test_get_configs_500_on_corrupt_field_status(self, client):
+        """GET /configs returns 500 when field_status.json contains corrupt JSON."""
+        c, configs = client
+        slug, project_path = _create_project(c, configs)
+        meta_dir = project_path / "_meta"
+
+        # Overwrite field_status.json with unparseable content.
+        (meta_dir / "field_status.json").write_text("{not valid json {")
+
+        res = c.get(f"/api/projects/{slug}/configs")
+        assert res.status_code == 500
+        assert res.json()["detail"].startswith("Corrupt field_status.json")
+
 
 # ---------------------------------------------------------------------------
 # GET /api/projects/{slug}/configs/export
@@ -205,6 +218,19 @@ class TestGetConfig:
         res = c.get(f"/api/projects/{slug}/configs/agent_core")
         assert res.status_code == 200
         assert res.json()["content"] == ""
+
+    def test_get_config_block_500_on_corrupt_field_status(self, client):
+        """GET /configs/{block} returns 500 when field_status.json contains corrupt JSON."""
+        c, configs = client
+        slug, project_path = _create_project(c, configs)
+        meta_dir = project_path / "_meta"
+
+        # Overwrite field_status.json with unparseable content.
+        (meta_dir / "field_status.json").write_text("{not valid json {")
+
+        res = c.get(f"/api/projects/{slug}/configs/agent_core")
+        assert res.status_code == 500
+        assert res.json()["detail"].startswith("Corrupt field_status.json")
 
 
 # ---------------------------------------------------------------------------

@@ -40,24 +40,28 @@ def save_field_status(path: Path, status: dict[str, str]) -> None:
 
 
 def load_field_status(path: Path) -> dict[str, str]:
-    """Return field statuses from disk; empty dict if file is missing or unreadable.
+    """Return field statuses from disk; empty dict if file is missing or not a dict.
 
-    Handles missing files, corrupt JSON, and valid JSON that is not a dict
-    gracefully — all return an empty dict rather than raising.
+    Handles missing files and valid JSON that is not a dict gracefully — those
+    return an empty dict.  Corrupt (unparseable) JSON is treated as a real
+    failure and raises ``ValueError`` so callers can propagate it as an HTTP 500.
 
     Args:
         path: Source file path (typically ``<slug>/_meta/field_status.json``).
 
     Returns:
-        The deserialised status dict, or ``{}`` if the file is absent, contains
-        corrupt JSON, or contains a non-dict JSON value.
+        The deserialised status dict, or ``{}`` if the file is absent or
+        contains a non-dict JSON value.
+
+    Raises:
+        ValueError: If the file exists but contains corrupt (unparseable) JSON.
     """
     if not path.exists():
         return {}
     try:
         payload = json.loads(path.read_text())
     except json.JSONDecodeError as exc:
-        logger.warning(
+        logger.error(
             "load_field_status corrupt",
             extra={
                 "operation": "load_field_status",
@@ -66,7 +70,7 @@ def load_field_status(path: Path) -> dict[str, str]:
                 "path": str(path),
             },
         )
-        return {}
+        raise ValueError(f"Corrupt JSON in field_status file {path}: {exc}") from exc
     if not isinstance(payload, dict):
         logger.warning(
             "load_field_status non-dict",

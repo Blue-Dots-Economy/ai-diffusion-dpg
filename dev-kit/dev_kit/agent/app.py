@@ -1079,7 +1079,23 @@ def get_configs(slug: str) -> list[dict]:
     _load_project_meta(slug)  # raises 404 if project not found
     project_path = _get_project_path(slug)
     meta_dir = project_path / "_meta"
-    field_status = load_field_status(meta_dir / "field_status.json")
+    try:
+        field_status = load_field_status(meta_dir / "field_status.json")
+    except ValueError as exc:
+        logger.error(
+            "devkit.project.state_corrupt",
+            extra={
+                "operation": "api.get_configs",
+                "status": "failure",
+                "error": str(exc),
+                "slug": slug,
+            },
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Corrupt field_status.json for '{slug}': {exc}",
+        )
     statuses = all_block_statuses(field_status)
     result = []
     for block in BLOCKS:
@@ -1156,7 +1172,23 @@ def get_config(slug: str, block: str) -> dict:
     meta_dir = project_path / "_meta"
     config_file = project_path / f"{block}.yaml"
     content = config_file.read_text() if config_file.exists() else ""
-    field_status = load_field_status(meta_dir / "field_status.json")
+    try:
+        field_status = load_field_status(meta_dir / "field_status.json")
+    except ValueError as exc:
+        logger.error(
+            "devkit.project.state_corrupt",
+            extra={
+                "operation": "api.get_config",
+                "status": "failure",
+                "error": str(exc),
+                "slug": slug,
+            },
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Corrupt field_status.json for '{slug}': {exc}",
+        )
     status = block_completion_status(block, field_status)
     return {"block": block, "status": status, "content": content}
 
