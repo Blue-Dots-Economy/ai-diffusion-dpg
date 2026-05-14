@@ -138,17 +138,19 @@ def test_dignity_check_requires_questions_when_enabled():
 
 def test_intent_filter_drift_detected_by_cross_block_validation():
     """Cross-block validation must flag KE intent_filters that reference undeclared NLU intents."""
-    from dev_kit.agent.accumulator import BLOCKS, ConfigAccumulator
-
-    acc = ConfigAccumulator()
-    acc._strict_mode = False
-    acc.update("agent_core", "preprocessing.nlu_processor", {"intents": ["greeting"]})
-    acc.update(
-        "knowledge_engine",
-        "knowledge.blocks.static_knowledge_base",
-        {"intent_filters": {"ask_packages": ["info"]}},  # not in NLU intents
-    )
-    blocks = {block: acc.get_block(block) for block in BLOCKS}
+    blocks = _empty_blocks()
+    blocks["agent_core"] = {
+        "preprocessing": {"nlu_processor": {"intents": ["greeting"]}}
+    }
+    blocks["knowledge_engine"] = {
+        "knowledge": {
+            "blocks": {
+                "static_knowledge_base": {
+                    "intent_filters": {"ask_packages": ["info"]},  # not in NLU intents
+                }
+            }
+        }
+    }
     errors = validate_cross_block(blocks, selected_channels=[], current_phase="knowledge")
 
     assert any("ask_packages" in e for e in errors), (
@@ -302,11 +304,9 @@ def test_no_phase_context_runs_every_check():
 
 def test_no_errors_when_blocks_are_consistent():
     """When all block configs are consistent, cross-block validation returns no errors."""
-    from dev_kit.agent.accumulator import BLOCKS, ConfigAccumulator
+    from dev_kit.agent.project_state import empty_accumulator
 
-    acc = ConfigAccumulator()
-    acc._strict_mode = False
-    blocks = {block: acc.get_block(block) for block in BLOCKS}
+    blocks = empty_accumulator()
     errors = validate_cross_block(blocks, selected_channels=[])
 
     assert errors == [], (

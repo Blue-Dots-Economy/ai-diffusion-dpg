@@ -28,8 +28,8 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "test-key-placeholder")
 
 import dev_kit.agent.app as app_module
 import dev_kit.agent.deployer.dependencies as deps_module
-from dev_kit.agent.accumulator import BLOCKS, ConfigAccumulator
 from dev_kit.agent.intake_state import IntakeState, save_intake_state
+from dev_kit.agent.project_state import BLOCKS, empty_accumulator
 
 # Stub YAML for infra services used in tests
 _INFRA_STUB_YAML = {
@@ -75,7 +75,6 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(deps_module, "HELM_INFRA_DIR", infra_tmp)
     # Disable schema validation for existing tests (they use incomplete test YAML).
     monkeypatch.setenv("DEVKIT_DPG_SCHEMA_STRICT", "0")
-    app_module._engines.clear()
     return TestClient(app_module.app)
 
 
@@ -99,10 +98,6 @@ def project_dir(tmp_path, project_slug):
         "phases_completed": [],
     }
     (meta_dir / "project.json").write_text(json.dumps(meta))
-    acc = ConfigAccumulator()
-    from dev_kit.agent.renderer import render_all
-    render_all(project, acc)
-    # Write intake_state.json — required by the deploy preview and execute endpoints.
     intake = IntakeState(
         project_name="Deploy Test",
         domain_description="desc",
@@ -117,6 +112,10 @@ def project_dir(tmp_path, project_slug):
         needs_consent=False,
         has_hitl=False,
     )
+    acc = empty_accumulator()
+    from dev_kit.agent.renderer import render_all
+    render_all(project, acc, intake)
+    # Write intake_state.json — required by the deploy preview and execute endpoints.
     intake.touch()
     save_intake_state(meta_dir / "intake_state.json", intake)
     return project
@@ -137,7 +136,6 @@ def client_with_project(tmp_path, monkeypatch, project_dir, project_slug):
     monkeypatch.setattr(deps_module, "HELM_INFRA_DIR", infra_tmp)
     # Disable schema validation for existing tests (they use incomplete test YAML).
     monkeypatch.setenv("DEVKIT_DPG_SCHEMA_STRICT", "0")
-    app_module._engines.clear()
     return TestClient(app_module.app), project_slug
 
 
@@ -571,10 +569,15 @@ def _make_mock_encrypted_secrets():
 
 
 def test_get_project_returns_required_secrets_and_azure_needed(tmp_path, monkeypatch):
-    """GET /api/projects/{slug} includes required_secrets and azure_storage.needed."""
+    """GET /api/projects/{slug} includes required_secrets and azure_storage.needed.
+
+    The new state model derives ``required_secrets`` from any tool in the
+    ``action_gateway`` block whose ``auth.secret_env`` is set. The
+    ``azure_storage.needed`` flag is a deferred stub in the current state
+    model and always returns ``False``; this test pins that contract.
+    """
     import json
     import dev_kit.agent.app as app_module
-    from dev_kit.agent.accumulator import ConfigAccumulator
 
     project_path = tmp_path / "configs" / "test-proj"
     project_path.mkdir(parents=True)
@@ -585,15 +588,18 @@ def test_get_project_returns_required_secrets_and_azure_needed(tmp_path, monkeyp
         '"current_phase": "tools", "phases_completed": []}'
     )
 
-    acc = ConfigAccumulator()
-    acc.add_action_gateway_tool({
-        "id": "onest_jobs",
-        "type": "rest_api",
-        "description": "ONEST jobs",
-        "auth": {"type": "api_key", "secret_env": "ONEST_API_KEY"},
-    })
-    acc.declare_azure_needed()
-    (meta_dir / "accumulator.json").write_text(json.dumps(acc.to_dict()))
+    acc = empty_accumulator()
+    acc["action_gateway"] = {
+        "tools": [
+            {
+                "id": "onest_jobs",
+                "type": "rest_api",
+                "description": "ONEST jobs",
+                "auth": {"type": "api_key", "secret_env": "ONEST_API_KEY"},
+            }
+        ]
+    }
+    (meta_dir / "accumulator.json").write_text(json.dumps(acc))
 
     monkeypatch.setattr(app_module, "CONFIGS_DIR", tmp_path / "configs")
 
@@ -606,7 +612,8 @@ def test_get_project_returns_required_secrets_and_azure_needed(tmp_path, monkeyp
     assert data["required_secrets"] == [
         {"env_var": "ONEST_API_KEY", "tool_id": "onest_jobs", "description": "ONEST jobs"}
     ]
-    assert data["azure_storage"]["needed"] is True
+    # azure_storage.needed is a deferred stub in the new state model.
+    assert data["azure_storage"]["needed"] is False
     # Must NOT include account_key or container_name
     assert "account_key" not in data["azure_storage"]
     assert "container_name" not in data["azure_storage"]
