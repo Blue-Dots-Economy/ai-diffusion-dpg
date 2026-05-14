@@ -80,7 +80,7 @@ All Trust Layer endpoints return `block` / `deny` on internal error. The Agent C
 ### Three-Tier config model: tools, not DPGs
 
 The configuration toolchain is **not part of the runtime architecture**. It operates outside the deployed system:
-- **Tier 1 — Configuration Agent:** ✅ Implemented. A FastAPI server with a React SPA frontend that interviews a domain expert through a structured conversation (8 phases) and generates all 7 domain YAML files. Lives in `dev-kit/dev_kit/agent/`.
+- **Tier 1 — Configuration Agent (Deterministic Wizard):** ✅ Implemented. A FastAPI server with a React SPA frontend that interviews a domain expert and generates all 7 domain YAML files. The wizard is deterministic: an `IntakeState` captured up front gates which of 11 declarative phases run, FIELD_RULES decide each field's category (chat / predetermined / deploy / derived / framework_default_only), the router cascades intake changes through dependent fields, and 8 canonical tools route the LLM's mutations through Pydantic-validated handlers. See [`docs/superpowers/specs/2026-05-13-devkit-deterministic-wizard-design.md`](docs/superpowers/specs/2026-05-13-devkit-deterministic-wizard-design.md). Lives in `dev-kit/dev_kit/agent/`.
 - **Tier 2 — YAML Configuration:** The canonical runtime source of truth. Read by each DPG at startup. This is what the 7 DPGs consume.
 - **Tier 3 — Live Tuning Dashboard:** A management UI that reads Observability Layer signals and patches YAML post-deployment. Not yet built.
 
@@ -552,7 +552,7 @@ These are first-class production paths, not PoC carve-outs.
 
 | Tier | What it is | Status |
 |---|---|---|
-| Tier 1 — Configuration Agent | AI interviewer that generates YAML from domain expert's natural language. FastAPI server + React SPA frontend in `dev-kit/dev_kit/agent/`. | ✅ Implemented |
+| Tier 1 — Configuration Agent | Deterministic wizard: IntakeState + FIELD_RULES + 11 declarative phases + 8-tool surface drive YAML generation. FastAPI server + React SPA frontend in `dev-kit/dev_kit/agent/`. | ✅ Implemented |
 | Tier 2 — YAML Configuration | Canonical runtime source of truth. Read by Agent Core at startup. | ✅ |
 | Tier 3 — Live Tuning Dashboard | Management UI reading Observability Layer signals to patch YAML post-deployment | ⏳ Not yet built |
 
@@ -723,7 +723,7 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 | TTS stop on barge-in | ✅ | In-flight Raya TTS audio does not stop mid-utterance on barge-in (#98) |
 | WhatsApp/Mobile channels | ⏳ | Pending |
 | Grafana dashboard provisioning | ⏳ | `automation/docker/grafana/provisioning/` not yet implemented |
-| Configuration Agent (Tier 1) | ✅ | FastAPI + React SPA; conversation-driven YAML generation for all 7 DPGs |
+| Configuration Agent (Tier 1) — Deterministic Wizard | ✅ | FastAPI + React SPA; IntakeState-gated 11-phase wizard with FIELD_RULES, 8 canonical tools, runtime-schema dry-run, and decision logging at 14 points |
 | Live Tuning Dashboard (Tier 3) | ⏳ | Dashboard reading Observability Layer signals |
 | Profile building subagent flow | ✅ | Subagent graph implemented; full profile collection partially complete |
 | Multimodal input | 🟡 | Handler exists, disabled via config |
