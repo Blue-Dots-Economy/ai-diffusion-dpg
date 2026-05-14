@@ -78,19 +78,24 @@ def test_tier_contains_4_turn_instructions():
 
 
 def test_tier_does_not_ask_form_fields():
-    """Form-captured fields must not appear as questions in the tier prompt."""
+    """Form-captured fields must not appear as questions in the tier prompt.
+
+    The LLM must NOT be instructed to ask the user for any of the 5 form
+    fields (project_name, domain_description, selected_channels,
+    default_language, supported_languages) — those are pre-populated
+    server-side before the tier phase begins.
+    """
     result = build([], "", "", _intake(
         project_name="my_project",
         domain_description="A farming advisor",
     ))
-    # project_name and domain_description appear in the "already set" block
-    # but must NOT be phrased as questions ("ask", "what is your project name")
     result_lower = result.lower()
-    # The prompt should not instruct the LLM to ask for these fields
-    assert "ask" not in result_lower.split("project_name")[0][-100:] or \
-        "do NOT ask" in result or "NOT ask" in result
-    # domain_description should appear only in the already-set section
-    assert "A farming advisor" in result  # it's shown as a value, not asked
+    # None of these imperative phrasings should appear in the output
+    assert "what is your project name" not in result_lower
+    assert "what is your domain" not in result_lower
+    assert "please provide your project name" not in result_lower
+    # domain_description value appears as a reference, not a question
+    assert "A farming advisor" in result
 
 
 def test_tier_has_update_intake_calls():
