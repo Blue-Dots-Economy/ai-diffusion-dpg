@@ -15,72 +15,31 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from dev_kit.agent.phase_prompts._helpers import _render_fields as _render_fields_generic
+
 if TYPE_CHECKING:
     from dev_kit.agent.field_rules import FieldRule
     from dev_kit.agent.intake_state import IntakeState
 
 
-def _path_of(item) -> str:
-    """Extract the dotted field path from a pending_fields item.
-
-    Args:
-        item: Either a FieldRule with a ``path`` attribute, a ``(path, rule)``
-            tuple, or any other object (falls back to ``str(item)``).
-
-    Returns:
-        The dotted field path string.
-    """
-    if hasattr(item, "path"):
-        return item.path
-    if isinstance(item, tuple) and len(item) == 2:
-        return item[0]
-    return str(item)
-
-
-def _rule_of(item):
-    """Extract the FieldRule from a pending_fields item.
-
-    Args:
-        item: Either a bare FieldRule, a ``(path, rule)`` tuple, or any object.
-
-    Returns:
-        The FieldRule object, or the item itself as a fallback.
-    """
-    if hasattr(item, "category"):
-        return item
-    if isinstance(item, tuple) and len(item) == 2:
-        return item[1]
-    return item
-
-
 def _render_fields(pending_fields: list) -> str:
-    """Render pending fields as a markdown bullet list.
+    """Render pending fields for the tier phase.
+
+    Delegates to the shared helper for non-empty lists; returns a tier-specific
+    sentinel string when the list is empty (tier flags live in IntakeState, not
+    FIELD_RULES).
 
     Args:
         pending_fields: Items where each is either a FieldRule with a ``path``
             attribute, or a ``(path, FieldRule)`` tuple.
 
     Returns:
-        Markdown bullet list with one line per field, or a note if empty.
+        Markdown bullet list with one line per field, or a tier-specific note
+        if empty.
     """
     if not pending_fields:
         return "_No outstanding fields — tier intake flags live in IntakeState, not FIELD_RULES._"
-    lines = []
-    for item in pending_fields:
-        path = _path_of(item)
-        rule = _rule_of(item)
-        desc = getattr(rule, "description", None) or ""
-        default = getattr(rule, "default", None)
-        applies_if = getattr(rule, "applies_if", None)
-        line = f"- `{path}`"
-        if desc:
-            line += f": {desc}"
-        if default is not None:
-            line += f" _(default: {default!r})_"
-        if applies_if:
-            line += f" _(applies if: {applies_if})_"
-        lines.append(line)
-    return "\n".join(lines)
+    return _render_fields_generic(pending_fields)
 
 
 def build(
