@@ -30,12 +30,6 @@ from dev_kit.agent.intake_state import IntakeState
 from dev_kit.agent.project_state import BLOCKS
 from dev_kit.schemas.validation import validate_partial
 
-# Blocks that are still actively being designed (dev-kit Docker image
-# iteration). This was previously imported from accumulator.DRAFT_BLOCKS but
-# is now inlined here because accumulator is no longer a dependency of the
-# renderer. Currently empty — all 7 blocks have stable wizard phases.
-_DRAFT_BLOCKS: frozenset[str] = frozenset()
-
 # ---------------------------------------------------------------------------
 # Path helpers — replicates the _KIT_ROOT pattern from dev_kit/loader.py so
 # this module can find dpg/<block>.yaml without importing private internals.
@@ -149,7 +143,12 @@ def _prepare_block_data(block: str, accumulator: dict[str, dict]) -> dict[str, A
         Cleaned domain data dict (internal ``_``-prefixed keys stripped), or
         an empty dict if the block has no data yet.
     """
-    data = dict(accumulator.get(block) or {})
+    raw = accumulator.get(block) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"accumulator[{block!r}] must be a dict, got {type(raw).__name__}"
+        )
+    data = dict(raw)
     if not data:
         return {}
 
@@ -293,6 +292,10 @@ def render_all(
     """
     if project_path is None:
         raise ValueError("project_path must not be None")
+    if accumulator is None:
+        raise ValueError(
+            "accumulator is required (got None); pass empty_accumulator() for a fresh project"
+        )
 
     # ------------------------------------------------------------------
     # Step 1: Pre-deploy dry-run — validate each block through the
@@ -339,7 +342,7 @@ def render_all(
             # Mirror-schema warnings are advisory; write them as comments
             # but still return "complete" — the runtime dry-run is
             # authoritative.
-            error_lines = "\n".join(f"# WARNINGS:\n#   - {e}" for e in errors)
+            error_lines = "# WARNINGS:\n" + "\n".join(f"#   - {e}" for e in errors)
             out_path.write_text(error_lines + "\n" + yaml_content)
         else:
             out_path.write_text(yaml_content)
@@ -352,7 +355,7 @@ def render_all(
 def load_block_from_file(project_path: Path, block: str) -> dict:
     """Load a block YAML file back into a dict (for reverse-sync from manual edits).
 
-    Strips the draft header comment before parsing.
+    Strips comment lines (including advisory ``# WARNINGS:`` blocks) before parsing.
 
     Args:
         project_path: Absolute path to the project's configs directory.
@@ -365,7 +368,7 @@ def load_block_from_file(project_path: Path, block: str) -> dict:
     if not path.exists():
         return {}
     raw = path.read_text()
-    # Strip comment lines (draft header)
+    # Strip comment lines
     lines = [line for line in raw.splitlines() if not line.startswith("#")]
     parsed = yaml.safe_load("\n".join(lines)) or {}
     # Reverse of render-time merge: keep the in-memory suffix free of the

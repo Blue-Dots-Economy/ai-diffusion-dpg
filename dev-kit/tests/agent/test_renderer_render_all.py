@@ -228,3 +228,49 @@ class TestRenderAllInputValidation:
         written = yaml.safe_load((tmp_path / "knowledge_engine.yaml").read_text())
         assert "_internal" not in written
         assert written == {"retrieval": {"top_k": 3}}
+
+    def test_render_all_raises_on_non_dict_block_value(self, tmp_path: Path) -> None:
+        """A non-dict block value in the accumulator raises ValueError."""
+        project = tmp_path / "proj"
+        project.mkdir()
+        acc = empty_accumulator()
+        acc["agent_core"] = "not_a_dict"  # type: ignore[assignment]
+        with pytest.raises(ValueError, match="must be a dict"):
+            render_all(project, acc, _intake())
+
+    def test_render_all_raises_on_none_accumulator(self, tmp_path: Path) -> None:
+        """Passing None as accumulator raises ValueError immediately."""
+        project = tmp_path / "proj"
+        with pytest.raises(ValueError, match="accumulator is required"):
+            render_all(project, None, _intake())  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Mirror-schema warning header
+# ---------------------------------------------------------------------------
+
+
+class TestRenderAllWarningHeader:
+    def test_mirror_warning_writes_warnings_header_once(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """validate_partial returning >=2 errors yields a single '# WARNINGS:' header."""
+        from dev_kit.agent import renderer
+
+        monkeypatch.setattr(
+            renderer,
+            "validate_partial",
+            lambda block, data: ["bad field x", "bad field y"]
+            if block == "agent_core"
+            else [],
+        )
+        project = tmp_path / "proj"
+        project.mkdir()
+        acc = empty_accumulator()
+        acc["agent_core"] = {"agent": {"primary_model": "claude-sonnet-4-5"}}
+        statuses = render_all(project, acc, _intake())
+        assert statuses["agent_core"] == "complete"
+        body = (project / "agent_core.yaml").read_text()
+        assert body.count("# WARNINGS:") == 1
+        assert "#   - bad field x" in body
+        assert "#   - bad field y" in body
