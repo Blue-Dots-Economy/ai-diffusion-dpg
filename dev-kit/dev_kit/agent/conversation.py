@@ -6,6 +6,7 @@ maintains conversation history, and persists state after each turn.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os as _os
@@ -15,12 +16,14 @@ from pathlib import Path
 import anthropic
 from tenacity import before_sleep_log, retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
+from dev_kit.agent import phase_driver
 from dev_kit.agent.accumulator import PHASES, ConfigAccumulator
 from dev_kit.agent.checkpoints import build_summary, list_checkpoints, restore_checkpoint, save_checkpoint
 from dev_kit.agent.errors import ConversationError
+from dev_kit.agent.phase_driver import LLMResponse, ToolCall, load_current_phase
 from dev_kit.agent.prompts.base import build_system_prompt
 from dev_kit.agent.renderer import render_all
-from dev_kit.agent.tools import TOOL_DEFINITIONS, ToolHandler
+from dev_kit.agent.tools import DEVKIT_TOOL_SCHEMAS, TOOL_DEFINITIONS, ToolHandler
 
 _MODEL = _os.environ.get("DEVKIT_MODEL", "claude-haiku-4-5-20251001")
 _MAX_TOKENS = int(_os.environ.get("DEVKIT_MAX_TOKENS", "4096"))
@@ -264,8 +267,148 @@ class ConversationEngine:
     async def chat(self, user_message: str) -> dict:
         """Process a user message and return the agent's response.
 
-        Calls Claude, dispatches any tool calls, saves state, and re-renders
-        YAML config files.
+        Routes to one of two backends:
+
+        * **New deterministic wizard** — when ``_meta/intake_state.json``
+          exists. Delegates to ``phase_driver.run_turn`` which builds the
+          phase prompt, calls the LLM, routes tool calls through the new 8-tool
+          registry, and persists intake/accumulator/field_status to disk.
+        * **Legacy LLM-orchestrated wizard** — when no intake state file is
+          present (older projects). Original behaviour: builds the legacy
+          system prompt, calls Claude, dispatches the legacy tool set, and
+          re-renders YAML configs.
+
+        Args:
+            user_message: The user's input text.
+
+        Returns:
+            Dict with keys depending on the backend:
+
+            * New wizard: ``reply``, ``phase``, ``config_updates`` (always []),
+              ``checkpoint_created`` (None), ``graph`` ({}).
+            * Legacy: ``reply``, ``phase``, ``config_updates``,
+              ``checkpoint_created``, ``graph``.
+
+        Raises:
+            ConversationError: If the Anthropic API call fails after retries
+                (legacy path), or if the new-wizard path's LLM call fails.
+        """
+        intake_path = self._project_path / "_meta" / "intake_state.json"
+        if intake_path.exists():
+            return await self._chat_new_wizard(user_message)
+        return await self._chat_legacy(user_message)
+
+    def _build_phase_driver_llm_call(self):
+        """Return a synchronous llm_call wrapper for phase_driver.run_turn.
+
+        Builds a fresh ``anthropic.Anthropic`` (sync) client per call. Cheap to
+        construct, and lets us bridge ``phase_driver.run_turn``'s synchronous
+        ``llm_call`` callable from the async ``chat()`` method via
+        ``asyncio.to_thread``.
+
+        Returns:
+            A callable ``(system_prompt, user_message) -> LLMResponse``.
+        """
+        def _llm_call(system_prompt: str, user_message: str) -> LLMResponse:
+            sync_client = anthropic.Anthropic()
+            response = sync_client.messages.create(
+                model=_MODEL,
+                max_tokens=_MAX_TOKENS,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_message}],
+                tools=DEVKIT_TOOL_SCHEMAS,
+                timeout=30.0,
+            )
+            text_parts: list[str] = []
+            tool_calls: list[ToolCall] = []
+            for block in response.content:
+                if getattr(block, "type", None) == "text":
+                    text_parts.append(block.text)
+                elif getattr(block, "type", None) == "tool_use":
+                    tool_calls.append(
+                        ToolCall(name=block.name, args=dict(block.input))
+                    )
+            usage = getattr(response, "usage", None)
+            return LLMResponse(
+                text="\n".join(text_parts),
+                tool_calls=tool_calls,
+                model=getattr(response, "model", None),
+                input_tokens=getattr(usage, "input_tokens", None),
+                output_tokens=getattr(usage, "output_tokens", None),
+            )
+
+        return _llm_call
+
+    async def _chat_new_wizard(self, user_message: str) -> dict:
+        """Delegate the turn to phase_driver.run_turn (deterministic wizard).
+
+        Wraps the sync ``llm_call`` in ``asyncio.to_thread`` so this method
+        stays awaitable from FastAPI handlers. Appends both the user and
+        assistant messages to ``self._history`` so the existing
+        ``GET /history`` endpoint keeps working.
+
+        Args:
+            user_message: The user's input text.
+
+        Returns:
+            Dict with ``reply``, ``phase``, ``config_updates`` (empty),
+            ``checkpoint_created`` (None), and ``graph`` (empty).
+
+        Raises:
+            ConversationError: If phase_driver.run_turn fails for any reason.
+        """
+        slug = self._project_path.name
+        projects_root = self._project_path.parent
+        logger.info(
+            "conversation.chat.new_wizard",
+            extra={
+                "operation": "conversation.chat.new_wizard",
+                "status": "started",
+                "slug": slug,
+            },
+        )
+        try:
+            response_text = await asyncio.to_thread(
+                phase_driver.run_turn,
+                user_message,
+                slug,
+                projects_root=projects_root,
+                llm_call=self._build_phase_driver_llm_call(),
+            )
+        except Exception as exc:
+            logger.error(
+                "conversation.chat.new_wizard_failed",
+                extra={
+                    "operation": "conversation.chat.new_wizard",
+                    "status": "failure",
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                    "slug": slug,
+                },
+                exc_info=True,
+            )
+            raise ConversationError(f"phase_driver.run_turn failed: {exc}") from exc
+
+        self._history.append({"role": "user", "content": user_message})
+        self._history.append({"role": "assistant", "content": response_text})
+        self._save_history()
+
+        return {
+            "reply": response_text,
+            "phase": load_current_phase(self._project_path),
+            "config_updates": [],
+            "checkpoint_created": None,
+            "graph": {},
+        }
+
+    async def _chat_legacy(self, user_message: str) -> dict:
+        """Legacy LLM-orchestrated wizard path (pre-deterministic).
+
+        Original ``chat()`` body: builds the legacy system prompt, calls
+        Claude, dispatches legacy tool calls, manages phase transitions and
+        checkpoints, persists state, and re-renders YAML configs. Kept for
+        projects created before the new wizard. Will be removed in Task 12.2
+        once no legacy projects remain.
 
         Args:
             user_message: The user's input text.
@@ -277,6 +420,15 @@ class ConversationEngine:
         Raises:
             ConversationError: If the Anthropic API call fails after retries.
         """
+        logger.info(
+            "conversation.chat.legacy",
+            extra={
+                "operation": "conversation.chat.legacy",
+                "status": "started",
+                "slug": self._project_path.name,
+            },
+        )
+
         async def _call_llm(system: str, messages: list) -> object:
             start = time.time()
             try:

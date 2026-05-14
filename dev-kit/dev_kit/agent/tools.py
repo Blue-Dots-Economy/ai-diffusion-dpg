@@ -59,6 +59,84 @@ __all__ = [
     "add_tool",
     "parse_openapi_spec",
     "discover_mcp_tools",
+    "DEVKIT_TOOL_SCHEMAS",
+]
+
+
+# Anthropic tool-use JSON schemas for the canonical 8-tool set. Exposed so the
+# new-wizard path in conversation.py can hand them to the Claude API.
+#
+# These are intentionally MINIMAL ("type": "object" with no strict properties)
+# so phase_driver.run_turn dispatches by name regardless of arg shape. The 8
+# Python handlers in this module perform their own arg validation and return
+# structured errors on malformed input. Schema strictness can be tightened in a
+# follow-up once the new wizard end-to-end flow is stable.
+DEVKIT_TOOL_SCHEMAS: list[dict] = [
+    {
+        "name": "update_intake",
+        "description": (
+            "Set or update a single IntakeState field. Args: field (str — e.g. 'has_kb', "
+            "'is_multi_turn'), value (any). Cascades through FIELD_RULES to invalidate "
+            "dependent answers."
+        ),
+        "input_schema": {"type": "object"},
+    },
+    {
+        "name": "update_config",
+        "description": (
+            "Write a user chat answer to the accumulator with mirror validation. "
+            "Preferred form: {path: 'block.section.field', value: ...}. "
+            "Legacy form: {block, section, values}."
+        ),
+        "input_schema": {"type": "object"},
+    },
+    {
+        "name": "add_subagent",
+        "description": (
+            "Append a subagent definition to agent_core.agent_workflow.subagents. "
+            "Args: definition (dict with at least an 'id' key)."
+        ),
+        "input_schema": {"type": "object"},
+    },
+    {
+        "name": "update_subagent",
+        "description": (
+            "Modify fields on an existing subagent. Args: id (str), fields (dict)."
+        ),
+        "input_schema": {"type": "object"},
+    },
+    {
+        "name": "add_routing_rule",
+        "description": (
+            "Append a routing rule (transition edge) to a subagent. "
+            "Args: from_subagent_id, intent, to_subagent_id, optional condition."
+        ),
+        "input_schema": {"type": "object"},
+    },
+    {
+        "name": "add_tool",
+        "description": (
+            "Add a tool to action_gateway.tools and the matching agent_core connector. "
+            "Args: spec (dict with id, type, category, endpoints)."
+        ),
+        "input_schema": {"type": "object"},
+    },
+    {
+        "name": "parse_openapi_spec",
+        "description": (
+            "Parse an OpenAPI 3.0/3.1 spec (JSON or YAML string, or dict) and return "
+            "candidate tool operations. Does not mutate state. Args: spec."
+        ),
+        "input_schema": {"type": "object"},
+    },
+    {
+        "name": "discover_mcp_tools",
+        "description": (
+            "List tools available on an MCP server. Args: server_url (str). "
+            "Currently a placeholder — returns an empty list."
+        ),
+        "input_schema": {"type": "object"},
+    },
 ]
 
 
