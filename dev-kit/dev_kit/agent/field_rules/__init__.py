@@ -10,17 +10,37 @@ See docs/superpowers/specs/2026-05-13-devkit-field-rules-catalogue.md §2.
 from __future__ import annotations
 
 from dataclasses import dataclass, field as dc_field
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, get_args
 
 Category = Literal[
     "predetermined", "chat", "deploy", "derived", "framework_default_only"
 ]
-_VALID_CATEGORIES = set(Category.__args__)  # type: ignore[attr-defined]
+_VALID_CATEGORIES = set(get_args(Category))
 
 
 @dataclass(frozen=True)
 class FieldRule:
-    """Per-field rule. See catalogue §2.2 for category semantics."""
+    """Per-field rule definition for the wizard's FIELD_RULES registry.
+
+    A rule's `category` determines which other attributes are meaningful:
+
+    - `predetermined`: requires `rule` (set: <python_expression>). Recomputed
+      whenever any field in `invalidated_by` changes.
+    - `chat`: requires `phase`. May carry `default`, `description`,
+      `applies_if`, `invalidated_by`, `must_include`. Set `deploy_overridable=True`
+      to additionally surface in the deploy form.
+    - `deploy`: captured by the deploy form (not chat). May set `advanced=True`
+      for collapsible groups.
+    - `derived`: requires `compute` (a python expression). No user input.
+    - `framework_default_only`: lives in dpg/<block>.yaml. Skeleton never
+      writes it; allowlisted from the Coverage CI guard.
+
+    Categories are mutually exclusive. `__post_init__` rejects any value
+    not in `Category`.
+
+    See docs/superpowers/specs/2026-05-13-devkit-field-rules-catalogue.md §2.2
+    for the canonical semantics.
+    """
 
     category: Category
 
@@ -62,9 +82,10 @@ FIELD_RULES_PHASES_VALID = {
 }
 
 
-# AGGREGATED_FIELD_RULES is built lazily by the loader below; populated
-# after every per-block module has registered its FIELD_RULES dict.
-# At plan-time it's empty — each block module fills it in Phase 3.
+# AGGREGATED_FIELD_RULES is module-level mutable state. Per-block modules
+# call register_block_rules() at import time, so any test that imports a
+# per-block module pre-populates this dict. Tests that touch the registry
+# directly should snapshot and restore (see tests/agent/test_field_rules_dataclass.py).
 AGGREGATED_FIELD_RULES: dict[str, FieldRule] = {}
 
 
@@ -72,12 +93,26 @@ def register_block_rules(block_name: str, rules: dict[str, FieldRule]) -> None:
     """Register a block's FIELD_RULES into the aggregate registry.
 
     Args:
-        block_name: e.g. "agent_core", "trust_layer".
+        block_name: Simple identifier (no dots), e.g. "agent_core", "trust_layer".
         rules: The block's FIELD_RULES dict with paths relative to block root.
+            Every value must be a FieldRule instance.
+
+    Raises:
+        ValueError: If block_name is empty or contains dots.
+        TypeError: If any value in rules is not a FieldRule instance.
 
     Mutation: prefixes each path with `<block_name>.` and inserts into
     AGGREGATED_FIELD_RULES. Re-registering the same block replaces its entries.
     """
+    if not block_name or "." in block_name:
+        raise ValueError(
+            f"block_name must be a simple identifier with no dots, got {block_name!r}"
+        )
+    for path, rule in rules.items():
+        if not isinstance(rule, FieldRule):
+            raise TypeError(
+                f"Expected FieldRule for {block_name}.{path!r}, got {type(rule).__name__}"
+            )
     # Drop previous entries for this block (idempotent re-registration).
     prefix = f"{block_name}."
     for path in list(AGGREGATED_FIELD_RULES.keys()):
