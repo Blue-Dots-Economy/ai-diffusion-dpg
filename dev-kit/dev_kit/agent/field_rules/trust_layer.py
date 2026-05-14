@@ -148,7 +148,7 @@ FIELD_RULES: dict[str, FieldRule] = {
     ),
     "dignity_check.questions": FieldRule(
         category="predetermined",
-        rule=f"set: {_CANONICAL_DIGNITY_QUESTIONS!r} if is_companion_style else []",
+        rule="set: _CANONICAL_DIGNITY_QUESTIONS if is_companion_style else []",
         invalidated_by=["is_companion_style"],
         pydantic_class="DignityCheckSection",
     ),

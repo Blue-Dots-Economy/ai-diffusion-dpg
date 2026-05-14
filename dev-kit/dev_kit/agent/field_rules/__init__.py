@@ -126,3 +126,15 @@ __all__ = [
     "FieldRule", "Category", "FIELD_RULES_PHASES_VALID",
     "AGGREGATED_FIELD_RULES", "register_block_rules",
 ]
+
+# Eagerly import every block module so register_block_rules() runs and
+# AGGREGATED_FIELD_RULES is fully populated.
+from dev_kit.agent.field_rules import (  # noqa: E402, F401
+    agent_core,
+    trust_layer,
+    knowledge_engine,
+    memory_layer,
+    action_gateway,
+    reach_layer,
+    observability_layer,
+)
