@@ -224,18 +224,21 @@ FIELD_RULES: dict[str, FieldRule] = {
     "connectors.internal[name=knowledge_retrieval].name": FieldRule(
         category="predetermined",
         rule="set: 'knowledge_retrieval'",
+        applies_if="has_kb",
         invalidated_by=["has_kb"],
         pydantic_class="ConnectorsSection",
     ),
     "connectors.internal[name=knowledge_retrieval].route": FieldRule(
         category="predetermined",
         rule="set: 'knowledge_engine'",
+        applies_if="has_kb",
         invalidated_by=["has_kb"],
         pydantic_class="ConnectorsSection",
     ),
     "connectors.internal[name=knowledge_retrieval].input_schema": FieldRule(
         category="predetermined",
-        rule="set: {'query': {'type': 'string'}} if has_kb else {}",
+        rule="set: {'query': {'type': 'string'}}",
+        applies_if="has_kb",
         invalidated_by=["has_kb"],
         pydantic_class="ConnectorsSection",
     ),

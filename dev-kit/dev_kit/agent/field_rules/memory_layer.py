@@ -78,7 +78,7 @@ FIELD_RULES: dict[str, FieldRule] = {
     "state.persistent.merge_on_session_end": FieldRule(
         category="chat",
         phase="memory",
-        applies_if="needs_persistent_user_data AND is_multi_turn",
+        applies_if="needs_persistent_user_data and is_multi_turn",
         invalidated_by=["needs_persistent_user_data", "is_multi_turn"],
         default=[],
         description="Rules for merging session fields → graph node at session end.",
@@ -99,7 +99,7 @@ FIELD_RULES: dict[str, FieldRule] = {
     "reengagement.triggers": FieldRule(
         category="chat",
         phase="memory",
-        applies_if="is_multi_turn AND has_external_tools",
+        applies_if="is_multi_turn and has_external_tools",
         invalidated_by=["is_multi_turn", "selected_channels"],
         default=[],
         description="List of re-engagement triggers (event, delay_hours, channel, message_template, etc.). GH-168: scheduler not yet wired.",

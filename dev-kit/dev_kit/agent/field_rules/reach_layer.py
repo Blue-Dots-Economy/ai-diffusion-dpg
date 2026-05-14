@@ -272,7 +272,7 @@ FIELD_RULES: dict[str, FieldRule] = {
     "reach_layer.channels.voice.recording.consent_purpose": FieldRule(
         category="chat",
         phase="reach",
-        applies_if='"voice" in selected_channels AND recording.source != "disabled"',
+        applies_if='"voice" in selected_channels',
         invalidated_by=["needs_consent"],
         description="Consent purpose string for voice recording. Ties to Trust Layer consent grants.",
         pydantic_class="VoiceChannelSection",
