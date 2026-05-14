@@ -751,3 +751,71 @@ When this session's context starts getting tight, stop at the next clean
 phase boundary, commit, and append a "Session 4" section to the session
 notes file describing where to pick up next.
 ```
+
+---
+
+## Session 4 notes — state-layer migration kicked off
+
+**Date:** 2026-05-14
+
+**Scope:** After the deterministic-wizard implementation was reported complete, a verification audit revealed the old wizard's state model (`ConfigAccumulator`, `ConversationEngine`, `checkpoints.py`, `ConfigStatus`) was never replaced — only the chat turn handler was rewired. Roughly 30 `/api/projects/*` endpoints still depend on the old state. User chose **Path A — full migration on this branch**.
+
+### What landed in Session 4
+
+| Commit | What |
+|---|---|
+| `8fe2b8b` | Wired IntakeState into app.py deploy preview + runner (replaces ConfigAccumulator at 4 call sites; adds has_kb/has_external_tools strips; depends_on cleanup) |
+| `cc10904` | Removed unused `compose_generator.py` + its tests (dead code from prior session) |
+| `16daa11` | **State-layer migration plan** at `docs/superpowers/plans/2026-05-14-devkit-state-layer-migration.md` — 7 phases, 22 tasks |
+| `8e45ad0` | Phase A.1 — `project_state.py` (accumulator dict persistence, 6 tests) |
+| `6499067` | Phase A.2 — `history.py` (append-only jsonl, 5 tests) |
+| `3e63f7b` | Phase A.3 — `block_status.py` (derive complete/incomplete from field_status, 7 tests) |
+
+**Net:** Phase A of the migration plan complete. 18 new tests added. New state modules ready for downstream phases.
+
+### Status snapshot
+
+- **Migration plan:** `docs/superpowers/plans/2026-05-14-devkit-state-layer-migration.md` (read this for the full task breakdown)
+- **Phase A:** ✅ Complete (3 tasks)
+- **Phase B:** ⏳ Next — refactor `renderer.render_all` to take `accumulator: dict` + `IntakeState` instead of `ConfigAccumulator`
+- **Phase C–G:** Pending — endpoint migration, deletions, UI updates, test migration, smoke + docs
+
+### Locked design decisions (do NOT revisit)
+
+| ID | Decision |
+|---|---|
+| D1 | `_meta/accumulator.json` is pure block YAML state (no status/phase). Implemented in `project_state.py`. |
+| D2 | `_meta/history.jsonl` is append-only chat history. Implemented in `history.py`. |
+| D3 | `ConfigStatus` enum is replaced by `"complete" / "incomplete"` strings derived from `field_status.json`. Implemented in `block_status.py`. |
+| D4 | **Checkpoints feature is dropped entirely.** No replacement. Delete `checkpoints.py`, 3 endpoints, React UI bits. |
+| D5 | `ConversationEngine` class is dropped. Endpoints use per-request loaders. `/chat` calls `phase_driver.run_turn` directly. |
+
+### Next-session kick-off prompt
+
+```
+Continue executing the implementation plan at:
+docs/superpowers/plans/2026-05-14-devkit-state-layer-migration.md
+
+READ THIS FIRST (execution discoveries from prior sessions):
+docs/superpowers/plans/2026-05-14-implementation-session-notes.md (Session 4
+section is the most relevant)
+
+Status: Phase A complete on branch `docs/devkit-config-generation-revamp-design`.
+Pick up at Phase B (Task B.1 — refactor renderer.render_all to take
+accumulator: dict + IntakeState; drop ConfigAccumulator + ConfigStatus
+dependencies).
+
+Use the superpowers:subagent-driven-development skill. Dispatch a fresh
+subagent per task, two-stage review (spec → code quality) after each.
+
+When this session's context starts getting tight, stop at the next clean
+phase boundary, commit, and append a "Session 5" section to the session
+notes file describing where to pick up next.
+```
+
+### Watch out for in Phase B onwards
+
+- **`renderer.render_all` change is breaking** — every caller (mostly in `app.py`) needs simultaneous update. Don't merge Phase B without ALSO updating callers, OR temporarily keep a legacy wrapper that adapts the old call shape.
+- **`accumulator.py` is still imported by:** `conversation.py`, `tools.py`, `renderer.py`, `app.py`, `phase_driver.py` (docstring reference only), `checkpoints.py`, and 6 test files. Don't try to delete it until Phase D — earlier phases need to migrate callers one-by-one.
+- **`tools.py`'s `update_config` writes to `ConfigAccumulator` today.** Must be rewired to read+write the accumulator dict + `save_accumulator(...)`. This is Phase C work but worth flagging — the deterministic wizard's runtime depends on tools.py writing correctly to the new state.
+- **Phase C is the bulk of the work** (~30 endpoints, 4 sub-tasks in the plan). Recommend dispatching one sub-task per fresh session to keep reviews tractable.
