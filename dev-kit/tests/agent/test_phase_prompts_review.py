@@ -66,3 +66,22 @@ def test_build_renders_pending_fields():
     assert "Blocked phrase list" in result
     assert "trust_layer.consent.required" in result
     assert "Whether consent is required" in result
+
+
+def test_review_mentions_re_asking():
+    """The review prompt must explicitly instruct re-asking needs_re_asking fields."""
+    result = build([], "", "", _intake())
+    result_lower = result.lower()
+    assert "needs_re_asking" in result_lower or "re-ask" in result_lower
+
+
+def test_review_does_not_instruct_set_phase():
+    """The review prompt must NOT instruct the LLM to call set_phase(...)."""
+    result = build([], "", "", _intake())
+    assert "set_phase(" not in result
+
+
+def test_review_directs_to_deploy_or_validate_config():
+    """The review prompt must reference the terminal handoff step (Deploy or validate_config)."""
+    result = build([], "", "", _intake())
+    assert any(token in result for token in ("Deploy", "validate_config", "complete"))

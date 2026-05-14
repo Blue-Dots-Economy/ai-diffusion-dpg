@@ -46,10 +46,15 @@ def build(
 
     return f"""# Phase: Review
 
-You are now in the final review phase. Your goal is to run a full
-schema-coverage check across all 7 DPG blocks, surface any empty required
-fields, and repair them before declaring the configuration complete.
+You are now in the final review phase. **Before running cross-block invariants,
+re-ask any fields that were marked `needs_re_asking` in prior phases** — these
+appear in the "Fields to capture this phase" section below if any exist. Work
+through every `needs_re_asking` field first: ask the user for the value, call
+the appropriate `update_config` tool to record it, and confirm before
+continuing. If `pending_fields` is empty (no `needs_re_asking` fields remain),
+note that briefly and proceed directly to the cross-block checks.
 
+Once re-asking is done, run the full schema-coverage check using `validate_config`.
 The `validate_config` tool reads every block's YAML template, compares it
 against the accumulated config, and returns a list of empty required fields
 with exact dotted paths (e.g. `reach_layer.channels.voice.terminal_word`,
