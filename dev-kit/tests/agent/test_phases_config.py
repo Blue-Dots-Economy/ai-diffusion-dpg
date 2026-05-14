@@ -12,6 +12,10 @@ import pytest
 
 from dev_kit.agent.intake_state import IntakeState
 from dev_kit.agent.phases_config import PHASES, PhaseDefinition
+
+# Transitional pin: once Task 6.3 wires phase_driver to PHASES and removes the
+# duplicate PHASE_ORDER from router.py, delete this import and the
+# TestOrderMatchesRouterPhaseOrder class below.
 from dev_kit.agent.router import PHASE_ORDER
 
 # ---------------------------------------------------------------------------

@@ -28,9 +28,9 @@ class PhaseDefinition:
     Attributes:
         id: Canonical phase identifier; must match the key in ``PHASES``.
         label: Human-readable phase title shown in the wizard UI.
-        prompt_module: Dotted module name under ``dev_kit.agent.phase_prompts``
-            that the phase driver loads at runtime to obtain the phase prompt
-            function.  Stored as a string (not a callable) to avoid circular
+        prompt_module: Leaf module name under ``dev_kit.agent.phase_prompts``
+            that the phase driver imports at runtime to obtain the phase prompt
+            function. Stored as a string (not a callable) to avoid circular
             imports during test collection.
         next_default: The id of the next phase in the default chain, or
             ``None`` for the terminal phase (``review``).
@@ -63,6 +63,10 @@ PHASES: dict[str, PhaseDefinition] = {
         "knowledge", "Knowledge base", "knowledge", "memory",
         lambda s: s.has_kb,
     ),
+    # "memory" is always relevant: every deployment has at least a session
+    # scope. Deviates from the plan's lambda (is_multi_turn or
+    # needs_persistent_user_data) to match router.PHASE_RELEVANCE["memory"];
+    # individual memory chat fields remain gated by their own applies_if.
     "memory": PhaseDefinition(
         "memory", "Memory & sessions", "memory", "user_state", _always
     ),
@@ -90,3 +94,6 @@ PHASES: dict[str, PhaseDefinition] = {
         "review", "Review", "review", None, _always
     ),
 }
+
+
+__all__ = ["PhaseDefinition", "PHASES"]
