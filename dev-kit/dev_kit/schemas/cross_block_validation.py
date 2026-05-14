@@ -21,11 +21,11 @@ from __future__ import annotations
 from typing import Iterable, Optional
 
 
-# Phase ordering, mirrored from dev_kit.agent.accumulator.PHASES so the
-# validator stays self-contained (no circular import). Index in this list
-# determines whether a check is "applicable yet" — checks tied to a phase
-# only fire when the LLM is leaving that phase or a later one. Keep this
-# in sync if PHASES changes.
+# Phase ordering, mirrored from phases_config.PHASES (formerly
+# dev_kit.agent.accumulator.PHASES, now deleted) so the validator stays
+# self-contained (no circular import). Index in this list determines whether
+# a check is "applicable yet" — checks tied to a phase only fire when the LLM
+# is leaving that phase or a later one. Keep this in sync if PHASES changes.
 _PHASES: list[str] = [
     "tier",
     "overview",

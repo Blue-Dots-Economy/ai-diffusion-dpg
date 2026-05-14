@@ -29,7 +29,6 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from dev_kit.agent.accumulator import BLOCKS, ConfigAccumulator
 from dev_kit.agent.auth import verify_api_key as _verify_api_key
 from dev_kit.agent.block_status import all_block_statuses, block_completion_status
 from dev_kit.agent.crypto import decrypt_secrets_dict, get_public_key_spki_b64
@@ -44,6 +43,7 @@ from dev_kit.agent.phase_driver import (
     save_current_phase,
 )
 from dev_kit.agent.project_state import (
+    BLOCKS,
     empty_accumulator,
     load_accumulator,
     # Aliased to disambiguate from phase_driver.save_accumulator (line 45) which

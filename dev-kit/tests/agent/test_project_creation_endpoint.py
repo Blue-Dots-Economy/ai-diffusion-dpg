@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key-placeholder")
 
 import dev_kit.agent.app as app_module
-from dev_kit.agent.accumulator import BLOCKS
+from dev_kit.agent.project_state import BLOCKS
 from dev_kit.agent.intake_state import load_intake_state
 
 

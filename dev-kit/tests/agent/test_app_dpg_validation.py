@@ -12,7 +12,7 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "test-key-placeholder")
 
 import dev_kit.agent.app as app_module
 import dev_kit.agent.deployer.dependencies as deps_module
-from dev_kit.agent.accumulator import BLOCKS
+from dev_kit.agent.project_state import BLOCKS
 
 
 def _create_infra_tmp(tmp_path: Path) -> Path:
