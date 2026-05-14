@@ -164,10 +164,14 @@ This ensures action_gateway has a non-empty config. Do NOT skip this step.
 **After each REST API tool — ALWAYS do this:**
 1. Ask: "Can you share a sample JSON response? Or describe the key fields
    you need the AI to work with."
-2. Identify fields and their JSONPaths.
-3. Confirm the field list with the user.
-4. Call `set_response_transformation(tool_id=..., fields=[...])` if needed.
-   Skip if the user does not want response filtering.
+2. Identify the key fields the LLM needs and their JSONPaths in the response
+   structure.
+3. Confirm the field list with the user: "I'll extract these fields: ...
+   Does that look right?"
+4. Record the confirmed field list in the invocation_rules `bridge_line`
+   or as a connector description note so the LLM knows what to surface.
+   (Response field filtering is configured separately — ask the user if they
+   want to restrict the raw response passed to the LLM.)
 
 **Auth credentials:** When auth is required, do NOT ask for the credential
 value in chat. Say: "This tool needs an API key in env var `<auth_secret_env>`.
