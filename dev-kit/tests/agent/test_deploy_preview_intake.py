@@ -10,26 +10,18 @@ See:
 """
 from __future__ import annotations
 
-import pytest
-
-pytest.skip(
-    "Phase F will migrate or rewrite these tests against the new "
-    "render_all(dict, IntakeState) signature; quarantined for now so "
-    "accumulator.py can be deleted without breaking collection.",
-    allow_module_level=True,
-)
-
 import json
 import os
 
+import pytest
 import yaml as _yaml
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key-placeholder")
 
 import dev_kit.agent.app as app_module
-from dev_kit.agent.accumulator import BLOCKS, ConfigAccumulator
 from dev_kit.agent.intake_state import IntakeState, save_intake_state
+from dev_kit.agent.project_state import BLOCKS, empty_accumulator
 from dev_kit.agent.renderer import render_all
 
 
@@ -80,8 +72,8 @@ def _build_project(tmp_path, slug: str, intake: IntakeState):
         "phases_completed": [],
     }
     (meta_dir / "project.json").write_text(json.dumps(meta))
-    acc = ConfigAccumulator()
-    render_all(project, acc)
+    acc = empty_accumulator()
+    render_all(project, acc, intake)
     _write_intake(project, intake)
     return project
 
@@ -306,8 +298,8 @@ class TestLegacyProjectWithoutIntakeState:
                 "current_phase": "overview", "phases_completed": [],
             })
         )
-        acc = ConfigAccumulator()
-        render_all(project, acc)
+        acc = empty_accumulator()
+        render_all(project, acc, _make_intake())
         # Intentionally do NOT write intake_state.json.
 
         res = client.post(
