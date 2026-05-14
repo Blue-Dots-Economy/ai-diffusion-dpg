@@ -1,6 +1,4 @@
 """Tests for path_ops: get/set/clear with [name=X] list-of-objects syntax."""
-import pytest
-
 from dev_kit.agent.path_ops import get_path, set_path, clear_path
 
 
