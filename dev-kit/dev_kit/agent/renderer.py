@@ -15,10 +15,14 @@ When running on the host (no baked-in schemas), the dry-run pass is a no-op.
 """
 from __future__ import annotations
 
+import logging
+import time
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 from dev_kit.agent.accumulator import BLOCKS, DRAFT_BLOCKS, ConfigAccumulator, ConfigStatus
 from dev_kit.agent.channel_tts import merge_voice_tts_into_suffix, strip_voice_tts_from_suffix
@@ -386,6 +390,8 @@ def runtime_validate(block: str, data: dict) -> None:
     """
     from dev_kit.agent.errors import RuntimeValidationError
 
+    _start = time.time()
+
     if RUNTIME_SCHEMAS is None:
         raise RuntimeValidationError(
             block,
@@ -403,4 +409,31 @@ def runtime_validate(block: str, data: dict) -> None:
     try:
         schema_cls.model_validate(data)
     except Exception as e:
+        _latency_ms = int((time.time() - _start) * 1000)
+        try:
+            _validation_errors = e.errors()
+        except AttributeError:
+            _validation_errors = str(e)
+        logger.error(
+            "renderer.runtime_validate",
+            extra={
+                "operation": "renderer.runtime_validate",
+                "status": "failure",
+                "block": block,
+                "latency_ms": _latency_ms,
+                "validation_errors": _validation_errors,
+            },
+        )
         raise RuntimeValidationError(block, e) from e
+
+    _latency_ms = int((time.time() - _start) * 1000)
+    logger.info(
+        "renderer.runtime_validate",
+        extra={
+            "operation": "renderer.runtime_validate",
+            "status": "success",
+            "block": block,
+            "latency_ms": _latency_ms,
+            "validation_errors": [],
+        },
+    )

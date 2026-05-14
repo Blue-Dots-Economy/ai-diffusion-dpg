@@ -168,13 +168,14 @@ def apply_derived_fields(
             continue
 
         set_path(accumulator[block], relative_path, value)
-        logger.debug(
-            "apply_derived_fields: wrote derived value",
+        # Point 10: promote DEBUG → INFO, rename operation, add computed_value
+        logger.info(
+            "derived_fields.computed",
             extra={
-                "operation": "apply_derived_fields",
+                "operation": "derived_fields.computed",
                 "status": "success",
                 "path": full_path,
-                "value": value,
+                "computed_value": value,
             },
         )
 

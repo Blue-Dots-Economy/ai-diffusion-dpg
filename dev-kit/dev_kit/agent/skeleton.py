@@ -164,6 +164,17 @@ def build_skeleton(
             field_status[full_path] = "pending"
             if rule.default is not None:
                 set_path(accumulator[block], relative_path, rule.default)
+                # Point 8: log chat field written with its default
+                logger.info(
+                    "skeleton.field_written",
+                    extra={
+                        "operation": "skeleton.field_written",
+                        "status": "success",
+                        "path": full_path,
+                        "category": rule.category,
+                        "value_kind": "chat_default",
+                    },
+                )
 
         elif rule.category == "predetermined":
             if not applies:
@@ -176,6 +187,28 @@ def build_skeleton(
             framework_default = get_framework_default(full_path)
             if value != framework_default:
                 set_path(accumulator[block], relative_path, value)
+                # Point 8: log predetermined field written
+                logger.info(
+                    "skeleton.field_written",
+                    extra={
+                        "operation": "skeleton.field_written",
+                        "status": "success",
+                        "path": full_path,
+                        "category": rule.category,
+                        "value_kind": "predetermined_value",
+                    },
+                )
+            else:
+                # Point 9: log field skipped because it equals framework default
+                logger.info(
+                    "skeleton.field_skipped",
+                    extra={
+                        "operation": "skeleton.field_skipped",
+                        "status": "skipped",
+                        "path": full_path,
+                        "reason": "equals_dpg_default",
+                    },
+                )
 
         elif rule.category in ("deploy", "derived", "framework_default_only"):
             # deploy: nothing in domain YAML; deploy overlay applies at render time.

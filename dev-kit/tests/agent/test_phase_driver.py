@@ -243,8 +243,8 @@ def test_run_turn_unsupported_tool_skipped(tmp_path: Path, caplog) -> None:
 
     assert result == "ok"
     assert any(
-        getattr(rec, "operation", None) == "phase_driver.unsupported_tool"
-        and getattr(rec, "tool_name", None) == "old_set_phase"
+        getattr(rec, "operation", None) == "phase_driver.tool_call_rejected"
+        and getattr(rec, "tool", None) == "old_set_phase"
         for rec in caplog.records
     )
 

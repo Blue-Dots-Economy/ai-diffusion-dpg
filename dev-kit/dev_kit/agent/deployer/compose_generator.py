@@ -126,8 +126,35 @@ def generate_compose(
     # ------------------------------------------------------------------
     # 2. Remove services and apply per-service tweaks to survivors.
     # ------------------------------------------------------------------
+    # Point 14: determine reason per removed service before iterating
+    _exclude_reasons: dict[str, str] = {}
+    if intake_state.has_kb is False and "knowledge_engine" in services_to_remove:
+        _exclude_reasons["knowledge_engine"] = "has_kb=false"
+    if intake_state.has_external_tools is False and "action_gateway" in services_to_remove:
+        _exclude_reasons["action_gateway"] = "has_external_tools=false"
+    if "voice" not in set(intake_state.selected_channels):
+        if "reach_layer_voice" in services_to_remove:
+            _exclude_reasons["reach_layer_voice"] = "voice_not_in_selected_channels"
+        if "ngrok" in services_to_remove:
+            _exclude_reasons["ngrok"] = "voice_not_in_selected_channels"
+    for _always in _ALWAYS_REMOVE:
+        if _always in services_to_remove:
+            _exclude_reasons[_always] = "always_excluded"
+
     for svc_name in list(services.keys()):
         if svc_name in services_to_remove:
+            # Point 14: log service excluded
+            _reason = _exclude_reasons.get(svc_name, "excluded")
+            logger.info(
+                "compose_generator.service_decision",
+                extra={
+                    "operation": "compose_generator.service_decision",
+                    "status": "success",
+                    "service": svc_name,
+                    "included": False,
+                    "reason": _reason,
+                },
+            )
             del services[svc_name]
             continue
 
@@ -151,6 +178,18 @@ def generate_compose(
                 if not (isinstance(e, str) and e.startswith("REACH_LAYER_WEB_MODE="))
             ]
             env_list.append(f"REACH_LAYER_WEB_MODE={web_mode}")
+
+        # Point 14: log service included
+        logger.info(
+            "compose_generator.service_decision",
+            extra={
+                "operation": "compose_generator.service_decision",
+                "status": "success",
+                "service": svc_name,
+                "included": True,
+                "reason": "selected",
+            },
+        )
 
     # ------------------------------------------------------------------
     # 3. Strip depends_on references to removed services.

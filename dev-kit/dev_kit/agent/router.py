@@ -106,6 +106,7 @@ def on_intake_update(
         applies = eval_expr(rule.applies_if, state)
 
         if rule.category == "predetermined":
+            old_predetermined = get_path(accumulator[block], relative_path)
             if applies and rule.rule:
                 value = eval_rule(rule.rule, state)
                 fw_default = get_framework_default(full_path)
@@ -113,8 +114,23 @@ def on_intake_update(
                     set_path(accumulator[block], relative_path, value)
                 else:
                     clear_path(accumulator[block], relative_path)
+                    value = None
             else:
                 clear_path(accumulator[block], relative_path)
+                value = None
+            # Point 4: log each predetermined field recomputed
+            new_predetermined = get_path(accumulator[block], relative_path)
+            logger.info(
+                "router.predetermined_recomputed",
+                extra={
+                    "operation": "router.predetermined_recomputed",
+                    "status": "success",
+                    "path": full_path,
+                    "triggered_by": field,
+                    "old_value": old_predetermined,
+                    "new_value": new_predetermined,
+                },
+            )
 
         elif rule.category == "chat":
             if not applies:
@@ -130,17 +146,31 @@ def on_intake_update(
                     set_path(accumulator[block], relative_path, rule.default)
                 field_status[full_path] = "needs_re_asking"
                 earliest_phase = _earlier_phase(earliest_phase, rule.phase)
+                # Point 3: log each chat field marked needs_re_asking
+                logger.info(
+                    "router.field_marked_needs_re_asking",
+                    extra={
+                        "operation": "router.field_marked_needs_re_asking",
+                        "status": "success",
+                        "path": full_path,
+                        "triggered_by": field,
+                        "reason": "intake_field_changed",
+                    },
+                )
 
         elif rule.category == "derived":
             # Flag for renderer recompute; derived-stale tracking is Phase 9 work.
             pass
 
-    logger.debug(
-        "on_intake_update",
+    # Point 1: summary log — promote DEBUG → INFO, add old_value/new_value
+    logger.info(
+        "router.on_intake_update",
         extra={
             "operation": "router.on_intake_update",
             "status": "success",
             "field": field,
+            "old_value": old_value,
+            "new_value": new_value,
             "affected_count": len(affected),
             "earliest_affected_phase": earliest_phase,
         },
@@ -256,7 +286,36 @@ def _next_relevant_phase(current: str, state: IntakeState) -> str | None:
     for nxt in PHASE_ORDER[idx + 1:]:
         if PHASE_RELEVANCE[nxt](state):
             return nxt
+        # Point 7: log each skipped phase with the reason it was irrelevant
+        _reason = _phase_skip_reason(nxt, state)
+        logger.info(
+            "router.phase_skipped",
+            extra={
+                "operation": "router.phase_skipped",
+                "status": "skipped",
+                "skipped_phase": nxt,
+                "reason": _reason,
+            },
+        )
     return None
+
+
+def _phase_skip_reason(phase: str, state: IntakeState) -> str:
+    """Return a human-readable reason why ``phase`` is not relevant for ``state``.
+
+    Args:
+        phase: Phase name to explain.
+        state: Current IntakeState.
+
+    Returns:
+        A short reason string (e.g. ``"has_kb=false"``).
+    """
+    _SKIP_REASONS: dict[str, str] = {
+        "knowledge": "has_kb=false",
+        "user_state": "is_companion_style=false",
+        "tools": "has_external_tools=false",
+    }
+    return _SKIP_REASONS.get(phase, f"phase={phase}_not_relevant")
 
 
 def decide_next_phase(
@@ -295,11 +354,36 @@ def decide_next_phase(
 
     invalidated = _earliest_phase_with_needs_re_asking(field_status)
     if invalidated and PHASE_ORDER.index(invalidated) < PHASE_ORDER.index(current_phase):
+        # Point 6: backtrack transition
+        logger.warning(
+            "router.decide_next_phase",
+            extra={
+                "operation": "router.decide_next_phase",
+                "status": "backtrack",
+                "from_phase": current_phase,
+                "to_phase": invalidated,
+                "reason": "invalidated",
+                "triggered_by": None,
+            },
+        )
         return invalidated
 
     if _is_phase_complete(current_phase, state, field_status):
         nxt = _next_relevant_phase(current_phase, state)
-        return nxt if nxt else current_phase
+        result = nxt if nxt else current_phase
+        if result != current_phase:
+            # Point 5: forward transition
+            logger.info(
+                "router.decide_next_phase",
+                extra={
+                    "operation": "router.decide_next_phase",
+                    "status": "advance",
+                    "from_phase": current_phase,
+                    "to_phase": result,
+                    "reason": "phase_complete",
+                },
+            )
+        return result
 
     return current_phase
 
@@ -367,18 +451,35 @@ def on_config_update(
     if errors:
         # Revert — restore block to snapshot.
         accumulator[block] = pre_write_snapshot
+        _section_on_fail = relative_path.split(".")[0] if "." in relative_path else relative_path
+        logger.warning(
+            "router.on_config_update",
+            extra={
+                "operation": "router.on_config_update",
+                "status": "failure",
+                "block": block,
+                "section": _section_on_fail,
+                "paths_written": [],
+                "validation_errors": errors,
+            },
+        )
         raise ValueError(
             f"Validation failed for {path!r}: {'; '.join(errors)}"
         )
 
     field_status[path] = "answered"
 
-    logger.debug(
-        "on_config_update",
+    # Point 2: log config field updated — promote DEBUG → INFO, add required fields
+    _block_part, _section_part = block, relative_path.split(".")[0] if "." in relative_path else relative_path
+    logger.info(
+        "router.on_config_update",
         extra={
             "operation": "router.on_config_update",
             "status": "success",
-            "path": path,
+            "block": block,
+            "section": _section_part,
+            "paths_written": [path],
+            "validation_errors": [],
         },
     )
 

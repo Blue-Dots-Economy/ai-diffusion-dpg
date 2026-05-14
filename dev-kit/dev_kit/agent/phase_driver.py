@@ -79,10 +79,16 @@ class LLMResponse:
     Attributes:
         text: The assistant's text reply for this turn.
         tool_calls: Ordered list of tool calls the LLM emitted in this turn.
+        model: Model identifier used for this call, if the provider exposes it.
+        input_tokens: Number of input tokens consumed, if exposed by the provider.
+        output_tokens: Number of output tokens generated, if exposed by the provider.
     """
 
     text: str
     tool_calls: list[ToolCall] = field(default_factory=list)
+    model: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -459,14 +465,21 @@ def run_turn(
     llm_start = time.time()
     response = llm_call(system_prompt, user_message)
     llm_latency_ms = int((time.time() - llm_start) * 1000)
+    # Point 12: log LLM call with phase, model, tokens, and tool call names
     logger.info(
         "phase_driver.llm_call",
         extra={
             "operation": "phase_driver.llm_call",
             "status": "success",
+            "phase": current_phase,
             "latency_ms": llm_latency_ms,
-            "current_phase": current_phase,
-            "tool_call_count": len(response.tool_calls),
+            "model": response.model,
+            "input_tokens": response.input_tokens,
+            "output_tokens": response.output_tokens,
+            "tool_calls": {
+                "count": len(response.tool_calls),
+                "names": [tc.name for tc in response.tool_calls],
+            },
         },
     )
 
@@ -474,12 +487,16 @@ def run_turn(
     for call in response.tool_calls:
         handler = TOOL_HANDLERS.get(call.name)
         if handler is None:
+            # Point 13: log unsupported (rejected) tool call
             logger.warning(
-                "phase_driver.unsupported_tool",
+                "phase_driver.tool_call_rejected",
                 extra={
-                    "operation": "phase_driver.unsupported_tool",
-                    "status": "skipped",
-                    "tool_name": call.name,
+                    "operation": "phase_driver.tool_call_rejected",
+                    "status": "failure",
+                    "tool": call.name,
+                    "tool_args": call.args,
+                    "error": f"no handler registered for tool {call.name!r}",
+                    "error_type": "KeyError",
                 },
             )
             continue
@@ -488,13 +505,16 @@ def run_turn(
         except (KeyError, ValueError, AttributeError) as exc:
             # Handler-internal errors (missing args, unknown intake field,
             # unknown chat path) should not abort the turn — log and continue.
+            # Point 13: log tool call that failed during execution
             logger.warning(
-                "phase_driver.tool_call_failed",
+                "phase_driver.tool_call_rejected",
                 extra={
-                    "operation": "phase_driver.tool_call_failed",
+                    "operation": "phase_driver.tool_call_rejected",
                     "status": "failure",
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "tool_name": call.name,
+                    "tool": call.name,
+                    "tool_args": call.args,
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
                 },
             )
             continue
