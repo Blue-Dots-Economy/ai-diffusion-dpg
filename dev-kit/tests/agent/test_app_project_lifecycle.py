@@ -195,6 +195,78 @@ def test_get_project_legacy_project_without_intake_state(client):
     assert body["channel_secrets"] == []
 
 
+def test_get_project_404_on_missing(client):
+    """GET /api/projects/{slug} returns 404 when the project does not exist."""
+    c, _configs = client
+    res = c.get("/api/projects/does-not-exist")
+    assert res.status_code == 404
+
+
+def test_get_project_500_on_corrupt_accumulator(client):
+    """GET /api/projects/{slug} returns 500 when accumulator.json is corrupt."""
+    c, configs = client
+    slug = c.post("/api/projects", json=_make_create_body()).json()["slug"]
+    (configs / slug / "_meta" / "accumulator.json").write_text("not valid json {{{")
+    res = c.get(f"/api/projects/{slug}")
+    assert res.status_code == 500
+    assert "Corrupt" in res.json().get("detail", "")
+
+
+def test_get_project_recording_voice_secrets(client):
+    """GET /api/projects/{slug} includes RECORDING_CALLER_ID_HASH_SALT when recording is enabled."""
+    c, configs = client
+    body = _make_create_body(name="recproj")
+    body["selected_channels"] = ["voice"]
+    body["supported_languages"] = ["english"]
+    slug = c.post("/api/projects", json=body).json()["slug"]
+
+    # Update accumulator to enable recording.
+    acc_path = configs / slug / "_meta" / "accumulator.json"
+    acc = json.loads(acc_path.read_text())
+    acc["reach_layer"] = {
+        "reach_layer": {
+            "channels": {
+                "voice": {
+                    "recording": {"source": "vobiz", "store": {"backend": "local"}}
+                }
+            }
+        }
+    }
+    acc_path.write_text(json.dumps(acc))
+
+    res = c.get(f"/api/projects/{slug}")
+    secrets = res.json()["channel_secrets"]
+    env_vars = {s["env_var"] for s in secrets}
+    assert "RECORDING_CALLER_ID_HASH_SALT" in env_vars
+    # S3 KMS only fires when store.backend == "s3"
+    assert "RECORDING_S3_KMS_KEY_ID" not in env_vars
+
+
+def test_get_project_recording_voice_s3_secrets(client):
+    """GET /api/projects/{slug} includes RECORDING_S3_KMS_KEY_ID when recording backend is s3."""
+    c, configs = client
+    body = _make_create_body(name="recs3")
+    body["selected_channels"] = ["voice"]
+    slug = c.post("/api/projects", json=body).json()["slug"]
+
+    acc_path = configs / slug / "_meta" / "accumulator.json"
+    acc = json.loads(acc_path.read_text())
+    acc["reach_layer"] = {
+        "reach_layer": {
+            "channels": {
+                "voice": {
+                    "recording": {"source": "vobiz", "store": {"backend": "s3"}}
+                }
+            }
+        }
+    }
+    acc_path.write_text(json.dumps(acc))
+
+    res = c.get(f"/api/projects/{slug}")
+    env_vars = {s["env_var"] for s in res.json()["channel_secrets"]}
+    assert "RECORDING_S3_KMS_KEY_ID" in env_vars
+
+
 # ---------------------------------------------------------------------------
 # DELETE /api/projects/{slug}
 # ---------------------------------------------------------------------------

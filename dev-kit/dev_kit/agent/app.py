@@ -762,23 +762,77 @@ def get_project(slug: str) -> dict:
     Returns:
         Project metadata dict augmented with config_statuses, azure_storage,
         required_secrets, channel_secrets, has_knowledge_base, and llm_provider.
+        ``azure_storage["needed"]`` is always ``False`` in the current state model;
+        this field is a deferred stub pending a future intake-state extension that
+        tracks Azure Blob Storage selection.
 
     Raises:
         HTTPException: 404 if the project does not exist.
+        HTTPException: 500 if any state file (accumulator.json, field_status.json,
+            or intake_state.json) contains corrupt or invalid data.
     """
     meta = _load_project_meta(slug)
     project_path = _get_project_path(slug)
     meta_dir = project_path / "_meta"
 
     # Load per-request state from disk.
-    accumulator = load_accumulator(meta_dir / "accumulator.json")
-    field_status = load_field_status(meta_dir / "field_status.json")
+    try:
+        accumulator = load_accumulator(meta_dir / "accumulator.json")
+    except ValueError as exc:
+        logger.error(
+            "devkit.project.state_corrupt",
+            extra={
+                "operation": "api.get_project",
+                "status": "failure",
+                "error": str(exc),
+                "slug": slug,
+            },
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Corrupt accumulator.json for '{slug}': {exc}",
+        )
+
+    try:
+        field_status = load_field_status(meta_dir / "field_status.json")
+    except ValueError as exc:
+        logger.error(
+            "devkit.project.state_corrupt",
+            extra={
+                "operation": "api.get_project",
+                "status": "failure",
+                "error": str(exc),
+                "slug": slug,
+            },
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Corrupt field_status.json for '{slug}': {exc}",
+        )
 
     # Legacy projects may not have intake_state.json — degrade gracefully.
+    # A corrupt intake_state.json is treated as a real error (not a legacy project).
     try:
         intake = load_intake_state(meta_dir / "intake_state.json")
     except FileNotFoundError:
         intake = None
+    except ValueError as exc:
+        logger.error(
+            "devkit.project.state_corrupt",
+            extra={
+                "operation": "api.get_project",
+                "status": "failure",
+                "error": str(exc),
+                "slug": slug,
+            },
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Corrupt intake_state.json for '{slug}': {exc}",
+        )
 
     meta["config_statuses"] = all_block_statuses(field_status)
 
@@ -806,7 +860,17 @@ def get_project(slug: str) -> dict:
 
 @app.delete("/api/projects/{slug}")
 def delete_project(slug: str) -> dict:
-    """Delete a project and all its files."""
+    """Delete a project directory and all its files.
+
+    Args:
+        slug: The project slug identifying the directory under CONFIGS_DIR.
+
+    Returns:
+        Dict with key ``deleted`` set to the slug of the removed project.
+
+    Raises:
+        HTTPException: 404 if the project directory does not exist.
+    """
     project_path = _get_project_path(slug)
     if not project_path.exists():
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
