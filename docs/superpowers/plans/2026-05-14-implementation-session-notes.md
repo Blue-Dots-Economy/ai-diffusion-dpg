@@ -616,3 +616,138 @@ When this session's context starts getting tight, stop at the next clean
 phase boundary, commit, and append a "Session 3" section to the session
 notes file describing where to pick up next.
 ```
+
+---
+
+## Session 3 notes (2026-05-14)
+
+**Branch:** `docs/devkit-config-generation-revamp-design`
+
+**Tasks completed this session:** 3 (Tasks 6.1, 6.2, 6.3 — all of Phase 6) plus 4 polish/refactor commits.
+
+**Commit log this session (newest first):**
+```
+ae22516 chore(dev-kit): apply phase_driver code-review polish
+2f7b4bf feat(dev-kit): add phase_driver.run_turn integrating LLM + tools + router
+707a613 test(dev-kit): simplify tier form-field negative assertion
+d1802e1 docs(dev-kit): name dev-kit in phase-prompt module docstrings
+e5f4bbb feat(dev-kit): teach review phase to re-ask needs_re_asking fields
+6da7e05 refactor(dev-kit): extract duplicated phase-prompt helpers into _helpers module
+ebcc517 feat(dev-kit): add tier phase prompt builder
+31fa378 feat(dev-kit): add language phase prompt builder
+7b7c83d feat(dev-kit): add knowledge phase prompt builder
+04b4c07 feat(dev-kit): add tools phase prompt builder
+08f4c28 feat(dev-kit): add memory phase prompt builder
+db9c54f feat(dev-kit): add user_state phase prompt builder
+0fe1458 feat(dev-kit): add trust phase prompt builder
+9ad91f3 feat(dev-kit): add workflow phase prompt builder
+92a67cc feat(dev-kit): add reach phase prompt builder
+1fdb506 feat(dev-kit): add observability phase prompt builder
+b9dfbe3 feat(dev-kit): add review phase prompt builder
+0ba7dd8 chore(dev-kit): document phases_config memory deviation and add __all__
+18bc4d5 feat(dev-kit): add declarative PHASES config
+```
+
+**Aggregate state:**
+- 272 host tests pass, 3 skipped (docker-only + Task 2.3 placeholder), 0 fail
+- 11 per-phase prompt modules + shared `_helpers.py` (`_render_fields`, `_path_of`, `_rule_of`)
+- New `dev-kit/dev_kit/agent/phase_driver.py` exposes `run_turn`, persistence helpers (`load/save_accumulator`, `load/save_current_phase`), `collect_pending_fields`, `cross_phase_references`, `render_pydantic_classes` (stub), `TOOL_HANDLERS` dispatch dict, and the `LLMResponse`/`ToolCall` dataclasses
+
+**Next task to pick up:** **Task 7.1 — Rewrite `tools.py` with the 8-tool set** (plan lines 2423-2458). The old `dev-kit/dev_kit/agent/tools.py` has 20 tools and is ~65 KB. Phase 7 trims to 8: `update_intake`, `update_config`, `add_subagent`, `update_subagent`, `add_routing_rule`, `add_tool`, `parse_openapi_spec`, `discover_mcp_tools`.
+
+---
+
+### Session 3 execution discoveries (NOT in plan)
+
+#### 13. Plan's `phases_config.PHASES["memory"]` predicate conflicts with prior router decision
+
+Plan Task 6.1 specifies `lambda s: s.is_multi_turn or s.needs_persistent_user_data` for memory's `is_relevant`. Design §6 lines 648-665 has NO `is_relevant` argument for memory (always-relevant). Session 2 Phase 5 already established `router.PHASE_RELEVANCE["memory"] = lambda s: True`. To keep router + phases_config aligned (and to follow design over plan), the Task 6.1 implementer used `_always` for memory in `PHASES` too. Documented inline in `phases_config.py:67-70`.
+
+Implication: `phases_config.PHASES` is intended as the canonical source eventually; `router.PHASE_RELEVANCE` is a duplicate. A future task should refactor router.py to import from phases_config — left as a transitional pin (test in `test_phases_config.py` cross-checks `tuple(PHASES.keys()) == PHASE_ORDER`).
+
+#### 14. Plan's `PhaseDefinition.prompt_module: str` deviates from design's `prompt_fn: Callable`
+
+Design §6 stores callables directly. Plan stores leaf module names as strings to avoid circular imports during testing. The implementer followed the plan. Driver resolves the callable via `importlib.import_module(f"dev_kit.agent.phase_prompts.{prompt_module}")` and `module.build`. This works cleanly and tests don't need import-time gymnastics.
+
+#### 15. The 11 phase prompts started as ~670 lines of duplicated helpers
+
+The batched Task 6.2 implementer copy-pasted `_path_of`, `_rule_of`, `_render_fields` into all 11 modules. Code review caught this and a follow-up refactor extracted them into `phase_prompts/_helpers.py` (commit `6da7e05`). `tier.py` keeps a local wrapper around `_render_fields` because its empty-list sentinel is different ("tier intake flags live in IntakeState, not FIELD_RULES."). **Lesson for future batched dispatches:** include "if helpers duplicate, extract to a shared module" as an explicit step, not a post-review fix.
+
+#### 16. Task 6.3's `current_phase` persistence is a new file, not in IntakeState
+
+`<slug>/_meta/current_phase.txt` is the source of truth for "which phase the wizard is currently in." Defaulted to `"tier"` on missing/empty/unknown values (matching the lenient `load_field_status` pattern). `save_current_phase` enforces validity (raises `ValueError` if phase not in `PHASE_ORDER`).
+
+This is a NEW persistence point not covered by IntakeState/accumulator/field_status. The phase_driver creates it on first save when a transition fires.
+
+#### 17. Accumulator persistence: NEW format, separate from old ConfigAccumulator
+
+The new wizard's accumulator is a plain `dict[str, dict]` keyed by block (the same shape `router.on_intake_update` / `on_config_update` mutate). The OLD `dev-kit/dev_kit/agent/accumulator.py:ConfigAccumulator` has a different shape (with statuses, subagent helpers, etc.) — left untouched, will be removed in a later phase.
+
+`phase_driver.load_accumulator` / `save_accumulator` use `<slug_root>/_meta/accumulator.json` and backfill missing block keys with empty dicts so callers can index unconditionally.
+
+#### 18. Tool routing is open-ended and tolerant
+
+`TOOL_HANDLERS` currently has only `update_intake` and `update_config`. The phase 7 rewrite adds `add_subagent`, `add_tool`, etc. Unknown tool names log a `phase_driver.unsupported_tool` warning and continue — no crash. Tool calls that raise `KeyError`/`ValueError`/`AttributeError` inside handlers (missing args, validation failure, unknown intake field) are also caught and logged as `phase_driver.tool_call_failed`. This tolerance is intentional: the LLM is sometimes wrong, but the turn should still produce a response.
+
+#### 19. `render_pydantic_classes` is a stub
+
+Returns `""` for empty pending_fields, otherwise a placeholder comment listing the paths. Full Pydantic-source injection lands in a later phase (likely Phase 9 alongside renderer derived fields, or earlier if the LLM needs schema hints). **Don't expand this in Phase 7 unless explicitly requested.**
+
+#### 20. `cross_phase_references` covers a focused set
+
+`agent.{provider, primary_model, fallback_model}`, language normalisation, NLU intents/entities, KB intent_filter keys, agent_core connector names. This matches the cross-block references the design surfaces. If a future phase prompt tells the LLM "use the value from <new_path>", add the path to `cross_phase_references` too — otherwise the LLM is told to read a value it can't see.
+
+#### 21. `# noqa: ARG001` on a used parameter is a code smell
+
+The Task 6.3 implementer added `# noqa: ARG001 — passed through to llm_call only` to `user_message` in `run_turn`. The parameter IS used (it's passed to `llm_call(system_prompt, user_message)`). Code review caught this; polish commit removed the comment. Watch for the same pattern in future driver/handler signatures — if you add `noqa`, double-check the linter is actually flagging it.
+
+---
+
+### Status snapshot for next session (after Phase 6)
+
+**Completed:** 23 of the plan's tasks (Phase 0.1–0.2, 1.1–1.3, 2.1–2.3, 3.1–3.8, 4.1, 4.2, 5.1–5.3, 6.1, 6.2, 6.3)
+
+**Next:** Phase 7 — Tool surface (1 task):
+- Task 7.1: Rewrite `dev-kit/dev_kit/agent/tools.py` with the 8-tool set (plan lines 2423-2458; **back up the old file locally** to `tools.py.bak` per the plan note — see Session 1 note "Phase 7 (Tools rewrite)" for the back-up rationale)
+
+After Phase 7:
+- Phase 8 — Selective compose generation (1 task, depends on IntakeState)
+- Phase 9 — Renderer derived-field pass (1 task)
+- Phase 10 — Decision logging (3 sub-tasks)
+- Phase 11 — UI changes (3 sub-tasks)
+- Phase 12 — Integration tests (mostly Opus territory; 12.3 / 12.4 are E2E)
+- Phase 13 — Final cleanup (delete old `prompts/phases.py`, old `accumulator.py`, etc.)
+
+**No blockers.** All Phase 6 tests green (272 host pass, 3 skipped, 0 fail). The phase_driver is fully covered and ready for Phase 7's new tools to wire into `TOOL_HANDLERS`.
+
+**Outstanding follow-ups carried forward (low priority):**
+- `test_phase_prompts_observability.py` has only the 7 minimum tests; could add a phase-specific extra later (e.g., `outcomes` schema injection).
+- `render_pydantic_classes` stub will need expansion before users see helpful prompts in any phase that emits pending chat fields.
+- Eventual refactor: delete `router.PHASE_ORDER` / `PHASE_RELEVANCE` once Phase 7+ can rely solely on `phases_config.PHASES`.
+
+**Pickup prompt for next session (paste verbatim):**
+
+```
+Continue executing the implementation plan at:
+docs/superpowers/plans/2026-05-14-devkit-deterministic-wizard-implementation.md
+
+READ THIS FIRST (execution discoveries through Session 3):
+docs/superpowers/plans/2026-05-14-implementation-session-notes.md
+(scroll to the "Session 3 notes" section)
+
+Status: 23 tasks complete on branch docs/devkit-config-generation-revamp-design
+(through Task 6.3, all of Phase 6 done). Pick up at Task 7.1 (rewrite tools.py
+with the 8-tool set).
+
+For Task 7.1: per Session 1 note in §"Phase 7 (Tools rewrite)", BACK UP the
+current tools.py locally first (copy to dev-kit/dev_kit/agent/tools.py.bak —
+do NOT commit the backup). Reference it while writing the new 8-tool file,
+then delete the .bak before committing.
+
+Use the superpowers:subagent-driven-development skill. Dispatch a fresh
+subagent per task, two-stage review (spec → code quality) after each.
+
+When this session's context starts getting tight, stop at the next clean
+phase boundary, commit, and append a "Session 4" section to the session
+notes file describing where to pick up next.
+```
