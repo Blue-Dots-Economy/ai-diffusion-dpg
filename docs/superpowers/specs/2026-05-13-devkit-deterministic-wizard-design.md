@@ -130,7 +130,8 @@ Both classes are legacy quirks from before the dpg/domain split was clean. Going
 - Predetermined fields whose value depends on intake state (e.g., `dignity_check.enabled` flips to true for Conversational — overrides the dpg.yaml default of false)
 - Slug-derived fields (e.g., `observability.domain`, `static_knowledge_base.collection_name`)
 - Chat fields the LLM writes (e.g., `trust.input_rules.blocked_phrases`, intents, subagents)
-- Deploy-overridable fields (e.g., `agent.provider` — defaulted in dpg.yaml, overridable per-deploy via the deploy form)
+- Chat fields with `deploy_overridable=true` — written to domain YAML by chat but surfaced (pre-filled, editable) by the deploy form; the deploy overlay applies any operator change at write time. Examples: `agent.provider`, `agent.primary_model`, `agent.fallback_model`, `reach_layer.channels.voice.raya.voice_id`. See the FIELD_RULES catalogue for the full list.
+- Pure deploy fields (e.g., `trust.hitl.queue_backend` — no useful chat default; operational only, asked only on the deploy form)
 - Derived fields (e.g., `agent_workflow.global_tools` computed from connectors)
 
 Pure framework defaults like `agent.timeout_ms: 10000`, `ke_client.endpoint: "http://..."`, `knowledge_engine.server.port: 8001` are NOT in `FIELD_RULES`. They're not the wizard's concern — they live in `dpg/<block>.yaml`.
@@ -486,23 +487,24 @@ Category = Literal["predetermined", "chat", "deploy", "derived"]
 
 @dataclass(frozen=True)
 class FieldRule:
-    category:        Category
+    category:           Category
     # For predetermined: Python-expression string referencing intake state
     #   e.g. "set: ${needs_consent}", "set: is_companion_style"
-    rule:            Optional[str] = None
+    rule:               Optional[str] = None
     # For chat
-    phase:           Optional[str] = None        # which phase asks this
-    default:         Optional[Any] = None        # pre-fill value the LLM presents
-    must_include:    Optional[list[Any]] = None  # required elements (lists)
-    description:     Optional[str] = None        # short hint for the prompt
-    applies_if:      Optional[str] = None        # gate expression on intake state
-    invalidated_by:  list[str] = dc_field(default_factory=list)  # intake field names
-    # For deploy
-    advanced:        bool = False                # collapsible "advanced" section
+    phase:              Optional[str] = None        # which phase asks this
+    default:            Optional[Any] = None        # pre-fill value the LLM presents
+    must_include:       Optional[list[Any]] = None  # required elements (lists)
+    description:        Optional[str] = None        # short hint for the prompt
+    applies_if:         Optional[str] = None        # gate expression on intake state
+    invalidated_by:     list[str] = dc_field(default_factory=list)  # intake field names
+    # For deploy and deploy-overridable chat
+    advanced:           bool = False                # collapsible "advanced" section in deploy form
+    deploy_overridable: bool = False                # chat field also surfaced (editable) by deploy form
     # For derived
-    compute:         Optional[str] = None        # Python expression
+    compute:            Optional[str] = None        # Python expression
     # For schema injection in prompts
-    pydantic_class:  Optional[str] = None        # dotted path to owning Pydantic class
+    pydantic_class:     Optional[str] = None        # dotted path to owning Pydantic class
 ```
 
 ### Categories
@@ -513,6 +515,8 @@ class FieldRule:
 | `chat` | Asked in chat, in a specific phase. Bot-builder sees the field, with `default` pre-filled if present, and can edit. **No "hidden defaults"** — every chat field surfaces to the user. |
 | `deploy` | Captured by the deploy form (separate concern). May be marked `advanced` to live in a collapsible section. The runtime gets its baseline from `dpg/<block>.yaml`; deploy form (if used) overrides via the deploy-time overlay. Skeleton does NOT write to the domain YAML for these fields. |
 | `derived` | Computed from other fields by the renderer at write time. No status tracked; no user input. |
+
+**Orthogonal flag — `deploy_overridable`:** a `chat` field may set `deploy_overridable=True` to indicate the deploy form should also surface it, pre-filled from the domain YAML value, with operator edit capability. The chat conversation writes the *project default*; the deploy form swaps for *specific environments* (dev/staging/prod). The override applies via the existing deploy overlay (§8 step 1) and never modifies the domain YAML on disk. Canonical uses: `agent.provider`, `agent.primary_model`, `agent.fallback_model`, `reach_layer.channels.voice.raya.voice_id`. Pure `deploy` fields (e.g., `trust.hitl.queue_backend`) are NOT chat-asked at all and have no pre-fill; the deploy form is the only surface.
 
 A field has exactly one category — categories are mutually exclusive.
 
