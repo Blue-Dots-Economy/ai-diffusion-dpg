@@ -8,12 +8,10 @@ See docs/superpowers/specs/2026-05-13-devkit-deterministic-wizard-design.md §8.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-from dev_kit.agent.deployer.compose_generator import generate_compose
 from dev_kit.agent.derived_fields import apply_derived_fields
 from dev_kit.agent.intake_state import IntakeState
 from dev_kit.agent.router import decide_next_phase, on_config_update, on_intake_update
@@ -22,13 +20,6 @@ from dev_kit.agent.skeleton import build_skeleton
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
-
-_BASE_COMPOSE = (
-    Path(__file__).resolve().parents[3]
-    / "automation"
-    / "docker"
-    / "docker-compose.dev.yml"
-)
 
 
 def _make_intake(**overrides) -> IntakeState:
@@ -358,47 +349,6 @@ def test_point10_derived_field_computed_log(caplog) -> None:
     assert "computed_value" in rec.__dict__ or hasattr(rec, "computed_value")
 
 
-# ---------------------------------------------------------------------------
-# Point 14: compose_generator service include/exclude
-# ---------------------------------------------------------------------------
-
-@pytest.mark.skipif(
-    not _BASE_COMPOSE.exists(),
-    reason="Base compose template not present in this checkout",
-)
-def test_point14_compose_generator_service_excluded_log(caplog) -> None:
-    """compose_generator.service_decision emitted for each excluded service."""
-    intake = _make_intake(has_kb=False, has_external_tools=False, selected_channels=["web"])
-
-    with caplog.at_level(logging.INFO, logger="dev_kit.agent.deployer.compose_generator"):
-        generate_compose(intake, "myslug", base_compose_path=_BASE_COMPOSE)
-
-    records = _find_log(caplog.records, "compose_generator.service_decision")
-    assert records, "Expected compose_generator.service_decision records"
-
-    excluded = [r for r in records if getattr(r, "included", True) is False]
-    assert excluded, "Expected at least one excluded service record"
-    rec = excluded[0]
-    assert rec.levelno == logging.INFO
-    assert getattr(rec, "status", None) == "success"
-    assert getattr(rec, "service", None) is not None
-    assert getattr(rec, "reason", None) is not None
-
-
-@pytest.mark.skipif(
-    not _BASE_COMPOSE.exists(),
-    reason="Base compose template not present in this checkout",
-)
-def test_point14_compose_generator_service_included_log(caplog) -> None:
-    """compose_generator.service_decision emitted for each included service."""
-    intake = _make_intake(has_kb=True, has_external_tools=True, selected_channels=["web"])
-
-    with caplog.at_level(logging.INFO, logger="dev_kit.agent.deployer.compose_generator"):
-        generate_compose(intake, "myslug", base_compose_path=_BASE_COMPOSE)
-
-    records = _find_log(caplog.records, "compose_generator.service_decision")
-    included = [r for r in records if getattr(r, "included", False) is True]
-    assert included, "Expected at least one included service record"
-    rec = included[0]
-    assert rec.levelno == logging.INFO
-    assert getattr(rec, "service", None) is not None
+# Point 14 (compose_generator.service_decision) was covered by the now-deleted
+# compose_generator.py module. The equivalent coverage is provided by the
+# deploy preview / deploy runner integration tests in test_deploy_preview_intake.py.

@@ -37,7 +37,7 @@ from dev_kit.agent.conversation import ConversationEngine
 from dev_kit.agent.crypto import decrypt_secrets_dict, get_public_key_spki_b64
 from dev_kit.agent.errors import ConversationError
 from dev_kit.agent.field_status import load_field_status
-from dev_kit.agent.intake_state import IntakeState, save_intake_state
+from dev_kit.agent.intake_state import IntakeState, load_intake_state, save_intake_state
 from dev_kit.agent.phase_driver import save_accumulator, save_current_phase
 from dev_kit.agent.renderer import load_block_from_file, render_all
 from dev_kit.config.loader import load_devkit_config as _load_devkit_config
@@ -949,7 +949,14 @@ def pre_deploy_validate(slug: str) -> dict[str, Any]:
     block_errors: dict[str, list[str]] = {}
     merged: dict[str, dict] = {}
 
-    selected_channels = _get_engine(slug).accumulator.get_reach_channel_selection_or_default()
+    # Prefer IntakeState (new wizard); fall back to accumulator for projects that
+    # pre-date the deterministic wizard and don't have intake_state.json yet.
+    _intake_path = CONFIGS_DIR / slug / "_meta" / "intake_state.json"
+    try:
+        _intake = load_intake_state(_intake_path)
+        selected_channels = list(_intake.selected_channels)
+    except FileNotFoundError:
+        selected_channels = _get_engine(slug).accumulator.get_reach_channel_selection_or_default()
 
     # 1. Full Pydantic validation per block using merged (dpg + domain) config.
     for block, model_cls in _MODELS.items():
@@ -985,7 +992,7 @@ def pre_deploy_validate(slug: str) -> dict[str, Any]:
     # the LLM tool loop (set_phase) and at this deploy-time safety net.
     from dev_kit.schemas.cross_block_validation import validate_cross_block
 
-    selected_channels = _get_engine(slug).accumulator.get_reach_channel_selection_or_default()
+    # Re-use the same selected_channels resolved above (IntakeState or accumulator fallback).
     invariant_errors: list[str] = validate_cross_block(merged, selected_channels)
 
     all_valid = all(len(errs) == 0 for errs in block_errors.values()) and not invariant_errors
@@ -1492,7 +1499,23 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
         # the preview matches exactly what _run_docker_deploy will deploy.
         # web is always deployed regardless of selection so the UI and ingest proxy
         # remain accessible; voice and cli are optional.
-        selected_channels = _get_engine(slug).accumulator.get_reach_channel_selection_or_default()
+        #
+        # Read IntakeState (new wizard). Projects created before the deterministic
+        # wizard don't have intake_state.json — raise 400 so the caller knows the
+        # project must be re-created rather than silently deploying a wrong compose.
+        _intake_path = CONFIGS_DIR / slug / "_meta" / "intake_state.json"
+        try:
+            _intake = load_intake_state(_intake_path)
+        except FileNotFoundError:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Project '{slug}' was created before the deterministic wizard "
+                    "and does not have an intake_state.json. "
+                    "Re-create the project through the new wizard to enable deployment."
+                ),
+            )
+        selected_channels = list(_intake.selected_channels)
         effective_channels = set(selected_channels) | {"web"}
         services_to_remove = {
             svc_name
@@ -1503,6 +1526,12 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
         # Remove it if voice is not selected.
         if "voice" not in effective_channels:
             services_to_remove.add("ngrok")
+        # Selective service inclusion driven by IntakeState (deterministic wizard).
+        # See docs/superpowers/specs/2026-05-13-devkit-deterministic-wizard-design.md §8.
+        if not _intake.has_kb:
+            services_to_remove.add("knowledge_engine")
+        if not _intake.has_external_tools:
+            services_to_remove.add("action_gateway")
         services_to_remove.add("dev_kit")
 
         import yaml as _yaml
@@ -1530,6 +1559,26 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
             if svc_name == "reach_layer_web":
                 web_mode = "full" if "web" in set(selected_channels) else "routing_only"
                 svc.setdefault("environment", []).append(f"REACH_LAYER_WEB_MODE={web_mode}")
+        # Strip depends_on references to removed services so docker compose doesn't
+        # complain about dangling dependencies. Both list-form and map-form supported.
+        for svc_name, svc in list(services.items()):
+            deps = svc.get("depends_on")
+            if not deps:
+                continue
+            if isinstance(deps, list):
+                filtered = [d for d in deps if d not in services_to_remove]
+                if filtered != deps:
+                    if filtered:
+                        svc["depends_on"] = filtered
+                    else:
+                        svc.pop("depends_on", None)
+            elif isinstance(deps, dict):
+                filtered_map = {k: v for k, v in deps.items() if k not in services_to_remove}
+                if filtered_map != deps:
+                    if filtered_map:
+                        svc["depends_on"] = filtered_map
+                    else:
+                        svc.pop("depends_on", None)
         # Mirror the deploy-time rewrite so the preview matches what the
         # actual deploy will write (and run) on the host.
         _rewrite_compose_bind_paths_to_host(services)
@@ -1783,8 +1832,25 @@ async def execute_deploy(slug: str, body: dict) -> dict:
         extra={"operation": "api.deploy_execute", "status": "start", "slug": slug, "target": target},
     )
     if target == "docker":
-        selected_channels = _get_engine(slug).accumulator.get_reach_channel_selection_or_default()
-        asyncio.create_task(_run_docker_deploy(slug, state, secrets, resources, selected_channels))
+        # Read IntakeState (new wizard). Projects created before the deterministic
+        # wizard don't have intake_state.json — raise 400 so the caller knows the
+        # project must be re-created rather than silently deploying a wrong compose.
+        _intake_path = CONFIGS_DIR / slug / "_meta" / "intake_state.json"
+        try:
+            _intake = load_intake_state(_intake_path)
+        except FileNotFoundError:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Project '{slug}' was created before the deterministic wizard "
+                    "and does not have an intake_state.json. "
+                    "Re-create the project through the new wizard to enable deployment."
+                ),
+            )
+        selected_channels = list(_intake.selected_channels)
+        asyncio.create_task(
+            _run_docker_deploy(slug, state, secrets, resources, selected_channels, _intake)
+        )
     else:
         kubeconfig_content = body.get("kubeconfig", "")
         namespace = body.get("namespace", "dpg")
@@ -1799,6 +1865,7 @@ async def _run_docker_deploy(
     secrets: dict,
     resources: dict,
     selected_channels: list[str] | None = None,
+    intake: "IntakeState | None" = None,
 ) -> None:
     """Background task: apply resources, resolve domain, and run docker compose up."""
     import tempfile
@@ -1849,6 +1916,12 @@ async def _run_docker_deploy(
         # Remove it if voice is not selected.
         if "voice" not in effective_channels:
             services_to_remove.add("ngrok")
+        # Selective service inclusion driven by IntakeState (deterministic wizard).
+        # See docs/superpowers/specs/2026-05-13-devkit-deterministic-wizard-design.md §8.
+        if intake is not None and not intake.has_kb:
+            services_to_remove.add("knowledge_engine")
+        if intake is not None and not intake.has_external_tools:
+            services_to_remove.add("action_gateway")
         # When deploying from the local dev-kit, exclude the Docker dev-kit service
         # to avoid port 8080 conflicts. The local process handles the UI + ingest proxy.
         services_to_remove.add("dev_kit")
@@ -1875,6 +1948,27 @@ async def _run_docker_deploy(
             if svc_name == "reach_layer_web":
                 web_mode = "full" if "web" in set(selected_channels) else "routing_only"
                 svc.setdefault("environment", []).append(f"REACH_LAYER_WEB_MODE={web_mode}")
+
+        # Strip depends_on references to removed services so docker compose doesn't
+        # complain about dangling dependencies. Both list-form and map-form supported.
+        for svc_name, svc in list(services.items()):
+            deps = svc.get("depends_on")
+            if not deps:
+                continue
+            if isinstance(deps, list):
+                filtered = [d for d in deps if d not in services_to_remove]
+                if filtered != deps:
+                    if filtered:
+                        svc["depends_on"] = filtered
+                    else:
+                        svc.pop("depends_on", None)
+            elif isinstance(deps, dict):
+                filtered_map = {k: v for k, v in deps.items() if k not in services_to_remove}
+                if filtered_map != deps:
+                    if filtered_map:
+                        svc["depends_on"] = filtered_map
+                    else:
+                        svc.pop("depends_on", None)
 
         _rewrite_compose_bind_paths_to_host(services)
         content = _yaml.dump(compose_doc, default_flow_style=False, sort_keys=False)
