@@ -5,7 +5,8 @@ fields for the current phase, build the phase prompt, call the LLM, route any
 tool calls returned by the LLM through the router handlers
 (``on_intake_update``, ``on_config_update``), then call
 ``router.decide_next_phase`` to compute the next phase and persist the new
-state to disk.
+state to disk. Appends user and assistant entries to ``_meta/history.jsonl``
+around the LLM call so chat history survives across processes.
 
 Belongs to the dev-kit deterministic wizard. See design §6:
 docs/superpowers/specs/2026-05-13-devkit-deterministic-wizard-design.md

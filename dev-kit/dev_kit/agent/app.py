@@ -36,9 +36,8 @@ from dev_kit.agent.block_status import all_block_statuses
 from dev_kit.agent.checkpoints import list_checkpoints, restore_checkpoint
 from dev_kit.agent.conversation import ConversationEngine
 from dev_kit.agent.crypto import decrypt_secrets_dict, get_public_key_spki_b64
-from dev_kit.agent.errors import ConversationError
 from dev_kit.agent.field_status import load_field_status
-from dev_kit.agent.history import HistoryEntry, load_history
+from dev_kit.agent.history import load_history
 from dev_kit.agent.intake_state import IntakeState, load_intake_state, save_intake_state
 from dev_kit.agent import phase_driver
 from dev_kit.agent.phase_driver import (
@@ -502,6 +501,12 @@ def _build_devkit_llm_call():
     Returns:
         A callable accepting ``(system_prompt, user_message)`` and returning
         an ``LLMResponse`` with text, tool_calls, model, and token counts.
+
+    Raises:
+        anthropic.APIError: On Anthropic API failures (timeout, connection,
+            status error). Propagates from the inner ``_llm_call`` through
+            ``asyncio.to_thread`` to the chat handler's exception handler,
+            which logs and returns HTTP 500.
     """
     def _llm_call(system_prompt: str, user_message: str) -> LLMResponse:
         sync_client = anthropic.Anthropic()
