@@ -11,9 +11,7 @@ import ThemeToggle from './shared/ThemeToggle'
 
 const STATUS_PILL = {
   complete: 'bg-green-900 text-green-300 border-green-700',
-  draft: 'bg-yellow-900 text-yellow-300 border-yellow-700',
-  pending: 'bg-gray-800 text-gray-400 border-gray-700',
-  stale: 'bg-red-900 text-red-300 border-red-700',
+  incomplete: 'bg-gray-800 text-gray-400 border-gray-700',
 }
 
 const DRAFT_BLOCKS = new Set(['trust_layer', 'action_gateway', 'reach_layer'])
@@ -25,7 +23,7 @@ export default function ConfigEditor({ slug, block, onBack }) {
   const originalRef = useRef('')
   const editableCompartment = useRef(new Compartment())
   const readOnlyCompartment = useRef(new Compartment())
-  const [status, setStatus] = useState('pending')
+  const [status, setStatus] = useState('incomplete')
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveMsg, setSaveMsg] = useState(null)
@@ -164,7 +162,7 @@ export default function ConfigEditor({ slug, block, onBack }) {
         </button>
         <div className="flex items-center gap-2">
           <span className="font-mono text-sm text-gray-300">{block}.yaml</span>
-          <span className={`text-xs px-2 py-0.5 rounded-full border ${STATUS_PILL[status] || STATUS_PILL.pending}`}>
+          <span className={`text-xs px-2 py-0.5 rounded-full border ${STATUS_PILL[status] || STATUS_PILL.incomplete}`}>
             {status}
           </span>
         </div>

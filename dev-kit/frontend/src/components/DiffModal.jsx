@@ -14,9 +14,7 @@ const BLOCK_LABELS = {
 
 const STATUS_PILL = {
   complete: 'bg-green-900 text-green-300 border-green-700',
-  draft: 'bg-yellow-900 text-yellow-300 border-yellow-700',
-  pending: 'bg-gray-800 text-gray-400 border-gray-700',
-  stale: 'bg-red-900 text-red-300 border-red-700',
+  incomplete: 'bg-gray-800 text-gray-400 border-gray-700',
 }
 
 function lineDiff(oldText, newText) {
@@ -52,8 +50,8 @@ export default function DiffModal({ currentConfigs, previewConfigs, checkpointPh
   const [activeBlock, setActiveBlock] = useState('agent_core')
   const [confirming, setConfirming] = useState(false)
 
-  const current = currentConfigs.find(c => c.block === activeBlock) || { content: '', status: 'pending' }
-  const preview = previewConfigs.find(c => c.block === activeBlock) || { content: '', status: 'pending' }
+  const current = currentConfigs.find(c => c.block === activeBlock) || { content: '', status: 'incomplete' }
+  const preview = previewConfigs.find(c => c.block === activeBlock) || { content: '', status: 'incomplete' }
   const diff = lineDiff(current.content, preview.content)
   const hasChanges = diff.some(d => d.type !== 'same')
 
@@ -110,12 +108,12 @@ export default function DiffModal({ currentConfigs, previewConfigs, checkpointPh
         {/* Status row */}
         <div className="flex items-center gap-3 px-6 py-2 bg-gray-950 text-xs border-b border-gray-800 shrink-0">
           <span className="text-gray-500">Current:</span>
-          <span className={`px-2 py-0.5 rounded-full border ${STATUS_PILL[current.status] || STATUS_PILL.pending}`}>
+          <span className={`px-2 py-0.5 rounded-full border ${STATUS_PILL[current.status] || STATUS_PILL.incomplete}`}>
             {current.status}
           </span>
           <span className="text-gray-600 mx-1">→</span>
           <span className="text-gray-500">After restore:</span>
-          <span className={`px-2 py-0.5 rounded-full border ${STATUS_PILL[preview.status] || STATUS_PILL.pending}`}>
+          <span className={`px-2 py-0.5 rounded-full border ${STATUS_PILL[preview.status] || STATUS_PILL.incomplete}`}>
             {preview.status}
           </span>
         </div>

@@ -6,31 +6,24 @@ import StatusBadge from './shared/StatusBadge'
 import ThemeToggle from './shared/ThemeToggle'
 
 function HealthBanner({ configs, onDeploy }) {
-  const counts = { complete: 0, draft: 0, stale: 0, pending: 0 }
+  const counts = { complete: 0, incomplete: 0 }
   configs.forEach(c => { counts[c.status] = (counts[c.status] || 0) + 1 })
   const total = BLOCKS.length
   const allComplete = counts.complete === total
-  const hasStale = counts.stale > 0
 
   return (
     <div className={`rounded-xl border px-4 py-3 mb-6 flex items-center justify-between ${
-      allComplete ? 'border-green-700 bg-green-950/40' :
-      hasStale ? 'border-red-700 bg-red-950/30' :
-      'border-gray-700 bg-gray-900'
+      allComplete ? 'border-green-700 bg-green-950/40' : 'border-gray-700 bg-gray-900'
     }`}>
       <div className="flex items-center gap-3">
-        <span className="text-xl">{allComplete ? '✅' : hasStale ? '⚠️' : '🔧'}</span>
+        <span className="text-xl">{allComplete ? '✅' : '🔧'}</span>
         <div>
           <p className="text-sm font-medium">
-            {allComplete ? 'All configs complete — ready to deploy' :
-             hasStale ? 'Some configs have validation errors' :
-             'Configuration in progress'}
+            {allComplete ? 'All configs complete — ready to deploy' : 'Configuration in progress'}
           </p>
           <p className="text-xs text-gray-400 mt-0.5">
             {counts.complete}/{total} complete
-            {counts.draft > 0 && ` · ${counts.draft} draft`}
-            {counts.stale > 0 && ` · ${counts.stale} stale`}
-            {counts.pending > 0 && ` · ${counts.pending} pending`}
+            {counts.incomplete > 0 && ` · ${counts.incomplete} incomplete`}
           </p>
         </div>
       </div>
@@ -41,11 +34,6 @@ function HealthBanner({ configs, onDeploy }) {
         >
           Deploy →
         </button>
-      )}
-      {hasStale && (
-        <span className="text-xs text-red-400 bg-red-950 border border-red-800 px-2 py-1 rounded-lg">
-          Fix stale configs
-        </span>
       )}
     </div>
   )
@@ -108,7 +96,7 @@ export default function Dashboard({ slug, onChat, onEditConfig, onBack, onDeploy
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {BLOCKS.map(block => {
           const config = configs.find(c => c.block === block)
-          const status = config?.status || 'pending'
+          const status = config?.status || 'incomplete'
           return (
             <button
               key={block}

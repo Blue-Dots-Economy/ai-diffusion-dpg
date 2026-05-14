@@ -7,7 +7,7 @@ import { oneDark } from '@codemirror/theme-one-dark'
 import { api } from '../api'
 import { useTheme } from '../ThemeContext'
 import ConfirmModal from './ConfirmModal'
-import { BLOCKS, BLOCK_LABELS, STATUS_PILL, STATUS_DOT } from '../constants'
+import { BLOCKS, BLOCK_LABELS, STATUS_DOT } from '../constants'
 import StatusBadge from './shared/StatusBadge'
 
 export default function YamlPanel({ slug, configs, onSaved }) {
@@ -30,7 +30,7 @@ export default function YamlPanel({ slug, configs, onSaved }) {
   const readOnlyCompartment = useRef(new Compartment())
   const editingRef = useRef(false)  // mirrors editing state; used in effect cleanup
 
-  const activeConfig = configs.find(c => c.block === activeBlock) || { content: '', status: 'pending' }
+  const activeConfig = configs.find(c => c.block === activeBlock) || { content: '', status: 'incomplete' }
   const blockValidation = validationByBlock[activeBlock]
 
   // Rebuild editor when block/configs/theme change — but never while editing.
@@ -212,7 +212,7 @@ export default function YamlPanel({ slug, configs, onSaved }) {
       {/* Block tabs */}
       <div className="flex overflow-x-auto border-b border-gray-800 bg-gray-900 shrink-0 scrollbar-hide">
         {BLOCKS.map(block => {
-          const st = (configs.find(c => c.block === block) || {}).status || 'pending'
+          const st = (configs.find(c => c.block === block) || {}).status || 'incomplete'
           const isActive = block === activeBlock
           const bv = validationByBlock[block]
           return (
@@ -224,7 +224,7 @@ export default function YamlPanel({ slug, configs, onSaved }) {
                 isActive ? 'border-blue-500 text-white bg-gray-800' : 'border-transparent text-gray-500 hover:text-gray-300 hover:bg-gray-800/60',
               ].join(' ')}
             >
-              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_DOT[st] || STATUS_DOT.pending}`} />
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_DOT[st] || STATUS_DOT.incomplete}`} />
               {BLOCK_LABELS[block]}
               {bv && (
                 <span className={`ml-0.5 text-[10px] font-bold ${bv.valid ? 'text-green-400' : 'text-red-400'}`}>
