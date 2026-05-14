@@ -32,6 +32,7 @@ from pydantic import BaseModel
 
 from dev_kit.agent.accumulator import BLOCKS, ConfigAccumulator
 from dev_kit.agent.auth import verify_api_key as _verify_api_key
+from dev_kit.agent.block_status import all_block_statuses
 from dev_kit.agent.checkpoints import list_checkpoints, restore_checkpoint
 from dev_kit.agent.conversation import ConversationEngine
 from dev_kit.agent.crypto import decrypt_secrets_dict, get_public_key_spki_b64
@@ -39,6 +40,7 @@ from dev_kit.agent.errors import ConversationError
 from dev_kit.agent.field_status import load_field_status
 from dev_kit.agent.intake_state import IntakeState, load_intake_state, save_intake_state
 from dev_kit.agent.phase_driver import save_accumulator, save_current_phase
+from dev_kit.agent.project_state import empty_accumulator, load_accumulator
 from dev_kit.agent.renderer import load_block_from_file, render_all
 from dev_kit.config.loader import load_devkit_config as _load_devkit_config
 from dev_kit.schemas.validation import validate_partial
@@ -476,6 +478,169 @@ def _get_engine(slug: str) -> ConversationEngine:
 
 
 # ---------------------------------------------------------------------------
+# Project-route helpers (stateless, per-request)
+# ---------------------------------------------------------------------------
+
+
+def _required_secrets_from_accumulator(accumulator: dict[str, dict]) -> list[dict]:
+    """Return API-key secrets required by configured tools (Action Gateway).
+
+    Scans the action_gateway block's ``tools`` list for non-empty
+    ``auth.secret_env`` fields. Each entry tells the deploy wizard which
+    password field to render.
+
+    Args:
+        accumulator: The full accumulator dict (one entry per block).
+
+    Returns:
+        List of ``{env_var, tool_id, description}`` dicts. Empty if no tools
+        declare a ``secret_env``.
+    """
+    result = []
+    for tool in accumulator.get("action_gateway", {}).get("tools", []):
+        secret_env = (tool.get("auth") or {}).get("secret_env", "")
+        if secret_env:
+            result.append({
+                "env_var": secret_env,
+                "tool_id": tool.get("id", ""),
+                "description": tool.get("description", ""),
+            })
+    return result
+
+
+def _channel_secrets_from_intake_and_accumulator(
+    intake: IntakeState | None,
+    accumulator: dict[str, dict],
+) -> list[dict]:
+    """Return credential descriptors for channels selected in the intake state.
+
+    Inspects ``intake.selected_channels`` and returns a structured list that
+    the deploy wizard renders as credential input fields. Web channel requires
+    Google OAuth client ID; voice channel requires Vobiz and Raya credentials
+    plus the public service URL. Recording config is read from the accumulator's
+    reach_layer block.
+
+    Args:
+        intake: The project's intake state. When ``None`` (legacy project
+            without intake_state.json), returns an empty list.
+        accumulator: The full accumulator dict (one entry per block).
+
+    Returns:
+        List of dicts, each with keys:
+            ``env_var``     — environment variable name injected into container
+            ``label``       — field label shown in the UI
+            ``description`` — hint text shown below the field
+            ``required``    — True for all current channel credentials
+            ``section``     — ``"web"`` or ``"voice"``
+            ``secret``      — ``True`` → SecretInput (masked); ``False`` → plain
+        Returns an empty list when intake is ``None`` or no credential-bearing
+        channel is selected.
+    """
+    if intake is None:
+        return []
+    selected = intake.selected_channels or []
+    result: list[dict] = []
+    if "web" in selected:
+        result.append({
+            "env_var": "GOOGLE_CLIENT_ID",
+            "label": "Google Client ID",
+            "description": (
+                "Google is the only supported auth provider. Get your Client ID from "
+                "the Google Cloud Console — create an OAuth 2.0 credential and add "
+                "your deployment URL as an authorised origin."
+            ),
+            "required": True,
+            "section": "web",
+            "secret": False,
+        })
+    if "voice" in selected:
+        recording_cfg = (
+            accumulator.get("reach_layer", {})
+            .get("reach_layer", {})
+            .get("channels", {})
+            .get("voice", {})
+            .get("recording", {})
+        )
+        recording_source = recording_cfg.get("source", "disabled")
+        if recording_source and recording_source != "disabled":
+            result.append({
+                "env_var": "RECORDING_CALLER_ID_HASH_SALT",
+                "label": "Recording Caller-ID Hash Salt",
+                "description": (
+                    "Secret salt used to hash caller phone numbers in recording metadata. "
+                    "Must be at least 32 characters (64 hex chars recommended). "
+                    "Auto-generated by the wizard if left blank."
+                ),
+                "required": True,
+                "section": "voice",
+                "secret": True,
+            })
+            store_backend = recording_cfg.get("store", {}).get("backend", "local")
+            if store_backend == "s3":
+                result.append({
+                    "env_var": "RECORDING_S3_KMS_KEY_ID",
+                    "label": "Recording S3 KMS Key ID",
+                    "description": (
+                        "Optional AWS KMS key ID used to encrypt recordings in S3. "
+                        "Leave blank to use the bucket's default encryption."
+                    ),
+                    "required": False,
+                    "section": "voice",
+                    "secret": True,
+                })
+        result.extend([
+            {
+                "env_var": "VOBIZ_AUTH_ID",
+                "label": "Vobiz Auth ID",
+                "description": "Your Vobiz account Auth ID. Found in the Vobiz dashboard under Account settings.",
+                "required": True,
+                "section": "voice",
+                "secret": True,
+            },
+            {
+                "env_var": "VOBIZ_AUTH_TOKEN",
+                "label": "Vobiz Auth Token",
+                "description": "Your Vobiz account Auth Token. Found in the Vobiz dashboard under Account settings.",
+                "required": True,
+                "section": "voice",
+                "secret": True,
+            },
+            {
+                "env_var": "RAYA_API_KEY",
+                "label": "Raya API Key",
+                "description": "API key for Raya STT/TTS. Found in your Raya dashboard.",
+                "required": True,
+                "section": "voice",
+                "secret": True,
+            },
+            {
+                "env_var": "PUBLIC_URL",
+                "label": "Voice Public URL",
+                "description": (
+                    "Public HTTPS URL of the voice service "
+                    "(e.g. https://voice.203-0-113-42.sslip.io). "
+                    "The voice server returns this to Vobiz so it knows where to open the audio WebSocket."
+                ),
+                "required": True,
+                "section": "voice",
+                "secret": False,
+            },
+            {
+                "env_var": "VOBIZ_FROM_NUMBER",
+                "label": "Vobiz From Number",
+                "description": (
+                    "Vobiz-assigned phone number used as caller ID on outbound calls "
+                    "(E.164 format, e.g. +919876543210). Required — the voice service will not start without it."
+                ),
+                "required": True,
+                "section": "voice",
+                "secret": False,
+            },
+        ])
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Project routes
 # ---------------------------------------------------------------------------
 
@@ -515,13 +680,8 @@ def create_project(body: CreateProjectRequest) -> dict:
     }
     (meta_dir / "project.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
 
-    # Initialise empty config files via the accumulator.
-    acc = ConfigAccumulator()
-    render_all(project_path, acc)
-    _engines[slug] = ConversationEngine(project_path, _anthropic_client)
-
-    # ── New deterministic-wizard bootstrap ──────────────────────────────────
-    # 1. Persist intake state with form fields + binary flags defaulted to False.
+    # Build IntakeState first so render_all (and future calls) get the
+    # source-of-truth for form fields and binary flags.
     intake = IntakeState(
         project_name=effective_name,
         domain_description=body.effective_domain_description(),
@@ -544,11 +704,13 @@ def create_project(body: CreateProjectRequest) -> dict:
         extra={"operation": "api.create_project", "status": "success", "slug": slug},
     )
 
-    # 2. Write initial current_phase.
+    # Write initial current_phase.
     save_current_phase(project_path, "tier")
 
-    # 3. Initialise accumulator.json with empty per-block dicts.
-    save_accumulator(project_path, {block: {} for block in BLOCKS})
+    # Initialise empty accumulator + render placeholder YAMLs.
+    acc_dict = empty_accumulator()
+    save_accumulator(project_path, acc_dict)
+    render_all(project_path, acc_dict, intake)
 
     logger.info(
         "devkit.project.created",
@@ -587,29 +749,56 @@ def list_projects() -> list[dict]:
 
 @app.get("/api/projects/{slug}")
 def get_project(slug: str) -> dict:
-    """Get project metadata and config statuses."""
+    """Get project metadata and config statuses.
+
+    Loads all state per-request from disk (accumulator, field_status,
+    intake_state) rather than via the legacy ConversationEngine registry.
+    Legacy projects without intake_state.json return partial metadata without
+    crashing.
+
+    Args:
+        slug: Project slug.
+
+    Returns:
+        Project metadata dict augmented with config_statuses, azure_storage,
+        required_secrets, channel_secrets, has_knowledge_base, and llm_provider.
+
+    Raises:
+        HTTPException: 404 if the project does not exist.
+    """
     meta = _load_project_meta(slug)
-    engine = _get_engine(slug)
-    meta["config_statuses"] = {block: engine.accumulator.get_status(block).value for block in BLOCKS}
+    project_path = _get_project_path(slug)
+    meta_dir = project_path / "_meta"
 
-    # Azure Blob Storage — expose intent flag only; all details collected at deploy time
-    meta["azure_storage"] = {
-        "needed": engine.accumulator.is_azure_needed(),
-    }
+    # Load per-request state from disk.
+    accumulator = load_accumulator(meta_dir / "accumulator.json")
+    field_status = load_field_status(meta_dir / "field_status.json")
 
-    # Required secrets — derived from tool auth configuration
-    meta["required_secrets"] = engine.accumulator.get_required_secrets()
-    meta["channel_secrets"] = engine.accumulator.get_required_channel_secrets()
+    # Legacy projects may not have intake_state.json — degrade gracefully.
+    try:
+        intake = load_intake_state(meta_dir / "intake_state.json")
+    except FileNotFoundError:
+        intake = None
 
-    # Knowledge base presence — used by the deploy wizard to skip the ingest step
-    meta["has_knowledge_base"] = engine.accumulator.has_knowledge_base()
+    meta["config_statuses"] = all_block_statuses(field_status)
 
-    # LLM provider chosen during the language phase. The deploy wizard's
-    # MandatoryInputsStep uses this to ask for the matching API key
-    # (ANTHROPIC_API_KEY vs OPENAI_API_KEY) instead of always prompting for
-    # Anthropic. Defaults to "anthropic" when the agent block hasn't been
-    # configured yet (matches the schema default).
-    agent_cfg = engine.accumulator.get_block("agent_core").get("agent", {}) or {}
+    # Azure Blob Storage: no equivalent in the new intake state model;
+    # defer until a future intake-state extension.
+    meta["azure_storage"] = {"needed": False}
+
+    meta["required_secrets"] = _required_secrets_from_accumulator(accumulator)
+    meta["channel_secrets"] = (
+        _channel_secrets_from_intake_and_accumulator(intake, accumulator)
+        if intake is not None
+        else []
+    )
+
+    # Knowledge base presence — used by the deploy wizard to skip the ingest step.
+    meta["has_knowledge_base"] = bool(intake and intake.has_kb)
+
+    # LLM provider chosen during the language phase. Defaults to "anthropic"
+    # when the agent block hasn't been configured yet.
+    agent_cfg = accumulator.get("agent_core", {}).get("agent", {}) or {}
     meta["llm_provider"] = agent_cfg.get("provider") or "anthropic"
 
     return meta
@@ -622,7 +811,6 @@ def delete_project(slug: str) -> dict:
     if not project_path.exists():
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
     shutil.rmtree(project_path)
-    _engines.pop(slug, None)
     logger.info(
         "devkit.project.deleted",
         extra={"operation": "api.delete_project", "status": "success", "slug": slug},
