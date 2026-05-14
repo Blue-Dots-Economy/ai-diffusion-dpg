@@ -235,7 +235,7 @@ Detailed per-field rules (defaults, types, sub-fields) live in §7's per-block c
 | Block | Field | Effect |
 |---|---|---|
 | agent_core | `connectors.read[name=*]`, `connectors.write[name=*]`, `connectors.identity[name=*]` (each entry's full subtree) | Chat. Each entry: `name`, `description`, `input_schema.{type,properties,required,additionalProperties}`, `invocation_rules.{call_when, required_before_calling, must_not_substitute, on_empty, on_failure, bridge_line, exception_no_call, ranking_order, presentation_limit, refinement_loop_max, safety.{never_present, never_speak}}`. |
-| agent_core | `agent.max_tool_rounds` | Chat (default 3; kkb tightens to 2 per GH-206). |
+| agent_core | `agent.max_tool_rounds` | Framework-default-only (3 in dpg.yaml). Not chat-asked. |
 | agent_core | `agent_workflow.subagents[id=*].tools` | Chat per-subagent; may reference connector names. Empty list → use `global_tools`. |
 | action_gateway | `tools` (the full list) | Chat. Each `tools[id=X]` entry has full ToolDefinition shape (see §7.4 for the per-entry contract). |
 | compose | `action_gateway` service | Deployed. |
@@ -686,7 +686,6 @@ The router lands the wizard in the **earliest affected phase** (lowest phase ind
 - **Chat `needs_re_asking`:**
   - `agent_core.connectors.read`, `.write`, `.identity` (operator authors entries)
   - `agent_core.agent_workflow.global_tools` and/or each subagent's `tools`
-  - `agent_core.agent.max_tool_rounds` (may want to tighten)
   - `action_gateway.tools` (operator authors entries)
   - `observability_layer.observability.outcomes.lifecycle` (LLM may propose tool-triggered states)
 - **Phases:** `tools` becomes relevant.
@@ -701,7 +700,6 @@ The router lands the wizard in the **earliest affected phase** (lowest phase ind
   - `observability_layer.observability.outcomes.lifecycle` (any `trigger_tool` references become invalid)
 - **Chat cleared (→ `not_applicable`):**
   - All `agent_core.connectors.read[name=*]`, `connectors.write[name=*]`, `connectors.identity[name=*]`
-  - `agent_core.agent.max_tool_rounds` (revert to framework default)
   - `action_gateway.tools`
   - Per-subagent `tools` lists
 - **Phases:** `tools` becomes skipped.
@@ -943,7 +941,7 @@ The catalogue here lists only domain-half fields (predetermined / chat / deploy 
 | `agent.provider` | chat (**deploy_overridable**) | language | always | — | `anthropic` | Phase prompt asks user first; flip invalidates models. Deploy form may swap provider per-deploy; UI enforces matching primary/fallback model swap. |
 | `agent.consent_prompt` | chat | language | `needs_consent` | `needs_consent, default_language, supported_languages` | — | Translation-sensitive. |
 | `agent.ask_for_consent` | predetermined | language | always | `needs_consent` | `set: needs_consent` | — |
-| `agent.max_tool_rounds` | chat | tools | `has_external_tools` | `has_external_tools` | 3 | KKB sets to 2 per GH-206. |
+| `agent.max_tool_rounds` | framework_default_only | — | always | — | 3 (dpg.yaml) | Not chat-asked. KKB's tightening to 2 (GH-206) will move to dpg.yaml or be revisited during the cleanup pass. |
 | `conversation.blocked_message` | chat | language | always | `default_language, supported_languages` | (sentinel) | Required (mirror min_length=1). |
 | `conversation.escalation_message` | chat | language | always | `default_language, supported_languages, has_hitl` | (sentinel) | Required. Re-phrased if `has_hitl`. |
 | `conversation.output_blocked_message` | chat | language | always | `default_language, supported_languages` | (sentinel) | Required. |
