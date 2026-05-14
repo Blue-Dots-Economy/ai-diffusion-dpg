@@ -2,7 +2,8 @@
 dev-kit/dev_kit/agent/renderer.py
 
 Writes accumulated config values to YAML files in a project directory.
-Computes config status based on data presence and block type.
+Returns per-block render status ("complete" | "failed") based on the outcome
+of writing and optional pre-deploy dry-run validation.
 
 When running inside the dev-kit Docker image, ``render_all`` performs a
 pre-deploy dry-run before writing any YAML file: each block's domain data is
@@ -24,9 +25,16 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-from dev_kit.agent.accumulator import BLOCKS, DRAFT_BLOCKS, ConfigAccumulator, ConfigStatus
 from dev_kit.agent.channel_tts import merge_voice_tts_into_suffix, strip_voice_tts_from_suffix
+from dev_kit.agent.intake_state import IntakeState
+from dev_kit.agent.project_state import BLOCKS
 from dev_kit.schemas.validation import validate_partial
+
+# Blocks that are still actively being designed (dev-kit Docker image
+# iteration). This was previously imported from accumulator.DRAFT_BLOCKS but
+# is now inlined here because accumulator is no longer a dependency of the
+# renderer. Currently empty — all 7 blocks have stable wizard phases.
+_DRAFT_BLOCKS: frozenset[str] = frozenset()
 
 # ---------------------------------------------------------------------------
 # Path helpers — replicates the _KIT_ROOT pattern from dev_kit/loader.py so
@@ -63,9 +71,6 @@ except ImportError:
     # Baked schemas not present (running outside the dev-kit docker image).
     # runtime_validate() will raise a clear error if called in this mode.
     RUNTIME_SCHEMAS = None
-
-_DRAFT_HEADER = "# STATUS: draft — block template not yet finalized\n"
-_STALE_HEADER_TPL = "# STATUS: stale — validation errors detected:\n{errors}\n"
 
 
 # ---------------------------------------------------------------------------
@@ -125,26 +130,26 @@ def _load_dpg_defaults(block: str) -> dict[str, Any]:
         return yaml.safe_load(fh) or {}
 
 
-def _prepare_block_data(block: str, accumulator: ConfigAccumulator) -> dict[str, Any]:
+def _prepare_block_data(block: str, accumulator: dict[str, dict]) -> dict[str, Any]:
     """Return the cleaned, render-ready domain data for a single block.
 
     Applies all agent_core-specific cleanups (NLU intent sync, subagent
     routing guard, voice-TTS suffix merge, max_tool_rounds clamp) so that
-    both ``render_block`` and the pre-deploy dry-run validate exactly the
-    same data that would be written to disk.  Does not mutate accumulator
-    state: ``accumulator.get_block`` returns a fresh deep copy, so the
-    in-place ``setdefault`` calls inside the cleanups stay local to the
-    returned dict.
+    both ``render_all`` and the pre-deploy dry-run validate exactly the
+    same data that would be written to disk.  Does not mutate the accumulator
+    dict: a shallow copy of the block's top-level keys is taken, so in-place
+    ``setdefault`` calls inside cleanups stay local to the returned dict.
 
     Args:
         block: Block name.
-        accumulator: Config accumulator to read from.
+        accumulator: Plain dict keyed by block name; each value is the
+            domain-YAML structure for that block.
 
     Returns:
         Cleaned domain data dict (internal ``_``-prefixed keys stripped), or
         an empty dict if the block has no data yet.
     """
-    data = accumulator.get_block(block)
+    data = dict(accumulator.get(block) or {})
     if not data:
         return {}
 
@@ -240,8 +245,14 @@ def _ensure_subagent_routing(data: dict) -> dict:
     return data
 
 
-def render_all(project_path: Path, accumulator: ConfigAccumulator) -> dict[str, ConfigStatus]:
-    """Write all 7 block config YAML files and return their statuses.
+def render_all(
+    project_path: Path,
+    accumulator: dict[str, dict],
+    intake_state: IntakeState,
+    *,
+    deploy_settings: dict | None = None,  # reserved for Phase 9 derived-field overlay
+) -> dict[str, str]:
+    """Render every block's domain YAML and return {block: 'complete'|'failed'} per outcome.
 
     Before writing any YAML file, performs a pre-deploy dry-run when running
     inside the dev-kit Docker image (i.e. when ``RUNTIME_SCHEMAS`` is not
@@ -252,21 +263,39 @@ def render_all(project_path: Path, accumulator: ConfigAccumulator) -> dict[str, 
     (subsequent blocks are not validated) and **no** YAML files are written.
 
     On the host (where ``RUNTIME_SCHEMAS`` is ``None``), the dry-run pass is
-    skipped entirely and the function behaves as before.
+    skipped entirely.
+
+    Mirror-schema warnings from ``validate_partial`` are advisory — they are
+    written as ``# WARNINGS:`` comments in the YAML file, but the block still
+    returns ``"complete"``. The runtime dry-run (via ``runtime_validate``) is
+    the authoritative gate.
 
     Args:
         project_path: Absolute path to the project's configs directory.
-        accumulator: Current config accumulator.
+        accumulator: Plain dict keyed by block name; each value is the
+            domain-YAML structure for that block. Missing or empty blocks
+            produce placeholder files.
+        intake_state: The project's intake state (reserved for future
+            phase-aware rendering; not yet used in block data logic).
+        deploy_settings: Reserved for Phase 9 deploy-overlay injection.
+            Accepted but ignored in this implementation.
 
     Returns:
-        Dict of block name → ConfigStatus after writing.
+        Dict of block name → ``"complete"`` or ``"failed"`` after rendering.
+        Currently always ``"complete"`` per block — ``"failed"`` is reserved
+        for future cases where a dry-run rejects a block non-fatally.
 
     Raises:
+        ValueError: If ``project_path`` is None.
         RuntimeValidationError: If any block's merged config fails runtime
-            schema validation (Docker image only).
+            schema validation (Docker image only). Raised before any file is
+            written.
     """
+    if project_path is None:
+        raise ValueError("project_path must not be None")
+
     # ------------------------------------------------------------------
-    # Step 1 (new): Pre-deploy dry-run — validate each block through the
+    # Step 1: Pre-deploy dry-run — validate each block through the
     # runtime's own baked-in MergedConfig schema before writing any file.
     # This catches anything the dev-kit mirror accepted but the runtime
     # would reject at boot.  Runs only inside the Docker image where
@@ -290,54 +319,34 @@ def render_all(project_path: Path, accumulator: ConfigAccumulator) -> dict[str, 
     # dry-run leaves no on-disk side effects for a fresh project.
     # ------------------------------------------------------------------
     project_path.mkdir(parents=True, exist_ok=True)
-    statuses: dict[str, ConfigStatus] = {}
+    statuses: dict[str, str] = {}
+
     for block in BLOCKS:
-        render_block(project_path, block, accumulator)
-        statuses[block] = accumulator.get_status(block)
+        out_path = project_path / f"{block}.yaml"
+        data = _prepare_block_data(block, accumulator)
+
+        if not data:
+            # Empty block — write a placeholder so the YAML loader always
+            # finds every block file.  An empty block is not a failure.
+            out_path.write_text(f"# {block} — no config generated yet\n")
+            statuses[block] = "complete"
+            continue
+
+        yaml_content = yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+        errors = validate_partial(block, data)
+        if errors:
+            # Mirror-schema warnings are advisory; write them as comments
+            # but still return "complete" — the runtime dry-run is
+            # authoritative.
+            error_lines = "\n".join(f"# WARNINGS:\n#   - {e}" for e in errors)
+            out_path.write_text(error_lines + "\n" + yaml_content)
+        else:
+            out_path.write_text(yaml_content)
+
+        statuses[block] = "complete"
+
     return statuses
-
-
-def render_block(project_path: Path, block: str, accumulator: ConfigAccumulator) -> None:
-    """Write a single block's domain config YAML and update its status in the accumulator.
-
-    Status rules:
-    - Empty data → PENDING
-    - Draft block (one of the 4 open blocks) with data → DRAFT
-    - Non-draft block with data → COMPLETE (agent-generated content is assumed valid)
-    - STALE is set externally by the PUT /configs/:block endpoint on validation failure.
-
-    Args:
-        project_path: Absolute path to the project's configs directory.
-        block: Block name.
-        accumulator: Config accumulator to read from and update status in.
-    """
-    out_path = project_path / f"{block}.yaml"
-
-    # Delegate all cleanup logic to _prepare_block_data so the dry-run in
-    # render_all and the actual write path always see identical data.
-    data = _prepare_block_data(block, accumulator)
-
-    if not data:
-        out_path.write_text(f"# {block} — no config generated yet\n")
-        accumulator.set_status(block, ConfigStatus.PENDING)
-        return
-
-    yaml_content = yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
-
-    errors = validate_partial(block, data)
-    if errors:
-        error_lines = "\n".join(f"#   - {e}" for e in errors)
-        header = _STALE_HEADER_TPL.format(errors=error_lines)
-        out_path.write_text(header + yaml_content)
-        accumulator.set_status(block, ConfigStatus.STALE)
-        return
-
-    if block in DRAFT_BLOCKS:
-        out_path.write_text(_DRAFT_HEADER + yaml_content)
-        accumulator.set_status(block, ConfigStatus.DRAFT)
-    else:
-        out_path.write_text(yaml_content)
-        accumulator.set_status(block, ConfigStatus.COMPLETE)
 
 
 def load_block_from_file(project_path: Path, block: str) -> dict:
