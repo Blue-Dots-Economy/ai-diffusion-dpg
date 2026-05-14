@@ -94,25 +94,14 @@ def test_workflow_id_set():
 # ---------------------------------------------------------------------------
 
 def test_reach_layer_storage_keys_set():
-    """reach_layer.channels.web.ui.storage_key and theme_storage_key are slug-derived.
-
-    NOTE: The reach_layer FIELD_RULES dict keys are already prefixed with
-    ``reach_layer.`` (e.g. ``"reach_layer.channels.web.ui.storage_key"``).
-    After ``register_block_rules("reach_layer", ...)`` adds another ``reach_layer.``
-    prefix, the AGGREGATED_FIELD_RULES path becomes
-    ``"reach_layer.reach_layer.channels.web.ui.storage_key"``.  The rendered
-    accumulator for reach_layer therefore has a nested ``reach_layer`` sub-key.
-    """
+    """reach_layer.channels.web.ui.storage_key and theme_storage_key are slug-derived."""
     accumulator = _fresh_accumulator()
     intake = _intake(project_name="My Project Name", selected_channels=["web"])
     apply_derived_fields(accumulator, intake)
 
     expected_slug = "my_project_name"
-    # The reach_layer data is nested under a second "reach_layer" key due to
-    # the double-prefix in AGGREGATED_FIELD_RULES (see note in docstring).
     web_ui = (
         accumulator["reach_layer"]
-        .get("reach_layer", {})
         .get("channels", {})
         .get("web", {})
         .get("ui", {})
@@ -276,20 +265,13 @@ def test_does_not_overwrite_existing_chat_fields():
 # ---------------------------------------------------------------------------
 
 def test_reach_layer_common_observability_domain():
-    """reach_layer.common.observability.domain is written at the 'common' sub-path.
-
-    NOTE: Due to the double-prefix in AGGREGATED_FIELD_RULES (see note in
-    test_reach_layer_storage_keys_set docstring), the data lands under
-    ``accumulator["reach_layer"]["reach_layer"]["common"]["observability"]["domain"]``.
-    """
+    """reach_layer.common.observability.domain is written at the 'common' sub-path."""
     accumulator = _fresh_accumulator()
     intake = _intake(project_name="My Project Name")
     apply_derived_fields(accumulator, intake)
 
-    # The reach_layer data is nested under a second "reach_layer" sub-key.
     common_domain = (
         accumulator["reach_layer"]
-        .get("reach_layer", {})
         .get("common", {})
         .get("observability", {})
         .get("domain")

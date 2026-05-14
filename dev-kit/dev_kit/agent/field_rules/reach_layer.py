@@ -24,7 +24,7 @@ FIELD_RULES: dict[str, FieldRule] = {
     # ── Derived: reach_layer.common.observability.domain ─────────────────────
     # Path is reach_layer.common.observability.domain (NOT reach_layer.observability.domain).
 
-    "reach_layer.common.observability.domain": FieldRule(
+    "common.observability.domain": FieldRule(
         category="derived",
         compute="slug(project_name)",
         pydantic_class="CommonObservabilityConfig",
@@ -32,7 +32,7 @@ FIELD_RULES: dict[str, FieldRule] = {
 
     # ── Gated chat: web UI strings (catalogue §3.3 + §7.3) ───────────────────
 
-    "reach_layer.channels.web.ui.app_name": FieldRule(
+    "channels.web.ui.app_name": FieldRule(
         category="chat",
         phase="reach",
         applies_if='"web" in selected_channels',
@@ -40,7 +40,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="Application name displayed in the web UI.",
         pydantic_class="WebUiConfig",
     ),
-    "reach_layer.channels.web.ui.app_tagline": FieldRule(
+    "channels.web.ui.app_tagline": FieldRule(
         category="chat",
         phase="reach",
         applies_if='"web" in selected_channels',
@@ -48,7 +48,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="Short tagline displayed below the app name in the web UI.",
         pydantic_class="WebUiConfig",
     ),
-    "reach_layer.channels.web.ui.app_icon": FieldRule(
+    "channels.web.ui.app_icon": FieldRule(
         category="chat",
         phase="reach",
         applies_if='"web" in selected_channels',
@@ -56,7 +56,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="App icon path or emoji for the web UI.",
         pydantic_class="WebUiConfig",
     ),
-    "reach_layer.channels.web.ui.agent_avatar": FieldRule(
+    "channels.web.ui.agent_avatar": FieldRule(
         category="chat",
         phase="reach",
         applies_if='"web" in selected_channels',
@@ -64,7 +64,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="Agent avatar image path or URL for the web UI.",
         pydantic_class="WebUiConfig",
     ),
-    "reach_layer.channels.web.ui.user_avatar": FieldRule(
+    "channels.web.ui.user_avatar": FieldRule(
         category="chat",
         phase="reach",
         applies_if='"web" in selected_channels',
@@ -72,7 +72,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="User avatar image path or URL for the web UI.",
         pydantic_class="WebUiConfig",
     ),
-    "reach_layer.channels.web.ui.setup_heading": FieldRule(
+    "channels.web.ui.setup_heading": FieldRule(
         category="chat",
         phase="reach",
         applies_if='"web" in selected_channels',
@@ -80,7 +80,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="Heading shown on the web UI setup/login screen.",
         pydantic_class="WebUiConfig",
     ),
-    "reach_layer.channels.web.ui.setup_subtitle": FieldRule(
+    "channels.web.ui.setup_subtitle": FieldRule(
         category="chat",
         phase="reach",
         applies_if='"web" in selected_channels',
@@ -88,7 +88,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="Subtitle shown on the web UI setup/login screen.",
         pydantic_class="WebUiConfig",
     ),
-    "reach_layer.channels.web.ui.user_id_placeholder": FieldRule(
+    "channels.web.ui.user_id_placeholder": FieldRule(
         category="chat",
         phase="reach",
         applies_if='"web" in selected_channels',
@@ -96,7 +96,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="Placeholder text for the user ID input field.",
         pydantic_class="WebUiConfig",
     ),
-    "reach_layer.channels.web.ui.user_id_hint": FieldRule(
+    "channels.web.ui.user_id_hint": FieldRule(
         category="chat",
         phase="reach",
         applies_if='"web" in selected_channels',
@@ -104,7 +104,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="Hint text below the user ID input field.",
         pydantic_class="WebUiConfig",
     ),
-    "reach_layer.channels.web.ui.start_btn_label": FieldRule(
+    "channels.web.ui.start_btn_label": FieldRule(
         category="chat",
         phase="reach",
         applies_if='"web" in selected_channels',
@@ -112,7 +112,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="Label for the start/launch button in the web UI.",
         pydantic_class="WebUiConfig",
     ),
-    "reach_layer.channels.web.ui.new_session_msg": FieldRule(
+    "channels.web.ui.new_session_msg": FieldRule(
         category="chat",
         phase="reach",
         applies_if='"web" in selected_channels',
@@ -120,7 +120,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         description='Opening message for new sessions. Often "Hello! I\'m <project_name>..."',
         pydantic_class="WebUiConfig",
     ),
-    "reach_layer.channels.web.ui.returning_user_msg": FieldRule(
+    "channels.web.ui.returning_user_msg": FieldRule(
         category="chat",
         phase="reach",
         applies_if='"web" in selected_channels',
@@ -128,7 +128,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="Welcome-back message for returning users.",
         pydantic_class="WebUiConfig",
     ),
-    "reach_layer.channels.web.ui.sign_out_confirm": FieldRule(
+    "channels.web.ui.sign_out_confirm": FieldRule(
         category="chat",
         phase="reach",
         applies_if='"web" in selected_channels',
@@ -136,7 +136,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="Confirmation prompt for sign-out action.",
         pydantic_class="WebUiConfig",
     ),
-    "reach_layer.channels.web.ui.switch_user_confirm": FieldRule(
+    "channels.web.ui.switch_user_confirm": FieldRule(
         category="chat",
         phase="reach",
         applies_if='"web" in selected_channels',
@@ -144,7 +144,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="Confirmation prompt for switch-user action.",
         pydantic_class="WebUiConfig",
     ),
-    "reach_layer.channels.web.ui.delete_conversation_confirm": FieldRule(
+    "channels.web.ui.delete_conversation_confirm": FieldRule(
         category="chat",
         phase="reach",
         applies_if='"web" in selected_channels',
@@ -155,12 +155,12 @@ FIELD_RULES: dict[str, FieldRule] = {
 
     # ── Derived: web UI keys ──────────────────────────────────────────────────
 
-    "reach_layer.channels.web.ui.storage_key": FieldRule(
+    "channels.web.ui.storage_key": FieldRule(
         category="derived",
         compute='f"{project_slug}_user_id"',
         pydantic_class="WebUiConfig",
     ),
-    "reach_layer.channels.web.ui.theme_storage_key": FieldRule(
+    "channels.web.ui.theme_storage_key": FieldRule(
         category="derived",
         compute='f"{project_slug}_theme"',
         pydantic_class="WebUiConfig",
@@ -168,7 +168,7 @@ FIELD_RULES: dict[str, FieldRule] = {
 
     # ── Gated chat: web.ke_internal_url ──────────────────────────────────────
 
-    "reach_layer.channels.web.ke_internal_url": FieldRule(
+    "channels.web.ke_internal_url": FieldRule(
         category="chat",
         phase="reach",
         applies_if="has_kb",
@@ -179,7 +179,7 @@ FIELD_RULES: dict[str, FieldRule] = {
 
     # ── Deploy: web.auth.enabled ──────────────────────────────────────────────
 
-    "reach_layer.channels.web.auth.enabled": FieldRule(
+    "channels.web.auth.enabled": FieldRule(
         category="deploy",
         description="Toggle Google SSO authentication for the web channel. Default: true (dpg).",
         pydantic_class="WebAuthConfig",
@@ -187,13 +187,13 @@ FIELD_RULES: dict[str, FieldRule] = {
 
     # ── Predetermined: voice.raya.stt_language / tts_language ─────────────────
 
-    "reach_layer.channels.voice.raya.stt_language": FieldRule(
+    "channels.voice.raya.stt_language": FieldRule(
         category="predetermined",
         rule='set: lang_code(default_language) if "voice" in selected_channels else None',
         invalidated_by=["selected_channels", "default_language"],
         pydantic_class="RayaVoiceConfig",
     ),
-    "reach_layer.channels.voice.raya.tts_language": FieldRule(
+    "channels.voice.raya.tts_language": FieldRule(
         category="predetermined",
         rule='set: lang_code(default_language) if "voice" in selected_channels else None',
         invalidated_by=["selected_channels", "default_language"],
@@ -202,7 +202,7 @@ FIELD_RULES: dict[str, FieldRule] = {
 
     # ── Gated chat: voice.raya.voice_id ──────────────────────────────────────
 
-    "reach_layer.channels.voice.raya.voice_id": FieldRule(
+    "channels.voice.raya.voice_id": FieldRule(
         category="chat",
         phase="reach",
         applies_if='"voice" in selected_channels',
@@ -214,7 +214,7 @@ FIELD_RULES: dict[str, FieldRule] = {
 
     # ── Gated chat: voice.agent_core.* ───────────────────────────────────────
 
-    "reach_layer.channels.voice.agent_core.fallback_phrase": FieldRule(
+    "channels.voice.agent_core.fallback_phrase": FieldRule(
         category="chat",
         phase="reach",
         applies_if='"voice" in selected_channels',
@@ -222,7 +222,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="Phrase the voice channel speaks when Agent Core is unreachable.",
         pydantic_class="VoiceAgentCoreClient",
     ),
-    "reach_layer.channels.voice.agent_core.barge_in_acknowledgement": FieldRule(
+    "channels.voice.agent_core.barge_in_acknowledgement": FieldRule(
         category="chat",
         phase="reach",
         applies_if='"voice" in selected_channels',
@@ -230,7 +230,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="Short acknowledgement phrase when the user barges in.",
         pydantic_class="VoiceAgentCoreClient",
     ),
-    "reach_layer.channels.voice.agent_core.timeout_ms": FieldRule(
+    "channels.voice.agent_core.timeout_ms": FieldRule(
         category="chat",
         phase="reach",
         applies_if='"voice" in selected_channels',
@@ -242,7 +242,7 @@ FIELD_RULES: dict[str, FieldRule] = {
 
     # ── Gated chat: voice filler + terminal ──────────────────────────────────
 
-    "reach_layer.channels.voice.filler_threshold_ms": FieldRule(
+    "channels.voice.filler_threshold_ms": FieldRule(
         category="chat",
         phase="reach",
         applies_if='"voice" in selected_channels',
@@ -250,7 +250,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="Threshold in ms before a filler phrase is played while waiting.",
         pydantic_class="VoiceChannelSection",
     ),
-    "reach_layer.channels.voice.filler_phrase": FieldRule(
+    "channels.voice.filler_phrase": FieldRule(
         category="chat",
         phase="reach",
         applies_if='"voice" in selected_channels',
@@ -258,7 +258,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="Filler phrase spoken while the agent is thinking.",
         pydantic_class="VoiceChannelSection",
     ),
-    "reach_layer.channels.voice.terminal_word": FieldRule(
+    "channels.voice.terminal_word": FieldRule(
         category="chat",
         phase="reach",
         applies_if='"voice" in selected_channels',
@@ -269,7 +269,7 @@ FIELD_RULES: dict[str, FieldRule] = {
 
     # ── Gated chat: voice.recording.consent_purpose (locked decision #6) ─────
 
-    "reach_layer.channels.voice.recording.consent_purpose": FieldRule(
+    "channels.voice.recording.consent_purpose": FieldRule(
         category="chat",
         phase="reach",
         applies_if='"voice" in selected_channels',
@@ -280,23 +280,23 @@ FIELD_RULES: dict[str, FieldRule] = {
 
     # ── Deploy: voice ─────────────────────────────────────────────────────────
 
-    "reach_layer.channels.voice.raya.api_key": FieldRule(
+    "channels.voice.raya.api_key": FieldRule(
         category="deploy",
         applies_if='"voice" in selected_channels',
         description="Raya API key (deploy secret).",
         pydantic_class="RayaVoiceConfig",
     ),
-    "reach_layer.channels.voice.public_url": FieldRule(
+    "channels.voice.public_url": FieldRule(
         category="deploy",
         applies_if='"voice" in selected_channels',
         description="Public URL for voice channel (e.g. ngrok).",
     ),
-    "reach_layer.channels.voice.vobiz": FieldRule(
+    "channels.voice.vobiz": FieldRule(
         category="deploy",
         applies_if='"voice" in selected_channels',
         description="Telephony adapter configuration (deploy form).",
     ),
-    "reach_layer.channels.voice.vad": FieldRule(
+    "channels.voice.vad": FieldRule(
         category="deploy",
         advanced=True,
         applies_if='"voice" in selected_channels',
@@ -304,7 +304,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="Silero VAD tuning (advanced deploy form). Hindi/voice cadence overrides.",
         pydantic_class="VoiceChannelSection",
     ),
-    "reach_layer.channels.voice.recording": FieldRule(
+    "channels.voice.recording": FieldRule(
         category="deploy",
         advanced=True,
         applies_if='"voice" in selected_channels',
