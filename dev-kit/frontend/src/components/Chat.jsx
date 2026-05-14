@@ -17,6 +17,7 @@ export default function Chat({ slug, onDashboard, onBack }) {
   const [graph, setGraph] = useState({ nodes: [], edges: [] })
   const [checkpoints, setCheckpoints] = useState([])
   const [configs, setConfigs] = useState([])
+  const [fieldStatus, setFieldStatus] = useState({})
   const [showGraph, setShowGraph] = useState(false)
   const [showYaml, setShowYaml] = useState(false)
   const [diffModal, setDiffModal] = useState(null)  // null | {phase, currentConfigs, previewConfigs}
@@ -84,6 +85,7 @@ export default function Chat({ slug, onDashboard, onBack }) {
     api.getCheckpoints(slug).then(setCheckpoints).catch(() => {})
     api.getGraph(slug).then(setGraph).catch(() => {})
     api.getConfigs(slug).then(setConfigs).catch(() => {})
+    api.getFieldStatus(slug).then(setFieldStatus).catch(() => {})
   }, [slug])
 
   useEffect(() => {
@@ -315,6 +317,19 @@ export default function Chat({ slug, onDashboard, onBack }) {
             )}
             <div ref={bottomRef} />
           </div>
+
+          {/* Field-status summary line — reads from field_status.json (Task 11.3) */}
+          {Object.keys(fieldStatus).length > 0 && (() => {
+            const counts = { pending: 0, answered: 0, needs_re_asking: 0, not_applicable: 0 }
+            Object.values(fieldStatus).forEach(v => { if (counts[v] !== undefined) counts[v]++ })
+            return (
+              <div className="px-4 py-1.5 border-t border-gray-800 bg-gray-900 text-xs text-gray-500 shrink-0 flex gap-3">
+                {counts.answered > 0 && <span className="text-green-500">{counts.answered} answered</span>}
+                {counts.pending > 0 && <span className="text-yellow-500">{counts.pending} pending</span>}
+                {counts.needs_re_asking > 0 && <span className="text-orange-400">{counts.needs_re_asking} needs re-asking</span>}
+              </div>
+            )
+          })()}
 
           {/* Completion banner */}
           {phase === 'review' && messages.length > 0 && (
