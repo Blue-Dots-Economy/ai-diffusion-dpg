@@ -41,14 +41,12 @@ def test_predetermined_rules_reference_intake_fields_only():
             "knowledge_engine", "knowledge_retrieval",
             # Python function/expression helpers used in rule expressions
             "slug", "lang_code", "f",
-            # Class names used in rule expressions
-            "PersistentStateConfig", "InternalConnectorDef",
-            # Module-level constant names used in rule expressions
-            "_CANONICAL_DIGNITY_QUESTIONS",
             # Common string literals / kwarg names in rule expressions
             "disabled", "name", "route", "type", "query", "string",
             "workflow", "user_id",
         }
+        # CamelCase class names and __dunder__ identifiers can't match the
+        # lowercase-leading regex above, so they don't need allowlisting.
         # Strip f-string fragment identifiers (e.g. '_knowledge' from f"{slug}_knowledge")
         idents = {i for i in idents if not i.startswith("_")}
         suspect = idents - intake_fields - {"set", "if", "else", "and", "or",

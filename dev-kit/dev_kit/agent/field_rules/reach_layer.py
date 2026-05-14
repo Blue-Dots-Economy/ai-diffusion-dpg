@@ -290,13 +290,11 @@ FIELD_RULES: dict[str, FieldRule] = {
         category="deploy",
         applies_if='"voice" in selected_channels',
         description="Public URL for voice channel (e.g. ngrok).",
-        pydantic_class="VoiceChannelSection",
     ),
     "reach_layer.channels.voice.vobiz": FieldRule(
         category="deploy",
         applies_if='"voice" in selected_channels',
         description="Telephony adapter configuration (deploy form).",
-        pydantic_class="VoiceChannelSection",
     ),
     "reach_layer.channels.voice.vad": FieldRule(
         category="deploy",
@@ -311,7 +309,6 @@ FIELD_RULES: dict[str, FieldRule] = {
         advanced=True,
         applies_if='"voice" in selected_channels',
         description="Voice recording configuration (advanced deploy form).",
-        pydantic_class="VoiceChannelSection",
     ),
 }
 
