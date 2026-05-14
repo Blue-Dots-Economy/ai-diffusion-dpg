@@ -31,10 +31,18 @@ from dev_kit.agent.phases_config import PHASES
 from dev_kit.agent.router import (
     PHASE_ORDER,
     decide_next_phase,
-    on_config_update,
-    on_intake_update,
 )
 from dev_kit.agent.skeleton import BLOCKS, eval_expr
+from dev_kit.agent.tools import (
+    add_routing_rule,
+    add_subagent,
+    add_tool,
+    discover_mcp_tools,
+    parse_openapi_spec,
+    update_config as tool_update_config,
+    update_intake as tool_update_intake,
+    update_subagent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -356,62 +364,21 @@ def _load_phase_prompt(phase_id: str) -> Callable[..., str]:
 # Tool routing
 # ---------------------------------------------------------------------------
 
-
-def _handle_update_intake(
-    args: dict[str, Any],
-    intake_state: IntakeState,
-    accumulator: dict[str, dict],
-    field_status: dict[str, str],
-) -> dict[str, Any]:
-    """Adapter for the ``update_intake`` tool — calls ``router.on_intake_update``."""
-    return on_intake_update(
-        args["field"],
-        args["value"],
-        intake_state,
-        accumulator,
-        field_status,
-    )
-
-
-def _handle_update_config(
-    args: dict[str, Any],
-    intake_state: IntakeState,  # kept for handler signature uniformity
-    accumulator: dict[str, dict],
-    field_status: dict[str, str],
-) -> dict[str, Any]:
-    """Adapter for the ``update_config`` tool — calls ``router.on_config_update``.
-
-    Catches the ValueError raised by the router on validation failure so a
-    single bad tool call does not abort the rest of the turn.
-    """
-    try:
-        return on_config_update(
-            args["path"],
-            args["value"],
-            accumulator,
-            field_status,
-        )
-    except ValueError as exc:
-        logger.warning(
-            "update_config rejected",
-            extra={
-                "operation": "phase_driver.update_config",
-                "status": "failure",
-                "error": str(exc),
-                "path": args.get("path"),
-            },
-        )
-        return {"ok": False, "error": str(exc), "path": args.get("path")}
-
-
-# Dispatch table — keep flat (no if/elif chain). Phase 7 will add more entries
-# for add_subagent, add_tool, parse_openapi_spec, etc.
+# Dispatch table — 8 canonical tools per design §6 "Slimmed tool surface".
+# All handlers share the signature:
+#   (args, intake_state, accumulator, field_status) -> dict[str, Any]
 TOOL_HANDLERS: dict[
     str,
     Callable[[dict[str, Any], IntakeState, dict[str, dict], dict[str, str]], dict[str, Any]],
 ] = {
-    "update_intake": _handle_update_intake,
-    "update_config": _handle_update_config,
+    "update_intake": tool_update_intake,
+    "update_config": tool_update_config,
+    "add_subagent": add_subagent,
+    "update_subagent": update_subagent,
+    "add_routing_rule": add_routing_rule,
+    "add_tool": add_tool,
+    "parse_openapi_spec": parse_openapi_spec,
+    "discover_mcp_tools": discover_mcp_tools,
 }
 
 

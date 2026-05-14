@@ -225,9 +225,13 @@ def test_run_turn_with_pending_fields_calls_phase_prompt(tmp_path: Path) -> None
 
 
 def test_run_turn_unsupported_tool_skipped(tmp_path: Path, caplog) -> None:
-    """Unknown tool names are logged and skipped without crashing."""
+    """Unknown tool names are logged and skipped without crashing.
+
+    Phase 7 expanded TOOL_HANDLERS to 8 tools; use a genuinely unknown name
+    (not one of the 8 canonical tools) to verify the skip-and-log path.
+    """
     projects_root = _setup_project(tmp_path)
-    fake, _ = _fake_llm(tool_calls=[ToolCall("add_subagent", {"id": "enquiry"})])
+    fake, _ = _fake_llm(tool_calls=[ToolCall("old_set_phase", {"phase": "tools"})])
 
     with caplog.at_level(logging.WARNING, logger="dev_kit.agent.phase_driver"):
         result = run_turn(
@@ -240,7 +244,7 @@ def test_run_turn_unsupported_tool_skipped(tmp_path: Path, caplog) -> None:
     assert result == "ok"
     assert any(
         getattr(rec, "operation", None) == "phase_driver.unsupported_tool"
-        and getattr(rec, "tool_name", None) == "add_subagent"
+        and getattr(rec, "tool_name", None) == "old_set_phase"
         for rec in caplog.records
     )
 

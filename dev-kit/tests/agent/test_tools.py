@@ -1,0 +1,803 @@
+"""Tests for the 8-tool set in dev_kit.agent.tools (design §6: Slimmed tool surface).
+
+Covers the canonical 4-param signature, side effects, and failure paths for
+each of the 8 tools, plus integration tests verifying TOOL_HANDLERS wiring in
+phase_driver.
+
+See docs/superpowers/specs/2026-05-13-devkit-deterministic-wizard-design.md §6.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from dev_kit.agent.field_status import save_field_status
+from dev_kit.agent.intake_state import IntakeState, save_intake_state
+from dev_kit.agent.phase_driver import (
+    TOOL_HANDLERS,
+    LLMResponse,
+    ToolCall,
+    load_accumulator,
+    run_turn,
+    save_accumulator,
+    save_current_phase,
+)
+from dev_kit.agent.skeleton import BLOCKS
+from dev_kit.agent.tools import (
+    add_routing_rule,
+    add_subagent,
+    add_tool,
+    discover_mcp_tools,
+    parse_openapi_spec,
+    update_config,
+    update_intake,
+    update_subagent,
+)
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+_TOOL_NAMES = {
+    "update_intake",
+    "update_config",
+    "add_subagent",
+    "update_subagent",
+    "add_routing_rule",
+    "add_tool",
+    "parse_openapi_spec",
+    "discover_mcp_tools",
+}
+
+
+def _make_intake(**overrides: Any) -> IntakeState:
+    """Return a minimal valid IntakeState with optional field overrides."""
+    base = dict(
+        has_kb=False,
+        has_external_tools=False,
+        is_multi_turn=False,
+        needs_persistent_user_data=False,
+        is_companion_style=False,
+        needs_consent=False,
+        has_hitl=False,
+        selected_channels=["web"],
+        default_language="english",
+        supported_languages=["english"],
+        domain_description="test domain",
+        project_name="test-project",
+    )
+    base.update(overrides)
+    return IntakeState(**base)
+
+
+def _empty_accumulator() -> dict[str, dict]:
+    """Return a fresh accumulator with all blocks as empty dicts."""
+    return {block: {} for block in BLOCKS}
+
+
+def _empty_field_status() -> dict[str, str]:
+    """Return an empty field status registry."""
+    return {}
+
+
+def _setup_project(
+    tmp_path: Path,
+    *,
+    slug: str = "demo",
+    intake: IntakeState | None = None,
+    accumulator: dict[str, dict] | None = None,
+    field_status: dict[str, str] | None = None,
+    current_phase: str | None = "tier",
+) -> Path:
+    """Lay out a minimal project tree for run_turn integration tests.
+
+    Returns the projects_root path.
+    """
+    projects_root = tmp_path / "projects"
+    slug_root = projects_root / slug
+    meta = slug_root / "_meta"
+    meta.mkdir(parents=True, exist_ok=True)
+
+    if intake is None:
+        intake = _make_intake()
+    save_intake_state(meta / "intake_state.json", intake)
+
+    if accumulator is not None:
+        save_accumulator(slug_root, accumulator)
+
+    if field_status is not None:
+        save_field_status(meta / "field_status.json", field_status)
+
+    if current_phase is not None:
+        save_current_phase(slug_root, current_phase)
+
+    return projects_root
+
+
+def _fake_llm(text: str = "ok", tool_calls: list[ToolCall] | None = None):
+    """Return a callable that returns a canned LLMResponse."""
+    def _call(system_prompt: str, user_message: str) -> LLMResponse:
+        return LLMResponse(text=text, tool_calls=list(tool_calls or []))
+    return _call
+
+
+# ---------------------------------------------------------------------------
+# Meta — TOOL_HANDLERS must export exactly the 8 expected names
+# ---------------------------------------------------------------------------
+
+
+def test_tools_match_TOOL_HANDLERS_keys() -> None:
+    """TOOL_HANDLERS keys must equal exactly the 8-tool set."""
+    assert set(TOOL_HANDLERS.keys()) == _TOOL_NAMES
+
+
+def test_tool_functions_are_callable() -> None:
+    """Each of the 8 tool functions must be callable."""
+    for name in _TOOL_NAMES:
+        fn = TOOL_HANDLERS[name]
+        assert callable(fn), f"{name} is not callable"
+
+
+# ---------------------------------------------------------------------------
+# 1. update_intake
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateIntake:
+    """Tests for the update_intake tool."""
+
+    def test_normal_mutates_intake_state(self) -> None:
+        """Valid update_intake call mutates IntakeState in place."""
+        intake = _make_intake(has_kb=False)
+        acc = _empty_accumulator()
+        fs = _empty_field_status()
+
+        result = update_intake(
+            {"field": "has_kb", "value": True},
+            intake,
+            acc,
+            fs,
+        )
+
+        assert result.get("ok") is True
+        assert intake.has_kb is True
+
+    def test_missing_field_returns_error(self) -> None:
+        """update_intake with no 'field' key returns ok=False."""
+        result = update_intake({}, _make_intake(), _empty_accumulator(), _empty_field_status())
+        assert result["ok"] is False
+        assert "field" in result["error"]
+
+    def test_missing_value_returns_error(self) -> None:
+        """update_intake without 'value' key returns ok=False."""
+        result = update_intake(
+            {"field": "has_kb"},
+            _make_intake(),
+            _empty_accumulator(),
+            _empty_field_status(),
+        )
+        assert result["ok"] is False
+        assert "value" in result["error"]
+
+    def test_unknown_field_returns_error(self) -> None:
+        """update_intake with an unknown field name returns ok=False (no crash)."""
+        result = update_intake(
+            {"field": "nonexistent_field_xyz", "value": True},
+            _make_intake(),
+            _empty_accumulator(),
+            _empty_field_status(),
+        )
+        assert result["ok"] is False
+        assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# 2. update_config
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateConfig:
+    """Tests for the update_config tool."""
+
+    def test_path_form_writes_to_accumulator(self) -> None:
+        """Path form sets the value and marks field_status answered."""
+        intake = _make_intake()
+        acc = _empty_accumulator()
+        fs = {"trust_layer.trust.input_rules.blocked_phrases": "pending"}
+
+        result = update_config(
+            {
+                "path": "trust_layer.trust.input_rules.blocked_phrases",
+                "value": ["badword"],
+            },
+            intake,
+            acc,
+            fs,
+        )
+
+        assert result.get("ok") is True
+        assert acc["trust_layer"]["trust"]["input_rules"]["blocked_phrases"] == ["badword"]
+        assert fs["trust_layer.trust.input_rules.blocked_phrases"] == "answered"
+
+    def test_path_form_missing_value_returns_error(self) -> None:
+        """Path form without 'value' returns ok=False."""
+        result = update_config(
+            {"path": "trust_layer.trust.input_rules.blocked_phrases"},
+            _make_intake(),
+            _empty_accumulator(),
+            _empty_field_status(),
+        )
+        assert result["ok"] is False
+
+    def test_block_section_form_writes_multiple_values(self) -> None:
+        """Block/section/values form writes all keys from values dict."""
+        intake = _make_intake()
+        acc = _empty_accumulator()
+        fs = {"trust_layer.trust.input_rules.blocked_phrases": "pending"}
+
+        result = update_config(
+            {
+                "block": "trust_layer",
+                "section": "trust.input_rules",
+                "values": {"blocked_phrases": ["spam"]},
+            },
+            intake,
+            acc,
+            fs,
+        )
+
+        assert result.get("ok") is True
+        assert "results" in result
+
+    def test_block_form_missing_block_returns_error(self) -> None:
+        """Block/section/values without block returns ok=False."""
+        result = update_config(
+            {"section": "trust", "values": {}},
+            _make_intake(),
+            _empty_accumulator(),
+            _empty_field_status(),
+        )
+        assert result["ok"] is False
+
+    def test_invalid_path_returns_error(self) -> None:
+        """Updating an unknown path returns ok=False (no crash)."""
+        result = update_config(
+            {"path": "agent_core.nonexistent.field", "value": "x"},
+            _make_intake(),
+            _empty_accumulator(),
+            _empty_field_status(),
+        )
+        assert result["ok"] is False
+        assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# 3. add_subagent
+# ---------------------------------------------------------------------------
+
+
+class TestAddSubagent:
+    """Tests for the add_subagent tool."""
+
+    def test_normal_appends_subagent(self) -> None:
+        """Valid definition is appended to agent_workflow.subagents."""
+        acc = _empty_accumulator()
+        defn = {
+            "id": "greeting",
+            "name": "Greeting",
+            "description": "Greets the user",
+            "is_start": True,
+        }
+
+        result = add_subagent({"definition": defn}, _make_intake(), acc, _empty_field_status())
+
+        assert result.get("ok") is True
+        assert result["id"] == "greeting"
+        subagents = acc["agent_core"]["agent_workflow"]["subagents"]
+        assert any(sa["id"] == "greeting" for sa in subagents)
+
+    def test_missing_definition_returns_error(self) -> None:
+        """No definition key returns ok=False."""
+        result = add_subagent({}, _make_intake(), _empty_accumulator(), _empty_field_status())
+        assert result["ok"] is False
+
+    def test_missing_id_in_definition_returns_error(self) -> None:
+        """Definition without id returns ok=False."""
+        result = add_subagent(
+            {"definition": {"name": "no-id"}},
+            _make_intake(),
+            _empty_accumulator(),
+            _empty_field_status(),
+        )
+        assert result["ok"] is False
+        assert "id" in result["error"]
+
+    def test_duplicate_id_returns_error(self) -> None:
+        """Adding a subagent with an existing id returns ok=False."""
+        acc = _empty_accumulator()
+        defn = {"id": "dup", "name": "Dup"}
+        add_subagent({"definition": defn}, _make_intake(), acc, _empty_field_status())
+
+        result = add_subagent({"definition": defn}, _make_intake(), acc, _empty_field_status())
+        assert result["ok"] is False
+        assert "already exists" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# 4. update_subagent
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateSubagent:
+    """Tests for the update_subagent tool."""
+
+    def _acc_with_subagent(self, subagent_id: str = "worker") -> dict[str, dict]:
+        """Return an accumulator pre-populated with one subagent."""
+        acc = _empty_accumulator()
+        acc["agent_core"].setdefault("agent_workflow", {}).setdefault("subagents", []).append(
+            {"id": subagent_id, "name": "Worker", "description": "does work"}
+        )
+        return acc
+
+    def test_normal_updates_fields(self) -> None:
+        """Valid fields are merged into the target subagent."""
+        acc = self._acc_with_subagent("worker")
+
+        result = update_subagent(
+            {"id": "worker", "fields": {"description": "updated description"}},
+            _make_intake(),
+            acc,
+            _empty_field_status(),
+        )
+
+        assert result.get("ok") is True
+        subagents = acc["agent_core"]["agent_workflow"]["subagents"]
+        worker = next(sa for sa in subagents if sa["id"] == "worker")
+        assert worker["description"] == "updated description"
+
+    def test_not_found_returns_error(self) -> None:
+        """update_subagent on a missing id returns ok=False."""
+        acc = self._acc_with_subagent("worker")
+
+        result = update_subagent(
+            {"id": "missing", "fields": {}},
+            _make_intake(),
+            acc,
+            _empty_field_status(),
+        )
+        assert result["ok"] is False
+        assert "not found" in result["error"]
+
+    def test_missing_id_returns_error(self) -> None:
+        """update_subagent without id returns ok=False."""
+        result = update_subagent(
+            {"fields": {"name": "x"}},
+            _make_intake(),
+            _empty_accumulator(),
+            _empty_field_status(),
+        )
+        assert result["ok"] is False
+
+    def test_missing_fields_returns_error(self) -> None:
+        """update_subagent without fields dict returns ok=False."""
+        result = update_subagent(
+            {"id": "worker"},
+            _make_intake(),
+            _empty_accumulator(),
+            _empty_field_status(),
+        )
+        assert result["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# 5. add_routing_rule
+# ---------------------------------------------------------------------------
+
+
+class TestAddRoutingRule:
+    """Tests for the add_routing_rule tool."""
+
+    def _acc_with_subagent(self, *ids: str) -> dict[str, dict]:
+        acc = _empty_accumulator()
+        subagents = acc["agent_core"].setdefault("agent_workflow", {}).setdefault("subagents", [])
+        for sid in ids:
+            subagents.append({"id": sid, "routing": []})
+        return acc
+
+    def test_normal_appends_rule(self) -> None:
+        """Valid routing rule is appended to the from-subagent's routing list."""
+        acc = self._acc_with_subagent("intro", "main")
+
+        result = add_routing_rule(
+            {
+                "from_subagent_id": "intro",
+                "intent": "greet",
+                "to_subagent_id": "main",
+            },
+            _make_intake(),
+            acc,
+            _empty_field_status(),
+        )
+
+        assert result.get("ok") is True
+        subagents = acc["agent_core"]["agent_workflow"]["subagents"]
+        intro = next(sa for sa in subagents if sa["id"] == "intro")
+        assert len(intro["routing"]) == 1
+        rule = intro["routing"][0]
+        assert rule["intent"] == "greet"
+        assert rule["to"] == "main"
+
+    def test_with_condition_appended(self) -> None:
+        """Optional condition field is included in the rule when provided."""
+        acc = self._acc_with_subagent("a", "b")
+        result = add_routing_rule(
+            {
+                "from_subagent_id": "a",
+                "intent": "confirm",
+                "to_subagent_id": "b",
+                "condition": "slot.confirmed == true",
+            },
+            _make_intake(),
+            acc,
+            _empty_field_status(),
+        )
+        assert result["ok"] is True
+        rule = acc["agent_core"]["agent_workflow"]["subagents"][0]["routing"][0]
+        assert rule.get("condition") == "slot.confirmed == true"
+
+    def test_source_not_found_returns_error(self) -> None:
+        """add_routing_rule with unknown from_subagent_id returns ok=False."""
+        acc = self._acc_with_subagent("worker")
+        result = add_routing_rule(
+            {"from_subagent_id": "nonexistent", "intent": "x", "to_subagent_id": "worker"},
+            _make_intake(),
+            acc,
+            _empty_field_status(),
+        )
+        assert result["ok"] is False
+        assert "not found" in result["error"]
+
+    def test_missing_required_args_returns_error(self) -> None:
+        """Missing from_subagent_id returns ok=False."""
+        result = add_routing_rule(
+            {"intent": "x", "to_subagent_id": "y"},
+            _make_intake(),
+            _empty_accumulator(),
+            _empty_field_status(),
+        )
+        assert result["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# 6. add_tool
+# ---------------------------------------------------------------------------
+
+
+class TestAddTool:
+    """Tests for the add_tool tool."""
+
+    def _rest_spec(self, tool_id: str = "my_api") -> dict:
+        return {
+            "id": tool_id,
+            "type": "rest_api",
+            "category": "read",
+            "description": "Looks up items",
+            "base_url": "https://api.example.com/v1",
+            "auth": {"type": "none"},
+            "endpoints": [
+                {
+                    "name": "search",
+                    "method": "GET",
+                    "path": "/search",
+                    "params": [
+                        {
+                            "name": "query",
+                            "source": "agent",
+                            "type": "string",
+                            "required": True,
+                            "description": "search query",
+                        }
+                    ],
+                }
+            ],
+        }
+
+    def test_normal_adds_to_action_gateway(self) -> None:
+        """Valid spec is appended to action_gateway.tools."""
+        acc = _empty_accumulator()
+        result = add_tool({"spec": self._rest_spec()}, _make_intake(), acc, _empty_field_status())
+
+        assert result.get("ok") is True
+        assert result["id"] == "my_api"
+        assert any(t["id"] == "my_api" for t in acc["action_gateway"].get("tools", []))
+
+    def test_normal_syncs_agent_core_connector(self) -> None:
+        """REST tool also writes a connector to agent_core.connectors.read."""
+        acc = _empty_accumulator()
+        add_tool({"spec": self._rest_spec()}, _make_intake(), acc, _empty_field_status())
+
+        connectors = acc["agent_core"].get("connectors", {}).get("read", [])
+        assert any(c["name"] == "my_api" for c in connectors)
+
+    def test_mcp_tool_no_connector(self) -> None:
+        """MCP tool does not create an agent_core connector."""
+        acc = _empty_accumulator()
+        mcp_spec = {
+            "id": "my_mcp",
+            "type": "mcp",
+            "category": "read",
+            "description": "MCP server",
+            "server_url": "https://mcp.example.com",
+        }
+        result = add_tool({"spec": mcp_spec}, _make_intake(), acc, _empty_field_status())
+
+        assert result.get("ok") is True
+        connectors = acc["agent_core"].get("connectors", {})
+        read = connectors.get("read", [])
+        assert not any(c.get("name") == "my_mcp" for c in read)
+
+    def test_missing_spec_returns_error(self) -> None:
+        """No spec key returns ok=False."""
+        result = add_tool({}, _make_intake(), _empty_accumulator(), _empty_field_status())
+        assert result["ok"] is False
+
+    def test_missing_id_in_spec_returns_error(self) -> None:
+        """spec without id returns ok=False."""
+        result = add_tool(
+            {"spec": {"type": "rest_api", "category": "read"}},
+            _make_intake(),
+            _empty_accumulator(),
+            _empty_field_status(),
+        )
+        assert result["ok"] is False
+        assert "id" in result["error"]
+
+    def test_duplicate_id_returns_error(self) -> None:
+        """Adding the same tool id twice returns ok=False on second call."""
+        acc = _empty_accumulator()
+        spec = self._rest_spec("api_v1")
+        add_tool({"spec": spec}, _make_intake(), acc, _empty_field_status())
+
+        result = add_tool({"spec": spec}, _make_intake(), acc, _empty_field_status())
+        assert result["ok"] is False
+        assert "already exists" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# 7. parse_openapi_spec
+# ---------------------------------------------------------------------------
+
+
+class TestParseOpenApiSpec:
+    """Tests for the parse_openapi_spec utility tool."""
+
+    _MINIMAL_SPEC = {
+        "openapi": "3.0.0",
+        "info": {"title": "Test", "version": "1.0"},
+        "paths": {
+            "/search": {
+                "get": {
+                    "summary": "Search items",
+                    "operationId": "searchItems",
+                    "parameters": [],
+                }
+            }
+        },
+        "servers": [{"url": "https://api.example.com"}],
+    }
+
+    def test_normal_dict_spec_returns_operations(self) -> None:
+        """Dict spec returns ok=True with at least one operation."""
+        result = parse_openapi_spec(
+            {"spec": self._MINIMAL_SPEC},
+            _make_intake(),
+            _empty_accumulator(),
+            _empty_field_status(),
+        )
+
+        assert result.get("ok") is True
+        assert "operations" in result
+        assert len(result["operations"]) >= 1
+        first = result["operations"][0]
+        assert "id" in first
+        assert "path" in first
+        assert "method" in first
+
+    def test_json_string_spec_returns_operations(self) -> None:
+        """JSON string spec is parsed and returns operations."""
+        import json
+
+        result = parse_openapi_spec(
+            {"spec": json.dumps(self._MINIMAL_SPEC)},
+            _make_intake(),
+            _empty_accumulator(),
+            _empty_field_status(),
+        )
+        assert result.get("ok") is True
+
+    def test_missing_spec_returns_error(self) -> None:
+        """No spec key returns ok=False."""
+        result = parse_openapi_spec(
+            {},
+            _make_intake(),
+            _empty_accumulator(),
+            _empty_field_status(),
+        )
+        assert result["ok"] is False
+
+    def test_spec_without_paths_returns_error(self) -> None:
+        """Spec dict missing 'paths' returns ok=False."""
+        result = parse_openapi_spec(
+            {"spec": {"openapi": "3.0.0"}},
+            _make_intake(),
+            _empty_accumulator(),
+            _empty_field_status(),
+        )
+        assert result["ok"] is False
+
+    def test_invalid_type_returns_error(self) -> None:
+        """spec as an integer returns ok=False."""
+        result = parse_openapi_spec(
+            {"spec": 42},
+            _make_intake(),
+            _empty_accumulator(),
+            _empty_field_status(),
+        )
+        assert result["ok"] is False
+
+    def test_does_not_mutate_accumulator(self) -> None:
+        """parse_openapi_spec never mutates the accumulator."""
+        acc = _empty_accumulator()
+        acc_before = json.loads(json.dumps(acc))
+
+        parse_openapi_spec(
+            {"spec": self._MINIMAL_SPEC},
+            _make_intake(),
+            acc,
+            _empty_field_status(),
+        )
+
+        assert acc == acc_before
+
+
+# ---------------------------------------------------------------------------
+# 8. discover_mcp_tools
+# ---------------------------------------------------------------------------
+
+
+class TestDiscoverMcpTools:
+    """Tests for the discover_mcp_tools utility tool."""
+
+    def test_normal_returns_empty_tool_list_with_note(self) -> None:
+        """discover_mcp_tools returns ok=True, empty tools, and a note."""
+        result = discover_mcp_tools(
+            {"server_url": "https://mcp.example.com"},
+            _make_intake(),
+            _empty_accumulator(),
+            _empty_field_status(),
+        )
+
+        assert result.get("ok") is True
+        assert result["tools"] == []
+        assert "note" in result
+        assert "not yet implemented" in result["note"].lower()
+
+    def test_missing_server_url_returns_error(self) -> None:
+        """Missing server_url returns ok=False."""
+        result = discover_mcp_tools(
+            {},
+            _make_intake(),
+            _empty_accumulator(),
+            _empty_field_status(),
+        )
+        assert result["ok"] is False
+        assert "server_url" in result["error"]
+
+    def test_does_not_mutate_accumulator(self) -> None:
+        """discover_mcp_tools never mutates the accumulator."""
+        acc = _empty_accumulator()
+        acc_before = json.loads(json.dumps(acc))
+
+        discover_mcp_tools(
+            {"server_url": "https://mcp.example.com"},
+            _make_intake(),
+            acc,
+            _empty_field_status(),
+        )
+
+        assert acc == acc_before
+
+
+# ---------------------------------------------------------------------------
+# Integration — phase_driver routes each tool through run_turn
+# ---------------------------------------------------------------------------
+
+
+def test_phase_driver_routes_update_intake(tmp_path: Path) -> None:
+    """update_intake in a tool call from run_turn mutates persisted IntakeState."""
+    projects_root = _setup_project(tmp_path)
+
+    fake = _fake_llm(
+        tool_calls=[ToolCall("update_intake", {"field": "has_kb", "value": True})]
+    )
+    run_turn(
+        user_message="yes",
+        project_slug="demo",
+        projects_root=projects_root,
+        llm_call=fake,
+    )
+
+    saved = json.loads((projects_root / "demo" / "_meta" / "intake_state.json").read_text())
+    assert saved["has_kb"] is True
+
+
+def test_phase_driver_routes_update_config(tmp_path: Path) -> None:
+    """update_config in a tool call from run_turn writes to accumulator."""
+    intake = _make_intake()
+    projects_root = _setup_project(
+        tmp_path,
+        intake=intake,
+        field_status={"trust_layer.trust.input_rules.blocked_phrases": "pending"},
+        current_phase="trust",
+    )
+
+    fake = _fake_llm(
+        tool_calls=[
+            ToolCall(
+                "update_config",
+                {
+                    "path": "trust_layer.trust.input_rules.blocked_phrases",
+                    "value": ["spam"],
+                },
+            )
+        ]
+    )
+    run_turn(
+        user_message="ok",
+        project_slug="demo",
+        projects_root=projects_root,
+        llm_call=fake,
+    )
+
+    acc = load_accumulator(projects_root / "demo")
+    assert acc["trust_layer"]["trust"]["input_rules"]["blocked_phrases"] == ["spam"]
+
+
+def test_phase_driver_skips_unknown_tool(tmp_path: Path) -> None:
+    """An unknown tool name is logged and skipped — run_turn does not crash."""
+    projects_root = _setup_project(tmp_path)
+
+    fake = _fake_llm(
+        tool_calls=[ToolCall("nonexistent_tool_xyz", {"foo": "bar"})]
+    )
+    result = run_turn(
+        user_message="ok",
+        project_slug="demo",
+        projects_root=projects_root,
+        llm_call=fake,
+    )
+    assert result == "ok"
+
+
+@pytest.mark.parametrize("tool_name", sorted(_TOOL_NAMES))
+def test_phase_driver_routes_each_tool_no_crash(tmp_path: Path, tool_name: str) -> None:
+    """Each tool name in TOOL_HANDLERS can be routed through run_turn without crashing.
+
+    We pass empty/minimal args so the handler returns ok=False for most tools
+    (missing required args) — but the point is no unhandled exception escapes
+    run_turn, since all handlers return structured errors rather than raising.
+    """
+    projects_root = _setup_project(tmp_path)
+
+    fake = _fake_llm(tool_calls=[ToolCall(tool_name, {})])
+    # Should not raise.
+    result = run_turn(
+        user_message="test",
+        project_slug="demo",
+        projects_root=projects_root,
+        llm_call=fake,
+    )
+    assert isinstance(result, str)
