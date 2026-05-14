@@ -304,9 +304,91 @@ def decide_next_phase(
     return current_phase
 
 
+def on_config_update(
+    path: str,
+    value: Any,
+    accumulator: dict[str, dict],
+    field_status: dict[str, str],
+) -> dict[str, Any]:
+    """Apply a user's chat answer to the accumulator with mirror validation.
+
+    Steps:
+    1. Split ``path`` into block and relative_path.
+    2. Look up the FieldRule. Raise ValueError if absent or not a chat field.
+    3. Write ``value`` via ``set_path``.
+    4. Run ``validate_partial`` against the mirror schema. On failure, revert
+       the write via ``clear_path`` and raise ValueError.
+    5. Mark ``field_status[path] = "answered"``.
+    6. Return ``{"ok": True, "path": path, "value": value}``.
+
+    Persistence (saving accumulator/field_status to disk) is the caller's
+    responsibility — this function only mutates the in-memory dicts.
+
+    Args:
+        path: Full dotted path including block prefix, e.g.
+            ``"agent_core.conversation.blocked_message"``.
+        value: The user-provided value (raw Python type).
+        accumulator: Per-block YAML dicts — mutated in-place on success,
+            reverted on validation failure.
+        field_status: Field status registry — mutated in-place on success
+            (set to ``"answered"``), left unchanged on failure.
+
+    Returns:
+        ``{"ok": True, "path": path, "value": value}`` on success.
+
+    Raises:
+        ValueError: If ``path`` is not in AGGREGATED_FIELD_RULES.
+        ValueError: If the rule's category is not ``"chat"``.
+        ValueError: If ``validate_partial`` reports constraint violations
+            (accumulator is reverted before raising).
+    """
+    # Lazy import to avoid circular import risk; validation module is heavy.
+    from dev_kit.schemas.validation import validate_partial  # noqa: PLC0415
+
+    rule = AGGREGATED_FIELD_RULES.get(path)
+    if rule is None:
+        raise ValueError(f"unknown path: {path!r}")
+
+    if rule.category != "chat":
+        raise ValueError(
+            f"path {path!r} is not a chat field (category={rule.category!r}); "
+            "only chat fields are user-writeable via the wizard"
+        )
+
+    block, relative_path = path.split(".", 1)
+
+    # Capture pre-write state so we can revert on validation failure.
+    import copy
+    pre_write_snapshot = copy.deepcopy(accumulator[block])
+
+    set_path(accumulator[block], relative_path, value)
+
+    errors = validate_partial(block, accumulator[block])
+    if errors:
+        # Revert — restore block to snapshot.
+        accumulator[block] = pre_write_snapshot
+        raise ValueError(
+            f"Validation failed for {path!r}: {'; '.join(errors)}"
+        )
+
+    field_status[path] = "answered"
+
+    logger.debug(
+        "on_config_update",
+        extra={
+            "operation": "router.on_config_update",
+            "status": "success",
+            "path": path,
+        },
+    )
+
+    return {"ok": True, "path": path, "value": value}
+
+
 __all__ = [
     "on_intake_update",
     "decide_next_phase",
+    "on_config_update",
     "PHASE_ORDER",
     "PHASE_RELEVANCE",
 ]
