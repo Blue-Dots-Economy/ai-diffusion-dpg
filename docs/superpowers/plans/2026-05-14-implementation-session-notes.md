@@ -819,3 +819,149 @@ notes file describing where to pick up next.
 - **`accumulator.py` is still imported by:** `conversation.py`, `tools.py`, `renderer.py`, `app.py`, `phase_driver.py` (docstring reference only), `checkpoints.py`, and 6 test files. Don't try to delete it until Phase D — earlier phases need to migrate callers one-by-one.
 - **`tools.py`'s `update_config` writes to `ConfigAccumulator` today.** Must be rewired to read+write the accumulator dict + `save_accumulator(...)`. This is Phase C work but worth flagging — the deterministic wizard's runtime depends on tools.py writing correctly to the new state.
 - **Phase C is the bulk of the work** (~30 endpoints, 4 sub-tasks in the plan). Recommend dispatching one sub-task per fresh session to keep reviews tractable.
+
+---
+
+## Session 5 notes (2026-05-14)
+
+**Branch:** `docs/devkit-config-generation-revamp-design`
+
+**Tasks completed this session:** 4 (B.1, C.1, C.2, C.4) plus 3 code-review polish commits and inline polish edits. Phase B fully done; Phase C is 3/4 done (C.3 deferred).
+
+**Commit log this session (newest first):**
+```
+f7cce91 chore(dev-kit): drop 3 checkpoint endpoints — feature deprecated (Task C.4)
+a986cb5 chore(dev-kit): apply Task C.2 code-review polish
+c380d1e feat(dev-kit): migrate /chat and /history to phase_driver + history.jsonl (Task C.2)
+99d8edf chore(dev-kit): apply Task C.1 code-review polish (ValueError handling, missing tests, docstrings)
+5846c91 feat(dev-kit): migrate lifecycle endpoints to per-request state loaders (Task C.1)
+86890d5 chore(dev-kit): apply renderer code-review polish (dead const, guards, warning header fix)
+b265e16 refactor(dev-kit): render_all takes dict + IntakeState; drops ConfigAccumulator dependency
+```
+
+**Aggregate state:**
+- `dev-kit/dev_kit/agent/renderer.py` — `render_all(project_path, accumulator: dict, intake_state, *, deploy_settings=None) -> dict[str, str]`. Returns `"complete"|"failed"`. `_DRAFT_HEADER`/`_STALE_HEADER_TPL` gone; mirror warnings emitted as a single `# WARNINGS:` block. `render_block` inlined. No imports from `accumulator.py`.
+- `dev-kit/dev_kit/agent/app.py` — Lifecycle endpoints (POST `/api/projects`, GET `/api/projects/{slug}`, DELETE `/api/projects/{slug}`) use per-request loaders. `/chat` and `/history` call `phase_driver.run_turn` and `history.load_history` directly. `_build_devkit_llm_call()` lives in app.py (duplicate of `conversation.py:_build_phase_driver_llm_call` — Phase D dedupes). Two new helpers `_required_secrets_from_accumulator` and `_channel_secrets_from_intake_and_accumulator`. 3 checkpoint endpoints + `from dev_kit.agent.checkpoints import ...` removed.
+- `dev-kit/dev_kit/agent/phase_driver.py` — `run_turn` now appends `HistoryEntry` rows (user before LLM, assistant after `decide_next_phase`, both with `phase=current_phase`).
+- Test files added: `tests/agent/test_renderer_render_all.py` (19 tests), `tests/agent/test_app_project_lifecycle.py` (21 tests), `tests/agent/test_app_chat_history.py` (7 tests), 3 history-append tests in `tests/agent/test_phase_driver.py`.
+
+**Test pass rate:** Agent tests 438 passed + 13 expected pre-existing failures (`test_deploy_preview_intake.py` — uses old `render_all(project, acc)` signature; covered by Phase F).
+
+**Next task to pick up:** **Task C.3 — Migrate config read/write endpoints** (plan lines 743-760). 6 endpoints around `app.py:787-908`:
+- `GET /api/projects/{slug}/configs` — list per-block status + content
+- `GET /api/projects/{slug}/configs/export` — zip/tar of all YAMLs
+- `GET /api/projects/{slug}/configs/{block}` — single block content
+- `PUT /api/projects/{slug}/configs/{block}` — write block YAML (with `validate_partial`)
+- `POST /api/projects/{slug}/configs/reload` — re-read YAMLs from disk into accumulator
+- `POST /api/projects/{slug}/configs/validate` — run mirror-schema validation
+
+After Phase C lands, the remaining work is:
+- Phase D — Delete dead code (`checkpoints.py`, `accumulator.py`, `ConversationEngine` class). D.2 dedupes the two `_build_devkit_llm_call`/`_build_phase_driver_llm_call` copies into one shared helper.
+- Phase E — Frontend `"PENDING"/"DRAFT"/...` → `"complete"/"incomplete"`; delete checkpoint UI.
+- Phase F — Migrate/delete legacy tests.
+- Phase G — Smoke + docs + final review.
+
+---
+
+### Session 5 execution discoveries (NOT in plan)
+
+#### 1. `GET /api/projects/{slug}` returned more than just status
+
+The plan only called out `config_statuses` for migration in Task C.1. But the endpoint actually returns 7 fields derived from `ConfigAccumulator` methods (`is_azure_needed`, `get_required_secrets`, `get_required_channel_secrets`, `has_knowledge_base`, `agent.provider`, etc.). Mapped as:
+
+- `config_statuses` → `all_block_statuses(field_status)` (clean migration).
+- `azure_storage.needed` → **hardcoded `False`**. The old `ConfigAccumulator._data["azure_storage"]` was a non-block key; the new dict accumulator rejects non-block keys (`_BLOCKS_SET` allowlist). Marked as a deferred stub pending intake-state extension.
+- `required_secrets` → `_required_secrets_from_accumulator(accumulator)` reads `accumulator["action_gateway"]["tools"]` directly.
+- `channel_secrets` → `_channel_secrets_from_intake_and_accumulator(intake, accumulator)`. Uses `intake.selected_channels` instead of `_data["reach_layer"]["_selected_channels"]`.
+- `has_knowledge_base` → `intake.has_kb` (intake is the new source of truth, not the YAML).
+- `llm_provider` → `accumulator.get("agent_core", {}).get("agent", {}).get("provider") or "anthropic"`.
+
+These two new private helpers (`_required_secrets_from_accumulator`, `_channel_secrets_from_intake_and_accumulator`) live in app.py for now; Phase D should move them to a `meta_derive.py` or similar (~100 line `_channel_secrets_from_intake_and_accumulator` is borderline-too-big to stay in app.py).
+
+#### 2. Legacy-project edge case in `get_project`
+
+When `_meta/intake_state.json` doesn't exist (pre-deterministic-wizard projects), `load_intake_state` raises `FileNotFoundError`. Catch it and set `intake = None`, then guard every `intake.X` reference. Pattern:
+```python
+meta["has_knowledge_base"] = bool(intake and intake.has_kb)
+meta["channel_secrets"] = (
+    _channel_secrets_from_intake_and_accumulator(intake, accumulator) if intake else []
+)
+```
+
+`ValueError` on the same load (corrupt JSON) must NOT be silently treated as a legacy project — Code review caught this; final version logs + raises HTTP 500 separately. Same pattern applied to `load_accumulator` and `load_field_status` per-call.
+
+#### 3. `BLOCKS` ordering divergence (deferred to Phase D)
+
+`accumulator.BLOCKS` (list) and `project_state.BLOCKS` (tuple) have different ordering. No runtime bug yet because no code iterates them in parallel. Phase D deletes `accumulator.py` cleanly; no action needed in Phase C.
+
+#### 4. `_build_devkit_llm_call` duplicates `conversation.py:_build_phase_driver_llm_call`
+
+Identical body. Acceptable for C.2 since `ConversationEngine` goes in Phase D.2 — that's the right place to dedupe. After D.2, only the app.py copy survives.
+
+#### 5. `phase_driver.run_turn` writes user entry BEFORE the LLM call
+
+This is intentional fail-safety: if the LLM crashes mid-turn, the user message is still persisted. The test `test_run_turn_user_entry_written_before_llm_call` proves this by injecting a failing LLM and asserting exactly one entry (user) in `history.jsonl`. **Caveat:** if `append_turn` itself raises (disk full / permission), the whole turn fails before LLM runs. Currently no try/except guards this — flagged as a minor follow-up.
+
+#### 6. `tests/agent/test_deploy_preview_intake.py` is broken since Phase B
+
+13 failures, all from `acc = ConfigAccumulator(); render_all(project, acc)` (old signature). These DON'T fail elegantly — they pass `ConfigAccumulator` to the new `render_all` and crash on signature mismatch. The plan's Phase F handles this (rewrite or xfail). DO NOT confuse these with regressions when reading test output during Phase C/D.
+
+#### 7. `restore_checkpoint_route` was already broken before C.4
+
+The deleted `POST /api/projects/{slug}/checkpoints/{phase}/restore` called `render_all(project_path, restored_acc)` with the OLD signature — meaning it had been broken since Phase B (commit b265e16). C.4's deletion fixed a latent bug nobody noticed.
+
+#### 8. App test fixture pattern
+
+For C.1, C.2 (and C.3 going forward), the canonical app test fixture is:
+```python
+@pytest.fixture()
+def client(tmp_path, monkeypatch):
+    import dev_kit.agent.app as app_mod
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    monkeypatch.setattr(app_mod, "CONFIGS_DIR", configs)
+    app_mod._engines.clear()
+    return TestClient(app_mod.app), configs
+```
+
+This works because `_get_project_path` reads `CONFIGS_DIR` from module scope each call (not a closure). The `_engines.clear()` is defensive in case earlier tests in the session created engine instances.
+
+---
+
+### Status snapshot for next session (after Phase C, partial)
+
+**Completed:** 28 of the plan's tasks (Phase A.1–A.3, B.1, C.1, C.2, C.4)
+
+**Next:** Task C.3 — Migrate the 6 config read/write endpoints. Subtleties:
+- `PUT /api/projects/{slug}/configs/{block}` currently calls `engine.accumulator._data[block] = parsed` (reaching into private state). Migrate to: load accumulator dict from disk, `accumulator[block] = parsed`, save back. Also: validate via `validate_partial` and update field_status accordingly (or leave field_status alone — the put is an out-of-band edit, not a wizard turn).
+- `POST /api/projects/{slug}/configs/reload` re-reads YAML files from disk. Migrate to: read each `<block>.yaml` file, parse, write into accumulator dict, save accumulator.
+- `GET /api/projects/{slug}/configs` returns per-block `{block, status, content}` — `status` is the new `"complete"|"incomplete"` from `all_block_statuses`.
+- `POST /api/projects/{slug}/configs/validate` — same `validate_partial` per block; no engine needed.
+- `GET /api/projects/{slug}/configs/{block}` returns a single block.
+- `GET /api/projects/{slug}/configs/export` zips all YAMLs.
+
+**No blockers.** All Phase B + C.1 + C.2 + C.4 tests green; pre-existing 13 deploy_preview_intake.py failures are expected per Phase F.
+
+**Pickup prompt for next session (paste verbatim):**
+
+```
+Continue executing the implementation plan at:
+docs/superpowers/plans/2026-05-14-devkit-state-layer-migration.md
+
+READ THIS FIRST (execution discoveries through Session 5):
+docs/superpowers/plans/2026-05-14-implementation-session-notes.md (Session 5
+section is the most relevant; review Session 4 too for full context)
+
+Status: Phase A, B done. Phase C 3/4 done (C.1, C.2, C.4 complete; C.3
+remaining). Branch: docs/devkit-config-generation-revamp-design.
+
+Pick up at Task C.3 — Migrate config read/write endpoints in app.py
+(plan lines 743-760, 6 endpoints around app.py:787-908).
+
+Use the superpowers:subagent-driven-development skill. Dispatch a fresh
+subagent per task, two-stage review (spec → code quality) after each.
+
+When this session's context starts getting tight, stop at the next clean
+phase boundary, commit, and append a "Session 6" section to the session
+notes file describing where to pick up next.
+```
