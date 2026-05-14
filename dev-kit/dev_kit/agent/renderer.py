@@ -14,6 +14,34 @@ from dev_kit.agent.accumulator import BLOCKS, DRAFT_BLOCKS, ConfigAccumulator, C
 from dev_kit.agent.channel_tts import merge_voice_tts_into_suffix, strip_voice_tts_from_suffix
 from dev_kit.schemas.validation import validate_partial
 
+# ---------------------------------------------------------------------------
+# Baked-in runtime schemas (available only inside the dev-kit Docker image).
+# The try/except allows the module to load on the host during local development
+# where the dpg_runtime_schemas package does not exist.
+# ---------------------------------------------------------------------------
+try:
+    from dpg_runtime_schemas.agent_core.config import MergedConfig as _AgentCoreCfg
+    from dpg_runtime_schemas.trust_layer.config import MergedConfig as _TrustLayerCfg
+    from dpg_runtime_schemas.knowledge_engine.config import MergedConfig as _KnowledgeEngineCfg
+    from dpg_runtime_schemas.action_gateway.config import MergedConfig as _ActionGatewayCfg
+    from dpg_runtime_schemas.memory_layer.config import MergedConfig as _MemoryLayerCfg
+    from dpg_runtime_schemas.observability_layer.config import MergedConfig as _ObservabilityLayerCfg
+    from dpg_runtime_schemas.reach_layer.config import MergedConfig as _ReachLayerCfg
+
+    RUNTIME_SCHEMAS: dict[str, type] | None = {
+        "agent_core": _AgentCoreCfg,
+        "trust_layer": _TrustLayerCfg,
+        "knowledge_engine": _KnowledgeEngineCfg,
+        "action_gateway": _ActionGatewayCfg,
+        "memory_layer": _MemoryLayerCfg,
+        "observability_layer": _ObservabilityLayerCfg,
+        "reach_layer": _ReachLayerCfg,
+    }
+except ImportError:
+    # Baked schemas not present (running outside the dev-kit docker image).
+    # runtime_validate() will raise a clear error if called in this mode.
+    RUNTIME_SCHEMAS = None
+
 _DRAFT_HEADER = "# STATUS: draft — block template not yet finalized\n"
 _STALE_HEADER_TPL = "# STATUS: stale — validation errors detected:\n{errors}\n"
 
@@ -193,3 +221,47 @@ def load_block_from_file(project_path: Path, block: str) -> dict:
     if block == "agent_core" and isinstance(parsed, dict):
         parsed = strip_voice_tts_from_suffix(parsed)
     return parsed
+
+
+def runtime_validate(block: str, data: dict) -> None:
+    """Validate rendered YAML against the runtime block's MergedConfig.
+
+    Performs a Pydantic ``model_validate`` call using the baked-in runtime
+    schema that was copied into the dev-kit Docker image at build time.  This
+    catches any drift between what the wizard generates and what the runtime
+    block actually accepts — well before ``docker compose up`` is attempted.
+
+    This function is a no-op success path; it either returns ``None`` or raises.
+
+    Args:
+        block: Block name, e.g. ``"agent_core"``.  Must be one of the seven
+            standard DPG blocks.
+        data: The fully-merged config dict that the running service would
+            receive (framework defaults deep-merged with domain overrides).
+
+    Raises:
+        KeyError: If ``block`` is not a known runtime block name.
+        RuntimeValidationError: If the data fails Pydantic validation, or if
+            the baked-in schemas are not available because the function is
+            being called outside the dev-kit Docker image.
+    """
+    from dev_kit.agent.errors import RuntimeValidationError
+
+    if RUNTIME_SCHEMAS is None:
+        raise RuntimeValidationError(
+            block,
+            RuntimeError(
+                "Baked-in runtime schemas not available — runtime_validate "
+                "is only meaningful inside the dev-kit Docker image where "
+                "dpg_runtime_schemas/* is baked in at build time."
+            ),
+        )
+    if block not in RUNTIME_SCHEMAS:
+        raise KeyError(
+            f"Unknown runtime block: {block!r}; expected one of {sorted(RUNTIME_SCHEMAS)}"
+        )
+    schema_cls = RUNTIME_SCHEMAS[block]
+    try:
+        schema_cls.model_validate(data)
+    except Exception as e:
+        raise RuntimeValidationError(block, e) from e
