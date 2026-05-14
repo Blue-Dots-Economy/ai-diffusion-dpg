@@ -48,6 +48,8 @@ from dev_kit.agent.phase_driver import (
 from dev_kit.agent.project_state import (
     empty_accumulator,
     load_accumulator,
+    # Aliased to disambiguate from phase_driver.save_accumulator (line 45) which
+    # takes a slug_root rather than an explicit file path. Both are imported.
     save_accumulator as _save_accumulator_path,
 )
 from dev_kit.agent.tools import DEVKIT_TOOL_SCHEMAS
@@ -1164,6 +1166,7 @@ def get_config(slug: str, block: str) -> dict:
     Raises:
         HTTPException: 400 if ``block`` is not a known block name.
         HTTPException: 404 if the project does not exist.
+        HTTPException: 500 if ``field_status.json`` contains corrupt data.
     """
     if block not in BLOCKS:
         raise HTTPException(status_code=400, detail=f"Unknown block: {block}")
@@ -1213,7 +1216,8 @@ def update_config_file(slug: str, block: str, body: UpdateConfigRequest) -> dict
     Raises:
         HTTPException: 400 if ``block`` is unknown or if the YAML is malformed.
         HTTPException: 404 if the project does not exist.
-        HTTPException: 500 if ``accumulator.json`` is corrupt.
+        HTTPException: 500 if ``accumulator.json`` or ``field_status.json``
+            is corrupt.
     """
     if block not in BLOCKS:
         raise HTTPException(status_code=400, detail=f"Unknown block: {block}")
@@ -1288,10 +1292,12 @@ def reload_configs(slug: str) -> dict[str, Any]:
         slug: Project slug.
 
     Returns:
-        Dict with ``reloaded``, ``slug``, and (additively) ``block_statuses``.
+        Dict with ``reloaded`` (``True``), ``slug``, and ``block_statuses``
+        (``{block_name: "complete"|"incomplete"}`` for all 7 blocks).
 
     Raises:
         HTTPException: 404 if the project does not exist.
+        HTTPException: 500 if ``field_status.json`` contains corrupt data.
     """
     _load_project_meta(slug)  # raises 404 if project not found
     project_path = _get_project_path(slug)

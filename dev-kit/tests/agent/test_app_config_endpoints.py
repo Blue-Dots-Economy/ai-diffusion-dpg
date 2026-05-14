@@ -388,15 +388,16 @@ class TestReloadConfigs:
         assert res.status_code == 404
 
     def test_reload_includes_block_statuses(self, client):
-        """POST /configs/reload response optionally includes block_statuses dict."""
+        """POST /configs/reload response includes block_statuses for all 7 blocks."""
         c, configs = client
         slug, _ = _create_project(c, configs)
         res = c.post(f"/api/projects/{slug}/configs/reload")
         assert res.status_code == 200
         data = res.json()
-        if "block_statuses" in data:
-            assert isinstance(data["block_statuses"], dict)
-            assert set(data["block_statuses"].keys()) == set(BLOCKS)
+        assert "block_statuses" in data
+        assert set(data["block_statuses"].keys()) == set(BLOCKS)
+        for status in data["block_statuses"].values():
+            assert status in ("complete", "incomplete")
 
     def test_reload_500_on_corrupt_field_status(self, client):
         """POST /configs/reload returns 500 when field_status.json contains corrupt JSON."""
@@ -449,3 +450,13 @@ class TestValidateConfigs:
         for block, result in res.json().items():
             assert "valid" in result
             assert "errors" in result
+
+    def test_validate_500_on_corrupt_accumulator(self, client):
+        """POST /configs/validate returns 500 when accumulator.json contains corrupt JSON."""
+        c, configs = client
+        slug, project_path = _create_project(c, configs)
+        (project_path / "_meta" / "accumulator.json").write_text("{not valid json {")
+
+        res = c.post(f"/api/projects/{slug}/configs/validate")
+        assert res.status_code == 500
+        assert res.json()["detail"].startswith("Corrupt accumulator.json")

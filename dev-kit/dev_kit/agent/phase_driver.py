@@ -431,9 +431,9 @@ def run_turn(
         FileNotFoundError: If
             ``<projects_root>/<project_slug>/_meta/intake_state.json`` does
             not exist.
-        ValueError: If the current phase cannot be resolved to a known
-            phase (via ``_load_phase_prompt``) or persisted via
-            ``save_current_phase``.
+        ValueError: If ``field_status.json`` contains corrupt JSON, or if
+            the current phase cannot be resolved to a known phase (via
+            ``_load_phase_prompt``) or persisted via ``save_current_phase``.
         AttributeError: If the resolved phase-prompt module has no
             ``build`` function.
     """
@@ -441,9 +441,26 @@ def run_turn(
     slug_root = projects_root / project_slug
 
     # ----- Step 1: load all state -----
+    # NOTE: phase_driver.load_accumulator is lenient (logs + empty on corrupt
+    # JSON) while load_field_status raises ValueError. The asymmetry is
+    # acceptable: a corrupt accumulator can be recovered by /configs/reload,
+    # but a corrupt field_status invalidates the entire turn — fail fast.
     intake_state = load_intake_state(slug_root / _META_DIR / _INTAKE_STATE_FILENAME)
     accumulator = load_accumulator(slug_root)
-    field_status = load_field_status(slug_root / _META_DIR / _FIELD_STATUS_FILENAME)
+    try:
+        field_status = load_field_status(slug_root / _META_DIR / _FIELD_STATUS_FILENAME)
+    except ValueError as exc:
+        logger.error(
+            "phase_driver.field_status_corrupt",
+            extra={
+                "operation": "phase_driver.run_turn",
+                "status": "failure",
+                "error": str(exc),
+                "project_slug": project_slug,
+            },
+            exc_info=True,
+        )
+        raise
     current_phase = load_current_phase(slug_root)
 
     # Record the user turn immediately so it is persisted even if the LLM call
