@@ -513,3 +513,20 @@ def test_load_current_phase_unknown_falls_back_to_default(tmp_path: Path) -> Non
     meta.mkdir(parents=True)
     (meta / "current_phase.txt").write_text("not-a-phase")
     assert load_current_phase(slug_root) == "tier"
+
+
+def test_load_phase_prompt_raises_when_build_missing(monkeypatch) -> None:
+    """A phase-prompt module without a `build` attribute raises AttributeError."""
+    import types
+
+    from dev_kit.agent import phase_driver
+
+    fake_module = types.ModuleType("fake_phase_prompt")  # no `build` attr
+    monkeypatch.setattr(
+        phase_driver.importlib,
+        "import_module",
+        lambda _name: fake_module,
+    )
+
+    with pytest.raises(AttributeError, match="no 'build' function"):
+        phase_driver._load_phase_prompt("tier")

@@ -336,6 +336,7 @@ def _load_phase_prompt(phase_id: str) -> Callable[..., str]:
 
     Raises:
         ValueError: If ``phase_id`` is not a known phase.
+        AttributeError: If the resolved module is missing a ``build`` attribute.
     """
     if phase_id not in PHASES:
         raise ValueError(f"Unknown phase {phase_id!r}; must be one of {tuple(PHASES)}")
@@ -343,7 +344,12 @@ def _load_phase_prompt(phase_id: str) -> Callable[..., str]:
     module = importlib.import_module(
         f"dev_kit.agent.phase_prompts.{phase_def.prompt_module}"
     )
-    return module.build
+    build = getattr(module, "build", None)
+    if build is None:
+        raise AttributeError(
+            f"Phase prompt module {phase_def.prompt_module!r} has no 'build' function"
+        )
+    return build
 
 
 # ---------------------------------------------------------------------------
@@ -369,7 +375,7 @@ def _handle_update_intake(
 
 def _handle_update_config(
     args: dict[str, Any],
-    intake_state: IntakeState,  # noqa: ARG001 — kept for handler signature uniformity
+    intake_state: IntakeState,  # kept for handler signature uniformity
     accumulator: dict[str, dict],
     field_status: dict[str, str],
 ) -> dict[str, Any]:
@@ -415,7 +421,7 @@ TOOL_HANDLERS: dict[
 
 
 def run_turn(
-    user_message: str,  # noqa: ARG001 — passed through to llm_call only
+    user_message: str,
     project_slug: str,
     *,
     projects_root: Path,
@@ -450,8 +456,11 @@ def run_turn(
         FileNotFoundError: If
             ``<projects_root>/<project_slug>/_meta/intake_state.json`` does
             not exist.
-        ValueError: If the persisted ``current_phase.txt`` references an
-            unknown phase, or if a known phase cannot be persisted on save.
+        ValueError: If the current phase cannot be resolved to a known
+            phase (via ``_load_phase_prompt``) or persisted via
+            ``save_current_phase``.
+        AttributeError: If the resolved phase-prompt module has no
+            ``build`` function.
     """
     turn_start = time.time()
     slug_root = projects_root / project_slug
@@ -553,7 +562,6 @@ def run_turn(
             "operation": "phase_driver.run_turn",
             "status": "success",
             "latency_ms": total_latency_ms,
-            "total_latency_ms": total_latency_ms,
             "project_slug": project_slug,
             "current_phase": current_phase,
             "next_phase": next_phase,
