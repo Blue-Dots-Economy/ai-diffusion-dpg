@@ -965,3 +965,128 @@ When this session's context starts getting tight, stop at the next clean
 phase boundary, commit, and append a "Session 6" section to the session
 notes file describing where to pick up next.
 ```
+
+---
+
+## Session 6 notes (2026-05-14)
+
+**Branch:** `docs/devkit-config-generation-revamp-design`
+
+**Tasks completed this session:** Task C.3 — the 6 config read/write endpoints — plus three review-driven fixes. Phase C is now fully complete (C.1–C.4).
+
+**Commit log this session (newest first):**
+```
+71e4eb7 chore(dev-kit): apply Task C.3 code-review polish
+4f7fb2b fix(dev-kit): guard remaining load_field_status callers after contract change
+e184730 fix(dev-kit): raise ValueError on corrupt field_status.json + propagate as 500 in GETs
+f265761 refactor(dev-kit): config read/write endpoints use project_state loaders
+```
+
+**Aggregate state:**
+- 6 endpoints migrated off `_get_engine` / `engine.accumulator` / `ConfigStatus` / `DRAFT_BLOCKS` (lines 1057-1182 in `app.py`):
+  - `GET /api/projects/{slug}/configs`
+  - `GET /api/projects/{slug}/configs/export`
+  - `GET /api/projects/{slug}/configs/{block}`
+  - `PUT /api/projects/{slug}/configs/{block}`
+  - `POST /api/projects/{slug}/configs/reload`
+  - `POST /api/projects/{slug}/configs/validate`
+- New `dev-kit/tests/agent/test_app_config_endpoints.py` — 36 tests (29 from main commit + 4 from contract-change fixes + 3 from polish).
+- `field_status.load_field_status` contract change: now raises `ValueError` on corrupt JSON (was previously lenient). Five call sites in `app.py` and one in `phase_driver.run_turn` all guarded. The non-dict branch of `load_field_status` retains lenient `return {}`.
+- Test pass rate: agent suite 472 passed, 13 expected pre-existing failures in `test_deploy_preview_intake.py` (Session 5 note #6 — covered by Phase F), 3 skipped.
+
+**Next task to pick up:** **Phase D — Delete dead code** (3 tasks). Start at **Task D.1 — Delete `checkpoints.py`** (plan lines 779-803).
+
+---
+
+### Session 6 execution discoveries (NOT in plan)
+
+#### 1. `load_field_status` had to flip from lenient to raising
+
+Before this session, `load_field_status` (`dev-kit/dev_kit/agent/field_status.py`) silently returned `{}` on `json.JSONDecodeError`, even though the documented cross-cutting rule (per Session 2 note #8) said corrupt state → HTTP 500. The C.1 endpoint (`get_project`) had a defensive `try/except ValueError` that was dead code under the old contract. To enforce the rule in Task C.3 we changed `load_field_status` to raise `ValueError` on corrupt JSON. The change made the C.1 defensive guard meaningful and required adding the same guard to **every** other caller of `load_field_status`. There are now 6 guarded call sites:
+- `app.py:861` (`get_project` — C.1)
+- `app.py:1083` (`get_configs`)
+- `app.py:1176` (`get_config`)
+- `app.py:1257` (`update_config_file`)
+- `app.py:1313` (`reload_configs`)
+- `app.py:1660` (`get_field_status` — Phase 11.3 endpoint, technically outside C.3 but adjacent)
+- `phase_driver.py:446` (`run_turn` — structured log + re-raise, no HTTPException since it's not an HTTP handler)
+
+**Lesson for future similar contract changes:** When you tighten a loader to raise where it previously returned a default, **grep `dev-kit/dev_kit/` AND `dev-kit/tests/` for ALL callers** and ensure each handles the new exception path, even ones nominally outside the current task scope. A contract change is wider than the task that motivates it.
+
+#### 2. `phase_driver.load_accumulator` is INTENTIONALLY lenient — do not auto-flip it next time
+
+`phase_driver.load_accumulator` (different function from `project_state.load_accumulator`) logs a warning and returns an empty skeleton on corrupt accumulator.json. The asymmetry with `load_field_status` (which now raises) is **intentional**: a corrupt accumulator can be recovered with `POST /configs/reload`, whereas a corrupt `field_status.json` means the wizard has lost track of which fields are pending and must fail fast. The new `# NOTE:` comment at `phase_driver.py:444-447` documents this.
+
+#### 3. Two near-identical `save_accumulator` symbols live in `app.py`
+
+`app.py` imports both:
+- `phase_driver.save_accumulator(slug_root, accumulator)` — slug-root based
+- `project_state.save_accumulator(path, accumulator)` — explicit file path
+
+The latter is aliased to `_save_accumulator_path` to avoid shadowing. The import comment now explains this. **Phase D.2 should consolidate** — once `ConversationEngine` is gone, the phase_driver variant should become the sole writer for the wizard, and the path-based variant could move to a helper for explicit-path callers (the C.3 endpoints).
+
+#### 4. Test-fixture pattern continues to work — minor footgun
+
+`monkeypatch.setattr(app_mod, "CONFIGS_DIR", configs)` only works because `_get_project_path` and the new endpoint bodies read `CONFIGS_DIR` from module scope on every call. If a future endpoint captures `CONFIGS_DIR` in a closure or default-argument, the fixture breaks silently. No fix needed now, but worth a sanity check during Phase E (UI integration) where new endpoints sometimes appear.
+
+#### 5. Plan said "PUT could update field_status" — we chose NOT to
+
+Plan Step 2 for C.3 says "validate via `validate_partial` and update field_status accordingly (or leave field_status alone — the put is an out-of-band edit, not a wizard turn)." We chose the "leave alone" branch and added a regression test (`test_does_not_mutate_field_status` reads field_status before and after, asserts equal). This matches Session 5 note #2's framing of the PUT as out-of-band. **Confirmed locked decision for Phase E onwards**: the PUT endpoint does NOT advance the wizard.
+
+#### 6. Plan said "Export endpoint — serialise the accumulator dict as YAML" — we did NOT
+
+The export endpoint was already engine-free; it reads on-disk YAML files (with `# not yet configured` placeholders for missing blocks). We left it alone. The on-disk YAML is the source of truth users want exported (it has comments, headers, and the operator-supplied formatting), not the in-memory accumulator. Added a one-line note to the export endpoint docstring explaining this.
+
+#### 7. `test_deploy_preview_intake.py` still failing — out of scope
+
+13 pre-existing failures in `test_deploy_preview_intake.py` (Session 5 note #6). They have NOT been touched in this session and are expected to remain red until Phase F migrates / xfails them. Do NOT mistake these for new C.3 regressions when reading test output during Phase D.
+
+---
+
+### Status snapshot for next session
+
+**Completed:** 29 of the plan's tasks (Phase A.1–A.3, B.1, C.1–C.4)
+
+**Next:** **Phase D — Delete dead code** (3 tasks):
+- Task D.1: Delete `checkpoints.py` (plan lines 781-803)
+- Task D.2: Drop `ConversationEngine` from `conversation.py` — replace with thin module + dedupe the two `_build_devkit_llm_call` / `_build_phase_driver_llm_call` copies (plan lines 805-853)
+- Task D.3: Delete `accumulator.py` + update `tools.py`, `cross_block_validation.py`, etc. (plan lines 855-915)
+
+After Phase D:
+- Phase E — UI string + checkpoint cleanup
+- Phase F — Test migration / xfail `test_deploy_preview_intake.py`
+- Phase G — Smoke + docs + final review
+
+**Watch out for in Phase D:**
+- `tools.py`'s `update_config` writes to ConfigAccumulator today. Must be rewired to read+write the accumulator dict + `save_accumulator(...)` (per Session 4 note). D.3 covers this but it's the most error-prone substitution.
+- `conversation.py:_build_phase_driver_llm_call` and `app.py:_build_devkit_llm_call` are identical bodies (Session 5 note #4). D.2 should dedupe — choose one as the canonical helper and import from there.
+- D.1 deletes `dev-kit/tests/test_app_endpoints.py` (per plan) — verify nothing else in that file is still relevant before deletion. Re-skim before removing.
+- `phase_driver.py:docstring` references `accumulator.py` — needs updating in D.3 once the file is gone.
+
+**No blockers.** All C.3 tests green; the 13 pre-existing failures are documented and out-of-scope.
+
+**Pickup prompt for next session (paste verbatim):**
+
+```
+Continue executing the implementation plan at:
+docs/superpowers/plans/2026-05-14-devkit-state-layer-migration.md
+
+READ THIS FIRST (execution discoveries through Session 6):
+docs/superpowers/plans/2026-05-14-implementation-session-notes.md
+(Session 6 section is the most relevant; Session 5 covers Phase B/C
+context that Phase D builds on)
+
+Status: Phases A, B, C done on branch docs/devkit-config-generation-revamp-design.
+Pick up at Phase D — Delete dead code (3 tasks: D.1 checkpoints.py,
+D.2 ConversationEngine, D.3 accumulator.py).
+
+D.2 should also dedupe the two _build_devkit_llm_call / _build_phase_driver_llm_call
+copies (Session 5 note #4; Session 6 note #3 expands on the import asymmetry).
+
+Use the superpowers:subagent-driven-development skill. Dispatch a fresh
+subagent per task, two-stage review (spec → code quality) after each.
+
+When this session's context starts getting tight, stop at the next clean
+phase boundary, commit, and append a "Session 7" section to the session
+notes file describing where to pick up next.
+```
