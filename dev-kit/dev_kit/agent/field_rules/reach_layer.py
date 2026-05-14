@@ -157,12 +157,12 @@ FIELD_RULES: dict[str, FieldRule] = {
 
     "reach_layer.channels.web.ui.storage_key": FieldRule(
         category="derived",
-        compute='f"{slug}_user_id"',
+        compute='f"{project_slug}_user_id"',
         pydantic_class="WebUiConfig",
     ),
     "reach_layer.channels.web.ui.theme_storage_key": FieldRule(
         category="derived",
-        compute='f"{slug}_theme"',
+        compute='f"{project_slug}_theme"',
         pydantic_class="WebUiConfig",
     ),
 
