@@ -36,6 +36,9 @@ from dev_kit.agent.checkpoints import list_checkpoints, restore_checkpoint
 from dev_kit.agent.conversation import ConversationEngine
 from dev_kit.agent.crypto import decrypt_secrets_dict, get_public_key_spki_b64
 from dev_kit.agent.errors import ConversationError
+from dev_kit.agent.field_status import load_field_status
+from dev_kit.agent.intake_state import IntakeState, save_intake_state
+from dev_kit.agent.phase_driver import save_accumulator, save_current_phase
 from dev_kit.agent.renderer import load_block_from_file, render_all
 from dev_kit.config.loader import load_devkit_config as _load_devkit_config
 from dev_kit.schemas.validation import validate_partial
@@ -386,8 +389,31 @@ app.add_middleware(
 
 
 class CreateProjectRequest(BaseModel):
+    """Request body for POST /api/projects.
+
+    The 5 new intake fields (project_name, domain_description, selected_channels,
+    default_language, supported_languages) are optional so the old form shape
+    ``{name, description}`` continues to work as a fallback.
+    """
+
+    # Legacy fields — kept for backwards compatibility.
     name: str
-    description: str
+    description: str = ""
+
+    # New deterministic-wizard intake fields.
+    project_name: Optional[str] = None
+    domain_description: Optional[str] = None
+    selected_channels: list[str] = ["web"]
+    default_language: str = "english"
+    supported_languages: list[str] = ["english"]
+
+    def effective_project_name(self) -> str:
+        """Return project_name if set, falling back to name."""
+        return self.project_name or self.name
+
+    def effective_domain_description(self) -> str:
+        """Return domain_description if set, falling back to description."""
+        return self.domain_description or self.description
 
 
 class ChatRequest(BaseModel):
@@ -456,26 +482,74 @@ def _get_engine(slug: str) -> ConversationEngine:
 
 @app.post("/api/projects")
 def create_project(body: CreateProjectRequest) -> dict:
-    """Create a new project and initialise its directory structure."""
-    slug = _slugify(body.name)
+    """Create a new project and initialise its directory structure.
+
+    Writes ``project.json``, empty config YAMLs, ``intake_state.json``
+    (with the 5 form fields + 7 binary flags defaulted to False),
+    ``current_phase.txt`` (set to ``"tier"``), and ``accumulator.json``
+    (empty per-block dicts).
+
+    Args:
+        body: CreateProjectRequest with at minimum ``name``. The new intake
+            fields (project_name, domain_description, selected_channels,
+            default_language, supported_languages) are optional and fall back
+            to the legacy ``name``/``description`` values when absent.
+
+    Returns:
+        The project metadata dict that was written to ``project.json``.
+    """
+    effective_name = body.effective_project_name()
+    slug = _slugify(effective_name)
     project_path = _get_project_path(slug)
     project_path.mkdir(parents=True, exist_ok=True)
     meta_dir = project_path / "_meta"
     meta_dir.mkdir(exist_ok=True)
     meta = {
         "slug": slug,
-        "name": body.name,
-        "description": body.description,
+        "name": effective_name,
+        "description": body.effective_domain_description(),
         "current_phase": "tier",
         "phases_completed": [],
         "agent_type": "",
         "phase_decisions": {},
     }
     (meta_dir / "project.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
-    # Initialise empty config files
+
+    # Initialise empty config files via the accumulator.
     acc = ConfigAccumulator()
     render_all(project_path, acc)
     _engines[slug] = ConversationEngine(project_path, _anthropic_client)
+
+    # ── New deterministic-wizard bootstrap ──────────────────────────────────
+    # 1. Persist intake state with form fields + binary flags defaulted to False.
+    intake = IntakeState(
+        project_name=effective_name,
+        domain_description=body.effective_domain_description(),
+        selected_channels=body.selected_channels,
+        default_language=body.default_language,
+        supported_languages=body.supported_languages,
+        has_kb=False,
+        has_external_tools=False,
+        is_multi_turn=False,
+        needs_persistent_user_data=False,
+        is_companion_style=False,
+        needs_consent=False,
+        has_hitl=False,
+        completed=False,
+    )
+    intake.touch()
+    save_intake_state(meta_dir / "intake_state.json", intake)
+    logger.info(
+        "devkit.project.intake_state_saved",
+        extra={"operation": "api.create_project", "status": "success", "slug": slug},
+    )
+
+    # 2. Write initial current_phase.
+    save_current_phase(project_path, "tier")
+
+    # 3. Initialise accumulator.json with empty per-block dicts.
+    save_accumulator(project_path, {block: {} for block in BLOCKS})
+
     logger.info(
         "devkit.project.created",
         extra={"operation": "api.create_project", "status": "success", "slug": slug},
@@ -966,6 +1040,159 @@ def get_workflow_graph(slug: str) -> dict:
     """Return the subagent workflow as nodes and edges for the frontend graph."""
     engine = _get_engine(slug)
     return engine.accumulator.get_workflow_graph()
+
+
+# ---------------------------------------------------------------------------
+# Deploy-fields routes (Task 11.2)
+# ---------------------------------------------------------------------------
+
+
+class DeploySettingsRequest(BaseModel):
+    """Request body for POST /api/projects/{slug}/deploy-settings."""
+
+    overrides: dict[str, Any] = {}
+
+
+@app.get("/api/projects/{slug}/deploy-fields")
+def get_deploy_fields(slug: str) -> dict:
+    """Return every field with category=='deploy' or deploy_overridable==True.
+
+    For each matching entry in AGGREGATED_FIELD_RULES, returns its path, the
+    rule's default, the current value from the accumulator (if any), and
+    display metadata.  The accumulator is consulted so that values already
+    captured during chat are pre-filled in the deploy form.
+
+    Args:
+        slug: Project slug.
+
+    Returns:
+        Dict with ``fields`` list. Each entry has keys:
+            ``path`` (dotted block-prefixed path),
+            ``default`` (rule default or None),
+            ``current_value`` (from accumulator or rule default),
+            ``description`` (human-readable description or ``""``),
+            ``advanced`` (bool).
+
+    Raises:
+        HTTPException: 404 if the project does not exist.
+    """
+    from dev_kit.agent.field_rules import AGGREGATED_FIELD_RULES
+
+    _load_project_meta(slug)  # raises 404 if project not found
+    engine = _get_engine(slug)
+
+    fields = []
+    for path, rule in AGGREGATED_FIELD_RULES.items():
+        if rule.category != "deploy" and not rule.deploy_overridable:
+            continue
+        # Resolve current value from accumulator using the block-prefixed path.
+        # Path format: "<block>.<section>.<field>"
+        parts = path.split(".", 1)
+        block = parts[0]
+        field_path = parts[1] if len(parts) > 1 else ""
+        block_data = engine.accumulator.get_block(block) or {}
+        # Walk nested keys using dot notation.
+        current_val: Any = block_data
+        for key in field_path.split("."):
+            if isinstance(current_val, dict):
+                current_val = current_val.get(key)
+            else:
+                current_val = None
+                break
+        fields.append({
+            "path": path,
+            "default": rule.default,
+            "current_value": current_val if current_val is not None else rule.default,
+            "description": rule.description or "",
+            "advanced": rule.advanced,
+        })
+
+    logger.info(
+        "devkit.deploy_fields.listed",
+        extra={
+            "operation": "api.get_deploy_fields",
+            "status": "success",
+            "slug": slug,
+            "count": len(fields),
+        },
+    )
+    return {"fields": fields}
+
+
+@app.post("/api/projects/{slug}/deploy-settings")
+def save_deploy_settings(slug: str, body: DeploySettingsRequest) -> dict:
+    """Persist operator deploy-time overrides for a project.
+
+    Writes the overrides dict to ``<project_path>/_meta/deploy_settings.json``
+    so they can be applied at deploy time without altering the generated YAML
+    configs.
+
+    Args:
+        slug: Project slug.
+        body: DeploySettingsRequest with ``overrides`` mapping dotted field
+            paths to their operator-supplied values.
+
+    Returns:
+        Dict with ``status: "saved"`` and the number of overrides persisted.
+
+    Raises:
+        HTTPException: 404 if the project does not exist.
+    """
+    _load_project_meta(slug)  # raises 404 if project not found
+    project_path = _get_project_path(slug)
+    settings_path = project_path / "_meta" / "deploy_settings.json"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(
+        json.dumps(body.overrides, indent=2, ensure_ascii=False, sort_keys=True)
+    )
+    logger.info(
+        "devkit.deploy_settings.saved",
+        extra={
+            "operation": "api.save_deploy_settings",
+            "status": "success",
+            "slug": slug,
+            "override_count": len(body.overrides),
+        },
+    )
+    return {"status": "saved", "override_count": len(body.overrides)}
+
+
+# ---------------------------------------------------------------------------
+# Field-status route (Task 11.3)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/projects/{slug}/field-status")
+def get_field_status(slug: str) -> dict:
+    """Return the contents of field_status.json for phase-progress display.
+
+    Reads ``<project_path>/_meta/field_status.json``.  Returns an empty dict
+    when the file is absent (project created but wizard not yet started).
+
+    Args:
+        slug: Project slug.
+
+    Returns:
+        Dict mapping dotted field paths to status strings
+        (``"pending"``, ``"answered"``, ``"needs_re_asking"``,
+        ``"not_applicable"``).
+
+    Raises:
+        HTTPException: 404 if the project does not exist.
+    """
+    _load_project_meta(slug)  # raises 404 if project not found
+    project_path = _get_project_path(slug)
+    status = load_field_status(project_path / "_meta" / "field_status.json")
+    logger.info(
+        "devkit.field_status.read",
+        extra={
+            "operation": "api.get_field_status",
+            "status": "success",
+            "slug": slug,
+            "field_count": len(status),
+        },
+    )
+    return status
 
 
 # ---------------------------------------------------------------------------

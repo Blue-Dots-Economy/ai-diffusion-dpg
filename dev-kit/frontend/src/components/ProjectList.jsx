@@ -7,6 +7,9 @@ export default function ProjectList({ onOpen }) {
   const [projects, setProjects] = useState([])
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
+  const [selectedChannels, setSelectedChannels] = useState(['web'])
+  const [defaultLanguage, setDefaultLanguage] = useState('english')
+  const [supportedLanguages, setSupportedLanguages] = useState(['english'])
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState(null)
   const [deletingSlug, setDeletingSlug] = useState(null)
@@ -22,10 +25,20 @@ export default function ProjectList({ onOpen }) {
     setCreating(true)
     setError(null)
     try {
-      const project = await api.createProject(name.trim(), description.trim())
+      const intakeFields = {
+        project_name: name.trim(),
+        domain_description: description.trim(),
+        selected_channels: selectedChannels,
+        default_language: defaultLanguage,
+        supported_languages: supportedLanguages,
+      }
+      const project = await api.createProject(name.trim(), description.trim(), intakeFields)
       setProjects(p => [...p, project])
       setName('')
       setDescription('')
+      setSelectedChannels(['web'])
+      setDefaultLanguage('english')
+      setSupportedLanguages(['english'])
       onOpen(project.slug)
     } catch (err) {
       setError(err.message)
@@ -90,6 +103,53 @@ export default function ProjectList({ onOpen }) {
             value={description}
             onChange={e => setDescription(e.target.value)}
           />
+          {/* New intake fields */}
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-gray-400">Channels</label>
+            <div className="flex gap-3">
+              {['web', 'voice'].map(ch => (
+                <label key={ch} className="flex items-center gap-1.5 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selectedChannels.includes(ch)}
+                    onChange={e => {
+                      if (e.target.checked) setSelectedChannels(selectedChannels.concat(ch))
+                      else setSelectedChannels(selectedChannels.filter(c => c !== ch))
+                    }}
+                    className="accent-blue-500"
+                  />
+                  {ch.charAt(0).toUpperCase() + ch.slice(1)}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="flex gap-3">
+            <div className="flex flex-col gap-1 flex-1">
+              <label className="text-xs text-gray-400">Default language</label>
+              <select
+                className="bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                value={defaultLanguage}
+                onChange={e => setDefaultLanguage(e.target.value)}
+              >
+                {['english', 'hindi', 'tamil', 'telugu', 'kannada', 'marathi', 'bengali'].map(lang => (
+                  <option key={lang} value={lang}>{lang.charAt(0).toUpperCase() + lang.slice(1)}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex flex-col gap-1 flex-1">
+              <label className="text-xs text-gray-400">Supported languages</label>
+              <select
+                multiple
+                className="bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 h-20"
+                value={supportedLanguages}
+                onChange={e => setSupportedLanguages(Array.from(e.target.selectedOptions, o => o.value))}
+              >
+                {['english', 'hindi', 'tamil', 'telugu', 'kannada', 'marathi', 'bengali'].map(lang => (
+                  <option key={lang} value={lang}>{lang.charAt(0).toUpperCase() + lang.slice(1)}</option>
+                ))}
+              </select>
+            </div>
+          </div>
           {error && (
             <p className="text-red-400 text-sm bg-red-950/40 border border-red-800 rounded-lg px-3 py-2">
               {error}

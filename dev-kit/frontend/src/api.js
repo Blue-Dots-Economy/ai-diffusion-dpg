@@ -18,7 +18,8 @@ async function request(method, path, body) {
 export const api = {
   // Projects
   listProjects: () => request('GET', '/projects'),
-  createProject: (name, description) => request('POST', '/projects', { name, description }),
+  createProject: (name, description, intakeFields = {}) =>
+    request('POST', '/projects', { name, description, ...intakeFields }),
   getProject: (slug) => request('GET', `/projects/${slug}`),
   deleteProject: (slug) => request('DELETE', `/projects/${slug}`),
 
@@ -57,6 +58,11 @@ export const api = {
   executeDeploy: (slug, options) => request('POST', `/projects/${slug}/deploy/execute`, options),
   getDeployStatus: (slug) => request('GET', `/projects/${slug}/deploy/status`),
   reloadConfigs: (slug) => request('POST', `/projects/${slug}/configs/reload`),
+
+  // Deterministic-wizard endpoints (Phase 11)
+  getDeployFields: (slug) => request('GET', `/projects/${slug}/deploy-fields`),
+  saveDeploySettings: (slug, overrides) => request('POST', `/projects/${slug}/deploy-settings`, { overrides }),
+  getFieldStatus: (slug) => request('GET', `/projects/${slug}/field-status`),
 
   // Ingest endpoints
   getDevKitConfig: () =>
