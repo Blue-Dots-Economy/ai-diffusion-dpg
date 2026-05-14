@@ -18,11 +18,11 @@ Tier 3 — Live Tuning Dashboard      ⏳ Not yet built
 
 A fully implemented AI agent (powered by Claude) that interviews a domain expert through a structured conversation and generates the complete set of domain YAML files. The agent runs as a FastAPI server with a React + Vite SPA frontend.
 
-**Conversation phases:** tier → overview → language → knowledge → memory → user_state → trust → tools → workflow → observability → reach → review (11 declarative phases, gated by `IntakeState`).
+**Conversation phases:** tier → language → knowledge → memory → user_state → trust → tools → workflow → observability → reach → review (11 declarative phases, gated by `IntakeState`; see `dev_kit/agent/router.py::PHASE_ORDER`).
 
 **Key capabilities:**
 - Deterministic wizard: an `IntakeState` captured up front decides which phases run; `FIELD_RULES` decide each field's category; the router cascades intake changes through dependent fields.
-- Stateless on-disk state model: every project's wizard state lives in `configs/<slug>/_meta/` (`intake_state.json`, `accumulator.json`, `field_status.json`, `current_phase.json`, `history.jsonl`, `deploy_settings.json`). No in-memory `ConversationEngine` or `ConfigAccumulator`.
+- Stateless on-disk state model: every project's wizard state lives in `configs/<slug>/_meta/` (`intake_state.json`, `accumulator.json`, `field_status.json`, `current_phase.txt`, `history.jsonl`, `deploy_settings.json`). No in-memory `ConversationEngine` or `ConfigAccumulator`.
 - Per-block completion derived on demand from `field_status.json` via `block_status.block_completion_status` (`complete` / `incomplete`).
 - Live YAML editing with CodeMirror-based ConfigEditor and validation.
 - Workflow DAG visualisation with @xyflow (FlowGraph component).

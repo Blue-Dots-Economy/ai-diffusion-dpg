@@ -164,7 +164,7 @@ dev-kit/dev_kit/agent/
 ```
 
 Per-project state is persisted under `dev-kit/configs/<slug>/_meta/`:
-- `intake_state.json`, `current_phase.json`, `accumulator.json`, `field_status.json`, `history.jsonl`, `deploy_settings.json`
+- `intake_state.json`, `current_phase.txt`, `accumulator.json`, `field_status.json`, `history.jsonl`, `deploy_settings.json`
 
 When changing a runtime block's `<block>/src/schema/config.py`, also update the dev-kit mirror at `dev-kit/dev_kit/schemas/domain/<block>.py` and the `FIELD_RULES` entry in `dev-kit/dev_kit/agent/field_rules/<block>.py` per [`.claude/rules/runtime-devkit-sync.md`](.claude/rules/runtime-devkit-sync.md).
 
