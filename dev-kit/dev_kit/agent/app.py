@@ -32,7 +32,7 @@ from pydantic import BaseModel
 
 from dev_kit.agent.accumulator import BLOCKS, ConfigAccumulator
 from dev_kit.agent.auth import verify_api_key as _verify_api_key
-from dev_kit.agent.block_status import all_block_statuses
+from dev_kit.agent.block_status import all_block_statuses, block_completion_status
 from dev_kit.agent.conversation import ConversationEngine
 from dev_kit.agent.crypto import decrypt_secrets_dict, get_public_key_spki_b64
 from dev_kit.agent.field_status import load_field_status
@@ -45,7 +45,11 @@ from dev_kit.agent.phase_driver import (
     save_accumulator,
     save_current_phase,
 )
-from dev_kit.agent.project_state import empty_accumulator, load_accumulator
+from dev_kit.agent.project_state import (
+    empty_accumulator,
+    load_accumulator,
+    save_accumulator as _save_accumulator_path,
+)
 from dev_kit.agent.tools import DEVKIT_TOOL_SCHEMAS
 from dev_kit.agent.renderer import load_block_from_file, render_all
 from dev_kit.config.loader import load_devkit_config as _load_devkit_config
@@ -1056,16 +1060,34 @@ def get_history(slug: str) -> list[dict]:
 
 @app.get("/api/projects/{slug}/configs")
 def get_configs(slug: str) -> list[dict]:
-    """Return all 7 config files with their status."""
-    engine = _get_engine(slug)
-    result = []
+    """Return all 7 config blocks with their completion status and on-disk YAML content.
+
+    Status is derived from ``field_status.json`` via ``all_block_statuses``; no
+    accumulator load is required for this endpoint.  Content is the raw
+    on-disk YAML text so the UI can display exactly what will be deployed.
+
+    Args:
+        slug: Project slug.
+
+    Returns:
+        List of ``{block, status, content}`` dicts, one per block.
+
+    Raises:
+        HTTPException: 404 if the project does not exist.
+        HTTPException: 500 if ``field_status.json`` contains corrupt data.
+    """
+    _load_project_meta(slug)  # raises 404 if project not found
     project_path = _get_project_path(slug)
+    meta_dir = project_path / "_meta"
+    field_status = load_field_status(meta_dir / "field_status.json")
+    statuses = all_block_statuses(field_status)
+    result = []
     for block in BLOCKS:
         config_file = project_path / f"{block}.yaml"
         content = config_file.read_text() if config_file.exists() else ""
         result.append({
             "block": block,
-            "status": engine.accumulator.get_status(block).value,
+            "status": statuses[block],
             "content": content,
         })
     return result
@@ -1074,6 +1096,10 @@ def get_configs(slug: str) -> list[dict]:
 @app.get("/api/projects/{slug}/configs/export")
 def export_configs(slug: str):
     """Return all config YAML files for a project as a ZIP archive.
+
+    Reads on-disk YAML files directly — the on-disk files are the source of
+    truth that operators want to export and deploy, not the in-memory
+    accumulator dict which may differ from what was last rendered.
 
     Args:
         slug: Project identifier.
@@ -1109,74 +1135,177 @@ def export_configs(slug: str):
 
 @app.get("/api/projects/{slug}/configs/{block}")
 def get_config(slug: str, block: str) -> dict:
-    """Return a single block config."""
+    """Return a single block's on-disk YAML content and completion status.
+
+    Args:
+        slug: Project slug.
+        block: Block name — must be one of the 7 standard DPG blocks.
+
+    Returns:
+        Dict with ``block``, ``status`` (``"complete"`` or ``"incomplete"``),
+        and ``content`` (raw YAML text, or ``""`` if the file does not exist).
+
+    Raises:
+        HTTPException: 400 if ``block`` is not a known block name.
+        HTTPException: 404 if the project does not exist.
+    """
     if block not in BLOCKS:
         raise HTTPException(status_code=400, detail=f"Unknown block: {block}")
+    _load_project_meta(slug)  # raises 404 if project not found
     project_path = _get_project_path(slug)
+    meta_dir = project_path / "_meta"
     config_file = project_path / f"{block}.yaml"
     content = config_file.read_text() if config_file.exists() else ""
-    engine = _get_engine(slug)
-    return {"block": block, "status": engine.accumulator.get_status(block).value, "content": content}
+    field_status = load_field_status(meta_dir / "field_status.json")
+    status = block_completion_status(block, field_status)
+    return {"block": block, "status": status, "content": content}
 
 
 @app.put("/api/projects/{slug}/configs/{block}")
 def update_config_file(slug: str, block: str, body: UpdateConfigRequest) -> dict:
-    """Manually update a config file and reverse-sync the accumulator.
+    """Write operator-supplied YAML to disk and reverse-sync the accumulator.
 
-    Parses YAML before writing to prevent corrupting the stored file.
-    If schema validation fails, sets the block status to STALE.
+    Parses YAML before writing to reject malformed content early.  Does NOT
+    modify ``field_status.json`` — this is an out-of-band editor action, not
+    a wizard turn; field completion state is unchanged (Session 5, note #2).
+
+    Args:
+        slug: Project slug.
+        block: Block name — must be one of the 7 standard DPG blocks.
+        body: Request body containing the raw YAML string.
+
+    Returns:
+        Dict with ``block``, ``status`` (derived from field_status), and
+        ``validation_errors`` (list of strings from the mirror-schema check).
+
+    Raises:
+        HTTPException: 400 if ``block`` is unknown or if the YAML is malformed.
+        HTTPException: 404 if the project does not exist.
+        HTTPException: 500 if ``accumulator.json`` is corrupt.
     """
     if block not in BLOCKS:
         raise HTTPException(status_code=400, detail=f"Unknown block: {block}")
-    from dev_kit.agent.accumulator import ConfigStatus, DRAFT_BLOCKS
-    # Parse before writing — reject invalid YAML with 400
+    _load_project_meta(slug)  # raises 404 if project not found
+
+    # Parse before writing — reject invalid YAML with 400.
     try:
         parsed = yaml.safe_load(body.content) or {}
     except yaml.YAMLError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid YAML: {exc}") from exc
 
     project_path = _get_project_path(slug)
+    meta_dir = project_path / "_meta"
     config_file = project_path / f"{block}.yaml"
+
+    # Write the raw YAML text to disk (preserves user formatting + comments).
     config_file.write_text(body.content)
 
-    engine = _get_engine(slug)
-    engine.accumulator._data[block] = parsed
+    # Load, update, and persist the accumulator.
+    try:
+        accumulator = load_accumulator(meta_dir / "accumulator.json")
+    except ValueError as exc:
+        logger.error(
+            "devkit.project.state_corrupt",
+            extra={"operation": "api.update_config_file", "status": "failure",
+                   "error": str(exc), "slug": slug},
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Corrupt accumulator.json for '{slug}': {exc}",
+        )
+    accumulator[block] = parsed
+    _save_accumulator_path(meta_dir / "accumulator.json", accumulator)
+
+    # Validate against the mirror schema (does NOT touch field_status).
     errors = validate_partial(block, parsed)
-    if errors:
-        engine.accumulator.set_status(block, ConfigStatus.STALE)
-    elif block in DRAFT_BLOCKS:
-        engine.accumulator.set_status(block, ConfigStatus.DRAFT)
-    else:
-        engine.accumulator.set_status(block, ConfigStatus.COMPLETE)
-    engine._save_accumulator()
-    return {"block": block, "status": engine.accumulator.get_status(block).value, "validation_errors": errors}
+
+    # Derive status from field_status only (not from validation result).
+    field_status = load_field_status(meta_dir / "field_status.json")
+    status = block_completion_status(block, field_status)
+
+    return {"block": block, "status": status, "validation_errors": errors}
 
 
 @app.post("/api/projects/{slug}/configs/reload")
 def reload_configs(slug: str) -> dict[str, Any]:
-    """Evict the cached engine so the next request reloads all configs from disk.
+    """Repopulate the accumulator from on-disk YAML files.
 
-    Useful after the operator hand-edits a YAML file outside the UI (e.g. in
-    their editor or via git pull). The engine is recreated on the next request,
-    picking up the new on-disk state.
+    Reads each block's ``.yaml`` file from disk via ``load_block_from_file``
+    and writes a fresh ``accumulator.json``.  Useful after the operator
+    hand-edits YAML files outside the UI (e.g. via an editor or ``git pull``).
+    Also evicts any cached legacy ConversationEngine to prevent stale state.
 
     Args:
         slug: Project slug.
 
     Returns:
-        Dict confirming the engine was evicted.
+        Dict with ``reloaded``, ``slug``, and (additively) ``block_statuses``.
+
+    Raises:
+        HTTPException: 404 if the project does not exist.
     """
+    _load_project_meta(slug)  # raises 404 if project not found
+    project_path = _get_project_path(slug)
+    meta_dir = project_path / "_meta"
+
+    # Rebuild the accumulator from on-disk YAML files.
+    accumulator = empty_accumulator()
+    for block in BLOCKS:
+        accumulator[block] = load_block_from_file(project_path, block)
+    _save_accumulator_path(meta_dir / "accumulator.json", accumulator)
+
+    # Evict any cached legacy engine (defensive; legacy registry no longer
+    # participates in any migrated endpoint after Task C.2).
     _engines.pop(slug, None)
-    return {"reloaded": True, "slug": slug}
+
+    field_status = load_field_status(meta_dir / "field_status.json")
+    return {
+        "reloaded": True,
+        "slug": slug,
+        "block_statuses": all_block_statuses(field_status),
+    }
 
 
 @app.post("/api/projects/{slug}/configs/validate")
 def validate_all_configs(slug: str) -> dict[str, Any]:
-    """Run partial validation on all 7 configs and return results."""
-    engine = _get_engine(slug)
+    """Run partial mirror-schema validation on all 7 blocks.
+
+    Loads the accumulator from disk and runs ``validate_partial`` against each
+    block's dev-kit mirror schema.  Does not run the full runtime Pydantic
+    validation (use ``POST /deploy/validate`` for that).
+
+    Args:
+        slug: Project slug.
+
+    Returns:
+        Dict mapping each block name to ``{"valid": bool, "errors": list[str]}``.
+
+    Raises:
+        HTTPException: 404 if the project does not exist.
+        HTTPException: 500 if ``accumulator.json`` is corrupt.
+    """
+    _load_project_meta(slug)  # raises 404 if project not found
+    project_path = _get_project_path(slug)
+    meta_dir = project_path / "_meta"
+
+    try:
+        accumulator = load_accumulator(meta_dir / "accumulator.json")
+    except ValueError as exc:
+        logger.error(
+            "devkit.project.state_corrupt",
+            extra={"operation": "api.validate_all_configs", "status": "failure",
+                   "error": str(exc), "slug": slug},
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Corrupt accumulator.json for '{slug}': {exc}",
+        )
+
     results = {}
     for block in BLOCKS:
-        data = engine.accumulator.get_block(block)
+        data = accumulator.get(block, {})
         errors = validate_partial(block, data)
         results[block] = {"valid": len(errors) == 0, "errors": errors}
     return results
