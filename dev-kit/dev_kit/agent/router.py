@@ -156,4 +156,157 @@ def on_intake_update(
     }
 
 
-__all__ = ["on_intake_update", "PHASE_ORDER"]
+# Per-phase relevance predicates. A phase is irrelevant when no chat fields in
+# it could ever apply for the current IntakeState — skip it in phase navigation.
+# "memory" is always relevant (every deployment has at least a session).
+PHASE_RELEVANCE: dict[str, Any] = {
+    "tier": lambda s: True,
+    "language": lambda s: True,
+    "knowledge": lambda s: s.has_kb,
+    "memory": lambda s: True,
+    "user_state": lambda s: s.is_companion_style,
+    "trust": lambda s: True,
+    "tools": lambda s: s.has_external_tools,
+    "workflow": lambda s: True,
+    "observability": lambda s: True,
+    "reach": lambda s: True,
+    "review": lambda s: True,
+}
+
+
+def _phase_for_path(path: str) -> str | None:
+    """Look up the phase name for a full dotted path via AGGREGATED_FIELD_RULES.
+
+    Args:
+        path: Full dotted path, e.g. ``"agent_core.preprocessing.nlu_processor.intents"``.
+
+    Returns:
+        The phase name string, or None if the path is not in AGGREGATED_FIELD_RULES
+        or the rule has no phase.
+    """
+    rule = AGGREGATED_FIELD_RULES.get(path)
+    return rule.phase if rule else None
+
+
+def _earliest_phase_with_needs_re_asking(field_status: dict[str, str]) -> str | None:
+    """Scan field_status for the earliest needs_re_asking phase.
+
+    Args:
+        field_status: Dict of full path → status.
+
+    Returns:
+        The earliest phase name that has at least one ``needs_re_asking`` field,
+        or None if no such field exists.
+    """
+    earliest: str | None = None
+    for path, status in field_status.items():
+        if status != "needs_re_asking":
+            continue
+        phase = _phase_for_path(path)
+        if phase is None:
+            continue
+        earliest = _earlier_phase(earliest, phase)
+    return earliest
+
+
+def _is_phase_complete(
+    phase: str,
+    state: IntakeState,
+    field_status: dict[str, str],
+) -> bool:
+    """Return True when every applicable chat field in ``phase`` is answered.
+
+    A phase with no applicable chat fields is trivially complete.
+
+    Args:
+        phase: Phase name to check.
+        state: Current IntakeState (used for applies_if evaluation).
+        field_status: Current per-path statuses.
+
+    Returns:
+        True if all applicable chat fields in this phase are answered; False
+        if any applicable field is pending, needs_re_asking, or not yet in
+        field_status.
+    """
+    for full_path, rule in AGGREGATED_FIELD_RULES.items():
+        if rule.category != "chat" or rule.phase != phase:
+            continue
+        if not eval_expr(rule.applies_if, state):
+            continue
+        # Fields absent from field_status were never initialised — treat as
+        # answered (they've been handled or do not require wizard input here).
+        status = field_status.get(full_path, "answered")
+        if status != "answered":
+            return False
+    return True
+
+
+def _next_relevant_phase(current: str, state: IntakeState) -> str | None:
+    """Walk PHASE_ORDER forward from ``current``, returning the first relevant phase.
+
+    Args:
+        current: The current phase name.
+        state: IntakeState for relevance evaluation.
+
+    Returns:
+        The name of the next relevant phase, or None if no further relevant
+        phase exists (wizard is complete).
+    """
+    idx = PHASE_ORDER.index(current)
+    for nxt in PHASE_ORDER[idx + 1:]:
+        if PHASE_RELEVANCE[nxt](state):
+            return nxt
+    return None
+
+
+def decide_next_phase(
+    current_phase: str,
+    state: IntakeState,
+    accumulator: dict[str, dict],
+    field_status: dict[str, str],
+) -> str:
+    """Decide which phase the wizard should be in for the next turn.
+
+    Rules applied in order:
+
+    1. **Backtrack**: if any field has ``needs_re_asking`` in an earlier phase
+       than ``current_phase``, return that earlier phase.
+    2. **Advance**: if ``current_phase`` is complete (all applicable chat fields
+       answered), return the next relevant phase.  If no further relevant phase
+       exists, stay on ``current_phase`` (wizard complete).
+    3. **Stay**: the current phase is not yet complete; return ``current_phase``.
+
+    Args:
+        current_phase: The phase the wizard is currently in.
+        state: Current IntakeState (used for applies_if and relevance evaluation).
+        accumulator: Per-block YAML dicts (read-only here; not mutated).
+        field_status: Per-field status dict (read-only here; not mutated).
+
+    Returns:
+        The phase name for the next turn.
+
+    Raises:
+        ValueError: If ``current_phase`` is not in PHASE_ORDER.
+    """
+    if current_phase not in PHASE_ORDER:
+        raise ValueError(
+            f"Unknown phase {current_phase!r}; must be one of {PHASE_ORDER}"
+        )
+
+    invalidated = _earliest_phase_with_needs_re_asking(field_status)
+    if invalidated and PHASE_ORDER.index(invalidated) < PHASE_ORDER.index(current_phase):
+        return invalidated
+
+    if _is_phase_complete(current_phase, state, field_status):
+        nxt = _next_relevant_phase(current_phase, state)
+        return nxt if nxt else current_phase
+
+    return current_phase
+
+
+__all__ = [
+    "on_intake_update",
+    "decide_next_phase",
+    "PHASE_ORDER",
+    "PHASE_RELEVANCE",
+]
