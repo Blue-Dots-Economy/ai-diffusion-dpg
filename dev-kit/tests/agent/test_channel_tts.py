@@ -1,16 +1,42 @@
-"""Tests for dev_kit.agent.channel_tts."""
+"""Tests for dev_kit.agent.channel_tts.
+
+Belongs to the dev-kit deterministic wizard. Pure dict-transformation tests
+for merge_voice_tts_into_suffix / strip_voice_tts_from_suffix, plus
+integration tests that drive these through render_all and load_block_from_file.
+"""
 from __future__ import annotations
 
 import yaml
 
-from dev_kit.agent.accumulator import ConfigAccumulator
 from dev_kit.agent.channel_tts import (
     TTS_BLOCK_BEGIN,
     TTS_BLOCK_END,
     merge_voice_tts_into_suffix,
     strip_voice_tts_from_suffix,
 )
-from dev_kit.agent.renderer import load_block_from_file, render_block
+from dev_kit.agent.intake_state import IntakeState
+from dev_kit.agent.project_state import empty_accumulator
+from dev_kit.agent.renderer import load_block_from_file, render_all
+
+
+def _intake(**overrides) -> IntakeState:
+    """Build a minimal IntakeState for the integration tests."""
+    defaults = dict(
+        has_kb=False,
+        has_external_tools=False,
+        is_multi_turn=False,
+        needs_persistent_user_data=False,
+        is_companion_style=False,
+        needs_consent=False,
+        has_hitl=False,
+        selected_channels=["web", "voice"],
+        default_language="english",
+        supported_languages=["english"],
+        domain_description="Test",
+        project_name="testproj",
+    )
+    defaults.update(overrides)
+    return IntakeState(**defaults)
 
 
 def _voice_rules() -> dict:
@@ -70,7 +96,10 @@ class TestMergeVoiceTtsIntoSuffix:
         cfg = _voice_config(suffix="Keep it short.")
         once = merge_voice_tts_into_suffix(cfg)
         twice = merge_voice_tts_into_suffix(once)
-        assert twice["channels"]["voice"]["system_prompt_suffix"] == once["channels"]["voice"]["system_prompt_suffix"]
+        assert (
+            twice["channels"]["voice"]["system_prompt_suffix"]
+            == once["channels"]["voice"]["system_prompt_suffix"]
+        )
 
     def test_does_not_mutate_input(self):
         cfg = _voice_config(suffix="Keep it short.")
@@ -100,39 +129,50 @@ class TestStripVoiceTtsFromSuffix:
 
 
 class TestRendererIntegration:
-    def test_render_block_merges_voice_tts(self, tmp_path):
-        acc = ConfigAccumulator()
-        acc.update("agent_core", "channels.voice", {
-            "system_prompt_suffix": "Keep it short.",
-            "terminal_word": "Goodbye",
-            "tts_rules": {k: "" for k in _voice_rules()} | {
-                "numbers": "Write all numbers in words in Devanagari.",
-            },
-        })
-        render_block(tmp_path, "agent_core", acc)
+    """Drive merge / strip behaviour through render_all and load_block_from_file."""
+
+    def test_render_all_merges_voice_tts(self, tmp_path):
+        acc = empty_accumulator()
+        acc["agent_core"] = {
+            "channels": {
+                "voice": {
+                    "system_prompt_suffix": "Keep it short.",
+                    "terminal_word": "Goodbye",
+                    "tts_rules": {k: "" for k in _voice_rules()}
+                    | {"numbers": "Write all numbers in words in Devanagari."},
+                }
+            }
+        }
+        render_all(tmp_path, acc, _intake())
         content = (tmp_path / "agent_core.yaml").read_text()
         assert TTS_BLOCK_BEGIN in content
         assert "Numbers: Write all numbers in words in Devanagari." in content
         # Accumulator's in-memory state is untouched — suffix still just prose.
-        assert acc.get_block("agent_core")["channels"]["voice"]["system_prompt_suffix"] == "Keep it short."
+        assert (
+            acc["agent_core"]["channels"]["voice"]["system_prompt_suffix"]
+            == "Keep it short."
+        )
 
     def test_load_block_strips_rendered_tts_block(self, tmp_path):
-        acc = ConfigAccumulator()
-        acc.update("agent_core", "channels.voice", {
-            "system_prompt_suffix": "Keep it short.",
-            "terminal_word": "Goodbye",
-            "tts_rules": {k: "" for k in _voice_rules()} | {
-                "numbers": "Write all numbers in words in Devanagari.",
-            },
-        })
-        render_block(tmp_path, "agent_core", acc)
+        acc = empty_accumulator()
+        acc["agent_core"] = {
+            "channels": {
+                "voice": {
+                    "system_prompt_suffix": "Keep it short.",
+                    "terminal_word": "Goodbye",
+                    "tts_rules": {k: "" for k in _voice_rules()}
+                    | {"numbers": "Write all numbers in words in Devanagari."},
+                }
+            }
+        }
+        render_all(tmp_path, acc, _intake())
         loaded = load_block_from_file(tmp_path, "agent_core")
         assert loaded["channels"]["voice"]["system_prompt_suffix"] == "Keep it short."
         assert loaded["channels"]["voice"]["tts_rules"]["numbers"].startswith("Write")
 
     def test_non_agent_core_block_unaffected(self, tmp_path):
-        acc = ConfigAccumulator()
-        acc.update("trust_layer", "trust", {"input_rules": {"blocked_phrases": ["spam"]}})
-        render_block(tmp_path, "trust_layer", acc)
+        acc = empty_accumulator()
+        acc["trust_layer"] = {"trust": {"input_rules": {"blocked_phrases": ["spam"]}}}
+        render_all(tmp_path, acc, _intake())
         content = (tmp_path / "trust_layer.yaml").read_text()
         assert TTS_BLOCK_BEGIN not in content
