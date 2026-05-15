@@ -198,16 +198,11 @@ def test_point4_predetermined_recomputed_log(caplog) -> None:
 
 def test_point5_phase_transition_forward_log(caplog) -> None:
     """router.decide_next_phase emits INFO with reason='phase_complete' on advance."""
-    # Build a state where 'tier' has no remaining pending chat fields,
-    # so decide_next_phase should advance to the next phase.
-    state = _make_intake()
+    # Tier phase completion is gated on state.completed, not chat fields.
+    # Set completed=True so the tier phase is considered complete.
+    state = _make_intake(completed=True)
     accumulator = _empty_accumulator()
-    # Mark all tier-phase chat fields as answered so the phase is complete.
     field_status: dict[str, str] = {}
-    from dev_kit.agent.field_rules import AGGREGATED_FIELD_RULES
-    for path, rule in AGGREGATED_FIELD_RULES.items():
-        if rule.phase == "tier" and rule.category == "chat":
-            field_status[path] = "answered"
 
     with caplog.at_level(logging.INFO, logger="dev_kit.agent.router"):
         result = decide_next_phase("tier", state, accumulator, field_status)

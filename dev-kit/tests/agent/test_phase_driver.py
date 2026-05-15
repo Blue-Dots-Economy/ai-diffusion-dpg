@@ -176,14 +176,22 @@ def test_run_turn_routes_update_config(tmp_path: Path) -> None:
 
 
 def test_run_turn_advances_phase_when_complete(tmp_path: Path) -> None:
-    """When the current phase has no pending chat fields, the router advances."""
+    """When all applicable chat fields are answered, the router advances the phase."""
+    from dev_kit.agent.skeleton import eval_expr
+
     intake = _make_intake()
-    # No pending fields → language phase is complete → next relevant is memory
-    # (knowledge skipped because has_kb=false).
+    # Build a field_status where every applicable language-phase chat field is "answered".
+    # (has_kb=false so knowledge is skipped → next relevant phase after language is memory.)
+    answered = {
+        path: "answered"
+        for path, rule in AGGREGATED_FIELD_RULES.items()
+        if rule.category == "chat" and rule.phase == "language"
+        and eval_expr(rule.applies_if, intake)
+    }
     projects_root = _setup_project(
         tmp_path,
         intake=intake,
-        field_status={},
+        field_status=answered,
         current_phase="language",
     )
 
@@ -579,6 +587,56 @@ def test_run_turn_history_phase_label_matches_active_phase(tmp_path: Path) -> No
     assert all(e["phase"] == "trust" for e in lines), (
         "Both user and assistant entries should carry the active phase 'trust'"
     )
+
+
+def test_run_turn_build_skeleton_called_when_tier_completes(tmp_path: Path) -> None:
+    """When all 7 binary flags are captured in one turn, build_skeleton populates field_status.
+
+    Simulates the tier-completion scenario: field_status starts empty and the
+    LLM emits 7 update_intake tool calls (one per binary flag). After run_turn,
+    field_status must be populated (skeleton ran) and the next phase must be
+    'language'.
+    """
+    from dev_kit.agent.intake_state import BINARY_INTAKE_FIELDS
+
+    intake = _make_intake()  # completed=False, all flags False
+    projects_root = _setup_project(
+        tmp_path,
+        intake=intake,
+        field_status={},  # no skeleton yet
+        current_phase="tier",
+    )
+
+    # LLM fires all 7 binary-flag tool calls in a single turn.
+    tool_calls = [
+        ToolCall("update_intake", {"field": flag, "value": True})
+        for flag in sorted(BINARY_INTAKE_FIELDS)
+    ]
+    fake, _ = _fake_llm(text="Got it, moving on!", tool_calls=tool_calls)
+
+    run_turn(
+        user_message="yes to everything",
+        project_slug="demo",
+        projects_root=projects_root,
+        llm_call=fake,
+    )
+
+    # After the turn: intake_state.completed must be True.
+    import json
+    intake_data = json.loads(
+        (projects_root / "demo" / "_meta" / "intake_state.json").read_text()
+    )
+    assert intake_data["completed"] is True
+
+    # field_status must be populated (build_skeleton ran).
+    field_status_data = json.loads(
+        (projects_root / "demo" / "_meta" / "field_status.json").read_text()
+    )
+    assert len(field_status_data) > 0, "build_skeleton should have populated field_status"
+
+    # Current phase must have advanced to 'language'.
+    new_phase = load_current_phase(projects_root / "demo")
+    assert new_phase == "language"
 
 
 def test_run_turn_user_entry_written_before_llm_call(tmp_path: Path) -> None:

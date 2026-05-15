@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from dev_kit.agent.intake_state import IntakeState, load_intake_state, save_intake_state
+from dev_kit.agent.intake_state import (
+    BINARY_INTAKE_FIELDS,
+    IntakeState,
+    load_intake_state,
+    save_intake_state,
+)
 
 
 def _empty_state() -> IntakeState:
@@ -101,3 +106,62 @@ def test_selected_channels_empty_rejected():
             default_language="english", supported_languages=["english"],
             domain_description="", project_name="",
         )
+
+
+def test_binary_flags_seen_defaults_to_empty_list():
+    """New IntakeState has an empty binary_flags_seen list by default."""
+    state = _empty_state()
+    assert state.binary_flags_seen == []
+
+
+def test_load_old_intake_state_without_binary_flags_seen(tmp_path: Path):
+    """An existing intake_state.json without binary_flags_seen loads cleanly.
+
+    This verifies backward compatibility with pre-existing project files that
+    were persisted before the binary_flags_seen field was added.
+    """
+    old_payload = {
+        "has_kb": False,
+        "has_external_tools": False,
+        "is_multi_turn": False,
+        "needs_persistent_user_data": False,
+        "is_companion_style": False,
+        "needs_consent": False,
+        "has_hitl": False,
+        "selected_channels": ["web"],
+        "default_language": "english",
+        "supported_languages": ["english"],
+        "domain_description": "legacy project",
+        "project_name": "legacy",
+        "completed": False,
+        "updated_at": "2026-05-14T00:00:00+00:00",
+        # No binary_flags_seen key — simulates an old file
+    }
+    old_file = tmp_path / "intake_state.json"
+    old_file.write_text(json.dumps(old_payload))
+
+    state = load_intake_state(old_file)
+    assert state.binary_flags_seen == []
+    assert state.completed is False
+    assert state.project_name == "legacy"
+
+
+def test_binary_intake_fields_constant_has_seven_entries():
+    """BINARY_INTAKE_FIELDS must contain exactly the 7 binary flags."""
+    assert len(BINARY_INTAKE_FIELDS) == 7
+    expected = {
+        "has_kb", "has_external_tools", "is_multi_turn",
+        "needs_persistent_user_data", "is_companion_style",
+        "needs_consent", "has_hitl",
+    }
+    assert BINARY_INTAKE_FIELDS == expected
+
+
+def test_save_load_roundtrip_with_binary_flags_seen(tmp_path: Path):
+    """binary_flags_seen survives a save/load round-trip."""
+    state = _empty_state()
+    state.binary_flags_seen = ["has_kb", "has_hitl"]
+    state_path = tmp_path / "intake_state.json"
+    save_intake_state(state_path, state)
+    loaded = load_intake_state(state_path)
+    assert loaded.binary_flags_seen == ["has_kb", "has_hitl"]

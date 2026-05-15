@@ -1,10 +1,10 @@
 import React, { useState } from 'react'
 
-const PHASES = ['tier', 'overview', 'language', 'knowledge', 'memory', 'user_state', 'trust', 'tools', 'workflow', 'observability', 'reach', 'review']
+const PHASES = ['tier', 'language', 'knowledge', 'memory', 'user_state', 'trust', 'tools', 'workflow', 'observability', 'reach', 'review']
 const PHASE_LABELS = {
-  tier: 'Agent Type', overview: 'Overview', language: 'Language', knowledge: 'Knowledge',
+  tier: 'Intake', language: 'Language', knowledge: 'Knowledge',
   memory: 'Memory', user_state: 'User State', trust: 'Trust', tools: 'Tools',
-  workflow: 'Workflow', observability: 'Observability', reach: 'Reach Layer', review: 'Review',
+  workflow: 'Workflow', observability: 'Observability', reach: 'Reach', review: 'Review',
 }
 
 export default function PhaseBar({ currentPhase }) {

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -18,6 +18,14 @@ from typing import Literal
 logger = logging.getLogger(__name__)
 
 Channel = Literal["web", "voice"]
+
+# The 7 binary flags the wizard captures via update_intake during the tier phase.
+# When all 7 are present in IntakeState.binary_flags_seen, intake is complete.
+BINARY_INTAKE_FIELDS: frozenset[str] = frozenset({
+    "has_kb", "has_external_tools", "is_multi_turn",
+    "needs_persistent_user_data", "is_companion_style",
+    "needs_consent", "has_hitl",
+})
 
 
 @dataclass
@@ -54,6 +62,10 @@ class IntakeState:
     # Bookkeeping
     completed: bool = False
     updated_at: str = ""
+    # Names of binary intake fields the wizard has captured via update_intake.
+    # When this set contains all 7 BINARY_INTAKE_FIELDS, intake is complete.
+    # Stored as list so it round-trips through JSON; use set semantics in code.
+    binary_flags_seen: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # Validate Channel literal manually since dataclass doesn't enforce it.
@@ -126,3 +138,12 @@ def load_intake_state(path: Path) -> IntakeState:
         raise ValueError(
             f"Schema mismatch loading intake state from {path}: {exc}"
         ) from exc
+
+
+__all__ = [
+    "BINARY_INTAKE_FIELDS",
+    "Channel",
+    "IntakeState",
+    "load_intake_state",
+    "save_intake_state",
+]

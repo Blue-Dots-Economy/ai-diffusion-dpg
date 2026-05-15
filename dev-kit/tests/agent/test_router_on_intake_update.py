@@ -1,7 +1,7 @@
 """Tests for router.on_intake_update — the FIELD_RULES cascade."""
 from dataclasses import replace
 
-from dev_kit.agent.intake_state import IntakeState
+from dev_kit.agent.intake_state import BINARY_INTAKE_FIELDS, IntakeState
 from dev_kit.agent.router import on_intake_update
 
 
@@ -67,3 +67,78 @@ def test_noop_when_value_unchanged():
     )
 
     assert result["noop"] is True
+
+
+def _empty_accumulator() -> dict:
+    return {b: {} for b in (
+        "agent_core", "trust_layer", "knowledge_engine", "memory_layer",
+        "action_gateway", "reach_layer", "observability_layer",
+    )}
+
+
+def test_all_seven_binary_flags_flip_completed_true():
+    """Calling update_intake for all 7 binary flags sets state.completed = True."""
+    state = _intake()
+    accumulator = _empty_accumulator()
+    field_status: dict[str, str] = {}
+
+    for flag in BINARY_INTAKE_FIELDS:
+        assert state.completed is False, f"should not be complete before all 7 flags; just set {flag}"
+        on_intake_update(
+            field=flag, new_value=True,
+            state=state, accumulator=accumulator, field_status=field_status,
+        )
+
+    assert state.completed is True
+    assert set(state.binary_flags_seen) == BINARY_INTAKE_FIELDS
+
+
+def test_non_binary_field_does_not_add_to_binary_flags_seen():
+    """Updating a non-binary field (project_name) does not modify binary_flags_seen."""
+    state = _intake()
+    accumulator = _empty_accumulator()
+    field_status: dict[str, str] = {}
+
+    on_intake_update(
+        field="project_name", new_value="My Project",
+        state=state, accumulator=accumulator, field_status=field_status,
+    )
+
+    assert state.binary_flags_seen == []
+    assert state.completed is False
+
+
+def test_repeated_calls_to_same_flag_do_not_duplicate_binary_flags_seen():
+    """Calling update_intake multiple times for the same flag only records it once."""
+    state = _intake()
+    accumulator = _empty_accumulator()
+    field_status: dict[str, str] = {}
+
+    on_intake_update(
+        field="has_kb", new_value=True,
+        state=state, accumulator=accumulator, field_status=field_status,
+    )
+    # Second call: has_kb is already True → noop, won't append again.
+    on_intake_update(
+        field="has_kb", new_value=True,
+        state=state, accumulator=accumulator, field_status=field_status,
+    )
+
+    assert state.binary_flags_seen.count("has_kb") == 1
+
+
+def test_completed_does_not_flip_until_all_seven_seen():
+    """Completing 6 of the 7 binary flags must NOT set state.completed = True."""
+    state = _intake()
+    accumulator = _empty_accumulator()
+    field_status: dict[str, str] = {}
+
+    flags = list(BINARY_INTAKE_FIELDS)
+    for flag in flags[:-1]:  # all but the last
+        on_intake_update(
+            field=flag, new_value=True,
+            state=state, accumulator=accumulator, field_status=field_status,
+        )
+
+    assert state.completed is False
+    assert len(state.binary_flags_seen) == 6

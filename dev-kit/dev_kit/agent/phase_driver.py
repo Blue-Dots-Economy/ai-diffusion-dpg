@@ -550,6 +550,29 @@ def run_turn(
             )
             continue
 
+    # ----- Step 4b: populate skeleton when tier completes -----
+    # If tier-phase intake just completed AND skeleton hasn't run yet for this
+    # project (field_status is empty), populate accumulator + field_status from
+    # FIELD_RULES so downstream phases have proper per-field state.
+    if intake_state.completed and not field_status:
+        from dev_kit.agent.skeleton import build_skeleton  # noqa: PLC0415
+        skeleton_acc, skeleton_fs = build_skeleton(intake_state)
+        # Deep merge: skeleton values fill gaps but don't overwrite existing.
+        for block, block_data in skeleton_acc.items():
+            if block not in accumulator:
+                accumulator[block] = {}
+            for key, val in block_data.items():
+                accumulator[block].setdefault(key, val)
+        field_status.update(skeleton_fs)
+        logger.info(
+            "phase_driver.skeleton_populated",
+            extra={
+                "operation": "phase_driver.skeleton_populated",
+                "status": "success",
+                "field_count": len(field_status),
+            },
+        )
+
     # ----- Step 5: end-of-turn router -----
     next_phase = decide_next_phase(current_phase, intake_state, accumulator, field_status)
 

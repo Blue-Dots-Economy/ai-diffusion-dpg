@@ -19,7 +19,7 @@ import pytest
 
 from dev_kit.agent.field_rules import AGGREGATED_FIELD_RULES, FieldRule
 from dev_kit.agent.field_status import load_field_status, save_field_status
-from dev_kit.agent.intake_state import IntakeState, save_intake_state
+from dev_kit.agent.intake_state import BINARY_INTAKE_FIELDS, IntakeState, save_intake_state
 from dev_kit.agent.phase_driver import (
     LLMResponse,
     ToolCall,
@@ -187,6 +187,10 @@ def _setup_project(
 ) -> tuple[Path, Path]:
     """Lay out a project tree with the skeleton already built.
 
+    The intake state is seeded with ``completed=True`` and a full
+    ``binary_flags_seen`` list so that the wizard starts after the tier phase
+    has already been completed (these tests exercise post-tier phase flow).
+
     Args:
         tmp_path: Pytest tmp_path fixture root.
         intake_fields: Field overrides for IntakeState construction.
@@ -199,13 +203,19 @@ def _setup_project(
     slug_root = projects_root / slug
     (slug_root / "_meta").mkdir(parents=True)
 
-    intake = IntakeState(**intake_fields)
+    # Mark intake as complete so the wizard starts past the tier phase.
+    completed_fields = {
+        **intake_fields,
+        "completed": True,
+        "binary_flags_seen": list(BINARY_INTAKE_FIELDS),
+    }
+    intake = IntakeState(**completed_fields)
     save_intake_state(slug_root / "_meta" / "intake_state.json", intake)
 
     accumulator, field_status = build_skeleton(intake)
     save_accumulator(slug_root, accumulator)
     save_field_status(slug_root / "_meta" / "field_status.json", field_status)
-    save_current_phase(slug_root, "tier")
+    save_current_phase(slug_root, "language")  # start at language (tier is done)
 
     return projects_root, slug_root
 

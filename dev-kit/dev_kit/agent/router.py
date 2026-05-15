@@ -13,7 +13,7 @@ import logging
 from typing import Any
 
 from dev_kit.agent.field_rules import AGGREGATED_FIELD_RULES, FIELD_RULES_PHASES_VALID, FieldRule
-from dev_kit.agent.intake_state import IntakeState
+from dev_kit.agent.intake_state import BINARY_INTAKE_FIELDS, IntakeState
 from dev_kit.agent.path_ops import clear_path, get_path, set_path
 from dev_kit.agent.skeleton import _SKIP, eval_expr, eval_rule, get_framework_default
 
@@ -93,6 +93,22 @@ def on_intake_update(
 
     setattr(state, field, new_value)
     state.touch()
+
+    # Track this update if it's one of the 7 binary intake fields. When all 7
+    # have been seen, mark intake_state.completed = True. The tier phase's
+    # completion check (router._is_phase_complete) gates on this.
+    if field in BINARY_INTAKE_FIELDS and field not in state.binary_flags_seen:
+        state.binary_flags_seen.append(field)
+    if not state.completed and BINARY_INTAKE_FIELDS.issubset(set(state.binary_flags_seen)):
+        state.completed = True
+        logger.info(
+            "router.intake_completed",
+            extra={
+                "operation": "router.intake_completed",
+                "status": "success",
+                "binary_flags_seen": list(state.binary_flags_seen),
+            },
+        )
 
     affected: list[tuple[str, FieldRule]] = [
         (full_path, rule)
@@ -246,7 +262,9 @@ def _is_phase_complete(
 ) -> bool:
     """Return True when every applicable chat field in ``phase`` is answered.
 
-    A phase with no applicable chat fields is trivially complete.
+    Special case: the tier (intake) phase has no chat fields — its
+    completeness is gated on ``state.completed``, which flips True once all
+    7 BINARY_INTAKE_FIELDS have been captured via update_intake.
 
     Args:
         phase: Phase name to check.
@@ -258,14 +276,18 @@ def _is_phase_complete(
         if any applicable field is pending, needs_re_asking, or not yet in
         field_status.
     """
+    if phase == "tier":
+        return state.completed
     for full_path, rule in AGGREGATED_FIELD_RULES.items():
         if rule.category != "chat" or rule.phase != phase:
             continue
         if not eval_expr(rule.applies_if, state):
             continue
-        # Fields absent from field_status were never initialised — treat as
-        # answered (they've been handled or do not require wizard input here).
-        status = field_status.get(full_path, "answered")
+        # Default to "pending" — a field absent from field_status was never
+        # initialised (build_skeleton hasn't run yet), so the phase is NOT
+        # complete. (Old default of "answered" caused premature advancement
+        # for every phase pre-skeleton.)
+        status = field_status.get(full_path, "pending")
         if status != "answered":
             return False
     return True
