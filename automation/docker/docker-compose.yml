@@ -72,8 +72,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.1'
-          memory: 512M
+          cpus: '0.5'
+          memory: 256M
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:9999/health')\""]
       interval: 10s
@@ -110,8 +110,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.1'
-          memory: 512M
+          cpus: '0.5'
+          memory: 256M
     depends_on:
       knowledge_engine:
         condition: service_healthy
@@ -243,7 +243,7 @@ services:
       resources:
         limits:
           cpus: '0.5'
-          memory: 2G
+          memory: 256M
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/health')\""]
       interval: 15s
@@ -283,8 +283,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.1'
-          memory: 512M
+          cpus: '0.25'
+          memory: 256M
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8002/health')\""]
       interval: 10s
@@ -316,7 +316,7 @@ services:
       resources:
         limits:
           cpus: '0.1'
-          memory: 512M
+          memory: 256M
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8004/health')\""]
       interval: 10s
@@ -365,8 +365,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.1'
-          memory: 512M
+          cpus: '0.25'
+          memory: 256M
     depends_on:
       agent_core:
         condition: service_healthy
@@ -446,7 +446,7 @@ services:
       resources:
         limits:
           cpus: '0.5'
-          memory: 1g
+          memory: 256M
     depends_on:
       agent_core:
         condition: service_healthy
@@ -480,8 +480,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.1'
-          memory: 512M
+          cpus: '0.25'
+          memory: 256M
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8003/health')\""]
       interval: 10s
@@ -526,7 +526,7 @@ services:
       resources:
         limits:
           cpus: '0.1'
-          memory: 256M
+          memory: 125M
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -589,7 +589,7 @@ services:
       resources:
         limits:
           cpus: '0.2'
-          memory: 512M
+          memory: 256M
     healthcheck:
       test: ["CMD-SHELL", "echo 'RETURN 1;' | mgconsole --host 127.0.0.1 --port 7687 2>/dev/null || exit 1"]
       interval: 15s
@@ -613,25 +613,25 @@ services:
   #   export PUBLIC_URL=https://abc123.ngrok-free.app
   #   docker compose up -d reach_layer_voice
   # ---------------------------------------------------------------------------
-  # ngrok:
-  #   image: ngrok/ngrok:latest
-  #   container_name: ngrok
-  #   command: http reach_layer_voice:8006 --log stdout
-  #   environment:
-  #     - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
-  #   ports:
-  #     - "4040:4040"                          # ngrok local API / inspector UI
-  #   networks:
-  #     - dpg_net
-  #   deploy:
-  #     resources:
-  #       limits:
-  #         cpus: '0.1'
-  #         memory: 128M
-  #   depends_on:
-  #     reach_layer_voice:
-  #       condition: service_healthy
-  #   restart: unless-stopped
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: ngrok
+    command: http reach_layer_voice:8006 --log stdout
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
+    ports:
+      - "4040:4040"                          # ngrok local API / inspector UI
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 128M
+    depends_on:
+      reach_layer_voice:
+        condition: service_healthy
+    restart: unless-stopped
 
   # ---------------------------------------------------------------------------
   # OTel Collector — receives OTLP, fans out to Jaeger / Prometheus / Loki

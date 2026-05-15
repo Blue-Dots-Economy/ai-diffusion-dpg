@@ -27,6 +27,9 @@ reach_layer:
     memory_layer_client:
       endpoint: "http://memory_layer:8002"
       timeout_s: 10.0
+    learning_client:
+      endpoint: "http://observability_layer:8004"
+      timeout_ms: 2000
     observability:
       otel:
         collector_endpoint: "http://otelcol:4317"

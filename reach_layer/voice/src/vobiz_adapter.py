@@ -18,6 +18,7 @@ import logging
 import time
 import uuid
 
+import httpx
 from fastapi import WebSocket
 from opentelemetry import trace as otel_trace
 from pipecat.frames.frames import TTSSpeakFrame
@@ -51,25 +52,89 @@ from src.vad.silero_vad import SileroVADWrapper
 logger = logging.getLogger(__name__)
 
 
-class _NoopObservability:
-    """Fallback observability backend that logs signals without a real OBS instance."""
+class _RecordingObservabilityClient:
+    """Thin async-compatible observability client for recording signals.
+
+    Exposes a synchronous ``emit_signal`` that schedules the HTTP POST as a
+    background ``asyncio.Task`` so it never blocks the call teardown path.
+    Falls back to structured logging when no event loop is running.
+
+    Args:
+        endpoint: Base URL of the Observability Layer service.
+        timeout_s: Per-request timeout in seconds.
+    """
+
+    def __init__(self, endpoint: str, timeout_s: float) -> None:
+        self._endpoint = endpoint.rstrip("/")
+        self._timeout_s = timeout_s
 
     def emit_signal(self, signal_type: str, data: dict) -> None:
-        """Log the signal as a structured info record.
+        """Schedule a ``POST /emit/signal`` request as a background task.
 
         Args:
-            signal_type: The observability signal type string.
-            data: Signal payload forwarded verbatim to the log record.
+            signal_type: Signal type string (e.g. ``"recording.stored"``).
+            data: Signal payload forwarded verbatim to the Observability Layer.
         """
-        logger.info(
-            "noop_observability.emit_signal",
-            extra={
-                "operation": "observability.emit_signal",
-                "status": "skipped",
-                "signal_type": signal_type,
-                **data,
-            },
-        )
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(self._post(signal_type, data or {}))
+            else:
+                logger.warning(
+                    "recording_observability.no_loop",
+                    extra={
+                        "operation": "recording_observability.emit_signal",
+                        "status": "skipped",
+                        "signal_type": signal_type,
+                        "reason": "no running event loop",
+                    },
+                )
+        except Exception as exc:
+            logger.warning(
+                "recording_observability.emit_signal_error",
+                extra={
+                    "operation": "recording_observability.emit_signal",
+                    "status": "failure",
+                    "signal_type": signal_type,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
+
+    async def _post(self, signal_type: str, data: dict) -> None:
+        """POST ``/emit/signal`` to the Observability Layer. Never raises.
+
+        Args:
+            signal_type: Signal type string.
+            data: Signal payload dict.
+        """
+        start = time.time()
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout_s) as client:
+                resp = await client.post(
+                    f"{self._endpoint}/emit/signal",
+                    json={"signal_type": signal_type, "data": data},
+                )
+                resp.raise_for_status()
+            logger.info(
+                "recording_observability.emit_signal",
+                extra={
+                    "operation": "recording_observability.emit_signal",
+                    "status": "success",
+                    "signal_type": signal_type,
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "recording_observability.emit_signal_error",
+                extra={
+                    "operation": "recording_observability.emit_signal",
+                    "status": "failure",
+                    "signal_type": signal_type,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "latency_ms": int((time.time() - start) * 1000),
+                },
+            )
 
 
 class VobizAdapter(TelephonyAdapterBase):
@@ -127,6 +192,17 @@ class VobizAdapter(TelephonyAdapterBase):
             self._config,
             telephony=self,
             registry=self._recording_url_registry,
+        )
+        # Observability Layer client — used by _finalize_and_store to emit
+        # recording.* signals to the audit trail.
+        obs_cfg = (
+            self._config.get("reach_layer", {})
+            .get("common", {})
+            .get("learning_client", {})
+        )
+        self._observability_client = _RecordingObservabilityClient(
+            endpoint=obs_cfg.get("endpoint", "http://observability_layer:8004"),
+            timeout_s=obs_cfg.get("timeout_ms", 2000) / 1000,
         )
         # OTel span context captured at handle_call() start for lifecycle link.
         self._inbound_span_context = None
@@ -485,9 +561,7 @@ class VobizAdapter(TelephonyAdapterBase):
         Args:
             call_sid: The telephony call identifier for log correlation.
         """
-        # TODO(#330): replace _NoopObservability with the adapter's real
-        # ObservabilityLayerBase client so recording.* signals land in audit.
-        emitter = SignalEmitter(_NoopObservability())
+        emitter = SignalEmitter(self._observability_client)
         link = None
         if self._inbound_span_context is not None:
             link = otel_trace.Link(self._inbound_span_context)
