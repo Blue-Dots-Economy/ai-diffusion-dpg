@@ -63,6 +63,12 @@ export const api = {
   getDevKitConfig: () =>
     request('GET', '/devkit-config'),
 
+  // Open enum values from dev_kit/schemas/enums_config.yaml. Used by the
+  // project creation form (language pickers) and downstream forms that
+  // present provider / model / voice choices.
+  getEnums: () =>
+    request('GET', '/enums'),
+
   getProjectDocTypes: (slug) =>
     request('GET', `/projects/${slug}/ingest/doc-types`),
 

@@ -3616,6 +3616,38 @@ async def get_devkit_config():
     }
 
 
+@app.get("/api/enums")
+async def get_enums():
+    """Return the open enum values from `dev_kit/schemas/enums_config.yaml`.
+
+    Consumed by the React frontend so dropdowns (languages, providers,
+    models, voices) stay in sync with the source-of-truth YAML without
+    hardcoding the lists in JS.
+
+    Returns:
+        Dict with `providers`, `languages`, `anthropic_models`, `openai_models`,
+        `embedding_providers`, and `raya_voices` (list of {voice_id, language,
+        name} dicts).
+    """
+    from dev_kit.schemas.enums import (
+        ANTHROPIC_MODELS,
+        EMBEDDING_PROVIDERS,
+        LANGUAGES,
+        OPENAI_MODELS,
+        PROVIDERS,
+        RAYA_VOICES,
+    )
+
+    return {
+        "providers": list(PROVIDERS),
+        "languages": list(LANGUAGES),
+        "anthropic_models": list(ANTHROPIC_MODELS),
+        "openai_models": list(OPENAI_MODELS),
+        "embedding_providers": list(EMBEDDING_PROVIDERS),
+        "raya_voices": list(RAYA_VOICES),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Static frontend
 # ---------------------------------------------------------------------------

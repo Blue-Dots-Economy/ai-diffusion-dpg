@@ -14,10 +14,38 @@ export default function ProjectList({ onOpen }) {
   const [error, setError] = useState(null)
   const [deletingSlug, setDeletingSlug] = useState(null)
   const [deleteModal, setDeleteModal] = useState(null)  // null | { slug, name }
+  // Language options sourced from /api/enums (dev_kit/schemas/enums_config.yaml).
+  // Falls back to a minimal local list so the form still renders if the API
+  // hasn't responded yet — the fallback gets replaced as soon as the fetch
+  // resolves and matches what the backend validators accept.
+  const [availableLanguages, setAvailableLanguages] = useState(['english'])
 
   useEffect(() => {
     api.listProjects().then(setProjects).catch(() => setProjects([]))
+    api.getEnums()
+      .then(d => {
+        if (Array.isArray(d?.languages) && d.languages.length > 0) {
+          setAvailableLanguages(d.languages)
+        }
+      })
+      .catch(() => { /* keep fallback */ })
   }, [])
+
+  // Toggle a language in `supported_languages`. Re-add `default_language`
+  // automatically if the user just unchecked it (it's always required).
+  function toggleSupportedLanguage(lang) {
+    setSupportedLanguages(prev => {
+      const next = prev.includes(lang) ? prev.filter(l => l !== lang) : prev.concat(lang)
+      return next.includes(defaultLanguage) ? next : next.concat(defaultLanguage)
+    })
+  }
+
+  // When the user changes the default language, make sure it's also in
+  // the supported list so the IntakeState invariant holds.
+  function handleDefaultLanguageChange(newDefault) {
+    setDefaultLanguage(newDefault)
+    setSupportedLanguages(prev => (prev.includes(newDefault) ? prev : prev.concat(newDefault)))
+  }
 
   async function handleCreate(e) {
     e.preventDefault()
@@ -123,31 +151,46 @@ export default function ProjectList({ onOpen }) {
               ))}
             </div>
           </div>
-          <div className="flex gap-3">
-            <div className="flex flex-col gap-1 flex-1">
-              <label className="text-xs text-gray-400">Default language</label>
-              <select
-                className="bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
-                value={defaultLanguage}
-                onChange={e => setDefaultLanguage(e.target.value)}
-              >
-                {['english', 'hindi', 'tamil', 'telugu', 'kannada', 'marathi', 'bengali'].map(lang => (
-                  <option key={lang} value={lang}>{lang.charAt(0).toUpperCase() + lang.slice(1)}</option>
-                ))}
-              </select>
-            </div>
-            <div className="flex flex-col gap-1 flex-1">
-              <label className="text-xs text-gray-400">Supported languages</label>
-              <select
-                multiple
-                className="bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 h-20"
-                value={supportedLanguages}
-                onChange={e => setSupportedLanguages(Array.from(e.target.selectedOptions, o => o.value))}
-              >
-                {['english', 'hindi', 'tamil', 'telugu', 'kannada', 'marathi', 'bengali'].map(lang => (
-                  <option key={lang} value={lang}>{lang.charAt(0).toUpperCase() + lang.slice(1)}</option>
-                ))}
-              </select>
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-gray-400">Default language</label>
+            <select
+              className="bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+              value={defaultLanguage}
+              onChange={e => handleDefaultLanguageChange(e.target.value)}
+            >
+              {availableLanguages.map(lang => (
+                <option key={lang} value={lang}>{lang.charAt(0).toUpperCase() + lang.slice(1)}</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-gray-400">
+              Supported languages{' '}
+              <span className="text-gray-500">(default language is always included)</span>
+            </label>
+            <div className="grid grid-cols-3 gap-x-3 gap-y-1.5 bg-gray-800/50 border border-gray-700 rounded-xl px-3 py-2.5">
+              {availableLanguages.map(lang => {
+                const checked = supportedLanguages.includes(lang)
+                const isDefault = lang === defaultLanguage
+                return (
+                  <label
+                    key={lang}
+                    className={`flex items-center gap-1.5 text-sm ${
+                      isDefault ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
+                    }`}
+                    title={isDefault ? 'Default language is always included' : ''}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={isDefault}
+                      onChange={() => toggleSupportedLanguage(lang)}
+                      className="accent-blue-500"
+                    />
+                    {lang.charAt(0).toUpperCase() + lang.slice(1)}
+                  </label>
+                )
+              })}
             </div>
           </div>
           {error && (

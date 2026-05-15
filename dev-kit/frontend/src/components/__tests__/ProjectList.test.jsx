@@ -8,6 +8,7 @@ vi.mock('../../api', () => ({
     listProjects: vi.fn(),
     createProject: vi.fn(),
     deleteProject: vi.fn(),
+    getEnums: vi.fn(),
   },
 }))
 
@@ -18,10 +19,20 @@ const sampleProjects = [
   { slug: 'rural-jobs', name: 'Rural Jobs', description: '', current_phase: null },
 ]
 
+const sampleEnums = {
+  languages: ['english', 'hindi', 'hinglish', 'tamil', 'telugu', 'kannada', 'marathi', 'bengali'],
+  providers: ['anthropic', 'openai'],
+  anthropic_models: [],
+  openai_models: [],
+  embedding_providers: [],
+  raya_voices: [],
+}
+
 describe('ProjectList', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     api.listProjects.mockResolvedValue(sampleProjects)
+    api.getEnums.mockResolvedValue(sampleEnums)
   })
 
   it('renders the hero heading', async () => {
@@ -116,7 +127,16 @@ describe('ProjectList', () => {
     fireEvent.click(screen.getByRole('button', { name: /Create & Start/ }))
 
     await waitFor(() => {
-      expect(api.createProject).toHaveBeenCalledWith('New Proj', '')
+      expect(api.createProject).toHaveBeenCalledWith(
+        'New Proj',
+        '',
+        expect.objectContaining({
+          project_name: 'New Proj',
+          selected_channels: ['web'],
+          default_language: 'english',
+          supported_languages: ['english'],
+        }),
+      )
       expect(onOpen).toHaveBeenCalledWith('new-proj')
     })
   })
