@@ -69,67 +69,195 @@ DEVKIT_TOOL_SCHEMAS: list[dict] = [
     {
         "name": "update_intake",
         "description": (
-            "Set or update a single IntakeState field. Args: field (str — e.g. 'has_kb', "
-            "'is_multi_turn'), value (any). Cascades through FIELD_RULES to invalidate "
-            "dependent answers."
+            "Set or update a single IntakeState field. Use this for every yes/no "
+            "answer the user gives during the tier intake phase. Cascades through "
+            "FIELD_RULES to invalidate dependent answers when intake changes."
         ),
-        "input_schema": {"type": "object"},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "field": {
+                    "type": "string",
+                    "description": (
+                        "IntakeState field name. One of: has_kb, has_external_tools, "
+                        "is_multi_turn, needs_persistent_user_data, is_companion_style, "
+                        "needs_consent, has_hitl (booleans), or selected_channels, "
+                        "supported_languages (list[str]), or default_language, "
+                        "domain_description, project_name (str)."
+                    ),
+                },
+                "value": {
+                    "description": (
+                        "New value for the field. Use a boolean for the 7 binary flags; "
+                        "a list of strings for selected_channels/supported_languages; "
+                        "a string for the rest."
+                    ),
+                },
+            },
+            "required": ["field", "value"],
+        },
     },
     {
         "name": "update_config",
         "description": (
             "Write a user chat answer to the accumulator with mirror validation. "
             "Preferred form: {path: 'block.section.field', value: ...}. "
-            "Legacy form: {block, section, values}."
+            "Legacy form: {block, section, values: {...}}."
         ),
-        "input_schema": {"type": "object"},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Dotted path 'block.section.field' (preferred form).",
+                },
+                "value": {
+                    "description": "Value to write at path (preferred form).",
+                },
+                "block": {
+                    "type": "string",
+                    "description": (
+                        "Block name (legacy form). One of: agent_core, trust_layer, "
+                        "knowledge_engine, memory_layer, action_gateway, reach_layer, "
+                        "observability_layer."
+                    ),
+                },
+                "section": {
+                    "type": "string",
+                    "description": "Section name within the block (legacy form).",
+                },
+                "values": {
+                    "type": "object",
+                    "description": "Dict of field-value pairs to apply (legacy form).",
+                },
+            },
+        },
     },
     {
         "name": "add_subagent",
         "description": (
             "Append a subagent definition to agent_core.agent_workflow.subagents. "
-            "Args: definition (dict with at least an 'id' key)."
+            "Used during the workflow phase to build the subagent graph."
         ),
-        "input_schema": {"type": "object"},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "definition": {
+                    "type": "object",
+                    "description": (
+                        "Subagent definition. Must include 'id' (str) and typically "
+                        "'name', 'description', 'is_start', 'is_terminal', "
+                        "'opening_phrase', 'system_prompt', 'valid_intents', 'routing'."
+                    ),
+                },
+            },
+            "required": ["definition"],
+        },
     },
     {
         "name": "update_subagent",
         "description": (
-            "Modify fields on an existing subagent. Args: id (str), fields (dict)."
+            "Modify fields on an existing subagent in agent_core.agent_workflow.subagents."
         ),
-        "input_schema": {"type": "object"},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "The subagent's id (must already exist).",
+                },
+                "fields": {
+                    "type": "object",
+                    "description": "Field-value pairs to overwrite on the subagent.",
+                },
+            },
+            "required": ["id", "fields"],
+        },
     },
     {
         "name": "add_routing_rule",
         "description": (
-            "Append a routing rule (transition edge) to a subagent. "
-            "Args: from_subagent_id, intent, to_subagent_id, optional condition."
+            "Append a routing rule (transition edge) to a subagent's 'routing' list. "
+            "Used to wire intent → next-subagent transitions during the workflow phase."
         ),
-        "input_schema": {"type": "object"},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "from_subagent_id": {
+                    "type": "string",
+                    "description": "ID of the subagent whose routing list gets a new rule.",
+                },
+                "intent": {
+                    "type": "string",
+                    "description": "Intent name (must subset nlu_processor.intents) or '*' wildcard.",
+                },
+                "to_subagent_id": {
+                    "type": "string",
+                    "description": "ID of the target subagent (must already be declared).",
+                },
+                "condition": {
+                    "type": ["object", "null"],
+                    "description": "Optional RoutingCondition {field, operator, value}.",
+                },
+            },
+            "required": ["from_subagent_id", "intent", "to_subagent_id"],
+        },
     },
     {
         "name": "add_tool",
         "description": (
-            "Add a tool to action_gateway.tools and the matching agent_core connector. "
-            "Args: spec (dict with id, type, category, endpoints)."
+            "Add an external tool to action_gateway.tools and the matching connector "
+            "entry in agent_core. Used during the tools phase."
         ),
-        "input_schema": {"type": "object"},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "spec": {
+                    "type": "object",
+                    "description": (
+                        "Tool spec. Must include id (str), type ('rest_api' or 'mcp'), "
+                        "category ('read', 'write', or 'identity'), and the type-specific "
+                        "fields (endpoints for rest_api, mcp_server_url for mcp)."
+                    ),
+                },
+            },
+            "required": ["spec"],
+        },
     },
     {
         "name": "parse_openapi_spec",
         "description": (
             "Parse an OpenAPI 3.0/3.1 spec (JSON or YAML string, or dict) and return "
-            "candidate tool operations. Does not mutate state. Args: spec."
+            "candidate tool operations. Does NOT mutate state — call add_tool afterwards "
+            "to register the chosen operations."
         ),
-        "input_schema": {"type": "object"},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "spec": {
+                    "description": (
+                        "The OpenAPI spec as a JSON/YAML string or a parsed dict."
+                    ),
+                },
+            },
+            "required": ["spec"],
+        },
     },
     {
         "name": "discover_mcp_tools",
         "description": (
-            "List tools available on an MCP server. Args: server_url (str). "
-            "Currently a placeholder — returns an empty list."
+            "List tools available on an MCP server. Placeholder today (returns empty list)."
         ),
-        "input_schema": {"type": "object"},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "server_url": {
+                    "type": "string",
+                    "description": "URL of the MCP server.",
+                },
+            },
+            "required": ["server_url"],
+        },
     },
 ]
 
