@@ -249,9 +249,25 @@ FIELD_RULES: dict[str, FieldRule] = {
         invalidated_by=["has_kb"],
         pydantic_class="ConnectorsSection",
     ),
+    # MUST match runtime InputSchema shape exactly:
+    # `{type: "object", properties: {<param>: {type: ...}}, required: [...]}`.
+    # Earlier the rule wrote `{'query': {'type': 'string'}}` directly, which
+    # the lenient mirror (`dict[str, Any]`) accepted but the runtime's
+    # strict InputSchema(extra="forbid") rejected at boot:
+    #   "connectors.internal.0.input_schema.query
+    #    Extra inputs are not permitted"
+    # The mirror has since been tightened to use the strict InputSchema
+    # class (see dev_kit/schemas/domain/agent_core.py), so future shape
+    # drift is caught at chat time, not at deploy.
     "connectors.internal[name=knowledge_retrieval].input_schema": FieldRule(
         category="predetermined",
-        rule="set: {'query': {'type': 'string'}}",
+        rule=(
+            "set: {"
+            "'type': 'object', "
+            "'properties': {'query': {'type': 'string'}}, "
+            "'required': ['query']"
+            "}"
+        ),
         applies_if="has_kb",
         invalidated_by=["has_kb"],
         pydantic_class="ConnectorsSection",
@@ -635,8 +651,15 @@ FIELD_RULES: dict[str, FieldRule] = {
         phase="reach",
         applies_if='"voice" in selected_channels',
         invalidated_by=["selected_channels"],
-        description="Semantic gate configuration for voice TurnAssembler.",
-        pydantic_class="ChannelsSection",
+        # Must be a structured SemanticGateConfig dict — bare strings or
+        # free-form maps are rejected by the strict mirror class:
+        #   `{"enabled": true, "confidence_threshold": 0.75}`
+        # See dev_kit/schemas/domain/agent_core.py SemanticGateConfig.
+        description=(
+            "Semantic gate for voice TurnAssembler. Shape: "
+            '{"enabled": bool, "confidence_threshold": 0.0-1.0}.'
+        ),
+        pydantic_class="SemanticGateConfig",
     ),
 
     # ── Predetermined: channels.voice.turn_assembler.* ────────────────────────

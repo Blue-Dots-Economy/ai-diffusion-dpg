@@ -125,7 +125,13 @@ _TEST_VALUES: dict[str, Any] = {
     "agent_core.channels.voice.tts_rules.english_loanwords": "Keep English words.",
     "agent_core.channels.voice.tts_rules.email": "Read emails carefully.",
     "agent_core.channels.voice.tts_rules.named_entities": "Pronounce names well.",
-    "agent_core.channels.voice.turn_assembler.semantic_gate": "Wait for full sentence.",
+    # semantic_gate is a structured SemanticGateConfig (mirror tightened
+    # to match runtime exactly — was earlier a free dict that silently
+    # accepted strings). Tests now write the canonical shape.
+    "agent_core.channels.voice.turn_assembler.semantic_gate": {
+        "enabled": True,
+        "confidence_threshold": 0.75,
+    },
     # ---- reach_layer ----
     "reach_layer.channels.web.ui.app_name": "TestBot",
     "reach_layer.channels.web.ui.app_tagline": "Helpful assistant",

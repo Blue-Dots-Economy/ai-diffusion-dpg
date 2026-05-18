@@ -44,6 +44,9 @@ def test_predetermined_rules_reference_intake_fields_only():
             # Common string literals / kwarg names in rule expressions
             "disabled", "name", "route", "type", "query", "string",
             "workflow", "user_id",
+            # JSON-Schema literals used by the knowledge_retrieval
+            # connector's input_schema predetermined rule.
+            "object", "properties", "required",
         }
         # CamelCase class names and __dunder__ identifiers can't match the
         # lowercase-leading regex above, so they don't need allowlisting.

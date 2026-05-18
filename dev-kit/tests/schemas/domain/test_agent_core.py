@@ -359,8 +359,19 @@ def _connector_def_kwargs(**overrides):
 
 
 def test_connector_def_minimal():
+    """A connector with no input_schema gets the default InputSchema(type='object').
+
+    Earlier the mirror typed input_schema as a bare `dict[str, Any]` and
+    the default was `{}`. The mirror was tightened to use the strict
+    `InputSchema` class (mirrors runtime exactly), so the default is now
+    an `InputSchema` instance with `type='object'`, empty `properties`,
+    and empty `required` — the canonical JSON-Schema "no input" shape
+    the runtime accepts at boot.
+    """
     c = ConnectorDef(**_connector_def_kwargs())
-    assert c.input_schema == {}
+    assert c.input_schema.type == "object"
+    assert c.input_schema.properties == {}
+    assert c.input_schema.required == []
 
 
 def test_internal_connector_default_route():
