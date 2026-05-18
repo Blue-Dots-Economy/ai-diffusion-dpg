@@ -272,6 +272,43 @@ def validate_partial(block: str, data: dict) -> list[str]:
     return errors
 
 
+def validate_full(block: str, data: dict) -> list[str]:
+    """Strict variant of ``validate_partial`` — surfaces missing required fields.
+
+    Iterates the same top-level sections but calls
+    ``validate_domain_section`` with ``omit_missing=False`` so required
+    fields the user hasn't supplied are reported instead of silently
+    dropped. Used by ``pre_deploy_validate`` as the host-mode fallback
+    when the baked runtime schemas (the canonical Docker-mode gate) are
+    not available. In Docker the baked schemas take over and this
+    function is not called.
+
+    Args:
+        block: Block name, e.g. ``"agent_core"`` or ``"trust_layer"``.
+        data: Full merged config dict (DPG defaults + domain values).
+
+    Returns:
+        List of error strings. Empty list means valid.
+    """
+    if block not in _VALID_BLOCKS:
+        return [f"Unknown block: {block!r}"]
+    if not data:
+        return []
+    if block == "reach_layer" and "reach_layer" not in data:
+        data = {"reach_layer": data}
+
+    errors: list[str] = []
+    for top_level, value in data.items():
+        if value is None:
+            continue
+        if not isinstance(value, (dict, list)):
+            continue
+        err = validate_domain_section(block, top_level, value, omit_missing=False)
+        if err:
+            errors.append(err)
+    return errors
+
+
 def validate_dpg_block(block: str, parsed_yaml: dict) -> Optional[str]:
     """Validate a full DPG framework YAML against its schema.
 

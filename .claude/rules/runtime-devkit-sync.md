@@ -1,48 +1,59 @@
 # Rule: Runtime ↔ Dev-Kit Synchronization
 
-Every change to a runtime block's config schema must be reflected in the dev-kit in the same PR. There is no CI guard today; discipline at PR time and code review is the only mechanism.
+Every change to a runtime block's `<block>/src/schema/config.py` must be reflected in the dev-kit in the same PR. There is no CI guard; PR-time discipline is the only mechanism.
 
 ## What lives where
 
-- **Runtime block schemas** at `<block>/src/schema/config.py` — the strict Pydantic schema each running service uses at boot.
-- **Dev-kit mirror schemas** at `dev-kit/dev_kit/schemas/domain/<block>.py` — the lenient, domain-half view the wizard uses during chat (LLM prompt injection, `update_config` validation, skeleton defaults).
-- **Dev-kit FIELD_RULES** at `dev-kit/dev_kit/agent/field_rules/<block>.py` — per-field category, phase, default, invalidation triggers.
-- **Dev-kit Docker image** bakes in each runtime block's `src/schema/config.py` at build time under `/app/dpg_runtime_schemas/<block>/` for the pre-deploy dry-run.
+| File | Role |
+|---|---|
+| `<block>/src/schema/config.py` | Runtime schema. Strict; what the running service accepts at boot. |
+| `dev-kit/dev_kit/schemas/domain/<block>.py` | Per-block mirror. Lenient, domain-half view; used at chat time by `update_config` validation and by the host-mode deploy fallback. |
+| `dev-kit/dev_kit/agent/field_rules/<block>.py` | Per-field FIELD_RULES — category, phase, default, invalidation, `applies_if`. |
+| `dev-kit/dpg/<block>.yaml` | Framework defaults — operational values identical across projects. |
+| `dev-kit/Dockerfile` (no edit; rebuild only) | Bakes each runtime schema into `/app/dpg_runtime_schemas/<block>/config.py`. Used by `pre_deploy_validate` as the canonical Config Review gate. |
 
-## Rules
+## Touch-points when changing a runtime field
 
-### 1. Never add a runtime field without a corresponding dev-kit change
+**Must update in the same PR:**
 
-When you add a new field to `<block>/src/schema/config.py`, decide which category it belongs to:
+1. **Decide category.** Framework default → set in `dev-kit/dpg/<block>.yaml`. Domain-half → continue with 2–3 below.
+2. **Mirror schema** at `dev-kit/dev_kit/schemas/domain/<block>.py`. Match the shape exactly (Optional ↔ Optional, strict BaseModel ↔ strict BaseModel). The mirror is what catches drift on the host.
+3. **FIELD_RULES** at `dev-kit/dev_kit/agent/field_rules/<block>.py`. Add/rename/remove entries; `pydantic_class` must point to a class in the mirror.
 
-- **Framework default** (operational, identical across projects): set the default in `dev-kit/dpg/<block>.yaml`. The wizard doesn't surface the field; no FIELD_RULES entry, no mirror update.
-- **Domain-specific** (varies per project): add a `FIELD_RULES` entry at `dev-kit/dev_kit/agent/field_rules/<block>.py`, AND mirror the field in `dev-kit/dev_kit/schemas/domain/<block>.py` so `update_config` validation and LLM prompt injection see it.
+**Update if applicable:**
 
-If you skip this step, the wizard will produce YAML that passes its mirror-only chat-time validation but the dry-run will reject it at deploy. The user only finds out at the worst possible moment.
+4. **Phase prompt** at `dev-kit/dev_kit/agent/phase_prompts/<phase>.py` — if the field is user-configurable, add an explicit `update_config(path="...", value=...)` template.
+5. **Cross-block invariant** at `dev-kit/dev_kit/schemas/cross_block_validation.py` — if the field participates in a cross-block rule.
+6. **Skeleton seed** at `dev-kit/dev_kit/agent/skeleton.py` — if the wizard must pre-fill a non-empty default.
+7. **Derived field** at `dev-kit/dev_kit/agent/derived_fields.py` — if the value is computed from another field (slug, intake state).
+8. **IntakeState + form** at `dev-kit/dev_kit/agent/intake_state.py` — if the new field is gated by a new binary flag.
+9. **`DOMAIN_SECTION_SCHEMAS` registry** at `dev-kit/dev_kit/schemas/validation.py` — only if you added a new TOP-LEVEL section in the mirror.
 
-### 2. Runtime schemas must stay self-contained
+**Test surface:** add coverage at `dev-kit/tests/schemas/domain/test_<block>.py` (accept-valid, reject-invalid).
 
-`<block>/src/schema/config.py` may only import from:
+**Docker rebuild:** any change to `<block>/src/schema/config.py` requires `docker build -f dev-kit/Dockerfile -t dpg-dev-kit .` so the baked copy under `/app/dpg_runtime_schemas/` picks up the change. Until rebuilt, the Config Review gate is still validating against the old schema.
 
-- `pydantic`
-- `enum`
-- `typing`
-- `__future__`
+## Runtime schemas must stay self-contained
 
-No relative imports, no imports from other modules in `<block>/src/`, no third-party dependencies. The dev-kit copies each schema file into its Docker image at build time; any other import would fail at dev-kit build.
+`<block>/src/schema/config.py` may import only from `pydantic`, `enum`, `typing`, `__future__`. No relative imports, no third-party deps, no reach into sibling modules. The Dockerfile copies this file verbatim — any other import breaks the dev-kit build. Shared types: inline, or co-locate in the same `schema/` directory (copied as a directory).
 
-If you need shared types, inline them in the same file or place them in the same `schema/` directory (which is copied as a directory). Do not reach outside `schema/` from `config.py`.
+## Validation gates (where drift is caught)
 
-### 3. Renames, removals, and newly required fields require dev-kit updates in the SAME PR
+| Gate | When | Schema |
+|---|---|---|
+| Per-write at chat | After every `update_config` tool call | Per-block mirror — lenient |
+| End-of-turn YAML write | After every chat turn (advisory `# WARNINGS:` comments) | Per-block mirror — lenient |
+| **Config Review / Deploy** | User clicks Deploy | **Baked runtime schemas (Docker) or per-block mirror via `validate_full` (host fallback)** |
 
-The release process rebuilds all images at the same `${GIT_SHA}` (per `automation/docker/docker-compose.yml`). A runtime schema change without a matching dev-kit change ships a wizard that cannot generate valid config for that schema.
+The baked runtime schemas are the only authoritative gate. In Docker, Config Review uses them directly; on host, `validate_full` against the mirror is a best-effort fallback (it doesn't know about DPG defaults, so it can over- or under-reject). Always do the final pre-merge verification with the dev-kit image rebuilt and running in Docker.
 
-If you rename a field in `<block>/src/schema/config.py`, also rename it in the mirror, in any `FIELD_RULES` entry that references it, and in any `pydantic_class` lookups. If you make an optional field required, ensure the FIELD_RULES `default` is no longer `None` and that `applies_if` doesn't gate it out.
+## Verify before merging
 
-### 4. Verify with the pre-deploy dry-run before merging
-
-Run the wizard end-to-end locally for the affected block and confirm `docker compose up` succeeds. This is the only way to catch silent mirror drift until the CI Coverage guard exists.
+End-to-end on the affected block, in Docker:
+1. Rebuild the dev-kit image after the schema change.
+2. Run the wizard through to Deploy. Config Review must surface any drift (response carries `"validator": "runtime_baked"`).
+3. Confirm `docker compose up` succeeds for the deployed config.
 
 ## Reasoning
 
-The dev-kit produces YAML; the runtime block consumes it. When the schemas drift, the wizard happily generates configs that the runtime rejects at boot — and the error surfaces as a confusing container startup failure, not a wizard-time validation error. Treating runtime schemas and dev-kit components as a single unit at PR time prevents this.
+The dev-kit produces YAML; the runtime consumes it. When schemas drift, the wizard generates configs that fail at container boot — a confusing failure mode, surfaced too late. Treating runtime + dev-kit as a single unit at PR time is what prevents that. The baked runtime schema in the Docker image makes deploy-time validation use the runtime's own definition, eliminating one drift surface (`dev_kit/schema.py`) entirely.

@@ -263,21 +263,17 @@ def render_all(
 ) -> dict[str, str]:
     """Render every block's domain YAML and return {block: 'complete'|'failed'} per outcome.
 
-    Before writing any YAML file, performs a pre-deploy dry-run when running
-    inside the dev-kit Docker image (i.e. when ``RUNTIME_SCHEMAS`` is not
-    ``None``).  Each block's cleaned domain data is deep-merged with the
-    DPG framework defaults from ``dpg/<block>.yaml`` and validated against
-    the baked-in ``MergedConfig`` Pydantic schema.  If any block fails
-    validation, a ``RuntimeValidationError`` is raised on the first failure
-    (subsequent blocks are not validated) and **no** YAML files are written.
+    Writes each block's accumulator data as a YAML file under
+    ``project_path``. Per-block mirror-schema warnings from
+    ``validate_partial`` are advisory — surfaced as ``# WARNINGS:``
+    comments at the top of the YAML — but never block the write.
 
-    On the host (where ``RUNTIME_SCHEMAS`` is ``None``), the dry-run pass is
-    skipped entirely.
-
-    Mirror-schema warnings from ``validate_partial`` are advisory — they are
-    written as ``# WARNINGS:`` comments in the YAML file, but the block still
-    returns ``"complete"``. The runtime dry-run (via ``runtime_validate``) is
-    the authoritative gate.
+    The authoritative runtime-schema gate is NOT run here. ``render_all``
+    is called at the end of every chat turn (often with partial,
+    mid-flow data) and must succeed unconditionally so the on-disk YAML
+    tracks the accumulator. The runtime dry-run lives at deploy time,
+    invoked from ``pre_deploy_validate`` against the deep-merged config
+    once all phases are complete.
 
     Args:
         project_path: Absolute path to the project's configs directory.
@@ -290,15 +286,12 @@ def render_all(
             Accepted but ignored in this implementation.
 
     Returns:
-        Dict of block name → ``"complete"`` or ``"failed"`` after rendering.
-        Currently always ``"complete"`` per block — ``"failed"`` is reserved
-        for future cases where a dry-run rejects a block non-fatally.
+        Dict of block name → ``"complete"`` per block. ``"failed"`` is
+        reserved for future use; ``render_all`` itself never marks a
+        block failed today.
 
     Raises:
         ValueError: If ``project_path`` is None.
-        RuntimeValidationError: If any block's merged config fails runtime
-            schema validation (Docker image only). Raised before any file is
-            written.
     """
     if project_path is None:
         raise ValueError("project_path must not be None")
@@ -307,30 +300,6 @@ def render_all(
             "accumulator is required (got None); pass empty_accumulator() for a fresh project"
         )
 
-    # ------------------------------------------------------------------
-    # Step 1: Pre-deploy dry-run — validate each block through the
-    # runtime's own baked-in MergedConfig schema before writing any file.
-    # This catches anything the dev-kit mirror accepted but the runtime
-    # would reject at boot.  Runs only inside the Docker image where
-    # RUNTIME_SCHEMAS is populated; is a no-op on the host.
-    # ------------------------------------------------------------------
-    if RUNTIME_SCHEMAS is not None:
-        for block in BLOCKS:
-            if block not in RUNTIME_SCHEMAS:
-                continue
-            domain_data = _prepare_block_data(block, accumulator)
-            if not domain_data:
-                # No domain data yet — skip; runtime would use defaults alone.
-                continue
-            dpg_defaults = _load_dpg_defaults(block)
-            merged = _deep_merge(dpg_defaults, domain_data)
-            runtime_validate(block, merged)
-
-    # ------------------------------------------------------------------
-    # Step 2: Write YAML files (only reached when dry-run passes).  The
-    # project directory is created here, after validation, so a failed
-    # dry-run leaves no on-disk side effects for a fresh project.
-    # ------------------------------------------------------------------
     project_path.mkdir(parents=True, exist_ok=True)
     statuses: dict[str, str] = {}
 

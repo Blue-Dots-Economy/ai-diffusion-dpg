@@ -1490,34 +1490,46 @@ def validate_all_configs(slug: str) -> dict[str, Any]:
 def pre_deploy_validate(slug: str) -> dict[str, Any]:
     """Run full merged-config validation and cross-block invariant checks.
 
-    Merges DPG defaults + domain config for each of the 7 blocks, runs the
-    full Pydantic model (not partial), then checks cross-block invariants
-    such as tool-name integrity and intent-filter coverage.
+    Validation strategy (two modes):
+
+    - **Docker (canonical):** Validates against the baked runtime
+      schemas at ``/app/dpg_runtime_schemas/<block>/config.py`` —
+      verbatim copies of each runtime block's ``MergedConfig``, baked
+      into the image at the same ``GIT_SHA`` as the runtime services.
+      A pass here means the runtime service will accept the same config
+      at boot; a failure surfaces exactly the runtime error.
+    - **Host (graceful fallback):** Validates against the per-block
+      mirror schemas at ``dev_kit/schemas/domain/<block>.py`` via
+      ``validate_full`` (strict — required-field errors not filtered).
+      The mirrors do not know about DPG framework defaults, so they
+      may over- or under-reject in places; the canonical answer is
+      always the Docker-mode gate above. Operators running the
+      wizard on the host should rebuild the dev-kit image to get
+      authoritative validation before deploy.
+
+    Cross-block invariants (tool-name integrity, intent-filter
+    coverage, etc.) run in both modes — they're enforced by
+    ``dev_kit.schemas.cross_block_validation``.
 
     Args:
         slug: Project slug.
 
     Returns:
-        Dict with ``valid`` bool, ``block_errors`` per-block Pydantic errors,
-        and ``invariant_errors`` list of cross-block rule violations.
+        Dict with ``valid`` bool, ``block_errors`` per-block error
+        list, ``invariant_errors`` list of cross-block rule violations,
+        ``merged_configs`` for display, and ``validator`` indicating
+        which gate ran (``"runtime_baked"`` or ``"host_mirror"``).
     """
     from dev_kit.loader import _load_and_merge
-    from dev_kit.schema import (
-        AgentCoreConfig, KnowledgeEngineConfig, TrustLayerConfig,
-        MemoryLayerConfig, ObservabilityLayerConfig, ActionGatewayConfig,
-        ReachLayerConfig,
-    )
-    from pydantic import ValidationError as _VE
+    from dev_kit.agent.renderer import RUNTIME_SCHEMAS, runtime_validate
+    from dev_kit.agent.errors import RuntimeValidationError
+    from dev_kit.schemas.validation import validate_full
 
-    _MODELS = {
-        "agent_core": AgentCoreConfig,
-        "knowledge_engine": KnowledgeEngineConfig,
-        "trust_layer": TrustLayerConfig,
-        "memory_layer": MemoryLayerConfig,
-        "observability_layer": ObservabilityLayerConfig,
-        "action_gateway": ActionGatewayConfig,
-        "reach_layer": ReachLayerConfig,
-    }
+    _BLOCKS = (
+        "agent_core", "knowledge_engine", "trust_layer", "memory_layer",
+        "observability_layer", "action_gateway", "reach_layer",
+    )
+    docker_mode = RUNTIME_SCHEMAS is not None
 
     import copy as _copy
     block_errors: dict[str, list[str]] = {}
@@ -1549,29 +1561,37 @@ def pre_deploy_validate(slug: str) -> dict[str, Any]:
             ) from exc
         selected_channels = _reach_channels_from_accumulator(legacy_acc)
 
-    # 1. Full Pydantic validation per block using merged (dpg + domain) config.
-    for block, model_cls in _MODELS.items():
+    # 1. Per-block validation.
+    for block in _BLOCKS:
         try:
             data = _load_and_merge(slug, block)
             merged[block] = data  # store original for display in merged_configs
             if block == "reach_layer":
                 # Deep-copy before patching so merged[block] retains the full
                 # config (shown to the user) while validation sees the patched copy.
-                # Null out channels that won't be deployed so Pydantic skips
+                # Null out channels that won't be deployed so the schema skips
                 # their required fields (e.g. voice raya.stt_language).
-                # ChannelsConfig already declares each channel as Optional.
                 data = _copy.deepcopy(data)
                 channels = (data.get("reach_layer") or {}).get("channels") or {}
                 for ch in ("voice", "cli", "web"):
                     if ch not in selected_channels and ch in channels:
                         channels[ch] = None
-            model_cls.model_validate(data)
-            block_errors[block] = []
-        except _VE as exc:
-            block_errors[block] = [
-                f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}"
-                for err in exc.errors()
-            ]
+
+            if docker_mode and block in RUNTIME_SCHEMAS:
+                try:
+                    runtime_validate(block, data)
+                    block_errors[block] = []
+                except RuntimeValidationError as exc:
+                    pe = exc.pydantic_error
+                    if hasattr(pe, "errors") and callable(pe.errors):
+                        block_errors[block] = [
+                            f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}"
+                            for err in pe.errors()
+                        ]
+                    else:
+                        block_errors[block] = [str(pe)]
+            else:
+                block_errors[block] = validate_full(block, data)
         except FileNotFoundError:
             merged[block] = {}
             block_errors[block] = []
@@ -1589,10 +1609,16 @@ def pre_deploy_validate(slug: str) -> dict[str, Any]:
     all_valid = all(len(errs) == 0 for errs in block_errors.values()) and not invariant_errors
 
     issue_count = sum(len(errs) for errs in block_errors.values()) + len(invariant_errors)
+    validator = "runtime_baked" if docker_mode else "host_mirror"
     if all_valid:
         logger.info(
             "devkit.deploy.validation_passed",
-            extra={"operation": "api.deploy_validate", "status": "success", "slug": slug},
+            extra={
+                "operation": "api.deploy_validate",
+                "status": "success",
+                "slug": slug,
+                "validator": validator,
+            },
         )
     else:
         logger.warning(
@@ -1602,6 +1628,7 @@ def pre_deploy_validate(slug: str) -> dict[str, Any]:
                 "status": "failure",
                 "slug": slug,
                 "issues": issue_count,
+                "validator": validator,
             },
         )
 
@@ -1624,6 +1651,7 @@ def pre_deploy_validate(slug: str) -> dict[str, Any]:
         "block_errors": block_errors,
         "invariant_errors": invariant_errors,
         "merged_configs": display_merged,
+        "validator": validator,
     }
 
 

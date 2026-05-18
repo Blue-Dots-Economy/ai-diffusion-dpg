@@ -86,3 +86,45 @@ def test_validate_partial_channels():
     }
     errors = validate_partial("reach_layer", data)
     assert errors == [], f"Unexpected errors: {errors}"
+
+
+def test_validate_full_passes_complete_data():
+    """validate_full accepts the same complete-shape data validate_partial does."""
+    from dev_kit.schemas.validation import validate_full
+    data = {
+        "reach_layer": {
+            "channels": {
+                "web": {"ui": {"app_name": "My App"}}
+            }
+        }
+    }
+    errors = validate_full("reach_layer", data)
+    assert errors == [], f"Unexpected errors: {errors}"
+
+
+def test_validate_full_surfaces_missing_required_fields():
+    """validate_full does NOT filter 'missing' errors — partial drafts that
+    would silently pass validate_partial should fail validate_full."""
+    from dev_kit.schemas.validation import validate_full, validate_partial
+    # action_gateway 'tools' is a list[ToolDefinition]; each tool has
+    # required fields (id, description, base_url). An empty list passes
+    # both validators. A tool with NO required fields surfaces missing
+    # errors only when omit_missing=False.
+    data = {"tools": [{"id": "x"}]}  # missing description, base_url, etc.
+    partial_errors = validate_partial("action_gateway", data)
+    full_errors = validate_full("action_gateway", data)
+    assert full_errors, "validate_full should flag missing required fields"
+    assert len(full_errors) >= len(partial_errors)
+
+
+def test_validate_full_unknown_block():
+    """validate_full returns the same unknown-block error as validate_partial."""
+    from dev_kit.schemas.validation import validate_full
+    errors = validate_full("nope_layer", {"x": 1})
+    assert errors and "Unknown block" in errors[0]
+
+
+def test_validate_full_empty_data():
+    """validate_full returns no errors for empty input (nothing to validate)."""
+    from dev_kit.schemas.validation import validate_full
+    assert validate_full("agent_core", {}) == []

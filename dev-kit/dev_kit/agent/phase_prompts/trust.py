@@ -95,6 +95,28 @@ own FIELD_RULES entry):**
   valid values: `log` | `redis` | `webhook`. Default to `log` for dev.
   NEVER use `memory` (not a valid backend; the Trust Layer crashes on it).
 - Policy pack (optional content/safety policy stack): `path="trust_layer.trust.policy_pack"`
+- Consent phrases (gated by `needs_consent`): `path="trust_layer.trust.consent.consent_phrases", value=[...]`
+- Decline phrases (gated by `needs_consent`): `path="trust_layer.trust.consent.decline_phrases", value=[...]`
+
+**Consent phrases — write-on-confirm.** When `needs_consent` is set the
+phase MUST capture both `consent_phrases` and `decline_phrases` in
+`default_language`. Propose both lists together, ask "Here are the
+suggested consent and decline phrases — do these look good, or would
+you like to change any?" — then on the user's confirmation make BOTH
+writes in the SAME turn:
+
+```
+update_config(path="trust_layer.trust.consent.consent_phrases",
+              value=["yes", "I agree", "go ahead", ...])
+update_config(path="trust_layer.trust.consent.decline_phrases",
+              value=["no", "stop", "cancel", ...])
+```
+
+Do NOT re-propose after the user says "yes" / "looks good" / "fine" /
+"otherwise looks good" — that re-ask costs the user a turn and stalls
+the phase. The Akashvani Concierge E2E hit this stall: assistant
+proposed, user confirmed, assistant re-asked instead of writing, then
+the user had to confirm a second time before the phase advanced.
 
 **REQUIRED ORDER if you set a policy pack** — the mirror's validator
 rejects `policy_pack` referencing a name that is NOT a key in

@@ -685,3 +685,47 @@ class TestWebModeInjection:
         # This test checks that the endpoint doesn't crash for legacy channel names.
         env = self._get_web_env(client_with_project, ["cli"])
         assert any("REACH_LAYER_WEB_MODE=" in str(e) for e in env)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/projects/{slug}/deploy/validate  — validator mode switch
+# ---------------------------------------------------------------------------
+
+
+class TestDeployValidatorMode:
+    """The deploy-validate endpoint must indicate which gate ran.
+
+    - In Docker (``RUNTIME_SCHEMAS`` populated): uses baked runtime
+      schemas → ``validator == "runtime_baked"``.
+    - On host (``RUNTIME_SCHEMAS is None``): falls back to the per-block
+      mirror via ``validate_full`` → ``validator == "host_mirror"``.
+
+    The fixtures run on host, so the default response is host_mirror;
+    the Docker case is exercised by monkeypatching RUNTIME_SCHEMAS.
+    """
+
+    def test_host_mode_returns_host_mirror_validator(self, client_with_project, monkeypatch):
+        from dev_kit.agent import renderer as renderer_mod
+        monkeypatch.setattr(renderer_mod, "RUNTIME_SCHEMAS", None)
+        client, slug = client_with_project
+        res = client.post(f"/api/projects/{slug}/deploy/validate")
+        assert res.status_code == 200
+        body = res.json()
+        assert body.get("validator") == "host_mirror"
+        assert "block_errors" in body
+        assert "invariant_errors" in body
+
+    def test_docker_mode_returns_runtime_baked_validator(
+        self, client_with_project, monkeypatch
+    ):
+        from dev_kit.agent import renderer as renderer_mod
+        # Stand in a dummy schema dict so the endpoint takes the Docker branch.
+        # The contents don't matter for the validator-tag assertion; runtime_validate
+        # is only called when a block name is present in the dict — passing an
+        # empty dict skips per-block calls but still flips the validator label.
+        monkeypatch.setattr(renderer_mod, "RUNTIME_SCHEMAS", {})
+        client, slug = client_with_project
+        res = client.post(f"/api/projects/{slug}/deploy/validate")
+        assert res.status_code == 200
+        body = res.json()
+        assert body.get("validator") == "runtime_baked"
