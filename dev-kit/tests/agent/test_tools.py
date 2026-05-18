@@ -630,9 +630,12 @@ class TestParseOpenApiSpec:
         assert "operations" in result
         assert len(result["operations"]) >= 1
         first = result["operations"][0]
-        assert "id" in first
-        assert "path" in first
-        assert "method" in first
+        # Discovery keys are now underscore-prefixed (see
+        # parse_openapi_spec docstring) so the LLM doesn't conflate
+        # them with the add_tool spec shape.
+        assert "_discovery_id" in first
+        assert "_path" in first
+        assert "_method" in first
 
     def test_json_string_spec_returns_operations(self) -> None:
         """JSON string spec is parsed and returns operations."""
@@ -1088,9 +1091,10 @@ def test_fetch_openapi_spec_from_url_parses_remote_json(monkeypatch) -> None:
     assert out["source_url"] == "https://api.example.com/openapi.json"
     assert len(out["operations"]) == 1
     op = out["operations"][0]
-    assert op["path"] == "/pets"
-    assert op["method"].upper() == "GET"
-    assert op["summary"] == "List all pets"
+    # Discovery keys are underscore-prefixed (see parse_openapi_spec).
+    assert op["_path"] == "/pets"
+    assert op["_method"].upper() == "GET"
+    assert op["_summary"] == "List all pets"
 
 
 def test_fetch_openapi_spec_from_url_parses_remote_yaml(monkeypatch) -> None:
@@ -1124,7 +1128,7 @@ paths:
 
     assert out["ok"] is True
     assert len(out["operations"]) == 1
-    assert out["operations"][0]["path"] == "/pets"
+    assert out["operations"][0]["_path"] == "/pets"
 
 
 def test_fetch_openapi_spec_from_url_http_404(monkeypatch) -> None:

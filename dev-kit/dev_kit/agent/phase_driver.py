@@ -18,6 +18,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -185,6 +186,50 @@ class LLMResponse:
     output_tokens: int | None = None
     stop_reason: str | None = None
     raw_content: list[dict[str, Any]] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Banned-phrase lint for assistant replies
+# ---------------------------------------------------------------------------
+
+# Sentence-level patterns that expose internal machinery (schema paths,
+# retry intents, debug fragments) to the end user. The Akashvani E2E
+# surfaced each of these as real LLM output that confused the user. We
+# strip the matching sentence — from the pattern through the next
+# terminator — and leave the rest of the paragraph in place.
+#
+# Each pattern is case-insensitive and matches greedily up to the next
+# `.`, `!`, `?`, or newline. Adding patterns here is cheaper than asking
+# every phase prompt to forbid them individually; the lint is the last
+# line of defence before history.jsonl persists the reply.
+_BANNED_SENTENCE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(?i)\bpath mismatch\b[^.!?\n]*[.!?\n]?"),
+    re.compile(r"(?i)\b(?:let me|i'll|i will) (?:try again|retry|fix that)\b[^.!?\n]*[.!?\n]?"),
+    re.compile(r"(?i)\bissue found:[^.!?\n]*[.!?\n]?"),
+    re.compile(r"(?i)\bversion of the schema\b[^.!?\n]*[.!?\n]?"),
+    re.compile(r"(?i)\bschema (?:rejects|doesn't allow|validation failed)\b[^.!?\n]*[.!?\n]?"),
+    re.compile(r"(?i)\b(?:my apologies|i apologize|apologies)[,. ][^.!?\n]*[.!?\n]?"),
+)
+
+
+def _strip_banned_sentences(text: str) -> str:
+    """Strip sentences matching internal-state-leak patterns.
+
+    Args:
+        text: Final assistant reply about to be persisted to history.
+
+    Returns:
+        The reply with any banned sentences removed and consecutive blank
+        lines collapsed. Returns the input unchanged if no patterns match.
+    """
+    if not text:
+        return text
+    cleaned = text
+    for pat in _BANNED_SENTENCE_PATTERNS:
+        cleaned = pat.sub("", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -804,6 +849,7 @@ def _call_llm_logged(
     phase: str,
     *,
     round_index: int,
+    slug_root: Optional[Path] = None,
 ) -> LLMResponse:
     """Invoke ``llm_call`` and emit the structured ``phase_driver.llm_call`` log.
 
@@ -815,12 +861,18 @@ def _call_llm_logged(
         round_index: 0 for the initial LLM call; 1+ for each tool-use loop
             iteration. Surfaced on the log so the tool-use loop's depth is
             visible in production logs.
+        slug_root: When provided, the per-call token-usage record is also
+            appended to ``<slug_root>/_meta/token_usage.jsonl`` so an
+            operator can sum total credits used per E2E without
+            scraping logs. None disables the file write (e.g. for unit
+            tests).
 
     Returns:
         The ``LLMResponse`` returned by the adapter.
     """
     llm_start = time.time()
     response = llm_call(system_prompt, messages)
+    latency_ms = int((time.time() - llm_start) * 1000)
     logger.info(
         "phase_driver.llm_call",
         extra={
@@ -828,7 +880,7 @@ def _call_llm_logged(
             "status": "success",
             "phase": phase,
             "round": round_index,
-            "latency_ms": int((time.time() - llm_start) * 1000),
+            "latency_ms": latency_ms,
             "model": response.model,
             "input_tokens": response.input_tokens,
             "output_tokens": response.output_tokens,
@@ -839,7 +891,85 @@ def _call_llm_logged(
             },
         },
     )
+    if slug_root is not None:
+        _append_token_usage(
+            slug_root,
+            phase=phase,
+            round_index=round_index,
+            latency_ms=latency_ms,
+            model=response.model,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+            stop_reason=response.stop_reason,
+            tool_call_count=len(response.tool_calls),
+        )
     return response
+
+
+def _append_token_usage(
+    slug_root: Path,
+    *,
+    phase: str,
+    round_index: int,
+    latency_ms: int,
+    model: Optional[str],
+    input_tokens: Optional[int],
+    output_tokens: Optional[int],
+    stop_reason: Optional[str],
+    tool_call_count: int,
+) -> None:
+    """Append a single LLM-call record to ``<slug_root>/_meta/token_usage.jsonl``.
+
+    One line per LLM round (initial call + every tool-use retry counts
+    as its own row). Format is deliberately a JSON-lines file so an
+    operator can sum totals trivially:
+
+        jq -s 'map(.input_tokens) | add' _meta/token_usage.jsonl
+        jq -s 'map(.output_tokens) | add' _meta/token_usage.jsonl
+
+    Or with the helper that ships in ``scripts/total_tokens.py``.
+
+    File writes are best-effort: any IO error is logged at WARNING and
+    swallowed so a transient disk problem can't crash an LLM turn.
+
+    Args:
+        slug_root: Project directory; the file lives at
+            ``<slug_root>/_meta/token_usage.jsonl``.
+        phase: Active wizard phase when this call happened.
+        round_index: 0 for initial, 1+ for tool-use retries.
+        latency_ms: LLM-call latency in milliseconds.
+        model: Model identifier reported by the provider, or None.
+        input_tokens / output_tokens: Per-call token usage, or None
+            when the provider doesn't expose it.
+        stop_reason: Provider's stop_reason for the response.
+        tool_call_count: Number of tool_use blocks the model emitted.
+    """
+    path = slug_root / _META_DIR / "token_usage.jsonl"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "ts": utc_now_iso(),
+            "phase": phase,
+            "round": round_index,
+            "latency_ms": latency_ms,
+            "model": model,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "stop_reason": stop_reason,
+            "tool_call_count": tool_call_count,
+        }
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        logger.warning(
+            "phase_driver.token_usage_write_failed",
+            extra={
+                "operation": "phase_driver._append_token_usage",
+                "status": "failure",
+                "error": str(exc),
+                "path": str(path),
+            },
+        )
 
 
 def _deep_merge_defaults(target: dict, source: dict) -> None:
@@ -1200,7 +1330,8 @@ def run_turn(
         # echoing the assistant's raw blocks and synthesized tool_results
         # back as the conversation grows.
         response = _call_llm_logged(
-            llm_call, system_prompt, messages, current_phase, round_index=0
+            llm_call, system_prompt, messages, current_phase, round_index=0,
+            slug_root=slug_root,
         )
         total_llm_calls += 1
         tool_rounds = 0
@@ -1241,7 +1372,8 @@ def run_turn(
                 messages.append({"role": "user", "content": tool_results})
             tool_rounds += 1
             response = _call_llm_logged(
-                llm_call, system_prompt, messages, current_phase, round_index=tool_rounds
+                llm_call, system_prompt, messages, current_phase, round_index=tool_rounds,
+                slug_root=slug_root,
             )
             total_llm_calls += 1
 
@@ -1356,6 +1488,7 @@ def run_turn(
         final_text = assistant_text_parts[-1]
     else:
         final_text = "\n\n".join(assistant_text_parts)
+    final_text = _strip_banned_sentences(final_text)
     append_turn(
         slug_root,
         HistoryEntry(
@@ -1462,6 +1595,7 @@ def run_turn(
                     messages,
                     final_phase,
                     round_index=0,
+                    slug_root=slug_root,
                 )
                 total_llm_calls += 1
                 # Run the new phase's tool-use loop too — the LLM might
@@ -1494,6 +1628,7 @@ def run_turn(
                         messages,
                         final_phase,
                         round_index=recovery_rounds,
+                        slug_root=slug_root,
                     )
                     total_llm_calls += 1
                 # Replace the stalled text with the recovered phase's

@@ -93,7 +93,11 @@ violation: ask the user for the correction and call the appropriate
 
 4. **NLU intents cover intent_filters** — every key in
    `knowledge_engine.knowledge.blocks.static_knowledge_base.intent_filters`
-   must appear in `agent_core.preprocessing.nlu_processor.intents`.
+   must appear in `agent_core.preprocessing.nlu_processor.intents`. The
+   reverse is FINE: `nlu_processor.intents` may be a strict superset of
+   `intent_filters` (an intent can exist without a KB filter mapped to
+   it). Do NOT flag the superset case as a violation — only flag a
+   filter key that has no matching NLU intent.
 
 5. **Voice configured if voice selected** — if `voice` is in
    `selected_channels`, `reach_layer.channels.voice` must include

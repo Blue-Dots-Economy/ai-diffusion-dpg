@@ -17,6 +17,7 @@ from dev_kit.agent.intake_state import IntakeState, save_intake_state
 from dev_kit.agent.phase_driver import (
     LLMResponse,
     ToolCall,
+    _strip_banned_sentences,
     collect_pending_fields,
     cross_phase_references,
     load_accumulator,
@@ -1260,3 +1261,49 @@ def test_run_turn_user_entry_written_before_llm_call(tmp_path: Path) -> None:
     assert len(lines) == 1
     assert lines[0]["role"] == "user"
     assert lines[0]["content"] == "test message"
+
+
+class TestStripBannedSentences:
+    """Verify the post-output lint strips known internal-state-leak phrases."""
+
+    def test_empty_passthrough(self) -> None:
+        assert _strip_banned_sentences("") == ""
+
+    def test_clean_text_unchanged(self) -> None:
+        text = "Here is the suggested setup. Does this look good?"
+        assert _strip_banned_sentences(text) == text
+
+    def test_strips_let_me_try_again(self) -> None:
+        text = "Let me try again with the right path. The setup is ready."
+        out = _strip_banned_sentences(text)
+        assert "try again" not in out.lower()
+        assert "setup is ready" in out.lower()
+
+    def test_strips_path_mismatch(self) -> None:
+        text = "There was a path mismatch in the previous call. Now configured."
+        out = _strip_banned_sentences(text)
+        assert "path mismatch" not in out.lower()
+        assert "now configured" in out.lower()
+
+    def test_strips_version_of_the_schema(self) -> None:
+        text = "I see — that's a newer version of the schema. Here's the config."
+        out = _strip_banned_sentences(text)
+        assert "version of the schema" not in out.lower()
+        assert "here's the config" in out.lower()
+
+    def test_strips_apology(self) -> None:
+        text = "Apologies for that. Here is the corrected proposal."
+        out = _strip_banned_sentences(text)
+        assert "apolog" not in out.lower()
+        assert "corrected proposal" in out.lower()
+
+    def test_strips_issue_found(self) -> None:
+        text = "Issue found: wrong field. Here is the right one."
+        out = _strip_banned_sentences(text)
+        assert "issue found" not in out.lower()
+        assert "right one" in out.lower()
+
+    def test_collapses_blank_lines_left_behind(self) -> None:
+        text = "Line one.\nLet me try again.\n\nLine three."
+        out = _strip_banned_sentences(text)
+        assert "\n\n\n" not in out

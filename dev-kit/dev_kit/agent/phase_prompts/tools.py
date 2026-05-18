@@ -101,10 +101,45 @@ Two sub-paths depending on what the user gave you:
 - *Pasted text*: call `parse_openapi_spec(spec=<json-or-yaml-text>)` with
   the full text the user pasted. Same return shape as the URL path.
 
-Both return `{{"ok": true, "operations": [{{id, path, method, summary,
-params, response_fields}}, ...]}}` where `params` lists every query/body
-parameter and `response_fields` lists candidate JSONPath fields the
-wizard could project from the 200 response into the LLM's tool result.
+Both return:
+
+```
+{{
+  "ok": true,
+  "operations": [
+    {{
+      "_discovery_id": "...",
+      "_path": "...",
+      "_method": "GET" | "POST" | ...,
+      "_summary": "...",
+      "_params": [{{name, type, required, description}}, ...],
+      "_response_fields": ["current.temperature_2m", ...]
+    }},
+    ...
+  ]
+}}
+```
+
+**Every discovery key is prefixed with `_`.** This is intentional: the
+fields below are DISCOVERY metadata only. They are NOT the shape
+``add_tool`` accepts. When you build the ``add_tool`` spec on the
+NEXT turn, you must rename and re-nest these values per the template
+in Step 3. Examples of the rename:
+
+| Discovery output (here)      | add_tool spec needs |
+|------------------------------|---------------------|
+| `_discovery_id`              | `id` (at the tool top level — snake_case, e.g. `get_v1_forecast`) |
+| `_path`                      | `endpoints[i].path` (NOT `endpoints[i]._path` and NOT at tool top level) |
+| `_method`                    | `endpoints[i].method` |
+| `_summary`                   | `description` (at the tool top level, NOT inside `endpoints[i]`) |
+| `_params[i]` (each)          | `endpoints[i].params[j]` — keep `name`, `type`, `required`, `description`; ADD `source: "agent"` |
+| `_response_fields`           | `response.projection.fields` (a `{{short_name: jsonpath}}` map, at the tool top level) |
+
+**Critical**: do NOT copy `_path`, `_method`, `_summary`, `_params`,
+`_response_fields`, `_discovery_id` (or any underscore-prefixed key)
+into `add_tool(spec=...)`. The mirror schema rejects every one of
+them as `extra_forbidden`. The underscore is your reminder to
+transform, not copy.
 
 **MANDATORY pacing — do NOT skip any of these steps:**
 

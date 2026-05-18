@@ -97,15 +97,33 @@ states users pass through and how the agent should behave in each.
     it detects this state.
 - `default_state` — which state a fresh caller starts in.
 
-**Configuration path:**
-`update_config(block=agent_core, section=conversation,
-values={{user_state_model: {{enabled: true, default_state: '...', states: [...]}}}})`
+**Write EVERYTHING the user confirms — proposing is not enough.** The
+skeleton seeds `user_state_model` with `enabled: false` and no states,
+so your proposed state model will be silently lost unless you write
+it. Make these writes in the SAME turn the user confirms:
 
-Also set the confidence threshold (GH-139):
-`update_config(block=agent_core, section=preprocessing.nlu_processor,
-values={{user_state_confidence_threshold: 0.4}})`
-(Default 0.4 is usually correct — only change if the user has a specific
-reason to tune sensitivity.)
+```
+update_config(path="agent_core.conversation.user_state_model.enabled",
+              value=true)
+update_config(path="agent_core.conversation.user_state_model.default_state",
+              value="<state_id>")
+update_config(path="agent_core.conversation.user_state_model.states",
+              value=[
+                {{"id": "<state_a>", "signals": [...], "guidance": "..."}},
+                {{"id": "<state_b>", "signals": [...], "guidance": "..."}},
+                ...
+              ])
+update_config(path="agent_core.preprocessing.nlu_processor.user_state_confidence_threshold",
+              value=0.4)
+```
+
+If the user gives edits ("add state X", "drop state Y", "rename A to B"),
+render the updated proposal back to them, ask for confirmation, THEN
+write the edited values. NEVER silently drop or rename states the user
+did not mention.
+
+The `user_state_confidence_threshold` default of 0.4 is usually correct —
+only change if the user has a specific reason to tune sensitivity.
 
 **Note on the DPG sticky fallback:** When the NLU classifier's confidence
 for the predicted user state falls below `user_state_confidence_threshold`,

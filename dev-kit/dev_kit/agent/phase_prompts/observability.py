@@ -75,17 +75,45 @@ latter double-nests and crashes observability_layer at startup.
   session can reach (e.g. `profile_gathered`, `options_shown`, `applied`,
   `callback_pending`). Derive these from the agent's described flow; present
   them to the user for sign-off.
-- **Quality signals** — metrics worth tracking (e.g. drop-off at specific
-  subagents, low-confidence NLU turns, consent declines, tool failures).
-  Present as a block alongside the lifecycle states.
-- **Exception-handling policies** — what the agent says on tool timeout,
-  empty result, ASR misrecognition, or mid-call drop. These are prose
-  descriptions the ops team can reference, not runtime config.
+- **Quality signals (metrics)** — what to count after each session
+  (e.g. drop-off at specific subagents, low-confidence NLU turns,
+  consent declines, tool failures).
 
 **Conversation style:** Present the full observability configuration as one
 block with suggested defaults based on the use case. Ask: "Here is the
 suggested observability setup — do these look good, or would you like to
 change any?"
+
+**Write EVERYTHING the user confirms — proposing is not enough.** The
+skeleton only seeds `lifecycle` with a minimal `[{{state: "started"}}]`
+entry to satisfy the runtime's `min_length=1` validator; your proposed
+multi-state lifecycle will be silently lost unless you write it. Make
+both writes in the SAME turn the user confirms:
+
+```
+update_config(path="observability_layer.observability.outcomes.lifecycle",
+              value=[
+                {{"state": "<state_a>", "trigger_tool": null}},
+                {{"state": "<state_b>", "trigger_tool": null}},
+                ...
+              ])
+update_config(path="observability_layer.observability.outcomes.metrics",
+              value=[
+                {{
+                  "name": "<metric_name>",
+                  "instrument": "counter" | "gauge" | "histogram",
+                  "description": "...",
+                  "unit": "<unit, e.g. '1' or 'ms'>",
+                  "attributes": ["<attr1>", "<attr2>"]
+                }},
+                ...
+              ])
+```
+
+If the user gives edits ("add stage X", "drop metric Y", "rename
+state A to B"), render the updated proposal back to them, ask for
+confirmation, THEN write the edited values. NEVER silently drop or
+rename items the user did not mention.
 
 ## Fields to capture this phase
 

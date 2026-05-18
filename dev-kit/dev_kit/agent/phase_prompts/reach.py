@@ -165,16 +165,13 @@ english_loanwords: "..."}})`
 - `terminal_word` — the literal word that signals call end (e.g.
   "Goodbye" in English, "धन्यवाद" in Hindi). REQUIRED for voice.
 - `filler_phrase` — short utterance played if the LLM takes >1.5s to
-  produce the first sentence (e.g. "One moment please").
-  **To DISABLE filler entirely:** do NOT include the `filler_phrase`
-  or `filler_threshold_ms` keys in your `update_config` call. The
-  mirror schema treats both as `Optional[X]` with `default=None`;
-  omitting the keys means "no filler". Do NOT write an empty string
-  or `0` — the mirror's `min_length=1` / `gt=0` validators reject
-  those and the wizard's plain-English error feedback is a footgun
-  ("Input should have at least 1 character" is not user-friendly).
+  produce the first sentence (e.g. "One moment please"). Both
+  `filler_phrase` and `filler_threshold_ms` are `Optional[X]` with
+  `default=None`; the pair `(None, None)` means "no filler". Do NOT
+  write an empty string or `0` — the mirror's `min_length=1` /
+  `gt=0` validators reject those.
 - `filler_threshold_ms` — milliseconds before the filler kicks in
-  (default 1500). Omit to disable along with `filler_phrase`.
+  (default 1500). Must be paired with `filler_phrase`.
 
 Configure via:
 `update_config(block=reach_layer, section=channels.voice,
@@ -182,11 +179,15 @@ values={{terminal_word: "...", filler_phrase: "...",
 filler_threshold_ms: 1500}})`
 
 If the user says "drop the filler" / "no filler" / "remove the
-filler phrase", make TWO separate calls:
-`update_config(path="reach_layer.channels.voice.filler_phrase", value=null)`
-and
-`update_config(path="reach_layer.channels.voice.filler_threshold_ms", value=null)`
-— or simply don't write either field in your config call.
+filler phrase", ALWAYS write both fields explicitly to null —
+even if you think they may not have been set previously. Do NOT
+rely on "just omitting the keys"; an omitted key leaves any prior
+value in place, and the user expects removal to actually remove.
+Make these TWO calls in the same turn the user confirms:
+```
+update_config(path="reach_layer.channels.voice.filler_phrase", value=null)
+update_config(path="reach_layer.channels.voice.filler_threshold_ms", value=null)
+```
 """
     else:
         voice_note = """

@@ -760,6 +760,40 @@ def add_tool(
     candidate_ag_tools: list[dict] = candidate_ag.setdefault("tools", [])
     if any(t.get("id") == tool_id for t in candidate_ag_tools):
         return {"ok": False, "error": f"tool id {tool_id!r} already exists"}
+
+    # Also dedupe by (method, base_url + path) — the LLM has been known
+    # to register the same OpenAPI operation TWICE under different IDs
+    # (e.g. `get_v1_forecast` from parse_openapi_spec, then
+    # `weather_forecast` as a custom user-facing name on a later turn).
+    # Result: 6 connector entries for 3 actual APIs, all routed to the
+    # same underlying URL. Subagent tool references become ambiguous.
+    if spec.get("type") != "mcp":
+        existing_operations: dict[tuple[str, str], str] = {}
+        for existing in candidate_ag_tools:
+            existing_base = existing.get("base_url", "")
+            for ep in existing.get("endpoints", []) or []:
+                key = (
+                    str(ep.get("method", "")).upper(),
+                    existing_base + str(ep.get("path", "")),
+                )
+                existing_operations[key] = existing.get("id", "?")
+        for ep in spec.get("endpoints", []) or []:
+            key = (
+                str(ep.get("method", "")).upper(),
+                spec.get("base_url", "") + str(ep.get("path", "")),
+            )
+            if key in existing_operations:
+                return {
+                    "ok": False,
+                    "error": (
+                        f"This API operation ({key[0]} {key[1]}) is already "
+                        f"registered as tool {existing_operations[key]!r}. "
+                        f"If you want to change its name or projection, use "
+                        f"update_subagent / a different tool — do NOT call "
+                        f"add_tool a second time for the same operation."
+                    ),
+                }
+
     candidate_ag_tools.append(copy.deepcopy(spec))
 
     # Strict validation (omit_missing=False) — a tool spec must be
@@ -890,7 +924,11 @@ def parse_openapi_spec(
 
     Returns:
         ``{"ok": True, "operations": [...]}`` where each entry has
-        ``id``, ``path``, ``method``, ``summary``.
+        underscore-prefixed discovery keys: ``_discovery_id``, ``_path``,
+        ``_method``, ``_summary``, ``_params``, ``_response_fields``.
+        The prefix is intentional — it visually distinguishes the
+        discovery shape from the ``add_tool`` spec shape the LLM must
+        construct on its next turn.
         ``{"ok": False, "error": "..."}`` on parse failure.
     """
     import json as _json  # noqa: PLC0415
@@ -932,17 +970,28 @@ def parse_openapi_spec(
     # LLM can also see the raw spec text in its context, but giving it a
     # pre-extracted list avoids the model having to re-walk YAML and
     # invent JSONPaths from scratch.
+    #
+    # ALL DISCOVERY KEYS ARE PREFIXED WITH ``_`` to make them visually
+    # distinct from the ``add_tool`` spec shape the LLM must construct on
+    # the next turn. Earlier the discovery payload used identical key
+    # names (``id``, ``path``, ``method``, ``summary``, ``params``,
+    # ``response_fields``) which the LLM copied verbatim into
+    # ``add_tool(spec.endpoints[i])`` — every one of those keys fails the
+    # mirror's strict ``EndpointDefinition`` schema with
+    # ``extra_forbidden``, and the wizard ate four LLM rounds of retries
+    # per tool. The prefix forces the model to consciously rename when
+    # building the add_tool spec.
     operations: list[dict[str, Any]] = []
     paths_spec = spec.get("paths", {})
     for t in tools:
         op_spec = paths_spec.get(t.path, {}).get(t.method.lower(), {})
         response_fields = _extract_response_fields(op_spec)
         operations.append({
-            "id": t.suggested_id,
-            "path": t.path,
-            "method": t.method,
-            "summary": t.description,
-            "params": [
+            "_discovery_id": t.suggested_id,
+            "_path": t.path,
+            "_method": t.method,
+            "_summary": t.description,
+            "_params": [
                 {
                     "name": p.name,
                     "type": p.type,
@@ -951,7 +1000,7 @@ def parse_openapi_spec(
                 }
                 for p in t.params
             ],
-            "response_fields": response_fields,
+            "_response_fields": response_fields,
         })
 
     logger.info(
@@ -1078,8 +1127,10 @@ def fetch_openapi_spec_from_url(
         field_status: Not used; accepted for signature uniformity.
 
     Returns:
-        ``{"ok": True, "operations": [...]}`` with each entry shaped as
-        ``{"id", "path", "method", "summary"}``.
+        ``{"ok": True, "operations": [...]}`` with each entry's discovery
+        keys prefixed (``_discovery_id``, ``_path``, ``_method``,
+        ``_summary``) so the LLM can't blindly copy them into the
+        ``add_tool`` spec shape (see parse_openapi_spec docstring).
         ``{"ok": False, "error": "..."}`` on missing arg, network failure,
         or parse failure.
     """
@@ -1167,11 +1218,16 @@ def fetch_openapi_spec_from_url(
         return {"ok": False, "error": str(exc)}
 
     operations = [
+        # Discovery keys are prefixed with `_` for the same reason as
+        # `parse_openapi_spec` above (see its long comment): the LLM
+        # previously copied these keys verbatim into add_tool's spec
+        # shape, triggering ``extra_forbidden`` mirror rejections on
+        # every tool registration.
         {
-            "id": t.suggested_id,
-            "path": t.path,
-            "method": t.method,
-            "summary": t.description,
+            "_discovery_id": t.suggested_id,
+            "_path": t.path,
+            "_method": t.method,
+            "_summary": t.description,
         }
         for t in tools
     ]

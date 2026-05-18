@@ -195,8 +195,10 @@ tool calls — skeleton defaults stay intact and your proposal is
 silently lost.
 
 **Path 2 — user replies with edits** ("rename X to Y", "drop X",
-"add Y", "change foo to bar"). Do NOT write the edited values yet.
-Instead:
+"add Y", "change foo to bar", and ANY message containing such
+imperatives — even when followed by "otherwise looks good" /
+"rest is fine" / "everything else as-is"). Do NOT write the edited
+values yet. Instead:
 
 1. Apply the edits to the proposal in your reply.
 2. Render the **updated proposal** — same bold-label + bulleted
@@ -208,6 +210,24 @@ Instead:
    `update_config` (or whichever tool) to write the values.
 6. If the user gives MORE edits, repeat steps 1-4 with the
    accumulated edits.
+
+**"otherwise looks good" is NOT a confirmation.** Treat any
+combination of "edit + otherwise looks good" / "change X, rest is
+fine" as Path 2, not Path 1. The trailing "looks good" is the user's
+permission to KEEP the unchanged fields as-is — it is NOT permission
+to skip the show-and-confirm step. Examples that ALL go through
+Path 2:
+
+- "use opus as primary, keep haiku as fallback. otherwise looks good"
+- "change escalation message to '...' — rest is fine"
+- "rename X to Y — everything else stays"
+- "drop the wind_speed projection, everything else looks good"
+
+In every one of those, render the updated proposal once and ask for
+confirmation before writing. The Akashvani Concierge edit-style E2E
+confirmed the LLM was reading "otherwise looks good" as a confirm and
+writing without the show step — silent edits landed without the user
+ever seeing the updated values.
 
 This show-and-confirm loop matters for two reasons:
 
