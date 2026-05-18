@@ -166,16 +166,14 @@ FIELD_RULES: dict[str, FieldRule] = {
         pydantic_class="WebUiConfig",
     ),
 
-    # ── Gated chat: web.ke_internal_url ──────────────────────────────────────
-
-    "channels.web.ke_internal_url": FieldRule(
-        category="chat",
-        phase="reach",
-        applies_if="has_kb",
-        invalidated_by=["has_kb"],
-        description="Internal URL for Reach Layer → Knowledge Engine direct ingest call.",
-        pydantic_class="WebChannelSection",
-    ),
+    # NOTE: `channels.web.ke_internal_url` used to be a chat field here but
+    # has been removed. It is an infrastructure/DNS setting with a sensible
+    # default in `reach_layer/config/dpg.yaml` (in-cluster service name) and
+    # is overridden by the `KE_INTERNAL_URL` env var at deploy time. The
+    # mirror `WebChannelSection` doesn't expose it either, so chat-time
+    # writes used to fail validation with "extra_forbidden" and stall the
+    # reach phase indefinitely. End users have no way to know the cluster
+    # DNS name; this belongs at deploy time, not in the wizard.
 
     # ── Deploy: web.auth.enabled ──────────────────────────────────────────────
 
@@ -185,18 +183,35 @@ FIELD_RULES: dict[str, FieldRule] = {
         pydantic_class="WebAuthConfig",
     ),
 
-    # ── Predetermined: voice.raya.stt_language / tts_language ─────────────────
-
+    # ── Gated chat: voice.raya.stt_language / tts_language ───────────────────
+    #
+    # The voice channel speaks a SINGLE language at a time, which may
+    # differ from the project's default_language (a multi-language web
+    # project can run a Hindi-only voice line, etc.). Earlier these
+    # were `predetermined` and computed via `lang_code(default_language)`
+    # — that locked them to the default and the LLM had no way to
+    # override when the user picked a different voice language. The
+    # mirror's `voice_id_matches_language` validator then rejected the
+    # voice_id update, and the wizard stalled.
+    #
+    # Now they're chat fields: the LLM asks "which language?", picks the
+    # matching Raya voice_id from the prompt's injected allowlist, and
+    # writes all three in the same turn. No default — the LLM MUST
+    # write them when voice is selected (the prompt enforces this).
     "channels.voice.raya.stt_language": FieldRule(
-        category="predetermined",
-        rule='set: lang_code(default_language) if "voice" in selected_channels else None',
-        invalidated_by=["selected_channels", "default_language"],
+        category="chat",
+        phase="reach",
+        applies_if='"voice" in selected_channels',
+        invalidated_by=["selected_channels"],
+        description="STT language tag for Raya (e.g. 'en-in', 'hi'). Must match voice_id's language.",
         pydantic_class="RayaVoiceConfig",
     ),
     "channels.voice.raya.tts_language": FieldRule(
-        category="predetermined",
-        rule='set: lang_code(default_language) if "voice" in selected_channels else None',
-        invalidated_by=["selected_channels", "default_language"],
+        category="chat",
+        phase="reach",
+        applies_if='"voice" in selected_channels',
+        invalidated_by=["selected_channels"],
+        description="TTS language tag for Raya (e.g. 'en-in', 'hi'). Must match voice_id's language.",
         pydantic_class="RayaVoiceConfig",
     ),
 

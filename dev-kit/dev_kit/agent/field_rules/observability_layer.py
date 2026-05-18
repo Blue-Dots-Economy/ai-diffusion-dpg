@@ -20,6 +20,15 @@ _LIFECYCLE_SEED = [{"state": "started", "trigger_tool": None}]
 FIELD_RULES: dict[str, FieldRule] = {
     # ── Always-asked chat: observability.outcomes.* (catalogue §7.7) ──────────
 
+    # Keep `default=_LIFECYCLE_SEED` so the field is always valid even
+    # if the LLM never engages with the observability phase — runtime
+    # `OutcomesConfig.lifecycle` has `min_length=1`, so removing the
+    # default would make a stalled run produce an invalid YAML. The
+    # LLM's job is to EXTEND this seed with domain-specific states
+    # (e.g. `booking_confirmed`, `escalated`); the observability-phase
+    # prompt explicitly requires it to write the extended lifecycle
+    # via `update_config` after presenting the proposal, even though
+    # the field is already marked answered by skeleton.
     "observability.outcomes.lifecycle": FieldRule(
         category="chat",
         phase="observability",

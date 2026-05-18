@@ -21,7 +21,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterator, get_args, get_origin
+from typing import Any, Callable, Iterator, Optional, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -61,10 +61,31 @@ _ACCUMULATOR_FILENAME = "accumulator.json"
 _CURRENT_PHASE_FILENAME = "current_phase.txt"
 _INTAKE_STATE_FILENAME = "intake_state.json"
 _FIELD_STATUS_FILENAME = "field_status.json"
+_PHASE_PROGRESS_FILENAME = "phase_progress.json"
 
-# How many prior text turns from history.jsonl get echoed back to the LLM per
-# turn. Mirrors the legacy ConversationEngine value (DEVKIT_HISTORY_WINDOW=20).
-_HISTORY_WINDOW = int(os.environ.get("DEVKIT_HISTORY_WINDOW", "20"))
+# After this many consecutive turns of zero progress in the same phase, the
+# driver intervenes: pending fields with a FieldRule.default get force-written
+# and marked answered, and any remaining no-default fields are also marked
+# answered so the router can advance. Without this guard the LLM can gives up
+# (says "I can't write that field", stops asking) and the wizard deadlocks —
+# verified in the Akashvani Concierge E2E where the reach phase stalled with
+# 2 pending fields the user couldn't even understand to set manually.
+_PHASE_STALL_FORCE_THRESHOLD = int(
+    os.environ.get("DEVKIT_PHASE_STALL_FORCE_THRESHOLD", "3")
+)
+
+# How many prior text turns from history.jsonl get echoed back to the LLM
+# per turn. Tightened from 20 → 10 — at 20 the system prompt + 20 alternating
+# user/assistant turns regularly pushed the request size to where a single
+# turn cost as much as the entire rest of the wizard combined, and the
+# extra context didn't help: each phase prompt already injects the
+# cross-phase reference block (current model, NLU intents, knowledge
+# filters, etc.) so the LLM has the canonical state without needing to
+# re-read it from history. 10 turns is enough for the bot to remember
+# the last 2-3 proposal+confirm cycles (which is all the conversational
+# anchor the LLM needs at each phase). Override with DEVKIT_HISTORY_WINDOW
+# if a deployment ever needs more.
+_HISTORY_WINDOW = int(os.environ.get("DEVKIT_HISTORY_WINDOW", "10"))
 
 # Safety cap on consecutive tool_use rounds within a single turn. Prevents
 # runaway loops if the model keeps requesting tools and never produces a text
@@ -278,6 +299,168 @@ def save_current_phase(slug_root: Path, phase: str) -> None:
     path = slug_root / _META_DIR / _CURRENT_PHASE_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(phase)
+
+
+# ---------------------------------------------------------------------------
+# Phase-progress tracking (deadlock recovery)
+# ---------------------------------------------------------------------------
+
+
+def load_phase_progress(slug_root: Path) -> dict[str, Any]:
+    """Read the per-project zero-progress counter for the current phase.
+
+    The progress file persists between turns and is used by the driver to
+    detect when the LLM has stalled — i.e. produced two or more consecutive
+    turns in the same phase without flipping any pending chat field to
+    ``"answered"``. After ``_PHASE_STALL_FORCE_THRESHOLD`` such turns the
+    driver intervenes (see ``_apply_stall_recovery``).
+
+    Args:
+        slug_root: The project directory.
+
+    Returns:
+        A dict shaped ``{"phase": <str>, "consecutive_no_progress_turns": <int>}``.
+        Returns a fresh ``{"phase": "", "consecutive_no_progress_turns": 0}``
+        when the file is absent or corrupt — a corrupt counter file should
+        never block the wizard, so the failure mode is "treat it as fresh".
+    """
+    path = slug_root / _META_DIR / _PHASE_PROGRESS_FILENAME
+    if not path.exists():
+        return {"phase": "", "consecutive_no_progress_turns": 0}
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        logger.warning(
+            "load_phase_progress corrupt — resetting",
+            extra={
+                "operation": "phase_driver.load_phase_progress",
+                "status": "failure",
+                "path": str(path),
+            },
+        )
+        return {"phase": "", "consecutive_no_progress_turns": 0}
+    if not isinstance(data, dict):
+        return {"phase": "", "consecutive_no_progress_turns": 0}
+    return {
+        "phase": str(data.get("phase", "")),
+        "consecutive_no_progress_turns": int(data.get("consecutive_no_progress_turns", 0) or 0),
+    }
+
+
+def save_phase_progress(slug_root: Path, progress: dict[str, Any]) -> None:
+    """Persist the per-project zero-progress counter.
+
+    Args:
+        slug_root: The project directory.
+        progress: Dict with keys ``phase`` and ``consecutive_no_progress_turns``.
+    """
+    path = slug_root / _META_DIR / _PHASE_PROGRESS_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(progress, indent=2, ensure_ascii=False))
+
+
+def _apply_stall_recovery(
+    phase: str,
+    intake_state: IntakeState,
+    accumulator: dict[str, dict],
+    field_status: dict[str, str],
+) -> list[str]:
+    """Force-resolve every pending chat field in ``phase`` so the router can advance.
+
+    Used as a last-resort escape when the LLM has spent
+    ``_PHASE_STALL_FORCE_THRESHOLD`` consecutive turns in the same phase
+    without flipping any pending field to ``"answered"``. The Akashvani
+    Concierge E2E hit exactly this state: the LLM tried to write a
+    consent-purpose field whose mirror schema didn't accept it, eventually
+    gave up, and the reach phase deadlocked with the user typing "hello"
+    in confusion. Recovery rules per pending field:
+
+    - If the FieldRule has a non-None ``default``: write that default into
+      the accumulator and mark ``answered``.
+    - If the FieldRule has ``auto_answer=True`` or ``default=None`` with no
+      writable value: just mark ``answered`` (the runtime will use its
+      own default).
+    - Either way the field exits ``pending`` so ``decide_next_phase`` can
+      walk forward to the next relevant phase.
+
+    Args:
+        phase: The stalled phase name (e.g. ``"reach"``).
+        intake_state: For applies_if evaluation — only applicable fields
+            are considered "pending" for this phase.
+        accumulator: Per-block YAML dicts; mutated in place when a default
+            is written.
+        field_status: Status registry; mutated in place.
+
+    Returns:
+        A list of ``full_path`` strings the recovery flipped to ``answered``,
+        for the structured stall log.
+    """
+    from dev_kit.agent.field_rules import AGGREGATED_FIELD_RULES  # noqa: PLC0415
+    from dev_kit.agent.path_ops import set_path  # noqa: PLC0415
+    from dev_kit.agent.skeleton import eval_expr  # noqa: PLC0415
+
+    forced: list[str] = []
+    for full_path, rule in AGGREGATED_FIELD_RULES.items():
+        if rule.category != "chat" or rule.phase != phase:
+            continue
+        if not eval_expr(rule.applies_if, intake_state):
+            continue
+        status = field_status.get(full_path, "pending")
+        if status == "answered":
+            continue
+        block, relative_path = full_path.split(".", 1)
+        if rule.default is not None:
+            accumulator.setdefault(block, {})
+            set_path(accumulator[block], relative_path, rule.default)
+        else:
+            # No FieldRule default. Write a type-shaped placeholder so the
+            # downstream deploy-validate doesn't fail with
+            # ``Field required`` for chat fields the LLM never wrote. The
+            # placeholder is intentionally trivial — a domain author can
+            # edit it in the YAML directly if they care. Without this
+            # fallback the Akashvani Concierge E2E ended with
+            # ``voice.raya.voice_id: Field required`` because stall
+            # recovery marked it answered without writing.
+            placeholder = _stall_recovery_placeholder(full_path, rule)
+            if placeholder is not None:
+                accumulator.setdefault(block, {})
+                set_path(accumulator[block], relative_path, placeholder)
+        field_status[full_path] = "answered"
+        forced.append(full_path)
+    return forced
+
+
+# Field-specific placeholders the wizard writes during stall recovery
+# when the LLM never wrote a value AND the FieldRule has no default.
+# Keep this map narrow and intentional — only fields known to be
+# required at runtime + commonly stalled in E2E should land here.
+# The exact values are intentionally obviously-test data so a human
+# review of the rendered YAML catches them before deploy.
+_STALL_PLACEHOLDERS: dict[str, Any] = {
+    # First English Raya voice; the user-edited E2E hit a stall when
+    # the LLM proposed Priyanka (Hindi) but never wrote voice_id.
+    "reach_layer.channels.voice.raya.voice_id": "0f24fb66-e495-4781-9e84-1224aa7dacde",
+    # Match the voice_id placeholder above (Nayra is en-in).
+    "reach_layer.channels.voice.raya.stt_language": "en-in",
+    "reach_layer.channels.voice.raya.tts_language": "en-in",
+}
+
+
+def _stall_recovery_placeholder(full_path: str, rule: "FieldRule") -> Any:
+    """Return a type-shaped placeholder for a stalled required-no-default field.
+
+    Looks the path up in ``_STALL_PLACEHOLDERS`` first (exact match).
+    Falls back to a value derived from the rule's pydantic_class when
+    available, and finally to ``None`` (caller skips the write).
+
+    Args:
+        full_path: Block-prefixed path of the stalled field.
+        rule: The FieldRule for that path.
+
+    Returns:
+        The placeholder to write, or ``None`` to skip the write.
+    """
+    return _STALL_PLACEHOLDERS.get(full_path)
 
 
 # ---------------------------------------------------------------------------
@@ -686,6 +869,8 @@ def _dispatch_tool_calls(
     accumulator: dict[str, dict],
     field_status: dict[str, str],
     round_index: int,
+    *,
+    turn_tool_history: Optional[list[str]] = None,
 ) -> list[dict[str, Any]]:
     """Route each ``ToolCall`` through ``TOOL_HANDLERS`` and build tool_results.
 
@@ -702,6 +887,15 @@ def _dispatch_tool_calls(
         round_index: The tool-use loop iteration; used to synthesize stable
             ``tool_use_id`` values when the adapter (or a test fake) leaves
             ``ToolCall.id`` unset.
+        turn_tool_history: List of tool names called earlier in the same
+            user turn (across prior rounds). Used to enforce the
+            ``parse_openapi_spec → user confirmation → add_tool`` pacing
+            rule. When the LLM calls ``add_tool`` for a REST tool in the
+            same turn it called ``parse_openapi_spec``, the wizard
+            rejects with a humanised error — the user MUST get to see
+            the extracted operations + response-field projection before
+            tools are registered. None disables the check (e.g. for
+            unit tests that drive the dispatch directly).
 
     Returns:
         A list of Anthropic ``tool_result`` content blocks paired one-to-one
@@ -711,6 +905,66 @@ def _dispatch_tool_calls(
     results: list[dict[str, Any]] = []
     for idx, call in enumerate(tool_calls):
         tool_use_id = call.id or f"toolu_dev_{round_index}_{idx}"
+
+        # Enforce the parse → confirm → register pacing for REST tools.
+        # The tools-phase prompt already instructs the LLM to wait, but
+        # the model routinely skips that step (verified in 3 consecutive
+        # Akashvani Concierge E2E runs). Rejecting at the dispatch
+        # layer forces the LLM to surface the extracted operations
+        # to the user, who can then edit the projection before tools
+        # are registered.
+        if (
+            turn_tool_history is not None
+            and call.name == "add_tool"
+            and any(t in turn_tool_history for t in ("parse_openapi_spec", "fetch_openapi_spec_from_url"))
+        ):
+            spec = call.args.get("spec") if isinstance(call.args, dict) else None
+            spec_is_rest = isinstance(spec, dict) and spec.get("type") != "mcp"
+            if spec_is_rest:
+                logger.warning(
+                    "phase_driver.tool_call_rejected",
+                    extra={
+                        "operation": "phase_driver.tool_call_rejected",
+                        "status": "failure",
+                        "tool": call.name,
+                        "error": "add_tool called in same turn as parse_openapi_spec",
+                        "error_type": "ProjectionConfirmationRequired",
+                    },
+                )
+                results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": json.dumps({
+                        "ok": False,
+                        "error": (
+                            "STOP. You called add_tool in the same turn you "
+                            "parsed the OpenAPI spec. Do NOT register tools "
+                            "yet. Do NOT call add_tool again this turn. "
+                            "Do NOT claim the tools are registered (they "
+                            "are not).\n\n"
+                            "Your reply to the user this turn MUST contain "
+                            "a Markdown table with one row per parsed "
+                            "operation and these columns: **Operation**, "
+                            "**Method + Path**, **Params**, **Response "
+                            "fields the bot will read** (the projection "
+                            "list you propose to put in "
+                            "`response.projection.fields`).\n\n"
+                            "End your reply with a SINGLE confirmation "
+                            "question: 'Here's what I parsed. Does the "
+                            "projection list look right, or would you like "
+                            "to add, drop, or rename any fields?'\n\n"
+                            "On the NEXT turn, after the user replies, "
+                            "call add_tool once per operation with the "
+                            "confirmed projection in "
+                            "response.projection.fields. Not before."
+                        ),
+                    }),
+                    "is_error": True,
+                })
+                if turn_tool_history is not None:
+                    turn_tool_history.append(call.name)
+                continue
+
         handler = TOOL_HANDLERS.get(call.name)
         if handler is None:
             # Point 13: log unsupported (rejected) tool call
@@ -765,6 +1019,10 @@ def _dispatch_tool_calls(
             "tool_use_id": tool_use_id,
             "content": json.dumps(handler_result if handler_result is not None else {"ok": True}),
         })
+        # Record the tool name so subsequent rounds in the same turn can
+        # enforce same-turn pacing rules (e.g. add_tool after parse).
+        if turn_tool_history is not None:
+            turn_tool_history.append(call.name)
     return results
 
 
@@ -854,6 +1112,13 @@ def run_turn(
         raise
     current_phase = load_current_phase(slug_root)
 
+    # Snapshot field_status before the turn so we can detect zero-progress
+    # turns (LLM ran but didn't flip any pending field to "answered"). The
+    # snapshot is a shallow dict copy — values are strings, so this is
+    # cheap.
+    field_status_before = dict(field_status)
+    phase_progress = load_phase_progress(slug_root)
+
     # Record the user turn immediately so it is persisted even if the LLM call
     # fails.  Phase label is the phase that received this message.
     append_turn(
@@ -905,6 +1170,12 @@ def run_turn(
     tool_call_counts: dict[str, int] = {}
     tool_reject_counts: dict[str, int] = {}
     total_llm_calls = 0
+    # Names of every tool the LLM has called this turn, across all
+    # phases and all tool_use rounds. Enables same-turn pacing rules
+    # — currently used to reject ``add_tool`` calls that follow
+    # ``parse_openapi_spec`` without a user-confirmation turn in
+    # between (forces the projection-step UX).
+    turn_tool_history: list[str] = []
 
     while True:
         # Build system prompt for the phase currently active.
@@ -928,7 +1199,8 @@ def run_turn(
             # single-shot behavior identical for callers (and test fakes)
             # that emit tool calls without setting stop_reason="tool_use".
             tool_results = _dispatch_tool_calls(
-                response.tool_calls, intake_state, accumulator, field_status, tool_rounds
+                response.tool_calls, intake_state, accumulator, field_status, tool_rounds,
+                turn_tool_history=turn_tool_history,
             )
             # Telemetry: tally what the LLM tried this round and which
             # dispatches were rejected (results with is_error=True).
@@ -1084,9 +1356,147 @@ def run_turn(
         ),
     )
 
+    # ----- Step 4b: deadlock recovery -----
+    # Compute how many fields this turn flipped from a non-answered status
+    # to "answered". If zero AND the final phase is still incomplete AND we
+    # already stalled in this phase for the previous turn(s), force-write
+    # FieldRule defaults so the router can advance on the next call to
+    # decide_next_phase.
+    answered_delta = sum(
+        1 for path, status in field_status.items()
+        if status == "answered" and field_status_before.get(path) != "answered"
+    )
+    if answered_delta > 0 or final_phase != phase_progress.get("phase"):
+        # Progress made OR we landed in a different phase than the prior
+        # turn — reset the stall counter and pin it to the final phase.
+        phase_progress = {
+            "phase": final_phase,
+            "consecutive_no_progress_turns": 0,
+        }
+    else:
+        phase_progress["consecutive_no_progress_turns"] += 1
+        logger.warning(
+            "phase_driver.zero_progress_turn",
+            extra={
+                "operation": "phase_driver.zero_progress_turn",
+                "status": "skipped",
+                "phase": final_phase,
+                "consecutive_no_progress_turns": phase_progress["consecutive_no_progress_turns"],
+                "project_slug": project_slug,
+            },
+        )
+        if phase_progress["consecutive_no_progress_turns"] >= _PHASE_STALL_FORCE_THRESHOLD:
+            # The LLM has stalled — apply recovery.  This either writes a
+            # FieldRule.default into the accumulator (the common case) or
+            # marks the field answered without writing (when no default
+            # exists; the runtime falls back to its own default at boot).
+            forced_paths = _apply_stall_recovery(
+                final_phase, intake_state, accumulator, field_status
+            )
+            logger.error(
+                "phase_driver.stall_recovery",
+                extra={
+                    "operation": "phase_driver.stall_recovery",
+                    "status": "success",
+                    "phase": final_phase,
+                    "forced_paths": forced_paths[:25],
+                    "forced_count": len(forced_paths),
+                    "stall_turns": phase_progress["consecutive_no_progress_turns"],
+                    "project_slug": project_slug,
+                },
+            )
+            phase_progress = {
+                "phase": final_phase,
+                "consecutive_no_progress_turns": 0,
+            }
+            # Now ask the router again — the freshly-forced answers should
+            # let it walk forward to the next relevant phase. `decide_next_phase`
+            # is imported at module level; do NOT re-import locally (the
+            # earlier reference inside the while-loop above would then
+            # shadow the global and crash with UnboundLocalError).
+            next_after_recovery = decide_next_phase(
+                final_phase, intake_state, accumulator, field_status
+            )
+            if next_after_recovery != final_phase:
+                final_phase = next_after_recovery
+                # Run the LLM once more, this turn, in the new phase so
+                # the user immediately sees the new phase's opening
+                # questions. Without this the user gets the prior
+                # stalled assistant reply, has to send a dummy "next" or
+                # "ok" message, and only THEN sees the new phase's first
+                # question. End-user testing in the Akashvani Concierge
+                # run confirmed that's confusing — users assume the
+                # wizard is stuck.
+                pending_fields = collect_pending_fields(
+                    final_phase, intake_state, field_status
+                )
+                pydantic_schemas = render_pydantic_classes(pending_fields)
+                refs = cross_phase_references(accumulator)
+                recovery_build = _load_phase_prompt(final_phase)
+                recovery_system_prompt = recovery_build(
+                    pending_fields, pydantic_schemas, refs, intake_state
+                )
+                # Same continuation-prompt trick as inline phase advancement
+                # uses: tell the LLM the conversation moved on and to
+                # produce the FIRST question of the new phase without
+                # acknowledging this system note.
+                messages.append(
+                    {"role": "assistant", "content": response.text or ""}
+                )
+                messages.append(
+                    {"role": "user", "content": _CONTINUATION_PROMPT}
+                )
+                recovery_response = _call_llm_logged(
+                    llm_call,
+                    recovery_system_prompt,
+                    messages,
+                    final_phase,
+                    round_index=0,
+                )
+                total_llm_calls += 1
+                # Run the new phase's tool-use loop too — the LLM might
+                # call update_config / add_subagent etc. as part of its
+                # opening turn.
+                recovery_rounds = 0
+                while True:
+                    _dispatch_tool_calls(
+                        recovery_response.tool_calls,
+                        intake_state,
+                        accumulator,
+                        field_status,
+                        recovery_rounds,
+                        turn_tool_history=turn_tool_history,
+                    )
+                    for call in recovery_response.tool_calls:
+                        tool_call_counts[call.name] = tool_call_counts.get(call.name, 0) + 1
+                    if recovery_response.stop_reason != "tool_use":
+                        break
+                    if recovery_rounds >= _MAX_TOOL_ROUNDS:
+                        break
+                    if recovery_response.raw_content:
+                        messages.append(
+                            {"role": "assistant", "content": recovery_response.raw_content}
+                        )
+                    recovery_rounds += 1
+                    recovery_response = _call_llm_logged(
+                        llm_call,
+                        recovery_system_prompt,
+                        messages,
+                        final_phase,
+                        round_index=recovery_rounds,
+                    )
+                    total_llm_calls += 1
+                # Replace the stalled text with the recovered phase's
+                # opening — the user should only see the latter, not
+                # the "wait for the system" prose the LLM produced
+                # before recovery fired.
+                if recovery_response.text:
+                    assistant_text_parts = [recovery_response.text]
+
     save_intake_state(slug_root / _META_DIR / _INTAKE_STATE_FILENAME, intake_state)
     save_accumulator(slug_root, accumulator)
     save_field_status(slug_root / _META_DIR / _FIELD_STATUS_FILENAME, field_status)
+    save_phase_progress(slug_root, phase_progress)
     if final_phase != initial_phase:
         save_current_phase(slug_root, final_phase)
 

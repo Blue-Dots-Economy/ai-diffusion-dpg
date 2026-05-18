@@ -105,14 +105,15 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="Message shown when session terminates. Used by termination_short_circuit.",
         pydantic_class="ConversationSection",
     ),
-    "conversation.consent_message": FieldRule(
-        category="chat",
-        phase="language",
-        applies_if="needs_consent",
-        invalidated_by=["needs_consent", "default_language", "supported_languages"],
-        description="Alt path to agent.consent_prompt for consent collection.",
-        pydantic_class="ConversationSection",
-    ),
+    # NOTE: `conversation.consent_message` is a legacy alt path on the
+    # runtime schema (used to be read by the orchestrator; now reads
+    # `agent.consent_prompt` exclusively at orchestrator.py:535 / 2814).
+    # Keeping it as a chat field caused the LLM to ask for / write the
+    # consent text twice (once at agent.consent_prompt in language phase,
+    # once at conversation.consent_message in the same phase), polluting
+    # the rendered YAML with duplicate copy. Removed from FIELD_RULES so
+    # the wizard surfaces it only once. The mirror still accepts the
+    # field if a future runtime change starts reading it.
     "conversation.consent_decline_ack": FieldRule(
         category="chat",
         phase="language",
@@ -188,12 +189,16 @@ FIELD_RULES: dict[str, FieldRule] = {
 
     # ── Gated chat: connectors.* ──────────────────────────────────────────────
 
-    # `default=[]` so the skeleton pre-marks these as "answered" with an
-    # empty list — projects that don't use a given category (very common
-    # for `identity`) shouldn't block phase advancement. `add_tool`
-    # overrides the empty default when the LLM registers a tool of that
-    # category. Without the default, the tools phase stays incomplete
-    # until the LLM explicitly writes [] for every unused category.
+    # Category-level defaults: write/identity stay `default=[]` because
+    # most projects don't need every category, and `add_tool` flips the
+    # answered status when a tool of that category is registered.
+    # `connectors.read` keeps `default=[]` for the same reason — but
+    # paired with `action_gateway.tools` (no default), the tools phase
+    # stays open until the LLM actually registers a tool. Without that
+    # pairing the wizard would skip past tools entirely on the strength
+    # of skeleton defaults alone (verified in the Akashvani Concierge
+    # E2E: dispatch rejected the same-turn add_tool, but `tools` had
+    # default=[] so the phase advanced with zero tools registered).
     "connectors.read": FieldRule(
         category="chat",
         phase="tools",
@@ -439,6 +444,20 @@ FIELD_RULES: dict[str, FieldRule] = {
     "agent_workflow.workflow_id": FieldRule(
         category="derived",
         compute='f"{project_slug}_workflow"',
+        pydantic_class="AgentWorkflowSection",
+    ),
+
+    # `agent_workflow.version` is required by the runtime MergedConfig
+    # (defaults to "1.0.0"). Without a FIELD_RULE entry the skeleton
+    # never writes it, deploy-validate reports "version: Field required",
+    # and the LLM scrambled to ask the user for a version number in the
+    # review phase — confusing for end users. Default to "1.0.0" and
+    # auto_answer so the field doesn't block phase advancement.
+    "agent_workflow.version": FieldRule(
+        category="chat",
+        phase="workflow",
+        default="1.0.0",
+        description="Workflow version tag — used for cross-deployment auditing. Default '1.0.0'.",
         pydantic_class="AgentWorkflowSection",
     ),
 

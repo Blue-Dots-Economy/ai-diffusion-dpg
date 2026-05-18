@@ -38,7 +38,8 @@ EXPECTED_PATHS = {
     # Gated chat (catalogue §4)
     "agent.consent_prompt",
     "conversation.termination_message",
-    "conversation.consent_message",
+    # `conversation.consent_message` removed from FIELD_RULES — legacy
+    # alt path; runtime reads agent.consent_prompt directly.
     "conversation.consent_decline_ack",
     "conversation.profile_complete_message",
     "conversation.returning_user_greeting",
@@ -83,6 +84,7 @@ EXPECTED_PATHS = {
     "connectors.internal[name=knowledge_retrieval].input_schema",
     "channels.voice.turn_assembler.silence_trigger.silence_ms",
     "channels.voice.turn_assembler.max_wait_ceiling.max_wait_ms",
+    "agent_workflow.version",   # default '1.0.0', auto_answer
     # Derived
     "agent_workflow.workflow_id",
     "observability.domain",

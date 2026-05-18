@@ -100,18 +100,18 @@ immediately.
 
 **Step 0 — Set top-level workflow fields FIRST:**
 
-These three fields are REQUIRED. Agent Core will fail Pydantic validation at
-startup if any is missing:
+Only ONE field is required from you at chat time:
 
-- `workflow_id` — unique snake_case identifier (e.g. `my_domain_agent`)
-- `version` — always `"1.0.0"` for a new workflow
 - `agent_system_prompt` — the top-level persona + overarching instruction
-  visible on EVERY turn
+  visible on EVERY turn.
 
-Set all three in one call:
-`update_config(block=agent_core, section=agent_workflow,
-values={{workflow_id: 'my_domain_agent', version: '1.0.0',
-agent_system_prompt: '...full persona prompt...'}})`
+(`workflow_id` is computed automatically from the project slug, and
+`version` defaults to `"1.0.0"`. Do NOT ask the user about either —
+they're handled by the wizard.)
+
+Set the persona via:
+`update_config(path="agent_core.agent_workflow.agent_system_prompt",
+value="...full persona prompt...")`
 
 Also set `default_fallback_subagent_id` once you have declared your
 subagents. It MUST exactly match a declared subagent `id`.
@@ -124,9 +124,20 @@ new intent names without explicit user approval.
 {kb_note}{memory_state_note}
 **Hard rules:**
 
-- Every tool name in `tools` or `global_tools` MUST match a connector `name`
-  in `connectors.read / write / identity / internal`. Agent Core crashes at
-  startup with a KeyError on any mismatch.
+- **The ONLY valid tool names are the connector names visible in the
+  "Already-set values you can reference" section below.** Look at
+  `agent_core.connectors.read`, `connectors.write`, `connectors.identity`,
+  `connectors.internal` — those `name` fields are the universe of tool
+  names you can use. Do NOT invent tool names from the OpenAPI spec you
+  parsed earlier (e.g. `get_v1_forecast`, `bookTour`); those exist as
+  connectors ONLY if `add_tool` ran successfully and registered them.
+  If the connectors section is empty or missing some tool you expected,
+  the tools phase did not register it — list it in NO subagent's
+  `tools` field. Agent Core crashes at startup with a KeyError on any
+  mismatch.
+- If the connectors list is empty (e.g. tools phase stalled), every
+  subagent's `tools` MUST be `[]` and `global_tools` MUST be `[]`. Do
+  NOT claim the agent can call APIs it has no registered connectors for.
 - Every `next_subagent_id` in every routing rule MUST match a declared
   subagent `id`.
 - No intent may appear in both `global_intents` and any subagent's
@@ -135,7 +146,7 @@ new intent names without explicit user approval.
 - Exactly ONE subagent has `is_start: true`.
 
 **Self-check before advancing:**
-1. `workflow_id`, `version`, `agent_system_prompt` all non-empty.
+1. `agent_system_prompt` is non-empty.
 2. Every non-terminal subagent has a non-empty `opening_phrase`.
 3. `default_fallback_subagent_id` matches a declared subagent id.
 4. Every `next_subagent_id` in every routing rule matches a declared id.

@@ -96,6 +96,43 @@ own FIELD_RULES entry):**
   NEVER use `memory` (not a valid backend; the Trust Layer crashes on it).
 - Policy pack (optional content/safety policy stack): `path="trust_layer.trust.policy_pack"`
 
+**REQUIRED ORDER if you set a policy pack** — the mirror's validator
+rejects `policy_pack` referencing a name that is NOT a key in
+`policy_packs`. Always do BOTH writes, and in this order:
+
+1. First, declare the pack and its rules:
+
+   ```
+   update_config(path="trust_layer.trust.policy_packs", value={{
+     "<pack_name>": {{
+       "rules": ["<rule 1>", "<rule 2>", ...]
+     }}
+   }})
+   ```
+
+2. THEN, set the active pack name:
+
+   ```
+   update_config(path="trust_layer.trust.policy_pack", value="<pack_name>")
+   ```
+
+If you skip step 1 the wizard refuses the write — the user will see a
+plain-English message asking them to declare the pack first. Do NOT
+surface that as an error in your reply; just call step 1 yourself and
+move on.
+
+**When the user says "no policy pack", "keep it empty", "skip", or
+"none for now":** call `update_config(path="trust_layer.trust.policy_pack",
+value="")` THE SAME TURN to explicitly mark it as empty.  Without
+this write the field stays `pending` indefinitely (or worse, the
+field_status counter creeps up to a stall) — the wizard interprets
+"the user hasn't told me yet" as different from "the user explicitly
+chose nothing", and only an empty-string write resolves the ambiguity.
+The Akashvani Concierge E2E hit a 3-turn stall on exactly this:
+user said "keep it empty for now" and the LLM said "All set with the
+Trust Layer" without writing — phase counter went 0 → 1 → 2 → 3 and
+the driver had to force the default to advance.
+
 Do NOT write `trust_layer.observability.domain` — derived, auto-computed.
 Do NOT write `trust_layer.dignity_check.enabled` or
 `trust_layer.dignity_check.questions` — both are predetermined fields the
@@ -104,8 +141,19 @@ five-question set). They are NOT user-configurable here.
 
 **Block 1 — Content rules and blocked phrases (all agents):**
 
-Suggest domain-appropriate blocked phrases, escalation topics, and content
-rules. Present them all together and ask: "Here are the suggested safety
+Suggest domain-appropriate blocked phrases, escalation topics, and
+content rules. **Every value MUST be concrete and domain-relevant** —
+derived from the project name and description. NEVER use placeholder
+strings like `competitor name`, `internal cost`, `staff password`,
+`<insert here>`, etc.: those are instructions to a developer, not real
+filter values, and the user will see them in the rendered YAML if
+left.
+
+If you genuinely cannot think of a domain-relevant blocked phrase or
+output-blocked phrase, write an empty list (`[]`) rather than a
+placeholder. Empty is correct; a placeholder is a bug.
+
+Present them all together and ask: "Here are the suggested safety
 rules — do these look good, or would you like to change any?"
 {dignity_section}
 **Self-check before advancing:**

@@ -115,9 +115,13 @@ violation: ask the user for the correction and call the appropriate
 10. **opening_phrase non-empty for every non-terminal subagent** — an empty
     opening_phrase means the agent says nothing on first entry.
 
-11. **workflow top-level fields set** — `agent_workflow.workflow_id`,
-    `agent_workflow.version`, and `agent_workflow.agent_system_prompt` must
-    all be non-empty.
+11. **agent_system_prompt is non-empty** — required for runtime startup.
+    Do NOT ask the user about `agent_workflow.workflow_id` or
+    `agent_workflow.version` — `workflow_id` is auto-derived from the
+    project slug (e.g. `akashvani_concierge_workflow`) and `version`
+    defaults to `"1.0.0"` via the skeleton. Both already appear in the
+    rendered YAML; treating them as user-configurable here would just
+    waste a turn asking for values the user has no input on.
 
 12. **dignity_check questions populated** — if
     `trust_layer.dignity_check.enabled` is true, `questions` must be a

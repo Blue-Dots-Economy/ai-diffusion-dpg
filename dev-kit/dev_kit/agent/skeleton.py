@@ -32,6 +32,47 @@ _RULE_EXTRAS: dict[str, Any] = {
 }
 
 
+# Maps a `languages` enum value (from dev_kit/schemas/enums_config.yaml)
+# to a Raya language tag — the codes Raya itself uses in
+# `raya_voices[].language`. Used by FIELD_RULES predetermined rules to
+# convert the project's `default_language` into the voice-channel STT/TTS
+# language. Keep in sync with `raya_voices` in enums_config.yaml when new
+# Raya languages are added.
+#
+# Hinglish has no dedicated Raya voice; en-in is the closest match.
+_LANG_CODE_MAP: dict[str, str] = {
+    "english":  "en-in",
+    "hindi":    "hi",
+    "hinglish": "en-in",
+    "marathi":  "mr",
+    "telugu":   "te",
+    "kannada":  "kn",
+    "bengali":  "bn",
+    "assamese": "as",
+    "gujarati": "gu",
+    "malayalam": "ml",
+    "nepali":   "ne",
+    "tamil":    "ta",
+}
+
+
+def lang_code(language: str | None) -> str:
+    """Convert an enum language name (e.g. ``"english"``) to a Raya tag (``"en-in"``).
+
+    Args:
+        language: A value from the ``languages`` enum (case-insensitive).
+            ``None`` or unknown values fall back to ``"en-in"`` so the
+            wizard never writes an empty STT/TTS language string — the
+            voice service rejects empty strings at boot.
+
+    Returns:
+        The Raya language tag for the given language.
+    """
+    if not language:
+        return "en-in"
+    return _LANG_CODE_MAP.get(language.lower(), "en-in")
+
+
 def eval_expr(expr: str | None, state: IntakeState) -> Any:
     """Evaluate an applies_if/invalidated_by expression against IntakeState.
 
@@ -91,6 +132,12 @@ def eval_rule(rule_str: str, state: IntakeState) -> Any:
     project_name = getattr(state, "project_name", "") or ""
     namespace["slug"] = _slug_fn
     namespace["project_slug"] = _slug_fn(project_name)
+    # `lang_code(language)` converts the project's language enum value
+    # to the Raya tag the runtime expects. Used by the voice STT/TTS
+    # language predetermined rules in reach_layer FIELD_RULES; without
+    # this in the namespace those rules silently return _SKIP and the
+    # voice service starts without a language config.
+    namespace["lang_code"] = lang_code
     try:
         return eval(expr, {"__builtins__": {}}, namespace)
     except Exception as exc:  # noqa: BLE001

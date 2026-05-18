@@ -491,11 +491,11 @@ def test_render_pydantic_classes_returns_real_class_source() -> None:
     `output_blocked_message`). Every `update_config` write to those
     paths was rejected by the dev-kit mirror with `extra_forbidden`.
     """
-    rule = AGGREGATED_FIELD_RULES["agent_core.conversation.consent_message"]
+    rule = AGGREGATED_FIELD_RULES["agent_core.conversation.profile_complete_message"]
     assert rule.pydantic_class == "ConversationSection"
 
     out = render_pydantic_classes(
-        [("agent_core.conversation.consent_message", rule)]
+        [("agent_core.conversation.profile_complete_message", rule)]
     )
 
     # Real class header — proves we resolved + dumped actual source.
@@ -519,9 +519,9 @@ def test_render_pydantic_classes_includes_referenced_submodels() -> None:
     Optional[UserStateModel] = None` but no `UserStateModel` definition,
     leading to invented sub-field names again.
     """
-    rule = AGGREGATED_FIELD_RULES["agent_core.conversation.consent_message"]
+    rule = AGGREGATED_FIELD_RULES["agent_core.conversation.profile_complete_message"]
     out = render_pydantic_classes(
-        [("agent_core.conversation.consent_message", rule)]
+        [("agent_core.conversation.profile_complete_message", rule)]
     )
 
     # The closure must include both the parent class AND its referenced
@@ -537,11 +537,11 @@ def test_render_pydantic_classes_includes_referenced_submodels() -> None:
 
 def test_render_pydantic_classes_deduplicates_shared_classes() -> None:
     """When multiple pending fields share a pydantic_class, render once."""
-    rule_a = AGGREGATED_FIELD_RULES["agent_core.conversation.consent_message"]
+    rule_a = AGGREGATED_FIELD_RULES["agent_core.conversation.profile_complete_message"]
     rule_b = AGGREGATED_FIELD_RULES["agent_core.conversation.blocked_message"]
 
     out = render_pydantic_classes([
-        ("agent_core.conversation.consent_message", rule_a),
+        ("agent_core.conversation.profile_complete_message", rule_a),
         ("agent_core.conversation.blocked_message", rule_b),
     ])
 
@@ -552,11 +552,11 @@ def test_render_pydantic_classes_deduplicates_shared_classes() -> None:
 
 def test_render_pydantic_classes_handles_unknown_block_gracefully(caplog) -> None:
     """An unknown block name on a path must not crash the prompt build."""
-    rule = AGGREGATED_FIELD_RULES["agent_core.conversation.consent_message"]
+    rule = AGGREGATED_FIELD_RULES["agent_core.conversation.profile_complete_message"]
 
     with caplog.at_level(logging.WARNING, logger="dev_kit.agent.phase_driver"):
         out = render_pydantic_classes(
-            [("not_a_block.conversation.consent_message", rule)]
+            [("not_a_block.conversation.profile_complete_message", rule)]
         )
 
     # Skipped silently in the prompt; surfaced in the log.
@@ -990,7 +990,7 @@ def test_run_turn_runs_skeleton_even_when_cascade_populated_field_status(
     # Seed field_status with one cascade-style entry so the OLD gate
     # would suppress the skeleton run.
     pre_populated_field_status = {
-        "agent_core.conversation.consent_message": "needs_re_asking",
+        "agent_core.conversation.profile_complete_message": "needs_re_asking",
     }
 
     projects_root = _setup_project(
@@ -1033,7 +1033,7 @@ def test_run_turn_runs_skeleton_even_when_cascade_populated_field_status(
     # The cascade-set `needs_re_asking` entry must survive (setdefault
     # semantics — skeleton does not clobber it).
     assert (
-        field_status_after["agent_core.conversation.consent_message"]
+        field_status_after["agent_core.conversation.profile_complete_message"]
         == "needs_re_asking"
     )
 

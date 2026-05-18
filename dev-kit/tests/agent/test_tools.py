@@ -543,7 +543,14 @@ class TestAddTool:
         assert any(c["name"] == "my_api" for c in connectors)
 
     def test_mcp_tool_no_connector(self) -> None:
-        """MCP tool does not create an agent_core connector."""
+        """MCP tool does not create an agent_core connector.
+
+        The mirror's ``shape_matches_type`` validator requires both
+        ``server_url`` and ``transport`` on MCP tools; add_tool now
+        strictly validates the spec, so the test data must include
+        both (transport was missing before — earlier partial
+        validation silently dropped the "missing field" error).
+        """
         acc = _empty_accumulator()
         mcp_spec = {
             "id": "my_mcp",
@@ -551,6 +558,7 @@ class TestAddTool:
             "category": "read",
             "description": "MCP server",
             "server_url": "https://mcp.example.com",
+            "transport": "sse",
         }
         result = add_tool({"spec": mcp_spec}, _make_intake(), acc, _empty_field_status())
 

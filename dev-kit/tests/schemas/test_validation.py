@@ -33,6 +33,13 @@ def test_valid_agent_section_returns_none():
 
 
 def test_invalid_agent_section_returns_error_with_type_and_value():
+    """Pydantic errors are now translated to plain-English action items.
+
+    The raw type code (e.g. ``[greater_than_equal]``) is intentionally
+    stripped — the LLM consumes these messages and the jargon confused
+    it in E2E runs. The Pydantic message itself is still surfaced, plus
+    the offending value, so the model can self-correct.
+    """
     err = validate_domain_section(
         "agent_core", "agent",
         {"primary_model": "claude-sonnet-4-6", "fallback_model": "claude-haiku-4-5-20251001",
@@ -40,18 +47,25 @@ def test_invalid_agent_section_returns_error_with_type_and_value():
     )
     assert err is not None
     assert "max_tool_rounds" in err
-    assert "[greater_than_equal]" in err   # error type code
-    assert "you sent: 0" in err            # offending value
+    assert "greater than or equal to 1" in err   # Pydantic msg surfaced
+    assert "you sent: 0" in err                  # offending value
 
 
 def test_extra_field_returns_extra_forbidden():
+    """Extra-field violations now produce a humanised action message.
+
+    The new format reads: "<path> is not a field this wizard accepts.
+    Either the path is wrong … or this field is set automatically and
+    is not user-configurable." The path and offending value are still
+    surfaced so the LLM can pivot.
+    """
     err = validate_domain_section(
         "agent_core", "agent",
         {"primary_model": "claude-sonnet-4-6", "fallback_model": "claude-haiku-4-5-20251001",
          "vector_store": "bogus"},
     )
     assert err is not None
-    assert "extra_forbidden" in err
+    assert "not a field this wizard accepts" in err
     assert "vector_store" in err
 
 
@@ -134,15 +148,21 @@ def test_domain_dispatch_covers_critical_sections():
 
 
 def test_error_format_includes_type_and_offending_value():
-    """Verify the error formatter output structure."""
+    """The humanised error output preserves the offending value.
+
+    Earlier format embedded a raw Pydantic type code in square brackets
+    (e.g. ``[less_than_equal]``); that has been intentionally removed
+    because the LLM was repeating the codes verbatim back to the user.
+    The current format is plain English action items plus the
+    ``you sent: <value>`` suffix.
+    """
     err = validate_domain_section(
         "memory_layer", "state",
         {"session": {"ttl_minutes": 99999}, "persistent": {"graph": {"user_node": {"label": "U", "key": "id"}}}},
     )
     assert err is not None
-    # Should have format: "- field.path [error_type]: msg (you sent: value)"
-    assert " [" in err and "]" in err
     assert "you sent:" in err
+    assert "ttl_minutes" in err
 
 
 def test_error_format_root_path_handled():
@@ -162,8 +182,9 @@ def test_error_format_handles_repr_exception():
         {"primary_model": BrokenRepr(), "fallback_model": "claude-haiku-4-5-20251001"},
     )
     assert err is not None
-    # Path/type still present; "you sent:" silently dropped on repr failure.
-    assert "[" in err and "]" in err
+    # The humanised action message still surfaces; "you sent:" is
+    # silently dropped on repr failure to avoid raising secondary errors.
+    assert "primary_model" in err
 
 
 def test_error_format_truncates_long_values():

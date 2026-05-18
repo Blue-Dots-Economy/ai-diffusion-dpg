@@ -30,8 +30,9 @@ EXPECTED_PATHS = {
     # Web derived
     "channels.web.ui.storage_key",
     "channels.web.ui.theme_storage_key",
-    # Web gated chat
-    "channels.web.ke_internal_url",
+    # `channels.web.ke_internal_url` was removed from FIELD_RULES — it's a
+    # dpg-level infrastructure setting overridden by KE_INTERNAL_URL env
+    # var at deploy time, not user-configurable in chat.
     # Web deploy
     "channels.web.auth.enabled",
     # Voice predetermined

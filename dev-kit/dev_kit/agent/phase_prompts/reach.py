@@ -53,10 +53,47 @@ def build(
 
     selected = getattr(intake_state, "selected_channels", ["web"])
     has_voice = "voice" in selected
+    supported_languages = list(getattr(intake_state, "supported_languages", []) or [])
 
     voice_note = ""
     if has_voice:
-        voice_note = """
+        # Pre-filter Raya voices to only the languages this project actually
+        # supports. The LLM has been hallucinating Google/AWS voice IDs (e.g.
+        # `en-US-Neural2-C`) when this list isn't injected — fabrication that
+        # the mirror schema's RayaVoiceIdField validator then rejects, sending
+        # the wizard into a stall loop. Embedding the allowlist directly in
+        # the prompt — filtered to project languages so it stays short —
+        # removes the model's reason to invent.
+        from dev_kit.agent.skeleton import _LANG_CODE_MAP  # noqa: PLC0415
+        from dev_kit.schemas.enums import RAYA_VOICES  # noqa: PLC0415
+
+        # Map the project's supported_languages (enum names like "english")
+        # to their Raya tags ("en-in"). Keep both forms so the LLM can pick
+        # using whichever the user types.
+        project_raya_tags = {
+            _LANG_CODE_MAP.get(lang.lower())
+            for lang in supported_languages
+        }
+        project_raya_tags.discard(None)
+        # Pull the matching voice rows. Also include en-us when en-in is
+        # selected, in case the user wants the US accent — both share
+        # mostly the same English STT.
+        candidate_voices = [
+            v for v in RAYA_VOICES
+            if v["language"] in project_raya_tags
+        ]
+        if not candidate_voices:
+            # Fallback: surface en-in so the wizard never has zero options.
+            candidate_voices = [v for v in RAYA_VOICES if v["language"] == "en-in"]
+
+        voices_table_lines = ["| voice_id | language | name |", "|---|---|---|"]
+        for v in candidate_voices:
+            voices_table_lines.append(
+                f"| `{v['voice_id']}` | `{v['language']}` | {v.get('name', '')} |"
+            )
+        voices_table = "\n".join(voices_table_lines)
+
+        voice_note = f"""
 **Voice channel (Raya TTS/STT):**
 
 Voice uses **Raya** as the only TTS/STT provider — do NOT ask the user which
@@ -65,12 +102,19 @@ time** — the schema's `voice_id_matches_language` validator enforces that
 `stt_language`, `tts_language`, and the chosen `voice_id` all belong to the
 same single language.
 
+**Allowed Raya voices for this project (filtered by its supported
+languages — pick `voice_id` from this table, NEVER invent a value):**
+
+{voices_table}
+
 Steps:
 1. Ask: "Voice supports a single language. Which language should the bot
-   speak in over voice calls?" Show the available Raya languages. Do NOT
-   offer multi-language voice — it is not supported.
-2. Auto-select the matching `voice_id`, `stt_language`, and `tts_language`
-   from the Raya voice table.
+   speak in over voice calls?" Offer ONLY the languages present in the
+   table above.
+2. From the user's chosen language, pick the `voice_id` + `language` row
+   from the table. Set `stt_language` and `tts_language` to that row's
+   `language` value (e.g. `en-in`, `hi`, `mr`). Set `voice_id` to the
+   exact UUID from the table.
 3. Present the full voice config block with defaults:
    - `timeout_ms`: 15000
    - `fallback_phrase`: Suggest a domain-appropriate phrase in the target language
@@ -83,8 +127,10 @@ values={{raya: {{stt_language: ..., tts_language: ..., voice_id: ...}},
 agent_core: {{timeout_ms: 15000, fallback_phrase: ...,
 barge_in_acknowledgement: ''}}}})`
 
-**NEVER invent voice IDs.** Schema validation will reject any ID not in the
-Raya voice table.
+**NEVER invent voice IDs.** The mirror's `RayaVoiceIdField` validator
+rejects any UUID not in the Raya allowlist above. If you write an
+invented ID (e.g. a Google Cloud or AWS Polly voice name) the write
+fails and the wizard stalls — the user has no way to fix it.
 
 **Voice — TTS rendering rules (`agent_core.channels.voice.tts_rules`):**
 
@@ -119,15 +165,28 @@ english_loanwords: "..."}})`
 - `terminal_word` — the literal word that signals call end (e.g.
   "Goodbye" in English, "धन्यवाद" in Hindi). REQUIRED for voice.
 - `filler_phrase` — short utterance played if the LLM takes >1.5s to
-  produce the first sentence (e.g. "One moment please"). Empty string
-  disables.
+  produce the first sentence (e.g. "One moment please").
+  **To DISABLE filler entirely:** do NOT include the `filler_phrase`
+  or `filler_threshold_ms` keys in your `update_config` call. The
+  mirror schema treats both as `Optional[X]` with `default=None`;
+  omitting the keys means "no filler". Do NOT write an empty string
+  or `0` — the mirror's `min_length=1` / `gt=0` validators reject
+  those and the wizard's plain-English error feedback is a footgun
+  ("Input should have at least 1 character" is not user-friendly).
 - `filler_threshold_ms` — milliseconds before the filler kicks in
-  (default 1500).
+  (default 1500). Omit to disable along with `filler_phrase`.
 
 Configure via:
 `update_config(block=reach_layer, section=channels.voice,
 values={{terminal_word: "...", filler_phrase: "...",
 filler_threshold_ms: 1500}})`
+
+If the user says "drop the filler" / "no filler" / "remove the
+filler phrase", make TWO separate calls:
+`update_config(path="reach_layer.channels.voice.filler_phrase", value=null)`
+and
+`update_config(path="reach_layer.channels.voice.filler_threshold_ms", value=null)`
+— or simply don't write either field in your config call.
 """
     else:
         voice_note = """

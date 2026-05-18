@@ -61,11 +61,25 @@ class FieldMapping(BaseModel):
     description: str = ""
 
 
+class ProjectionConfig(BaseModel):
+    """Slim projection applied to the raw tool response before it reaches the LLM.
+
+    Mirrors the runtime ``ProjectionConfig`` in
+    ``action_gateway/src/schema/config.py``. The wizard writes this from
+    the user-confirmed response-field list in the tools phase: each
+    ``fields`` entry maps a short output name (what the LLM sees) to the
+    dot-path inside the API response that it should read.
+    """
+    model_config = ConfigDict(extra="forbid")
+    list_key: str = ""
+    fields: dict[str, str] = Field(default_factory=dict)
+
+
 class ResponseConfig(BaseModel):
     """Tool response handling — size cap + optional projection / field_mapping."""
     model_config = ConfigDict(extra="forbid")
     max_size_chars: int = Field(default=4000, gt=0, le=50000)
-    projection: Optional[dict] = None
+    projection: Optional[ProjectionConfig] = None
     field_mapping: Optional[list[FieldMapping]] = None
 
 

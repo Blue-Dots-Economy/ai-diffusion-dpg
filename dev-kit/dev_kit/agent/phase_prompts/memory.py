@@ -160,12 +160,61 @@ Do NOT propose: `current_intent`, `last_intent`, `current_subagent`,
 infrastructure and are auto-injected. Only declare user-visible domain
 state fields (e.g. `location`, `trade`, `selected_scheme`).
 
+**IMPORTANT — session-schema field `type` values are a 4-value enum:**
+
+Allowed type strings (this is the COMPLETE list — anything else is
+rejected by the mirror's `SessionFieldType` enum and the write fails):
+
+| Type     | Meaning                                                  |
+|----------|----------------------------------------------------------|
+| `string` | Free-text values like `selected_destination`, `name`     |
+| `int`    | Numbers like `party_size`, `guests` (NOT `integer`)      |
+| `enum`   | Fixed allowlist; requires a `values: [...]` field too    |
+| `list`   | List of strings, e.g. `preferred_destinations`           |
+
+Do NOT write `type: "integer"`, `type: "number"`, `type: "boolean"`,
+`type: "float"`, or any other variant. The mirror enum rejects them
+and the field write silently fails — the user sees their proposed
+schema land partly (or not at all) in the YAML. Use `int` for any
+numeric field. Use `string` for booleans (e.g. `"yes"`/`"no"`) or
+free text. Use `list` for collections. Use `enum` only when there's
+a closed value set.
+
 **Conversation style:** Present the full memory configuration as ONE block
 with suggested defaults based on the use case. Include session schema fields,
 TTL, persistent graph node types, and user_data_persistence mode. Ask:
 "Here is the suggested memory configuration — do these look good, or would
 you like to change any?" Only ask about re-engagement triggers separately if
 the agent type requires outbound follow-up.
+
+**Write EVERYTHING the user confirms — proposing is not enough.** The
+skeleton pre-fills these fields with empty defaults (`{{}}` for
+`schema`, `[]` for `merge_on_session_end`, empty `subnodes`). When you
+propose a domain-specific schema and the user says "looks good", the
+field is still at the skeleton default and your proposed values will
+be silently lost. You MUST call `update_config` for every value you
+proposed. Make ALL of these writes in the SAME turn as the user's
+confirmation:
+
+```
+update_config(path="memory_layer.state.session.schema",
+              value={{<proposed session fields>}})
+update_config(path="memory_layer.state.session.ttl_minutes",
+              value=<int minutes>)
+update_config(path="memory_layer.state.persistent.merge_on_session_end",
+              value=[<list of session fields that should persist>])
+update_config(path="memory_layer.state.persistent.graph.user_node.label",
+              value="<typically 'User'>")
+update_config(path="memory_layer.state.persistent.graph.user_node.key",
+              value="<typically 'user_id'>")
+update_config(path="memory_layer.state.persistent.graph.subnodes",
+              value={{<map of subnode types if any>}})
+```
+
+If the user said "looks good" you write the values you proposed. If
+they edited ("drop selected_date, rename group_size to party_size"),
+apply the edits in your write — never silently drop or rename what
+they didn't ask to change.
 
 ## Fields to capture this phase
 

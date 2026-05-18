@@ -14,6 +14,9 @@ EXPECTED_PATHS = {
     "knowledge.blocks.static_knowledge_base.enabled",
     "knowledge.blocks.static_knowledge_base.collection_name",
     "knowledge.blocks.static_knowledge_base.default_doc_type",
+    "knowledge.blocks.static_knowledge_base.top_k",
+    "knowledge.blocks.static_knowledge_base.similarity_threshold",
+    "knowledge.blocks.static_knowledge_base.embedding_provider",
     "knowledge.blocks.static_knowledge_base.intent_filters",
     "observability.domain",
 }

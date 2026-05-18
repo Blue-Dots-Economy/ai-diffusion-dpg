@@ -56,7 +56,8 @@ _TEST_VALUES: dict[str, Any] = {
         "I do not support that language."
     ),
     "agent_core.conversation.termination_message": "Goodbye!",
-    "agent_core.conversation.consent_message": "Do you consent?",
+    # `conversation.consent_message` was removed from FIELD_RULES — it was
+    # a legacy alt path; the runtime reads `agent.consent_prompt` instead.
     "agent_core.conversation.consent_decline_ack": "Understood, I will not proceed.",
     "agent_core.conversation.profile_complete_message": "Profile saved.",
     "agent_core.conversation.returning_user_greeting": "Welcome back!",
@@ -141,7 +142,9 @@ _TEST_VALUES: dict[str, Any] = {
     "reach_layer.channels.web.ui.sign_out_confirm": "Sign out?",
     "reach_layer.channels.web.ui.switch_user_confirm": "Switch user?",
     "reach_layer.channels.web.ui.delete_conversation_confirm": "Delete this?",
-    "reach_layer.channels.web.ke_internal_url": "http://knowledge_engine:8001",
+    # `channels.web.ke_internal_url` was removed from FIELD_RULES — it's
+    # a dpg-level infrastructure setting overridden by the
+    # KE_INTERNAL_URL env var, not user-configurable in chat.
     "reach_layer.channels.voice.raya.voice_id": (
         "0f24fb66-e495-4781-9e84-1224aa7dacde"
     ),

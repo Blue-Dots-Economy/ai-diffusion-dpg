@@ -193,7 +193,14 @@ def test_prompt_contains_no_router_advances_clause(
 # regression that strips only the format rules (or only the content
 # rules) still trips a clear failure message.
 _COMMON_RULES_MARKERS = {
-    "no-phase-leak rule": "Do NOT name wizard phases in your reply",
+    # Phase-name announcements at transitions are explicitly ALLOWED — the
+    # dev-kit UI shows a sidebar with phase names, so a brief one-line
+    # transition note ("That covers X — moving on to Y.") matches what the
+    # user already sees. The invariant we still enforce is: no internal
+    # implementation jargon (validate_partial, mirror schema, deployment
+    # team, etc.) leaks into user-facing prose.
+    "no-internals-leak rule": "NEVER expose implementation",
+    "no-blame-the-system rule": "NEVER blame the wizard, the schema",
     "numbered-question format rule": "put EVERY question on its own line as a numbered list item",
     "no-multi-question-in-prose example": 'do NOT produce',
     "propose-defaults rule": "Propose defaults — never ask open-ended",

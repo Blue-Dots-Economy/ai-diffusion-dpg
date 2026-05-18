@@ -101,12 +101,129 @@ Two sub-paths depending on what the user gave you:
 - *Pasted text*: call `parse_openapi_spec(spec=<json-or-yaml-text>)` with
   the full text the user pasted. Same return shape as the URL path.
 
-Both return `{{"ok": true, "operations": [{{id, path, method, summary}},
-...]}}`. Present the operation list, confirm which ones to add, then for
-each confirmed operation call:
+Both return `{{"ok": true, "operations": [{{id, path, method, summary,
+params, response_fields}}, ...]}}` where `params` lists every query/body
+parameter and `response_fields` lists candidate JSONPath fields the
+wizard could project from the 200 response into the LLM's tool result.
 
-`add_tool(spec={{id: ..., type: "rest_api", category: "read"|"write"|"identity",
-base_url: ..., endpoints: [...], auth: ...}})`.
+**MANDATORY pacing — do NOT skip any of these steps:**
+
+1. **Step 1: parse + show.** After `parse_openapi_spec` or
+   `fetch_openapi_spec_from_url` succeeds, render every operation in a
+   table for the user with the four columns:
+
+   | Operation | Method + Path | Params | Response fields the bot will read |
+   |---|---|---|---|
+   | `getWeatherForecast` | `GET /v1/forecast` | `latitude`, `longitude`, `current`, `timezone` | `current.temperature_2m`, `current.weather_code`, `current.wind_speed_10m` |
+   | … | … | … | … |
+
+   Pick a sensible default category (`read` for GET endpoints, `write`
+   for POST/PUT/DELETE that mutate state, `identity` for auth/profile
+   endpoints) and list it under each operation row.
+
+2. **Step 2: confirm with the user — STOP after this question.** Ask:
+
+   > "Here's what I parsed. For each operation: do the response fields
+   > look right (the bot only sees these from the API response), and
+   > should I register all of them? Reply 'yes' to confirm everything,
+   > or tell me which fields to add, drop, or rename."
+
+   **Do NOT call `add_tool` in the same turn as the parse.** The
+   wizard's dispatcher hard-rejects same-turn `add_tool` calls — if
+   you ignore this rule the tool returns an error, no tool gets
+   registered, and your reply must STILL render the operations table
+   and the confirmation question. There is no shortcut. End your
+   reply after the confirmation question — no follow-up paragraphs,
+   no preview of the next phase, no claim that tools have been
+   registered.
+
+3. **Step 3: register.** Only after the user confirms in their next
+   reply, call `add_tool` once per confirmed operation. Use the
+   parser's snake_case `suggested_id` (NOT the operationId from the
+   spec — e.g. use `get_v1_forecast`, NOT `getWeatherForecast`; the
+   accumulator's `tools[i].id` must match `^[a-z][a-z0-9_]*$`).
+
+   **Every field below is required** — REST tools without `description`,
+   `base_url`, `auth`, or `endpoints[i].name` are rejected by the
+   strict validator (the deploy-time runtime requires them too).
+   Template:
+
+   ```
+   add_tool(spec={{
+     id: "<snake_case_id, e.g. get_v1_forecast>",
+     type: "rest_api",
+     category: "read" | "write" | "identity",
+     description: "<one-line plain English; REQUIRED, non-empty>",
+     base_url: "<root URL from spec.servers[0].url; e.g. https://api.open-meteo.com>",
+     timeout_ms: 5000,
+     auth: {{
+       type: "none" | "api_key" | "bearer" | "oauth2",
+       header: "",
+       secret_env: "",
+       token_url: ""
+     }},
+     endpoints: [
+       {{
+         name: "<endpoint name; e.g. forecast — REQUIRED, non-empty>",
+         method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH",
+         path: "<path relative to base_url, e.g. /v1/forecast>",
+         params: [
+           {{
+             name: "<param name>",
+             source: "agent",
+             type: "string" | "integer" | "boolean" | "array",
+             required: true | false,
+             description: "<what this param is>"
+           }}
+         ]
+       }}
+     ],
+     response: {{
+       projection: {{
+         list_key: "<dot-path to a list in the response, or empty for object root>",
+         fields: {{
+           "<short_name_for_LLM>": "<dot-path in response>"
+         }}
+       }}
+     }}
+   }})
+   ```
+
+   - `id` MUST be snake_case (`^[a-z][a-z0-9_]*$`). Use the
+     `suggested_id` from the parser output verbatim. The runtime
+     `agent_core.connectors.<category>` matches by this id.
+   - `description` is REQUIRED and non-empty. The LLM uses it to
+     decide when to call this tool at runtime.
+   - `base_url` is at the **tool level**, not nested inside each
+     endpoint. Take it from `spec.servers[0].url`. Per-operation server
+     overrides (e.g. the booking webhook on `webhook.site`) override
+     `base_url` for that tool.
+   - `auth.type: "none"` is fine when the API has no auth (Open-Meteo,
+     test webhooks); otherwise set `secret_env` to a UPPER_SNAKE_CASE
+     name (e.g. `OPENWEATHER_API_KEY`) — the actual key value is
+     collected in the Deploy step, NEVER asked in chat.
+   - `params[i].source: "agent"` is the only sensible value here (the
+     LLM supplies these at call time). `static` is reserved for
+     deploy-time constants and not used in chat.
+   - `params[i].type`: only `string` | `integer` | `boolean` | `array`.
+     **`number` and `float` are NOT valid** — use `string` for
+     decimal numbers (latitude, longitude, pricing) and the REST
+     adapter forwards them verbatim to the HTTP query.
+   - Use `list_key=""` for endpoints that return a single object (e.g.
+     a forecast wraps `{{current: {{...}}}}`); set `list_key` to the
+     field name (e.g. `"results"`) for endpoints that wrap data in an
+     array (e.g. a geocode response wraps `{{results: [{{...}}, ...]}}`).
+   - `projection.fields` keys are the short names the LLM will see in
+     its tool result; values are dot-paths into the raw response (or
+     into each list item when `list_key` is set).
+   - If the user edited the projection ("drop wind_speed", "add
+     relative_humidity", "rename temperature_2m to temp_c"), reflect
+     their edits in `fields`. **Never** silently drop or add fields
+     the user did not ask for.
+
+Skipping the confirmation step is a regression — it removes the user's
+ability to audit which API response fields the agent will see, and the
+wizard's audit log loses the human-in-the-loop check on tool wiring.
 
 **Path B — MCP server:**
 - Ask for the MCP server URL and transport type (`sse` or `streamable_http`).

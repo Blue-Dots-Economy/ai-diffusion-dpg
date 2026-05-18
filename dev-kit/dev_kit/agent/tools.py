@@ -709,7 +709,10 @@ def add_tool(
         ``{"ok": True, "id": tool_id}`` on success.
         ``{"ok": False, "error": "..."}`` on duplicate id or validation failure.
     """
-    from dev_kit.schemas.validation import validate_partial  # noqa: PLC0415
+    from dev_kit.schemas.validation import (  # noqa: PLC0415
+        validate_domain_section,
+        validate_partial,
+    )
 
     spec = args.get("spec")
     if not isinstance(spec, dict):
@@ -718,6 +721,35 @@ def add_tool(
     tool_id = spec.get("id")
     if not tool_id:
         return {"ok": False, "error": "spec.id is required"}
+
+    # Auto-coerce four common LLM mistakes BEFORE validation so the
+    # error feedback is about real issues, not noise the wizard can fix
+    # itself:
+    #
+    #   1. params[i].source defaults to "agent" (the parser sets this on
+    #      the dataclass but the LLM often drops it when reconstructing
+    #      the spec by hand).
+    #   2. params[i].type="number" / "float" → "string" (the mirror's
+    #      ParamType allowlist excludes them; the REST adapter passes
+    #      strings through to the HTTP query verbatim, so the user can
+    #      type "12.97" without issue).
+    #   3. auth defaults to {type: "none"} on REST tools when the LLM
+    #      omits it (e.g. Open-Meteo, webhook.site test APIs have no
+    #      auth). The legacy deploy schema requires auth (not Optional),
+    #      so the dev-kit's host validation would let the spec through
+    #      but /deploy/validate would reject it later.  Inject the
+    #      no-auth block here so both layers agree.
+    #   4. response.max_size_chars defaults are filled in by the mirror;
+    #      no auto-coerce needed here.
+    if spec.get("type") != "mcp":
+        for endpoint in spec.get("endpoints", []) or []:
+            for param in endpoint.get("params", []) or []:
+                if "source" not in param:
+                    param["source"] = "agent"
+                if param.get("type") in ("number", "float"):
+                    param["type"] = "string"
+        if spec.get("auth") is None:
+            spec["auth"] = {"type": "none"}
 
     # Candidate-copy commit. add_tool touches two blocks (action_gateway
     # for the tool spec, agent_core for the matching connector) so we
@@ -730,19 +762,27 @@ def add_tool(
         return {"ok": False, "error": f"tool id {tool_id!r} already exists"}
     candidate_ag_tools.append(copy.deepcopy(spec))
 
-    errors = validate_partial("action_gateway", candidate_ag)
+    # Strict validation (omit_missing=False) — a tool spec must be
+    # complete before it reaches the accumulator. Earlier add_tool used
+    # partial validation, which silently dropped "required field missing"
+    # errors and committed broken specs that only failed at deploy-time.
+    # The Akashvani Concierge E2E shipped 3 tools missing description,
+    # base_url, auth, and endpoint name; deploy-validate then raised 27
+    # cascading errors.
+    errors = validate_domain_section(
+        "action_gateway", "tools", candidate_ag_tools, omit_missing=False
+    )
     if errors:
-        error_msg = "; ".join(errors)
         logger.warning(
             "add_tool.ag_validation_failed",
             extra={
                 "operation": "tools.add_tool",
                 "status": "failure",
-                "error": error_msg,
+                "error": errors,
                 "tool_id": tool_id,
             },
         )
-        return {"ok": False, "error": f"action_gateway validation failed: {error_msg}"}
+        return {"ok": False, "error": f"action_gateway validation failed: {errors}"}
 
     # --- Agent Core connector side ---
     # MCP tools — schemas come from the server at runtime; no static connector.
@@ -886,15 +926,33 @@ def parse_openapi_spec(
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 
-    operations = [
-        {
+    # Surface the params + a best-effort response-field projection list so
+    # the LLM can render the confirmation table the tools-phase prompt
+    # mandates (operation | method+path | params | response fields). The
+    # LLM can also see the raw spec text in its context, but giving it a
+    # pre-extracted list avoids the model having to re-walk YAML and
+    # invent JSONPaths from scratch.
+    operations: list[dict[str, Any]] = []
+    paths_spec = spec.get("paths", {})
+    for t in tools:
+        op_spec = paths_spec.get(t.path, {}).get(t.method.lower(), {})
+        response_fields = _extract_response_fields(op_spec)
+        operations.append({
             "id": t.suggested_id,
             "path": t.path,
             "method": t.method,
             "summary": t.description,
-        }
-        for t in tools
-    ]
+            "params": [
+                {
+                    "name": p.name,
+                    "type": p.type,
+                    "required": p.required,
+                    "description": p.description,
+                }
+                for p in t.params
+            ],
+            "response_fields": response_fields,
+        })
 
     logger.info(
         "parse_openapi_spec.success",
@@ -904,7 +962,95 @@ def parse_openapi_spec(
             "operation_count": len(operations),
         },
     )
-    return {"ok": True, "operations": operations}
+    return {
+        "ok": True,
+        "operations": operations,
+        # Belt-and-braces nudge for the LLM in case the prompt rule
+        # gets ignored. The tools-phase prompt mandates a
+        # parse → confirm → add_tool pacing; this echo in the tool
+        # result reinforces it from the LLM's other context channel.
+        "next_step": (
+            "Do NOT call add_tool yet. Render the operations + their "
+            "response_fields in a table for the user, then ask them to "
+            "confirm or edit the projection list. Only call add_tool "
+            "on the NEXT turn, after the user has confirmed."
+        ),
+    }
+
+
+def _extract_response_fields(op_spec: dict[str, Any]) -> list[str]:
+    """Return dotted JSONPaths for every leaf field in the 200 JSON response.
+
+    Walks ``op_spec["responses"]["200"]["content"]["application/json"]["schema"]``
+    and emits one path per primitive leaf (string/number/integer/boolean).
+    Arrays contribute their item schema's paths prefixed with ``[].`` so
+    the operator can see, e.g., ``results[].latitude``. Objects nest with
+    ``.``. Returns an empty list if the operation has no JSON 200
+    response or the schema is too opaque to walk (``$ref``-only, no
+    ``properties``, etc.).
+
+    Used by ``parse_openapi_spec`` to populate each operation's
+    ``response_fields`` projection list so the tools-phase prompt can
+    show the user which API response fields will flow into the LLM
+    context. The user can then edit the projection (drop some, add
+    others) before ``add_tool`` is called with the final
+    ``response_filter`` list.
+
+    Args:
+        op_spec: A single operation dict from
+            ``spec["paths"][<path>][<method>]``.
+
+    Returns:
+        A list of dotted JSONPath strings, deduplicated and order-preserving.
+        Empty list if the response schema cannot be walked.
+    """
+    if not isinstance(op_spec, dict):
+        return []
+    responses = op_spec.get("responses") or {}
+    if not isinstance(responses, dict):
+        return []
+    # Try 200, then any 2xx, then default.
+    success = responses.get("200") or responses.get("default")
+    if not success:
+        for code, body in responses.items():
+            if isinstance(code, str) and code.startswith("2"):
+                success = body
+                break
+    if not isinstance(success, dict):
+        return []
+    content = success.get("content") or {}
+    schema = (content.get("application/json") or {}).get("schema") or {}
+    if not isinstance(schema, dict):
+        return []
+
+    paths: list[str] = []
+    seen: set[str] = set()
+
+    def _walk(node: Any, prefix: str) -> None:
+        if not isinstance(node, dict):
+            return
+        # Inline $ref — we don't resolve refs; treat as opaque leaf.
+        if "$ref" in node:
+            if prefix and prefix not in seen:
+                seen.add(prefix)
+                paths.append(prefix)
+            return
+        node_type = node.get("type")
+        if node_type == "object" or "properties" in node:
+            props = node.get("properties") or {}
+            for key, sub in props.items():
+                _walk(sub, f"{prefix}.{key}" if prefix else key)
+        elif node_type == "array":
+            items = node.get("items") or {}
+            _walk(items, f"{prefix}[]" if prefix else "[]")
+        else:
+            # Primitive leaf — emit the path.
+            if prefix and prefix not in seen:
+                seen.add(prefix)
+                paths.append(prefix)
+
+    _walk(schema, "")
+    return paths
 
 
 def fetch_openapi_spec_from_url(

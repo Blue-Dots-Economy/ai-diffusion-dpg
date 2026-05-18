@@ -100,6 +100,23 @@ class VadConfig(BaseModel):
     stop_secs: float = Field(default=0.4, ge=0.0, le=10.0)
 
 
+class RecordingConfig(BaseModel):
+    """reach_layer.channels.voice.recording — voice-recording domain settings.
+
+    The runtime ``RecordingConfig`` in ``reach_layer/base/schema/config.py``
+    has many fields (source, webhook timeouts, storage backend, S3 prefix,
+    KMS key, etc.) — those are all deploy-time concerns set in
+    ``dev-kit/dpg/reach_layer.yaml`` or via env vars. The wizard only
+    surfaces ``consent_purpose`` to the user (Trust Layer consent grant
+    ties to this string), so the mirror keeps only that field. All other
+    keys are forbidden here; the runtime accepts them because the
+    wizard's domain YAML is deep-merged on top of the dpg defaults at
+    boot, not the other way around.
+    """
+    model_config = ConfigDict(extra="forbid")
+    consent_purpose: Optional[str] = Field(default=None, min_length=1)
+
+
 class VoiceChannelSection(BaseModel):
     """reach_layer.channels.voice — voice-channel domain config.
 
@@ -114,6 +131,7 @@ class VoiceChannelSection(BaseModel):
     filler_threshold_ms: Optional[int] = Field(default=None, gt=0, le=10000)
     barge_in_recency_ms: Optional[int] = Field(default=None, gt=0, le=10000)
     vad: Optional[VadConfig] = None
+    recording: Optional[RecordingConfig] = None
 
 
 class CliChannelSection(BaseModel):

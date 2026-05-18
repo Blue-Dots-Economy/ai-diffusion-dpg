@@ -1071,6 +1071,43 @@ async def chat(slug: str, body: ChatRequest) -> dict:
             llm_call=_build_devkit_llm_call(),
         )
     except Exception as exc:
+        # Inspect the Anthropic error type so we can return an
+        # operator-friendly message for the two failure modes the
+        # wizard cannot recover from on its own: an exhausted API
+        # credit balance and a missing/invalid API key. Both produce
+        # `anthropic.BadRequestError` and `anthropic.AuthenticationError`
+        # respectively; the raw message is unfriendly and the wizard's
+        # 500 surfaces as an empty chat reply in the UI, which looks
+        # like a wizard freeze. Surface them as a 402 / 401 with
+        # human-readable detail so the operator knows what to do.
+        msg = str(exc)
+        if "credit balance is too low" in msg or "credit_balance" in msg:
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error": "anthropic_credit_exhausted",
+                    "message": (
+                        "The Anthropic API rejected the request because your "
+                        "account credit balance is too low. Top up at "
+                        "https://console.anthropic.com/settings/billing and "
+                        "try the same message again — the wizard's state is "
+                        "preserved."
+                    ),
+                },
+            ) from exc
+        if "authentication_error" in msg.lower() or "invalid x-api-key" in msg.lower():
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "anthropic_auth_failed",
+                    "message": (
+                        "The Anthropic API rejected the request because the "
+                        "ANTHROPIC_API_KEY env var is missing, empty, or "
+                        "invalid. Set it and restart the dev-kit; the "
+                        "wizard's state is preserved."
+                    ),
+                },
+            ) from exc
         logger.error(
             "devkit.chat.failed",
             extra={

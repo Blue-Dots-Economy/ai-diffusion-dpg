@@ -142,20 +142,19 @@ below before constructing the update.
 2. From the answer, create `doc_type` labels (short snake_case) and
    `intent_filters`. Present together with the full KB config for
    confirmation.
-3. **REQUIRED — Azure Blob Storage question.** After the KB config is
-   confirmed (and BEFORE any narrative about moving to the next
-   phase), ask exactly ONE follow-up question on its own turn:
+3. **Azure Blob Storage question.** After the KB config is confirmed,
+   ask exactly ONE follow-up question on its own turn — plain phrasing,
+   no preambles like "let me ask the mandatory follow-up":
 
    > "Will your KB documents be stored in Azure Blob Storage, or only
    > uploaded locally?"
 
-   This question is MANDATORY. The phase will NOT advance until you
-   record the user's answer via `update_intake(field="uses_azure_blob",
-   ...)`. Skipping this question or assuming the default will leave the
-   wizard stuck on the knowledge phase indefinitely — the router
-   explicitly gates knowledge-phase completion on this decision because
-   the deploy form needs to know whether to surface Azure credential
-   inputs.
+   The phase will NOT advance until you record the user's answer via
+   `update_intake(field="uses_azure_blob", ...)`. Skipping this
+   question or assuming the default will leave the wizard stuck on
+   the knowledge phase indefinitely — the router explicitly gates
+   knowledge-phase completion on this decision because the deploy
+   form needs to know whether to surface Azure credential inputs.
 
    When the user answers:
    - If **yes (Azure)**: call

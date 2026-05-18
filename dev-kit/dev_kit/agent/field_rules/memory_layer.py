@@ -27,12 +27,18 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="Session TTL in minutes. Mirror: gt=0, le=10080. KKB uses 2880.",
         pydantic_class="SessionStateConfig",
     ),
+    # No default — the LLM proposes a domain-specific session schema in
+    # the memory phase (e.g. `location`, `selected_package`, `group_size`)
+    # and must call `update_config` to write it. Earlier `default={}`
+    # let the skeleton mark the field "answered" with an empty schema,
+    # so when the LLM forgot to write its proposal (verified in the
+    # Akashvani Concierge edit-style E2E) the phase auto-advanced with
+    # nothing useful in the session state.
     "state.session.schema": FieldRule(
         category="chat",
         phase="memory",
         applies_if="is_multi_turn",
         invalidated_by=["is_multi_turn", "is_companion_style", "domain_description"],
-        default={},
         description="Open map of session field definitions (type, values?, default?). Reserved names forbidden.",
         pydantic_class="SessionStateConfig",
     ),
@@ -75,12 +81,15 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="Open map of subnodes hanging off the user node (recursive graph topology).",
         pydantic_class="PersistentStateConfig",
     ),
+    # No default — the LLM proposes which session fields should persist
+    # into the user's profile at session end. With `default=[]` the
+    # skeleton marked it "answered" with empty merge rules, so the
+    # proposed profile carry-over was silently lost.
     "state.persistent.merge_on_session_end": FieldRule(
         category="chat",
         phase="memory",
         applies_if="needs_persistent_user_data and is_multi_turn",
         invalidated_by=["needs_persistent_user_data", "is_multi_turn"],
-        default=[],
         description="Rules for merging session fields → graph node at session end.",
         pydantic_class="PersistentStateConfig",
     ),

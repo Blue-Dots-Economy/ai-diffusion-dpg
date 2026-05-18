@@ -66,6 +66,40 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="Default document type for knowledge base entries.",
         pydantic_class="StaticKnowledgeBaseSection",
     ),
+    # `top_k`, `similarity_threshold`, `embedding_provider` are surfaced
+    # in the knowledge-phase proposal; without FIELD_RULES entries the
+    # LLM's `update_config` call to those paths was rejected as
+    # "unknown path", and the bot spiraled into the C2 "paths not
+    # writable" leak. Tunable defaults match the mirror schema so any
+    # project that just says "looks good" still gets a sensible
+    # configuration without the LLM doing any work.
+    "knowledge.blocks.static_knowledge_base.top_k": FieldRule(
+        category="chat",
+        phase="knowledge",
+        applies_if="has_kb",
+        invalidated_by=["has_kb"],
+        default=3,
+        description="Top-K retrieval count (1-50). Higher = more context, slower retrieval.",
+        pydantic_class="StaticKnowledgeBaseSection",
+    ),
+    "knowledge.blocks.static_knowledge_base.similarity_threshold": FieldRule(
+        category="chat",
+        phase="knowledge",
+        applies_if="has_kb",
+        invalidated_by=["has_kb"],
+        default=0.65,
+        description="Similarity threshold for retrieval (0.0-1.0). Higher = stricter matching.",
+        pydantic_class="StaticKnowledgeBaseSection",
+    ),
+    "knowledge.blocks.static_knowledge_base.embedding_provider": FieldRule(
+        category="chat",
+        phase="knowledge",
+        applies_if="has_kb",
+        invalidated_by=["has_kb"],
+        default="chroma_default",
+        description="Embedding provider for vector search. Allowed: chroma_default, openai, sentence_transformers.",
+        pydantic_class="StaticKnowledgeBaseSection",
+    ),
     "knowledge.blocks.static_knowledge_base.intent_filters": FieldRule(
         category="chat",
         phase="knowledge",
