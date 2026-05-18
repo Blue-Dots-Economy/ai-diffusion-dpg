@@ -87,10 +87,20 @@ _PHASE_STALL_FORCE_THRESHOLD = int(
 # if a deployment ever needs more.
 _HISTORY_WINDOW = int(os.environ.get("DEVKIT_HISTORY_WINDOW", "10"))
 
-# Safety cap on consecutive tool_use rounds within a single turn. Prevents
-# runaway loops if the model keeps requesting tools and never produces a text
-# response. Mirrors legacy _MAX_TOOL_ROUNDS behavior.
-_MAX_TOOL_ROUNDS = int(os.environ.get("DEVKIT_MAX_TOOL_ROUNDS", "10"))
+# Safety cap on consecutive tool_use rounds within a single user turn.
+# Each round = one full LLM call. Tightened 10 → 4 to slash the worst-
+# case cost of a single turn (1 initial + N retries = N+1 LLM calls).
+# In practice the LLM batches many tool_use blocks into one response —
+# the round count is the number of times the model re-thinks AFTER
+# seeing tool_results. 4 covers: initial proposal, retry on validation
+# rejection, second retry with the corrected shape, and a final pass to
+# emit user-facing text. If a turn legitimately needs more rounds (e.g.
+# heavy workflow-graph creation) the LLM can chain tool calls within a
+# single round; only error-recovery loops need multiple rounds. Tighter
+# cap also bounds the credit burn when the LLM gets stuck retrying a
+# broken write — earlier 10-round budget could spend ~10× a normal turn
+# on a single hopeless tool-use loop.
+_MAX_TOOL_ROUNDS = int(os.environ.get("DEVKIT_MAX_TOOL_ROUNDS", "4"))
 
 # Maximum number of phase transitions to chain inside a SINGLE call to
 # ``run_turn``. When a phase completes (e.g. tier intake captures the last
