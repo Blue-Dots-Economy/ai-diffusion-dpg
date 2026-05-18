@@ -210,7 +210,12 @@ class UserStateDefinition(BaseModel):
 
 
 class UserStateModel(BaseModel):
-    """Conversational-agent user-state model. When enabled, default_state must be one of declared states."""
+    """Conversational-agent user-state model.
+
+    Invariant when fully configured: `default_state` references an `id` in
+    `states`. Enforced ONLY once `states` is non-empty — see
+    `default_must_be_in_states` below.
+    """
     model_config = ConfigDict(extra="forbid")
     enabled: bool = False
     default_state: str = ""
@@ -218,13 +223,34 @@ class UserStateModel(BaseModel):
 
     @model_validator(mode="after")
     def default_must_be_in_states(self) -> "UserStateModel":
-        """When enabled, default_state must reference an id in the declared states list."""
-        if self.enabled:
-            ids = {s.id for s in self.states}
-            if not self.default_state or self.default_state not in ids:
-                raise ValueError(
-                    f"default_state '{self.default_state}' must be one of declared states: {sorted(ids)}"
-                )
+        """When the model is fully populated, default_state must be a declared id.
+
+        The dev-kit's predetermined cascade flips `enabled=True` on tier
+        completion for companion-style agents, but `states` and
+        `default_state` are populated only later in the user_state phase. If
+        this validator fired during that gap, every `update_config` write to
+        `conversation.*` (e.g. `consent_message`) in language/memory/trust
+        phases would be rejected — exactly the loop the GoGuide chat hit.
+
+        We deliberately keep the check lenient at chat time:
+
+        - `enabled=False`                      → no constraint (vacuous OK)
+        - `enabled=True`, `states=[]`          → partial draft, accept it
+        - `enabled=True`, `states=[...]`       → enforce `default_state in states`
+
+        Strict deploy-time enforcement happens against the runtime schema in
+        the pre-deploy dry-run (see `renderer.runtime_validate`).
+        """
+        if not self.enabled:
+            return self
+        if not self.states:
+            # Partial draft — user_state phase has not populated `states` yet.
+            return self
+        ids = {s.id for s in self.states}
+        if not self.default_state or self.default_state not in ids:
+            raise ValueError(
+                f"default_state '{self.default_state}' must be one of declared states: {sorted(ids)}"
+            )
         return self
 
 
@@ -521,6 +547,15 @@ class ReachLayerDefaultsSection(BaseModel):
 # -- agent_core.observability (observability phase) --------------------------
 
 class ObservabilitySection(BaseModel):
-    """agent_core.observability — domain identifier (slug pattern)."""
+    """agent_core.observability — domain identifier (slug pattern).
+
+    The pattern accepts both ``-`` and ``_`` separators so the mirror does
+    not reject values produced by ``derived_fields.slug()`` (underscore-
+    based) OR by the project-creation slug in ``app.py:_slugify`` (hyphen-
+    based). The runtime ``ObservabilityConfig.domain`` field has no
+    pattern constraint at all (``agent_core/src/schema/config.py``), so
+    the only reason this regex exists is to keep the LLM from writing
+    obvious junk values (capitalised names, spaces, etc.).
+    """
     model_config = ConfigDict(extra="forbid")
-    domain: str = Field(..., min_length=1, pattern=r"^[a-z][a-z0-9-]*$")
+    domain: str = Field(..., min_length=1, pattern=r"^[a-z][a-z0-9_-]*$")

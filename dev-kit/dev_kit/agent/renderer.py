@@ -166,6 +166,16 @@ def _prepare_block_data(block: str, accumulator: dict[str, dict]) -> dict[str, A
         if isinstance(agent_cfg.get("max_tool_rounds"), int) and agent_cfg["max_tool_rounds"] < 1:
             agent_cfg["max_tool_rounds"] = 1
 
+    # reach_layer is the only block whose runtime YAML wraps under a
+    # top-level `reach_layer:` key (its MergedConfig declares
+    # `reach_layer: ReachLayerConfig`). FIELD_RULES paths are flat —
+    # `channels.web.ui.app_name`, `common.observability.domain` — so the
+    # accumulator stores those keys flat as well. Wrap here, exactly once,
+    # so the rendered YAML, the validate_partial pass, and the runtime
+    # dry-run all see the wrapped shape the runtime expects.
+    if block == "reach_layer" and "reach_layer" not in data:
+        data = {"reach_layer": data}
+
     return data
 
 
@@ -375,6 +385,13 @@ def load_block_from_file(project_path: Path, block: str) -> dict:
     # auto-generated TTS block so the author only sees prose they wrote.
     if block == "agent_core" and isinstance(parsed, dict):
         parsed = strip_voice_tts_from_suffix(parsed)
+    # Reverse of render-time wrap: reach_layer on disk has a top-level
+    # `reach_layer:` key; the accumulator stores it flat. Unwrap so a
+    # round-trip (render → reload → render) is stable and so the
+    # accumulator stays in the same flat shape FIELD_RULES write to.
+    if block == "reach_layer" and isinstance(parsed, dict):
+        if list(parsed.keys()) == ["reach_layer"] and isinstance(parsed["reach_layer"], dict):
+            parsed = parsed["reach_layer"]
     return parsed
 
 

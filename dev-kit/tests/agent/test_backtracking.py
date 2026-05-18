@@ -169,7 +169,7 @@ def _scripted_llm(scripted: list[list[ToolCall]]):
     """
     counter = {"i": 0}
 
-    def _call(system_prompt: str, user_message: str) -> LLMResponse:
+    def _call(system_prompt: str, messages: list[dict]) -> LLMResponse:
         idx = counter["i"]
         counter["i"] += 1
         if idx >= len(scripted):
@@ -194,7 +194,7 @@ def _auto_answer_llm(slug_root: Path, intake: IntakeState):
         A callable matching ``phase_driver.run_turn``'s ``llm_call`` contract.
     """
 
-    def _call(system_prompt: str, user_message: str) -> LLMResponse:
+    def _call(system_prompt: str, messages: list[dict]) -> LLMResponse:
         phase = load_current_phase(slug_root)
         field_status = load_field_status(slug_root / "_meta" / "field_status.json")
         pending = collect_pending_fields(phase, intake, field_status)
@@ -265,17 +265,25 @@ def test_backtracking_flips_has_kb_returns_to_language(tmp_path: Path) -> None:
         == "needs_re_asking"
     )
 
-    # And at least one knowledge-phase chat field is also marked re-ask.
-    re_ask_paths = {
-        p for p, s in field_status.items() if s == "needs_re_asking"
-    }
+    # Knowledge-phase chat fields that were `not_applicable` (has_kb=False)
+    # have transitioned to `applicable`. Per the cascade contract they
+    # now sit at `pending` (no default) or `answered` (default seeded) —
+    # NOT `needs_re_asking`, which only makes sense for fields the user
+    # had already answered. The router will still visit the knowledge
+    # phase after the language re-ask completes, because the phase has
+    # pending chat fields.
     knowledge_chat_paths = {
         p
         for p, rule in AGGREGATED_FIELD_RULES.items()
         if rule.category == "chat" and rule.phase == "knowledge"
     }
-    assert re_ask_paths & knowledge_chat_paths, (
-        "expected at least one knowledge-phase chat field to be marked needs_re_asking"
+    activated_kb_paths = {
+        p for p in knowledge_chat_paths
+        if field_status.get(p) in ("pending", "answered")
+    }
+    assert activated_kb_paths, (
+        "expected knowledge-phase chat fields to have transitioned out of "
+        "not_applicable now that has_kb=True"
     )
 
 

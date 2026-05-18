@@ -88,27 +88,57 @@ def on_intake_update(
         AttributeError: If ``field`` is not a valid attribute of ``IntakeState``.
     """
     old_value = getattr(state, field)
+
+    # Record the user's explicit answer to a tier binary field BEFORE the noop
+    # check below. `app.py` seeds all 7 binary flags to False at project
+    # creation; without this ordering, an explicit "no" answer (False → False)
+    # would short-circuit as a noop and the flag would never be marked seen.
+    # The result was tier never completing for projects with any "no" answers,
+    # and the LLM then hallucinating phase transitions in its prose. Recording
+    # the answer here decouples "user gave an answer" from "value changed".
+    if field in BINARY_INTAKE_FIELDS and field not in state.binary_flags_seen:
+        state.binary_flags_seen.append(field)
+        if not state.completed and BINARY_INTAKE_FIELDS.issubset(set(state.binary_flags_seen)):
+            state.completed = True
+            state.touch()
+            logger.info(
+                "router.intake_completed",
+                extra={
+                    "operation": "router.intake_completed",
+                    "status": "success",
+                    "binary_flags_seen": list(state.binary_flags_seen),
+                },
+            )
+
+    # When the LLM records the user's answer to the Azure-Blob question,
+    # flip `azure_blob_decided=True` so `_is_phase_complete("knowledge")`
+    # can release the phase. The boolean `uses_azure_blob` alone is
+    # ambiguous (False = default OR False = answered no), so we track the
+    # decision flag separately. See the comment on the field in
+    # intake_state.py for the full rationale.
+    if field == "uses_azure_blob" and not state.azure_blob_decided:
+        state.azure_blob_decided = True
+        state.touch()
+        logger.info(
+            "router.azure_blob_decided",
+            extra={
+                "operation": "router.azure_blob_decided",
+                "status": "success",
+                "uses_azure_blob": new_value,
+            },
+        )
+
     if old_value == new_value:
-        return {"ok": True, "noop": True}
+        return {
+            "ok": True,
+            "noop": True,
+            "field": field,
+            "new_value": new_value,
+            "binary_flag_recorded": field in BINARY_INTAKE_FIELDS,
+        }
 
     setattr(state, field, new_value)
     state.touch()
-
-    # Track this update if it's one of the 7 binary intake fields. When all 7
-    # have been seen, mark intake_state.completed = True. The tier phase's
-    # completion check (router._is_phase_complete) gates on this.
-    if field in BINARY_INTAKE_FIELDS and field not in state.binary_flags_seen:
-        state.binary_flags_seen.append(field)
-    if not state.completed and BINARY_INTAKE_FIELDS.issubset(set(state.binary_flags_seen)):
-        state.completed = True
-        logger.info(
-            "router.intake_completed",
-            extra={
-                "operation": "router.intake_completed",
-                "status": "success",
-                "binary_flags_seen": list(state.binary_flags_seen),
-            },
-        )
 
     affected: list[tuple[str, FieldRule]] = [
         (full_path, rule)
@@ -153,26 +183,68 @@ def on_intake_update(
                 clear_path(accumulator[block], relative_path)
                 field_status[full_path] = "not_applicable"
             else:
-                # If the field was not_applicable and we have a default,
-                # seed the default and mark it needs_re_asking.
-                if (
-                    rule.default is not None
-                    and field_status.get(full_path) == "not_applicable"
-                ):
-                    set_path(accumulator[block], relative_path, rule.default)
-                field_status[full_path] = "needs_re_asking"
-                earliest_phase = _earlier_phase(earliest_phase, rule.phase)
-                # Point 3: log each chat field marked needs_re_asking
-                logger.info(
-                    "router.field_marked_needs_re_asking",
-                    extra={
-                        "operation": "router.field_marked_needs_re_asking",
-                        "status": "success",
-                        "path": full_path,
-                        "triggered_by": field,
-                        "reason": "intake_field_changed",
-                    },
-                )
+                # `needs_re_asking` only makes sense for fields the user has
+                # actually answered (or had seeded as `not_applicable` and is
+                # now becoming applicable). For fields that are `pending` or
+                # have never been entered into field_status, leave them
+                # alone — there is no answer to invalidate, and marking 43
+                # pristine fields as "needs re-asking" before the chat has
+                # started misleads both the LLM (which thinks it must
+                # re-ask) and the UI counters.
+                current = field_status.get(full_path)
+                if current == "answered":
+                    field_status[full_path] = "needs_re_asking"
+                    earliest_phase = _earlier_phase(earliest_phase, rule.phase)
+                    logger.info(
+                        "router.field_marked_needs_re_asking",
+                        extra={
+                            "operation": "router.field_marked_needs_re_asking",
+                            "status": "success",
+                            "path": full_path,
+                            "triggered_by": field,
+                            "reason": "answered_invalidated",
+                            "previous_status": "answered",
+                        },
+                    )
+                elif current == "not_applicable":
+                    # Field just transitioned from not_applicable →
+                    # applicable. Treat it like a fresh skeleton field
+                    # rather than blindly marking `needs_re_asking`:
+                    #   - non-None default → write it + mark `answered`
+                    #     (the framework default IS the answer, same as
+                    #     `skeleton.build_skeleton`)
+                    #   - auto_answer → mark `answered`
+                    #   - otherwise → `pending` (LLM will propose when
+                    #     it gets to that phase)
+                    # The earlier blanket `needs_re_asking` created false
+                    # work: e.g. `memory_layer.state.persistent.merge_on_session_end`
+                    # (default=[]) was forced into a confirmation loop
+                    # the moment `needs_persistent_user_data` flipped on,
+                    # blocking the memory phase from advancing.
+                    new_status: str
+                    if rule.default is not None:
+                        set_path(accumulator[block], relative_path, rule.default)
+                        new_status = "answered"
+                    elif getattr(rule, "auto_answer", False):
+                        new_status = "answered"
+                    else:
+                        new_status = "pending"
+                    field_status[full_path] = new_status
+                    logger.info(
+                        "router.field_status_reset_from_not_applicable",
+                        extra={
+                            "operation": "router.field_status_reset",
+                            "status": "success",
+                            "path": full_path,
+                            "triggered_by": field,
+                            "reason": "not_applicable_became_applicable",
+                            "previous_status": "not_applicable",
+                            "new_status": new_status,
+                        },
+                    )
+                # else (`pending` / missing): no action — skeleton will fill
+                # in the baseline at tier completion; the field has nothing
+                # to be re-asked about because it has never been answered.
 
         elif rule.category == "derived":
             # Flag for renderer recompute; derived-stale tracking is Phase 9 work.
@@ -278,6 +350,14 @@ def _is_phase_complete(
     """
     if phase == "tier":
         return state.completed
+    # Knowledge phase has an out-of-band intake question (Azure Blob Storage)
+    # that isn't part of FIELD_RULES — the LLM must ask it AFTER the KB chat
+    # fields are answered, then call `update_intake(field="uses_azure_blob",
+    # ...)`. Without this gate the LLM has no router-side reason to ask the
+    # question and skips it, leaving the deploy form unable to decide whether
+    # to surface Azure credential inputs.
+    if phase == "knowledge" and state.has_kb and not state.azure_blob_decided:
+        return False
     for full_path, rule in AGGREGATED_FIELD_RULES.items():
         if rule.category != "chat" or rule.phase != phase:
             continue
@@ -405,9 +485,70 @@ def decide_next_phase(
                     "reason": "phase_complete",
                 },
             )
+        else:
+            # Phase is complete but no further relevant phase exists — the
+            # wizard has reached the terminal phase (review).
+            logger.info(
+                "router.decide_next_phase",
+                extra={
+                    "operation": "router.decide_next_phase",
+                    "status": "stay",
+                    "from_phase": current_phase,
+                    "to_phase": current_phase,
+                    "reason": "wizard_complete",
+                },
+            )
         return result
 
+    # Phase is NOT complete. Surface which fields are still blocking the
+    # transition so the user and the developer can see WHY the router
+    # decided to stay (this was the GoGuide regression: "phase transition
+    # is not happening" was invisible without this log).
+    pending = _pending_field_paths_for_phase(current_phase, state, field_status)
+    logger.info(
+        "router.decide_next_phase",
+        extra={
+            "operation": "router.decide_next_phase",
+            "status": "stay",
+            "from_phase": current_phase,
+            "to_phase": current_phase,
+            "reason": "phase_incomplete",
+            "pending_field_count": len(pending),
+            "pending_fields": pending[:25],  # cap log payload at 25 paths
+        },
+    )
     return current_phase
+
+
+def _pending_field_paths_for_phase(
+    phase: str, state: IntakeState, field_status: dict[str, str]
+) -> list[str]:
+    """Return the list of applicable chat-field paths in ``phase`` that are not
+    yet ``answered``.
+
+    Mirrors the iteration in ``_is_phase_complete`` but collects the paths
+    instead of returning the first failure. Used for the structured "stay"
+    log emitted by ``decide_next_phase`` so it is obvious WHICH fields are
+    blocking advancement.
+    """
+    if phase == "tier":
+        # Tier has no chat fields; completeness gates on state.completed,
+        # which the caller already evaluated.
+        return [] if state.completed else ["intake_state.binary_flags_seen (< 7 captured)"]
+    pending: list[str] = []
+    # Mirror the out-of-band gate in `_is_phase_complete` so the "stay"
+    # log surfaces the Azure decision as a blocker.
+    if phase == "knowledge" and state.has_kb and not state.azure_blob_decided:
+        pending.append("intake_state.uses_azure_blob [not_yet_asked]")
+    for full_path, rule in AGGREGATED_FIELD_RULES.items():
+        if rule.category != "chat" or rule.phase != phase:
+            continue
+        if not eval_expr(rule.applies_if, state):
+            continue
+        status = field_status.get(full_path, "pending")
+        if status != "answered":
+            pending.append(f"{full_path} [{status}]")
+    return pending
 
 
 def on_config_update(
@@ -418,14 +559,27 @@ def on_config_update(
 ) -> dict[str, Any]:
     """Apply a user's chat answer to the accumulator with mirror validation.
 
-    Steps:
-    1. Split ``path`` into block and relative_path.
-    2. Look up the FieldRule. Raise ValueError if absent or not a chat field.
-    3. Write ``value`` via ``set_path``.
-    4. Run ``validate_partial`` against the mirror schema. On failure, revert
-       the write via ``clear_path`` and raise ValueError.
-    5. Mark ``field_status[path] = "answered"``.
-    6. Return ``{"ok": True, "path": path, "value": value}``.
+    **Validation-before-write guarantee** (mirrors the OLD ConfigAccumulator
+    pattern from main; preserved verbatim so wrong values never reach the
+    rendered YAML):
+
+    1. Look up the FieldRule. Raise ``ValueError`` if the path is unknown
+       or the rule's category is not ``"chat"``.
+    2. Build a deep-copied **candidate** of ``accumulator[block]``.
+    3. Apply ``set_path(candidate, relative_path, value)`` to the candidate.
+    4. Validate the candidate via ``validate_partial(block, candidate)``.
+    5. If validation reports errors, raise ``ValueError`` — ``accumulator``
+       is **never** mutated, so no bad value can leak into the per-turn
+       YAML render at the end of ``phase_driver.run_turn``.
+    6. Only on success: commit the candidate (``accumulator[block] = candidate``)
+       and mark ``field_status[path] = "answered"``.
+
+    This is intentionally a candidate-copy commit rather than a
+    mutate-then-revert. With mutate-then-revert, an unexpected exception
+    raised mid-validation (e.g. a bug in a Pydantic validator) would leave
+    the live accumulator in a partial state; with candidate-copy commit,
+    the live accumulator is touched exactly once, after validation
+    succeeds.
 
     Persistence (saving accumulator/field_status to disk) is the caller's
     responsibility — this function only mutates the in-memory dicts.
@@ -434,8 +588,8 @@ def on_config_update(
         path: Full dotted path including block prefix, e.g.
             ``"agent_core.conversation.blocked_message"``.
         value: The user-provided value (raw Python type).
-        accumulator: Per-block YAML dicts — mutated in-place on success,
-            reverted on validation failure.
+        accumulator: Per-block YAML dicts — mutated in-place ONLY when
+            validation passes.
         field_status: Field status registry — mutated in-place on success
             (set to ``"answered"``), left unchanged on failure.
 
@@ -446,10 +600,11 @@ def on_config_update(
         ValueError: If ``path`` is not in AGGREGATED_FIELD_RULES.
         ValueError: If the rule's category is not ``"chat"``.
         ValueError: If ``validate_partial`` reports constraint violations
-            (accumulator is reverted before raising).
+            (accumulator is left untouched before raising).
     """
     # Lazy import to avoid circular import risk; validation module is heavy.
     from dev_kit.schemas.validation import validate_partial  # noqa: PLC0415
+    import copy  # noqa: PLC0415
 
     rule = AGGREGATED_FIELD_RULES.get(path)
     if rule is None:
@@ -463,16 +618,14 @@ def on_config_update(
 
     block, relative_path = path.split(".", 1)
 
-    # Capture pre-write state so we can revert on validation failure.
-    import copy
-    pre_write_snapshot = copy.deepcopy(accumulator[block])
+    # Candidate-copy commit pattern: build the would-be merged result on a
+    # deep copy first, validate it, and only swap in if validation passes.
+    # The live accumulator is never mutated until the commit line below.
+    candidate = copy.deepcopy(accumulator.get(block, {}))
+    set_path(candidate, relative_path, value)
 
-    set_path(accumulator[block], relative_path, value)
-
-    errors = validate_partial(block, accumulator[block])
+    errors = validate_partial(block, candidate)
     if errors:
-        # Revert — restore block to snapshot.
-        accumulator[block] = pre_write_snapshot
         _section_on_fail = relative_path.split(".")[0] if "." in relative_path else relative_path
         logger.warning(
             "router.on_config_update",
@@ -489,6 +642,9 @@ def on_config_update(
             f"Validation failed for {path!r}: {'; '.join(errors)}"
         )
 
+    # Commit the validated candidate. After this line both `accumulator`
+    # and `field_status` reflect the successful write.
+    accumulator[block] = candidate
     field_status[path] = "answered"
 
     # Point 2: log config field updated — promote DEBUG → INFO, add required fields

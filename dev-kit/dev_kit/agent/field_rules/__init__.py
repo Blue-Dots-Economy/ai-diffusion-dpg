@@ -55,6 +55,13 @@ class FieldRule:
     description: Optional[str] = None
     applies_if: Optional[str] = None
     invalidated_by: list[str] = dc_field(default_factory=list)
+    # When True, the skeleton marks this chat field as ``answered`` even
+    # though no concrete default value is written. Use for fields whose
+    # Pydantic default (``None`` / absent) is a meaningful "inherit from
+    # parent" or "use framework default" signal — the user has nothing
+    # to add, but ``default=None`` would otherwise leave the field at
+    # ``pending`` forever and stall phase advancement.
+    auto_answer: bool = False
 
     # For deploy and deploy-overridable chat
     advanced: bool = False

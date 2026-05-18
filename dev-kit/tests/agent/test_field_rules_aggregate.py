@@ -40,7 +40,7 @@ def test_predetermined_rules_reference_intake_fields_only():
             # Route / tool name literals
             "knowledge_engine", "knowledge_retrieval",
             # Python function/expression helpers used in rule expressions
-            "slug", "lang_code", "f",
+            "slug", "project_slug", "lang_code", "f",
             # Common string literals / kwarg names in rule expressions
             "disabled", "name", "route", "type", "query", "string",
             "workflow", "user_id",

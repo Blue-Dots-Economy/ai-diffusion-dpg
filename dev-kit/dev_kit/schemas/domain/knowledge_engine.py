@@ -56,11 +56,28 @@ class StaticKnowledgeBaseSection(BaseModel):
 
     @model_validator(mode="after")
     def intent_filter_requires_mappings_when_enabled(self) -> "StaticKnowledgeBaseSection":
-        if self.metadata_filters.use_intent_filter and not self.intent_filters:
-            raise ValueError(
-                "metadata_filters.use_intent_filter=True requires intent_filters to be non-empty "
-                "(or set use_intent_filter=False to allow searching all doc_types)"
-            )
+        """Enforce intent_filter ↔ intent_filters consistency only when filters exist.
+
+        `use_intent_filter` defaults to True. The dev-kit accumulator starts
+        with an empty `intent_filters={}` and the knowledge phase populates
+        it later. If this validator fired on empty intent_filters, EVERY
+        `update_config` write to `knowledge.blocks.static_knowledge_base.*`
+        (e.g. setting `collection_name` before intent_filters are ready)
+        would be rejected.
+
+        Chat-time policy:
+
+        - `use_intent_filter=False`                                → no check
+        - `use_intent_filter=True`,  `intent_filters={}`           → partial draft, accept
+        - `use_intent_filter=True`,  `intent_filters={...}`        → fully configured, no violation possible
+
+        Strict deploy-time enforcement happens against the runtime schema in
+        the pre-deploy dry-run.
+        """
+        # All current combinations are accepted at chat time. The dev-kit
+        # mirror used to fail on (use_intent_filter=True, intent_filters={})
+        # but that was an over-eager partial-state check; runtime dry-run
+        # catches the real misconfiguration at deploy.
         return self
 
 

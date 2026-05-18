@@ -75,3 +75,41 @@ def test_tools_expectation_when_has_external_tools():
 def test_tools_expectation_when_no_external_tools():
     result = build([], "", "", _intake(has_external_tools=False))
     assert "does **NOT** need external tools" in result or "NOT" in result
+
+
+def test_tools_phase_documents_all_three_entry_paths() -> None:
+    """Tools-phase prompt must describe all three independent paths to add
+    external tools: OpenAPI spec (URL or paste), MCP server, and manual REST.
+
+    Each path must name the concrete tool the LLM should call so the
+    LLM does not invent legacy names (`fetch_openapi_spec_from_url` was
+    trimmed from the surface in commit b0c2d33 and restored as the 9th
+    canonical tool; without an explicit prompt entry, the LLM would
+    keep asking users to paste multi-thousand-line specs by hand).
+    """
+    result = build([], "", "", _intake(has_external_tools=True))
+
+    # All three path headers present.
+    assert "Path A — OpenAPI spec" in result
+    assert "Path B — MCP server" in result
+    assert "Path C — Manual REST API" in result
+
+    # Each path names the correct tool call.
+    # Path A: both fetch_openapi_spec_from_url AND parse_openapi_spec
+    assert "fetch_openapi_spec_from_url" in result
+    assert "parse_openapi_spec" in result
+    # Path B: discover_mcp_tools (now a real implementation)
+    assert "discover_mcp_tools" in result
+    # All paths converge on add_tool
+    assert "add_tool" in result
+
+
+def test_tools_phase_does_not_tell_llm_to_paste_when_url_given() -> None:
+    """The old workaround copy ("ask them to paste the spec contents (the
+    wizard does not fetch URLs)") must be gone now that the URL fetcher
+    is implemented. Otherwise the LLM still asks users to paste specs by
+    hand even when they offered a URL.
+    """
+    result = build([], "", "", _intake(has_external_tools=True))
+    assert "the wizard does not fetch URLs" not in result
+    assert "ask them to paste the spec contents" not in result

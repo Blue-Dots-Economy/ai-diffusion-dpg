@@ -59,7 +59,9 @@ def eval_rule(rule_str: str, state: IntakeState) -> Any:
 
     Rule format: `set: <python_expression>`. The expression is evaluated in the
     same restricted namespace as applies_if, augmented with known rule-level
-    constants (e.g. `_CANONICAL_DIGNITY_QUESTIONS`).
+    constants (e.g. `_CANONICAL_DIGNITY_QUESTIONS`) and the derived-field
+    helpers ``slug`` (callable) and ``project_slug`` (precomputed) so rules
+    can reference the project slug without each one re-implementing it.
 
     If the expression cannot be evaluated (e.g. it references an undefined
     name like a placeholder class), returns the ``_SKIP`` sentinel so the
@@ -80,6 +82,15 @@ def eval_rule(rule_str: str, state: IntakeState) -> Any:
     expr = rule_str.removeprefix("set:").strip()
     namespace = {f: getattr(state, f) for f in IntakeState.__dataclass_fields__}
     namespace.update(_RULE_EXTRAS)
+    # Expose `slug(...)` and `project_slug` so predetermined rules can
+    # reference the project's hyphen-separated slug — mirrors what
+    # `derived_fields.apply_derived_fields` provides. Without this,
+    # rules like `set: f"{slug}_knowledge"` (for the KB collection
+    # name) silently return _SKIP and the field is never written.
+    from dev_kit.agent.derived_fields import slug as _slug_fn  # noqa: PLC0415
+    project_name = getattr(state, "project_name", "") or ""
+    namespace["slug"] = _slug_fn
+    namespace["project_slug"] = _slug_fn(project_name)
     try:
         return eval(expr, {"__builtins__": {}}, namespace)
     except Exception as exc:  # noqa: BLE001
@@ -161,9 +172,22 @@ def build_skeleton(
             if not applies:
                 field_status[full_path] = "not_applicable"
                 continue
-            field_status[full_path] = "pending"
             if rule.default is not None:
+                # The FIELD_RULES default IS the answer for this field — the
+                # framework has a safe default, the user is not required to
+                # pick anything, so mark it `answered` immediately. Without
+                # this, the router would block phase advancement on chat
+                # fields the LLM and user have nothing useful to say about
+                # (e.g. `language_normalisation.enabled=True` or any
+                # inheritance-via-empty-string field). The GoGuide
+                # regression: seven such fields in language phase kept the
+                # phase stuck at `pending` forever.
+                #
+                # Invalidation still moves these to `needs_re_asking` via
+                # `router.on_intake_update`, so user-driven re-confirmation
+                # remains intact when intake flags flip.
                 set_path(accumulator[block], relative_path, rule.default)
+                field_status[full_path] = "answered"
                 # Point 8: log chat field written with its default
                 logger.info(
                     "skeleton.field_written",
@@ -173,8 +197,31 @@ def build_skeleton(
                         "path": full_path,
                         "category": rule.category,
                         "value_kind": "chat_default",
+                        "field_status": "answered",
                     },
                 )
+            elif rule.auto_answer:
+                # `default=None` is a *meaningful* default for this field
+                # (typically "inherit from parent" — see the
+                # `nlu_processor.provider` / `language_normalisation.provider`
+                # FieldRule entries, whose Pydantic field is
+                # `Optional[ProviderField] = None`). Nothing to write, but
+                # the field IS configured — mark answered so the router
+                # does not block on it.
+                field_status[full_path] = "answered"
+                logger.info(
+                    "skeleton.field_written",
+                    extra={
+                        "operation": "skeleton.field_written",
+                        "status": "success",
+                        "path": full_path,
+                        "category": rule.category,
+                        "value_kind": "auto_answer",
+                        "field_status": "answered",
+                    },
+                )
+            else:
+                field_status[full_path] = "pending"
 
         elif rule.category == "predetermined":
             if not applies:

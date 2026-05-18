@@ -70,9 +70,35 @@ def test_build_renders_pending_fields():
 def test_memory_persistent_note_when_needed():
     result = build([], "", "", _intake(needs_persistent_user_data=True))
     assert "saved" in result
-    assert "needs_persistent_user_data" in result or "cross-session" in result
+    # The persistence-required branch must surface the "across sessions"
+    # framing so the LLM grounds its proposal in the user's intake answer.
+    # Internal flag name `needs_persistent_user_data` is intentionally NOT
+    # in user-facing prompt copy (per the no-flag-name-leak rule).
+    assert "across sessions" in result.lower() or "cross-session" in result.lower()
 
 
 def test_memory_anonymous_note_when_not_needed():
     result = build([], "", "", _intake(needs_persistent_user_data=False))
     assert "anonymous" in result
+
+
+def test_memory_persistent_proposes_concrete_profile_fields() -> None:
+    """When persistence is needed, the prompt must instruct the LLM to
+    propose a concrete profile schema with example fields — not ask an
+    open-ended "what should the bot remember?".
+
+    GoGuide regression: the bot asked "What profile fields should the bot
+    remember about returning users (e.g., name, email, phone, preferred
+    destinations, trip history)?" — an open-ended question with hints in
+    parentheses. The user wanted the bot to COMMIT to a proposal up
+    front and ask for confirmation.
+    """
+    result = build([], "", "", _intake(needs_persistent_user_data=True))
+
+    # Explicit anti-open-ended marker.
+    assert 'do NOT ask "what fields do you want to remember?"' in result
+    # A concrete example schema appears so the LLM has a default proposal.
+    assert "preferred_destinations" in result
+    assert "past_bookings" in result
+    # Tied to language-phase signal_intents so the writes line up.
+    assert "entity_to_profile_field" in result

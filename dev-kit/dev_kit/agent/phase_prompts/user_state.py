@@ -13,7 +13,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from dev_kit.agent.phase_prompts._helpers import _path_of, _rule_of, _render_fields
+from dev_kit.agent.phase_prompts._helpers import (
+    _phase_focus_header,
+    _closing_block,
+    _common_rules,
+    _path_of,
+    _render_fields,
+    _rule_of,
+)
 
 if TYPE_CHECKING:
     from dev_kit.agent.field_rules import FieldRule
@@ -70,12 +77,14 @@ def build(
             "as the user's situation evolves across sessions."
         )
 
-    return f"""# Phase: User State
+    return f"""{_phase_focus_header("user_state", pending_fields)}# Phase: User State
 
-You are now defining the user's mental journey — the cognitive and emotional
+You are defining the user's mental journey — the cognitive and emotional
 states users pass through and how the agent should behave in each.
 
 {applicability}
+
+{_common_rules()}
 
 **What to configure:**
 
@@ -117,6 +126,5 @@ jittery state transitions on ambiguous turns.
 
 {refs_section}
 
-When the user state model is declared (or confirmed as not needed), the router
-advances to the trust phase automatically. Do NOT call set_phase.
+{_closing_block()}
 """

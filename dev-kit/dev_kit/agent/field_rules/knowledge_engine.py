@@ -46,7 +46,11 @@ FIELD_RULES: dict[str, FieldRule] = {
     ),
     "knowledge.blocks.static_knowledge_base.collection_name": FieldRule(
         category="predetermined",
-        rule='set: f"{slug}_knowledge" if has_kb else None',
+        # `project_slug` is the hyphen-separated slug computed from
+        # `intake_state.project_name` and exposed by `skeleton.eval_rule`.
+        # When no KB is needed the rule returns None and the renderer
+        # skips writing the field; the schema's own default kicks in.
+        rule='set: f"{project_slug}_knowledge" if has_kb else None',
         invalidated_by=["has_kb", "project_name"],
         pydantic_class="StaticKnowledgeBaseSection",
     ),

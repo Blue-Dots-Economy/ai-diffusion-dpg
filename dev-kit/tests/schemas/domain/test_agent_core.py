@@ -273,6 +273,34 @@ def test_user_state_model_disabled_skips_check():
     UserStateModel(enabled=False, default_state="", states=[])
 
 
+def test_user_state_model_enabled_with_empty_states_accepted_as_partial_draft():
+    """Chat-time partial drafts: (enabled=True, states=[]) must NOT raise.
+
+    The dev-kit's predetermined cascade flips `enabled=True` on tier
+    completion for companion-style agents, but `states` and `default_state`
+    are populated only later in the user_state phase. The original
+    validator fired during that gap, rejecting every `update_config` write
+    to `conversation.*` (consent_message, blocked_message, etc.) in
+    language/memory/trust phases — exactly the regression that bricked the
+    GoGuide chat for ~10 turns. Strict deploy-time enforcement still runs
+    against the runtime schema in the pre-deploy dry-run.
+    """
+    m = UserStateModel(enabled=True, default_state="", states=[])
+    assert m.enabled is True
+    assert m.states == []
+    assert m.default_state == ""
+
+
+def test_user_state_model_enabled_with_states_still_validates_default():
+    """Fully-configured case still rejects an out-of-list default_state."""
+    with pytest.raises(ValidationError, match="default_state"):
+        UserStateModel(
+            enabled=True,
+            default_state="ghost",
+            states=[UserStateDefinition(id="real")],
+        )
+
+
 # -- TtsRulesConfig ----------------------------------------------------------
 
 def test_tts_rules_includes_email_and_named_entities():
@@ -530,12 +558,32 @@ def test_hitl_section_valid():
 # -- ObservabilitySection ----------------------------------------------------
 
 def test_observability_section_domain_pattern():
+    """Accepts both hyphen-separated and underscore-separated slugs.
+
+    GoGuide regression: the pattern used to reject underscores
+    (`^[a-z][a-z0-9-]*$`). `derived_fields.slug()` produces underscore-
+    separated values, and the LLM occasionally inferred underscored
+    slugs from `project_name`, both of which the mirror then rejected.
+    The runtime schema has no pattern constraint at all, so a permissive
+    `^[a-z][a-z0-9_-]*$` is consistent with runtime AND with the sibling
+    `workflow_id` / `collection_name` fields.
+    """
+    # Both separator styles must round-trip.
     ObservabilitySection(domain="kkb")
     ObservabilitySection(domain="employ-voice-bot")
+    ObservabilitySection(domain="go-guide")
+    ObservabilitySection(domain="go_guide")          # underscore — newly accepted
+    ObservabilitySection(domain="employ_voice_bot")  # underscore — newly accepted
+
+    # But genuine junk values are still rejected.
     with pytest.raises(ValidationError):
         ObservabilitySection(domain="UPPERCASE")
     with pytest.raises(ValidationError):
         ObservabilitySection(domain="123_starts_with_num")
+    with pytest.raises(ValidationError):
+        ObservabilitySection(domain="has spaces")
+    with pytest.raises(ValidationError):
+        ObservabilitySection(domain="Has-Caps")
 
 
 # -- EntityToProfileFieldSection ---------------------------------------------

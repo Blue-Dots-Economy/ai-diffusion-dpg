@@ -11,7 +11,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from dev_kit.agent.phase_prompts._helpers import _path_of, _rule_of, _render_fields
+from dev_kit.agent.phase_prompts._helpers import (
+    _phase_focus_header,
+    _closing_block,
+    _common_rules,
+    _path_of,
+    _render_fields,
+    _rule_of,
+)
 
 if TYPE_CHECKING:
     from dev_kit.agent.field_rules import FieldRule
@@ -54,19 +61,18 @@ def build(
         "user and, if confirmed, proceed directly after the mandatory first action below."
     )
 
-    return f"""# Phase: Tools
+    return f"""{_phase_focus_header("tools", pending_fields)}# Phase: Tools
 
-You are now declaring every external tool the agent can invoke via the Action
-Gateway. The LLM never calls APIs directly — it expresses intent via tool
-definitions only; Agent Core routes to Action Gateway.
+You are declaring every external tool the agent can invoke via the Action
+Gateway. At runtime, the agent never calls APIs directly — it expresses
+intent via tool definitions only, and Agent Core routes to Action Gateway.
 
 {tools_expectation}
 
-**MANDATORY FIRST ACTION — do this BEFORE anything else, even if no external
-tools are needed:**
-`update_config(block=action_gateway, section=observability,
-values={{domain: '<project_slug>'}})`
-This ensures action_gateway has a non-empty config. Do NOT skip this step.
+{_common_rules()}
+
+Do NOT write `action_gateway.observability.domain` — derived field, the
+wizard computes it automatically from the project slug.
 
 **For each tool, define 6 `invocation_rules` fields:**
 1. `call_when` — exact trigger condition in plain language.
@@ -81,25 +87,45 @@ This ensures action_gateway has a non-empty config. Do NOT skip this step.
    (e.g. "Let me check that for you."). Essential for voice; optional for
    chat.
 
-**Three paths to add tools:**
+**Three independent paths to add tools — pick whichever fits the user's
+input, then finish with `add_tool(spec=...)`:**
 
-**Path A — OpenAPI spec:**
-- URL: call `fetch_openapi_spec_from_url(url)` directly.
-- File/paste: call `parse_openapi_spec(spec_json)` with the full spec text.
-- Present returned candidates and confirm which to add.
-- Call `add_rest_api_tool` once per confirmed tool.
+**Path A — OpenAPI spec (URL or pasted text):**
+
+Two sub-paths depending on what the user gave you:
+
+- *URL*: call `fetch_openapi_spec_from_url(url=<URL>)`. The wizard
+  downloads the spec (JSON or YAML), parses it, and returns candidate
+  operations. Do NOT ask the user to paste the spec when a URL is
+  available.
+- *Pasted text*: call `parse_openapi_spec(spec=<json-or-yaml-text>)` with
+  the full text the user pasted. Same return shape as the URL path.
+
+Both return `{{"ok": true, "operations": [{{id, path, method, summary}},
+...]}}`. Present the operation list, confirm which ones to add, then for
+each confirmed operation call:
+
+`add_tool(spec={{id: ..., type: "rest_api", category: "read"|"write"|"identity",
+base_url: ..., endpoints: [...], auth: ...}})`.
 
 **Path B — MCP server:**
 - Ask for the MCP server URL and transport type (`sse` or `streamable_http`).
-- Call `discover_mcp_tools` to fetch available tools.
-- Call `add_mcp_tool` ONCE for the server (not once per tool).
+- Call `discover_mcp_tools(server_url=<URL>)`. Returns the server's
+  advertised tools as `{{"ok": true, "tools": [{{name, description,
+  input_schema}}, ...]}}` — auto-handles both plain JSON-RPC and SSE
+  responses. Summarise the discovered tools for the user.
+- Call `add_tool(spec={{id: ..., type: "mcp",
+  mcp_server_url: ..., transport: ...}})` ONCE for the server (NOT once
+  per tool — the MCP adapter discovers individual operations from the
+  server at runtime).
 - Choose a short snake_case namespace id (e.g. `obsrv_docs`).
 - MCP tools do NOT auto-create connectors; subagents reference them by
   namespaced names (e.g. `obsrv_docs__searchDocumentation`).
 
-**Path C — Manual REST API:**
-- Collect: tool ID, description, base URL, auth type, at least one endpoint.
-- Call `add_rest_api_tool`.
+**Path C — Manual REST API (no spec, the user describes the endpoint):**
+- Collect: tool id, description, base URL, auth type, at least one endpoint.
+- Call `add_tool(spec={{id: ..., type: "rest_api", category: ..., base_url: ...,
+  endpoints: [...], auth: ...}})` directly — skip the parser entirely.
 
 **After each REST API tool — ALWAYS do this:**
 1. Ask: "Can you share a sample JSON response? Or describe the key fields
@@ -139,7 +165,5 @@ params verbatim to the HTTP request.
 
 {refs_section}
 
-When all external tools are declared with all six `invocation_rules` fields
-populated (or confirmed as not needed), the router advances to the workflow
-phase automatically. Do NOT call set_phase.
+{_closing_block()}
 """

@@ -235,7 +235,7 @@ def _make_auto_answer_llm(slug_root: Path, intake: IntakeState):
         A callable matching ``phase_driver.run_turn``'s ``llm_call`` contract.
     """
 
-    def _call(system_prompt: str, user_message: str) -> LLMResponse:
+    def _call(system_prompt: str, messages: list[dict]) -> LLMResponse:
         phase = load_current_phase(slug_root)
         field_status = load_field_status(slug_root / "_meta" / "field_status.json")
         pending = collect_pending_fields(phase, intake, field_status)

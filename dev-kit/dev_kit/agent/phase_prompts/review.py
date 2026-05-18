@@ -11,7 +11,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from dev_kit.agent.phase_prompts._helpers import _path_of, _rule_of, _render_fields
+from dev_kit.agent.phase_prompts._helpers import (
+    _phase_focus_header,
+    _closing_block,
+    _common_rules,
+    _path_of,
+    _render_fields,
+    _rule_of,
+)
 
 if TYPE_CHECKING:
     from dev_kit.agent.field_rules import FieldRule
@@ -44,23 +51,23 @@ def build(
     schemas_section = pydantic_schemas if pydantic_schemas.strip() else "_N/A — no schema changes in review._"
     refs_section = cross_phase_refs if cross_phase_refs.strip() else "_No prior-phase refs to display._"
 
-    return f"""# Phase: Review
+    return f"""{_phase_focus_header("review", pending_fields)}# Phase: Review
 
-You are now in the final review phase. **Before running cross-block invariants,
-re-ask any fields that were marked `needs_re_asking` in prior phases** — these
-appear in the "Fields to capture this phase" section below if any exist. Work
-through every `needs_re_asking` field first: ask the user for the value, call
-the appropriate `update_config` tool to record it, and confirm before
-continuing. If `pending_fields` is empty (no `needs_re_asking` fields remain),
-note that briefly and proceed directly to the cross-block checks.
+You are in the final review step. **Before anything else, re-ask any
+fields that were marked `needs_re_asking` in prior phases** — these appear
+in the "Fields to capture this phase" section below if any exist. Work
+through every re-ask first: ask the user for the value, call the
+appropriate `update_config` tool to record it, and confirm before
+continuing. If no re-asks remain, note that briefly and proceed straight
+to the cross-block checks.
 
-Once re-asking is done, run the full schema-coverage check using `validate_config`.
-The `validate_config` tool reads every block's YAML template, compares it
-against the accumulated config, and returns a list of empty required fields
-with exact dotted paths (e.g. `reach_layer.channels.voice.terminal_word`,
-`trust_layer.dignity_check.questions[2]`). For each missing field: ask the
-user for the value, call the appropriate `update_config` tool, and re-run
-`validate_config` until the report is clean.
+The system runs a strict Pydantic dry-run against the runtime block
+schemas when the user clicks **Deploy** in the wizard's next step. There
+is no per-turn validation tool you can call yourself — your job here is
+to inspect the accumulated config in the references section below and
+flag any issues against the cross-block invariants listed beneath.
+
+{_common_rules()}
 
 ## Fields to capture this phase
 
@@ -68,8 +75,9 @@ user for the value, call the appropriate `update_config` tool, and re-run
 
 ## Cross-block invariants to verify manually
 
-After `validate_config` is clean, verify these rules by inspecting the
-accumulated config state:
+By inspecting the accumulated config below, verify these rules. For each
+violation: ask the user for the correction and call the appropriate
+`update_config` tool to record it.
 
 1. **Tool names exist in connectors** — every name in any subagent's `tools`
    list or in `global_tools` must match a connector `name` in
@@ -132,9 +140,11 @@ accumulated config state:
 
 {refs_section}
 
-Fix any violations found by `validate_config` or the manual cross-block
-checks above. Once everything is clean, tell the user the configuration is
-complete and they can proceed to the **Deploy** step in the wizard to push
-it to their DPG infrastructure. Do NOT name a tool to call — deploy is a
-wizard step the user clicks through, not a tool you invoke.
+Fix any violations found by the manual cross-block checks above. Once
+everything is clean, tell the user the configuration is complete and they
+can proceed to the **Deploy** step in the wizard to push it to their DPG
+infrastructure. The Deploy step is a UI action the user clicks; it is not
+a tool you invoke.
+
+{_closing_block()}
 """

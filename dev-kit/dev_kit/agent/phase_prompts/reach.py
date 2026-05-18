@@ -11,7 +11,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from dev_kit.agent.phase_prompts._helpers import _path_of, _rule_of, _render_fields
+from dev_kit.agent.phase_prompts._helpers import (
+    _phase_focus_header,
+    _closing_block,
+    _common_rules,
+    _path_of,
+    _render_fields,
+    _rule_of,
+)
 
 if TYPE_CHECKING:
     from dev_kit.agent.field_rules import FieldRule
@@ -78,31 +85,84 @@ barge_in_acknowledgement: ''}}}})`
 
 **NEVER invent voice IDs.** Schema validation will reject any ID not in the
 Raya voice table.
+
+**Voice — TTS rendering rules (`agent_core.channels.voice.tts_rules`):**
+
+These rules tell the TTS engine how to speak structured data types
+naturally. Propose a sensible default block in the project's
+`default_language` and let the user confirm:
+
+- `numbers` — how to speak digits (e.g. "Speak as words: 123 → one
+  hundred twenty-three")
+- `money` — currency rendering (e.g. "Include currency symbol: ₹500 →
+  five hundred rupees")
+- `dates` — date format (e.g. "Expand to full date: 2025-03-15 → March
+  fifteenth, twenty twenty-five")
+- `time` — time format (e.g. "Speak in twelve-hour format with AM/PM")
+- `phone` — phone-number rendering (e.g. "Spell out digit by digit")
+- `abbreviations` — abbreviation expansion (e.g. "Expand common
+  abbreviations: USD → US dollar")
+- `output_script` — preferred script for non-English text (e.g.
+  `Devanagari` for Hindi)
+- `english_loanwords` — loanword pronunciation (e.g. "Pronounce naturally
+  without transliteration")
+
+Configure via ONE call:
+`update_config(block=agent_core, section=channels.voice.tts_rules,
+values={{numbers: "...", money: "...", dates: "...", time: "...",
+phone: "...", abbreviations: "...", output_script: "...",
+english_loanwords: "..."}})`
+
+**Voice — terminal word + filler phrase
+(`reach_layer.channels.voice.*`):**
+
+- `terminal_word` — the literal word that signals call end (e.g.
+  "Goodbye" in English, "धन्यवाद" in Hindi). REQUIRED for voice.
+- `filler_phrase` — short utterance played if the LLM takes >1.5s to
+  produce the first sentence (e.g. "One moment please"). Empty string
+  disables.
+- `filler_threshold_ms` — milliseconds before the filler kicks in
+  (default 1500).
+
+Configure via:
+`update_config(block=reach_layer, section=channels.voice,
+values={{terminal_word: "...", filler_phrase: "...",
+filler_threshold_ms: 1500}})`
 """
     else:
         voice_note = """
-**Voice channel:** Not selected — skip all voice-specific configuration.
+**Voice channel:** Not selected — skip all voice-specific configuration
+(TTS rules, Raya voice, terminal_word, filler_phrase). Do NOT ask about
+them.
 """
 
-    return f"""# Phase: Reach
+    return f"""{_phase_focus_header("reach", pending_fields)}# Phase: Reach
 
-You are now configuring the Reach Layer. This phase declares channel adapters
-and their domain-specific settings (voice config, web UI branding).
+You are configuring the Reach Layer — channel adapters and their domain-
+specific settings (voice config, web UI branding).
 
-Channel selection was already done during the tier intake chat (selected
-channels: {selected}). Do NOT ask which channels to deploy — go straight to
-configuring each selected channel.
+**Already set on the project-creation form — do NOT ask the user about
+these:**
+- `selected_channels` = `{selected}`
 
-**Channels to configure: {selected}** (web is always deployed even if not
-explicitly listed).
+The user picked these channels on the form before chat began. **NEVER ask
+"will it run on web?", "will it run on voice?", "which channels?" or any
+variation.** Go straight to configuring each selected channel.
+
+Wrong shape (do NOT produce these — the user already answered both):
+- "Will it operate on web (chat interface in a browser or app)?"
+- "Will it operate on voice (phone call or voice app)?"
+- "Which channels should the bot run on?"
+
+Web is always deployed even if not explicitly listed in
+`selected_channels` (every deployment has a web admin surface).
+
+{_common_rules()}
 
 **IMPORTANT — reach_layer.channels must be set for every selected channel.**
-Also set the observability domain tag first:
-`update_config(block=reach_layer,
-section=reach_layer.common.observability,
-values={{domain: '<project_slug>'}})`
-Note: the section path is `reach_layer.common.observability` (not
-`observability` or `observability.domain`).
+
+Do NOT write `reach_layer.common.observability.domain` — derived field,
+auto-computed by the wizard.
 
 **Web channel (always required):**
 
@@ -146,6 +206,7 @@ would you like to change any?"
 3. `reach_layer.channels.<X>` is non-null and has domain-specific fields set
    for every channel in selected_channels.
 
-Fix any missing channel config. When all selected channels are configured,
-the router advances to the review phase automatically. Do NOT call set_phase.
+Fix any missing channel config before stopping.
+
+{_closing_block()}
 """

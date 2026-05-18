@@ -486,14 +486,21 @@ _DEVKIT_MAX_TOKENS = int(os.environ.get("DEVKIT_MAX_TOKENS", "4096"))
 
 
 def _build_devkit_llm_call():
-    """Return a sync ``(system_prompt, user_message) -> LLMResponse`` callable.
+    """Return a sync ``(system_prompt, messages) -> LLMResponse`` callable.
 
     Each invocation builds a fresh sync Anthropic client (cheap), so the
     callable is safe to use under ``asyncio.to_thread`` from the chat handler.
 
+    The returned callable accepts the full Anthropic-format ``messages`` list
+    (text turns plus any ``tool_use``/``tool_result`` rounds for an in-turn
+    tool loop) and surfaces ``stop_reason`` and the model's raw content blocks
+    on the response so ``phase_driver.run_turn`` can echo them back on the
+    next loop iteration.
+
     Returns:
-        A callable accepting ``(system_prompt, user_message)`` and returning
-        an ``LLMResponse`` with text, tool_calls, model, and token counts.
+        A callable accepting ``(system_prompt, messages)`` and returning an
+        ``LLMResponse`` with text, tool_calls (each carrying the provider
+        ``tool_use_id``), raw_content, stop_reason, model, and token counts.
 
     Raises:
         anthropic.APIError: On Anthropic API failures (timeout, connection,
@@ -501,23 +508,36 @@ def _build_devkit_llm_call():
             ``asyncio.to_thread`` to the chat handler's exception handler,
             which logs and returns HTTP 500.
     """
-    def _llm_call(system_prompt: str, user_message: str) -> LLMResponse:
+    def _llm_call(system_prompt: str, messages: list[dict]) -> LLMResponse:
         sync_client = anthropic.Anthropic()
         response = sync_client.messages.create(
             model=_DEVKIT_MODEL,
             max_tokens=_DEVKIT_MAX_TOKENS,
             system=system_prompt,
-            messages=[{"role": "user", "content": user_message}],
+            messages=messages,
             tools=DEVKIT_TOOL_SCHEMAS,
             timeout=30.0,
         )
         text_parts: list[str] = []
         tool_calls: list[ToolCall] = []
+        raw_content: list[dict] = []
         for block in response.content:
-            if getattr(block, "type", None) == "text":
+            # Serialize each content block to the Anthropic message-format dict
+            # so phase_driver can echo it back verbatim as the assistant turn
+            # on the next tool-use loop iteration.
+            if hasattr(block, "model_dump"):
+                raw_content.append(block.model_dump())
+            block_type = getattr(block, "type", None)
+            if block_type == "text":
                 text_parts.append(block.text)
-            elif getattr(block, "type", None) == "tool_use":
-                tool_calls.append(ToolCall(name=block.name, args=dict(block.input)))
+            elif block_type == "tool_use":
+                tool_calls.append(
+                    ToolCall(
+                        name=block.name,
+                        args=dict(block.input),
+                        id=getattr(block, "id", None),
+                    )
+                )
         usage = getattr(response, "usage", None)
         return LLMResponse(
             text="\n".join(text_parts),
@@ -525,6 +545,8 @@ def _build_devkit_llm_call():
             model=getattr(response, "model", None),
             input_tokens=getattr(usage, "input_tokens", None),
             output_tokens=getattr(usage, "output_tokens", None),
+            stop_reason=getattr(response, "stop_reason", None),
+            raw_content=raw_content,
         )
 
     return _llm_call
@@ -873,9 +895,11 @@ def get_project(slug: str) -> dict:
     Returns:
         Project metadata dict augmented with config_statuses, azure_storage,
         required_secrets, channel_secrets, has_knowledge_base, and llm_provider.
-        ``azure_storage["needed"]`` is always ``False`` in the current state model;
-        this field is a deferred stub pending a future intake-state extension that
-        tracks Azure Blob Storage selection.
+        ``azure_storage["needed"]`` reflects ``intake_state.uses_azure_blob``
+        — set during the knowledge phase chat when the operator confirms the
+        KB documents live in Azure Blob Storage. The deploy form uses this
+        flag to decide whether to surface AZURE_STORAGE_ACCOUNT /
+        AZURE_STORAGE_KEY / AZURE_CONTAINER_NAME inputs.
 
     Raises:
         HTTPException: 404 if the project does not exist.
@@ -947,9 +971,14 @@ def get_project(slug: str) -> dict:
 
     meta["config_statuses"] = all_block_statuses(field_status)
 
-    # Azure Blob Storage: no equivalent in the new intake state model;
-    # defer until a future intake-state extension.
-    meta["azure_storage"] = {"needed": False}
+    # Azure Blob Storage: surface intake_state.uses_azure_blob so the
+    # deploy form knows whether to show Azure credential fields. The
+    # flag is captured during the knowledge phase chat via
+    # `update_intake(field="uses_azure_blob", value=...)`. Credentials
+    # themselves never travel through chat — only the boolean intent.
+    meta["azure_storage"] = {
+        "needed": bool(intake and getattr(intake, "uses_azure_blob", False))
+    }
 
     meta["required_secrets"] = _required_secrets_from_accumulator(accumulator)
     meta["channel_secrets"] = (

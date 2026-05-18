@@ -28,7 +28,9 @@ def chat_turn(
         projects_root: Parent directory holding all project slugs.
         slug: Project identifier.
         user_message: The user's text for this turn.
-        llm_call: Sync ``(system_prompt, user_message) -> LLMResponse`` callable.
+        llm_call: Sync ``(system_prompt, messages) -> LLMResponse`` callable.
+            ``messages`` follows the Anthropic message-format list shape (see
+            ``phase_driver.run_turn``).
 
     Returns:
         The assistant reply text.

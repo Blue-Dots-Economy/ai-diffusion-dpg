@@ -188,11 +188,18 @@ FIELD_RULES: dict[str, FieldRule] = {
 
     # ── Gated chat: connectors.* ──────────────────────────────────────────────
 
+    # `default=[]` so the skeleton pre-marks these as "answered" with an
+    # empty list — projects that don't use a given category (very common
+    # for `identity`) shouldn't block phase advancement. `add_tool`
+    # overrides the empty default when the LLM registers a tool of that
+    # category. Without the default, the tools phase stays incomplete
+    # until the LLM explicitly writes [] for every unused category.
     "connectors.read": FieldRule(
         category="chat",
         phase="tools",
         applies_if="has_external_tools",
         invalidated_by=["has_external_tools", "default_language"],
+        default=[],
         description="List of read connectors exposed to the LLM.",
         pydantic_class="ConnectorsSection",
     ),
@@ -201,6 +208,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         phase="tools",
         applies_if="has_external_tools",
         invalidated_by=["has_external_tools", "default_language"],
+        default=[],
         description="List of write connectors exposed to the LLM. Consent gate at runtime.",
         pydantic_class="ConnectorsSection",
     ),
@@ -209,6 +217,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         phase="tools",
         applies_if="has_external_tools",
         invalidated_by=["has_external_tools", "default_language"],
+        default=[],
         description="List of identity connectors exposed to the LLM. Consent gate at runtime.",
         pydantic_class="ConnectorsSection",
     ),
@@ -318,6 +327,9 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="Provider for language normalisation helper; None inherits agent.provider.",
         invalidated_by=["agent.provider"],
         pydantic_class="PreprocessingSection",
+        # Same as nlu_processor.provider — `None` IS the inherit signal,
+        # so skeleton marks answered without writing a value.
+        auto_answer=True,
     ),
     "preprocessing.language_normalisation.model": FieldRule(
         category="chat",
@@ -352,6 +364,10 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="Provider for NLU classifier helper; None inherits agent.provider.",
         invalidated_by=["agent.provider"],
         pydantic_class="PreprocessingSection",
+        # `None` (absent) is the meaningful "inherit agent.provider" signal.
+        # Skeleton marks this answered without writing — nothing for the
+        # LLM or user to add.
+        auto_answer=True,
     ),
     "preprocessing.nlu_processor.model": FieldRule(
         category="chat",

@@ -41,7 +41,15 @@ from dev_kit.schemas.validation import get_valid_sections
 
 
 # ---------------------------------------------------------------------------
-# § 6 — Canonical 8-tool set (phase_driver.TOOL_HANDLERS uses these)
+# § 6 — Canonical tool set (phase_driver.TOOL_HANDLERS uses these)
+#
+# Tool count: 9. Started at 8 (commit b0c2d33's trim); the tools phase later
+# needed three independent entry points for external-tool registration —
+# manual spec paste, OpenAPI URL fetch, and MCP discovery — so
+# ``fetch_openapi_spec_from_url`` was restored as a sibling of
+# ``parse_openapi_spec``. Without the URL fetcher, the LLM has to ask the
+# user to paste a multi-thousand-line spec into chat, which is a non-starter
+# for any production API.
 # ---------------------------------------------------------------------------
 
 __all__ = [
@@ -52,6 +60,7 @@ __all__ = [
     "add_routing_rule",
     "add_tool",
     "parse_openapi_spec",
+    "fetch_openapi_spec_from_url",
     "discover_mcp_tools",
     "DEVKIT_TOOL_SCHEMAS",
 ]
@@ -227,9 +236,10 @@ DEVKIT_TOOL_SCHEMAS: list[dict] = [
     {
         "name": "parse_openapi_spec",
         "description": (
-            "Parse an OpenAPI 3.0/3.1 spec (JSON or YAML string, or dict) and return "
-            "candidate tool operations. Does NOT mutate state — call add_tool afterwards "
-            "to register the chosen operations."
+            "Parse an OpenAPI 3.0/3.1 spec the user pasted into chat (JSON or YAML "
+            "string, or a parsed dict) and return candidate tool operations. Does "
+            "NOT mutate state — call add_tool afterwards to register the chosen "
+            "operations. Use this when the user pastes the spec inline."
         ),
         "input_schema": {
             "type": "object",
@@ -244,16 +254,43 @@ DEVKIT_TOOL_SCHEMAS: list[dict] = [
         },
     },
     {
+        "name": "fetch_openapi_spec_from_url",
+        "description": (
+            "Download an OpenAPI 3.0/3.1 spec from a URL and return candidate tool "
+            "operations. Accepts JSON or YAML responses, follows redirects, and "
+            "returns the same shape as parse_openapi_spec. Does NOT mutate state — "
+            "call add_tool afterwards to register the chosen operations. Use this "
+            "when the user gives a URL instead of pasting the spec."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "Direct URL to the OpenAPI spec (JSON or YAML).",
+                },
+            },
+            "required": ["url"],
+        },
+    },
+    {
         "name": "discover_mcp_tools",
         "description": (
-            "List tools available on an MCP server. Placeholder today (returns empty list)."
+            "List tools exposed by an MCP server via JSON-RPC tools/list. "
+            "Auto-detects plain JSON or SSE responses. Returns each tool's name, "
+            "description, and input_schema so you can decide whether to register "
+            "the server via add_tool(spec={type:'mcp',...})."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "server_url": {
                     "type": "string",
-                    "description": "URL of the MCP server.",
+                    "description": "URL of the MCP server (the JSON-RPC endpoint).",
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "Optional timeout in milliseconds (default 10000).",
                 },
             },
             "required": ["server_url"],
@@ -392,7 +429,7 @@ def add_subagent(
     args: dict[str, Any],
     intake_state: IntakeState,  # unused — kept for signature uniformity
     accumulator: dict[str, dict],
-    field_status: dict[str, str],  # unused — kept for signature uniformity
+    field_status: dict[str, str],
 ) -> dict[str, Any]:
     """Append a new subagent definition to ``agent_core.agent_workflow.subagents``.
 
@@ -404,7 +441,9 @@ def add_subagent(
         args: Must contain ``definition`` (dict) with at least an ``id`` key.
         intake_state: Not used; accepted for signature uniformity.
         accumulator: Per-block YAML dicts — mutated in-place on success.
-        field_status: Not used; accepted for signature uniformity.
+        field_status: Mutated on success — ``agent_core.agent_workflow.subagents``
+            is marked ``"answered"`` so the workflow phase can advance once at
+            least one subagent has been registered.
 
     Returns:
         ``{"ok": True, "id": subagent_id}`` on success.
@@ -420,7 +459,12 @@ def add_subagent(
     if not subagent_id:
         return {"ok": False, "error": "definition.id is required"}
 
-    workflow = accumulator.setdefault("agent_core", {}).setdefault("agent_workflow", {})
+    # Candidate-copy commit. Building the would-be merged agent_core on a
+    # deep copy means the live accumulator is never mutated until the
+    # validate_partial gate passes — no bad subagent can leak into the
+    # per-turn YAML render.
+    candidate_agent_core = copy.deepcopy(accumulator.get("agent_core", {}))
+    workflow = candidate_agent_core.setdefault("agent_workflow", {})
     subagents: list[dict] = workflow.setdefault("subagents", [])
 
     if any(sa.get("id") == subagent_id for sa in subagents):
@@ -431,9 +475,8 @@ def add_subagent(
 
     subagents.append(copy.deepcopy(definition))
 
-    errors = validate_partial("agent_core", accumulator.get("agent_core", {}))
+    errors = validate_partial("agent_core", candidate_agent_core)
     if errors:
-        subagents.pop()
         error_msg = "; ".join(errors)
         logger.warning(
             "add_subagent.validation_failed",
@@ -446,6 +489,14 @@ def add_subagent(
         )
         return {"ok": False, "error": f"Validation failed: {error_msg}"}
 
+    # Commit the validated candidate.
+    accumulator["agent_core"] = candidate_agent_core
+    # Mark the workflow's `subagents` chat field as answered. Without this
+    # the workflow phase stays incomplete forever because field_status
+    # never transitions out of `pending` — the LLM has no signal that the
+    # field has been populated, and `_is_phase_complete("workflow")`
+    # keeps returning False even after subagents have been registered.
+    field_status["agent_core.agent_workflow.subagents"] = "answered"
     logger.info(
         "add_subagent.success",
         extra={
@@ -487,44 +538,48 @@ def update_subagent(
     if not isinstance(fields, dict):
         return {"ok": False, "error": "args.fields must be a dict"}
 
-    subagents = (
-        accumulator.get("agent_core", {})
-        .get("agent_workflow", {})
-        .get("subagents", [])
+    # Candidate-copy commit. Builds the would-be merged agent_core on a
+    # deep copy first so the live accumulator never carries a half-updated
+    # subagent if validation fails mid-merge.
+    candidate_agent_core = copy.deepcopy(accumulator.get("agent_core", {}))
+    candidate_subagents = (
+        candidate_agent_core.get("agent_workflow", {}).get("subagents", [])
     )
 
-    for sa in subagents:
-        if sa.get("id") == subagent_id:
-            snapshot = copy.deepcopy(sa)
-            sa.update(fields)
+    target = next(
+        (sa for sa in candidate_subagents if sa.get("id") == subagent_id),
+        None,
+    )
+    if target is None:
+        return {"ok": False, "error": f"subagent id {subagent_id!r} not found"}
 
-            errors = validate_partial("agent_core", accumulator.get("agent_core", {}))
-            if errors:
-                sa.clear()
-                sa.update(snapshot)
-                error_msg = "; ".join(errors)
-                logger.warning(
-                    "update_subagent.validation_failed",
-                    extra={
-                        "operation": "tools.update_subagent",
-                        "status": "failure",
-                        "error": error_msg,
-                        "subagent_id": subagent_id,
-                    },
-                )
-                return {"ok": False, "error": f"Validation failed: {error_msg}"}
+    target.update(fields)
 
-            logger.info(
-                "update_subagent.success",
-                extra={
-                    "operation": "tools.update_subagent",
-                    "status": "success",
-                    "subagent_id": subagent_id,
-                },
-            )
-            return {"ok": True, "id": subagent_id}
+    errors = validate_partial("agent_core", candidate_agent_core)
+    if errors:
+        error_msg = "; ".join(errors)
+        logger.warning(
+            "update_subagent.validation_failed",
+            extra={
+                "operation": "tools.update_subagent",
+                "status": "failure",
+                "error": error_msg,
+                "subagent_id": subagent_id,
+            },
+        )
+        return {"ok": False, "error": f"Validation failed: {error_msg}"}
 
-    return {"ok": False, "error": f"subagent id {subagent_id!r} not found"}
+    # Commit the validated candidate.
+    accumulator["agent_core"] = candidate_agent_core
+    logger.info(
+        "update_subagent.success",
+        extra={
+            "operation": "tools.update_subagent",
+            "status": "success",
+            "subagent_id": subagent_id,
+        },
+    )
+    return {"ok": True, "id": subagent_id}
 
 
 def add_routing_rule(
@@ -560,30 +615,63 @@ def add_routing_rule(
     if not to_id:
         return {"ok": False, "error": "args.to_subagent_id is required"}
 
-    subagents = (
-        accumulator.get("agent_core", {})
-        .get("agent_workflow", {})
-        .get("subagents", [])
+    from dev_kit.schemas.validation import validate_partial  # noqa: PLC0415
+
+    # Candidate-copy commit. Builds the routing addition on a deep copy
+    # of agent_core, validates, and only swaps in on success — keeps
+    # invalid rules (e.g. an intent that crashes startup invariants) out
+    # of the live accumulator and the per-turn YAML render.
+    candidate_agent_core = copy.deepcopy(accumulator.get("agent_core", {}))
+    candidate_subagents = (
+        candidate_agent_core.get("agent_workflow", {}).get("subagents", [])
     )
 
-    for sa in subagents:
-        if sa.get("id") == from_id:
-            rule: dict[str, Any] = {"intent": intent, "to": to_id}
-            condition = args.get("condition")
-            if condition:
-                rule["condition"] = condition
-            sa.setdefault("routing", []).append(rule)
-            logger.info(
-                "add_routing_rule.success",
+    target = next(
+        (sa for sa in candidate_subagents if sa.get("id") == from_id),
+        None,
+    )
+    if target is not None:
+        # Match the mirror schema (RoutingRule in
+        # dev_kit/schemas/domain/agent_core.py): the field is
+        # `next_subagent_id`, not `to`, and `conditions` is a list of
+        # RoutingCondition objects, not a single `condition`.
+        rule: dict[str, Any] = {"intent": intent, "next_subagent_id": to_id}
+        condition = args.get("condition")
+        if condition:
+            # Tool API accepts a single condition object for ergonomics;
+            # promote to the schema's list shape.
+            rule["conditions"] = condition if isinstance(condition, list) else [condition]
+        target.setdefault("routing", []).append(rule)
+
+        errors = validate_partial("agent_core", candidate_agent_core)
+        if errors:
+            error_msg = "; ".join(errors)
+            logger.warning(
+                "add_routing_rule.validation_failed",
                 extra={
                     "operation": "tools.add_routing_rule",
-                    "status": "success",
+                    "status": "failure",
                     "from_subagent_id": from_id,
                     "intent": intent,
                     "to_subagent_id": to_id,
+                    "error": error_msg,
                 },
             )
-            return {"ok": True, "from": from_id, "intent": intent, "to": to_id}
+            return {"ok": False, "error": f"Validation failed: {error_msg}"}
+
+        # Commit the validated candidate.
+        accumulator["agent_core"] = candidate_agent_core
+        logger.info(
+            "add_routing_rule.success",
+            extra={
+                "operation": "tools.add_routing_rule",
+                "status": "success",
+                "from_subagent_id": from_id,
+                "intent": intent,
+                "to_subagent_id": to_id,
+            },
+        )
+        return {"ok": True, "from": from_id, "intent": intent, "to": to_id}
 
     return {
         "ok": False,
@@ -595,7 +683,7 @@ def add_tool(
     args: dict[str, Any],
     intake_state: IntakeState,  # unused — kept for signature uniformity
     accumulator: dict[str, dict],
-    field_status: dict[str, str],  # unused — kept for signature uniformity
+    field_status: dict[str, str],
 ) -> dict[str, Any]:
     """Add an action_gateway tool and matching agent_core connector.
 
@@ -612,7 +700,10 @@ def add_tool(
             (``read``, ``write``, or ``identity``).
         intake_state: Not used; accepted for signature uniformity.
         accumulator: Per-block YAML dicts — mutated in-place on success.
-        field_status: Not used; accepted for signature uniformity.
+        field_status: Mutated on success — both ``action_gateway.tools`` and
+            the matching ``agent_core.connectors.<category>`` field are
+            marked ``"answered"`` so the tools phase can advance once at
+            least one tool has been registered.
 
     Returns:
         ``{"ok": True, "id": tool_id}`` on success.
@@ -628,18 +719,19 @@ def add_tool(
     if not tool_id:
         return {"ok": False, "error": "spec.id is required"}
 
-    # --- Action Gateway side ---
-    ag = accumulator.setdefault("action_gateway", {})
-    tools_list: list[dict] = ag.setdefault("tools", [])
-
-    if any(t.get("id") == tool_id for t in tools_list):
+    # Candidate-copy commit. add_tool touches two blocks (action_gateway
+    # for the tool spec, agent_core for the matching connector) so we
+    # build both on deep copies, validate each, and only swap them into
+    # the live accumulator once both pass. No half-applied state can
+    # reach the per-turn YAML render.
+    candidate_ag = copy.deepcopy(accumulator.get("action_gateway", {}))
+    candidate_ag_tools: list[dict] = candidate_ag.setdefault("tools", [])
+    if any(t.get("id") == tool_id for t in candidate_ag_tools):
         return {"ok": False, "error": f"tool id {tool_id!r} already exists"}
+    candidate_ag_tools.append(copy.deepcopy(spec))
 
-    tools_list.append(copy.deepcopy(spec))
-
-    errors = validate_partial("action_gateway", ag)
+    errors = validate_partial("action_gateway", candidate_ag)
     if errors:
-        tools_list.pop()
         error_msg = "; ".join(errors)
         logger.warning(
             "add_tool.ag_validation_failed",
@@ -654,6 +746,7 @@ def add_tool(
 
     # --- Agent Core connector side ---
     # MCP tools — schemas come from the server at runtime; no static connector.
+    candidate_ac = None
     if spec.get("type") != "mcp":
         category = spec.get("category", "read")
         properties: dict[str, Any] = {}
@@ -679,8 +772,8 @@ def add_tool(
             "description": spec.get("description", ""),
             "input_schema": input_schema,
         }
-        ac = accumulator.setdefault("agent_core", {})
-        connectors_block = ac.setdefault("connectors", {})
+        candidate_ac = copy.deepcopy(accumulator.get("agent_core", {}))
+        connectors_block = candidate_ac.setdefault("connectors", {})
         connector_list: list[dict] = connectors_block.setdefault(category, [])
 
         replaced = False
@@ -692,13 +785,8 @@ def add_tool(
         if not replaced:
             connector_list.append(connector)
 
-        errors = validate_partial("agent_core", ac)
+        errors = validate_partial("agent_core", candidate_ac)
         if errors:
-            if not replaced:
-                connector_list.pop()
-            else:
-                connector_list[:] = [c for c in connector_list if c.get("name") != tool_id]
-            tools_list.pop()
             error_msg = "; ".join(errors)
             logger.warning(
                 "add_tool.ac_validation_failed",
@@ -710,6 +798,25 @@ def add_tool(
                 },
             )
             return {"ok": False, "error": f"agent_core validation failed: {error_msg}"}
+
+    # Both candidates passed — commit them atomically to the live accumulator.
+    accumulator["action_gateway"] = candidate_ag
+    if candidate_ac is not None:
+        accumulator["agent_core"] = candidate_ac
+
+    # Mark the chat fields this tool just populated. Without these flips
+    # the tools phase stays incomplete — `add_tool` writes the connector
+    # list directly (via the candidate-copy commit above) but never
+    # transitions the matching `field_status` entries out of `pending`,
+    # so `_is_phase_complete("tools")` keeps reporting "stay" even
+    # after every requested tool has been registered.
+    field_status["action_gateway.tools"] = "answered"
+    if spec.get("type") != "mcp":
+        category = spec.get("category", "read")
+        # Only flip the category that was actually written. The mirror
+        # schema allows `connectors.read/write/identity` to stay absent,
+        # so we don't promise that the OTHER categories are answered.
+        field_status[f"agent_core.connectors.{category}"] = "answered"
 
     logger.info(
         "add_tool.success",
@@ -800,45 +907,307 @@ def parse_openapi_spec(
     return {"ok": True, "operations": operations}
 
 
+def fetch_openapi_spec_from_url(
+    args: dict[str, Any],
+    intake_state: IntakeState,  # unused — kept for signature uniformity
+    accumulator: dict[str, dict],  # unused — kept for signature uniformity
+    field_status: dict[str, str],  # unused — kept for signature uniformity
+) -> dict[str, Any]:
+    """Download an OpenAPI 3.x spec from a URL and parse it into tool candidates.
+
+    Wraps the same parser used by ``parse_openapi_spec`` so the caller gets a
+    consistent ``operations`` shape regardless of whether the spec arrived as a
+    pasted string or via HTTP. Accepts JSON or YAML payloads.
+
+    Mirrors the implementation that shipped on ``main`` before the state-layer
+    migration trimmed it out. The wizard's tools phase needs this entry point
+    so users with a real-world OpenAPI doc don't have to paste a multi-thousand-
+    line spec into chat.
+
+    Args:
+        args: Must contain ``url`` (str). The URL may serve JSON or YAML; the
+            response is auto-detected by trying JSON first.
+        intake_state: Not used; accepted for signature uniformity.
+        accumulator: Not used; accepted for signature uniformity.
+        field_status: Not used; accepted for signature uniformity.
+
+    Returns:
+        ``{"ok": True, "operations": [...]}`` with each entry shaped as
+        ``{"id", "path", "method", "summary"}``.
+        ``{"ok": False, "error": "..."}`` on missing arg, network failure,
+        or parse failure.
+    """
+    import json as _json  # noqa: PLC0415
+    import time as _time  # noqa: PLC0415
+
+    import httpx  # noqa: PLC0415
+
+    from dev_kit.agent.openapi_parser import parse_openapi_spec as _parse  # noqa: PLC0415
+
+    url = args.get("url")
+    if not url or not isinstance(url, str) or not url.strip():
+        return {"ok": False, "error": "args.url is required and must be a non-empty string"}
+    url = url.strip()
+
+    start = _time.time()
+    try:
+        transport = httpx.HTTPTransport(retries=1)
+        with httpx.Client(
+            transport=transport,
+            timeout=15.0,
+            follow_redirects=True,
+        ) as client:
+            response = client.get(url)
+            response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "fetch_openapi_spec_from_url.http_error",
+            extra={
+                "operation": "tools.fetch_openapi_spec_from_url",
+                "status": "failure",
+                "url": url,
+                "http_status": exc.response.status_code,
+                "latency_ms": int((_time.time() - start) * 1000),
+            },
+        )
+        return {"ok": False, "error": f"HTTP {exc.response.status_code} fetching {url}"}
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "fetch_openapi_spec_from_url.network_error",
+            extra={
+                "operation": "tools.fetch_openapi_spec_from_url",
+                "status": "failure",
+                "url": url,
+                "error": str(exc),
+                "latency_ms": int((_time.time() - start) * 1000),
+            },
+        )
+        return {"ok": False, "error": f"could not fetch spec from {url} — {exc}"}
+
+    content = response.text
+    try:
+        spec = _json.loads(content)
+    except _json.JSONDecodeError:
+        try:
+            import yaml as _yaml  # noqa: PLC0415
+            spec = _yaml.safe_load(content)
+        except Exception as exc:  # yaml emits a soup of exceptions; catch them all here
+            logger.warning(
+                "fetch_openapi_spec_from_url.parse_failed",
+                extra={
+                    "operation": "tools.fetch_openapi_spec_from_url",
+                    "status": "failure",
+                    "url": url,
+                    "error": str(exc),
+                },
+            )
+            return {"ok": False, "error": f"could not parse fetched content as JSON or YAML — {exc}"}
+
+    if not isinstance(spec, dict):
+        return {"ok": False, "error": "fetched content is not a JSON/YAML object"}
+
+    try:
+        tools = _parse(spec)
+    except ValueError as exc:
+        logger.warning(
+            "fetch_openapi_spec_from_url.openapi_invalid",
+            extra={
+                "operation": "tools.fetch_openapi_spec_from_url",
+                "status": "failure",
+                "url": url,
+                "error": str(exc),
+            },
+        )
+        return {"ok": False, "error": str(exc)}
+
+    operations = [
+        {
+            "id": t.suggested_id,
+            "path": t.path,
+            "method": t.method,
+            "summary": t.description,
+        }
+        for t in tools
+    ]
+    logger.info(
+        "fetch_openapi_spec_from_url.success",
+        extra={
+            "operation": "tools.fetch_openapi_spec_from_url",
+            "status": "success",
+            "url": url,
+            "operation_count": len(operations),
+            "latency_ms": int((_time.time() - start) * 1000),
+        },
+    )
+    return {"ok": True, "operations": operations, "source_url": url}
+
+
+def _parse_sse_json(text: str) -> dict | None:
+    """Extract the first JSON-RPC payload from an SSE response body.
+
+    SSE lines have the form ``data: <json>``. This function scans the
+    response text for the first such line and returns the parsed dict, or
+    ``None`` if no valid ``data:`` line is found.
+
+    Args:
+        text: Raw response body string.
+
+    Returns:
+        Parsed dict from the first ``data:`` line, or None.
+    """
+    import json as _json  # noqa: PLC0415
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("data:"):
+            payload = stripped[len("data:"):].strip()
+            try:
+                return _json.loads(payload)
+            except _json.JSONDecodeError:
+                continue
+    return None
+
+
 def discover_mcp_tools(
     args: dict[str, Any],
     intake_state: IntakeState,  # unused — kept for signature uniformity
     accumulator: dict[str, dict],  # unused — kept for signature uniformity
     field_status: dict[str, str],  # unused — kept for signature uniformity
 ) -> dict[str, Any]:
-    """List tools available on an MCP server (placeholder — not yet implemented).
+    """List tools available on an MCP server via JSON-RPC ``tools/list``.
 
-    Real MCP discovery (JSON-RPC ``tools/list`` over HTTP/SSE) is deferred to a
-    later phase. This stub returns an empty tool list and a note so callers can
-    handle the not-implemented case gracefully.
+    Performs the standard MCP discovery handshake:
+
+    1. POST a JSON-RPC ``tools/list`` payload to ``server_url``.
+    2. Accept both plain JSON and SSE (``data: <json>``) responses — auto-
+       detects by trying JSON first and falling back to line-by-line SSE
+       parsing.
+    3. Extract ``result.tools`` and surface each tool's
+       ``name``/``description``/``inputSchema``.
+
+    Mirrors the implementation that shipped on ``main`` before the
+    state-layer migration trimmed it out. The wizard's tools phase uses
+    this output to suggest which MCP server to register via ``add_tool``.
 
     Args:
-        args: Must contain ``server_url`` (str).
+        args: Must contain ``server_url`` (str). May contain
+            ``timeout_ms`` (int, default 10000).
         intake_state: Not used; accepted for signature uniformity.
         accumulator: Not used; accepted for signature uniformity.
         field_status: Not used; accepted for signature uniformity.
 
     Returns:
-        ``{"ok": True, "tools": [], "note": "MCP discovery not yet implemented"}``
-        ``{"ok": False, "error": "..."}`` if ``server_url`` is missing.
+        ``{"ok": True, "tools": [...]}`` with each entry shaped as
+        ``{"name", "description", "input_schema"}``. ``tools`` is empty
+        when the server returns no tools.
+        ``{"ok": False, "error": "..."}`` on missing arg, network error,
+        or unparseable response.
     """
+    import httpx  # noqa: PLC0415
+
     server_url = args.get("server_url")
     if not server_url:
         return {"ok": False, "error": "args.server_url is required"}
+    if not isinstance(server_url, str):
+        return {
+            "ok": False,
+            "error": f"args.server_url must be a string, got {type(server_url).__name__!r}",
+        }
 
-    logger.warning(
-        "discover_mcp_tools.not_implemented",
+    timeout_ms = args.get("timeout_ms", 10_000)
+    try:
+        timeout_seconds = float(timeout_ms) / 1000.0
+    except (TypeError, ValueError):
+        timeout_seconds = 10.0
+
+    url = server_url.rstrip("/")
+    payload = {"jsonrpc": "2.0", "method": "tools/list", "id": 1}
+
+    try:
+        response = httpx.post(
+            url,
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+            },
+            timeout=timeout_seconds,
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "discover_mcp_tools.http_error",
+            extra={
+                "operation": "tools.discover_mcp_tools",
+                "status": "failure",
+                "server_url": url,
+                "http_status": exc.response.status_code,
+                "error": str(exc),
+            },
+        )
+        return {
+            "ok": False,
+            "error": f"MCP server at {url} returned HTTP {exc.response.status_code}",
+        }
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "discover_mcp_tools.network_error",
+            extra={
+                "operation": "tools.discover_mcp_tools",
+                "status": "failure",
+                "server_url": url,
+                "error": str(exc),
+            },
+        )
+        return {
+            "ok": False,
+            "error": f"could not reach MCP server at {url} — {exc}",
+        }
+
+    # Auto-detect transport: plain JSON first, fall back to SSE parsing.
+    import json as _json  # noqa: PLC0415
+    try:
+        data = response.json()
+    except (_json.JSONDecodeError, ValueError):
+        data = _parse_sse_json(response.text)
+        if data is None:
+            preview = response.text[:200]
+            logger.warning(
+                "discover_mcp_tools.unparseable_response",
+                extra={
+                    "operation": "tools.discover_mcp_tools",
+                    "status": "failure",
+                    "server_url": url,
+                    "preview": preview,
+                },
+            )
+            return {
+                "ok": False,
+                "error": (
+                    f"MCP server at {url} returned an unrecognised response "
+                    f"format (expected JSON-RPC or SSE). Preview: {preview!r}"
+                ),
+            }
+
+    raw_tools = data.get("result", {}).get("tools", []) if isinstance(data, dict) else []
+    tools = [
+        {
+            "name": t.get("name", ""),
+            "description": t.get("description", ""),
+            "input_schema": t.get("inputSchema", {}),
+        }
+        for t in raw_tools
+        if isinstance(t, dict)
+    ]
+    logger.info(
+        "discover_mcp_tools.success",
         extra={
             "operation": "tools.discover_mcp_tools",
-            "status": "skipped",
-            "server_url": server_url,
-            "note": "MCP discovery not yet implemented — returning empty tool list",
+            "status": "success",
+            "server_url": url,
+            "tool_count": len(tools),
         },
     )
-    return {
-        "ok": True,
-        "tools": [],
-        "note": "MCP discovery not yet implemented",
-    }
+    return {"ok": True, "tools": tools, "server_url": url}
 
 

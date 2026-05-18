@@ -12,7 +12,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from dev_kit.agent.phase_prompts._helpers import _path_of, _rule_of, _render_fields
+from dev_kit.agent.phase_prompts._helpers import (
+    _phase_focus_header,
+    _closing_block,
+    _common_rules,
+    _path_of,
+    _render_fields,
+    _rule_of,
+)
 
 if TYPE_CHECKING:
     from dev_kit.agent.field_rules import FieldRule
@@ -50,57 +57,50 @@ def build(
     dignity_section = ""
     if is_companion:
         dignity_section = """
-**Block 2 — Dignity check (required for companion-style agents):**
+**Block 2 — Dignity check (predetermined, not user-configurable here):**
 
-You MUST call `update_config` to set all five questions and `fail_action`.
-Do NOT leave `questions: []` — the dignity check will always pass (no
-questions to fail) and the protection is disabled.
-
-Default questions (adapt phrasing to the domain language):
-1. "Does this blame the user?"
-2. "Does it over-promise?"
-3. "Does it push urgency?"
-4. "Does it reduce their agency?"
-5. "Does it sound like a script instead of a human call?"
-
-Set them in one call:
-`update_config(block=trust_layer, section=dignity_check, values={{enabled:
-true, questions: ['Does this blame the user?', 'Does it over-promise?',
-'Does it push urgency?', 'Does it reduce their agency?', 'Does it sound
-like a script instead of a human call?'], fail_action: 'rewrite'}})`
-
-`questions` MUST be a list of plain string sentences. Do NOT emit dicts like
-`{{category: 'hate_speech', severity: 'high'}}` — that's a content-
-moderation taxonomy, not a dignity prompt. The wrong shape causes a Pydantic
-ValidationError at startup.
-
-If the domain is non-English, translate the questions into the domain
-language before setting.
+For companion-style agents the router cascade has already populated
+`trust_layer.dignity_check.enabled = true` and a canonical five-question
+list — confirm to the user the dignity check is in place, and DO NOT
+call `update_config` for either field. The chat field on this section
+is `fail_action`, which has no FieldRule entry in this codebase and is
+also not user-configurable.
 """
     else:
         dignity_section = """
 **Dignity check:** Not required for this agent type (not companion-style).
 """
 
-    return f"""# Phase: Trust
+    return f"""{_phase_focus_header("trust", pending_fields)}# Phase: Trust
 
-You are now configuring the Trust Layer — the mandatory safety gate that runs
-twice per turn (input before LLM, output before delivery). This phase sets
-blocked content rules, prohibited language, topic firewall, and escalation
-rules.
+You are configuring the Trust Layer — the mandatory safety gate that runs
+twice per turn (input before LLM, output before delivery). Set blocked
+content rules, prohibited language, topic firewall, and escalation rules.
 
 The Trust Layer is never skipped. All agents need at minimum: content rules,
 blocked phrases, and escalation topics.
 
-**Configuration paths:**
-- Content and output rules: `update_config(block=trust_layer, section=rules, values={{...}})`
-- Consent rules (DPDP Act): `section=consent`
-- HITL queue backend: `section=trust, values={{hitl: {{queue_backend: 'log'}}}}`
-  Valid values: `log` | `redis` | `webhook`. Default to `log` for dev.
-  NEVER use `memory` — it is not a valid backend and will crash the Trust Layer.
-- Observability domain: `update_config(block=trust_layer, section=observability,
-  values={{domain: '<project_slug>'}})`. Use `section=observability` NOT
-  `section=observability.domain` (double-nesting crashes trust_layer).
+{_common_rules()}
+
+**Configuration paths (use the path form — every chat field below has its
+own FIELD_RULES entry):**
+
+- Input blocked phrases: `update_config(path="trust_layer.trust.input_rules.blocked_phrases", value=[...])`
+- Input blocked-input message: `path="trust_layer.trust.input_rules.blocked_input_message"`
+- Escalation topics: `path="trust_layer.trust.input_rules.escalation_topics", value=[...]`
+- Output blocked phrases: `path="trust_layer.trust.output_rules.blocked_phrases"`
+- Output blocked-output message: `path="trust_layer.trust.output_rules.output_blocked_message"`
+- HITL holding message: `path="trust_layer.trust.hitl.holding_message"`
+- HITL queue backend: `path="trust_layer.trust.hitl.queue_backend"` —
+  valid values: `log` | `redis` | `webhook`. Default to `log` for dev.
+  NEVER use `memory` (not a valid backend; the Trust Layer crashes on it).
+- Policy pack (optional content/safety policy stack): `path="trust_layer.trust.policy_pack"`
+
+Do NOT write `trust_layer.observability.domain` — derived, auto-computed.
+Do NOT write `trust_layer.dignity_check.enabled` or
+`trust_layer.dignity_check.questions` — both are predetermined fields the
+router cascade sets from `is_companion_style` (enabled + a canonical
+five-question set). They are NOT user-configurable here.
 
 **Block 1 — Content rules and blocked phrases (all agents):**
 
@@ -127,7 +127,5 @@ rules — do these look good, or would you like to change any?"
 
 {refs_section}
 
-When content rules, blocked phrases, and (for companion-style agents)
-dignity check questions are set, the router advances to the tools phase
-automatically. Do NOT call set_phase.
+{_closing_block()}
 """

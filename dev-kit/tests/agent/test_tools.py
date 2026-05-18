@@ -31,6 +31,7 @@ from dev_kit.agent.tools import (
     add_subagent,
     add_tool,
     discover_mcp_tools,
+    fetch_openapi_spec_from_url,
     parse_openapi_spec,
     update_config,
     update_intake,
@@ -49,6 +50,7 @@ _TOOL_NAMES = {
     "add_routing_rule",
     "add_tool",
     "parse_openapi_spec",
+    "fetch_openapi_spec_from_url",
     "discover_mcp_tools",
 }
 
@@ -119,7 +121,7 @@ def _setup_project(
 
 def _fake_llm(text: str = "ok", tool_calls: list[ToolCall] | None = None):
     """Return a callable that returns a canned LLMResponse."""
-    def _call(system_prompt: str, user_message: str) -> LLMResponse:
+    def _call(system_prompt: str, messages: list[dict]) -> LLMResponse:
         return LLMResponse(text=text, tool_calls=list(tool_calls or []))
     return _call
 
@@ -408,7 +410,14 @@ class TestAddRoutingRule:
         return acc
 
     def test_normal_appends_rule(self) -> None:
-        """Valid routing rule is appended to the from-subagent's routing list."""
+        """Valid routing rule is appended to the from-subagent's routing list.
+
+        The tool writes the field names declared by the mirror schema
+        (`next_subagent_id`, not `to`) so the result passes the mirror's
+        `extra="forbid"` check at write time. Earlier versions wrote `to`
+        and `condition` and silently slipped through because validation
+        was not wired on this tool.
+        """
         acc = self._acc_with_subagent("intro", "main")
 
         result = add_routing_rule(
@@ -428,17 +437,26 @@ class TestAddRoutingRule:
         assert len(intro["routing"]) == 1
         rule = intro["routing"][0]
         assert rule["intent"] == "greet"
-        assert rule["to"] == "main"
+        assert rule["next_subagent_id"] == "main"
 
     def test_with_condition_appended(self) -> None:
-        """Optional condition field is included in the rule when provided."""
+        """Optional condition field is included in the rule when provided.
+
+        Schema declares `conditions: list[RoutingCondition]` — the tool
+        wraps a single condition dict into a one-element list so callers
+        can pass either shape.
+        """
         acc = self._acc_with_subagent("a", "b")
         result = add_routing_rule(
             {
                 "from_subagent_id": "a",
                 "intent": "confirm",
                 "to_subagent_id": "b",
-                "condition": "slot.confirmed == true",
+                "condition": {
+                    "field": "slot.confirmed",
+                    "operator": "eq",
+                    "value": True,
+                },
             },
             _make_intake(),
             acc,
@@ -446,7 +464,9 @@ class TestAddRoutingRule:
         )
         assert result["ok"] is True
         rule = acc["agent_core"]["agent_workflow"]["subagents"][0]["routing"][0]
-        assert rule.get("condition") == "slot.confirmed == true"
+        assert rule["conditions"] == [
+            {"field": "slot.confirmed", "operator": "eq", "value": True}
+        ]
 
     def test_source_not_found_returns_error(self) -> None:
         """add_routing_rule with unknown from_subagent_id returns ok=False."""
@@ -669,24 +689,17 @@ class TestParseOpenApiSpec:
 
 
 class TestDiscoverMcpTools:
-    """Tests for the discover_mcp_tools utility tool."""
+    """Tests for the discover_mcp_tools utility tool.
 
-    def test_normal_returns_empty_tool_list_with_note(self) -> None:
-        """discover_mcp_tools returns ok=True, empty tools, and a note."""
-        result = discover_mcp_tools(
-            {"server_url": "https://mcp.example.com"},
-            _make_intake(),
-            _empty_accumulator(),
-            _empty_field_status(),
-        )
-
-        assert result.get("ok") is True
-        assert result["tools"] == []
-        assert "note" in result
-        assert "not yet implemented" in result["note"].lower()
+    Detailed JSON-RPC / SSE / error-path coverage lives in the module-level
+    `test_discover_mcp_tools_*` functions below (they share the
+    `_FakeHttpxResponse` helper). The cases here cover the argument-
+    validation and accumulator-immutability invariants that hold regardless
+    of network behavior.
+    """
 
     def test_missing_server_url_returns_error(self) -> None:
-        """Missing server_url returns ok=False."""
+        """Missing server_url returns ok=False without touching the network."""
         result = discover_mcp_tools(
             {},
             _make_intake(),
@@ -696,8 +709,18 @@ class TestDiscoverMcpTools:
         assert result["ok"] is False
         assert "server_url" in result["error"]
 
-    def test_does_not_mutate_accumulator(self) -> None:
-        """discover_mcp_tools never mutates the accumulator."""
+    def test_does_not_mutate_accumulator(self, monkeypatch) -> None:
+        """discover_mcp_tools never mutates the accumulator, even on success."""
+        import httpx
+
+        def _fake_post(url, *, json, headers, timeout):  # noqa: A002
+            return _FakeHttpxResponse(
+                status_code=200,
+                json_payload={"jsonrpc": "2.0", "id": 1, "result": {"tools": []}},
+            )
+
+        monkeypatch.setattr(httpx, "post", _fake_post)
+
         acc = _empty_accumulator()
         acc_before = json.loads(json.dumps(acc))
 
@@ -801,3 +824,331 @@ def test_phase_driver_routes_each_tool_no_crash(tmp_path: Path, tool_name: str) 
         llm_call=fake,
     )
     assert isinstance(result, str)
+
+
+# ---------------------------------------------------------------------------
+# discover_mcp_tools — real JSON-RPC + SSE discovery
+# ---------------------------------------------------------------------------
+
+
+class _FakeHttpxResponse:
+    """Minimal stand-in for httpx.Response used in monkeypatched tests."""
+
+    def __init__(
+        self,
+        *,
+        status_code: int = 200,
+        json_payload: dict | None = None,
+        text: str = "",
+        json_raises: bool = False,
+    ) -> None:
+        self.status_code = status_code
+        self._json_payload = json_payload
+        self.text = text
+        self._json_raises = json_raises
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            import httpx
+            raise httpx.HTTPStatusError(
+                f"HTTP {self.status_code}",
+                request=None,  # type: ignore[arg-type]
+                response=self,  # type: ignore[arg-type]
+            )
+
+    def json(self) -> dict:
+        if self._json_raises or self._json_payload is None:
+            import json as _json
+            raise _json.JSONDecodeError("not json", "", 0)
+        return self._json_payload
+
+
+def test_discover_mcp_tools_missing_server_url() -> None:
+    """server_url is required."""
+    out = discover_mcp_tools({}, _make_intake(), _empty_accumulator(), _empty_field_status())
+    assert out == {"ok": False, "error": "args.server_url is required"}
+
+
+def test_discover_mcp_tools_plain_jsonrpc_response(monkeypatch) -> None:
+    """JSON-RPC `result.tools` parsed into the canonical {name, description,
+    input_schema} shape."""
+    import httpx
+
+    captured: dict = {}
+
+    def _fake_post(url, *, json, headers, timeout):  # noqa: A002 — match httpx.post signature
+        captured["url"] = url
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return _FakeHttpxResponse(
+            status_code=200,
+            json_payload={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "tools": [
+                        {
+                            "name": "searchDocs",
+                            "description": "Search documentation.",
+                            "inputSchema": {"type": "object", "properties": {"q": {"type": "string"}}},
+                        },
+                        {
+                            "name": "listRepos",
+                            "description": "List repos.",
+                            "inputSchema": {"type": "object"},
+                        },
+                    ]
+                },
+            },
+        )
+
+    monkeypatch.setattr(httpx, "post", _fake_post)
+
+    out = discover_mcp_tools(
+        {"server_url": "https://mcp.example.com/rpc/"},
+        _make_intake(),
+        _empty_accumulator(),
+        _empty_field_status(),
+    )
+
+    assert out["ok"] is True
+    assert out["server_url"] == "https://mcp.example.com/rpc"  # trailing slash stripped
+    assert out["tools"] == [
+        {
+            "name": "searchDocs",
+            "description": "Search documentation.",
+            "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}},
+        },
+        {
+            "name": "listRepos",
+            "description": "List repos.",
+            "input_schema": {"type": "object"},
+        },
+    ]
+    # The wizard sent the canonical tools/list payload.
+    assert captured["json"] == {"jsonrpc": "2.0", "method": "tools/list", "id": 1}
+
+
+def test_discover_mcp_tools_sse_response(monkeypatch) -> None:
+    """SSE `data: <json>` line is auto-detected when response.json() fails."""
+    import httpx
+
+    sse_text = (
+        "event: message\n"
+        'data: {"jsonrpc": "2.0", "id": 1, '
+        '"result": {"tools": [{"name": "ping", "description": "Ping the server."}]}}\n'
+        "\n"
+    )
+
+    def _fake_post(url, *, json, headers, timeout):  # noqa: A002
+        return _FakeHttpxResponse(
+            status_code=200,
+            json_raises=True,
+            text=sse_text,
+        )
+
+    monkeypatch.setattr(httpx, "post", _fake_post)
+
+    out = discover_mcp_tools(
+        {"server_url": "https://mcp.example.com/sse"},
+        _make_intake(),
+        _empty_accumulator(),
+        _empty_field_status(),
+    )
+
+    assert out["ok"] is True
+    assert out["tools"] == [
+        {"name": "ping", "description": "Ping the server.", "input_schema": {}}
+    ]
+
+
+def test_discover_mcp_tools_network_error_returns_structured_error(monkeypatch) -> None:
+    """httpx connection failure surfaces as a tool_result error (no crash)."""
+    import httpx
+
+    def _fake_post(url, *, json, headers, timeout):  # noqa: A002
+        raise httpx.ConnectError("Connection refused")
+
+    monkeypatch.setattr(httpx, "post", _fake_post)
+
+    out = discover_mcp_tools(
+        {"server_url": "https://unreachable.example.com"},
+        _make_intake(),
+        _empty_accumulator(),
+        _empty_field_status(),
+    )
+
+    assert out["ok"] is False
+    assert "unreachable.example.com" in out["error"]
+    assert "could not reach" in out["error"].lower()
+
+
+def test_discover_mcp_tools_unparseable_response_returns_error(monkeypatch) -> None:
+    """A non-JSON, non-SSE response is reported with a preview, not silently
+    treated as zero tools."""
+    import httpx
+
+    def _fake_post(url, *, json, headers, timeout):  # noqa: A002
+        return _FakeHttpxResponse(
+            status_code=200,
+            json_raises=True,
+            text="<html><body>not an MCP server</body></html>",
+        )
+
+    monkeypatch.setattr(httpx, "post", _fake_post)
+
+    out = discover_mcp_tools(
+        {"server_url": "https://not-an-mcp.example.com"},
+        _make_intake(),
+        _empty_accumulator(),
+        _empty_field_status(),
+    )
+
+    assert out["ok"] is False
+    assert "unrecognised response format" in out["error"]
+
+
+# ---------------------------------------------------------------------------
+# fetch_openapi_spec_from_url
+# ---------------------------------------------------------------------------
+
+
+class _FakeHttpxClient:
+    """Stand-in for httpx.Client used in the fetch_openapi_spec_from_url tests."""
+
+    def __init__(self, response: _FakeHttpxResponse) -> None:
+        self._response = response
+
+    def __enter__(self) -> "_FakeHttpxClient":
+        return self
+
+    def __exit__(self, *args) -> None:
+        pass
+
+    def get(self, url: str) -> _FakeHttpxResponse:
+        self._response_url = url
+        return self._response
+
+
+def _patch_httpx_client(monkeypatch, response: _FakeHttpxResponse) -> None:
+    import httpx
+
+    def _fake_client(*args, **kwargs):
+        return _FakeHttpxClient(response)
+
+    monkeypatch.setattr(httpx, "Client", _fake_client)
+
+
+def test_fetch_openapi_spec_from_url_missing_url() -> None:
+    out = fetch_openapi_spec_from_url(
+        {}, _make_intake(), _empty_accumulator(), _empty_field_status()
+    )
+    assert out["ok"] is False
+    assert "args.url" in out["error"]
+
+
+def test_fetch_openapi_spec_from_url_parses_remote_json(monkeypatch) -> None:
+    """A JSON OpenAPI 3.0 document fetched from a URL produces the same
+    `operations` shape as parse_openapi_spec."""
+    spec_text = """{
+        "openapi": "3.0.0",
+        "info": {"title": "Demo", "version": "1.0.0"},
+        "servers": [{"url": "https://api.example.com"}],
+        "paths": {
+            "/pets": {
+                "get": {
+                    "operationId": "listPets",
+                    "summary": "List all pets",
+                    "responses": {"200": {"description": "OK"}}
+                }
+            }
+        }
+    }"""
+    _patch_httpx_client(
+        monkeypatch,
+        _FakeHttpxResponse(status_code=200, text=spec_text),
+    )
+
+    out = fetch_openapi_spec_from_url(
+        {"url": "https://api.example.com/openapi.json"},
+        _make_intake(),
+        _empty_accumulator(),
+        _empty_field_status(),
+    )
+
+    assert out["ok"] is True
+    assert out["source_url"] == "https://api.example.com/openapi.json"
+    assert len(out["operations"]) == 1
+    op = out["operations"][0]
+    assert op["path"] == "/pets"
+    assert op["method"].upper() == "GET"
+    assert op["summary"] == "List all pets"
+
+
+def test_fetch_openapi_spec_from_url_parses_remote_yaml(monkeypatch) -> None:
+    """YAML OpenAPI fallback when JSON.parse fails."""
+    spec_text = """openapi: 3.0.0
+info:
+  title: Demo
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      summary: List all pets
+      responses:
+        '200':
+          description: OK
+"""
+    _patch_httpx_client(
+        monkeypatch,
+        _FakeHttpxResponse(status_code=200, text=spec_text),
+    )
+
+    out = fetch_openapi_spec_from_url(
+        {"url": "https://api.example.com/openapi.yaml"},
+        _make_intake(),
+        _empty_accumulator(),
+        _empty_field_status(),
+    )
+
+    assert out["ok"] is True
+    assert len(out["operations"]) == 1
+    assert out["operations"][0]["path"] == "/pets"
+
+
+def test_fetch_openapi_spec_from_url_http_404(monkeypatch) -> None:
+    """A 404 surfaces as a structured error, not a crash."""
+    _patch_httpx_client(
+        monkeypatch,
+        _FakeHttpxResponse(status_code=404, text="Not Found"),
+    )
+
+    out = fetch_openapi_spec_from_url(
+        {"url": "https://api.example.com/missing.json"},
+        _make_intake(),
+        _empty_accumulator(),
+        _empty_field_status(),
+    )
+    assert out["ok"] is False
+    assert "404" in out["error"]
+
+
+def test_fetch_openapi_spec_from_url_non_dict_payload(monkeypatch) -> None:
+    """If the URL returns a plain string or array (not an OpenAPI object),
+    we report it rather than crashing in the parser."""
+    _patch_httpx_client(
+        monkeypatch,
+        _FakeHttpxResponse(status_code=200, text='"just a string"'),
+    )
+
+    out = fetch_openapi_spec_from_url(
+        {"url": "https://api.example.com/odd.json"},
+        _make_intake(),
+        _empty_accumulator(),
+        _empty_field_status(),
+    )
+    assert out["ok"] is False
+    assert "not a JSON/YAML object" in out["error"]

@@ -11,7 +11,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from dev_kit.agent.phase_prompts._helpers import _path_of, _rule_of, _render_fields
+from dev_kit.agent.phase_prompts._helpers import (
+    _phase_focus_header,
+    _closing_block,
+    _common_rules,
+    _path_of,
+    _render_fields,
+    _rule_of,
+)
 
 if TYPE_CHECKING:
     from dev_kit.agent.field_rules import FieldRule
@@ -50,20 +57,60 @@ def build(
     persistence_note = ""
     if needs_persistent:
         persistence_note = """
-**Persistent user data (required for this project):**
+**Persistent user data (required for this project) — propose a concrete
+profile schema, do NOT ask "what fields do you want to remember?":**
 
-This agent needs to remember users across sessions (`needs_persistent_user_data=true`).
-Set `default_mode: saved` in `user_data_persistence`:
-`update_config(block=memory_layer, section=user_data_persistence,
-values={{default_mode: saved}})`
+The user said this agent should remember users across sessions. The
+storage mode (`memory_layer.user_data_persistence.default_mode = saved`)
+is set automatically by the router cascade — do NOT call `update_config`
+for it.
 
-Also configure the persistent graph node types (`state.persistent`) so the
-Context Graph in Memgraph can store cross-session user attributes.
+1. Propose the persistent profile fields based on the project description.
+   Adapt the list to the actual domain — pick fields the bot will
+   plausibly *use* on return visits, not every entity the NLU can
+   extract. Match each field name to an `entity_to_profile_field` value
+   from the previous step so writes line up.
+
+   Apply the markdown formatting rules above. Lead with a bold heading
+   AND a one-line plain-English explanation (em-dash separator) so the
+   user knows what the table is for. Use a Markdown table with columns
+   for Field, Type, and Source/notes, so the user can scan the schema
+   in one glance. For a tour-planning bot a typical default is:
+
+       **Proposed persistent profile schema** — the user-profile fields
+       the bot will store across sessions and use when the same person
+       returns. Each row picks one field, its type, and how it gets
+       populated. Adapt the list to your domain and remove anything you
+       do not want stored:
+
+       | Field                    | Type           | Source / notes |
+       |--------------------------|----------------|----------------|
+       | `name`                   | string         | from `traveller_name` entity |
+       | `email`                  | string         | from `contact_email` entity |
+       | `phone`                  | string         | from `contact_phone` entity |
+       | `preferred_destinations` | list[string]   | written when `destination_query` fires the `profile_update` signal |
+       | `past_bookings`          | list[string]   | written when `booking_request` completes |
+
+2. Configure the Context Graph node types under `state.persistent`. Lead
+   with a one-line explanation of what node types are (the persistent
+   graph stores cross-session relationships — `user_node` is the root,
+   `child_node` is for one-to-many relations). For most domains a
+   single `user_node` is enough; add a `child_node` only if the domain
+   has a one-to-many relationship the bot needs to recall (e.g. multiple
+   `trip` records per user).
+
+After the table, ONE numbered question asking the user to confirm or
+adjust the schema. Do NOT comma-list the fields in prose, and never
+present a table without first explaining (in one short sentence) what
+the table IS — the user did not write the schema.
 """
     else:
         persistence_note = """
-**User data persistence:** This project does not require cross-session memory.
-Set `default_mode: anonymous` in `user_data_persistence`.
+**User data persistence:** The user did not flag a need to remember
+people across sessions. The router cascade has already set
+`memory_layer.user_data_persistence.default_mode = anonymous` from the
+intake flag — do NOT call `update_config` for it. Skip persistent-graph
+configuration too.
 """
 
     memory_states_note = ""
@@ -71,8 +118,8 @@ Set `default_mode: anonymous` in `user_data_persistence`.
         memory_states_note = """
 **Multi-turn agents — contact-memory states:**
 
-In the workflow phase you will structure subagents around 5 contact-memory
-states (new, sparse, rich, mid-journey, post-application). Define the session
+In a later step you will structure subagents around 5 contact-memory states
+(new, sparse, rich, mid-journey, post-application). Define the session
 schema fields here that will populate those states. For example:
 - `location` → populates `sparse` state
 - `trade` or `occupation` → populates `rich` state
@@ -85,24 +132,26 @@ conversation phase) — they are auto-injected and must NEVER appear in
 `state.session.schema`.
 """
 
-    return f"""# Phase: Memory
+    return f"""{_phase_focus_header("memory", pending_fields)}# Phase: Memory
 
-You are now configuring the Memory Layer — what the agent remembers across
+You are configuring the Memory Layer — what the agent remembers across
 turns (session scope), across sessions (persistent graph), and what user
 profile fields are available at call start.
+
+{_common_rules()}
 
 **Configuration paths:**
 - Session schema and TTL: `update_config(block=memory_layer,
   section=state.session, values={{ttl_minutes: ..., schema: {{...}}}})`
 - Persistent graph: `section=state.persistent, values={{...}}`
-- Storage mode: `section=user_data_persistence,
-  values={{default_mode: saved|anonymous}}`
 - Re-engagement triggers (if needed): `section=reengagement,
   values={{triggers: [...]}}`
-- Observability domain: `update_config(block=memory_layer,
-  section=observability, values={{domain: '<project_slug>'}})`.
-  Use `section=observability` NOT `section=observability.domain` — the
-  latter double-nests and crashes memory_layer at startup.
+
+Do NOT write `memory_layer.user_data_persistence.default_mode` — it's a
+predetermined field that the router cascade sets from
+`needs_persistent_user_data` (`saved` if true, `anonymous` if false).
+Do NOT write `memory_layer.observability.domain` — derived, auto-computed.
+Both are rejected as non-chat fields.
 {persistence_note}{memory_states_note}
 **IMPORTANT — fields to avoid in session schema:**
 Do NOT propose: `current_intent`, `last_intent`, `current_subagent`,
@@ -132,7 +181,5 @@ the agent type requires outbound follow-up.
 
 {refs_section}
 
-When session schema, persistent graph, user_data_persistence, and
-reengagement (if needed) are set, the router advances to the user_state
-phase automatically. Do NOT call set_phase.
+{_closing_block()}
 """

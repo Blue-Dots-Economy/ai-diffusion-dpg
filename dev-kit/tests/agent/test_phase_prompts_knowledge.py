@@ -79,11 +79,45 @@ def test_knowledge_references_project_name():
     assert "foo_kb" in result
 
 
-def test_knowledge_has_kb_true_note():
+def test_knowledge_prompt_asks_azure_blob_question() -> None:
+    """The knowledge phase must ask the operator whether KB docs live in
+    Azure Blob Storage and call `update_intake` with the answer.
+
+    Without this flag the deploy form has no way to know whether to
+    surface AZURE_STORAGE_ACCOUNT / AZURE_STORAGE_KEY / AZURE_CONTAINER_NAME
+    inputs. Mirrors the legacy `declare_azure_storage` tool flow on main —
+    chat captures the boolean intent; the deploy step collects the actual
+    credentials.
+    """
     result = build([], "", "", _intake(has_kb=True))
-    assert "REQUIRED" in result or "has_kb=true" in result
+    # The question is asked verbatim.
+    assert "Azure Blob Storage" in result
+    # The wizard tool that records the answer is mentioned both for yes
+    # and no, so the LLM commits the boolean either way.
+    assert 'update_intake(field="uses_azure_blob", value=true)' in result
+    assert 'update_intake(field="uses_azure_blob", value=false)' in result
+    # And the prompt still explicitly forbids asking for credentials in
+    # chat — those are deploy-form only.
+    assert "NEVER ask for the credentials in chat" in result
+
+
+def test_knowledge_has_kb_true_note():
+    """When the user wants a KB, the prompt instructs the LLM to proceed."""
+    result = build([], "", "", _intake(has_kb=True))
+    assert "knowledge base" in result.lower()
+    assert "required" in result.lower() or "already confirmed" in result.lower()
+    # The literal `has_kb=true` leak (the regression we are guarding against)
+    # must not appear in user-facing guidance text.
+    assert "has_kb=true" not in result
+    assert "has_kb=false" not in result
 
 
 def test_knowledge_has_kb_false_note():
+    """When the user did not flag a KB, the prompt instructs the LLM to
+    confirm briefly without leaking `has_kb=...` into prose.
+    """
     result = build([], "", "", _intake(has_kb=False))
-    assert "has_kb=false" in result or "NOT confirm" in result or "did NOT confirm" in result
+    assert "knowledge base" in result.lower()
+    assert "did not flag" in result.lower() or "no kb is needed" in result.lower()
+    assert "has_kb=true" not in result
+    assert "has_kb=false" not in result

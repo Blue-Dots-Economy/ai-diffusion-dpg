@@ -220,6 +220,17 @@ def validate_partial(block: str, data: dict) -> list[str]:
     if not data:
         return []
 
+    # reach_layer is the only block whose runtime YAML wraps under a
+    # top-level `reach_layer:` key. FIELD_RULES paths are flat
+    # (`channels.web.ui.app_name`, `common.observability.domain`) — so
+    # `on_config_update` builds a candidate with top-level keys `channels`
+    # and `common`, and `validate_partial` would otherwise report them as
+    # "Unknown section". Auto-wrap when the wrapper is absent so
+    # DOMAIN_SECTION_SCHEMAS lookups resolve. Idempotent: if the caller
+    # already wrapped (e.g. tests passing wrapped data), this is a no-op.
+    if block == "reach_layer" and "reach_layer" not in data:
+        data = {"reach_layer": data}
+
     # --- Validate each section ---
     errors: list[str] = []
     for top_level, value in data.items():

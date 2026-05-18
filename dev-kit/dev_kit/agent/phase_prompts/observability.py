@@ -11,7 +11,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from dev_kit.agent.phase_prompts._helpers import _path_of, _rule_of, _render_fields
+from dev_kit.agent.phase_prompts._helpers import (
+    _phase_focus_header,
+    _closing_block,
+    _common_rules,
+    _path_of,
+    _render_fields,
+    _rule_of,
+)
 
 if TYPE_CHECKING:
     from dev_kit.agent.field_rules import FieldRule
@@ -44,11 +51,13 @@ def build(
     refs_section = cross_phase_refs if cross_phase_refs.strip() else "_No prior-phase refs to display._"
     project_name = getattr(intake_state, "project_name", "")
 
-    return f"""# Phase: Observability
+    return f"""{_phase_focus_header("observability", pending_fields)}# Phase: Observability
 
-You are now configuring the Observability Layer. This phase sets outcome
-lifecycle states, quality metrics, and the domain tag that will be attached
-to every OTel span emitted by the running agent.
+You are configuring the Observability Layer — outcome lifecycle states,
+quality metrics, and the domain tag attached to every OTel span emitted
+by the running agent.
+
+{_common_rules()}
 
 The Observability Layer is async-only — it never runs in the response path.
 Its job is to let operators answer questions like "how many users reached the
@@ -92,6 +101,5 @@ change any?"
 
 {refs_section}
 
-When outcomes and quality signals are set, the router advances to the reach
-phase automatically. Do NOT call set_phase.
+{_closing_block()}
 """

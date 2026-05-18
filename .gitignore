@@ -148,3 +148,21 @@ dev-kit/dev_kit/agent/static/
 dev-kit/configs/**/_meta/
 .worktrees/
 test-fixtures/
+
+# Local-only Compose overlays (host-shell secret passthrough, dev-only services, etc.)
+automation/docker/docker-compose.local.yml
+automation/docker/docker-compose.local.*.yml
+
+# reach_layer_voice call recordings — local mount of /var/recordings; contains call audio (PII)
+automation/docker/recordings/
+dev-kit/configs/e*
+dev-kit/configs/b*
+
+experiments/cache_compare/results
+dev-kit/frontend-v2
+# Voice audio test - generated/recorded audio samples
+experiments/voice_audio_test/samples/
+
+# Realtime voice test - per-call recordings + audio contain PII
+experiments/realtime_voice_test/results/**/*.jsonl
+experiments/realtime_voice_test/results/**/*.wav

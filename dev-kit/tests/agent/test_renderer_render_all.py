@@ -274,3 +274,95 @@ class TestRenderAllWarningHeader:
         assert body.count("# WARNINGS:") == 1
         assert "#   - bad field x" in body
         assert "#   - bad field y" in body
+
+
+class TestReachLayerWrap:
+    """reach_layer renders under a top-level `reach_layer:` key.
+
+    FIELD_RULES paths for the reach block are flat
+    (`channels.web.ui.app_name`, `common.observability.domain`) so the
+    accumulator stores those keys flat as well. The runtime
+    `MergedConfig` for reach_layer expects a top-level `reach_layer:`
+    wrapper — the renderer must add it. Tour Pal regression: a fresh
+    project's reach_layer.yaml had top-level `channels:` and `common:`
+    keys, producing two "Unknown section" warnings and YAML the runtime
+    would reject at boot.
+    """
+
+    def test_reach_layer_yaml_has_top_level_wrapper(self, tmp_path: Path) -> None:
+        """Even with only the skeleton+derived fields written, the YAML
+        must start with `reach_layer:` (not `channels:` / `common:`).
+        """
+        project = tmp_path / "proj"
+        project.mkdir()
+        acc = empty_accumulator()
+        # Mimic the state after build_skeleton + apply_derived_fields
+        # for a `selected_channels=["web", "voice"]` project.
+        acc["reach_layer"] = {
+            "channels": {
+                "voice": {"agent_core": {"timeout_ms": 15000}},
+                "web": {
+                    "ui": {
+                        "storage_key": "tour_pal_user_id",
+                        "theme_storage_key": "tour_pal_theme",
+                    }
+                },
+            },
+            "common": {"observability": {"domain": "tour_pal"}},
+        }
+        render_all(project, acc, _intake(selected_channels=["web", "voice"]))
+        body = (project / "reach_layer.yaml").read_text()
+        assert "# WARNINGS:" not in body, (
+            f"expected no validate_partial warnings; got:\n{body}"
+        )
+        parsed = yaml.safe_load(
+            "\n".join(line for line in body.splitlines() if not line.startswith("#"))
+        )
+        assert list(parsed.keys()) == ["reach_layer"], (
+            f"reach_layer.yaml must start with `reach_layer:` wrapper; "
+            f"got top-level keys: {list(parsed.keys())}"
+        )
+        assert parsed["reach_layer"]["channels"]["voice"]["agent_core"]["timeout_ms"] == 15000
+        assert parsed["reach_layer"]["common"]["observability"]["domain"] == "tour_pal"
+
+    def test_reach_layer_idempotent_wrap(self, tmp_path: Path) -> None:
+        """If the accumulator was loaded back already wrapped (e.g. by
+        load_block_from_file's symmetric unwrap fallback), the renderer
+        does NOT double-wrap.
+        """
+        project = tmp_path / "proj"
+        project.mkdir()
+        acc = empty_accumulator()
+        # Already wrapped — pretend a caller skipped the unwrap.
+        acc["reach_layer"] = {
+            "reach_layer": {"common": {"observability": {"domain": "foo"}}}
+        }
+        render_all(project, acc, _intake())
+        body = (project / "reach_layer.yaml").read_text()
+        parsed = yaml.safe_load(
+            "\n".join(line for line in body.splitlines() if not line.startswith("#"))
+        )
+        # Single wrapper, not nested.
+        assert list(parsed.keys()) == ["reach_layer"]
+        assert "reach_layer" not in parsed["reach_layer"], (
+            "double-wrap detected — _prepare_block_data must skip when "
+            "the wrapper is already present"
+        )
+
+    def test_load_block_from_file_unwraps_reach_layer(self, tmp_path: Path) -> None:
+        """Round-trip: render writes wrapped YAML, load reads it flat."""
+        from dev_kit.agent.renderer import load_block_from_file
+
+        project = tmp_path / "proj"
+        project.mkdir()
+        acc = empty_accumulator()
+        acc["reach_layer"] = {
+            "common": {"observability": {"domain": "tour_pal"}},
+        }
+        render_all(project, acc, _intake())
+        loaded = load_block_from_file(project, "reach_layer")
+        # Wrapper must be stripped — accumulator-shape is flat.
+        assert "reach_layer" not in loaded, (
+            f"load_block_from_file must unwrap; got {loaded!r}"
+        )
+        assert loaded["common"]["observability"]["domain"] == "tour_pal"

@@ -73,22 +73,42 @@ def test_static_kb_similarity_threshold_range():
         )
 
 
-def test_static_kb_intent_filter_requires_mappings():
-    """If use_intent_filter=True (default), intent_filters must be non-empty."""
-    with pytest.raises(ValidationError, match="intent_filters"):
-        StaticKnowledgeBaseSection(
-            metadata_filters=MetadataFiltersConfig(use_intent_filter=True),
-            intent_filters={},
-        )
+def test_static_kb_intent_filter_true_with_empty_filters_accepted_as_partial_draft():
+    """Chat-time partial drafts: (use_intent_filter=True, intent_filters={})
+    must NOT raise.
+
+    Reason: the dev-kit accumulator starts with an empty `intent_filters`
+    and the knowledge phase populates it later. The previous "must be
+    non-empty when enabled" check fired on every `update_config` write to
+    `knowledge.blocks.static_knowledge_base.*` (e.g. setting
+    `collection_name` before intent_filters were ready) and bricked the
+    knowledge phase. Strict deploy-time enforcement happens against the
+    runtime schema in the pre-deploy dry-run instead.
+    """
+    s = StaticKnowledgeBaseSection(
+        metadata_filters=MetadataFiltersConfig(use_intent_filter=True),
+        intent_filters={},
+    )
+    assert s.intent_filters == {}
+    assert s.metadata_filters.use_intent_filter is True
 
 
 def test_static_kb_intent_filter_disabled_allows_empty():
-    """If use_intent_filter=False, intent_filters can be empty."""
+    """If use_intent_filter=False, intent_filters can be empty (always was)."""
     s = StaticKnowledgeBaseSection(
         metadata_filters=MetadataFiltersConfig(use_intent_filter=False),
         intent_filters={},
     )
     assert s.intent_filters == {}
+
+
+def test_static_kb_intent_filter_true_with_populated_filters_accepted():
+    """Fully-configured case: use_intent_filter=True + intent_filters set."""
+    s = StaticKnowledgeBaseSection(
+        metadata_filters=MetadataFiltersConfig(use_intent_filter=True),
+        intent_filters={"tour_inquiry": ["tours"]},
+    )
+    assert s.intent_filters == {"tour_inquiry": ["tours"]}
 
 
 def test_static_kb_intent_filter_with_mappings_passes():

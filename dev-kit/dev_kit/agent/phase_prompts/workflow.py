@@ -11,7 +11,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from dev_kit.agent.phase_prompts._helpers import _path_of, _rule_of, _render_fields
+from dev_kit.agent.phase_prompts._helpers import (
+    _phase_focus_header,
+    _closing_block,
+    _common_rules,
+    _path_of,
+    _render_fields,
+    _rule_of,
+)
 
 if TYPE_CHECKING:
     from dev_kit.agent.field_rules import FieldRule
@@ -50,21 +57,19 @@ def build(
     kb_note = ""
     if has_kb:
         kb_note = """
-**Pre-check for knowledge base agents:**
+**Knowledge base agents — knowledge_retrieval already configured:**
 
-Before calling `create_subagent` for the first time, verify that
-`knowledge_retrieval` exists in `connectors.internal`. If not, add it:
-`update_config(block=agent_core, section=connectors.internal,
-values=[{{name: 'knowledge_retrieval', route: 'knowledge_engine',
-description: '<what the KB contains>',
-input_schema: {{type: 'object', properties: {{query: {{type: 'string',
-description: 'Search query'}}}}, required: ['query']}},
-invocation_rules: {{call_when: '...', required_before_calling: ['query'],
-must_not_substitute: '...', on_empty: '...', on_failure: '...',
-bridge_line: '...'}}}}]}}`
+By the time you reach the workflow phase, the `knowledge_retrieval`
+connector at `agent_core.connectors.internal[name=knowledge_retrieval]`
+has been fully configured during the earlier knowledge phase (skeleton
+created the connector entry; the knowledge phase wrote `description`
+and the six `invocation_rules.*` chat fields). Do NOT re-create it
+here — `update_config` writes to `connectors.internal` will fail
+because every path-form chat field for it is already `answered`.
 
-Then set `global_tools: ['knowledge_retrieval']` — NEVER list
-`knowledge_retrieval` in any individual subagent's `tools` field.
+When wiring it into the workflow, set `global_tools:
+['knowledge_retrieval']` — and NEVER list `knowledge_retrieval` in any
+individual subagent's `tools` field.
 """
 
     memory_state_note = ""
@@ -79,16 +84,19 @@ appropriate `opening_phrase`. The wizard does not enforce exactly 5 branches
 validation.
 """
 
-    return f"""# Phase: Workflow
+    return f"""{_phase_focus_header("workflow", pending_fields)}# Phase: Workflow
 
-You are now designing the subagent state machine — individual conversational
+You are designing the subagent state machine — individual conversational
 sub-flows and how they route between each other based on NLU intent.
 
+{_common_rules()}
+
 **Execution rule:** When the user confirms the subagent design (any variant
-of 'yes', 'looks good', 'that's correct', 'proceed'), immediately call
-`create_subagent` for every subagent in the design. Do NOT say "Perfect! Let
-me set that up…" and then ask another question. Present design → user
-confirms → execute tools immediately.
+of "yes", "looks good", "that's correct", "proceed"), immediately call
+`add_subagent` for every subagent in the design, then `add_routing_rule`
+for every transition. Do NOT say "Perfect! Let me set that up…" and then
+ask another question. Present design → user confirms → execute tools
+immediately.
 
 **Step 0 — Set top-level workflow fields FIRST:**
 
@@ -152,7 +160,5 @@ new intent names without explicit user approval.
 
 {refs_section}
 
-When all subagents are declared, routing rules are set, and the self-check
-above passes, the router advances to the observability phase automatically.
-Do NOT call set_phase.
+{_closing_block()}
 """

@@ -66,6 +66,23 @@ class IntakeState:
     # When this set contains all 7 BINARY_INTAKE_FIELDS, intake is complete.
     # Stored as list so it round-trips through JSON; use set semantics in code.
     binary_flags_seen: list[str] = field(default_factory=list)
+    # Set during the knowledge phase when the operator confirms documents
+    # live in Azure Blob Storage. Drives the deploy form's decision to
+    # ask for AZURE_STORAGE_ACCOUNT / AZURE_STORAGE_KEY / AZURE_CONTAINER_NAME.
+    # Credentials themselves NEVER touch chat — only the boolean intent.
+    # Mirrors the legacy `ConfigAccumulator.declare_azure_needed()` flag
+    # on main; restored here so the deploy step knows whether to surface
+    # Azure inputs.
+    uses_azure_blob: bool = False
+    # Tracks whether the LLM has explicitly captured the user's answer to
+    # the Azure-Blob question (via `update_intake(field="uses_azure_blob",
+    # value=...)`). Distinct from `uses_azure_blob` because False is also a
+    # valid answer — the value alone can't tell us whether the user
+    # answered or whether we are still looking at the default. The router
+    # uses this to gate knowledge-phase advancement: if `has_kb=True`
+    # and this flag is False, the phase stays open until the LLM asks
+    # the question and writes the answer.
+    azure_blob_decided: bool = False
 
     def __post_init__(self) -> None:
         # Validate Channel literal manually since dataclass doesn't enforce it.
@@ -128,8 +145,16 @@ def load_intake_state(path: Path) -> IntakeState:
             f"Corrupt JSON in intake state file {path}: {exc}"
         ) from exc
 
+    # Drop any unknown keys so a forward-compat read of an older payload
+    # (or a payload from a project created with a slightly different
+    # IntakeState version) still loads. Dataclass field defaults cover
+    # missing keys automatically.
+    import dataclasses
+    known_fields = {f.name for f in dataclasses.fields(IntakeState)}
+    filtered_payload = {k: v for k, v in payload.items() if k in known_fields}
+
     try:
-        return IntakeState(**payload)
+        return IntakeState(**filtered_payload)
     except TypeError as exc:
         logger.error(
             "load_intake_state",

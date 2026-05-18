@@ -68,9 +68,19 @@ def test_build_renders_pending_fields():
 
 
 def test_trust_dignity_check_for_companion_style():
+    """For companion-style agents the trust prompt must mention the dignity
+    check (so the LLM knows it's in place) but MUST NOT instruct the LLM
+    to write `enabled` or `questions` — both are predetermined fields set
+    by the router cascade from `is_companion_style`. Writing them via
+    `update_config` is rejected as a non-chat field.
+    """
     result = build([], "", "", _intake(is_companion_style=True))
     assert "dignity_check" in result
-    assert "Does this blame the user?" in result
+    # The prompt must explicitly mark dignity_check as predetermined.
+    assert "predetermined" in result.lower() or "router cascade" in result.lower()
+    # And must NOT instruct the LLM to write either dignity field via
+    # block/section/values.
+    assert "section=dignity_check" not in result
 
 
 def test_trust_no_dignity_check_for_non_companion():

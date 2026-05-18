@@ -165,3 +165,61 @@ def test_save_load_roundtrip_with_binary_flags_seen(tmp_path: Path):
     save_intake_state(state_path, state)
     loaded = load_intake_state(state_path)
     assert loaded.binary_flags_seen == ["has_kb", "has_hitl"]
+
+
+def test_uses_azure_blob_defaults_false_and_round_trips(tmp_path: Path):
+    """uses_azure_blob defaults to False, round-trips through JSON, and is
+    forward-compat (an old payload missing the field still loads)."""
+    # Default.
+    state = _empty_state()
+    assert state.uses_azure_blob is False
+
+    # Round-trip when explicitly set True (the knowledge phase captures
+    # this via update_intake(field="uses_azure_blob", value=True)).
+    state.uses_azure_blob = True
+    state_path = tmp_path / "intake_state.json"
+    save_intake_state(state_path, state)
+    loaded = load_intake_state(state_path)
+    assert loaded.uses_azure_blob is True
+
+
+def test_load_intake_state_tolerates_missing_uses_azure_blob(tmp_path: Path):
+    """A legacy payload from before the field was added still loads — the
+    default (False) is applied automatically.
+    """
+    import json
+    legacy_payload = {
+        "has_kb": False, "has_external_tools": False,
+        "is_multi_turn": False, "needs_persistent_user_data": False,
+        "is_companion_style": False, "needs_consent": False, "has_hitl": False,
+        "selected_channels": ["web"],
+        "default_language": "english", "supported_languages": ["english"],
+        "domain_description": "", "project_name": "legacy_proj",
+        # uses_azure_blob deliberately absent.
+    }
+    p = tmp_path / "intake_state.json"
+    p.write_text(json.dumps(legacy_payload))
+    loaded = load_intake_state(p)
+    assert loaded.uses_azure_blob is False
+
+
+def test_load_intake_state_drops_unknown_keys(tmp_path: Path):
+    """A forward-compat read with an extra key the dataclass doesn't know
+    about must not crash — the unknown key is silently dropped.
+    """
+    import json
+    payload_with_extra = {
+        "has_kb": False, "has_external_tools": False,
+        "is_multi_turn": False, "needs_persistent_user_data": False,
+        "is_companion_style": False, "needs_consent": False, "has_hitl": False,
+        "selected_channels": ["web"],
+        "default_language": "english", "supported_languages": ["english"],
+        "domain_description": "", "project_name": "fwd",
+        "uses_azure_blob": True,
+        "future_field_we_dont_know_about": "ignored",
+    }
+    p = tmp_path / "intake_state.json"
+    p.write_text(json.dumps(payload_with_extra))
+    loaded = load_intake_state(p)
+    assert loaded.uses_azure_blob is True
+    assert not hasattr(loaded, "future_field_we_dont_know_about")
