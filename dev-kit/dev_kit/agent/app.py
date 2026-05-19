@@ -1601,6 +1601,7 @@ def pre_deploy_validate(slug: str) -> dict[str, Any]:
     # Prefer IntakeState (new wizard); fall back to accumulator for projects that
     # pre-date the deterministic wizard and don't have intake_state.json yet.
     _intake_path = CONFIGS_DIR / slug / "_meta" / "intake_state.json"
+    _intake: IntakeState | None = None
     try:
         _intake = load_intake_state(_intake_path)
         selected_channels = list(_intake.selected_channels)
@@ -1624,8 +1625,39 @@ def pre_deploy_validate(slug: str) -> dict[str, Any]:
             ) from exc
         selected_channels = _reach_channels_from_accumulator(legacy_acc)
 
+    # Decide which blocks would actually be deployed. The compose
+    # generator drops ``knowledge_engine`` when ``has_kb=false`` and
+    # ``action_gateway`` when ``has_external_tools=false`` (see
+    # ``services_to_remove`` in the deploy/preview path). Validating
+    # the YAML for a block that will never be deployed produces noise
+    # — e.g. ``knowledge.blocks.static_knowledge_base.collection_name:
+    # Field required`` on a poem bot that never wired a KB. Mirror the
+    # selective-deploy logic here. The legacy accumulator-only branch
+    # has no intake flags to read; default to validating everything
+    # (safe conservative behaviour).
+    skipped_blocks: dict[str, str] = {}
+    if _intake is not None:
+        if not _intake.has_kb:
+            skipped_blocks["knowledge_engine"] = (
+                "has_kb=false — Knowledge Engine is not deployed for this project."
+            )
+        if not _intake.has_external_tools:
+            skipped_blocks["action_gateway"] = (
+                "has_external_tools=false — Action Gateway is not deployed for this project."
+            )
+
     # 1. Per-block validation.
     for block in _BLOCKS:
+        if block in skipped_blocks:
+            # Selective-deploy: this block's service is not in the
+            # compose generated for this project. The compose
+            # generator drops it; validating its YAML would surface
+            # spurious "required field" errors for sections the
+            # runtime never sees. Mark as no-errors + leave
+            # ``merged`` empty so it doesn't appear in display_merged.
+            block_errors[block] = []
+            merged[block] = {}
+            continue
         try:
             data = _load_and_merge(slug, block)
             merged[block] = data  # store original for display in merged_configs
@@ -1726,6 +1758,13 @@ def pre_deploy_validate(slug: str) -> dict[str, Any]:
         "invariant_errors": invariant_errors,
         "merged_configs": display_merged,
         "validator": validator,
+        # Map of {block_name: human-readable reason}. Blocks listed
+        # here were skipped from validation because the selective-
+        # deploy logic (see ``services_to_remove`` in deploy/preview)
+        # drops them from the compose for this project. The frontend
+        # can render this as "Validation skipped — service not
+        # deployed" on the Config Review screen.
+        "skipped_blocks": skipped_blocks,
     }
 
 

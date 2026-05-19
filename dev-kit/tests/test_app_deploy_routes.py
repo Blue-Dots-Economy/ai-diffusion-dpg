@@ -729,3 +729,66 @@ class TestDeployValidatorMode:
         assert res.status_code == 200
         body = res.json()
         assert body.get("validator") == "runtime_baked"
+
+
+class TestDeployValidateSkippedBlocks:
+    """Selective-deploy: blocks whose service isn't deployed for this
+    project must be skipped from validation. The compose generator
+    drops ``knowledge_engine`` when ``has_kb=false`` and
+    ``action_gateway`` when ``has_external_tools=false``; validating
+    their YAML against the strict schema would surface false-positive
+    "required field" errors (e.g.
+    ``knowledge.blocks.static_knowledge_base.collection_name: Field
+    required`` on a project that never wired a KB).
+
+    The endpoint returns a ``skipped_blocks`` map so the frontend
+    Config Review screen can render "Validation skipped — service
+    not deployed" for affected blocks.
+    """
+
+    def _patch_intake(self, project_dir: Path, **overrides) -> None:
+        """Rewrite the project's intake_state.json with the given flag overrides."""
+        intake_path = project_dir / "_meta" / "intake_state.json"
+        with open(intake_path) as f:
+            intake = json.load(f)
+        intake.update(overrides)
+        with open(intake_path, "w") as f:
+            json.dump(intake, f)
+
+    def test_no_kb_skips_knowledge_engine(self, client_with_project, project_dir):
+        self._patch_intake(project_dir, has_kb=False)
+        client, slug = client_with_project
+        res = client.post(f"/api/projects/{slug}/deploy/validate")
+        assert res.status_code == 200
+        body = res.json()
+        assert "knowledge_engine" in body.get("skipped_blocks", {})
+        assert body["skipped_blocks"]["knowledge_engine"].startswith("has_kb=false")
+        # And no errors are reported for the skipped block.
+        assert body["block_errors"].get("knowledge_engine") == []
+
+    def test_no_external_tools_skips_action_gateway(self, client_with_project, project_dir):
+        self._patch_intake(project_dir, has_external_tools=False)
+        client, slug = client_with_project
+        res = client.post(f"/api/projects/{slug}/deploy/validate")
+        assert res.status_code == 200
+        body = res.json()
+        assert "action_gateway" in body.get("skipped_blocks", {})
+        assert body["block_errors"].get("action_gateway") == []
+
+    def test_both_flags_off_skips_both_blocks(self, client_with_project, project_dir):
+        self._patch_intake(project_dir, has_kb=False, has_external_tools=False)
+        client, slug = client_with_project
+        res = client.post(f"/api/projects/{slug}/deploy/validate")
+        assert res.status_code == 200
+        body = res.json()
+        skipped = body.get("skipped_blocks", {})
+        assert "knowledge_engine" in skipped
+        assert "action_gateway" in skipped
+
+    def test_default_flags_on_no_skips(self, client_with_project):
+        client, slug = client_with_project
+        res = client.post(f"/api/projects/{slug}/deploy/validate")
+        assert res.status_code == 200
+        body = res.json()
+        # The fixture project has both flags=True; nothing should be skipped.
+        assert body.get("skipped_blocks") == {}
