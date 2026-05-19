@@ -123,9 +123,36 @@ class ConnectorsConfig(BaseModel):
     )
 
 
+class FeaturesConfig(BaseModel):
+    """Per-deployment chat-provider feature toggles.
+
+    Mirrors the runtime ``agent_core/src/schema/config.py:FeaturesConfig``.
+    Each toggle's ``None`` means "use the provider's intrinsic capability";
+    a bool tightens the effective feature for this deployment.
+    """
+
+    model_config = {"extra": "forbid"}
+    prompt_cache: bool | None = None
+    streaming: bool | None = None
+    image_input: bool | None = None
+
+
 class AgentConfig(BaseModel):
-    primary_model: str = Field(..., description="Claude model ID for primary inference, e.g. claude-haiku-4-5-20251001")
-    fallback_model: str = Field(..., description="Claude model ID used if primary call fails")
+    # Runtime ``agent_core/src/schema/config.py:AgentConfig`` declares
+    # ``primary_model`` and ``fallback_model`` with ``= ""`` defaults
+    # (not required). Matching that so host validation accepts a config
+    # that hasn't named a model yet.
+    primary_model: str = Field(default="", description="Claude model ID for primary inference, e.g. claude-haiku-4-5-20251001")
+    fallback_model: str = Field(default="", description="Claude model ID used if primary call fails")
+    # GH-289: provider selection. Runtime makes this a ``Literal``;
+    # switching away from ``anthropic`` requires the matching API key in
+    # env (e.g. ``OPENAI_API_KEY``) and tightens the feature set the
+    # chat_provider factory accepts.
+    provider: Literal["anthropic", "openai"] = "anthropic"
+    features: FeaturesConfig = Field(
+        default_factory=FeaturesConfig,
+        description="Per-deployment chat-provider feature toggles (GH-289)",
+    )
     timeout_ms: int = Field(default=10000, description="LLM call timeout in milliseconds")
     retry_attempts: int = Field(default=2, description="Number of retry attempts on transient failure")
     retry_backoff_seconds: list[float] = Field(default=[0, 0.5, 1.0])
@@ -1192,9 +1219,58 @@ class ChannelsConfig(BaseModel):
     voice: VoiceChannelConfig | None = Field(default=None, description="Voice channel config. None = not deployed.")
 
 
-class CommonReachConfig(BaseModel):
-    """Common settings shared across all channels."""
+class ReachHttpClientConfig(BaseModel):
+    """Generic HTTP client config for Reach Layer inter-service calls.
 
+    Mirrors the runtime ``reach_layer/base/schema/config.py:HttpClientConfig``.
+    """
+
+    model_config = {"extra": "forbid"}
+    endpoint: str
+    timeout_s: float = Field(default=10.0, gt=0)
+
+
+class LearningClientConfig(BaseModel):
+    """Observability-layer learning-signal client (ms timeouts).
+
+    Mirrors the runtime ``reach_layer/base/schema/config.py:LearningClientConfig``
+    added by GH-330. Used by Reach Layer voice/web channels to POST
+    ``recording.*`` audit signals at session-end.
+    """
+
+    model_config = {"extra": "forbid"}
+    endpoint: str
+    timeout_ms: int = Field(default=2000, gt=0)
+
+
+class CommonReachConfig(BaseModel):
+    """Common settings shared across all channel services.
+
+    Mirrors the runtime ``reach_layer/base/schema/config.py:CommonConfig``
+    1:1. Earlier this class only modelled ``observability`` and relied on
+    Pydantic's default ``extra="ignore"`` to drop everything else — which
+    silently let drift through (host validation passed configs the
+    runtime would later validate strictly). With ``extra="forbid"`` and
+    the three missing client sub-configs, host-mode deploy review now
+    catches the same drift Docker mode would.
+    """
+
+    model_config = {"extra": "forbid"}
+    agent_core_client: ReachHttpClientConfig = Field(
+        default_factory=lambda: ReachHttpClientConfig(
+            endpoint="http://agent_core:8000/process_turn", timeout_s=30.0
+        )
+    )
+    memory_layer_client: ReachHttpClientConfig = Field(
+        default_factory=lambda: ReachHttpClientConfig(
+            endpoint="http://memory_layer:8002", timeout_s=10.0
+        )
+    )
+    learning_client: LearningClientConfig = Field(
+        default_factory=lambda: LearningClientConfig(
+            endpoint="http://observability_layer:8004", timeout_ms=2000
+        )
+    )
     observability: dict[str, Any] = Field(
         default_factory=dict,
         description="Observability settings. At minimum: {domain: 'your_domain_slug'}",

@@ -138,9 +138,16 @@ class TestValidatePartialKeyCheck:
 
 
 class TestAgentConfig:
-    def test_required_models_must_be_present(self):
-        with pytest.raises(ValidationError):
-            AgentConfig()  # missing primary_model and fallback_model
+    def test_default_models_are_empty_strings(self):
+        # Runtime ``agent_core/src/schema/config.py:AgentConfig`` declares
+        # ``primary_model: str = ""`` and ``fallback_model: str = ""`` —
+        # not required at construction. The dev-kit flat-file copy
+        # previously over-required these; aligned with runtime so host
+        # validation accepts partial configs the runtime would accept.
+        cfg = AgentConfig()
+        assert cfg.primary_model == ""
+        assert cfg.fallback_model == ""
+        assert cfg.provider == "anthropic"
 
     def test_consent_fields_default_false_and_empty(self):
         cfg = AgentConfig(primary_model="claude-haiku-4-5-20251001", fallback_model="claude-haiku-4-5-20251001")
