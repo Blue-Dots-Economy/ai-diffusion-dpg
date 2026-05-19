@@ -188,6 +188,7 @@ def _reach_minimal_dict():
         "common": {
             "agent_core_client": {"endpoint": "http://x:1", "timeout_s": 30.0},
             "memory_layer_client": {"endpoint": "http://x:1", "timeout_s": 10.0},
+            "learning_client": {"endpoint": "http://x:1", "timeout_ms": 2000},
             "observability": {"otel": {"collector_endpoint": "http://x:1"}},
         },
         "channels": {

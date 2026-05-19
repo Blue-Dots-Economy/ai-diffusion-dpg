@@ -282,7 +282,7 @@ class AgentWorkflowLoader:
             if c.get("name")
         }
         self._validate_tool_names(subagents, tool_registry, internal_tool_names)
-        self._validate_global_tool_names(global_tools_raw, tool_registry)
+        self._validate_global_tool_names(global_tools_raw, tool_registry, internal_tool_names)
         self._validate_subagent_intents(subagents, all_nlu_intents)
         self._validate_global_intents_not_in_subagents(subagents, global_intents)
         self._validate_terminal_routing(subagents)
@@ -793,19 +793,21 @@ class AgentWorkflowLoader:
         self,
         global_tools: list[str],
         tool_registry: ToolRegistry,
+        internal_tool_names: set[str] | None = None,
     ) -> None:
         """Fail fast if any name in agent_workflow.global_tools is not registered.
 
         Args:
-            global_tools:   Names declared under ``agent_workflow.global_tools``.
-            tool_registry:  Registry whose :meth:`get_tool_names` lists all known tools.
+            global_tools:         Names declared under ``agent_workflow.global_tools``.
+            tool_registry:        Registry whose :meth:`get_tool_names` lists all known tools.
+            internal_tool_names:  Tool names from connectors.internal (exempt from check).
 
         Raises:
-            ConfigurationError: If any name is not registered.
+            ConfigurationError: If any name is not registered or internal.
         """
         if not global_tools:
             return
-        known = tool_registry.get_tool_names()
+        known = tool_registry.get_tool_names() | (internal_tool_names or set())
         unknown = [t for t in global_tools if t not in known]
         if unknown:
             raise ConfigurationError(

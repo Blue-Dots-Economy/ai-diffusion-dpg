@@ -76,6 +76,15 @@ class HttpClientConfig(BaseModel):
     timeout_s: float = Field(default=10.0, gt=0)
 
 
+class LearningClientConfig(BaseModel):
+    """Observability Layer learning-signal client — uses ms timeouts."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    endpoint: str
+    timeout_ms: int = Field(default=2000, gt=0)
+
+
 # ---------------------------------------------------------------------------
 # common
 # ---------------------------------------------------------------------------
@@ -94,6 +103,11 @@ class CommonConfig(BaseModel):
     memory_layer_client: HttpClientConfig = Field(
         default_factory=lambda: HttpClientConfig(
             endpoint="http://memory_layer:8002", timeout_s=10.0
+        )
+    )
+    learning_client: LearningClientConfig = Field(
+        default_factory=lambda: LearningClientConfig(
+            endpoint="http://observability_layer:8004", timeout_ms=2000
         )
     )
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)

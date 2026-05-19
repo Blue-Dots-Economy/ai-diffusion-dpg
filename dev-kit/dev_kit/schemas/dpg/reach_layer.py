@@ -19,6 +19,14 @@ class HttpClientConfig(BaseModel):
     timeout_s: float = Field(..., gt=0, le=120)
 
 
+class LearningClientDpg(BaseModel):
+    """Observability Layer learning-signal client — uses ms timeouts."""
+
+    model_config = ConfigDict(extra="forbid")
+    endpoint: str = Field(..., pattern=r"^https?://")
+    timeout_ms: int = Field(..., gt=0, le=60000)
+
+
 class OtelConfig(BaseModel):
     """OpenTelemetry exporter configuration for Reach Layer.
 
@@ -45,6 +53,7 @@ class CommonDpg(BaseModel):
     model_config = ConfigDict(extra="forbid")
     agent_core_client: HttpClientConfig
     memory_layer_client: HttpClientConfig
+    learning_client: LearningClientDpg
     observability: ReachObservability
 
 

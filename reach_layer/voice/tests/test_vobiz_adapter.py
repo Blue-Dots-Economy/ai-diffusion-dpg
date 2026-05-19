@@ -241,3 +241,145 @@ async def test_consent_event_denied_ignored():
     evt = ConsentEvent(purpose="recording", granted=False)
     await a._on_consent_event(evt)
     a._recording_manager.start.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _RecordingObservabilityClient unit tests (GH-330)
+# ---------------------------------------------------------------------------
+
+from src.vobiz_adapter import _RecordingObservabilityClient
+
+
+def test_recording_observability_client_reads_endpoint_from_config():
+    """VobizAdapter must read learning_client endpoint from config."""
+    cfg = _voice_cfg()
+    cfg.setdefault("reach_layer", {}).setdefault("common", {})["learning_client"] = {
+        "endpoint": "http://obs:9999",
+        "timeout_ms": 1000,
+    }
+    a = VobizAdapter(cfg)
+    assert a._observability_client._endpoint == "http://obs:9999"
+    assert a._observability_client._timeout_s == pytest.approx(1.0)
+
+
+def test_recording_observability_client_defaults():
+    """VobizAdapter must use default OBS endpoint when config absent."""
+    a = VobizAdapter(_voice_cfg())
+    assert "observability_layer" in a._observability_client._endpoint
+
+
+@pytest.mark.asyncio
+async def test_recording_observability_client_posts_signal(respx_mock):
+    """_RecordingObservabilityClient.emit_signal must POST /emit/signal."""
+    import respx
+    import httpx
+
+    respx_mock.post("http://obs:8004/emit/signal").mock(
+        return_value=httpx.Response(200)
+    )
+    client = _RecordingObservabilityClient(endpoint="http://obs:8004", timeout_s=2.0)
+    # emit_signal schedules a task — run pending tasks to flush it
+    client.emit_signal("recording.stored", {"call_sid": "c1"})
+    await asyncio.sleep(0)
+    assert respx_mock.calls.call_count == 1
+    body = respx_mock.calls[0].request.content
+    import json
+    payload = json.loads(body)
+    assert payload["signal_type"] == "recording.stored"
+    assert payload["data"]["call_sid"] == "c1"
+
+
+@pytest.mark.asyncio
+async def test_recording_observability_client_swallows_http_error(respx_mock):
+    """emit_signal must not raise when the Observability Layer returns an error."""
+    import httpx
+
+    respx_mock.post("http://obs:8004/emit/signal").mock(
+        return_value=httpx.Response(500)
+    )
+    client = _RecordingObservabilityClient(endpoint="http://obs:8004", timeout_s=2.0)
+    client.emit_signal("recording.failed", {})
+    await asyncio.sleep(0)
+    # No exception should propagate
+
+
+@pytest.mark.asyncio
+async def test_finalize_and_store_uses_real_observability_client():
+    """_finalize_and_store must pass the adapter's observability client to SignalEmitter."""
+    from src.recordings.manager import NullRecordingManager
+
+    a = VobizAdapter(_voice_cfg())
+    emitted: list = []
+
+    class _CapturingClient:
+        def emit_signal(self, signal_type: str, data: dict) -> None:
+            emitted.append(signal_type)
+
+    a._observability_client = _CapturingClient()
+    # NullRecordingManager.finalize() returns None → "empty" signal emitted
+    await a._finalize_and_store("test-call-sid")
+    assert "recording.empty" in emitted
+
+
+# ---------------------------------------------------------------------------
+# RecordingManager / NullRecordingManager properties (GH-330)
+# ---------------------------------------------------------------------------
+
+def test_null_recording_manager_caller_id_hash_property():
+    """NullRecordingManager.caller_id_hash must return empty string."""
+    from src.recordings.manager import NullRecordingManager
+    m = NullRecordingManager()
+    assert m.caller_id_hash == ""
+
+
+def test_null_recording_manager_source_name_property():
+    """NullRecordingManager.source_name must return 'disabled'."""
+    from src.recordings.manager import NullRecordingManager
+    m = NullRecordingManager()
+    assert m.source_name == "disabled"
+
+
+def test_recording_manager_caller_id_hash_property(tmp_path):
+    """RecordingManager.caller_id_hash must return the value passed at construction."""
+    from src.recordings.manager import RecordingManager
+    from unittest.mock import MagicMock
+
+    source = MagicMock()
+    source.pipeline_processors = []
+    store = MagicMock()
+    m = RecordingManager(
+        source=source,
+        store=store,
+        call_sid="c1",
+        session_id="s1",
+        caller_id_hash="abcdef1234567890",
+        source_name="vobiz",
+        fmt="mp3",
+        sample_rate=8000,
+        min_duration_ms=100,
+        vobiz_call_id="v1",
+    )
+    assert m.caller_id_hash == "abcdef1234567890"
+
+
+def test_recording_manager_source_name_property(tmp_path):
+    """RecordingManager.source_name must return the value passed at construction."""
+    from src.recordings.manager import RecordingManager
+    from unittest.mock import MagicMock
+
+    source = MagicMock()
+    source.pipeline_processors = []
+    store = MagicMock()
+    m = RecordingManager(
+        source=source,
+        store=store,
+        call_sid="c1",
+        session_id="s1",
+        caller_id_hash="abc",
+        source_name="pipeline",
+        fmt="wav",
+        sample_rate=16000,
+        min_duration_ms=100,
+        vobiz_call_id="",
+    )
+    assert m.source_name == "pipeline"
