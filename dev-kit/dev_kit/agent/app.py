@@ -2617,12 +2617,32 @@ async def execute_deploy(slug: str, body: dict) -> dict:
         elif target == "docker":
             secrets["ke_devkit_callback_url"] = "http://host.docker.internal:8080"
 
-    # Mark all services as queued initially
+    # Load IntakeState once so we can filter the service list by the
+    # selective-deploy logic the compose generator uses (see
+    # ``services_to_remove`` further down in this function). Without
+    # this filter, ``knowledge_engine`` / ``action_gateway`` stay in
+    # ``state.services`` even when the compose drops them — the status
+    # endpoint then surfaces them as ``failed`` in the UI because the
+    # poll for an absent container falls through to the error path.
+    # Legacy projects without intake_state.json get the full unfiltered
+    # list (conservative — no flag info to drop from).
+    _deploy_intake_path = CONFIGS_DIR / slug / "_meta" / "intake_state.json"
+    try:
+        _deploy_intake = load_intake_state(_deploy_intake_path)
+    except FileNotFoundError:
+        _deploy_intake = None
+
+    # Mark all services as queued initially, filtered by selective-deploy.
     all_services = [
         "redis", "memgraph", "otel_collector", "jaeger", "prometheus", "loki", "grafana",
         "agent_core", "knowledge_engine", "memory_layer", "trust_layer",
         "action_gateway", "reach_layer", "observability_layer",
     ]
+    if _deploy_intake is not None:
+        if not _deploy_intake.has_kb:
+            all_services = [s for s in all_services if s != "knowledge_engine"]
+        if not _deploy_intake.has_external_tools:
+            all_services = [s for s in all_services if s != "action_gateway"]
     for svc in all_services:
         state.set_service(svc, "queued")
 

@@ -546,6 +546,56 @@ class TestGetDeployStatus:
         assert isinstance(data["services"], list)
 
 
+class TestDeployExecuteServiceFiltering:
+    """``deploy/execute`` must filter ``state.services`` by the same
+    selective-deploy logic the compose generator uses, otherwise the
+    status endpoint surfaces non-deployed services as ``failed``
+    (poem-bot regression: KE / AG appeared as failed on the Config
+    Review screen even though the compose correctly dropped them).
+    """
+
+    def _patch_intake(self, project_dir: Path, **overrides) -> None:
+        intake_path = project_dir / "_meta" / "intake_state.json"
+        with open(intake_path) as f:
+            intake = json.load(f)
+        intake.update(overrides)
+        with open(intake_path, "w") as f:
+            json.dump(intake, f)
+
+    def _execute_then_get_services(self, client, slug: str) -> list[str]:
+        with mock.patch.object(app_module, "pre_deploy_validate", return_value=_VALID_VALIDATION), \
+             mock.patch.object(app_module, "_run_docker_deploy", new_callable=mock.AsyncMock):
+            client.post(f"/api/projects/{slug}/deploy/execute", json={"target": "docker"})
+        res = client.get(f"/api/projects/{slug}/deploy/status")
+        return [s["name"] for s in res.json()["services"]]
+
+    def test_no_kb_drops_knowledge_engine_from_state(self, client_with_project, project_dir):
+        self._patch_intake(project_dir, has_kb=False)
+        client, slug = client_with_project
+        svcs = self._execute_then_get_services(client, slug)
+        assert "knowledge_engine" not in svcs
+
+    def test_no_external_tools_drops_action_gateway_from_state(self, client_with_project, project_dir):
+        self._patch_intake(project_dir, has_external_tools=False)
+        client, slug = client_with_project
+        svcs = self._execute_then_get_services(client, slug)
+        assert "action_gateway" not in svcs
+
+    def test_both_flags_off_drops_both_services(self, client_with_project, project_dir):
+        self._patch_intake(project_dir, has_kb=False, has_external_tools=False)
+        client, slug = client_with_project
+        svcs = self._execute_then_get_services(client, slug)
+        assert "knowledge_engine" not in svcs
+        assert "action_gateway" not in svcs
+
+    def test_default_flags_on_keeps_both_services(self, client_with_project):
+        client, slug = client_with_project
+        svcs = self._execute_then_get_services(client, slug)
+        # Fixture project has both flags=True; both services must still be tracked.
+        assert "knowledge_engine" in svcs
+        assert "action_gateway" in svcs
+
+
 # ---------------------------------------------------------------------------
 # Tests for encrypted_secrets decryption in deploy endpoints
 # ---------------------------------------------------------------------------
