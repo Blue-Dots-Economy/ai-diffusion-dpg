@@ -641,7 +641,27 @@ def add_routing_rule(
             # Tool API accepts a single condition object for ergonomics;
             # promote to the schema's list shape.
             rule["conditions"] = condition if isinstance(condition, list) else [condition]
-        target.setdefault("routing", []).append(rule)
+        # Idempotent dedupe — match sibling tools ``add_subagent``
+        # (id check) and ``add_tool`` (name check). The LLM tool-loop
+        # retry pattern (``_MAX_TOOL_ROUNDS=4``) regularly re-emits a
+        # batch when one call in the batch fails validation, so
+        # without this check the routing list grows by one each retry.
+        existing_routes = target.setdefault("routing", [])
+        for r in existing_routes:
+            if (
+                r.get("intent") == intent
+                and r.get("next_subagent_id") == to_id
+                and r.get("conditions") == rule.get("conditions")
+            ):
+                return {
+                    "ok": True,
+                    "noop": True,
+                    "reason": "duplicate routing rule skipped",
+                    "from": from_id,
+                    "intent": intent,
+                    "to": to_id,
+                }
+        existing_routes.append(rule)
 
         errors = validate_partial("agent_core", candidate_agent_core)
         if errors:
@@ -1326,15 +1346,21 @@ def discover_mcp_tools(
     payload = {"jsonrpc": "2.0", "method": "tools/list", "id": 1}
 
     try:
-        response = httpx.post(
-            url,
-            json=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json, text/event-stream",
-            },
-            timeout=timeout_seconds,
-        )
+        # Route through a client with a 1-retry transport so a single
+        # transient 503 / connection-reset on the MCP server doesn't
+        # bounce the LLM into a regeneration cycle. Mirrors the retry
+        # behaviour of sibling ``fetch_openapi_spec_from_url`` and
+        # satisfies .claude/rules/error-handling.md.
+        transport = httpx.HTTPTransport(retries=1)
+        with httpx.Client(transport=transport, timeout=timeout_seconds) as client:
+            response = client.post(
+                url,
+                json=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                },
+            )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         logger.warning(

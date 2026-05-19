@@ -35,8 +35,9 @@ def save_field_status(path: Path, status: dict[str, str]) -> None:
                 f"Invalid field status {v!r} for {k!r}; "
                 f"allowed: {sorted(FIELD_STATUS_VALUES)}"
             )
+    from dev_kit.agent._atomic_io import write_atomic_text
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(status, indent=2, ensure_ascii=False, sort_keys=True))
+    write_atomic_text(path, json.dumps(status, indent=2, ensure_ascii=False, sort_keys=True))
 
 
 def load_field_status(path: Path) -> dict[str, str]:

@@ -730,7 +730,7 @@ class TestDiscoverMcpTools:
                 json_payload={"jsonrpc": "2.0", "id": 1, "result": {"tools": []}},
             )
 
-        monkeypatch.setattr(httpx, "post", _fake_post)
+        _patch_httpx_post(monkeypatch, _fake_post)
 
         acc = _empty_accumulator()
         acc_before = json.loads(json.dumps(acc))
@@ -913,7 +913,7 @@ def test_discover_mcp_tools_plain_jsonrpc_response(monkeypatch) -> None:
             },
         )
 
-    monkeypatch.setattr(httpx, "post", _fake_post)
+    _patch_httpx_post(monkeypatch, _fake_post)
 
     out = discover_mcp_tools(
         {"server_url": "https://mcp.example.com/rpc/"},
@@ -958,7 +958,7 @@ def test_discover_mcp_tools_sse_response(monkeypatch) -> None:
             text=sse_text,
         )
 
-    monkeypatch.setattr(httpx, "post", _fake_post)
+    _patch_httpx_post(monkeypatch, _fake_post)
 
     out = discover_mcp_tools(
         {"server_url": "https://mcp.example.com/sse"},
@@ -980,7 +980,7 @@ def test_discover_mcp_tools_network_error_returns_structured_error(monkeypatch) 
     def _fake_post(url, *, json, headers, timeout):  # noqa: A002
         raise httpx.ConnectError("Connection refused")
 
-    monkeypatch.setattr(httpx, "post", _fake_post)
+    _patch_httpx_post(monkeypatch, _fake_post)
 
     out = discover_mcp_tools(
         {"server_url": "https://unreachable.example.com"},
@@ -1006,7 +1006,7 @@ def test_discover_mcp_tools_unparseable_response_returns_error(monkeypatch) -> N
             text="<html><body>not an MCP server</body></html>",
         )
 
-    monkeypatch.setattr(httpx, "post", _fake_post)
+    _patch_httpx_post(monkeypatch, _fake_post)
 
     out = discover_mcp_tools(
         {"server_url": "https://not-an-mcp.example.com"},
@@ -1048,6 +1048,34 @@ def _patch_httpx_client(monkeypatch, response: _FakeHttpxResponse) -> None:
         return _FakeHttpxClient(response)
 
     monkeypatch.setattr(httpx, "Client", _fake_client)
+
+
+def _patch_httpx_post(monkeypatch, fake_post) -> None:
+    """Patch ``httpx.Client(...).post(...)`` to delegate to ``fake_post``.
+
+    Used by ``discover_mcp_tools`` tests now that production code calls
+    through a Client (so retries=1 transport applies) rather than the
+    legacy module-level ``httpx.post``. The legacy
+    ``monkeypatch.setattr(httpx, "post", ...)`` pattern no longer
+    intercepts. ``fake_post`` keeps the same signature (url, json=...,
+    headers=..., timeout=...) so individual tests don't need to change
+    their fake-response construction.
+    """
+    import httpx
+
+    class _ClientForPost:
+        def __init__(self, *args, **kwargs):
+            self._kwargs = kwargs
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def post(self, url, **kwargs):
+            # Forward the Client-level timeout if the call didn't supply one
+            kwargs.setdefault("timeout", self._kwargs.get("timeout"))
+            return fake_post(url, **kwargs)
+
+    monkeypatch.setattr(httpx, "Client", _ClientForPost)
 
 
 def test_fetch_openapi_spec_from_url_missing_url() -> None:

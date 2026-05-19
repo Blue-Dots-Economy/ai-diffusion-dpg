@@ -24,8 +24,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional, get_args, get_origin
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError as PydanticValidationError
 
+from dev_kit.agent._atomic_io import write_atomic_text
 from dev_kit.agent.field_rules import AGGREGATED_FIELD_RULES, FieldRule
 from dev_kit.agent.field_status import load_field_status, save_field_status
 from dev_kit.agent.intake_state import (
@@ -298,7 +299,7 @@ def save_accumulator(slug_root: Path, accumulator: dict[str, dict]) -> None:
     """
     path = slug_root / _META_DIR / _ACCUMULATOR_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(accumulator, indent=2, ensure_ascii=False, sort_keys=True))
+    write_atomic_text(path, json.dumps(accumulator, indent=2, ensure_ascii=False, sort_keys=True))
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +354,7 @@ def save_current_phase(slug_root: Path, phase: str) -> None:
         )
     path = slug_root / _META_DIR / _CURRENT_PHASE_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(phase)
+    write_atomic_text(path, phase)
 
 
 # ---------------------------------------------------------------------------
@@ -411,7 +412,7 @@ def save_phase_progress(slug_root: Path, progress: dict[str, Any]) -> None:
     """
     path = slug_root / _META_DIR / _PHASE_PROGRESS_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(progress, indent=2, ensure_ascii=False))
+    write_atomic_text(path, json.dumps(progress, indent=2, ensure_ascii=False))
 
 
 def _apply_stall_recovery(
@@ -1130,10 +1131,16 @@ def _dispatch_tool_calls(
             continue
         try:
             handler_result = handler(call.args, intake_state, accumulator, field_status)
-        except (KeyError, ValueError, AttributeError) as exc:
+        except (KeyError, ValueError, AttributeError, PydanticValidationError) as exc:
             # Handler-internal errors (missing args, unknown intake field,
-            # unknown chat path) should not abort the turn — log, surface the
-            # error to the model as a tool_result, and continue.
+            # unknown chat path, pydantic shape rejection) should not abort
+            # the turn — log, surface the error to the model as a
+            # tool_result, and continue. ``PydanticValidationError`` is
+            # included explicitly because in Pydantic v2 it does NOT
+            # inherit from ``ValueError`` (unlike v1); without it the
+            # FastAPI handler would 500 mid-turn and the LLM would never
+            # see a paired ``tool_result``, which Anthropic then rejects
+            # with "tool_use ids found without tool_result blocks".
             # Point 13: log tool call that failed during execution
             logger.warning(
                 "phase_driver.tool_call_rejected",
@@ -1603,7 +1610,16 @@ def run_turn(
                 # opening turn.
                 recovery_rounds = 0
                 while True:
-                    _dispatch_tool_calls(
+                    # CAPTURE the tool_results — previously the recovery
+                    # loop discarded them, which meant the next LLM call
+                    # sent an assistant message with tool_use blocks but
+                    # NO paired user message carrying tool_result blocks.
+                    # Anthropic rejects that with HTTP 400
+                    # "tool_use ids found without tool_result blocks
+                    # immediately after". Mirror the main loop pattern
+                    # at the top of run_turn so the recovery branch
+                    # produces well-formed message sequences.
+                    recovery_tool_results = _dispatch_tool_calls(
                         recovery_response.tool_calls,
                         intake_state,
                         accumulator,
@@ -1613,13 +1629,27 @@ def run_turn(
                     )
                     for call in recovery_response.tool_calls:
                         tool_call_counts[call.name] = tool_call_counts.get(call.name, 0) + 1
+                    for call, result in zip(
+                        recovery_response.tool_calls, recovery_tool_results
+                    ):
+                        if isinstance(result, dict) and result.get("is_error"):
+                            tool_reject_counts[call.name] = (
+                                tool_reject_counts.get(call.name, 0) + 1
+                            )
                     if recovery_response.stop_reason != "tool_use":
                         break
                     if recovery_rounds >= _MAX_TOOL_ROUNDS:
                         break
+                    # Echo the assistant's raw content blocks AND the
+                    # synthesised tool_results before the next call —
+                    # same pattern as the main loop.
                     if recovery_response.raw_content:
                         messages.append(
                             {"role": "assistant", "content": recovery_response.raw_content}
+                        )
+                    if recovery_tool_results:
+                        messages.append(
+                            {"role": "user", "content": recovery_tool_results}
                         )
                     recovery_rounds += 1
                     recovery_response = _call_llm_logged(

@@ -45,8 +45,9 @@ def save_accumulator(path: Path, accumulator: dict[str, dict]) -> None:
     unknown = set(accumulator) - _BLOCKS_SET
     if unknown:
         raise ValueError(f"unknown blocks in accumulator: {sorted(unknown)}")
+    from dev_kit.agent._atomic_io import write_atomic_text
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(accumulator, indent=2, ensure_ascii=False, sort_keys=True))
+    write_atomic_text(path, json.dumps(accumulator, indent=2, ensure_ascii=False, sort_keys=True))
 
 
 def load_accumulator(path: Path) -> dict[str, dict]:

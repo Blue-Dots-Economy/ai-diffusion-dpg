@@ -83,6 +83,31 @@ _anthropic_client = anthropic.AsyncAnthropic(api_key=_api_key)
 logger = logging.getLogger(__name__)
 
 
+# Per-slug locks for serialising concurrent chat turns on the same
+# project. ``phase_driver.run_turn`` loads/mutates/saves five
+# ``_meta/*.json`` files plus appends to ``history.jsonl``; two
+# concurrent ``POST /api/projects/{slug}/chat`` requests (two browser
+# tabs, a stale-refresh retry, etc.) would race and produce
+# last-write-wins corruption. The lock is per-slug so cross-project
+# parallelism is preserved. ``_slug_locks_guard`` serialises the
+# get-or-create itself.
+_slug_locks: dict[str, "asyncio.Lock"] = {}
+_slug_locks_guard: "asyncio.Lock | None" = None
+
+
+async def _acquire_slug_lock(slug: str) -> "asyncio.Lock":
+    """Return the per-slug ``asyncio.Lock``, creating it if needed.
+
+    Lazy-creates the guard lock on first use so module import doesn't
+    require an active event loop.
+    """
+    global _slug_locks_guard
+    if _slug_locks_guard is None:
+        _slug_locks_guard = asyncio.Lock()
+    async with _slug_locks_guard:
+        return _slug_locks.setdefault(slug, asyncio.Lock())
+
+
 def _rewrite_compose_bind_paths_to_host(services: dict) -> None:
     """Rewrite relative bind-mount sources to absolute host paths in-place.
 
@@ -1063,13 +1088,22 @@ async def chat(slug: str, body: ChatRequest) -> dict:
             ),
         )
     try:
-        response_text = await asyncio.to_thread(
-            phase_driver.run_turn,
-            body.message,
-            slug,
-            projects_root=project_path.parent,
-            llm_call=_build_devkit_llm_call(),
-        )
+        # Serialise concurrent chat turns on the same slug. The
+        # alternative (two browser tabs, a stale-refresh retry, any
+        # parallel POST to this endpoint with the same slug) races on
+        # five ``_meta/*.json`` files plus the ``history.jsonl`` append
+        # because ``phase_driver.run_turn`` is a load-mutate-save cycle
+        # against shared disk state. The lock is per-slug so different
+        # projects still run in parallel.
+        slug_lock = await _acquire_slug_lock(slug)
+        async with slug_lock:
+            response_text = await asyncio.to_thread(
+                phase_driver.run_turn,
+                body.message,
+                slug,
+                projects_root=project_path.parent,
+                llm_call=_build_devkit_llm_call(),
+            )
     except Exception as exc:
         # Inspect the Anthropic error type so we can return an
         # operator-friendly message for the two failure modes the

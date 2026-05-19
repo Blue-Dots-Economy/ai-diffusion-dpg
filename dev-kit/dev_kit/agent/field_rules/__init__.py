@@ -96,6 +96,66 @@ FIELD_RULES_PHASES_VALID = {
 AGGREGATED_FIELD_RULES: dict[str, FieldRule] = {}
 
 
+def _intake_state_field_names() -> set[str]:
+    """Return the set of declared IntakeState dataclass field names.
+
+    Imported lazily inside the helper to avoid a circular import at
+    module load (``intake_state`` imports nothing from
+    ``field_rules`` but the inverse path is fragile during package
+    initialisation).
+    """
+    from dataclasses import fields as _dc_fields
+    from dev_kit.agent.intake_state import IntakeState
+    return {f.name for f in _dc_fields(IntakeState)}
+
+
+def _validate_invalidated_by(block_name: str, rules: dict[str, FieldRule]) -> None:
+    """Reject typo'd ``invalidated_by`` entries at registration time.
+
+    Each entry must be either:
+
+    * A name of a declared ``IntakeState`` field (cascades through
+      ``router.on_intake_update``), or
+    * A dotted path (contains ``.``) — treated as a cross-field
+      reference. Cross-field references are not validated here because
+      not every block is registered at the time this runs.
+
+    A typo like ``"has_external_tool"`` (missing ``s``) silently fails
+    to cascade — the dependent chat field never invalidates when the
+    user flips the real ``has_external_tools`` flag — and the stale
+    answer flows through ``apply_derived_fields`` and ``render_all``
+    into the deployed YAML. Catching at import surfaces the typo
+    immediately rather than at deploy time.
+
+    Args:
+        block_name: For error message context.
+        rules: The block's FIELD_RULES dict.
+
+    Raises:
+        ValueError: If any ``invalidated_by`` entry is not a dotted
+            path and is not a known IntakeState field.
+    """
+    intake_names = _intake_state_field_names()
+    typos: list[tuple[str, str]] = []
+    for relative_path, rule in rules.items():
+        for ref in rule.invalidated_by:
+            if "." in ref:
+                continue
+            if ref not in intake_names:
+                typos.append((relative_path, ref))
+    if typos:
+        formatted = "\n  ".join(
+            f"{block_name}.{p}: invalidated_by={ref!r} is not an IntakeState field "
+            f"(known names: {sorted(intake_names)})"
+            for p, ref in typos
+        )
+        raise ValueError(
+            f"FIELD_RULES typo in block {block_name!r} — invalidated_by entries "
+            f"must reference declared IntakeState fields or use a dotted path:\n  "
+            f"{formatted}"
+        )
+
+
 def register_block_rules(block_name: str, rules: dict[str, FieldRule]) -> None:
     """Register a block's FIELD_RULES into the aggregate registry.
 
@@ -105,7 +165,9 @@ def register_block_rules(block_name: str, rules: dict[str, FieldRule]) -> None:
             Every value must be a FieldRule instance.
 
     Raises:
-        ValueError: If block_name is empty or contains dots.
+        ValueError: If block_name is empty or contains dots, or if any
+            ``invalidated_by`` entry references a non-existent
+            ``IntakeState`` field (see ``_validate_invalidated_by``).
         TypeError: If any value in rules is not a FieldRule instance.
 
     Mutation: prefixes each path with `<block_name>.` and inserts into
@@ -120,6 +182,7 @@ def register_block_rules(block_name: str, rules: dict[str, FieldRule]) -> None:
             raise TypeError(
                 f"Expected FieldRule for {block_name}.{path!r}, got {type(rule).__name__}"
             )
+    _validate_invalidated_by(block_name, rules)
     # Drop previous entries for this block (idempotent re-registration).
     prefix = f"{block_name}."
     for path in list(AGGREGATED_FIELD_RULES.keys()):

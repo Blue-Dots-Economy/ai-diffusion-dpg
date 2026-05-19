@@ -112,9 +112,10 @@ def save_intake_state(path: Path, state: IntakeState) -> None:
         path: Target file path (typically `<slug>/_meta/intake_state.json`).
         state: The IntakeState to save.
     """
+    from dev_kit.agent._atomic_io import write_atomic_text
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = asdict(state)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
+    write_atomic_text(path, json.dumps(payload, indent=2, ensure_ascii=False))
 
 
 def load_intake_state(path: Path) -> IntakeState:
