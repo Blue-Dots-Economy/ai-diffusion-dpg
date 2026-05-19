@@ -10,10 +10,22 @@ before writing to action_gateway config.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _camel_to_snake(name: str) -> str:
+    """Convert ``camelCase`` / ``PascalCase`` to ``snake_case``.
+
+    ``bookTour`` → ``book_tour``; ``getWeatherForecast`` →
+    ``get_weather_forecast``; already-snake names pass through unchanged.
+    """
+    s1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
+    s2 = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1)
+    return s2.lower()
 
 
 @dataclass
@@ -46,6 +58,11 @@ class ParsedTool:
         method: HTTP method in uppercase, e.g. 'POST'.
         description: Human-readable description from summary or operationId.
         base_url: Server base URL from the spec.
+        operation_id: Original ``operationId`` from the OpenAPI spec when
+            present, else ``None``. Used by ``suggested_id`` to produce a
+            human-readable tool name; falls back to the path when absent
+            (which is why UUID-style paths produce ugly auto-generated ids
+            unless the spec author supplies an ``operationId``).
         params: List of extracted parameters.
         auth_type: Detected auth scheme: 'none', 'api_key', 'bearer', or 'oauth2'.
         auth_header: Header name for api_key auth, or None.
@@ -56,6 +73,7 @@ class ParsedTool:
     method: str
     description: str
     base_url: str
+    operation_id: str | None = None
     params: list[ParsedParam] = field(default_factory=list)
     auth_type: str = "none"
     auth_header: str | None = None
@@ -63,11 +81,27 @@ class ParsedTool:
 
     @property
     def suggested_id(self) -> str:
-        """Generate a snake_case suggested tool ID from path and method.
+        """Generate a snake_case suggested tool ID.
+
+        Prefers the spec's ``operationId`` (snake-cased) when present, so a
+        spec with ``operationId: bookTour`` yields ``book_tour`` — matching
+        what humans intuitively name the tool. Falls back to
+        ``{method}_{path_sanitized}`` when no ``operationId`` is supplied,
+        which is when UUID-style paths produce auto-generated ids like
+        ``post_d394c4e8_...``.
+
+        The returned id is what subsequent phases (workflow, observability,
+        review) must use to reference this tool in ``subagent.tools`` and
+        ``subagent.system_prompt`` — the tools-phase prompt forbids the LLM
+        from renaming it at ``add_tool`` time so chat history and registered
+        connector names stay in lockstep.
 
         Returns:
-            Snake_case identifier like 'post_search' or 'get_apply_job_id'.
+            Snake_case identifier like 'book_tour', 'get_v1_forecast', or
+            'post_apply_job_id'.
         """
+        if self.operation_id:
+            return _camel_to_snake(self.operation_id)
         path_part = (
             self.path.strip("/")
             .replace("/", "_")
@@ -128,6 +162,7 @@ def parse_openapi_spec(spec: dict[str, Any]) -> list[ParsedTool]:
                 method=method.upper(),
                 description=description,
                 base_url=base_url,
+                operation_id=operation.get("operationId"),
                 params=params,
                 auth_type=auth_type,
                 auth_header=auth_header,

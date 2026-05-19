@@ -358,13 +358,20 @@ class VoiceChannelConfig(BaseModel):
 
 
 class ChannelsConfig(BaseModel):
-    """All channel service configs."""
+    """All channel service configs.
+
+    Every channel is Optional so a deployment can omit any it doesn't
+    use. The dev-kit's pre-deploy validator sets the unselected channel
+    to ``None`` based on ``selected_channels``; with non-Optional
+    declarations the merged config would fail validation here even
+    though the runtime block for the missing channel was never started.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    cli: CliChannelConfig = Field(default_factory=CliChannelConfig)
-    web: WebChannelConfig = Field(default_factory=WebChannelConfig)
-    voice: VoiceChannelConfig = Field(default_factory=VoiceChannelConfig)
+    cli: Optional[CliChannelConfig] = None
+    web: Optional[WebChannelConfig] = None
+    voice: Optional[VoiceChannelConfig] = None
 
 
 class ReachLayerConfig(BaseModel):

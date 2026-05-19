@@ -53,90 +53,92 @@ def build(
 
     return f"""{_phase_focus_header("review", pending_fields)}# Phase: Review
 
-You are in the final review step. **Before anything else, re-ask any
-fields that were marked `needs_re_asking` in prior phases** — these appear
-in the "Fields to capture this phase" section below if any exist. Work
-through every re-ask first: ask the user for the value, call the
-appropriate `update_config` tool to record it, and confirm before
-continuing. If no re-asks remain, note that briefly and proceed straight
-to the cross-block checks.
+The authoritative validator runs when the user clicks **Deploy** — it
+runs the strict baked runtime schemas + the full cross-block invariant
+set on the merged config. You CANNOT reproduce that gate here, and you
+MUST NOT try.
 
-The system runs a strict Pydantic dry-run against the runtime block
-schemas when the user clicks **Deploy** in the wizard's next step. There
-is no per-turn validation tool you can call yourself — your job here is
-to inspect the accumulated config in the references section below and
-flag any issues against the cross-block invariants listed beneath.
+**Strict output contract for this phase — there are only two valid
+shapes for your reply:**
+
+**Shape A — re-asks pending.** If the "Fields to capture this phase"
+section below lists any field with status `needs_re_asking`, ask
+the user for it, record their answer via `update_config`, confirm.
+Repeat until all re-asks are clear. Then produce Shape B on the
+turn that clears the last re-ask.
+
+**Shape B — single-paragraph closing.** Emit ONE short paragraph (≤4
+sentences, no bullets, no headers) that:
+1. Lists the project name + main blocks generated (e.g. "Configured
+   <project> with N subagents, M tools, voice+web channels, KB,
+   N outcome states.").
+2. Tells the user to click **Deploy** to run the canonical
+   validation and ship the config.
+
+That is your entire reply. No preamble. No "Let me check…", no
+"I'll verify…", no narrating invariants you are "scanning". No
+self-checks of any kind. No claims that anything has been
+"verified" or "validated". The Deploy button is the validator.
+
+**Banned reply patterns (these waste a turn and confuse the user):**
+
+- "I need to review the configuration against the runtime invariants."
+- "Let me check for any violations:" / "Checking…" / "Scanning…"
+- "Tool-name case matching — Checking subagent tool references…"
+- "I don't see X in the accumulated state — could you confirm…"
+- "Have the N tools been registered?"
+- "Could you confirm the routing rules and tool connectors?"
+- Any per-rule bullet list describing checks.
+- Any "I'll now verify…" narration.
+
+Each of these asks the user for state the accumulator already holds,
+or describes work you cannot actually do from here. Skip them.
+
+**Silent auto-fixes before emitting Shape B.** Before closing, scan
+the references section and auto-fix any of these — write via
+`update_config` without narrating, then proceed to Shape B:
+
+- **Tool-name mismatch in `subagent.tools` / `subagent.system_prompt`.**
+  Every name in a `subagent.tools` list MUST appear verbatim in
+  `agent_core.connectors.{{read,write,identity,internal}}[].name`.
+  If a tools entry shows a different form than the connector
+  (camelCase vs snake_case, or a renamed id), REPLACE it with the
+  exact connector name. Same rule for tool references inside any
+  `subagent.system_prompt` string — rewrite the prompt text so
+  every tool name matches a real connector.
+
+- **`global_tools` ⊆ connector names.** Same fix as above —
+  replace any entry that isn't a real connector with the matching
+  registered name, or remove it if no match exists.
+
+- **knowledge_retrieval placement.** If it appears in any tool list,
+  its connector must be in `connectors.internal`, not
+  `connectors.read`. Fix silently if misplaced.
+
+- **`global_intents` ∩ `subagent.valid_intents` empty.** Remove any
+  overlap; prefer keeping the subagent-specific placement.
+
+- **`intent_filters` keys ⊆ `nlu_processor.intents`.** NLU intents
+  may be a strict superset — that is FINE, do not "fix" it.
+
+- **`default_fallback_subagent_id`** must be a declared subagent id;
+  set it to the first non-terminal subagent's id if missing.
+
+- **`routing.next_subagent_id`** must reference a declared id; drop
+  or remap if not.
+
+- **`opening_phrase`** non-empty for every non-terminal subagent.
+  If empty, write one short greeting line and move on.
+
+Do NOT mention the fixes you applied beyond a short clause in the
+single-paragraph closing (e.g. "(fixed N tool-name references)").
+Do not enumerate them.
 
 {_common_rules()}
 
 ## Fields to capture this phase
 
 {fields_section}
-
-## Cross-block invariants to verify manually
-
-By inspecting the accumulated config below, verify these rules. For each
-violation: ask the user for the correction and call the appropriate
-`update_config` tool to record it.
-
-1. **Tool names exist in connectors** — every name in any subagent's `tools`
-   list or in `global_tools` must match a connector `name` in
-   `connectors.read`, `connectors.write`, `connectors.identity`, or
-   `connectors.internal`.
-
-2. **knowledge_retrieval placement** — if `knowledge_retrieval` appears in
-   any tool list or `global_tools`, it must be in `connectors.internal`
-   (route field), not `connectors.read` (base_url field).
-
-3. **global_intents ∩ subagent valid_intents = empty** — Agent Core crashes
-   at startup on any overlap.
-
-4. **NLU intents cover intent_filters** — every key in
-   `knowledge_engine.knowledge.blocks.static_knowledge_base.intent_filters`
-   must appear in `agent_core.preprocessing.nlu_processor.intents`. The
-   reverse is FINE: `nlu_processor.intents` may be a strict superset of
-   `intent_filters` (an intent can exist without a KB filter mapped to
-   it). Do NOT flag the superset case as a violation — only flag a
-   filter key that has no matching NLU intent.
-
-5. **Voice configured if voice selected** — if `voice` is in
-   `selected_channels`, `reach_layer.channels.voice` must include
-   `raya.voice_id`, `raya.stt_language`, and `raya.tts_language`.
-
-6. **agent_core.channels set for every selected channel** — web is always
-   required; voice and cli if selected. Missing entries cause
-   `ValueError: Unsupported channel` at Agent Core startup.
-
-7. **reach_layer.channels set for every selected channel** — the DPG
-   defaults provide all three; verify no domain config nullifies one.
-
-8. **default_fallback_subagent_id is a declared subagent id** — a mismatch
-   causes a KeyError at runtime.
-
-9. **routing.next_subagent_id values are declared subagent ids** — walk
-   every routing rule in every subagent and in global_routing.
-
-10. **opening_phrase non-empty for every non-terminal subagent** — an empty
-    opening_phrase means the agent says nothing on first entry.
-
-11. **agent_system_prompt is non-empty** — required for runtime startup.
-    Do NOT ask the user about `agent_workflow.workflow_id` or
-    `agent_workflow.version` — `workflow_id` is auto-derived from the
-    project slug (e.g. `akashvani_concierge_workflow`) and `version`
-    defaults to `"1.0.0"` via the skeleton. Both already appear in the
-    rendered YAML; treating them as user-configurable here would just
-    waste a turn asking for values the user has no input on.
-
-12. **dignity_check questions populated** — if
-    `trust_layer.dignity_check.enabled` is true, `questions` must be a
-    non-empty list of plain strings and `fail_action` must be set.
-
-13. **observability.domain is a non-empty string in every block** — a dict
-    value means the config used `section=observability.domain` (double-nested
-    bug) instead of `section=observability`. Fix by calling
-    `update_config(block=<block>, section=observability,
-    values={{domain: '<slug>'}})` for any offending block. Check every block
-    including `reach_layer.common.observability.domain`.
 
 ## Pydantic schemas (use ONLY these field names)
 
@@ -147,12 +149,6 @@ violation: ask the user for the correction and call the appropriate
 ## Already-set values you can reference
 
 {refs_section}
-
-Fix any violations found by the manual cross-block checks above. Once
-everything is clean, tell the user the configuration is complete and they
-can proceed to the **Deploy** step in the wizard to push it to their DPG
-infrastructure. The Deploy step is a UI action the user clicks; it is not
-a tool you invoke.
 
 {_closing_block()}
 """

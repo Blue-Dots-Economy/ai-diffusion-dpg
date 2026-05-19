@@ -57,6 +57,14 @@ You are configuring the Observability Layer — outcome lifecycle states,
 quality metrics, and the domain tag attached to every OTel span emitted
 by the running agent.
 
+**This is NOT the tools phase.** Do NOT propose tool integrations, REST
+APIs, OpenAPI specs, MCP servers, or any external connector configuration
+here. If the prior phase mentioned tools, that's an artefact of the
+wizard's phase order — it does not mean tools are pending. The tools
+phase has either already run, or was skipped because the project has
+`has_external_tools=false`. Either way, your job here is purely
+observability config — lifecycle states + metrics. Stay on that.
+
 {_common_rules()}
 
 The Observability Layer is async-only — it never runs in the response path.

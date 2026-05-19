@@ -119,3 +119,70 @@ def test_invalid_spec_raises_value_error():
     """A dict without 'paths' key raises ValueError."""
     with pytest.raises(ValueError, match="paths"):
         parse_openapi_spec({"openapi": "3.0.0"})
+
+
+def test_suggested_id_uses_operation_id_when_present():
+    """When the spec supplies a camelCase operationId, suggested_id should
+    snake_case it instead of falling back to the path. This is what keeps
+    chat history (which shows suggested_id) and registered connector
+    names (which add_tool stores) in lockstep — preventing the
+    workflow-phase regression where subagent.tools reference `bookTour`
+    while connectors.write has `book_tour`, or where a UUID path forces
+    the LLM to rename at add_tool time.
+    """
+    spec = {
+        "openapi": "3.0.0",
+        "info": {"title": "Test", "version": "1"},
+        "servers": [{"url": "https://api.example.com"}],
+        "paths": {
+            "/v1/forecast": {
+                "get": {
+                    "operationId": "getWeatherForecast",
+                    "summary": "Weather forecast",
+                    "responses": {"200": {"description": "OK"}},
+                }
+            },
+            "/d394c4e8-4890-41d7-a619-cd6f19880232": {
+                "post": {
+                    "operationId": "bookTour",
+                    "summary": "Book a tour",
+                    "responses": {"200": {"description": "OK"}},
+                }
+            },
+        },
+    }
+    tools = parse_openapi_spec(spec)
+    by_path = {t.path: t for t in tools}
+    assert by_path["/v1/forecast"].suggested_id == "get_weather_forecast"
+    # The UUID path's id now comes from operationId, NOT the path — so
+    # the LLM sees a clean name and has no reason to rename at add_tool.
+    assert (
+        by_path["/d394c4e8-4890-41d7-a619-cd6f19880232"].suggested_id
+        == "book_tour"
+    )
+
+
+def test_suggested_id_falls_back_to_path_when_no_operation_id():
+    """Without operationId, the parser falls back to {method}_{path}. The
+    id may be ugly for UUID paths but is deterministic; the tools-phase
+    prompt now forbids the LLM from renaming so chat history matches
+    what add_tool registers.
+    """
+    spec = {
+        "openapi": "3.0.0",
+        "info": {"title": "Test", "version": "1"},
+        "servers": [{"url": "https://api.example.com"}],
+        "paths": {
+            "/v1/forecast": {"get": {"summary": "x", "responses": {"200": {"description": "OK"}}}},
+            "/d394c4e8-4890-41d7-a619-cd6f19880232": {
+                "post": {"summary": "x", "responses": {"200": {"description": "OK"}}}
+            },
+        },
+    }
+    tools = parse_openapi_spec(spec)
+    by_path = {t.path: t for t in tools}
+    assert by_path["/v1/forecast"].suggested_id == "get_v1_forecast"
+    assert (
+        by_path["/d394c4e8-4890-41d7-a619-cd6f19880232"].suggested_id
+        == "post_d394c4e8_4890_41d7_a619_cd6f19880232"
+    )

@@ -77,22 +77,30 @@ def test_tools_expectation_when_no_external_tools():
     assert "does **NOT** need external tools" in result or "NOT" in result
 
 
-def test_tools_phase_documents_all_three_entry_paths() -> None:
-    """Tools-phase prompt must describe all three independent paths to add
-    external tools: OpenAPI spec (URL or paste), MCP server, and manual REST.
+def test_tools_phase_documents_spec_backed_paths_only() -> None:
+    """Tools-phase prompt must describe both spec-backed entry paths to add
+    external tools: OpenAPI spec (URL or paste) and MCP server discovery.
 
-    Each path must name the concrete tool the LLM should call so the
-    LLM does not invent legacy names (`fetch_openapi_spec_from_url` was
-    trimmed from the surface in commit b0c2d33 and restored as the 9th
-    canonical tool; without an explicit prompt entry, the LLM would
-    keep asking users to paste multi-thousand-line specs by hand).
+    The "Path C — Manual REST API" path was REMOVED deliberately: it
+    let the LLM build a `rest_api` tool from imagination when the user
+    described an API in plain English without a spec. Those tools
+    crashed at runtime because the LLM cannot know real contracts.
+    Every tool MUST originate from a real spec (Path A) or MCP
+    discovery (Path B); the strict policy is enforced by the
+    first-question block at the top of the prompt.
+
+    Each remaining path must name the concrete tool the LLM should
+    call so the LLM does not invent legacy names.
     """
     result = build([], "", "", _intake(has_external_tools=True))
 
-    # All three path headers present.
+    # Both spec-backed path headers present.
     assert "Path A — OpenAPI spec" in result
-    assert "Path B — MCP server" in result
-    assert "Path C — Manual REST API" in result
+    assert "Path B — MCP server URL" in result
+    # Manual-REST path explicitly REMOVED.
+    assert "Path C" not in result
+    # The "no manual tools" guard must be in place.
+    assert "No manual / imagined tool definitions" in result
 
     # Each path names the correct tool call.
     # Path A: both fetch_openapi_spec_from_url AND parse_openapi_spec
@@ -100,7 +108,7 @@ def test_tools_phase_documents_all_three_entry_paths() -> None:
     assert "parse_openapi_spec" in result
     # Path B: discover_mcp_tools (now a real implementation)
     assert "discover_mcp_tools" in result
-    # All paths converge on add_tool
+    # Both paths converge on add_tool
     assert "add_tool" in result
 
 

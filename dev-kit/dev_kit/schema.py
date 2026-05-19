@@ -68,11 +68,28 @@ class InvocationRulesConfig(BaseModel):
     )
 
 
+class InputSchema(BaseModel):
+    """JSON-Schema-shaped description of a connector's input.
+
+    Passed verbatim to the Anthropic tools API. ``properties`` is an
+    open map of param name → JSON Schema fragment. ``extra='forbid'``
+    matches the runtime block's strict ``InputSchema`` — preventing the
+    domain config from carrying inline param values (e.g.
+    ``{query: 'placeholder'}``) under ``input_schema``.
+    """
+
+    model_config = {"extra": "forbid"}
+    type: str = Field(default="object")
+    properties: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    required: list[str] = Field(default_factory=list)
+    additionalProperties: bool = False
+
+
 class ConnectorDef(BaseModel):
     name: str = Field(..., description="Connector name matching a key in action_gateway.connectors")
     description: str = Field(default="", description="Description shown to LLM explaining when to call this connector")
-    input_schema: dict[str, Any] = Field(
-        default_factory=dict,
+    input_schema: InputSchema = Field(
+        default_factory=InputSchema,
         description="JSON Schema object for the tool's input. Passed verbatim to the Anthropic tools API.",
     )
     invocation_rules: InvocationRulesConfig = Field(
@@ -85,8 +102,8 @@ class InternalConnectorDef(BaseModel):
     name: str = Field(..., description="Internal connector name, e.g. knowledge_retrieval")
     route: str = Field(..., description="Internal routing destination, e.g. knowledge_engine")
     description: str = Field(default="", description="Description shown to LLM explaining when to call this connector")
-    input_schema: dict[str, Any] = Field(
-        default_factory=dict,
+    input_schema: InputSchema = Field(
+        default_factory=InputSchema,
         description="JSON Schema object for the tool's input.",
     )
     invocation_rules: InvocationRulesConfig = Field(
@@ -402,9 +419,13 @@ class AgentWorkflowConfig(BaseModel):
         default="",
         description="Subagent to route to when no routing rule matches the current intent",
     )
+    # Runtime ``agent_core/src/schema/config.py`` declares
+    # ``subagents: list[SubAgent] = []`` — allows an empty list at boot
+    # so a partially-rendered config doesn't crash the service. The old
+    # ``min_length=1`` here over-rejected the partial-but-valid case at
+    # host deploy review.
     subagents: list[SubAgentSchema] = Field(
-        ...,
-        min_length=1,
+        default_factory=list,
         description="All subagent definitions. Must contain exactly one subagent with is_start: true.",
     )
 
@@ -468,15 +489,16 @@ class ChannelConfig(BaseModel):
 
 
 class ChannelsTopLevelConfig(BaseModel):
-    """Top-level per-channel configuration block (GH-137)."""
+    """Top-level per-channel configuration block (GH-137).
+
+    Runtime ``agent_core/src/schema/config.py:ChannelsConfig`` carries
+    only ``voice``, ``web``, ``cli`` (``chat`` was removed). Keeping the
+    dev-kit copy in lockstep so host validation matches runtime.
+    """
 
     voice: ChannelConfig = Field(
         default_factory=lambda: ChannelConfig(tts_rules=TtsRulesConfig()),
         description="Voice channel configuration",
-    )
-    chat: ChannelConfig = Field(
-        default_factory=ChannelConfig,
-        description="Chat channel configuration",
     )
     web: ChannelConfig = Field(
         default_factory=ChannelConfig,
@@ -722,6 +744,22 @@ class MemgraphConfig(BaseModel):
     connection_timeout_s: int = Field(default=5, description="Connection timeout in seconds")
 
 
+class SessionFieldDefinition(BaseModel):
+    """One declared domain session field.
+
+    Mirrors the runtime ``memory_layer/src/schema/config.py:SessionFieldDefinition``.
+    ``type`` is restricted to the runtime's ``SessionFieldType`` enum
+    values — typos like ``"date"`` (not a valid type) would crash the
+    Memory Layer at boot if the dev-kit copy left this as
+    ``dict[str, Any]``.
+    """
+
+    model_config = {"extra": "forbid"}
+    type: Literal["enum", "string", "int", "list"]
+    values: list[str] | None = None
+    default: Any = None
+
+
 class SessionStateConfig(BaseModel):
     model_config = {"populate_by_name": True}
 
@@ -730,7 +768,7 @@ class SessionStateConfig(BaseModel):
         description="Session TTL in minutes. Redis evicts inactive sessions after this period.",
     )
     # Field named 'schema' in YAML; aliased to avoid shadowing BaseModel.schema()
-    session_schema: dict[str, Any] = Field(
+    session_schema: dict[str, SessionFieldDefinition] = Field(
         default_factory=dict,
         alias="schema",
         description="Domain-specific session fields. Each key is a field name; value declares "
@@ -783,7 +821,14 @@ class PersistentStateConfig(BaseModel):
 
 class StateConfig(BaseModel):
     session: SessionStateConfig = Field(default_factory=SessionStateConfig)
-    persistent: PersistentStateConfig = Field(default_factory=PersistentStateConfig)
+    # Optional to match runtime ``memory_layer/src/schema/config.py``,
+    # which declares ``persistent: Optional[PersistentConfig] = None``.
+    # When ``needs_persistent_user_data=false`` the wizard correctly
+    # omits this block; a non-Optional declaration here would force
+    # ``user_node`` to exist whether the project needs persistence or
+    # not — surfacing as false "user_node: Field required" errors at
+    # deploy review.
+    persistent: PersistentStateConfig | None = None
 
 
 class UserDataPersistenceConfig(BaseModel):

@@ -1523,13 +1523,42 @@ def pre_deploy_validate(slug: str) -> dict[str, Any]:
     from dev_kit.loader import _load_and_merge
     from dev_kit.agent.renderer import RUNTIME_SCHEMAS, runtime_validate
     from dev_kit.agent.errors import RuntimeValidationError
-    from dev_kit.schemas.validation import validate_full
+    from pydantic import ValidationError as _VE
 
     _BLOCKS = (
         "agent_core", "knowledge_engine", "trust_layer", "memory_layer",
         "observability_layer", "action_gateway", "reach_layer",
     )
     docker_mode = RUNTIME_SCHEMAS is not None
+
+    # Host fallback uses dev_kit/schema.py — a hand-maintained flat-file
+    # copy that models BOTH halves (framework defaults + domain values)
+    # of every block's merged config. The per-block mirror schemas at
+    # dev_kit/schemas/domain/<block>.py only cover the domain half by
+    # design, so they would over-reject the framework-default sections
+    # (server, ke_client, redis, otel, etc.) every merged config carries.
+    # Drift between dev_kit/schema.py and the actual runtime is what the
+    # sync rule discipline (.claude/rules/runtime-devkit-sync.md) prevents.
+    _HOST_MODELS: dict[str, Any] = {}
+    if not docker_mode:
+        from dev_kit.schema import (
+            ActionGatewayConfig,
+            AgentCoreConfig,
+            KnowledgeEngineConfig,
+            MemoryLayerConfig,
+            ObservabilityLayerConfig,
+            ReachLayerConfig,
+            TrustLayerConfig,
+        )
+        _HOST_MODELS = {
+            "agent_core": AgentCoreConfig,
+            "knowledge_engine": KnowledgeEngineConfig,
+            "trust_layer": TrustLayerConfig,
+            "memory_layer": MemoryLayerConfig,
+            "observability_layer": ObservabilityLayerConfig,
+            "action_gateway": ActionGatewayConfig,
+            "reach_layer": ReachLayerConfig,
+        }
 
     import copy as _copy
     block_errors: dict[str, list[str]] = {}
@@ -1591,7 +1620,18 @@ def pre_deploy_validate(slug: str) -> dict[str, Any]:
                     else:
                         block_errors[block] = [str(pe)]
             else:
-                block_errors[block] = validate_full(block, data)
+                model_cls = _HOST_MODELS.get(block)
+                if model_cls is None:
+                    block_errors[block] = []
+                    continue
+                try:
+                    model_cls.model_validate(data)
+                    block_errors[block] = []
+                except _VE as exc:
+                    block_errors[block] = [
+                        f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}"
+                        for err in exc.errors()
+                    ]
         except FileNotFoundError:
             merged[block] = {}
             block_errors[block] = []

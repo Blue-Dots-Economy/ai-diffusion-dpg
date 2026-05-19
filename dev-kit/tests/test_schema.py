@@ -406,9 +406,16 @@ class TestAgentWorkflowConfig:
         assert wf.workflow_id == "test_flow"
         assert len(wf.subagents) == 2
 
-    def test_empty_subagents_rejected(self):
-        with pytest.raises(ValidationError):
-            AgentWorkflowConfig(workflow_id="x", version="1.0.0", subagents=[])
+    def test_empty_subagents_accepted(self):
+        # The runtime ``agent_core/src/schema/config.py:AgentWorkflowConfig``
+        # accepts ``subagents=[]`` so a partial config doesn't crash boot.
+        # The wizard's CROSS-block invariants catch the "must have at least
+        # one start subagent" rule via ``validate_cross_block``, not the
+        # per-block Pydantic shape. The old ``min_length=1`` here drifted
+        # from runtime and rejected legitimate partial drafts at host
+        # deploy review.
+        wf = AgentWorkflowConfig(workflow_id="x", version="1.0.0", subagents=[])
+        assert wf.subagents == []
 
     def test_workflow_id_required(self):
         data = self._make_minimal_workflow()

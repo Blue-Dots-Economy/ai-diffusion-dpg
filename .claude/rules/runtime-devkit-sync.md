@@ -1,59 +1,61 @@
 # Rule: Runtime ↔ Dev-Kit Synchronization
 
-Every change to a runtime block's `<block>/src/schema/config.py` must be reflected in the dev-kit in the same PR. There is no CI guard; PR-time discipline is the only mechanism.
+Every change to a runtime block's `<block>/src/schema/config.py` must be reflected in the dev-kit in the same PR. No CI guard; PR-time discipline is the only mechanism.
 
 ## What lives where
 
 | File | Role |
 |---|---|
-| `<block>/src/schema/config.py` | Runtime schema. Strict; what the running service accepts at boot. |
-| `dev-kit/dev_kit/schemas/domain/<block>.py` | Per-block mirror. Lenient, domain-half view; used at chat time by `update_config` validation and by the host-mode deploy fallback. |
-| `dev-kit/dev_kit/agent/field_rules/<block>.py` | Per-field FIELD_RULES — category, phase, default, invalidation, `applies_if`. |
-| `dev-kit/dpg/<block>.yaml` | Framework defaults — operational values identical across projects. |
-| `dev-kit/Dockerfile` (no edit; rebuild only) | Bakes each runtime schema into `/app/dpg_runtime_schemas/<block>/config.py`. Used by `pre_deploy_validate` as the canonical Config Review gate. |
+| `<block>/src/schema/config.py` | Runtime schema. Strict, full merged config; what the service accepts at boot. |
+| `dev-kit/dev_kit/schemas/domain/<block>.py` | Per-block mirror. Lenient, domain-half only; chat-time `update_config` gate. |
+| `dev-kit/dev_kit/schema.py` | Flat-file copy of the FULL merged schema. Host-mode deploy gate; must match runtime. |
+| `dev-kit/dev_kit/agent/field_rules/<block>.py` | FIELD_RULES — category, phase, default, invalidation, `applies_if`. |
+| `dev-kit/dpg/<block>.yaml` | Framework defaults shared across projects. |
+| `dev-kit/Dockerfile` (rebuild only) | Bakes each runtime schema into `/app/dpg_runtime_schemas/<block>/config.py`. Canonical Docker deploy gate. |
 
 ## Touch-points when changing a runtime field
 
 **Must update in the same PR:**
 
-1. **Decide category.** Framework default → set in `dev-kit/dpg/<block>.yaml`. Domain-half → continue with 2–3 below.
-2. **Mirror schema** at `dev-kit/dev_kit/schemas/domain/<block>.py`. Match the shape exactly (Optional ↔ Optional, strict BaseModel ↔ strict BaseModel). The mirror is what catches drift on the host.
-3. **FIELD_RULES** at `dev-kit/dev_kit/agent/field_rules/<block>.py`. Add/rename/remove entries; `pydantic_class` must point to a class in the mirror.
+1. **Category.** Framework default → `dev-kit/dpg/<block>.yaml`. Domain-half → continue.
+2. **Per-block mirror** at `dev-kit/dev_kit/schemas/domain/<block>.py`. Match shape exactly (Optional ↔ Optional, strict ↔ strict).
+3. **FIELD_RULES** at `dev-kit/dev_kit/agent/field_rules/<block>.py`. `pydantic_class` points to the mirror class.
+4. **Flat-file copy** at `dev-kit/dev_kit/schema.py`. Update the matching class — even for framework-half changes (server, client URLs, redis/memgraph, otel, vad, recording). This is the host-mode deploy gate; drift here = silently pass/fail what runtime would reject/accept.
 
 **Update if applicable:**
 
-4. **Phase prompt** at `dev-kit/dev_kit/agent/phase_prompts/<phase>.py` — if the field is user-configurable, add an explicit `update_config(path="...", value=...)` template.
-5. **Cross-block invariant** at `dev-kit/dev_kit/schemas/cross_block_validation.py` — if the field participates in a cross-block rule.
-6. **Skeleton seed** at `dev-kit/dev_kit/agent/skeleton.py` — if the wizard must pre-fill a non-empty default.
-7. **Derived field** at `dev-kit/dev_kit/agent/derived_fields.py` — if the value is computed from another field (slug, intake state).
-8. **IntakeState + form** at `dev-kit/dev_kit/agent/intake_state.py` — if the new field is gated by a new binary flag.
-9. **`DOMAIN_SECTION_SCHEMAS` registry** at `dev-kit/dev_kit/schemas/validation.py` — only if you added a new TOP-LEVEL section in the mirror.
+5. **Phase prompt** at `dev-kit/dev_kit/agent/phase_prompts/<phase>.py` — if user-configurable, add an `update_config(path=..., value=...)` template.
+6. **Cross-block invariant** at `dev-kit/dev_kit/schemas/cross_block_validation.py`.
+7. **Skeleton seed** at `dev-kit/dev_kit/agent/skeleton.py` — if a non-empty default is needed up front.
+8. **Derived field** at `dev-kit/dev_kit/agent/derived_fields.py` — if computed from another field.
+9. **IntakeState + form** at `dev-kit/dev_kit/agent/intake_state.py` — if gated by a new binary flag.
+10. **`DOMAIN_SECTION_SCHEMAS`** at `dev-kit/dev_kit/schemas/validation.py` — only if you added a new top-level section to the mirror.
 
-**Test surface:** add coverage at `dev-kit/tests/schemas/domain/test_<block>.py` (accept-valid, reject-invalid).
+**Tests:** add accept-valid + reject-invalid at `dev-kit/tests/schemas/domain/test_<block>.py`.
 
-**Docker rebuild:** any change to `<block>/src/schema/config.py` requires `docker build -f dev-kit/Dockerfile -t dpg-dev-kit .` so the baked copy under `/app/dpg_runtime_schemas/` picks up the change. Until rebuilt, the Config Review gate is still validating against the old schema.
+**Docker rebuild:** any runtime schema change requires `docker build -f dev-kit/Dockerfile -t dpg-dev-kit .` so the baked copy picks up the change. Until rebuilt, the canonical Config Review gate validates against the old schema.
 
 ## Runtime schemas must stay self-contained
 
-`<block>/src/schema/config.py` may import only from `pydantic`, `enum`, `typing`, `__future__`. No relative imports, no third-party deps, no reach into sibling modules. The Dockerfile copies this file verbatim — any other import breaks the dev-kit build. Shared types: inline, or co-locate in the same `schema/` directory (copied as a directory).
+`<block>/src/schema/config.py` may import only from `pydantic`, `enum`, `typing`, `__future__`. No relative imports, no third-party deps, no reach into siblings — the Dockerfile copies this file verbatim. Shared types: inline, or co-locate in the same `schema/` directory.
 
-## Validation gates (where drift is caught)
+## Validation gates
 
 | Gate | When | Schema |
 |---|---|---|
-| Per-write at chat | After every `update_config` tool call | Per-block mirror — lenient |
-| End-of-turn YAML write | After every chat turn (advisory `# WARNINGS:` comments) | Per-block mirror — lenient |
-| **Config Review / Deploy** | User clicks Deploy | **Baked runtime schemas (Docker) or per-block mirror via `validate_full` (host fallback)** |
+| Per-write | Each `update_config` tool call | Per-block mirror — domain-half |
+| End-of-turn write | Each chat turn (advisory `# WARNINGS:`) | Per-block mirror |
+| Deploy in Docker | User clicks Deploy, dev-kit in Docker | Baked runtime schemas — canonical |
+| Deploy on host | User clicks Deploy, dev-kit on host | `dev_kit/schema.py` — flat-file copy |
 
-The baked runtime schemas are the only authoritative gate. In Docker, Config Review uses them directly; on host, `validate_full` against the mirror is a best-effort fallback (it doesn't know about DPG defaults, so it can over- or under-reject). Always do the final pre-merge verification with the dev-kit image rebuilt and running in Docker.
+The deploy response carries `"validator": "runtime_baked" | "host_mirror"` so the surface that ran is explicit. Baked runtime schemas are the only authoritative gate; always do final pre-merge verification with the dev-kit image rebuilt and running in Docker.
 
 ## Verify before merging
 
-End-to-end on the affected block, in Docker:
-1. Rebuild the dev-kit image after the schema change.
-2. Run the wizard through to Deploy. Config Review must surface any drift (response carries `"validator": "runtime_baked"`).
+1. Rebuild the dev-kit image after the runtime change.
+2. Run the wizard end-to-end to Deploy in Docker. Response must show `"validator": "runtime_baked"`.
 3. Confirm `docker compose up` succeeds for the deployed config.
 
 ## Reasoning
 
-The dev-kit produces YAML; the runtime consumes it. When schemas drift, the wizard generates configs that fail at container boot — a confusing failure mode, surfaced too late. Treating runtime + dev-kit as a single unit at PR time is what prevents that. The baked runtime schema in the Docker image makes deploy-time validation use the runtime's own definition, eliminating one drift surface (`dev_kit/schema.py`) entirely.
+The dev-kit produces YAML; the runtime consumes it. Schema drift means the wizard generates configs that fail at container boot — surfaced too late. Treating runtime + dev-kit as a single unit at PR time prevents this. The baked runtime schema in Docker is the canonical gate; `dev_kit/schema.py` keeps host-mode usable but only as a best-effort hand-maintained copy.

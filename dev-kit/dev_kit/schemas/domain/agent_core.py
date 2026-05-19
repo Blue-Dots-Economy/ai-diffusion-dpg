@@ -412,6 +412,7 @@ class InputSchema(BaseModel):
     type: str = "object"
     properties: dict[str, dict[str, Any]] = Field(default_factory=dict)
     required: list[str] = Field(default_factory=list)
+    additionalProperties: bool = False
 
 
 class ConnectorDef(BaseModel):

@@ -61,6 +61,42 @@ def build(
         "user and, if confirmed, proceed directly after the mandatory first action below."
     )
 
+    # First action the LLM MUST take in the tools phase: ask the user
+    # to provide a real spec. NEVER invent tool definitions from imagination
+    # — the LLM cannot know real API contracts, base URLs, response shapes,
+    # auth requirements. Every tool definition must originate from a real
+    # OpenAPI spec the user provides (uploaded or pasted), or from MCP
+    # discovery against a URL the user provides.
+    first_question_block = """
+**MANDATORY first action — ask the user for a real source.**
+
+Open this phase with EXACTLY this question (no preamble, no proposal of
+specific tools or APIs):
+
+> "Which external systems should the agent be able to call? You can
+> either:
+> - **share an OpenAPI spec** — click the 📎 attach button below to
+>   upload a `.yaml`, `.yml`, or `.json` file, OR paste the spec
+>   directly into chat, OR give me a URL to fetch it from, OR
+> - **share an MCP server URL** — I'll fetch the available tools and
+>   show them to you for confirmation.
+>
+> If neither applies, say so and we'll move on."
+
+**NEVER propose specific APIs, endpoints, base URLs, or tool names
+from your own knowledge.** You cannot know the real contracts of the
+user's systems — bases, paths, response shapes, auth schemes, rate
+limits — and any tool you invent will fail at runtime when the agent
+calls a URL that doesn't match the user's actual service. The
+discovery functions (`parse_openapi_spec`,
+`fetch_openapi_spec_from_url`, `discover_mcp_tools`) are the ONLY
+sources of valid tool definitions.
+
+If the user says "no external tools" / "skip" / "we'll do this
+later", confirm and stop — do not register any tool. The wizard's
+stall-recovery handles the empty-tools case.
+"""
+
     return f"""{_phase_focus_header("tools", pending_fields)}# Phase: Tools
 
 You are declaring every external tool the agent can invoke via the Action
@@ -70,7 +106,7 @@ intent via tool definitions only, and Agent Core routes to Action Gateway.
 {tools_expectation}
 
 {_common_rules()}
-
+{first_question_block}
 Do NOT write `action_gateway.observability.domain` — derived field, the
 wizard computes it automatically from the project slug.
 
@@ -145,16 +181,27 @@ transform, not copy.
 
 1. **Step 1: parse + show.** After `parse_openapi_spec` or
    `fetch_openapi_spec_from_url` succeeds, render every operation in a
-   table for the user with the four columns:
+   table for the user. **The "Tool ID" column MUST be the snake_case
+   `_discovery_id` value from the parser output — NEVER the spec's
+   `operationId`.** The snake_case id is exactly what `add_tool` will
+   register as `connectors.<category>[].name`, and it is the name the
+   workflow phase's subagent `tools` lists and `system_prompt`
+   references must use. If the LLM presents the camelCase
+   `operationId` here, the workflow LLM will pick that up from chat
+   history and write camelCase into `subagent.tools` and into
+   `subagent.system_prompt`, both of which the cross-block validator
+   rejects at deploy with "X is not declared in any connectors.* list".
 
-   | Operation | Method + Path | Params | Response fields the bot will read |
-   |---|---|---|---|
-   | `getWeatherForecast` | `GET /v1/forecast` | `latitude`, `longitude`, `current`, `timezone` | `current.temperature_2m`, `current.weather_code`, `current.wind_speed_10m` |
-   | … | … | … | … |
+   | Tool ID (used by subagents) | Method + Path | Params | Response fields the bot will read | Category |
+   |---|---|---|---|---|
+   | `get_weather_forecast` | `GET /v1/forecast` | `latitude`, `longitude`, `current`, `timezone` | `current.temperature_2m`, `current.weather_code`, `current.wind_speed_10m` | `read` |
+   | `geocode_city` | `GET /v1/search` | `name`, `count`, `language` | `results[].name`, `results[].latitude`, `results[].longitude` | `read` |
+   | `book_tour` | `POST /reservations` | `site`, `package`, `date`, `guests` | `status` | `write` |
+   | … | … | … | … | … |
 
    Pick a sensible default category (`read` for GET endpoints, `write`
    for POST/PUT/DELETE that mutate state, `identity` for auth/profile
-   endpoints) and list it under each operation row.
+   endpoints) and put it in the rightmost column.
 
 2. **Step 2: confirm with the user — STOP after this question.** Ask:
 
@@ -173,10 +220,30 @@ transform, not copy.
    registered.
 
 3. **Step 3: register.** Only after the user confirms in their next
-   reply, call `add_tool` once per confirmed operation. Use the
-   parser's snake_case `suggested_id` (NOT the operationId from the
-   spec — e.g. use `get_v1_forecast`, NOT `getWeatherForecast`; the
-   accumulator's `tools[i].id` must match `^[a-z][a-z0-9_]*$`).
+   reply, call `add_tool` once per confirmed operation.
+
+   **CRITICAL — id MUST equal the parser's `_discovery_id` verbatim.**
+   Copy the snake_case string from the operations table you showed
+   the user. Do NOT prettify, shorten, expand, or "improve" it. Do
+   NOT use the spec's camelCase `operationId`. Do NOT compose a new
+   name from the description or summary.
+
+   Why: the workflow phase later reads `connectors.<cat>[].name`
+   from the accumulator AND reads the chat history. Both must show
+   the SAME name. If you renamed at `add_tool` time (e.g. parser
+   returned `post_d394c4e8_4890_41d7_a619_cd6f19880232` and you
+   wrote `id: "post_booking_webhook"`), the workflow LLM remembers
+   the parser's name from chat and writes the wrong name into
+   `subagent.tools` and `subagent.system_prompt`. The cross-block
+   validator then rejects at deploy with "X is not declared in any
+   connectors.* list" and Agent Core would crash at runtime with a
+   KeyError.
+
+   If the parser-suggested id is ugly (UUID path, e.g.
+   `post_d394c4e8_4890_41d7_a619_cd6f19880232`), live with it. The
+   id is internal; only the description is shown to end users at
+   runtime. The cure for an ugly id is to add an `operationId` to
+   the user's OpenAPI spec — not a unilateral rename here.
 
    **Every field below is required** — REST tools without `description`,
    `base_url`, `auth`, or `endpoints[i].name` are rejected by the
@@ -260,24 +327,55 @@ Skipping the confirmation step is a regression — it removes the user's
 ability to audit which API response fields the agent will see, and the
 wizard's audit log loses the human-in-the-loop check on tool wiring.
 
-**Path B — MCP server:**
-- Ask for the MCP server URL and transport type (`sse` or `streamable_http`).
-- Call `discover_mcp_tools(server_url=<URL>)`. Returns the server's
-  advertised tools as `{{"ok": true, "tools": [{{name, description,
-  input_schema}}, ...]}}` — auto-handles both plain JSON-RPC and SSE
-  responses. Summarise the discovered tools for the user.
-- Call `add_tool(spec={{id: ..., type: "mcp",
-  mcp_server_url: ..., transport: ...}})` ONCE for the server (NOT once
-  per tool — the MCP adapter discovers individual operations from the
-  server at runtime).
-- Choose a short snake_case namespace id (e.g. `obsrv_docs`).
-- MCP tools do NOT auto-create connectors; subagents reference them by
-  namespaced names (e.g. `obsrv_docs__searchDocumentation`).
+**Path B — MCP server URL:**
 
-**Path C — Manual REST API (no spec, the user describes the endpoint):**
-- Collect: tool id, description, base URL, auth type, at least one endpoint.
-- Call `add_tool(spec={{id: ..., type: "rest_api", category: ..., base_url: ...,
-  endpoints: [...], auth: ...}})` directly — skip the parser entirely.
+Two-step discover-then-write pattern:
+
+1. **Discover.** Once the user provides the MCP server URL, call
+   `discover_mcp_tools(server_url=<URL>)`. The wizard contacts the
+   server and returns `{{"ok": true, "tools": [{{name, description,
+   input_schema}}, ...]}}` — handles both plain JSON-RPC and SSE
+   transports automatically. If discovery fails (server unreachable,
+   404, invalid response shape), tell the user and ask for a
+   different URL — do NOT guess tool names from the server URL or
+   the project description.
+
+2. **Show + confirm + write.** Render the discovered tools to the
+   user as a table (name, description, key params), then ask:
+
+   > "Here are the tools exposed by this MCP server. I'll register
+   > them under the namespace `<short_snake_case_id>` (e.g.
+   > `obsrv_docs`). Do you want me to register all of them, or
+   > should I skip any?"
+
+   On confirmation, call `add_tool` ONCE for the server (NOT once
+   per tool — the MCP adapter discovers individual operations from
+   the server at runtime):
+
+   ```
+   add_tool(spec={{
+     id: "<short_snake_case_namespace, e.g. obsrv_docs>",
+     type: "mcp",
+     category: "read" | "write",
+     description: "<one-line plain English summarising what this MCP server provides>",
+     server_url: "<exact URL the user provided>",
+     transport: "sse" | "streamable_http",
+     timeout_ms: 5000
+   }})
+   ```
+
+   Pick `transport` from the user's input — if they didn't say,
+   ask. GitBook MCP and most modern servers use
+   `streamable_http`; older servers may use `sse`. MCP tools do NOT
+   auto-create connectors; subagents reference them by namespaced
+   names (e.g. `obsrv_docs__searchDocumentation`).
+
+**No manual / imagined tool definitions.** Reject any path that
+isn't backed by a parsed OpenAPI spec (Path A) or an MCP discovery
+result (Path B). If the user describes an API in plain English
+without a spec, ask them to share the spec — do NOT build a
+`rest_api` tool from imagination. Tools without a real source crash
+at runtime when the agent calls them.
 
 **After each REST API tool — ALWAYS do this:**
 1. Ask: "Can you share a sample JSON response? Or describe the key fields

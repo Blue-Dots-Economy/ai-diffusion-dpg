@@ -53,6 +53,45 @@ def build(
 
     has_kb = getattr(intake_state, "has_kb", False)
     is_multi_turn = getattr(intake_state, "is_multi_turn", False)
+    has_external = getattr(intake_state, "has_external_tools", False)
+
+    # When tools phase is skipped (has_external_tools=False) the workflow
+    # prompt must not mention "tools phase" — the LLM, having been told
+    # tools comes next, then hallucinates tools work in the actual next
+    # phase (observability). Use neutral connector-name language in that
+    # case. The Akashvani Concierge E2E hit this exact regression.
+    if has_external:
+        tools_warning = (
+            "Do NOT invent tool names from the OpenAPI spec you parsed earlier "
+            "(e.g. `get_v1_forecast`, `bookTour`); those exist as connectors ONLY "
+            "if `add_tool` ran successfully and registered them. If the connectors "
+            "section is empty or missing some tool you expected, the tools phase "
+            "did not register it — list it in NO subagent's `tools` field. Agent "
+            "Core crashes at startup with a KeyError on any mismatch."
+        )
+        empty_connectors_note = (
+            "- If the connectors list is empty (e.g. tools phase stalled), every "
+            "subagent's `tools` MUST be `[]` and `global_tools` MUST be `[]`. Do "
+            "NOT claim the agent can call APIs it has no registered connectors for."
+        )
+    else:
+        # No tools phase runs for this project. Connectors will contain
+        # only the framework's built-in entries (e.g. knowledge_retrieval
+        # when has_kb=true). Do NOT mention "tools phase" anywhere —
+        # the LLM should not anchor on a phase it will never see.
+        tools_warning = (
+            "This project has no external tools (`has_external_tools=false`). "
+            "Every subagent's `tools` field MUST be `[]` and `global_tools` MUST "
+            "be `[]` — with one exception: when `has_kb=true`, include "
+            "`knowledge_retrieval` in `global_tools` only. Do NOT invent tool "
+            "names. Do NOT add external API connectors. Agent Core crashes at "
+            "startup with a KeyError on any unregistered tool name."
+        )
+        empty_connectors_note = (
+            "- The only valid `global_tools` entry for this project is "
+            "`knowledge_retrieval` (only if `has_kb=true`). Every subagent's "
+            "`tools` field MUST be `[]`."
+        )
 
     kb_note = ""
     if has_kb:
@@ -128,16 +167,19 @@ new intent names without explicit user approval.
   "Already-set values you can reference" section below.** Look at
   `agent_core.connectors.read`, `connectors.write`, `connectors.identity`,
   `connectors.internal` — those `name` fields are the universe of tool
-  names you can use. Do NOT invent tool names from the OpenAPI spec you
-  parsed earlier (e.g. `get_v1_forecast`, `bookTour`); those exist as
-  connectors ONLY if `add_tool` ran successfully and registered them.
-  If the connectors section is empty or missing some tool you expected,
-  the tools phase did not register it — list it in NO subagent's
-  `tools` field. Agent Core crashes at startup with a KeyError on any
-  mismatch.
-- If the connectors list is empty (e.g. tools phase stalled), every
-  subagent's `tools` MUST be `[]` and `global_tools` MUST be `[]`. Do
-  NOT claim the agent can call APIs it has no registered connectors for.
+  names you can use. They are always snake_case (matching pattern
+  `^[a-z][a-z0-9_]*$`). Use them VERBATIM in every `subagent.tools`
+  list AND in every `subagent.system_prompt` that mentions a tool.
+  Do NOT use any name from the prior tools-phase chat — if you
+  remember a tool being called e.g. `getWeatherForecast` or
+  `bookTour`, those are spec `operationId` values that were
+  presented for context only; the registered connector name is the
+  snake_case form (`get_weather_forecast`, `book_tour`). The
+  cross-block validator rejects any camelCase tool reference at
+  deploy with "X is not declared in any connectors.* list", and
+  Agent Core would crash with a KeyError at runtime even if the
+  validator missed it. {tools_warning}
+{empty_connectors_note}
 - Every `next_subagent_id` in every routing rule MUST match a declared
   subagent `id`.
 - No intent may appear in both `global_intents` and any subagent's
