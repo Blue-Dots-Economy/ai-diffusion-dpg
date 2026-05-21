@@ -1,0 +1,132 @@
+# dev-kit/configs/blue-dots-economy/memory_layer.yaml
+# Blue Dots Economy — Memory Layer domain config.
+# Merged with dev-kit/dpg/memory_layer.yaml by loader.py at startup.
+#
+# Session state (Redis) carries everything the apply flow needs to
+# stitch together turn-by-turn. Persistent state (Memgraph) keyed on
+# phone holds the seeker profile + journey history across calls.
+
+state:
+
+  session:
+    ttl_minutes: 2880    # 2 days — caller can resume next day if dropped.
+    schema:
+      # Infrastructure fields (user_id=phone, journey_id, is_returning)
+      # are injected by Memory Layer at session init and need not be
+      # declared here.
+      #
+      # Consent / safety. Memory Layer's session schema enum is
+      # {enum, string, int, list} — no bool. Modelled as a 2-value enum.
+      consent_given:           { type: enum,   values: ["true", "false"], default: "false" }
+      # Profile data (from fetch_profile / onboard)
+      profile_item_id:         { type: string, default: "" }
+      profile_instance_url:    { type: string, default: "" }
+      source_item_owner:       { type: string, default: "" }   # user.id from onboard
+      name:                    { type: string, default: "" }
+      age:                     { type: int,    default: 0 }
+      gender:                  { type: string, default: "" }
+      work_experience:         { type: string, default: "" }
+      experience_years:        { type: string, default: "" }
+      # Search criteria (confirmed in profile_resolve subagent)
+      trade:                   { type: string, default: "" }
+      location:          { type: string, default: "" }
+      # Job search results + selection
+      last_jobs:               { type: list,   default: [] }   # compact dicts: item_id, role, company, city, salary_range
+      selected_job_item_id:    { type: string, default: "" }
+      selected_job_instance_url: { type: string, default: "" }
+      selected_job_role:       { type: string, default: "" }
+      selected_job_company:    { type: string, default: "" }
+      # Application outcome
+      last_application_id:     { type: string, default: "" }
+      applications_submitted:  { type: int,    default: 0 }
+
+  persistent:
+    backend: memgraph
+    graph:
+      user_node:
+        label: User
+        key: user_id    # = phone number; set by Reach Layer at session init.
+
+      subnodes:
+        SeekerProfile:
+          rel: HAS_PROFILE
+          declared_fields:
+            # Identity layer
+            - name
+            - phone
+            - age
+            - gender
+            - location
+            - language_preference
+            # Capability layer (mapped from blue-dots field names)
+            - trade
+            - work_experience
+            - experience_years
+            - highest_qualification_or_skill
+            - skills
+            # Identity-on-upstream
+            - profile_item_id
+            - source_item_owner
+          adhoc:
+            label: UserAttribute
+            rel: HAS_ATTRIBUTE
+            fields: [key, value, raw, turn, journey_id]
+
+        JourneyHistory:
+          rel: HAS_JOURNEY_HISTORY
+          grouping: true
+          child:
+            label: Journey
+            rel: JOURNEY
+            fields: [journey_id, started_at, ended_at, end_reason]
+            children:
+              - label: JobOffered
+                rel: OFFERED
+                fields: [item_id, role, company, city, salary_range, employment_type, shortlisted, committed]
+              - label: Application
+                rel: APPLIED
+                fields: [application_id, target_item_id, source_item_id, source_item_owner, applied_at, status]
+              - label: DropOff
+                rel: DROPPED_AT
+                fields: [subagent_id, reason, timestamp]
+
+        ContextGraph:
+          rel: HAS_CONTEXT
+          grouping: true
+          child:
+            label: Signal
+            rel: SIGNAL
+            fields: [type, turn, raw, journey_id]
+            adhoc:
+              label: ContextAttribute
+              rel: HAS_ATTRIBUTE
+              fields: [key, value, raw, turn, journey_id]
+
+    merge_on_session_end:
+      # Promote selected session-state fields to Journey-node properties
+      # when the session closes.
+      - session_field: trade
+        target: Journey.trade_at_end
+      - session_field: location
+        target: Journey.city_at_end
+      - session_field: selected_job_item_id
+        target: Journey.selected_job_item_id
+      - session_field: last_application_id
+        target: Journey.application_id
+      - session_field: last_jobs
+        target: JobOffered    # creates OFFERED edges from the compact dicts
+
+user_data_persistence:
+  # "saved"     — Memgraph retains the profile across sessions.
+  # "anonymous" — data is purged at session end (DPDP-respectful path).
+  # If consent_given is false at session end, Memory Layer falls back
+  # to anonymous regardless of this default.
+  default_mode: saved
+
+reengagement:
+  # Trigger scheduler not yet wired (GH-168). Config is validated at
+  # startup; no runtime code acts on these entries yet.
+  triggers: []
+
+observability:
+  domain: "blue_dot"

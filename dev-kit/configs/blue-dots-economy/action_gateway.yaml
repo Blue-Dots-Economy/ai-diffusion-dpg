@@ -1,0 +1,348 @@
+# dev-kit/configs/blue-dots-economy/action_gateway.yaml
+# Blue Dots Economy domain values for Action Gateway.
+# Merged with dev-kit/dpg/action_gateway.yaml by loader.py before deployment.
+#
+# Four tools back the voice-first job-seeker journey:
+#   fetch_profile  — GET  /mock/blue_dots/seeker_fetch  (seeker lookup by phone)
+#   fetch_jobs     — GET  /mock/blue_dots/job_fetch     (provider listings)
+#   onboard        — POST /mock/blue_dots/onboard       (create/update user+profile)
+#   apply_job      — POST /mock/blue_dots/apply         (submit application)
+#
+# All four endpoints currently point at the in-process Action Gateway mocks
+# (http://action_gateway:9999/mock/blue_dots/*). Swap each tool's base_url
+# and path to the real upstream once the schemas are finalised.
+#
+# Auth (when we switch to the real services):
+#   - fetch_profile, fetch_jobs       — public, no key required
+#   - onboard, apply_job              — x-api-key header, shared secret
+#     (env var: BLUE_DOTS_API_KEY)
+
+tools:
+
+  # ────────────────────────────────────────────────────────────────────
+  # READ — Seeker profile lookup by phone.
+  # ────────────────────────────────────────────────────────────────────
+  - id: fetch_profile
+    type: rest_api
+    category: read
+    description: >
+      Fetch any existing seeker profiles for the caller's phone number
+      from the Blue Dots provider network. Returns zero profiles for a
+      new user, one profile for a returning user, or multiple profiles
+      when the same phone has been used to create several accounts.
+      ALWAYS call this once on the first turn after consent has been
+      granted. Each profile carries: name, age, gender, phone, location.
+      For multi-profile callers, prefer the most recently updated
+      profile (highest `updated_at`) when extracting fields.
+    base_url: "http://65.2.66.144:2742"
+    # Public endpoint — no auth header required.
+    timeout_ms: 5000
+    health_check:
+      enabled: false
+    endpoints:
+      - name: seeker_fetch
+        method: GET
+        # Caller's phone is injected from session user_id (Reach Layer
+        # sets user_id = caller's phone). Static params (item_network,
+        # item_domain, limit) are baked into the path string rather than
+        # passed via `params:` because httpx's params= kwarg REPLACES the
+        # URL's existing query string — which would strip the phone segment
+        # produced by the {user_id} substitution. With an empty params list,
+        # httpx leaves the URL untouched.
+        #
+        # NOTE — phone format mismatch risk: the upstream expects the bare
+        # 10-digit number (e.g. "7892487848"), but Vobiz/voice may surface
+        # user_id as "91<10-digit>" (12-digit with country code). If logs
+        # show 0 profiles for a known returning user, this is the cause —
+        # fix at the Reach Layer side, or trim the prefix in the adapter.
+        path: "/api/v1/network/item/fetch?item_network=blue_dot&item_domain=seeker&limit=100&item_state[phone]={user_id}"
+        params: []
+    response:
+      max_size_chars: 4000
+      projection:
+        list_key: items
+        fields:
+          # Identity + stable fields per profile.
+          item_id: item_id
+          name: item_state.name
+          phone: item_state.phone
+          age: item_state.age
+          gender: item_state.gender
+          location: item_state.location
+          # For multi-profile disambiguation (most recently updated wins).
+          updated_at: updated_at
+
+  # ────────────────────────────────────────────────────────────────────
+  # READ — Job listings filtered by city and role.
+  # ────────────────────────────────────────────────────────────────────
+  - id: fetch_jobs
+    type: rest_api
+    category: read
+    description: >
+      Search the Blue Dots provider network for live job postings.
+      ALWAYS call this only after both trade and city are known and
+      confirmed. Pass the trade (role) and city (lowercase) as
+      filters. NEVER describe job availability from memory — always
+      fetch fresh.
+    base_url: "http://action_gateway:9999"
+    timeout_ms: 5000
+    health_check:
+      enabled: false
+    endpoints:
+      - name: job_fetch
+        method: GET
+        path: /mock/blue_dots/job_fetch
+        params:
+          - name: item_network
+            source: static
+            type: string
+            value: blue_dot
+          - name: item_domain
+            source: static
+            type: string
+            value: provider
+          - name: limit
+            source: static
+            type: integer
+            value: 100
+          - name: item_state[city]
+            source: agent
+            type: string
+            required: false
+            description: >
+              City the caller wants to work in. Lowercase for best
+              match with backend data (e.g. "bengaluru", "kannur").
+              Optional — omit only if the user has explicitly asked
+              for jobs anywhere.
+          - name: item_state[role]
+            source: agent
+            type: string
+            required: false
+            description: >
+              The trade / role the caller is looking for. Capitalised
+              (e.g. "Plumber", "Electrician", "Fitter"). Optional —
+              omit only if the user has explicitly asked to browse
+              all trades.
+    response:
+      max_size_chars: 4000
+      projection:
+        list_key: items
+        fields:
+          item_id: item_id
+          role: item_state.role
+          company: item_state.company_name
+          city: item_state.city
+          salary_range: item_state.salary_range
+          employment_type: item_state.employment_type
+
+  # ────────────────────────────────────────────────────────────────────
+  # WRITE — Multi-purpose onboard. Creates user, creates or updates
+  # profile, and returns the user UUID (used as source_item_owner in
+  # the apply call) plus the current profile list.
+  # ────────────────────────────────────────────────────────────────────
+  - id: onboard
+    type: rest_api
+    category: write
+    description: >
+      Create or update the caller's user and profile records. ALWAYS
+      call this once after the user has confirmed they want to apply
+      to a specific job, and BEFORE calling apply_job. Pass the
+      caller's name and phone in the user block (both required). If
+      the user is reusing an existing profile (item_id known from a
+      prior fetch_profile result), pass that item_id inside the
+      profile block to UPDATE that profile. If creating a brand-new
+      profile (no item_id known), omit item_id and pass the captured
+      fields under item_state — the backend will create a new
+      profile. The response carries the user.id (use as
+      source_item_owner) and the list of profiles after this onboard
+      step (use the chosen profile's item_id as source_item.item_id
+      in apply_job).
+    base_url: "http://action_gateway:9999"
+    timeout_ms: 5000
+    health_check:
+      enabled: false
+    endpoints:
+      - name: onboard
+        method: POST
+        path: /mock/blue_dots/onboard
+        body_template:
+          user:
+            name: "{name}"
+            phoneNumber: "{phone}"
+          profile:
+            item_id: "{profile_item_id}"
+            item_network: "blue_dot"
+            item_domain: "seeker"
+            item_type: "profile_1.0"
+            item_state:
+              name: "{name}"
+              phone: "{phone}"
+              location: "{location}"
+              nameOfJobRolesInterestedIn: "{trade}"
+              age: "{age}"
+              gender: "{gender}"
+              workExperience: "{work_experience}"
+              workExperienceYearsConditional: "{experience_years}"
+        params:
+          - name: name
+            source: agent
+            type: string
+            required: true
+            description: "Caller's full name (required for user record)."
+          - name: phone
+            source: agent
+            type: string
+            required: true
+            description: >
+              Caller's phone in E.164 or plain digits, matching what
+              was used in fetch_profile.
+          - name: profile_item_id
+            source: agent
+            type: string
+            required: false
+            description: >
+              The existing profile's item_id from a prior
+              fetch_profile result. Pass this to UPDATE that
+              profile. Omit to create a new profile.
+          - name: trade
+            source: agent
+            type: string
+            required: false
+            description: "Trade / job role (capitalised, e.g. 'Plumber')."
+          - name: location
+            source: agent
+            type: string
+            required: false
+            description: "City the caller wants to work in."
+          - name: age
+            source: agent
+            type: integer
+            required: false
+            description: "Caller's age in years. Optional."
+          - name: gender
+            source: agent
+            type: string
+            required: false
+            description: "Caller's gender as stated. Optional."
+          - name: work_experience
+            source: agent
+            type: string
+            required: false
+            description: "Free-text experience descriptor (e.g. 'Worked before', 'Fresher')."
+          - name: experience_years
+            source: agent
+            type: string
+            required: false
+            description: "Years of experience descriptor (e.g. '2 Years')."
+    response:
+      max_size_chars: 4000
+      projection:
+        fields:
+          user_id: user.id
+          user_name: user.name
+          user_phone: user.phoneNumber
+          profiles: profiles
+          user_created: status.userCreated
+          user_existed: status.userExisted
+          profile_created: status.profileCreated
+          profile_updated: status.profileUpdated
+          profile_existed: status.profileExisted
+
+  # ────────────────────────────────────────────────────────────────────
+  # WRITE — Submit the application linking caller profile to the job.
+  # ────────────────────────────────────────────────────────────────────
+  - id: apply_job
+    type: rest_api
+    category: write
+    description: >
+      Submit a job application. Call ONLY after onboard has succeeded
+      in this session (so source_item_owner is known) and the user
+      has confirmed the specific job to apply to. Pass the chosen
+      profile_item_id (from the onboard response's profiles list),
+      the job_item_id (from a prior fetch_jobs result), the
+      source_item_owner (user.id from onboard), and a
+      requirements_snapshot built from the chosen profile (role,
+      workExperience, age). Returns application_id on success.
+    base_url: "http://action_gateway:9999"
+    timeout_ms: 5000
+    health_check:
+      enabled: false
+    endpoints:
+      - name: apply
+        method: POST
+        path: /mock/blue_dots/apply
+        body_template:
+          action_type: "apply"
+          source_item:
+            item_network: "blue_dot"
+            item_domain: "seeker"
+            item_type: "profile_1.0"
+            item_id: "{profile_item_id}"
+            item_instance_url: "{profile_instance_url}"
+          source_item_owner: "{source_item_owner}"
+          target_item:
+            item_network: "blue_dot"
+            item_domain: "provider"
+            item_type: "job_posting_1.0"
+            item_id: "{job_item_id}"
+            item_instance_url: "{job_instance_url}"
+          requirements_snapshot:
+            role: "{role}"
+            workExperience: "{work_experience}"
+            age: "{age}"
+        params:
+          - name: profile_item_id
+            source: agent
+            type: string
+            required: true
+            description: "The chosen profile's item_id from onboard response."
+          - name: profile_instance_url
+            source: agent
+            type: string
+            required: false
+            description: >
+              The chosen profile's item_instance_url. Default to the
+              upstream host if unknown.
+          - name: source_item_owner
+            source: agent
+            type: string
+            required: true
+            description: >
+              The user UUID returned by the onboard call (user.id).
+              The backend rejects the apply without it.
+          - name: job_item_id
+            source: agent
+            type: string
+            required: true
+            description: "The chosen job's item_id from fetch_jobs."
+          - name: job_instance_url
+            source: agent
+            type: string
+            required: false
+            description: "The chosen job's item_instance_url from fetch_jobs."
+          - name: role
+            source: agent
+            type: string
+            required: true
+            description: "The trade / role being applied for (from chosen profile)."
+          - name: work_experience
+            source: agent
+            type: string
+            required: false
+            description: "workExperience value from the chosen profile."
+          - name: age
+            source: agent
+            type: integer
+            required: false
+            description: "age value from the chosen profile."
+    response:
+      max_size_chars: 1000
+      projection:
+        fields:
+          status: status
+          application_id: application_id
+          source_item_id: source_item_id
+          target_item_id: target_item_id
+
+observability:
+  domain: "blue_dot"

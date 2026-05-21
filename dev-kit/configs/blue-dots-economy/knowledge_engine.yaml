@@ -1,0 +1,30 @@
+# dev-kit/configs/blue-dots-economy/knowledge_engine.yaml
+# Blue Dots Economy — Knowledge Engine domain config.
+#
+# No KE retrieval is used in this domain. The `knowledge_retrieval`
+# internal tool is NOT registered in agent_core.yaml's connectors.internal,
+# so KE is never hit at runtime. This file is still authored so the
+# config is structurally complete and KE can be enabled later without
+# YAML restructuring; for the same reason, the KE service may be
+# omitted from docker-compose.dev.yml for blue-dots deployments
+# without affecting any other block.
+
+knowledge:
+  blocks:
+    glossary:
+      enabled: false
+      mappings: []
+      apply_to: []
+
+    static_knowledge_base:
+      enabled: false
+      collection_name: blue_dots_knowledge
+      chroma_persist_dir: /app/chroma_db
+      sources: []
+      intent_filters: {}
+
+    multimodal_input_handler:
+      image_model: claude-haiku-4-5-20251001
+
+observability:
+  domain: "blue_dot"

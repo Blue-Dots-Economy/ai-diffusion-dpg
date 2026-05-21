@@ -1,0 +1,166 @@
+# dev-kit/configs/blue-dots-economy/trust_layer.yaml
+# Blue Dots Economy — Trust Layer domain config.
+# Mirrors KKB's job-domain policy pack. Differences from KKB:
+#   - English consent / refusal / holding messages.
+#   - Gujarati consent + decline phrases added on top of KKB's
+#     Hindi / Romanised sets.
+#   - Output-blocked phrases keep the English subset and drop the
+#     Hindi promotional phrases.
+
+trust:
+  policy_pack: "blue_dots_advisory_jobs"
+
+  input_rules:
+    blocked_phrases:
+      - "bomb"
+      - "weapon"
+      - "kill"
+      - "threat"
+      - "violence"
+    escalation_topics:
+      - "suicide"
+      - "arrested"
+      - "police case"
+      - "FIR"
+      - "jail"
+    blocked_input_message: "I'm sorry, I can't help with that topic."
+
+  output_rules:
+    blocked_phrases:
+      - "guaranteed placement"
+      - "100% job guarantee"
+      - "as an AI, I"
+    output_blocked_message: "Sorry, I'm having trouble responding right now. Could you ask that again?"
+
+  policy_packs:
+    # severity and failure_mode declare operator intent. Differential
+    # enforcement is tracked in GH-170 — for now any non-pass triggers
+    # the refusal_template / blocked_message.
+    blue_dots_advisory_jobs:
+      guardrails:
+        false_certainty:
+          severity: "blocker"
+          failure_mode: "block"
+          prompt_constraints:
+            - "MUST NOT guarantee or imply certainty about job outcomes"
+            - "MUST frame all opportunities as possibilities, not certainties"
+          required_disclosures:
+            - "Hiring decisions rest with the employer"
+          refusal_template: "I can't guarantee any specific job outcome."
+
+        hallucinated_reality:
+          severity: "blocker"
+          failure_mode: "block"
+          prompt_constraints:
+            - "MUST NOT infer or generalise from missing data"
+            - "MUST only reference verified signals available in context"
+          required_disclosures:
+            - "Information is based only on verified data"
+          refusal_template: "I don't have verified data on that yet."
+
+        emotional_overreach:
+          severity: "warning"
+          failure_mode: "constrain"
+          prompt_constraints:
+            - "MUST NOT provide counselling or motivational language"
+            - "MUST limit empathetic language to one brief acknowledgement"
+          required_disclosures: []
+          refusal_template: null
+
+        dignity_harm:
+          severity: "blocker"
+          failure_mode: "block"
+          prompt_constraints:
+            - "MUST NOT imply blame, deficiency, or judgment about the user"
+          required_disclosures: []
+          refusal_template: null
+
+        agency_violation:
+          severity: "blocker"
+          failure_mode: "block"
+          prompt_constraints:
+            - "MUST NOT act without explicit user confirmation"
+            - "MUST present options and wait for user decision before any action"
+          required_disclosures:
+            - "Any action requires your explicit confirmation"
+          refusal_template: null
+
+  consent:
+    # English-first set with Hindi/Gujarati/Romanised coverage. Naive
+    # substring match; ordering doesn't matter, coverage does.
+    consent_phrases:
+      # English
+      - "yes"
+      - "yeah"
+      - "yep"
+      - "ok"
+      - "okay"
+      - "go ahead"
+      - "sure"
+      - "alright"
+      - "please do"
+      # Romanised Hindi
+      - "haan"
+      - "theek hai"
+      - "manzoor"
+      - "sahi hai"
+      # Devanagari (Hindi)
+      - "हाँ"
+      - "हा"
+      - "जी हाँ"
+      - "जी"
+      - "ठीक है"
+      - "ठीक"
+      - "सही है"
+      - "मंज़ूर"
+      # Gujarati
+      - "હા"
+      - "જી હા"
+      - "બરાબર"
+      - "ઓકે"
+      - "ઠીક છે"
+    decline_phrases:
+      # English
+      - "no"
+      - "nope"
+      - "don't"
+      - "not now"
+      - "no thanks"
+      # Romanised Hindi
+      - "nahi"
+      - "nahi chahiye"
+      - "mat"
+      # Devanagari
+      - "नहीं"
+      - "नही"
+      - "नहीं चाहिए"
+      - "मना"
+      # Gujarati
+      - "ના"
+      - "નહિ"
+      - "મારે નથી"
+
+  hitl:
+    queue_backend: "log"
+    holding_message: >
+      I'm connecting you with an advisor — someone will call you back
+      within twenty four hours.
+    # notification_webhook backend tracked in GH-36.
+    notification_webhook: null
+
+observability:
+  domain: "blue_dot"
+
+# GH-137 pre-response dignity check. Blue Dots is a Conversational
+# agent, so dignity_check is enabled. The 6 KKB questions transfer
+# verbatim — they are domain-agnostic.
+dignity_check:
+  enabled: true
+  questions:
+    - "Does this blame the user for their situation or lack of opportunity?"
+    - "Does it over-promise job availability, placement rate, or income outcomes?"
+    - "Does it push urgency or use pressure language?"
+    - "Does it reduce the user's agency to decide their own path?"
+    - "Does it sound like a scripted call rather than a genuine human conversation?"
+    - "Am I saying more than this state needs?"
+  fail_action: "rewrite"

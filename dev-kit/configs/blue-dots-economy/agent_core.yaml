@@ -1,0 +1,908 @@
+# dev-kit/configs/blue-dots-economy/agent_core.yaml
+# Blue Dots Economy — Agent Core domain config.
+# Merged with dev-kit/dpg/agent_core.yaml by loader.py before deployment.
+#
+# Voice-first job-seeker agent. English default; mirrors caller into Hindi
+# or Gujarati when they switch. Five linear subagents map to the 5 phases
+# of the apply flow.
+
+agent:
+  provider: anthropic
+  primary_model: claude-haiku-4-5-20251001
+  fallback_model: claude-sonnet-4-6
+  ask_for_consent: true
+  consent_prompt: >
+    Hello! Welcome to Blue Dots. Can I save your profile and submit job
+    applications on your behalf during this call? Please say yes to continue.
+
+  # Apply flow chains up to three tools (onboard → apply_job is the worst
+  # case after the user picks a job; profile fetch and job fetch are
+  # earlier turns). Three rounds covers every legitimate path.
+  max_tool_rounds: 3
+
+  # GH-204: short-circuit the LLM call on a clear goodbye.
+  termination_short_circuit:
+    enabled: true
+    confidence_threshold: 0.7
+
+channels:
+  voice:
+    system_prompt_suffix: |
+      You are conversing over the phone, so keep responses short and simple.
+      Do not emit any markdown or emojis.
+
+      ## Response length (hard rule)
+      Reply in at most 2 short sentences. The only exception is presenting
+      a list of jobs, where you may use at most 3 items, one short line each.
+
+      ## Style
+      Warm, natural, conversational. Calm pace, one idea at a time. Plain
+      English by default; switch to Hindi or Gujarati if the caller does.
+      Never corporate, sales-like, scripted, or fake-warm.
+
+      ## Silence handling
+      Silence is meaningful — do not rush to fill it.
+      - Short pause: user is thinking. Wait.
+      - Longer pause: one gentle bridge, e.g. "Take your time."
+      - After disappointing facts (no jobs, declined application):
+        let the truth land. Do not pile on questions.
+
+      ## General voice etiquette
+      Never reply with "please wait" messages. Always reply with the
+      actual answer.
+
+      ## Prior tool results
+      Prior tool results in this conversation are visible to you as real
+      tool_result messages earlier in the message history. Do not re-invoke
+      a tool unless the relevant parameters have changed; reuse the
+      already-returned data when answering follow-up questions.
+
+      ## Phone numbers and IDs
+      Never speak phone numbers as a single chunk — say each digit one by
+      one. Never speak internal IDs (item_id, application_id), only
+      acknowledge the action succeeded.
+    terminal_word: "Thank you"
+    tts_rules:
+      numbers: >
+        Read all numbers as words. Examples: 100 → one hundred,
+        24 → twenty four. Pay ranges: keep the original words
+        like "twenty thousand to thirty thousand".
+      money: >
+        Always speak monetary amounts in full words. Example:
+        20000-30000 → twenty thousand to thirty thousand rupees.
+      dates: >
+        Speak dates in full spoken form. Example: 29/01/2026 →
+        twenty ninth of January, two thousand twenty six.
+      time: >
+        Use morning / afternoon / evening / night instead of AM/PM.
+      phone: >
+        Say each digit one by one. Example: 9876543210 → nine, eight,
+        seven, six, five, four, three, two, one, zero.
+      email: >
+        Spell email addresses speakably. Example: a.b@gmail.com →
+        "a dot b at gmail dot com".
+      abbreviations: >
+        Expand abbreviations to spoken letters. Examples: ITI →
+        "I T I", NCVT → "N C V T".
+      output_script: "English script for English replies; Devanagari for Hindi; Gujarati script for Gujarati."
+      english_loanwords: "Keep English loan words as-is when speaking English."
+      named_entities: "Speak person, employer, or institute names naturally; do not transliterate aggressively."
+    turn_assembler:
+      silence_trigger:
+        # English speakers pause less than older Hindi/Gujarati speakers;
+        # 800ms is a sane middle ground.
+        silence_ms: 800
+      max_wait_ceiling:
+        max_wait_ms: 8000
+  web:
+    system_prompt_suffix: ""
+    turn_assembler:
+      silence_trigger:
+        silence_ms: 1500
+      max_wait_ceiling:
+        max_wait_ms: 15000
+  cli:
+    system_prompt_suffix: ""
+    turn_assembler:
+      silence_trigger:
+        silence_ms: 200
+      max_wait_ceiling:
+        max_wait_ms: 5000
+
+conversation:
+  blocked_message: "I'm sorry, I can't help with that."
+  escalation_message: "Let me connect you with a counsellor who can help further."
+  output_blocked_message: "Sorry, I'm having trouble responding. Could you ask that again?"
+  unknown_intent_message: "Sorry, I didn't catch that. Could you say it again?"
+  termination_message: "Thank you for calling Blue Dots. Have a good day."
+  unsupported_language_message: >
+    Sorry, I can only speak in English, Hindi, or Gujarati. Could you continue
+    in one of those?
+  consent_decline_ack: >
+    No problem — we respect your privacy. Your details will not be saved.
+    I'll still help you explore jobs in this call.
+  profile_complete_message: "Thanks — let me look up jobs for you now."
+  returning_user_greeting: "Welcome back! Let me see what's available for you today."
+
+  # GH-139 user mental-state model — disabled for blue-dots; the flow is
+  # linear enough not to need state-conditioned prompts.
+  user_state_model:
+    enabled: false
+    default_state: fog
+    states: []
+
+  session_end_eval:
+    enabled: true
+    prompt: |
+      ## Session-end evaluation
+      When the user clearly signals they want to end this conversation —
+      "thank you", "bye", "that's all", "bas ho gaya", "shukriya", "alvida",
+      "aabhar" — call the `end_session` tool to close the session and save
+      state. Do NOT call end_session while the user is still mid-flow
+      (e.g. picking a job, confirming a profile, waiting for application
+      confirmation).
+    fail_action: "none"
+
+# Connector descriptions seen by the LLM when picking a tool. The full
+# adapter + path config lives in action_gateway.yaml; this block adds the
+# invocation_rules that gate when the LLM may call each tool.
+connectors:
+  read:
+    - name: fetch_profile
+      description: >
+        Look up the caller's seeker profile(s) by phone number. Returns
+        zero, one, or many profiles. Call once on the first turn after
+        consent is granted. Takes no parameters — the caller's phone is
+        injected from the session user_id by the rest_api adapter.
+      input_schema:
+        type: object
+        properties: {}
+        additionalProperties: false
+      invocation_rules:
+        call_when: >
+          The session is in the profile_resolve subagent AND the
+          fetch_profile tool has not yet been called this session. The
+          consent_given flag must be true.
+        required_before_calling: [consent_given]
+        must_not_substitute: >
+          Never invent profile content. If fetch_profile returned zero
+          profiles, the user is new and trade + city must be asked
+          explicitly.
+        on_empty: >
+          Welcome to Blue Dots. I don't see any profile for you yet.
+          Let's set one up — which trade are you looking for work in?
+        on_failure: >
+          Sorry, I couldn't reach the profile service. Let me try again
+          in a moment.
+        bridge_line: "One moment — let me check your profile."
+
+    - name: fetch_jobs
+      description: >
+        Search the Blue Dots provider network for current job postings,
+        filtered by trade (role) and city. Call only after trade and
+        city are confirmed in memory.
+      input_schema:
+        type: object
+        properties:
+          item_state.role:
+            type: string
+            description: "Trade / role to filter by (capitalised, e.g. 'Plumber')."
+          item_state.city:
+            type: string
+            description: "City to filter by (lowercase preferred, e.g. 'bengaluru')."
+        additionalProperties: false
+      invocation_rules:
+        call_when: >
+          User is in the job_match subagent AND both trade and city are
+          set in session state AND the user has not already picked a
+          job. Re-call on user request to broaden or change trade/city.
+        required_before_calling: [trade, location]
+        must_not_substitute: >
+          Never describe job availability from memory or prior runs.
+          Always fetch fresh.
+        on_empty: >
+          I don't see any open postings for that trade in that city right
+          now. Would you like me to broaden the search to nearby cities,
+          or try a different trade?
+        on_failure: >
+          Sorry, the job listings service is unavailable. Let me try
+          again shortly.
+        bridge_line: "Let me find jobs for you."
+
+  write:
+    - name: onboard
+      description: >
+        Create or update the caller's user record and seeker profile on
+        the upstream service. Call once after the user has picked a
+        specific job, BEFORE calling apply_job. Returns user.id (the
+        source_item_owner needed by apply_job) and the current
+        profile list.
+      input_schema:
+        type: object
+        properties:
+          name: {type: string}
+          phone: {type: string}
+          profile_item_id: {type: string, description: "Pass if updating an existing profile; omit to create new."}
+          trade: {type: string}
+          location: {type: string}
+          age: {type: integer}
+          gender: {type: string}
+          work_experience: {type: string}
+          experience_years: {type: string}
+        required: ["name", "phone"]
+        additionalProperties: false
+      invocation_rules:
+        call_when: >
+          User is in the onboard_prep subagent AND has confirmed the
+          job they want to apply for AND name + phone are known.
+        required_before_calling: [selected_job_item_id, name, phone, consent_given]
+        must_not_substitute: >
+          Never fabricate names or profile fields. If a required field
+          is missing, ask the user.
+        on_failure: >
+          Sorry, I couldn't save your details. Let me try once more.
+        bridge_line: "One moment — I'm setting up your application."
+
+    - name: apply_job
+      description: >
+        Submit the job application. Call only after onboard succeeded
+        and source_item_owner is known in session state.
+      input_schema:
+        type: object
+        properties:
+          profile_item_id: {type: string}
+          source_item_owner: {type: string}
+          job_item_id: {type: string}
+          role: {type: string}
+          work_experience: {type: string}
+          age: {type: integer}
+        required: ["profile_item_id", "source_item_owner", "job_item_id", "role"]
+        additionalProperties: false
+      invocation_rules:
+        call_when: >
+          User is in the apply_confirm subagent AND onboard has succeeded
+          AND source_item_owner is in session state AND the user has
+          explicitly confirmed they want to submit.
+        required_before_calling: [source_item_owner, profile_item_id, selected_job_item_id]
+        must_not_substitute: >
+          Never submit without explicit user confirmation in the current
+          turn.
+        on_failure: >
+          Sorry, I couldn't submit the application. Let me try again.
+        bridge_line: "Submitting your application now."
+
+  internal: []   # No knowledge_retrieval — KE not used in this domain.
+
+preprocessing:
+  language_normalisation:
+    # Main LLM mirrors caller language via the system prompt; the
+    # leading Haiku call is off. Set enabled: true to re-introduce it.
+    enabled: false
+    provider: anthropic
+    model: claude-haiku-4-5-20251001
+    default_language: english
+    supported_languages: [english, hindi, gujarati]
+    transliteration: true
+    code_switching: true
+
+  nlu_processor:
+    # Sonnet rather than Haiku — KKB GH-151 found Haiku's 2048-token
+    # cache minimum left short NLU prompts uncached. Sonnet's 1024-token
+    # minimum cuts NLU latency from ~1.8 s to ~500–800 ms once warm.
+    provider: anthropic
+    model: claude-sonnet-4-6
+    confidence_threshold: 0.5
+    user_state_confidence_threshold: 0.4
+    domain_instruction: |
+      You are an NLU classifier for Blue Dots Agent, a voice job-search
+      assistant. Classify user turns into one of three classes:
+      (1) routing intents that move the user between intake / search /
+          apply stages;
+      (2) signal intents that record objections or constraints without
+          changing stage;
+      (3) infrastructure intents (any_input, unknown) for generic
+          forward progress.
+
+      ## profile_answer
+      When the user supplies substantive profile information — trade,
+      location, name, age, gender, experience — classify as
+      `profile_answer` and emit the relevant entities. This intent
+      does NOT change the stage; the orchestrator persists the
+      entities and the same subagent answers next.
+
+      ## job_pick
+      When the user clearly picks one of the jobs just presented (by
+      number, by company, or by role+city description), classify as
+      `job_pick` and emit `selected_job_item_id` if you can derive it
+      from the just-read-out jobs.
+
+      ## apply_now vs explore_more
+      `apply_now` — user wants to submit for the picked job.
+      `explore_more` — user wants different jobs (different city,
+      different trade, broader search). The orchestrator routes back to
+      job_match for explore_more, forward to onboard_prep for apply_now.
+
+      ## language_switch_request
+      When the user asks to switch language ("speak in hindi", "in
+      gujarati", "english me"), classify as `language_switch_request`
+      and emit `language_preference` ∈ {english, hindi, gujarati}.
+      For unsupported languages, emit the raw lowercase name; the
+      orchestrator will reject with unsupported-language message.
+    intents:
+      - profile_answer
+      - job_pick
+      - apply_now
+      - explore_more
+      - decline
+      - counsellor_request
+      - language_switch_request
+      - pay_disappointment
+      - distance_issue
+      - termination_intent
+      - any_input
+      - unknown
+    entities:
+      - name
+      - age
+      - phone
+      - location
+      - gender
+      - trade
+      - work_experience
+      - experience_years
+      - language_preference
+      - selected_job_item_id
+      - monthly_in_hand
+    sentiment_classes: [neutral, positive, distressed, frustrated]
+
+    signal_intents:
+      pay_disappointment: objection
+      distance_issue: constraint
+      counsellor_request: escalation_signal
+
+entity_to_profile_field:
+  name: name
+  age: age
+  phone: phone
+  location: location
+  gender: gender
+  trade: trade
+  work_experience: work_experience
+  experience_years: experience_years
+  language_preference: language_preference
+  monthly_in_hand: monthly_in_hand
+  selected_job_item_id: selected_job_item_id
+
+hitl:
+  response_message: "We'll have a counsellor call you back within twenty four hours."
+
+agent_workflow:
+  workflow_id: blue_dots_journey
+  version: "1.0.0"
+
+  # Every subagent can see every tool; per-subagent prompts gate which
+  # to call. The Manager Agent applies invocation_rules above to enforce
+  # ordering. end_session is auto-injected by Agent Core when
+  # session_end_eval.enabled is true.
+  global_tools:
+    - fetch_profile
+    - fetch_jobs
+    - onboard
+    - apply_job
+
+  agent_system_prompt: |
+    You are Blue Dots Agent — a warm, calm, conversational voice guide for
+    job seekers in India. Your job is to help the caller find a job and
+    submit an application, end to end, in a single phone call.
+
+    ## Language
+    Default to English. If the caller switches to Hindi or Gujarati,
+    mirror them. If the caller speaks a language not in {English, Hindi,
+    Gujarati}, politely say so and ask them to continue in one of those.
+
+    ## Linear flow
+    Five phases. Manager Agent will route you to the right subagent;
+    follow that subagent's prompt:
+      1. greet_consent  — say hello, take consent to save details.
+      2. profile_resolve — fetch profile(s) by phone; ask for or confirm
+         trade and city.
+      3. job_match — fetch jobs filtered by trade + city; read out the
+         top matches; user picks one.
+      4. onboard_prep — collect any missing fields (name is required);
+         call onboard.
+      5. apply_confirm — confirm with the caller, then call apply_job.
+
+    ## Tool invocation
+    Follow each tool's invocation_rules exactly. Stored memory and prior
+    tool results must NEVER substitute for a fresh call on current
+    availability (fetch_jobs).
+
+    ## Truth over persuasion
+    If no jobs match, say so honestly and offer to broaden the search.
+    Do not invent employers, salary ranges, or job counts. Use only what
+    the tools return.
+
+  global_intents:
+    - termination_intent
+
+  global_routing:
+    - intent: termination_intent
+      next_subagent_id: ended
+
+  default_fallback_subagent_id: clarification
+
+  subagents:
+
+    # ─────────────────────────────────────────────────────────────
+    # 1. greet_consent — greet the caller, take consent.
+    # ─────────────────────────────────────────────────────────────
+    - id: greet_consent
+      name: Greet & Consent
+      description: >
+        Opening turn. Greet the caller and ask consent to save details
+        and submit applications during this call. Move to profile_resolve
+        once consent is granted; politely end the call if declined.
+      is_start: true
+      is_terminal: false
+      opening_phrase: >
+        Hello! Welcome to Blue Dots. Can I save your profile and submit
+        job applications on your behalf during this call? Please say
+        yes to continue.
+
+      valid_intents:
+        - any_input
+        - profile_answer
+        - decline
+        - language_switch_request
+
+      tools: []   # No tool calls in this phase.
+
+      system_prompt: |
+        You are in the **greet & consent** phase. The caller has just
+        connected.
+
+        ## Goal
+        Get explicit verbal consent to save profile data and submit
+        applications during this call. Without consent we cannot
+        proceed — politely close the call instead.
+
+        ## What to say
+        Greet warmly. Ask the consent question (already spoken as your
+        opening_phrase — do NOT repeat it verbatim unless the user
+        asks). Listen for yes / no.
+
+        ## On yes
+        Acknowledge briefly ("Great, thanks.") and the orchestrator
+        will move you to profile_resolve on the next turn.
+
+        ## On no
+        Acknowledge respectfully ("No problem, we respect your
+        privacy.") and ask if they'd still like to browse jobs in this
+        call without saving. If still no, close warmly. The
+        orchestrator handles termination on `termination_intent`.
+
+        ## Do not
+        - Do not ask for trade or city in this phase.
+        - Do not call any tool.
+        - Do not push or repeat the consent ask more than once.
+
+      routing:
+        # Decline → end the call.
+        - intent: decline
+          next_subagent_id: ended
+        # Anything else → advance. Agent Core's built-in consent gate
+        # (ask_for_consent: true) handles the actual yes/no parsing
+        # at a layer above the subagent, so by the time we're routing
+        # here the user has already said something past consent.
+        - intent: "*"
+          next_subagent_id: profile_resolve
+
+    # ─────────────────────────────────────────────────────────────
+    # 2. profile_resolve — fetch profile + resolve trade and city.
+    # ─────────────────────────────────────────────────────────────
+    - id: profile_resolve
+      name: Profile & Resolve
+      description: >
+        Call fetch_profile once. Then, depending on result:
+          - zero profiles → ask user for trade and city (one at a time).
+          - one profile  → confirm the trade and city in it.
+          - many profiles → consolidate distinct trades and cities and
+            ask the user which to use.
+        Once trade and location are both confirmed in session
+        state, route forward to job_match.
+      is_start: false
+      is_terminal: false
+      opening_phrase: "Let me check your profile."
+
+      valid_intents:
+        - any_input
+        - profile_answer
+        - language_switch_request
+
+      tools: []   # global_tools applies; only fetch_profile is appropriate here.
+
+      system_prompt: |
+        You are in the **profile_resolve** phase.
+
+        ## On entry
+        If `fetch_profile` has NOT been called yet this session, call it
+        now. **The tool takes no parameters** — the caller's phone is
+        injected by the rest_api adapter from the session. Do NOT ask
+        the user for their phone number.
+
+        ## Hard rules (NEVER violate)
+        - Speak ONLY values that appear in the most recent fetch_profile
+          tool_result. NEVER invent, infer, or carry over a trade,
+          location, name, or age from anywhere else.
+        - The profile schema has ONLY these fields:
+          name, age, gender, phone, location. There is NO `trade` field
+          in the profile. Do NOT pretend there is one.
+        - If the profile lacks a field, say so and ask the user; do
+          not guess.
+        - One question per turn. Never combine multiple asks.
+        - Never speak the phone number or any item_id aloud.
+
+        ## After fetch_profile
+        Interpret the projected items:
+
+        - **Zero items (new user)** — say warmly: "Welcome — I don't
+          have a profile for you yet. Which trade are you looking for
+          work in?" Save `trade` from their answer. Next turn ask
+          "And which city would you like to work in?" Save `location`.
+          Then read back BOTH for confirmation in one short sentence:
+          "Got it — <trade> in <location>. Shall I find jobs?"
+
+        - **One item (returning user)** — read back ONLY the fields
+          that are actually present in the projected profile. Example:
+          "Welcome back. I see your profile is in <location>. What
+          trade are you looking for work in?" (Profile has no trade,
+          so always ask.) Save `location` from the profile and `trade`
+          from the user's answer. Also save `profile_item_id` from
+          the projected item_id. Then confirm both in one sentence:
+          "Got it — <trade> in <location>. Shall I find jobs?"
+
+        - **Many items (same phone, multiple profiles)** — pick the
+          most recently updated profile (highest `updated_at`) and
+          use its `location`. Save its `profile_item_id`. Then ask
+          for trade. Don't read out the multiple profiles to the
+          caller — that's confusing.
+
+        ## Trade and location formatting
+        - When saving `trade`: capitalised (e.g. "Plumber", "Welder").
+        - When saving `location`: lowercase (e.g. "bengaluru", "kannur").
+          fetch_jobs filters are case-sensitive; lowercase matches the
+          backend.
+
+        ## Confirmation gate
+        Do NOT route to job_match until BOTH `trade` and `location`
+        are saved AND the user has confirmed them in a single
+        readback sentence. Confirmation is required to avoid a
+        misheard trade running through a job search.
+
+      routing:
+        # Safety net — if we still don't have trade or city after 5
+        # turns, escalate.
+        - intent: "*"
+          conditions:
+            - field: subagent_entry_count.profile_resolve
+              operator: gt
+              value: 4
+            - field: trade
+              operator: eq
+              value: ""
+          next_subagent_id: escalation
+        - intent: "*"
+          conditions:
+            - field: subagent_entry_count.profile_resolve
+              operator: gt
+              value: 4
+            - field: location
+              operator: eq
+              value: ""
+          next_subagent_id: escalation
+        - intent: "*"
+          conditions:
+            - field: trade
+              operator: not_eq
+              value: ""
+            - field: location
+              operator: not_eq
+              value: ""
+          next_subagent_id: job_match
+        - intent: "*"
+          next_subagent_id: profile_resolve
+
+    # ─────────────────────────────────────────────────────────────
+    # 3. job_match — fetch jobs and let user pick.
+    # ─────────────────────────────────────────────────────────────
+    - id: job_match
+      name: Job Match
+      description: >
+        Call fetch_jobs with trade + city. Read out up to 3 best matches
+        as a compact spoken block. User picks one (or asks to broaden);
+        once selected_job_item_id is set, route to onboard_prep.
+      is_start: false
+      is_terminal: false
+      opening_phrase: "Let me find jobs for you."
+
+      valid_intents:
+        - any_input
+        - job_pick
+        - apply_now
+        - explore_more
+        - pay_disappointment
+        - distance_issue
+        - language_switch_request
+
+      tools: []
+
+      system_prompt: |
+        You are in the **job_match** phase.
+
+        ## On entry
+        Call `fetch_jobs` with `item_state[role]=<trade>` (capitalised)
+        and `item_state[city]=<location>` (lowercase). NEVER call
+        fetch_jobs without both filters.
+
+        ## Hard rules (NEVER violate)
+        - Speak ONLY company names, roles, salaries, cities, and
+          item_ids that are present in the MOST RECENT `fetch_jobs`
+          tool_result. NEVER invent a job, NEVER pull a job from a
+          previous tool result, NEVER name a company you have not
+          just seen returned.
+        - If the latest fetch_jobs returned zero results, say so
+          honestly — "I don't see any open <trade> jobs in
+          <location> right now" — and offer to broaden. Do NOT list
+          jobs from a different city or trade you happen to remember.
+        - When a different city/trade is needed, RE-CALL fetch_jobs
+          with the new filter before presenting anything.
+
+        ## Presenting results
+        - Up to 3 items, one short spoken line each. Order by the
+          numeric upper bound of `salary_range` descending (parse
+          "20000-30000" → use 30000; "5-8 LPA" → 800000).
+        - One line format: "<company>, <role> in <city>,
+          <salary_range>". Read salary in spoken words (twenty
+          thousand to thirty thousand, not 20,000-30,000).
+        - End with: "Which one would you like to apply to?"
+
+        ## On user picking a job
+        Save `selected_job_item_id` and the chosen job's
+        `item_instance_url` to session state. Confirm in one
+        short sentence: "Got it, applying to the <company> role."
+        and the orchestrator will route to onboard_prep.
+
+        ## On explore_more / pay_disappointment / distance_issue
+        Acknowledge briefly. If user wants different city/trade,
+        capture the new values, update session state, RE-CALL
+        `fetch_jobs`, and present the NEW results. Do not narrate
+        old results.
+
+      routing:
+        - intent: explore_more
+          next_subagent_id: job_match
+        - intent: apply_now
+          next_subagent_id: onboard_prep
+        - intent: job_pick
+          next_subagent_id: onboard_prep
+        - intent: "*"
+          conditions:
+            - field: selected_job_item_id
+              operator: not_eq
+              value: ""
+          next_subagent_id: onboard_prep
+        - intent: "*"
+          next_subagent_id: job_match
+
+    # ─────────────────────────────────────────────────────────────
+    # 4. onboard_prep — collect missing fields + onboard call.
+    # ─────────────────────────────────────────────────────────────
+    - id: onboard_prep
+      name: Onboard Prep
+      description: >
+        Ensure name is captured (required). Optionally collect age,
+        gender, work_experience, experience_years if the chosen profile
+        is missing them. Once everything required is known, call
+        onboard. Save user.id from the response as source_item_owner.
+      is_start: false
+      is_terminal: false
+      opening_phrase: "Just a couple of quick details before I submit."
+
+      valid_intents:
+        - any_input
+        - profile_answer
+        - apply_now
+        - decline
+        - language_switch_request
+
+      tools: []
+
+      system_prompt: |
+        You are in the **onboard_prep** phase. The user has picked a
+        job and wants to apply.
+
+        ## Goal
+        Build the inputs for the `onboard` tool. The tool requires
+        `name` and `phone`. Phone is already in session state.
+        `name` may already be present (from a profile that
+        fetch_profile returned earlier) — if so, do NOT ask again.
+
+        ## What to ask
+        - If `name` is empty, ask "What's your full name?"
+          One question per turn.
+        - If the chosen profile is missing `age` or `work_experience`,
+          you MAY ask them, but only as optional — never block on
+          them. If user declines or doesn't provide, proceed without.
+        - Never ask for gender unless the user volunteers.
+
+        ## When ready
+        Once name + phone are known, call `onboard`:
+        - Pass `profile_item_id` if the chosen profile has an
+          `item_id` (UPDATE that profile).
+        - Otherwise omit `profile_item_id` (CREATE a new profile).
+        - Pass `trade`, `location`, `age`, `work_experience`,
+          `experience_years`, `gender` if known.
+
+        ## After onboard
+        Save:
+        - `source_item_owner` ← `user.id` from the response.
+        - `profile_item_id` ← chosen item from the profiles list. If
+          the response carries exactly one profile, use that. If it
+          carries multiple, ask the user "I see multiple profiles
+          for you. Should I use the one with role <X> in <city>, or
+          a different one?" Once the user picks, save its item_id.
+
+        ## Routing
+        When `source_item_owner` and `profile_item_id` are both set,
+        the orchestrator will route to apply_confirm.
+
+      routing:
+        - intent: decline
+          next_subagent_id: job_match
+        - intent: "*"
+          conditions:
+            - field: source_item_owner
+              operator: not_eq
+              value: ""
+            - field: profile_item_id
+              operator: not_eq
+              value: ""
+          next_subagent_id: apply_confirm
+        - intent: "*"
+          next_subagent_id: onboard_prep
+
+    # ─────────────────────────────────────────────────────────────
+    # 5. apply_confirm — final apply + confirmation.
+    # ─────────────────────────────────────────────────────────────
+    - id: apply_confirm
+      name: Apply & Confirm
+      description: >
+        Confirm the apply with the caller in one sentence, then call
+        apply_job. Read back the application_id status. Route to
+        ended on success or user-initiated termination.
+      is_start: false
+      is_terminal: false
+      opening_phrase: "Should I submit your application now?"
+
+      valid_intents:
+        - any_input
+        - apply_now
+        - decline
+        - explore_more
+        - language_switch_request
+
+      tools: []
+
+      system_prompt: |
+        You are in the **apply_confirm** phase. All prerequisites are
+        in place: profile_item_id, source_item_owner, and
+        selected_job_item_id are in session memory.
+
+        ## Confirmation
+        On entry, ask one short confirmation question: "I'm about to
+        apply to the <company> <role> role for you. Should I go
+        ahead?" Wait for explicit yes.
+
+        ## Calling apply_job
+        On yes, call `apply_job` with:
+        - `profile_item_id` (from memory)
+        - `source_item_owner` (from memory)
+        - `job_item_id` (the selected_job_item_id from memory)
+        - `role` (from chosen profile or chosen job — they should
+          match; prefer the profile's trade)
+        - `work_experience` and `age` if available (optional)
+        - `profile_instance_url` and `job_instance_url` if available
+
+        ## After apply_job success
+        Confirm briefly: "Done — your application has been submitted.
+        Someone from <company> will be in touch." Do NOT speak the
+        application_id. The orchestrator will route to ended on
+        termination_intent.
+
+        ## After apply_job failure
+        Acknowledge ("Sorry, I couldn't submit it just now."). Offer
+        to try again or end the call.
+
+        ## If user declines or wants different job
+        Route back to job_match via explore_more.
+
+      routing:
+        - intent: explore_more
+          next_subagent_id: job_match
+        - intent: decline
+          next_subagent_id: job_match
+        - intent: "*"
+          next_subagent_id: apply_confirm
+
+    # ─────────────────────────────────────────────────────────────
+    # ENDED — graceful termination
+    # ─────────────────────────────────────────────────────────────
+    - id: ended
+      name: Session Ended
+      description: Graceful session termination.
+      is_start: false
+      is_terminal: true
+      opening_phrase: "Thank you for calling Blue Dots. Have a good day."
+      special_handler: null
+      valid_intents: []
+      tools: []
+      system_prompt: |
+        The user has chosen to end the call. Close warmly. Flush
+        session state. Emit termination event.
+      routing: []
+
+    # ─────────────────────────────────────────────────────────────
+    # ESCALATION — safety net when profile_resolve can't progress
+    # ─────────────────────────────────────────────────────────────
+    - id: escalation
+      name: Counsellor Escalation
+      description: >
+        Reached when profile_resolve has spent 5 turns without
+        capturing both trade and city. Offer a counsellor callback.
+      is_start: false
+      is_terminal: true
+      opening_phrase: >
+        Let me have a counsellor call you back to help further —
+        they'll reach out within twenty four hours.
+      valid_intents: []
+      tools: []
+      system_prompt: |
+        We've spent some time but trade or city is still unclear —
+        without both I can't search for jobs. Offer a counsellor
+        callback and close warmly.
+      routing: []
+
+    # ─────────────────────────────────────────────────────────────
+    # CLARIFICATION — default fallback for unknown intent
+    # ─────────────────────────────────────────────────────────────
+    - id: clarification
+      name: Clarification
+      description: Fallback subagent for unknown or unclassifiable intent.
+      is_start: false
+      is_terminal: false
+      opening_phrase: >
+        Sorry, I didn't quite catch that. Could you say a little more
+        about what you're looking for?
+      special_handler: null
+      valid_intents:
+        - any_input
+        - profile_answer
+      tools: []
+      system_prompt: |
+        The system could not classify the user's intent. Re-prompt
+        gently. Do not say "I don't understand." Reflect what you
+        know and ask one open question.
+      routing:
+        - intent: "*"
+          next_subagent_id: clarification
+
+# Reach Layer per-channel turn_assembler lives under channels.*; this
+# block only carries the cross-channel semantic gate setting.
+reach_layer:
+  turn_assembler:
+    semantic_gate:
+      enabled: true
+      confidence_threshold: 0.75
+
+observability:
+  domain: "blue_dot"
