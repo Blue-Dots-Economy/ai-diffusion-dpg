@@ -18,24 +18,34 @@ state:
       # Consent / safety. Memory Layer's session schema enum is
       # {enum, string, int, list} — no bool. Modelled as a 2-value enum.
       consent_given:           { type: enum,   values: ["true", "false"], default: "false" }
-      # Profile data (from fetch_profile / onboard)
+      # Profile data — populated when the user verbalises these and NLU
+      # picks them up. Mirrors the profile_1.0 schema returned by
+      # fetch_profile so subsequent tool calls (update_profile, apply_job)
+      # have somewhere to read from.
       profile_item_id:         { type: string, default: "" }
       profile_instance_url:    { type: string, default: "" }
       source_item_owner:       { type: string, default: "" }   # user.id from onboard
       name:                    { type: string, default: "" }
       age:                     { type: int,    default: 0 }
       gender:                  { type: string, default: "" }
-      work_experience:         { type: string, default: "" }
-      experience_years:        { type: string, default: "" }
+      work_experience:         { type: string, default: "" }   # enum: Fresher / Worked before / Returning after a break
+      experience_years:        { type: string, default: "" }   # enum: 0, < 1 Year, 1 Year, 2 Years, …
+      qualification:           { type: string, default: "" }   # enum: School / College / ITI Other Vocational Trainings / Certification Learned on the job
+      job_nature:              { type: string, default: "" }   # enum: Internship / Apprenticeship / Full-time / Flexible
+      help_needed:             { type: string, default: "" }   # enum: Training / Accommodation / Travel / Other
       # Search criteria (confirmed in profile_resolve subagent)
       trade:                   { type: string, default: "" }
-      location:          { type: string, default: "" }
+      location:                { type: string, default: "" }
       # Job search results + selection
       last_jobs:               { type: list,   default: [] }   # compact dicts: item_id, role, company, city, salary_range
       selected_job_item_id:    { type: string, default: "" }
       selected_job_instance_url: { type: string, default: "" }
       selected_job_role:       { type: string, default: "" }
       selected_job_company:    { type: string, default: "" }
+      # Profile-choice state (written during profile_choice/profile_setup phases)
+      profile_action:          { type: enum,   values: ["use_existing", "create_new", "update_existing", ""], default: "" }
+      profile_setup_done:      { type: enum,   values: ["true", "false"], default: "false" }
+      profiles_from_onboard:   { type: list,   default: [] }   # snapshot of list_user_profiles result
       # Application outcome
       last_application_id:     { type: string, default: "" }
       applications_submitted:  { type: int,    default: 0 }
@@ -51,19 +61,20 @@ state:
         SeekerProfile:
           rel: HAS_PROFILE
           declared_fields:
-            # Identity layer
+            # Identity layer (profile_1.0 required fields)
             - name
             - phone
             - age
             - gender
             - location
             - language_preference
-            # Capability layer (mapped from blue-dots field names)
-            - trade
-            - work_experience
-            - experience_years
-            - highest_qualification_or_skill
-            - skills
+            # Capability layer (profile_1.0 optional fields)
+            - trade                  # nameOfJobRolesInterestedIn
+            - work_experience        # workExperience
+            - experience_years       # workExperienceYearsConditional
+            - qualification          # highestQualificationOrSkill
+            - job_nature             # natureOfJobsInterestedIn
+            - help_needed            # otherHelpNeeded
             # Identity-on-upstream
             - profile_item_id
             - source_item_owner

@@ -8,8 +8,12 @@
 
 agent:
   provider: anthropic
-  primary_model: claude-haiku-4-5-20251001
-  fallback_model: claude-sonnet-4-6
+  # Sonnet primary — Haiku 4.5 silently returned 0-sentence responses
+  # after tool calls (model ended turn with no text content), which
+  # the caller hears as a dead line. Sonnet's instruction-following
+  # is stronger; trade ~1.5 s extra latency for reliability.
+  primary_model: claude-sonnet-4-6
+  fallback_model: claude-haiku-4-5-20251001
   ask_for_consent: true
   consent_prompt: >
     Hello! Welcome to Blue Dots. Can I save your profile and submit job
@@ -210,43 +214,78 @@ connectors:
         bridge_line: "Let me find jobs for you."
 
   write:
-    - name: onboard
+    - name: list_user_profiles
       description: >
-        Create or update the caller's user record and seeker profile on
-        the upstream service. Call once after the user has picked a
-        specific job, BEFORE calling apply_job. Returns user.id (the
-        source_item_owner needed by apply_job) and the current
-        profile list.
+        Look up the user's existing seeker profiles on the upstream
+        (creates the user record if new). Call once when the user
+        has just confirmed they want to apply to a specific job. The
+        response gives source_item_owner (user.id) and the profiles
+        array — use those to disambiguate which profile to apply with.
       input_schema:
         type: object
         properties:
           name: {type: string}
           phone: {type: string}
-          profile_item_id: {type: string, description: "Pass if updating an existing profile; omit to create new."}
-          trade: {type: string}
-          location: {type: string}
-          age: {type: integer}
-          gender: {type: string}
-          work_experience: {type: string}
-          experience_years: {type: string}
         required: ["name", "phone"]
         additionalProperties: false
       invocation_rules:
         call_when: >
-          User is in the onboard_prep subagent AND has confirmed the
-          job they want to apply for AND name + phone are known.
-        required_before_calling: [selected_job_item_id, name, phone, consent_given]
+          User is in the profile_choice subagent AND has confirmed
+          they want to apply (intent=apply_now) AND a job is
+          selected (selected_job_item_id is set).
+        required_before_calling: [selected_job_item_id, name, phone]
         must_not_substitute: >
-          Never fabricate names or profile fields. If a required field
-          is missing, ask the user.
+          Never fabricate names or phone numbers. Both must come
+          from session / prior tool results.
         on_failure: >
-          Sorry, I couldn't save your details. Let me try once more.
-        bridge_line: "One moment — I'm setting up your application."
+          Sorry, I couldn't reach the profile service. Let me try
+          once more.
+        bridge_line: "One moment — let me pull up your profiles."
+
+    - name: save_profile
+      description: >
+        Create a new seeker profile or update an existing one. The
+        upstream does NOT support partial updates — pass the full
+        item_state on every call. For UPDATE pass profile_item_id;
+        for CREATE omit it.
+      input_schema:
+        type: object
+        properties:
+          name: {type: string}
+          phone: {type: string}
+          gender: {type: string}
+          location: {type: string}
+          age: {type: integer}
+          work_experience: {type: string, description: "Fresher / Worked before / Returning after a break"}
+          profile_item_id: {type: string, description: "Pass to UPDATE; omit to CREATE."}
+          experience_years: {type: string}
+          trade: {type: string}
+          qualification: {type: string}
+          job_nature: {type: string}
+          help_needed: {type: string}
+        required: ["name", "phone", "gender", "location", "age", "work_experience"]
+        additionalProperties: false
+      invocation_rules:
+        call_when: >
+          User is in the profile_setup subagent AND profile_action
+          in session is "create_new" or "update_existing" AND all
+          required fields (name, phone, gender, location, age,
+          work_experience) are gathered.
+        required_before_calling: [name, phone, gender, location, age, work_experience]
+        must_not_substitute: >
+          Never invent profile fields. Each must come from the user
+          or from the chosen profile's existing state (for update
+          paths).
+        on_failure: >
+          Sorry, I couldn't save the profile. Let me try once more.
+        bridge_line: "Setting up your profile now."
 
     - name: apply_job
       description: >
-        Submit the job application. Call only after onboard succeeded
-        and source_item_owner is known in session state.
+        Submit the job application linking the chosen profile to the
+        selected job. Call only after a profile is chosen
+        (profile_item_id and source_item_owner both set) and the
+        user has explicitly confirmed they want to submit.
       input_schema:
         type: object
         properties:
@@ -256,17 +295,18 @@ connectors:
           role: {type: string}
           work_experience: {type: string}
           age: {type: integer}
-        required: ["profile_item_id", "source_item_owner", "job_item_id", "role"]
+        required: ["profile_item_id", "source_item_owner", "job_item_id", "role", "work_experience", "age"]
         additionalProperties: false
       invocation_rules:
         call_when: >
-          User is in the apply_confirm subagent AND onboard has succeeded
-          AND source_item_owner is in session state AND the user has
-          explicitly confirmed they want to submit.
+          User is in the apply_confirm subagent AND profile_item_id
+          AND source_item_owner AND selected_job_item_id are all in
+          session AND the user has explicitly confirmed (yes) in the
+          current turn.
         required_before_calling: [source_item_owner, profile_item_id, selected_job_item_id]
         must_not_substitute: >
-          Never submit without explicit user confirmation in the current
-          turn.
+          Never submit without an explicit yes/confirm in the most
+          recent user turn.
         on_failure: >
           Sorry, I couldn't submit the application. Let me try again.
         bridge_line: "Submitting your application now."
@@ -350,6 +390,9 @@ preprocessing:
       - trade
       - work_experience
       - experience_years
+      - qualification              # School / College / ITI / Certification
+      - job_nature                 # Internship / Apprenticeship / Full-time / Flexible
+      - help_needed                # Training / Accommodation / Travel / Other
       - language_preference
       - selected_job_item_id
       - monthly_in_hand
@@ -369,6 +412,9 @@ entity_to_profile_field:
   trade: trade
   work_experience: work_experience
   experience_years: experience_years
+  qualification: qualification
+  job_nature: job_nature
+  help_needed: help_needed
   language_preference: language_preference
   monthly_in_hand: monthly_in_hand
   selected_job_item_id: selected_job_item_id
@@ -387,7 +433,8 @@ agent_workflow:
   global_tools:
     - fetch_profile
     - fetch_jobs
-    - onboard
+    - list_user_profiles
+    - save_profile
     - apply_job
 
   agent_system_prompt: |
@@ -395,22 +442,61 @@ agent_workflow:
     job seekers in India. Your job is to help the caller find a job and
     submit an application, end to end, in a single phone call.
 
+    ## Never stay silent (HARD RULE — applies to EVERY response)
+    You MUST emit at least one short spoken sentence in EVERY response.
+    The caller is on a phone — silence sounds like the line has dropped,
+    and the user will hang up.
+
+    After EVERY tool call, you MUST speak. Concrete patterns:
+      - After fetch_profile (1 item): "Welcome back. I see your profile
+        in <location>. What trade are you looking for work in?"
+      - After fetch_profile (0 items): "Welcome — I don't see a profile
+        for this number yet. Which trade are you looking for work in?"
+      - After fetch_jobs (some results): "I found <N> <trade> job(s) in
+        <location>. <Company A>, <salary range>. <Company B>, …
+        Which one would you like to apply to?"
+      - After fetch_jobs (no results): "I don't see any open <trade>
+        jobs in <location> right now. Want me to try a nearby city or
+        a different trade?"
+      - After list_user_profiles (multi): "I see you have a few
+        profiles on this number. The one in <location> as <trade>
+        looks closest to this job — should I use that one, or
+        create a fresh profile, or update one of them?"
+      - After list_user_profiles (single): "I see one profile for you,
+        in <location>. Should I apply using this profile, create a
+        new one, or update this one?"
+      - After list_user_profiles (zero): "Let me set up a profile for
+        you first. What's your gender?" (then location, age, work
+        experience, one at a time).
+      - After save_profile (created): "Profile saved. Shall I submit
+        your application now?"
+      - After save_profile (updated): "Profile updated. Ready to
+        submit the application?"
+      - After apply_job (success): "Your application to <company> for
+        the <role> role has been submitted. They'll be in touch."
+
+    If you genuinely have nothing to add, say "One moment, please." —
+    NEVER return an empty response. Silence is the worst outcome.
+
     ## Language
     Default to English. If the caller switches to Hindi or Gujarati,
     mirror them. If the caller speaks a language not in {English, Hindi,
     Gujarati}, politely say so and ask them to continue in one of those.
 
     ## Linear flow
-    Five phases. Manager Agent will route you to the right subagent;
-    follow that subagent's prompt:
+    Six phases. Manager Agent routes you to the right subagent; follow
+    that subagent's prompt:
       1. greet_consent  — say hello, take consent to save details.
-      2. profile_resolve — fetch profile(s) by phone; ask for or confirm
-         trade and city.
-      3. job_match — fetch jobs filtered by trade + city; read out the
-         top matches; user picks one.
-      4. onboard_prep — collect any missing fields (name is required);
-         call onboard.
-      5. apply_confirm — confirm with the caller, then call apply_job.
+      2. profile_resolve — fetch profile(s) by phone (silent); ask user
+         for trade (and location if profiles disagree on city).
+      3. job_match — fetch jobs by location, present results matching
+         the user's trade, user picks one.
+      4. profile_choice — after user confirms apply: call
+         list_user_profiles, ask the user whether to USE an existing
+         profile, CREATE a new one, or UPDATE one of theirs.
+      5. profile_setup — when create or update is needed, gather all
+         required fields and call save_profile.
+      6. apply_confirm — confirm with the caller, then call apply_job.
 
     ## Tool invocation
     Follow each tool's invocation_rules exactly. Stored memory and prior
@@ -562,10 +648,13 @@ agent_workflow:
           "Got it — <trade> in <location>. Shall I find jobs?"
 
         - **Many items (same phone, multiple profiles)** — pick the
-          most recently updated profile (highest `updated_at`) and
-          use its `location`. Save its `profile_item_id`. Then ask
-          for trade. Don't read out the multiple profiles to the
-          caller — that's confusing.
+          most recently updated profile silently and use its
+          `location`. Do NOT ask the user to pick a profile here —
+          profile selection happens later, after the user picks a
+          job. If the multiple profiles disagree on `location` (some
+          say Bengaluru, some say Kannur), THEN ask the user which
+          location they're searching in. If they all agree, just ask
+          for the trade.
 
         ## Trade and location formatting
         - When saving `trade`: capitalised (e.g. "Plumber", "Welder").
@@ -573,33 +662,17 @@ agent_workflow:
           fetch_jobs filters are case-sensitive; lowercase matches the
           backend.
 
-        ## Confirmation gate
-        Do NOT route to job_match until BOTH `trade` and `location`
-        are saved AND the user has confirmed them in a single
-        readback sentence. Confirmation is required to avoid a
-        misheard trade running through a job search.
+        ## Confirmation gate (HARD — must always end with a question)
+        Before calling fetch_jobs in the next phase, you MUST first
+        read back both values AND end your turn with the explicit
+        question "Shall I find jobs?" (or equivalent). The sentence
+        is incomplete without the question — the user needs to know
+        you're waiting on a yes/no. Never stop after just "Got it —
+        Plumber in Bengaluru." — that leaves the user wondering.
+        Wait for the user's yes/no reply before fetch_jobs fires.
 
       routing:
-        # Safety net — if we still don't have trade or city after 5
-        # turns, escalate.
-        - intent: "*"
-          conditions:
-            - field: subagent_entry_count.profile_resolve
-              operator: gt
-              value: 4
-            - field: trade
-              operator: eq
-              value: ""
-          next_subagent_id: escalation
-        - intent: "*"
-          conditions:
-            - field: subagent_entry_count.profile_resolve
-              operator: gt
-              value: 4
-            - field: location
-              operator: eq
-              value: ""
-          next_subagent_id: escalation
+        # Advance when both trade and location are confirmed.
         - intent: "*"
           conditions:
             - field: trade
@@ -609,6 +682,10 @@ agent_workflow:
               operator: not_eq
               value: ""
           next_subagent_id: job_match
+        # Otherwise stay. (The earlier "subagent_entry_count > 4 →
+        # escalation" safety net fired incorrectly on turn 1 — the
+        # orchestrator's `gt` evaluator treats a missing counter as
+        # greater than 4. Removed until we can express it safely.)
         - intent: "*"
           next_subagent_id: profile_resolve
 
@@ -682,31 +759,157 @@ agent_workflow:
         - intent: explore_more
           next_subagent_id: job_match
         - intent: apply_now
-          next_subagent_id: onboard_prep
+          next_subagent_id: profile_choice
         - intent: job_pick
-          next_subagent_id: onboard_prep
+          next_subagent_id: profile_choice
         - intent: "*"
           conditions:
             - field: selected_job_item_id
               operator: not_eq
               value: ""
-          next_subagent_id: onboard_prep
+          next_subagent_id: profile_choice
         - intent: "*"
           next_subagent_id: job_match
 
     # ─────────────────────────────────────────────────────────────
-    # 4. onboard_prep — collect missing fields + onboard call.
+    # 4. profile_choice — list user's profiles, decide use/create/update.
     # ─────────────────────────────────────────────────────────────
-    - id: onboard_prep
-      name: Onboard Prep
+    - id: profile_choice
+      name: Profile Choice
       description: >
-        Ensure name is captured (required). Optionally collect age,
-        gender, work_experience, experience_years if the chosen profile
-        is missing them. Once everything required is known, call
-        onboard. Save user.id from the response as source_item_owner.
+        Call list_user_profiles to fetch the user's profiles and the
+        user.id (source_item_owner). Then present options to the
+        user — use one of the existing profiles (suggest the best
+        match for the selected job), create a fresh profile, or
+        update one of theirs. Capture the user's choice into
+        profile_action and (if applicable) profile_item_id, then
+        route forward.
       is_start: false
       is_terminal: false
-      opening_phrase: "Just a couple of quick details before I submit."
+      opening_phrase: "One moment — let me pull up your profiles."
+
+      valid_intents:
+        - any_input
+        - profile_answer
+        - apply_now
+        - decline
+        - language_switch_request
+
+      tools: []   # global_tools applies — list_user_profiles is the right call here.
+
+      system_prompt: |
+        You are in the **profile_choice** phase. The user has picked
+        a job and confirmed they want to apply.
+
+        ## On entry
+        If list_user_profiles has NOT been called yet this session,
+        call it now. Pass:
+          - name: from session (set during profile_resolve) or, if
+            missing, ask the user before calling.
+          - phone: from session (the same value used in fetch_profile).
+
+        ## After list_user_profiles
+        Inspect the response: it carries the user.id (the
+        source_item_owner you'll need for apply_job — save it to
+        session immediately) and a `profiles` array. Branch on the
+        profiles count:
+
+        - **Zero profiles** — user is new (status.userCreated=true
+          usually). Profile creation is mandatory. Set
+          profile_action="create_new". Say: "Let me set up a
+          profile for you first." Then the orchestrator routes
+          you to profile_setup; the user-facing field collection
+          happens there.
+
+        - **One profile** — say: "I see one profile for you, in
+          <location>. Should I apply using this profile, create a
+          new one, or update this one?" Wait for the user's
+          choice.
+            - If USE: set profile_action="use_existing",
+              profile_item_id = that profile's item_id. Save also
+              the profile's name/age/gender/location/etc into the
+              session fields (so apply_confirm can read them).
+            - If CREATE: set profile_action="create_new". Don't
+              touch profile_item_id.
+            - If UPDATE: set profile_action="update_existing",
+              profile_item_id = that profile's item_id. Save the
+              profile's existing fields to session so the user's
+              changes can be overlaid.
+
+        - **Many profiles** — suggest the best match. The best match
+          is the profile whose `location` AND
+          `nameOfJobRolesInterestedIn` align with the selected
+          job's `location` and `role`. If multiple match equally,
+          pick the most recently updated. Say: "I see <N> profiles
+          on this number. The one in <best.location> as
+          <best.trade> looks closest to this job — should I use
+          that one, create a fresh profile, or update one of them?"
+          Same three branches as above; profile_item_id = the
+          chosen one's item_id when use/update.
+
+        ## Hard rules
+        - Save source_item_owner = user.id from the
+          list_user_profiles response IMMEDIATELY, before doing
+          anything else. apply_job will fail without it.
+        - Never offer a profile choice the user hasn't been given
+          (e.g., don't auto-pick on the user's behalf for the
+          multi-profile case — ask them).
+        - The session fields you write are: `profile_action`
+          (enum: use_existing/create_new/update_existing),
+          `profile_item_id`, `source_item_owner`, plus name/age/
+          gender/location/work_experience/experience_years/trade
+          from the chosen profile (for the apply step).
+
+      routing:
+        # Decline → user gave up; back to job_match for a different job.
+        - intent: decline
+          next_subagent_id: job_match
+        # use_existing → straight to apply_confirm (we have the item_id).
+        - intent: "*"
+          conditions:
+            - field: profile_action
+              operator: eq
+              value: "use_existing"
+            - field: profile_item_id
+              operator: not_eq
+              value: ""
+            - field: source_item_owner
+              operator: not_eq
+              value: ""
+          next_subagent_id: apply_confirm
+        # create_new or update_existing → route to profile_setup.
+        - intent: "*"
+          conditions:
+            - field: profile_action
+              operator: eq
+              value: "create_new"
+          next_subagent_id: profile_setup
+        - intent: "*"
+          conditions:
+            - field: profile_action
+              operator: eq
+              value: "update_existing"
+          next_subagent_id: profile_setup
+        # Otherwise stay here.
+        - intent: "*"
+          next_subagent_id: profile_choice
+
+    # ─────────────────────────────────────────────────────────────
+    # 5. profile_setup — collect fields + call save_profile.
+    # ─────────────────────────────────────────────────────────────
+    - id: profile_setup
+      name: Profile Setup
+      description: >
+        Collect any missing fields and call save_profile. Handles
+        both create and update paths — same tool call, different
+        inputs. On create: ask the user for gender, location, age,
+        and workExperience (name + phone already in session). On
+        update: ask which fields the user wants to change, overlay
+        them on the chosen profile's existing values, then send
+        the full item_state with item_id present.
+      is_start: false
+      is_terminal: false
+      opening_phrase: "Just a couple of quick details before I can save your profile."
 
       valid_intents:
         - any_input
@@ -718,71 +921,90 @@ agent_workflow:
       tools: []
 
       system_prompt: |
-        You are in the **onboard_prep** phase. The user has picked a
-        job and wants to apply.
+        You are in the **profile_setup** phase. profile_action in
+        session is either "create_new" or "update_existing".
 
-        ## Goal
-        Build the inputs for the `onboard` tool. The tool requires
-        `name` and `phone`. Phone is already in session state.
-        `name` may already be present (from a profile that
-        fetch_profile returned earlier) — if so, do NOT ask again.
+        ## For create_new
+        The user is new (or chose to create a fresh profile). Walk
+        through these fields one per turn — DO NOT ask multiple
+        in one turn. Skip any field that's already non-empty in
+        session.
+          1. gender  (e.g. male / female / other)
+          2. location  (the city they want to work in)
+          3. age  (integer years)
+          4. work_experience  (MUST map to one of:
+             "Fresher", "Worked before", "Returning after a break")
 
-        ## What to ask
-        - If `name` is empty, ask "What's your full name?"
-          One question per turn.
-        - If the chosen profile is missing `age` or `work_experience`,
-          you MAY ask them, but only as optional — never block on
-          them. If user declines or doesn't provide, proceed without.
-        - Never ask for gender unless the user volunteers.
+        Map the user's natural language to the enum:
+          - "I've never worked before" / "I'm a fresher" → Fresher
+          - "I worked before" / "I have experience" → Worked before
+          - "I took a break" / "returning from break" → Returning after a break
 
-        ## When ready
-        Once name + phone are known, call `onboard`:
-        - Pass `profile_item_id` if the chosen profile has an
-          `item_id` (UPDATE that profile).
-        - Otherwise omit `profile_item_id` (CREATE a new profile).
-        - Pass `trade`, `location`, `age`, `work_experience`,
-          `experience_years`, `gender` if known.
+        Once you have all four, call `save_profile` with:
+          - name, phone (from session)
+          - gender, location, age, work_experience (just gathered)
+          - profile_item_id: OMIT (this is a create)
+          - Any other optional fields the user has volunteered
 
-        ## After onboard
-        Save:
-        - `source_item_owner` ← `user.id` from the response.
-        - `profile_item_id` ← chosen item from the profiles list. If
-          the response carries exactly one profile, use that. If it
-          carries multiple, ask the user "I see multiple profiles
-          for you. Should I use the one with role <X> in <city>, or
-          a different one?" Once the user picks, save its item_id.
+        ## For update_existing
+        The chosen profile's existing fields are already in session
+        (name, age, gender, location, work_experience, etc., copied
+        by profile_choice). Ask: "What would you like to change?"
+        The user might say e.g. "change my age to 25" or "I'm in
+        Pune now" — capture only those fields and update the
+        matching session keys. Confirm what you understood: "Got
+        it — age 25 and everything else stays the same. Should I
+        save?" Wait for yes. Then call `save_profile` with:
+          - name, phone, gender, location, age, work_experience
+            (from session — your overlay of the user's changes on
+            the chosen profile's existing values)
+          - profile_item_id: from session (the chosen one)
+          - All other fields known to the chosen profile.
 
-        ## Routing
-        When `source_item_owner` and `profile_item_id` are both set,
-        the orchestrator will route to apply_confirm.
+        ## Workplace experience MUST be an enum
+        Before calling save_profile, double-check work_experience
+        is exactly one of: "Fresher", "Worked before",
+        "Returning after a break". If you're unsure, ask the user
+        one clarifying question rather than guessing.
+
+        ## After save_profile succeeds
+        Set profile_setup_done="true" in session. Confirm to user:
+          - On create: "Profile saved."
+          - On update: "Profile updated."
+        Then say: "Should I submit your application now?" The
+        orchestrator routes to apply_confirm on the user's yes.
+
+        ## After save_profile fails
+        Say honestly: "Sorry, I couldn't save the profile — let me
+        try once more." Retry once. Don't pretend it succeeded.
 
       routing:
         - intent: decline
           next_subagent_id: job_match
+        # Setup done → route to apply_confirm.
         - intent: "*"
           conditions:
-            - field: source_item_owner
-              operator: not_eq
-              value: ""
-            - field: profile_item_id
-              operator: not_eq
-              value: ""
+            - field: profile_setup_done
+              operator: eq
+              value: "true"
           next_subagent_id: apply_confirm
         - intent: "*"
-          next_subagent_id: onboard_prep
+          next_subagent_id: profile_setup
 
     # ─────────────────────────────────────────────────────────────
-    # 5. apply_confirm — final apply + confirmation.
+    # 6. apply_confirm — final apply + confirmation.
     # ─────────────────────────────────────────────────────────────
     - id: apply_confirm
       name: Apply & Confirm
       description: >
-        Confirm the apply with the caller in one sentence, then call
-        apply_job. Read back the application_id status. Route to
-        ended on success or user-initiated termination.
+        Confirm with the caller, then call apply_job. Announces the
+        result and ends the journey. Pulls all apply_job inputs from
+        session (profile_item_id, source_item_owner, job_item_id,
+        role, work_experience, age) — no field is asked here unless
+        work_experience is somehow still empty.
       is_start: false
       is_terminal: false
-      opening_phrase: "Should I submit your application now?"
+      opening_phrase: "Ready to submit your application?"
 
       valid_intents:
         - any_input
@@ -794,37 +1016,43 @@ agent_workflow:
       tools: []
 
       system_prompt: |
-        You are in the **apply_confirm** phase. All prerequisites are
-        in place: profile_item_id, source_item_owner, and
-        selected_job_item_id are in session memory.
+        You are in the **apply_confirm** phase. All prerequisites
+        should be in session: profile_item_id, source_item_owner,
+        selected_job_item_id, name, plus from the chosen profile:
+        age, work_experience.
 
         ## Confirmation
-        On entry, ask one short confirmation question: "I'm about to
-        apply to the <company> <role> role for you. Should I go
-        ahead?" Wait for explicit yes.
+        On entry, ask exactly one short question:
+          "I'm about to apply to <company> for the <role> role.
+          Should I go ahead?"
+        Wait for explicit yes.
+
+        ## Last-mile field gate
+        Before calling apply_job, double-check work_experience is
+        set AND is one of the three enum values: "Fresher",
+        "Worked before", "Returning after a break". If empty, ask
+        the user. Same for age — if empty, ask.
 
         ## Calling apply_job
-        On yes, call `apply_job` with:
-        - `profile_item_id` (from memory)
-        - `source_item_owner` (from memory)
-        - `job_item_id` (the selected_job_item_id from memory)
-        - `role` (from chosen profile or chosen job — they should
-          match; prefer the profile's trade)
-        - `work_experience` and `age` if available (optional)
-        - `profile_instance_url` and `job_instance_url` if available
+        On yes, call apply_job with:
+          - profile_item_id, source_item_owner, job_item_id
+            (all from session)
+          - role: from the SELECTED JOB's role (in fetch_jobs result)
+          - work_experience: from session (chosen profile's value)
+          - age: from session (chosen profile's value)
 
         ## After apply_job success
-        Confirm briefly: "Done — your application has been submitted.
-        Someone from <company> will be in touch." Do NOT speak the
-        application_id. The orchestrator will route to ended on
-        termination_intent.
+        Announce clearly:
+          "Your application to <company> for the <role> role has
+          been submitted. They'll be in touch."
+        Do NOT speak the application_id or action_id aloud.
 
         ## After apply_job failure
-        Acknowledge ("Sorry, I couldn't submit it just now."). Offer
-        to try again or end the call.
+        Say honestly: "Sorry, I couldn't submit the application
+        just now. Should I try again?" Retry once on user's yes.
 
-        ## If user declines or wants different job
-        Route back to job_match via explore_more.
+        ## If user declines apply or wants a different job
+        Route back to job_match. Don't apply.
 
       routing:
         - intent: explore_more
