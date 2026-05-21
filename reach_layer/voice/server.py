@@ -184,7 +184,35 @@ def create_app(config: dict | None = None) -> FastAPI:
         """
         form = await request.form()
         call_sid = str(form.get("CallUUID") or form.get("CallSid") or "unknown")
-        caller_id = str(form.get("From") or "")
+        # Pick the right field based on call direction:
+        #   - inbound: From = the user calling us (correct)
+        #   - outbound (campaign): From = VOBIZ_FROM_NUMBER (us); To = the
+        #     user we're dialling. caller_id must be the user, never us.
+        #
+        # Two complementary signals — either is sufficient to detect outbound:
+        #   1. Direction field (Plivo convention: "outbound-api" / "inbound").
+        #   2. Comparing From against VOBIZ_FROM_NUMBER: if From matches our
+        #      configured outbound caller ID, it's necessarily outbound — they
+        #      could only have dialled FROM us.
+        # Falling back to From is the safe default when neither signal fires
+        # (matches the historical behaviour for inbound calls).
+        direction = str(form.get("Direction") or "").lower()
+        form_from = str(form.get("From") or "")
+        form_to = str(form.get("To") or "")
+        our_number = (os.environ.get("VOBIZ_FROM_NUMBER") or "").strip().lstrip("+")
+        from_norm = form_from.strip().lstrip("+")
+        is_outbound = (
+            direction.startswith("outbound")
+            or (our_number != "" and from_norm == our_number)
+        )
+        raw = form_to if is_outbound else form_from
+        # Normalise to bare 10-digit local number for upstream lookups. Upstreams
+        # like Blue Dots' fetch_profile expect the local form without the +91
+        # country code; Vobiz passes E.164 (+91…). Strip the leading + and the
+        # 91 prefix when present.
+        caller_id = raw.lstrip("+")
+        if caller_id.startswith("91") and len(caller_id) == 12:
+            caller_id = caller_id[2:]
         _caller_id_map[call_sid] = caller_id
         # Evict oldest entries when the map exceeds its cap (orphaned calls)
         while len(_caller_id_map) > _CALLER_ID_MAP_MAX:
