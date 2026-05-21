@@ -382,10 +382,15 @@ class RestApiAdapter(ToolAdapter):
                 http_span.set_attribute("http.method", method)
                 http_span.set_attribute("http.url", url)
                 if method == "GET":
+                    # Pass params=None (not {}) when no params have been merged
+                    # in. httpx replaces the URL's existing query string when
+                    # params= is provided, even with an empty dict — which
+                    # silently strips any ``?key=value`` baked into the path
+                    # template (e.g. ``?item_state[phone]={user_id}``).
                     response = await self._http_client.request(
                         method=method,
                         url=url,
-                        params=all_params,
+                        params=all_params or None,
                         headers=headers,
                         timeout=timeout_s,
                     )
