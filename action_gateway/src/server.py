@@ -481,8 +481,16 @@ def create_app(registry: AdapterRegistry) -> FastAPI:
         string; either may be absent. Returns the subset of the canned job
         list whose fields match the filter (case-insensitive).
         """
-        city = (request.query_params.get("item_state[city]") or "").strip().lower()
-        role = (request.query_params.get("item_state[role]") or "").strip().lower()
+        city = (
+            request.query_params.get("item_state[city]")
+            or request.query_params.get("city")
+            or ""
+        ).strip().lower()
+        role = (
+            request.query_params.get("item_state[role]")
+            or request.query_params.get("role")
+            or ""
+        ).strip().lower()
 
         def _matches(job: dict) -> bool:
             if city and job["city"].lower() != city:
