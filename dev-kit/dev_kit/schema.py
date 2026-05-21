@@ -1015,12 +1015,22 @@ class ToolParamDef(BaseModel):
 
 
 class ToolEndpointDef(BaseModel):
-    """One HTTP endpoint within a REST API tool definition."""
+    """One HTTP endpoint within a REST API tool definition.
+
+    ``body_template`` mirrors the runtime ``EndpointDefinition.body_template``
+    field — an optional nested body shape for non-GET methods, with
+    ``{placeholder}`` strings filled at call time. When absent, non-GET
+    bodies fall back to the historical flat ``json=all_params`` form.
+    """
 
     name: str = Field(..., description="Endpoint name, e.g. 'search', 'apply'")
     method: Literal["GET", "POST", "PUT", "DELETE", "PATCH"] = Field(..., description="HTTP method")
     path: str = Field(..., description="Path appended to base_url, e.g. '/search'")
     params: list[ToolParamDef] = Field(default=[], description="Parameters for this endpoint")
+    body_template: dict | list | None = Field(
+        default=None,
+        description="Optional nested request body shape for non-GET methods; placeholders {key} are filled from static + agent params at call time",
+    )
 
 
 class ToolResponseConfig(BaseModel):

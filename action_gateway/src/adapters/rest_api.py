@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from typing import Optional
 
@@ -21,6 +22,19 @@ from src.adapters.base import ToolAdapter
 from src.models import ToolDefinition, ToolResult
 
 logger = logging.getLogger(__name__)
+
+
+# Sentinel returned by _render_body_template when a value resolves to nothing.
+# Surfaced upward so the enclosing dict/list can drop the field entirely
+# rather than emit an empty string or null.
+_DROP = object()
+
+# Whole-value placeholder: the string is exactly "{name}" with nothing else.
+# Matches Python-identifier-shaped keys (letters/digits/underscore, no leading digit).
+_WHOLE_PLACEHOLDER_RE = re.compile(r"^\{([A-Za-z_][A-Za-z0-9_]*)\}$")
+
+# Embedded placeholder: a "{name}" occurrence somewhere inside a larger string.
+_EMBEDDED_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 def _get_tracer() -> otel_trace.Tracer:
@@ -56,6 +70,78 @@ def _get_nested(d, path: str):
             return None
         current = current.get(key)
     return current
+
+
+def _render_body_template(template, values: dict):
+    """Walk a body template tree, substituting ``{placeholder}`` strings.
+
+    Substitution rules:
+      - A string equal to exactly ``"{key}"`` is replaced by the raw value of
+        ``values[key]``, preserving type (lists, dicts, ints, bools stay
+        intact).
+      - A string containing ``"{key}"`` embedded among other characters is
+        rendered via standard string substitution; non-string values are
+        ``str()``-cast.
+      - If a placeholder's key is missing from ``values``, or its value is
+        ``None`` or an empty string, the enclosing field is dropped from the
+        parent dict/list. After substitution, dicts that became empty are
+        also dropped from their parent — so optional nested branches vanish
+        cleanly when the user did not supply any of their fields.
+      - Strings with no placeholders, and non-string scalars, copy through
+        unchanged.
+      - Nested dicts and lists are walked recursively.
+
+    Args:
+        template: The template tree. Top-level may be a dict, list, str, or
+            scalar — but the adapter only invokes this helper when the
+            top-level template is a dict or list.
+        values: Merged dict of static + agent params, used as the
+            substitution source.
+
+    Returns:
+        The rendered structure. May return :data:`_DROP` when the entire
+        template resolved to nothing — the caller is expected to substitute
+        an empty dict in that case.
+    """
+    if isinstance(template, dict):
+        out: dict = {}
+        for k, v in template.items():
+            rendered = _render_body_template(v, values)
+            if rendered is _DROP:
+                continue
+            if isinstance(rendered, dict) and not rendered:
+                # Nested dict pruned to empty → drop from parent too.
+                continue
+            out[k] = rendered
+        return out
+    if isinstance(template, list):
+        rendered_items: list = []
+        for item in template:
+            r = _render_body_template(item, values)
+            if r is _DROP:
+                continue
+            if isinstance(r, dict) and not r:
+                continue
+            rendered_items.append(r)
+        return rendered_items
+    if isinstance(template, str):
+        whole = _WHOLE_PLACEHOLDER_RE.match(template)
+        if whole:
+            key = whole.group(1)
+            val = values.get(key)
+            if val is None or val == "":
+                return _DROP
+            return val
+        keys = _EMBEDDED_PLACEHOLDER_RE.findall(template)
+        if not keys:
+            return template
+        for k in keys:
+            val = values.get(k)
+            if val is None or val == "":
+                return _DROP
+        return _EMBEDDED_PLACEHOLDER_RE.sub(lambda m: str(values[m.group(1)]), template)
+    # int, bool, float, None — copy through.
+    return template
 
 
 def _apply_projection(result_dict: dict, projection: Optional[dict]):
@@ -100,6 +186,17 @@ class RestApiAdapter(ToolAdapter):
     domain YAML at startup. The adapter resolves auth secrets from environment
     variables, builds ToolDefinitions from the endpoint config, merges agent-
     supplied params with static params, and returns normalised ToolResults.
+
+    Request body shape (non-GET methods)
+    ------------------------------------
+    By default the adapter sends ``json=all_params`` — a flat dict of merged
+    static + agent params — as the JSON body. When the endpoint declares an
+    optional ``body_template`` (dict or list), :func:`_render_body_template`
+    walks the template at call time, substituting ``{placeholder}`` strings
+    from ``all_params``. This lets a YAML author declare arbitrary nested
+    body shapes (e.g. ``source_item.item_id``) without asking the LLM to
+    reconstruct protocol-static strings on every call. GET requests ignore
+    ``body_template`` — their params continue to flow into the query string.
 
     Attributes:
         config: Raw adapter config dict.
@@ -293,10 +390,16 @@ class RestApiAdapter(ToolAdapter):
                         timeout=timeout_s,
                     )
                 else:
+                    body_template = endpoint.get("body_template")
+                    if body_template is not None:
+                        rendered = _render_body_template(body_template, all_params)
+                        body = {} if rendered is _DROP else rendered
+                    else:
+                        body = all_params
                     response = await self._http_client.request(
                         method=method,
                         url=url,
-                        json=all_params,
+                        json=body,
                         headers=headers,
                         timeout=timeout_s,
                     )

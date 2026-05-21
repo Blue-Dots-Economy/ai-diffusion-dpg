@@ -150,6 +150,14 @@ class EndpointDefinition(BaseModel):
             ``{placeholder}`` segments that the adapter fills from caller
             context.
         params: Ordered parameter list.
+        body_template: Optional nested body shape for non-GET requests. When
+            present, the RestApiAdapter renders this template at call time —
+            string values shaped exactly like ``"{key}"`` are replaced with
+            the raw value of the matching param (preserving type), and
+            embedded ``{key}`` placeholders are string-interpolated. Missing
+            placeholders cause the containing field to be dropped. GETs
+            ignore this field. When absent, non-GET bodies fall back to the
+            historical flat ``json=all_params`` form.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -158,6 +166,7 @@ class EndpointDefinition(BaseModel):
     method: HttpMethod = HttpMethod.POST
     path: str = ""
     params: list[ParamDefinition] = Field(default_factory=list)
+    body_template: Optional[dict | list] = None
 
 
 class FieldMapping(BaseModel):
