@@ -11,8 +11,10 @@ import json
 import logging
 import os
 import re
+import string as _string
 import time
 from typing import Optional
+from urllib.parse import quote as _url_quote
 
 import httpx
 from opentelemetry import metrics as otel_metrics
@@ -35,6 +37,42 @@ _WHOLE_PLACEHOLDER_RE = re.compile(r"^\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 
 # Embedded placeholder: a "{name}" occurrence somewhere inside a larger string.
 _EMBEDDED_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+class _PathDefaultEmpty(dict):
+    """``str.format_map`` helper — unbound ``{placeholder}`` → empty string.
+
+    Preserves the historical behaviour where ``{user_id}`` / ``{session_id}``
+    silently substituted to empty when the caller didn't supply them. Now
+    applies to any LLM input_param placeholder too.
+    """
+
+    def __missing__(self, key: str) -> str:
+        return ""
+
+
+def _path_placeholders(path: str) -> set[str]:
+    """Return the placeholder names referenced by ``{name}`` in a path template.
+
+    Used to identify which LLM input_params have been consumed by path
+    substitution so they don't get re-sent via httpx's ``params=`` kwarg —
+    which would otherwise strip the URL's existing query string.
+    """
+    return {
+        field_name
+        for _, field_name, _, _ in _string.Formatter().parse(path)
+        if field_name
+    }
+
+
+def _quote_for_path(value) -> str:
+    """URL-encode a value for safe interpolation into a path/query string.
+
+    Leaves alphanumerics and the standard unreserved set alone; escapes
+    spaces, ``+``, ``&``, ``=``, and so on so a value like ``"New Delhi"``
+    becomes ``"New%20Delhi"`` rather than corrupting the URL.
+    """
+    return _url_quote(str(value), safe="")
 
 
 def _get_tracer() -> otel_trace.Tracer:
@@ -323,7 +361,15 @@ class RestApiAdapter(ToolAdapter):
 
         Path templating lets a tool like ``get_profile`` point at
         ``/profile/{user_id}`` without asking the LLM to pass the caller's
-        ID — the framework substitutes it from session context.
+        ID — the framework substitutes it from session context. The same
+        mechanism also substitutes any LLM-supplied ``input_param`` into
+        the path (e.g. ``…?item_state[jobProviderLocation]={location}``),
+        so domain configs can declare bracketed query keys with dynamic
+        values without bracketed JSON-Schema property names (which
+        Anthropic rejects). Values are URL-encoded on substitution; LLM
+        input_params consumed by path placeholders are excluded from the
+        GET ``params=`` kwarg so httpx doesn't double-send them or strip
+        the path's existing query string.
 
         Args:
             tool_name: Name of the tool to execute (used in error messages).
@@ -339,16 +385,27 @@ class RestApiAdapter(ToolAdapter):
         start = time.time()
         endpoint = self.config.get("endpoints", [{}])[0]
         method: str = endpoint.get("method", "GET").upper()
-        path: str = endpoint.get("path", "")
-        # Substitute context variables into the path. Empty strings are passed
-        # through unchanged so a path like /profile/{user_id} with no user_id
-        # produces /profile/ — which the backing endpoint can 404 or return an
-        # empty profile for, matching "no profile" semantics.
-        path = path.format(session_id=session_id or "", user_id=user_id or "")
+        raw_path: str = endpoint.get("path", "")
+        input_params: dict = dict(params or {})
+        # Path substitution context: caller identity + LLM input_params.
+        # Static params are intentionally NOT included — they always go via
+        # the query string / body, never into path placeholders. Values are
+        # URL-encoded so a value like "New Delhi" becomes "New%20Delhi".
+        path_context = _PathDefaultEmpty(
+            session_id=_quote_for_path(session_id or ""),
+            user_id=_quote_for_path(user_id or ""),
+            **{k: _quote_for_path(v) for k, v in input_params.items()},
+        )
+        path = raw_path.format_map(path_context)
         url = f"{self._base_url}{path}"
+        # LLM input_params consumed by path placeholders — exclude these
+        # from the GET ``params=`` kwarg below so we don't send them twice
+        # and so httpx doesn't strip the path's existing query string.
+        path_consumed = _path_placeholders(raw_path) & set(input_params.keys())
 
-        # Merge agent params with static params
-        all_params: dict = dict(params)
+        # Merge agent params with static params (full dict; body_template
+        # still sees everything, including path-consumed names).
+        all_params: dict = dict(input_params)
         for p in endpoint.get("params", []):
             if p.get("source") == "static":
                 all_params[p["name"]] = p.get("value")
@@ -382,15 +439,21 @@ class RestApiAdapter(ToolAdapter):
                 http_span.set_attribute("http.method", method)
                 http_span.set_attribute("http.url", url)
                 if method == "GET":
-                    # Pass params=None (not {}) when no params have been merged
-                    # in. httpx replaces the URL's existing query string when
-                    # params= is provided, even with an empty dict — which
-                    # silently strips any ``?key=value`` baked into the path
-                    # template (e.g. ``?item_state[phone]={user_id}``).
+                    # Exclude path-consumed param names from the GET query —
+                    # they've already been baked into the URL via path
+                    # substitution. Sending them again via ``params=`` would
+                    # (a) duplicate them and (b) make httpx replace the
+                    # path's existing query string with this dict, dropping
+                    # any literal ``?key=value`` segments. Pass ``None`` if
+                    # nothing remains so httpx leaves the URL untouched.
+                    query_params = {
+                        k: v for k, v in all_params.items()
+                        if k not in path_consumed
+                    }
                     response = await self._http_client.request(
                         method=method,
                         url=url,
-                        params=all_params or None,
+                        params=query_params or None,
                         headers=headers,
                         timeout=timeout_s,
                     )
