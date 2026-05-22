@@ -160,9 +160,13 @@ connectors:
         additionalProperties: false
       invocation_rules:
         call_when: >
-          The session is in the profile_resolve subagent AND the
-          fetch_profile tool has not yet been called this session. The
-          consent_given flag must be true.
+          Either: (a) the session is in profile_resolve AND fetch_profile
+          has not been called yet this session, OR (b) the session is in
+          profile_choice on entry AND the LLM needs the freshest list of
+          the caller's profiles to present the use/create/update choice.
+          fetch_profile is read-only and idempotent — a second call in
+          profile_choice has no side effects upstream. The consent_given
+          flag must be true.
         required_before_calling: [consent_given]
         must_not_substitute: >
           Never invent profile content. If fetch_profile returned zero
@@ -366,6 +370,27 @@ preprocessing:
         - work_experience: exactly one of "Fresher" /
           "Worked before" / "Returning after a break"
 
+      ## profile_action — choice between existing / new / update
+      When the user is RESPONDING to a "Should I apply using this
+      profile, create a new one, or update this one?" question (or
+      similar wording), classify as `profile_answer` and emit
+      `profile_action` with EXACTLY ONE of these three values:
+        - use_existing — wants to apply with the existing profile
+          ("use this one", "use the same profile", "apply with this",
+          "go with this profile", "yes use the existing")
+        - create_new — wants a fresh profile
+          ("create new", "make a new one", "a new profile",
+          "fresh profile", "new profile please")
+        - update_existing — wants to change the existing profile
+          ("update this", "change my profile", "modify it",
+          "update the existing one")
+
+      Do NOT classify these as `decline` — the user is making a
+      profile choice, not refusing the application. `decline` is
+      ONLY for "no don't apply" / "cancel" / "stop".
+
+      profile_action lowercase with underscore, exactly one value.
+
       ## job_pick
       When the user clearly picks one of the jobs just presented (by
       number, by company, or by role+city description), classify as
@@ -412,6 +437,7 @@ preprocessing:
       - language_preference
       - selected_job_item_id
       - monthly_in_hand
+      - profile_action             # use_existing / create_new / update_existing
     sentiment_classes: [neutral, positive, distressed, frustrated]
 
     signal_intents:
@@ -434,6 +460,7 @@ entity_to_profile_field:
   language_preference: language_preference
   monthly_in_hand: monthly_in_hand
   selected_job_item_id: selected_job_item_id
+  profile_action: profile_action
 
 hitl:
   response_message: "We'll have a counsellor call you back within twenty four hours."
@@ -449,9 +476,15 @@ agent_workflow:
   global_tools:
     - fetch_profile
     - fetch_jobs
-    - list_user_profiles
     - save_profile
     - apply_job
+    # list_user_profiles removed — fetch_profile (called in
+    # profile_resolve turn 1) already returns the user's existing
+    # profiles + source_item_owner (via created_by). profile_choice
+    # reads from that earlier tool_result rather than calling onboard.
+    # save_profile still hits /api/v1/admin/onboard for CREATE /
+    # UPDATE side-effects when the user picks "create new" or
+    # "update existing".
 
   agent_system_prompt: |
     You are Blue Dots Agent — a warm, calm, conversational voice guide for
@@ -917,13 +950,11 @@ agent_workflow:
     - id: profile_choice
       name: Profile Choice
       description: >
-        Call list_user_profiles to fetch the user's profiles and the
-        user.id (source_item_owner). Then present options to the
-        user — use one of the existing profiles (suggest the best
-        match for the selected job), create a fresh profile, or
-        update one of theirs. Capture the user's choice into
-        profile_action and (if applicable) profile_item_id, then
-        route forward.
+        Re-call fetch_profile to get the caller's existing profiles
+        fresh in the most recent tool_result, then present "use this
+        profile / create new / update" choice when the caller has
+        1+ profiles. Capture the user's choice into profile_action
+        (via NLU) and route forward.
       is_start: false
       is_terminal: false
       # Short neutral bridge (see profile_resolve above for rationale).
@@ -936,107 +967,99 @@ agent_workflow:
         - decline
         - language_switch_request
 
-      tools: []   # global_tools applies — list_user_profiles is the right call here.
+      tools: []
 
       system_prompt: |
         You are in the **profile_choice** phase. The user has picked
         a job and confirmed they want to apply.
 
-        ## Decisive flow — exactly one of A or B per turn
-        Look at what's available NOW. Name can be in THREE places:
-          1. The <known_profile> section the system injects above
-             (carries persisted profile fields like name, gender,
-             location, trade). If `name` is listed there, treat it
-             as KNOWN — branch B below.
-          2. The current conversation history (the user said it
-             in an earlier turn this call).
-          3. Neither — branch A.
-        Phone is ALWAYS known (session.user_id, set by Reach Layer).
+        ## TWO-STEP FLOW on entry — call fetch_profile, then speak
+        list_user_profiles does NOT exist in this domain. The right
+        call to get the caller's existing profiles is `fetch_profile`
+        — the same tool profile_resolve called in turn 1. It's
+        read-only and idempotent, so calling it again here is safe
+        and gives you a fresh tool_result in your most-recent context
+        (rather than relying on you remembering an old tool_result
+        from way back in the conversation).
 
-        **A. Name UNKNOWN** — your reply must be exactly two short
-          sentences, in this order:
-            "To apply for this job I need a couple of details about
-             you. What's your full name?"
-          Do NOT say anything else. Do NOT repeat the job listing.
-          Do NOT promise to look up profiles. Just those two
-          sentences.
+        Step 1: Call `fetch_profile` (no parameters — the caller's
+                phone is auto-injected from session.user_id).
+        Step 2: When the tool_result arrives in the SAME turn,
+                produce spoken text per the branching below. The
+                caller is on a phone and tool calls are invisible
+                to them — you MUST emit text after the tool returns,
+                or the line goes silent. If you cannot formulate
+                the question cleanly, at minimum say "Let me check
+                your profile." — but normally the branching below
+                gives you the exact line.
 
-        **B. Name KNOWN** — immediately call the
-          list_user_profiles tool with just `name` (the caller's full
-          name from this conversation). Phone is auto-injected by the
-          framework — you don't pass it, the LLM tool schema doesn't
-          even list it. Do NOT say anything else in the same turn.
-          No commentary, no echoing the job listing, no "great,
-          looking up your profiles." Just call the tool. The
-          orchestrator will give you the result; on the NEXT turn
-          you'll handle the branch (see "After list_user_profiles"
-          below).
+        ## Branch on the fetch_profile result
 
-        **NEVER** repeat a previous job-match message ("I found one
-        Plumber job…") — that was the previous subagent's job, not
-        yours. The user is past that point.
+        **Zero profiles** (items array empty in fetch_profile result):
+          This is a new user. Profile creation is mandatory.
+          Response: "To apply for this job I need a couple of
+          details about you. What's your gender?" The next user
+          input + routing will move forward to profile_setup.
 
-        ## Single-shot rule
-        Call list_user_profiles AT MOST ONCE per session. If a prior
-        tool_result for list_user_profiles is in conversation history,
-        do NOT call it again — read from history and branch.
+        **One profile** — say:
+          "I see one profile for you, in <profile.location> as a
+          <profile.trade>. Should I apply with this profile, create
+          a new one, or update it?"
+          Wait for the user's answer. NLU will classify their reply
+          and emit profile_action ∈ {use_existing, create_new,
+          update_existing}. Routing handles the transition; you
+          don't have to.
 
-        ## After list_user_profiles
-        Inspect the response: it carries the user.id (the
-        source_item_owner you'll need for apply_job — save it to
-        session immediately) and a `profiles` array. Branch on the
-        profiles count:
+        **Multi-profile** — pick the best match (location AND trade
+          align with the picked job; tiebreaker: most recently
+          updated by `updated_at`). Say:
+          "I see <N> profiles on this number. The one in
+          <best.location> as a <best.trade> looks closest to this
+          job — should I use that one, create a fresh profile, or
+          update one of them?"
+          Same routing as single-profile.
 
-        - **Zero profiles** — user is new (status.userCreated=true
-          usually). Profile creation is mandatory. Set
-          profile_action="create_new". Do NOT say "Let me set up
-          a profile for you first" or any preamble — the caller
-          ALREADY heard "To apply for this job I need a couple
-          of details about you" earlier in this phase, and
-          repeating that intent is robotic. Instead, in this same
-          turn jump directly to the first missing profile field:
-          "What's your gender?" The orchestrator will route to
-          profile_setup on the next user input, where the rest of
-          the fields are collected.
+        ## When the user replies to the choice question
+        Just acknowledge briefly — NLU + routing handle the
+        transition automatically:
+          - "Use this one" / "Apply with this" → NLU emits
+            profile_action=use_existing → routing sends you to
+            apply_confirm. Say "Got it." and stop; apply_confirm
+            will call apply_job using the same fetch_profile
+            tool_result you just produced.
+          - "Create new" → NLU emits profile_action=create_new →
+            routing sends you to profile_setup. Say nothing extra.
+          - "Update" → NLU emits profile_action=update_existing →
+            routing sends you to profile_setup (update path). Say
+            nothing extra.
 
-        - **One profile** — say: "I see one profile for you, in
-          <location>. Should I apply using this profile, create a
-          new one, or update this one?" Wait for the user's
-          choice.
-            - If USE: set profile_action="use_existing",
-              profile_item_id = that profile's item_id. Save also
-              the profile's name/age/gender/location/etc into the
-              session fields (so apply_confirm can read them).
-            - If CREATE: set profile_action="create_new". Don't
-              touch profile_item_id.
-            - If UPDATE: set profile_action="update_existing",
-              profile_item_id = that profile's item_id. Save the
-              profile's existing fields to session so the user's
-              changes can be overlaid.
+        On the choice-reply turn, do NOT call any tool. The
+        fetch_profile call you made on the previous turn is still
+        in your message history; downstream subagents read the
+        identifiers (item_id, source_item_owner, age,
+        work_experience, etc.) from there.
 
-        - **Many profiles** — suggest the best match. The best match
-          is the profile whose `location` AND
-          `nameOfJobRolesInterestedIn` align with the selected
-          job's `location` and `role`. If multiple match equally,
-          pick the most recently updated. Say: "I see <N> profiles
-          on this number. The one in <best.location> as
-          <best.trade> looks closest to this job — should I use
-          that one, create a fresh profile, or update one of them?"
-          Same three branches as above; profile_item_id = the
-          chosen one's item_id when use/update.
+        ## NEVER repeat the job listing
+        The user already heard "I found one Plumber job…" in
+        job_match. Do NOT repeat it here — that was a previous
+        phase's response. Asking the profile-choice question is
+        enough acknowledgement that we're proceeding with the
+        application.
 
-        ## Hard rules
-        - Save source_item_owner = user.id from the
-          list_user_profiles response IMMEDIATELY, before doing
-          anything else. apply_job will fail without it.
-        - Never offer a profile choice the user hasn't been given
-          (e.g., don't auto-pick on the user's behalf for the
-          multi-profile case — ask them).
-        - The session fields you write are: `profile_action`
-          (enum: use_existing/create_new/update_existing),
-          `profile_item_id`, `source_item_owner`, plus name/age/
-          gender/location/work_experience/experience_years/trade
-          from the chosen profile (for the apply step).
+        ## Identity fields for downstream subagents
+        apply_confirm (or profile_setup) will need these from the
+        chosen profile in fetch_profile's result:
+          - `item_id` — used as `profile_item_id` for apply_job /
+            save_profile (the latter when path is update_existing).
+          - `source_item_owner` — the profile's owner UUID; the
+            adapter projection exposes it as a top-level field
+            (sourced from upstream's `created_by`).
+          - For use_existing: also age, work_experience, name,
+            gender, location, trade — all already projected on
+            each profile, read directly.
+        You don't write these to session — the downstream subagent
+        reads them from the same fetch_profile tool_result in
+        conversation history.
 
       routing:
         # Decline → user gave up; back to job_match for a different job.
@@ -1112,98 +1135,75 @@ agent_workflow:
         You are in the **profile_setup** phase. profile_action in
         session is either "create_new" or "update_existing".
 
-        ## HARD RULE — NEVER list jobs in this phase
-        You are NOT job_match. job_match already showed jobs and the
-        user already picked one. Your job is only to collect missing
-        profile fields and call save_profile. NEVER repeat a company
-        name, role, salary range, or any job-listing sentence in this
-        phase, even if you see one earlier in the conversation. If
-        you find yourself about to say "I found one … job …", STOP —
-        that is the wrong phase. Ask the next missing profile field
-        instead.
+        ╔════════════════════════════════════════════════════════════╗
+        ║ ⚡ STEP 0 — Pre-flight check (do this BEFORE responding)   ║
+        ╚════════════════════════════════════════════════════════════╝
 
-        ## For create_new — CHECK CONTEXT FIRST, don't re-ask known fields
-        The user is new (or chose to create a fresh profile). You
-        need these four fields, but several are usually already
-        captured from earlier turns:
-          - `location` was confirmed in profile_resolve (the user
-            answered "which city").
-          - `name` was given during the list_user_profiles step.
-          - `phone` is the session user_id (always set).
-        Look at the conversation so far and the User Profile context
-        the system injects (the <known_profile> "Already collected"
-        block). SKIP any field that the user already said in this
-        call — do NOT ask the same question twice.
+        Read your <known_profile> system-injected block carefully.
+        For each of the four required fields, decide KNOWN or MISSING:
 
-        Walk through these checks in order, one question per turn,
-        skipping the ones that are already known:
-          1. gender         — KNOWN if any of male/female/other has
-                              been said. Ask if not.
-          2. location       — KNOWN if any city is in profile or
-                              earlier conversation. Almost always
-                              already given in profile_resolve. Ask
-                              if not.
-          3. age            — KNOWN if the user said a concrete age
-                              (e.g. "I'm 24") or it appears in
-                              <known_profile> as a positive integer.
-                              `0` or missing means UNKNOWN. Ask if
-                              not yet known.
-          4. work_experience — KNOWN if mapped to one of "Fresher",
-                              "Worked before", "Returning after a
-                              break". Ask if not.
+          gender          → KNOWN if <known_profile> has a non-empty value
+          location        → KNOWN if <known_profile> has a non-empty city
+          age             → KNOWN if <known_profile> has age as ANY positive
+                            number / non-empty string (e.g. "age: 24"). Zero
+                            or absent = MISSING.
+          work_experience → KNOWN if <known_profile> has one of
+                            "Fresher" / "Worked before" / "Returning after
+                            a break"
 
-        Map the user's natural language for work_experience:
-          - "I've never worked before" / "I'm a fresher" → Fresher
-          - "I worked before" / "I have experience" → Worked before
-          - "I took a break" / "returning from break" → Returning after a break
+        Then act according to this decision tree — NO OTHER PATHS:
 
-        ## DO NOT narrate your reasoning out loud
-        The caller does NOT need to hear "All fields are already
-        known from context", "Let me save the profile now", or any
-        commentary about what you're about to do internally. Just
-        ASK the next missing field, or CALL save_profile silently.
-        Speech only describes results, not intentions.
+          • ALL 4 KNOWN     → call `save_profile` silently. No preamble.
+          • Exactly 1 MISSING → ask ONLY that one field. One short question.
+          • 2+ MISSING       → ask the FIRST missing in this order:
+                               gender → location → age → work_experience
+                               (one field per turn)
 
-        ## HARD GATE before save_profile — all four MUST be real
-        Before you call save_profile, every one of these four must
-        be present AND non-default:
-          - gender:           non-empty
-          - location:         non-empty
-          - age:              a positive integer (NOT 0, NOT missing)
-          - work_experience:  one of "Fresher" / "Worked before" /
-                              "Returning after a break"
-        If ANY of the four fails this check, do NOT call save_profile.
-        Ask the missing field instead. Calling save_profile with
-        age=0 is a HARD ERROR — the upstream rejects it with 400 and
-        the application step cannot proceed.
+        Re-asking a field that's already KNOWN in <known_profile> is
+        a HARD ERROR. Specifically, NEVER ask:
+          - "How old are you?" / "What's your age?" / "Just to
+             confirm — how old are you?" — if age is in <known_profile>
+          - "What city are you in?" / "Which city?" — if location is
+             in <known_profile>
+          - "Are you male, female…?" — if gender is in <known_profile>
+          - "Are you a fresher…?" — if work_experience is in <known_profile>
 
-        ## Never re-ask a known field — HARD ERROR
-        Each turn, before producing your response, scan the
-        <known_profile> section in your system prompt AND the
-        conversation history. If a field already has a value there,
-        treat it as final — do NOT ask the same question again
-        with different phrasing. Specifically:
+        If you're about to ask a field, double-check <known_profile> first.
 
-          - If <known_profile> contains `age:` followed by any
-            non-zero number or non-empty string (e.g. "age: 25"),
-            age is KNOWN. NEVER ask "How old are you?",
-            "Just to confirm — how old?", "What's your age?", or
-            ANY variant. Re-asking age that's already known is a
-            HARD ERROR — it makes the bot sound broken.
-          - Same rule for gender, location, name, trade,
-            work_experience: if it's in <known_profile> with a
-            real value, it is KNOWN. Move on.
+        ╔════════════════════════════════════════════════════════════╗
+        ║ ⚡ Forbidden narrations (NEVER speak these)                ║
+        ╚════════════════════════════════════════════════════════════╝
 
-        The ONLY exception: if the user explicitly says "I gave
-        you wrong info" or "let me correct that", treat it as
-        an update — capture the new value, do not re-ask.
+        Do NOT say any of these:
+          - "I have all the details I need." (FALSE if any field is
+             still missing; even when all 4 are present, just call
+             save_profile — don't announce it)
+          - "Let me save the profile now."
+          - "All fields are in hand."
+          - "Now I just need…" / "Just one more thing…"
+          - Any other commentary on internal state.
 
-        After the user provides the LAST missing field, you have
-        all four. The next thing you do is call save_profile —
-        NOT a "to confirm, how old are you?" question. The
-        confirmation question is wasted breath when the value is
-        already in your context.
+        Your response THIS TURN is exactly ONE of:
+          A. A single short question for the next missing field.
+          B. A save_profile tool call (no text alongside).
+        Nothing else.
 
+        ## Other rules
+
+        - NEVER list jobs (this is not job_match — never repeat a
+          company / role / salary). If you find yourself about to
+          say "I found one … job …", STOP.
+        - For work_experience, map user words to the enum:
+            "I've never worked before" / "I'm a fresher" → Fresher
+            "I worked before" / "I have experience" → Worked before
+            "I took a break" / "returning from break" → Returning after a break
+        - HARD GATE on save_profile: gender non-empty, location
+          non-empty, age a positive integer (NOT 0), work_experience
+          ∈ {Fresher, Worked before, Returning after a break}.
+          Calling save_profile with age=0 or any missing field is a
+          HARD ERROR (upstream rejects with 400).
+
+        ## save_profile call shape (create_new path)
         Once all four are real, call `save_profile` with:
           - name, phone (from session)
           - gender, location, age, work_experience (gathered)
@@ -1211,19 +1211,34 @@ agent_workflow:
           - Any other optional fields the user has volunteered
 
         ## For update_existing
-        The chosen profile's existing fields are already in session
-        (name, age, gender, location, work_experience, etc., copied
-        by profile_choice). Ask: "What would you like to change?"
-        The user might say e.g. "change my age to 25" or "I'm in
-        Pune now" — capture only those fields and update the
-        matching session keys. Confirm what you understood: "Got
-        it — age 25 and everything else stays the same. Should I
-        save?" Wait for yes. Then call `save_profile` with:
-          - name, phone, gender, location, age, work_experience
-            (from session — your overlay of the user's changes on
-            the chosen profile's existing values)
-          - profile_item_id: from session (the chosen one)
-          - All other fields known to the chosen profile.
+        The chosen profile's existing fields are in
+        fetch_profile's earlier tool_result (in conversation
+        history). Read them from there — do NOT ask the user to
+        repeat them.
+
+        Ask once: "What would you like to change about your
+        profile?" The user might say e.g. "change my age to 25",
+        "I'm in Pune now", "my trade is electrician now". Capture
+        the new value(s).
+
+        Confirm what you understood once: "Got it — <field> updated
+        to <new value>, everything else stays the same. Should I
+        save?" Wait for an explicit yes.
+
+        On yes, call `save_profile` with:
+          - profile_item_id: the chosen profile's item_id (from
+            fetch_profile's result). This makes the upstream treat
+            it as an UPDATE, not a CREATE.
+          - name, gender, location, age, work_experience,
+            experience_years, trade, qualification, job_nature,
+            help_needed: ALL the chosen profile's existing fields
+            from fetch_profile's result, with the user's changes
+            overlaid. The upstream does NOT support partial updates
+            — you must resend the full item_state every time.
+
+        After save_profile success, route to apply_confirm via
+        the "Profile updated — shall I submit the application?"
+        prompt (same as create_new path).
 
         ## Workplace experience MUST be an enum
         Before calling save_profile, double-check work_experience
@@ -1315,60 +1330,68 @@ agent_workflow:
       tools: []
 
       system_prompt: |
-        You are in the **apply_confirm** phase. All prerequisites
-        should be in session: profile_item_id, source_item_owner,
-        selected_job_item_id, name, plus from the chosen profile:
-        age, work_experience.
+        You are in the **apply_confirm** phase. Your job is to call
+        apply_job with the correct identifiers and announce the result.
 
-        ## Confirmation policy — read user's last input first
-        Look at the IMMEDIATELY PRECEDING user input:
-          - If it was a clear "yes" / "submit" / "go ahead" /
-            "please apply" right after profile_setup said
-            "Profile saved — shall I submit the application?",
-            the user has ALREADY confirmed. Go DIRECTLY to apply_job
-            (subject to the HARD GATE below). Do NOT ask
-            "Should I go ahead?" again — it's a double confirmation
-            and the caller has already heard the company and role.
-          - Otherwise (you got here via routing without an explicit
-            yes already), ask ONCE: "I'm about to apply to
-            <company> for the <role> role. Should I go ahead?"
-            Wait for explicit yes.
+        ## Where each required field comes from (HARD)
+        apply_job needs six values. Their source depends on the
+        path the user took through profile_choice (see
+        session.profile_action):
 
-        ## HARD GATE before apply_job — required fields must be real
-        Before calling apply_job, ALL of these must be present in
-        session AND have real values (not empty, not literal
-        placeholders like "{{...}}"):
-          - profile_item_id    — UUID from save_profile's response
-          - source_item_owner  — UUID from list_user_profiles
-          - selected_job_item_id (passed as job_item_id) — UUID
-                                  from fetch_jobs
-          - role               — from the selected job
-          - age                — positive integer
-          - work_experience    — one of "Fresher" / "Worked before"
-                                  / "Returning after a break"
-        If profile_item_id is empty, missing, or shaped like
-        "{{...}}", DO NOT call apply_job. The previous save_profile
-        likely failed. Say: "Hmm, I'm missing the profile reference
-        I need to submit this — let me try saving your profile
-        again." and route back to profile_setup mentally (the
-        orchestrator will follow on user's next answer). Calling
-        apply_job with a placeholder string is a HARD ERROR — the
-        upstream rejects with 400.
+        | Field                  | If use_existing                          | If create_new / update_existing       |
+        |------------------------|------------------------------------------|---------------------------------------|
+        | profile_item_id        | chosen profile's `item_id` from the      | newly-created/updated profile's      |
+        |                        | MOST RECENT fetch_profile tool_result    | `item_id` from save_profile's        |
+        |                        | (the one profile_choice called)          | response (profiles[0].item_id)        |
+        | source_item_owner      | chosen profile's `source_item_owner`     | save_profile's response `user.id` /  |
+        |                        | from the same fetch_profile projection   | top-level `user_id` field            |
+        | job_item_id            | selected job's `item_id` from            | (same)                                |
+        |                        | fetch_jobs result                        |                                       |
+        | role                   | selected job's `role` from fetch_jobs    | (same)                                |
+        | age                    | profile.age from fetch_profile           | save_profile's response               |
+        | work_experience        | profile.work_experience                  | save_profile's response               |
+
+        All these values are in your conversation history — the
+        respective tool_results are still in context. Read them.
+
+        ## Confirmation policy
+        For all three paths, the user has ALREADY confirmed they
+        want to apply (they said yes to "Should I apply with this
+        profile" in profile_choice, or yes to "shall I submit the
+        application" after save_profile in profile_setup). Do NOT
+        ask "Should I go ahead?" again — it's a double confirmation.
+        Go DIRECTLY to apply_job (subject to the HARD GATE below).
+
+        Exception: if for some reason you got here without seeing
+        an explicit yes immediately preceding, ask ONCE: "I'm about
+        to apply to <company> for the <role> role. Should I go
+        ahead?" Then wait for yes.
+
+        ## HARD GATE before apply_job — every field must be real
+        Before calling apply_job, every field below must be a real
+        value (not empty, not a literal placeholder like "{{...}}",
+        and age must be a positive integer):
+          - profile_item_id, source_item_owner, job_item_id  — UUIDs
+          - role                                              — non-empty
+          - age                                               — positive integer
+          - work_experience  — one of "Fresher" / "Worked before"
+                              / "Returning after a break"
+        If profile_item_id is empty, missing, or a placeholder, DO
+        NOT call apply_job. Say: "Hmm, I'm missing the profile
+        reference I need — let me try once more." and re-read the
+        relevant tool_result. Calling apply_job with a placeholder
+        is a HARD ERROR — the upstream rejects with 400.
 
         ## Last-mile age / work_experience check
-        If somehow age or work_experience is empty even though
-        profile_item_id is set, ask the single missing field ONCE
-        — do NOT loop asking the same field twice with different
-        phrasings.
+        If somehow age or work_experience is empty (rare for
+        use_existing, possible if the chosen profile was older and
+        partial), ask the single missing field ONCE — do NOT loop
+        asking with different phrasings.
 
         ## Calling apply_job
         On confirmed yes AND all required fields real, call
-        apply_job with:
-          - profile_item_id, source_item_owner, job_item_id
-            (all from session — real UUIDs, not placeholders)
-          - role: from the SELECTED JOB's role (in fetch_jobs result)
-          - work_experience: from session (chosen profile's value)
-          - age: from session (chosen profile's value)
+        apply_job with the values pulled from the right
+        tool_result per the table above.
 
         ## Reading the apply_job tool result — HARD RULE
         SUCCESS only if the response contains a non-empty

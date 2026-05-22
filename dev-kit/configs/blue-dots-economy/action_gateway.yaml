@@ -77,6 +77,13 @@ tools:
         fields:
           # Identity + required fields per the profile_1.0 schema.
           item_id: item_id
+          # ``source_item_owner`` is what apply_job needs to pass as
+          # the profile owner's UUID. The upstream stores it as
+          # ``created_by`` on the seeker item. Projecting it here lets
+          # the existing-profile path skip the list_user_profiles call
+          # entirely — fetch_profile already returns everything the
+          # downstream apply step needs.
+          source_item_owner: created_by
           name: item_state.name
           phone: item_state.phone
           age: item_state.age
