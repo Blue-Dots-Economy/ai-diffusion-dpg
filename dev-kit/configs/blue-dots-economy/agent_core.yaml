@@ -473,10 +473,12 @@ agent_workflow:
     and the user will hang up.
 
     After EVERY tool call, you MUST speak. Concrete patterns:
-      - After fetch_profile (1 item): "Welcome back. I see your profile
-        in <location>. What trade are you looking for work in?"
-      - After fetch_profile (0 items): "Welcome — I don't see a profile
-        for this number yet. Which trade are you looking for work in?"
+      - After fetch_profile (1 item): "I see your profile in <location>.
+        What trade are you looking for work in?" (Do NOT say
+        "Welcome back" — the consent prompt already greeted the caller.)
+      - After fetch_profile (0 items): "I don't see a profile for this
+        number yet. Which trade are you looking for work in?" (Do NOT
+        prefix with "Welcome —"; the consent prompt already greeted.)
       - After fetch_jobs (some results): "I found <N> <trade> job(s) in
         <location>. <Company A>, <salary range>. <Company B>, …
         Which one would you like to apply to?"
@@ -1130,26 +1132,55 @@ agent_workflow:
           - `name` was given during the list_user_profiles step.
           - `phone` is the session user_id (always set).
         Look at the conversation so far and the User Profile context
-        the system injects. SKIP any field that the user already
-        said in this call — do NOT ask the same question twice. Walk
-        through these checks in order, one question per turn,
-        skipping the ones that are already known:
-          1. gender         — ask only if not already said
-          2. location       — ask only if not already said
-                              (almost always already given in profile_resolve)
-          3. age            — ask only if not already said
-          4. work_experience — ask only if not already said
-             (MUST end up as one of: "Fresher", "Worked before",
-             "Returning after a break")
+        the system injects (the <known_profile> "Already collected"
+        block). SKIP any field that the user already said in this
+        call — do NOT ask the same question twice.
 
-        Map the user's natural language to the enum:
+        Walk through these checks in order, one question per turn,
+        skipping the ones that are already known:
+          1. gender         — KNOWN if any of male/female/other has
+                              been said. Ask if not.
+          2. location       — KNOWN if any city is in profile or
+                              earlier conversation. Almost always
+                              already given in profile_resolve. Ask
+                              if not.
+          3. age            — KNOWN if the user said a concrete age
+                              (e.g. "I'm 24") or it appears in
+                              <known_profile> as a positive integer.
+                              `0` or missing means UNKNOWN. Ask if
+                              not yet known.
+          4. work_experience — KNOWN if mapped to one of "Fresher",
+                              "Worked before", "Returning after a
+                              break". Ask if not.
+
+        Map the user's natural language for work_experience:
           - "I've never worked before" / "I'm a fresher" → Fresher
           - "I worked before" / "I have experience" → Worked before
           - "I took a break" / "returning from break" → Returning after a break
 
-        Once you have all four, call `save_profile` with:
+        ## DO NOT narrate your reasoning out loud
+        The caller does NOT need to hear "All fields are already
+        known from context", "Let me save the profile now", or any
+        commentary about what you're about to do internally. Just
+        ASK the next missing field, or CALL save_profile silently.
+        Speech only describes results, not intentions.
+
+        ## HARD GATE before save_profile — all four MUST be real
+        Before you call save_profile, every one of these four must
+        be present AND non-default:
+          - gender:           non-empty
+          - location:         non-empty
+          - age:              a positive integer (NOT 0, NOT missing)
+          - work_experience:  one of "Fresher" / "Worked before" /
+                              "Returning after a break"
+        If ANY of the four fails this check, do NOT call save_profile.
+        Ask the missing field instead. Calling save_profile with
+        age=0 is a HARD ERROR — the upstream rejects it with 400 and
+        the application step cannot proceed.
+
+        Once all four are real, call `save_profile` with:
           - name, phone (from session)
-          - gender, location, age, work_experience (just gathered)
+          - gender, location, age, work_experience (gathered)
           - profile_item_id: OMIT (this is a create)
           - Any other optional fields the user has volunteered
 
@@ -1174,16 +1205,39 @@ agent_workflow:
         "Returning after a break". If you're unsure, ask the user
         one clarifying question rather than guessing.
 
-        ## After save_profile succeeds
-        Set profile_setup_done="true" in session. Confirm to user:
-          - On create: "Profile saved."
-          - On update: "Profile updated."
-        Then say: "Should I submit your application now?" The
-        orchestrator routes to apply_confirm on the user's yes.
+        ## Reading the save_profile tool result — HARD RULE
+        The tool result is success ONLY if it contains a non-empty
+        `profiles` array with an `item_id`. Specifically:
+          - SUCCESS — content has `"profiles": [{"item_id": "<uuid>"...}]`
+            AND status block is healthy. The `item_id` is the new
+            profile_item_id and you'll need it for apply_job.
+          - FAILURE — content is literally `{}` (empty), OR the
+            content has no `profiles` field, OR the `profiles` array
+            is empty. The upstream returned 400 or similar.
+        NEVER announce success on a `{}` result. NEVER pretend it
+        worked when the result is empty.
 
-        ## After save_profile fails
+        ## After save_profile success
+        Set profile_setup_done="true" in session. Say ONE short line
+        that combines confirmation and the apply prompt:
+          "Profile saved — shall I submit the application?"
+        Do NOT say "Profile saved" and "Should I submit?" as two
+        separate sentences. Do NOT add narration like "Let me save
+        the profile now" or "All fields are known". Just the one
+        combined line.
+
+        The orchestrator routes to apply_confirm on the user's yes.
+        apply_confirm will NOT ask another "Should I go ahead?" if
+        the user has just said yes here — it will go straight to
+        apply_job. So don't double up the confirmation.
+
+        ## After save_profile failure
         Say honestly: "Sorry, I couldn't save the profile — let me
-        try once more." Retry once. Don't pretend it succeeded.
+        try once more." Re-check the four required fields are
+        present and non-default, then retry ONCE. Don't pretend
+        success. If it fails again, say: "I'm unable to save your
+        profile right now. A counsellor will reach out within
+        twenty-four hours." and end the session.
 
       routing:
         # decline intent intentionally NOT routed to job_match here —
@@ -1240,25 +1294,62 @@ agent_workflow:
         selected_job_item_id, name, plus from the chosen profile:
         age, work_experience.
 
-        ## Confirmation
-        On entry, ask exactly one short question:
-          "I'm about to apply to <company> for the <role> role.
-          Should I go ahead?"
-        Wait for explicit yes.
+        ## Confirmation policy — read user's last input first
+        Look at the IMMEDIATELY PRECEDING user input:
+          - If it was a clear "yes" / "submit" / "go ahead" /
+            "please apply" right after profile_setup said
+            "Profile saved — shall I submit the application?",
+            the user has ALREADY confirmed. Go DIRECTLY to apply_job
+            (subject to the HARD GATE below). Do NOT ask
+            "Should I go ahead?" again — it's a double confirmation
+            and the caller has already heard the company and role.
+          - Otherwise (you got here via routing without an explicit
+            yes already), ask ONCE: "I'm about to apply to
+            <company> for the <role> role. Should I go ahead?"
+            Wait for explicit yes.
 
-        ## Last-mile field gate
-        Before calling apply_job, double-check work_experience is
-        set AND is one of the three enum values: "Fresher",
-        "Worked before", "Returning after a break". If empty, ask
-        the user. Same for age — if empty, ask.
+        ## HARD GATE before apply_job — required fields must be real
+        Before calling apply_job, ALL of these must be present in
+        session AND have real values (not empty, not literal
+        placeholders like "{{...}}"):
+          - profile_item_id    — UUID from save_profile's response
+          - source_item_owner  — UUID from list_user_profiles
+          - selected_job_item_id (passed as job_item_id) — UUID
+                                  from fetch_jobs
+          - role               — from the selected job
+          - age                — positive integer
+          - work_experience    — one of "Fresher" / "Worked before"
+                                  / "Returning after a break"
+        If profile_item_id is empty, missing, or shaped like
+        "{{...}}", DO NOT call apply_job. The previous save_profile
+        likely failed. Say: "Hmm, I'm missing the profile reference
+        I need to submit this — let me try saving your profile
+        again." and route back to profile_setup mentally (the
+        orchestrator will follow on user's next answer). Calling
+        apply_job with a placeholder string is a HARD ERROR — the
+        upstream rejects with 400.
+
+        ## Last-mile age / work_experience check
+        If somehow age or work_experience is empty even though
+        profile_item_id is set, ask the single missing field ONCE
+        — do NOT loop asking the same field twice with different
+        phrasings.
 
         ## Calling apply_job
-        On yes, call apply_job with:
+        On confirmed yes AND all required fields real, call
+        apply_job with:
           - profile_item_id, source_item_owner, job_item_id
-            (all from session)
+            (all from session — real UUIDs, not placeholders)
           - role: from the SELECTED JOB's role (in fetch_jobs result)
           - work_experience: from session (chosen profile's value)
           - age: from session (chosen profile's value)
+
+        ## Reading the apply_job tool result — HARD RULE
+        SUCCESS only if the response contains a non-empty
+        `action_id` or `application_id`. If the content is `{}`
+        (empty), or no such id appears, the upstream rejected the
+        application — treat as FAILURE. NEVER announce "submitted"
+        on an empty result.
 
         ## After apply_job success
         Announce clearly, ONCE:
