@@ -156,8 +156,9 @@ automation/docker/docker-compose.local.*.yml
 # reach_layer_voice call recordings — local mount of /var/recordings; contains call audio (PII)
 automation/docker/recordings/
 dev-kit/configs/e*
-dev-kit/configs/b*
-
+dev-kit/configs/t*
+dev-kit/configs/p*
+dev-kit/scripts/
 experiments/cache_compare/results
 dev-kit/frontend-v2
 # Voice audio test - generated/recorded audio samples

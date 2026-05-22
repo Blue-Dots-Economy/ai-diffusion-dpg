@@ -10,8 +10,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import string as _string
 import time
 from typing import Optional
+from urllib.parse import quote as _url_quote
 
 import httpx
 from opentelemetry import metrics as otel_metrics
@@ -21,6 +24,55 @@ from src.adapters.base import ToolAdapter
 from src.models import ToolDefinition, ToolResult
 
 logger = logging.getLogger(__name__)
+
+
+# Sentinel returned by _render_body_template when a value resolves to nothing.
+# Surfaced upward so the enclosing dict/list can drop the field entirely
+# rather than emit an empty string or null.
+_DROP = object()
+
+# Whole-value placeholder: the string is exactly "{name}" with nothing else.
+# Matches Python-identifier-shaped keys (letters/digits/underscore, no leading digit).
+_WHOLE_PLACEHOLDER_RE = re.compile(r"^\{([A-Za-z_][A-Za-z0-9_]*)\}$")
+
+# Embedded placeholder: a "{name}" occurrence somewhere inside a larger string.
+_EMBEDDED_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+class _PathDefaultEmpty(dict):
+    """``str.format_map`` helper — unbound ``{placeholder}`` → empty string.
+
+    Preserves the historical behaviour where ``{user_id}`` / ``{session_id}``
+    silently substituted to empty when the caller didn't supply them. Now
+    applies to any LLM input_param placeholder too.
+    """
+
+    def __missing__(self, key: str) -> str:
+        return ""
+
+
+def _path_placeholders(path: str) -> set[str]:
+    """Return the placeholder names referenced by ``{name}`` in a path template.
+
+    Used to identify which LLM input_params have been consumed by path
+    substitution so they don't get re-sent via httpx's ``params=`` kwarg —
+    which would otherwise strip the URL's existing query string.
+    """
+    return {
+        field_name
+        for _, field_name, _, _ in _string.Formatter().parse(path)
+        if field_name
+    }
+
+
+def _quote_for_path(value) -> str:
+    """URL-encode a value for safe interpolation into a path/query string.
+
+    Leaves alphanumerics and the standard unreserved set alone; escapes
+    spaces, ``+``, ``&``, ``=``, and so on so a value like ``"New Delhi"``
+    becomes ``"New%20Delhi"`` rather than corrupting the URL.
+    """
+    return _url_quote(str(value), safe="")
 
 
 def _get_tracer() -> otel_trace.Tracer:
@@ -56,6 +108,78 @@ def _get_nested(d, path: str):
             return None
         current = current.get(key)
     return current
+
+
+def _render_body_template(template, values: dict):
+    """Walk a body template tree, substituting ``{placeholder}`` strings.
+
+    Substitution rules:
+      - A string equal to exactly ``"{key}"`` is replaced by the raw value of
+        ``values[key]``, preserving type (lists, dicts, ints, bools stay
+        intact).
+      - A string containing ``"{key}"`` embedded among other characters is
+        rendered via standard string substitution; non-string values are
+        ``str()``-cast.
+      - If a placeholder's key is missing from ``values``, or its value is
+        ``None`` or an empty string, the enclosing field is dropped from the
+        parent dict/list. After substitution, dicts that became empty are
+        also dropped from their parent — so optional nested branches vanish
+        cleanly when the user did not supply any of their fields.
+      - Strings with no placeholders, and non-string scalars, copy through
+        unchanged.
+      - Nested dicts and lists are walked recursively.
+
+    Args:
+        template: The template tree. Top-level may be a dict, list, str, or
+            scalar — but the adapter only invokes this helper when the
+            top-level template is a dict or list.
+        values: Merged dict of static + agent params, used as the
+            substitution source.
+
+    Returns:
+        The rendered structure. May return :data:`_DROP` when the entire
+        template resolved to nothing — the caller is expected to substitute
+        an empty dict in that case.
+    """
+    if isinstance(template, dict):
+        out: dict = {}
+        for k, v in template.items():
+            rendered = _render_body_template(v, values)
+            if rendered is _DROP:
+                continue
+            if isinstance(rendered, dict) and not rendered:
+                # Nested dict pruned to empty → drop from parent too.
+                continue
+            out[k] = rendered
+        return out
+    if isinstance(template, list):
+        rendered_items: list = []
+        for item in template:
+            r = _render_body_template(item, values)
+            if r is _DROP:
+                continue
+            if isinstance(r, dict) and not r:
+                continue
+            rendered_items.append(r)
+        return rendered_items
+    if isinstance(template, str):
+        whole = _WHOLE_PLACEHOLDER_RE.match(template)
+        if whole:
+            key = whole.group(1)
+            val = values.get(key)
+            if val is None or val == "":
+                return _DROP
+            return val
+        keys = _EMBEDDED_PLACEHOLDER_RE.findall(template)
+        if not keys:
+            return template
+        for k in keys:
+            val = values.get(k)
+            if val is None or val == "":
+                return _DROP
+        return _EMBEDDED_PLACEHOLDER_RE.sub(lambda m: str(values[m.group(1)]), template)
+    # int, bool, float, None — copy through.
+    return template
 
 
 def _apply_projection(result_dict: dict, projection: Optional[dict]):
@@ -100,6 +224,17 @@ class RestApiAdapter(ToolAdapter):
     domain YAML at startup. The adapter resolves auth secrets from environment
     variables, builds ToolDefinitions from the endpoint config, merges agent-
     supplied params with static params, and returns normalised ToolResults.
+
+    Request body shape (non-GET methods)
+    ------------------------------------
+    By default the adapter sends ``json=all_params`` — a flat dict of merged
+    static + agent params — as the JSON body. When the endpoint declares an
+    optional ``body_template`` (dict or list), :func:`_render_body_template`
+    walks the template at call time, substituting ``{placeholder}`` strings
+    from ``all_params``. This lets a YAML author declare arbitrary nested
+    body shapes (e.g. ``source_item.item_id``) without asking the LLM to
+    reconstruct protocol-static strings on every call. GET requests ignore
+    ``body_template`` — their params continue to flow into the query string.
 
     Attributes:
         config: Raw adapter config dict.
@@ -226,7 +361,15 @@ class RestApiAdapter(ToolAdapter):
 
         Path templating lets a tool like ``get_profile`` point at
         ``/profile/{user_id}`` without asking the LLM to pass the caller's
-        ID — the framework substitutes it from session context.
+        ID — the framework substitutes it from session context. The same
+        mechanism also substitutes any LLM-supplied ``input_param`` into
+        the path (e.g. ``…?item_state[jobProviderLocation]={location}``),
+        so domain configs can declare bracketed query keys with dynamic
+        values without bracketed JSON-Schema property names (which
+        Anthropic rejects). Values are URL-encoded on substitution; LLM
+        input_params consumed by path placeholders are excluded from the
+        GET ``params=`` kwarg so httpx doesn't double-send them or strip
+        the path's existing query string.
 
         Args:
             tool_name: Name of the tool to execute (used in error messages).
@@ -242,16 +385,27 @@ class RestApiAdapter(ToolAdapter):
         start = time.time()
         endpoint = self.config.get("endpoints", [{}])[0]
         method: str = endpoint.get("method", "GET").upper()
-        path: str = endpoint.get("path", "")
-        # Substitute context variables into the path. Empty strings are passed
-        # through unchanged so a path like /profile/{user_id} with no user_id
-        # produces /profile/ — which the backing endpoint can 404 or return an
-        # empty profile for, matching "no profile" semantics.
-        path = path.format(session_id=session_id or "", user_id=user_id or "")
+        raw_path: str = endpoint.get("path", "")
+        input_params: dict = dict(params or {})
+        # Path substitution context: caller identity + LLM input_params.
+        # Static params are intentionally NOT included — they always go via
+        # the query string / body, never into path placeholders. Values are
+        # URL-encoded so a value like "New Delhi" becomes "New%20Delhi".
+        path_context = _PathDefaultEmpty(
+            session_id=_quote_for_path(session_id or ""),
+            user_id=_quote_for_path(user_id or ""),
+            **{k: _quote_for_path(v) for k, v in input_params.items()},
+        )
+        path = raw_path.format_map(path_context)
         url = f"{self._base_url}{path}"
+        # LLM input_params consumed by path placeholders — exclude these
+        # from the GET ``params=`` kwarg below so we don't send them twice
+        # and so httpx doesn't strip the path's existing query string.
+        path_consumed = _path_placeholders(raw_path) & set(input_params.keys())
 
-        # Merge agent params with static params
-        all_params: dict = dict(params)
+        # Merge agent params with static params (full dict; body_template
+        # still sees everything, including path-consumed names).
+        all_params: dict = dict(input_params)
         for p in endpoint.get("params", []):
             if p.get("source") == "static":
                 all_params[p["name"]] = p.get("value")
@@ -285,18 +439,35 @@ class RestApiAdapter(ToolAdapter):
                 http_span.set_attribute("http.method", method)
                 http_span.set_attribute("http.url", url)
                 if method == "GET":
+                    # Exclude path-consumed param names from the GET query —
+                    # they've already been baked into the URL via path
+                    # substitution. Sending them again via ``params=`` would
+                    # (a) duplicate them and (b) make httpx replace the
+                    # path's existing query string with this dict, dropping
+                    # any literal ``?key=value`` segments. Pass ``None`` if
+                    # nothing remains so httpx leaves the URL untouched.
+                    query_params = {
+                        k: v for k, v in all_params.items()
+                        if k not in path_consumed
+                    }
                     response = await self._http_client.request(
                         method=method,
                         url=url,
-                        params=all_params,
+                        params=query_params or None,
                         headers=headers,
                         timeout=timeout_s,
                     )
                 else:
+                    body_template = endpoint.get("body_template")
+                    if body_template is not None:
+                        rendered = _render_body_template(body_template, all_params)
+                        body = {} if rendered is _DROP else rendered
+                    else:
+                        body = all_params
                     response = await self._http_client.request(
                         method=method,
                         url=url,
-                        json=all_params,
+                        json=body,
                         headers=headers,
                         timeout=timeout_s,
                     )

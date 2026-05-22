@@ -1,0 +1,485 @@
+# dev-kit/configs/blue-dots-economy/action_gateway.yaml
+# Blue Dots Economy domain values for Action Gateway.
+# Merged with dev-kit/dpg/action_gateway.yaml by loader.py before deployment.
+#
+# Four tools back the voice-first job-seeker journey:
+#   fetch_profile  — GET  /mock/blue_dots/seeker_fetch  (seeker lookup by phone)
+#   fetch_jobs     — GET  /mock/blue_dots/job_fetch     (provider listings)
+#   onboard        — POST /mock/blue_dots/onboard       (create/update user+profile)
+#   apply_job      — POST /mock/blue_dots/apply         (submit application)
+#
+# All four endpoints currently point at the in-process Action Gateway mocks
+# (http://action_gateway:9999/mock/blue_dots/*). Swap each tool's base_url
+# and path to the real upstream once the schemas are finalised.
+#
+# Auth (when we switch to the real services):
+#   - fetch_profile, fetch_jobs       — public, no key required
+#   - onboard, apply_job              — x-api-key header, shared secret
+#     (env var: BLUE_DOTS_API_KEY)
+
+tools:
+
+  # ────────────────────────────────────────────────────────────────────
+  # READ — Seeker profile lookup by phone.
+  # ────────────────────────────────────────────────────────────────────
+  - id: fetch_profile
+    type: rest_api
+    category: read
+    description: >
+      Fetch any existing seeker profiles for the caller's phone number
+      from the Blue Dots provider network. Returns zero profiles for a
+      new user, one profile for a returning user, or multiple profiles
+      when the same phone has been used to create several accounts.
+      ALWAYS call this once on the first turn after consent has been
+      granted. For multi-profile callers, prefer the most recently
+      updated profile (highest `updated_at`) when extracting fields.
+
+      Profile schema (profile_1.0). Required: name, gender, location,
+      age, phone. Optional: trade (nameOfJobRolesInterestedIn),
+      work_experience (workExperience: Fresher / Worked before /
+      Returning after a break), experience_years
+      (workExperienceYearsConditional: 0 / < 1 Year / 1 Year /
+      2 Years / 3 Years / 3-5 Years / 5-10 Years / 10-15 Years /
+      15+ Years / Other), qualification
+      (highestQualificationOrSkill: School / College / ITI Other
+      Vocational Trainings / Certification Learned on the job),
+      job_nature (natureOfJobsInterestedIn: Internship / Apprenticeship
+      / Full-time / Flexible), help_needed (otherHelpNeeded: Training /
+      Accommodation / Travel / Other). The trade field may be empty or
+      noisy in older records — still ask the user to confirm.
+    base_url: "http://65.2.66.144:2742"
+    # Public endpoint — no auth header required.
+    timeout_ms: 5000
+    health_check:
+      enabled: false
+    endpoints:
+      - name: seeker_fetch
+        method: GET
+        # Caller's phone is injected from session user_id (Reach Layer
+        # sets user_id = caller's phone). Static params (item_network,
+        # item_domain, limit) are baked into the path string rather than
+        # passed via `params:` because httpx's params= kwarg REPLACES the
+        # URL's existing query string — which would strip the phone segment
+        # produced by the {user_id} substitution. With an empty params list,
+        # httpx leaves the URL untouched.
+        #
+        # NOTE — phone format mismatch risk: the upstream expects the bare
+        # 10-digit number (e.g. "7892487848"), but Vobiz/voice may surface
+        # user_id as "91<10-digit>" (12-digit with country code). If logs
+        # show 0 profiles for a known returning user, this is the cause —
+        # fix at the Reach Layer side, or trim the prefix in the adapter.
+        path: "/api/v1/network/item/fetch?item_network=blue_dot&item_domain=seeker&limit=100&item_state[phone]={user_id}"
+        params: []
+    response:
+      max_size_chars: 4000
+      projection:
+        list_key: items
+        fields:
+          # Identity + required fields per the profile_1.0 schema.
+          item_id: item_id
+          name: item_state.name
+          phone: item_state.phone
+          age: item_state.age
+          gender: item_state.gender
+          location: item_state.location
+          # Optional fields — may be absent on older / partial profiles.
+          # `trade` is the user's intended role; may be empty or noisy
+          # ("1") on older records, so always confirm with the user.
+          trade: item_state.nameOfJobRolesInterestedIn
+          # Fed into apply_job.requirements_snapshot
+          work_experience: item_state.workExperience
+          experience_years: item_state.workExperienceYearsConditional
+          qualification: item_state.highestQualificationOrSkill
+          job_nature: item_state.natureOfJobsInterestedIn
+          help_needed: item_state.otherHelpNeeded
+          # For multi-profile disambiguation (most recently updated wins).
+          updated_at: updated_at
+
+  # ────────────────────────────────────────────────────────────────────
+  # READ — Job listings filtered by city and role.
+  # ────────────────────────────────────────────────────────────────────
+  - id: fetch_jobs
+    type: rest_api
+    category: read
+    description: >
+      Search the Blue Dots provider network for live job postings,
+      filtered by the user's location (jobProviderLocation). ALWAYS
+      call this once after location is confirmed. The trade/role is
+      NOT filtered server-side — read the projected results and pick
+      the one(s) that match the user's role of interest. NEVER
+      describe job availability from memory — always fetch fresh.
+
+      Each item carries: role, company (jobProviderName), location
+      (jobProviderLocation), positions, nature_of_job (Internship /
+      Apprenticeship / Full-time / Flexible), and one of three
+      pay-model pairs depending on the job: salary_min / salary_max,
+      stipend_min / stipend_max, or task_rate_min / task_rate_max.
+      Read out whichever is populated. Hiring-manager contact
+      details are intentionally not exposed to the LLM.
+    base_url: "http://65.2.66.144:2742"
+    # Public endpoint — no auth header required.
+    timeout_ms: 5000
+    health_check:
+      enabled: false
+    endpoints:
+      - name: job_fetch
+        method: GET
+        # Location is substituted from the LLM input_param {location}
+        # into the bracketed query key. The adapter handles the
+        # substitution + URL-encoding and removes the param from the
+        # httpx params= kwarg so the path's existing query string
+        # survives intact. Static params (network, domain, limit) are
+        # baked into the path for the same reason fetch_profile does
+        # — they go through as literal query.
+        path: "/api/v1/network/item/fetch?item_network=blue_dot&item_domain=provider&limit=100&item_state[jobProviderLocation]={location}"
+        params:
+          - name: location
+            source: agent
+            type: string
+            required: true
+            description: >
+              City to filter jobs by. Pass the same spelling the
+              user (or their profile) used — e.g. "Bengaluru",
+              "Kannur". The upstream matches jobProviderLocation
+              against this value; if the user's location and the
+              job listings use different spellings the filter
+              won't match.
+    response:
+      max_size_chars: 4000
+      projection:
+        list_key: items
+        fields:
+          # Identity + display fields (used by the bot when reading jobs aloud).
+          item_id: item_id
+          role: item_state.role
+          company: item_state.jobProviderName
+          location: item_state.jobProviderLocation
+          positions: item_state.positions
+          nature_of_job: item_state.natureOfJob
+          # Three pay-model pairs; only one is populated per job. Bot
+          # reads out whichever pair has values.
+          salary_min: item_state.salaryMin
+          salary_max: item_state.salaryMax
+          stipend_min: item_state.stipendMin
+          stipend_max: item_state.stipendMax
+          task_rate_min: item_state.taskRateMin
+          task_rate_max: item_state.taskRateMax
+          # Match-quality fields the LLM can use if the user asks
+          # about fit. Optional on the upstream side.
+          candidate_experience_type: item_state.candidateExperienceType
+          work_experience_years: item_state.workExperienceYears
+          min_educational_institute: item_state.minEducationalInstitute
+          last_role_held: item_state.lastRoleHeld
+          # Hiring-manager fields (hiringManagerName,
+          # hiringManagerPhoneNumber, hiringManagerEmail) are
+          # intentionally NOT projected — internal/PII, not for the
+          # LLM to mention or read aloud.
+
+  # ────────────────────────────────────────────────────────────────────
+  # WRITE — List the user's existing profiles (and create the user
+  # record if new). Calls /api/v1/admin/onboard with ONLY the user
+  # block. Returns user.id (used as source_item_owner in apply_job)
+  # plus the list of profiles already on this phone number.
+  # ────────────────────────────────────────────────────────────────────
+  - id: list_user_profiles
+    type: rest_api
+    category: write
+    description: >
+      Look up the user's existing profiles on the Blue Dots seeker
+      backend by their name and phone number. Side-effect: creates
+      the user record if this is the first time we've seen this
+      phone. Call this AFTER the user has confirmed they want to
+      apply to a specific job (intent=apply_now). The response
+      contains user.id (save as source_item_owner) and a profiles
+      array — present each profile to the caller and have them pick
+      one to apply with, ask to update one, or create a new one.
+    base_url: "http://65.2.66.144:2742"
+    auth:
+      type: api_key
+      header: x-api-key
+      secret_env: BLUE_DOTS_API_KEY
+    timeout_ms: 5000
+    health_check:
+      enabled: false
+    endpoints:
+      - name: list_user_profiles
+        method: POST
+        path: /api/v1/admin/onboard
+        body_template:
+          user:
+            name: "{name}"
+            phoneNumber: "{phone}"
+        params:
+          - name: name
+            source: agent
+            type: string
+            required: true
+            description: "Caller's full name."
+          - name: phone
+            source: agent
+            type: string
+            required: true
+            description: >
+              Caller's bare 10-digit phone number (no country code).
+              Same value the session user_id carries.
+    response:
+      max_size_chars: 4000
+      projection:
+        fields:
+          user_id: user.id
+          user_name: user.name
+          user_phone: user.phoneNumber
+          profiles: profiles
+          user_created: status.userCreated
+          user_existed: status.userExisted
+
+  # ────────────────────────────────────────────────────────────────────
+  # WRITE — Create a new seeker profile, or update an existing one.
+  # Hits the same /api/v1/admin/onboard endpoint but with the
+  # `profile` block filled in. item_id absent → create; item_id
+  # present → update (full item_state required, partial not
+  # supported by the upstream).
+  # ────────────────────────────────────────────────────────────────────
+  - id: save_profile
+    type: rest_api
+    category: write
+    description: >
+      Create a brand-new seeker profile, OR update an existing one.
+      Call this when the user has chosen `create_new` or
+      `update_existing` (profile_action in session). Pass ALL
+      profile fields every time — the upstream does NOT support
+      partial updates. For UPDATE, pass the existing profile's
+      item_id along with the full item_state (with the user's
+      changes overlaid on the previous values). For CREATE, omit
+      item_id. workExperience MUST be one of:
+      "Fresher" / "Worked before" / "Returning after a break".
+      The response returns the created/updated profile in the
+      profiles array — use its item_id as the chosen profile for
+      apply_job.
+    base_url: "http://65.2.66.144:2742"
+    auth:
+      type: api_key
+      header: x-api-key
+      secret_env: BLUE_DOTS_API_KEY
+    timeout_ms: 5000
+    health_check:
+      enabled: false
+    endpoints:
+      - name: save_profile
+        method: POST
+        path: /api/v1/admin/onboard
+        body_template:
+          user:
+            name: "{name}"
+            phoneNumber: "{phone}"
+          profile:
+            item_id: "{profile_item_id}"     # missing → CREATE, present → UPDATE
+            item_network: "blue_dot"
+            item_domain: "seeker"
+            item_type: "profile_1.0"
+            item_state:
+              name: "{name}"
+              phone: "{phone}"
+              gender: "{gender}"
+              location: "{location}"
+              age: "{age}"
+              workExperience: "{work_experience}"
+              workExperienceYearsConditional: "{experience_years}"
+              nameOfJobRolesInterestedIn: "{trade}"
+              highestQualificationOrSkill: "{qualification}"
+              natureOfJobsInterestedIn: "{job_nature}"
+              otherHelpNeeded: "{help_needed}"
+        params:
+          - name: name
+            source: agent
+            type: string
+            required: true
+            description: "Caller's full name."
+          - name: phone
+            source: agent
+            type: string
+            required: true
+            description: "Caller's bare 10-digit phone number."
+          - name: gender
+            source: agent
+            type: string
+            required: true
+            description: 'Gender (e.g. "male", "female", "other").'
+          - name: location
+            source: agent
+            type: string
+            required: true
+            description: "City the caller is in / wants to work."
+          - name: age
+            source: agent
+            type: integer
+            required: true
+            description: "Caller's age in years."
+          - name: work_experience
+            source: agent
+            type: string
+            required: true
+            description: >
+              Must be EXACTLY one of: "Fresher", "Worked before",
+              "Returning after a break". Map the caller's words to
+              the closest enum value.
+          - name: profile_item_id
+            source: agent
+            type: string
+            required: false
+            description: >
+              Existing profile's item_id, when UPDATING that profile.
+              Omit (or pass empty) to CREATE a new profile.
+          - name: experience_years
+            source: agent
+            type: string
+            required: false
+            description: >
+              workExperienceYearsConditional value if known. One of:
+              "0", "< 1 Year", "1 Year", "2 Years", "3 Years",
+              "3-5 Years", "5-10 Years", "10-15 Years", "15+ Years",
+              "Other".
+          - name: trade
+            source: agent
+            type: string
+            required: false
+            description: 'nameOfJobRolesInterestedIn (e.g. "Plumber").'
+          - name: qualification
+            source: agent
+            type: string
+            required: false
+            description: >
+              highestQualificationOrSkill. One of: "School",
+              "College", "ITI / Other Vocational Trainings",
+              "Certification / Learned on the job".
+          - name: job_nature
+            source: agent
+            type: string
+            required: false
+            description: >
+              natureOfJobsInterestedIn. One of: "Internship",
+              "Apprenticeship", "Full-time", "Flexible".
+          - name: help_needed
+            source: agent
+            type: string
+            required: false
+            description: >
+              otherHelpNeeded. One of: "Training", "Accommodation",
+              "Travel", "Other".
+    response:
+      max_size_chars: 4000
+      projection:
+        fields:
+          user_id: user.id
+          profiles: profiles
+          profile_created: status.profileCreated
+          profile_updated: status.profileUpdated
+
+  # ────────────────────────────────────────────────────────────────────
+  # WRITE — Submit the application linking caller profile to the job.
+  # ────────────────────────────────────────────────────────────────────
+  - id: apply_job
+    type: rest_api
+    category: write
+    description: >
+      Submit a job application linking the chosen seeker profile to
+      the selected job posting. Call ONLY after a profile has been
+      chosen (use_existing) or created/updated (via save_profile)
+      AND source_item_owner is in session. The LLM passes the three
+      dynamic IDs plus the requirements_snapshot fields — all the
+      static envelope (item_network, item_domain, item_type,
+      item_instance_url, action_type) lives in the body_template
+      below and never needs to be supplied by the LLM.
+    base_url: "http://65.2.66.144:2742"
+    auth:
+      type: api_key
+      header: x-api-key
+      secret_env: BLUE_DOTS_API_KEY
+    timeout_ms: 5000
+    health_check:
+      enabled: false
+    endpoints:
+      - name: apply
+        method: POST
+        path: /api/v1/action/perform
+        body_template:
+          # Static envelope — never supplied by the LLM.
+          action_type: "apply"
+          source_item:
+            item_network: "blue_dot"
+            item_domain: "seeker"
+            item_type: "profile_1.0"
+            item_instance_url: "http://65.2.66.144:2742/"
+            # Dynamic — from the chosen profile.
+            item_id: "{profile_item_id}"
+          # Dynamic — user.id returned by list_user_profiles or save_profile.
+          source_item_owner: "{source_item_owner}"
+          target_item:
+            item_network: "blue_dot"
+            item_domain: "provider"
+            item_type: "job_posting_1.0"
+            item_instance_url: "http://65.2.66.144:2742/"
+            # Dynamic — selected job item_id from fetch_jobs.
+            item_id: "{job_item_id}"
+          # Dynamic — from the chosen profile + selected job.
+          requirements_snapshot:
+            role: "{role}"
+            workExperience: "{work_experience}"
+            age: "{age}"
+        params:
+          - name: profile_item_id
+            source: agent
+            type: string
+            required: true
+            description: >
+              The chosen profile's item_id — from the profiles list
+              returned by list_user_profiles (use_existing /
+              update_existing path) or from save_profile's response
+              (create_new path).
+          - name: source_item_owner
+            source: agent
+            type: string
+            required: true
+            description: >
+              The user.id from the list_user_profiles or
+              save_profile response. Backend rejects apply without it.
+          - name: job_item_id
+            source: agent
+            type: string
+            required: true
+            description: >
+              The chosen job's item_id from the prior fetch_jobs result.
+          - name: role
+            source: agent
+            type: string
+            required: true
+            description: >
+              The role being applied for — the SELECTED JOB's role
+              (e.g. "Plumber"), NOT the user's intended trade. They
+              usually match anyway.
+          - name: work_experience
+            source: agent
+            type: string
+            required: true
+            description: >
+              workExperience for requirements_snapshot. One of:
+              "Fresher", "Worked before", "Returning after a break".
+              Pull from the chosen profile; ask the user if missing.
+          - name: age
+            source: agent
+            type: integer
+            required: true
+            description: >
+              age for requirements_snapshot — pull from the chosen
+              profile.
+    response:
+      max_size_chars: 1000
+      projection:
+        fields:
+          action_id: action_id
+          action_status: action_status
+          source_item_id: source_item_id
+          target_item_id: target_item_id
+
+observability:
+  domain: "blue_dot"

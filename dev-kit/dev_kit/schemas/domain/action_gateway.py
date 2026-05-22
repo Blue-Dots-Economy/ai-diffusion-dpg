@@ -40,12 +40,19 @@ class ParamDefinition(BaseModel):
 
 
 class EndpointDefinition(BaseModel):
-    """One REST endpoint exposed as a callable function to the LLM."""
+    """One REST endpoint exposed as a callable function to the LLM.
+
+    Mirrors ``action_gateway/src/schema/config.py::EndpointDefinition``.
+    ``body_template`` declares the nested request body shape for non-GET
+    methods, with ``{placeholder}`` strings filled at call time from
+    static + agent params.
+    """
     model_config = ConfigDict(extra="forbid")
     name: str = Field(..., min_length=1)
     method: HttpMethod = HttpMethod.POST
     path: str = ""
     params: list[ParamDefinition] = Field(default_factory=list)
+    body_template: Optional[dict | list] = None
 
 
 class FieldMapping(BaseModel):
