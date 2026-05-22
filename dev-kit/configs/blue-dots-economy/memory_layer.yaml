@@ -1,0 +1,144 @@
+# dev-kit/configs/blue-dots-economy/memory_layer.yaml
+# Blue Dots Economy — Memory Layer domain config.
+# Merged with dev-kit/dpg/memory_layer.yaml by loader.py at startup.
+#
+# Session state (Redis) carries everything the apply flow needs to
+# stitch together turn-by-turn. Persistent state (Memgraph) keyed on
+# phone holds the seeker profile + journey history across calls.
+
+state:
+
+  session:
+    ttl_minutes: 2880    # 2 days — caller can resume next day if dropped.
+    schema:
+      # Infrastructure fields (user_id=phone, journey_id, is_returning)
+      # are injected by Memory Layer at session init and need not be
+      # declared here.
+      #
+      # Consent / safety. Memory Layer's session schema enum is
+      # {enum, string, int, list} — no bool. Modelled as a 2-value enum.
+      consent_given:           { type: enum,   values: ["true", "false"], default: "false" }
+      # Profile data — populated when the user verbalises these and NLU
+      # picks them up. Mirrors the profile_1.0 schema returned by
+      # fetch_profile so subsequent tool calls (update_profile, apply_job)
+      # have somewhere to read from.
+      profile_item_id:         { type: string, default: "" }
+      profile_instance_url:    { type: string, default: "" }
+      source_item_owner:       { type: string, default: "" }   # user.id from onboard
+      name:                    { type: string, default: "" }
+      age:                     { type: int,    default: 0 }
+      gender:                  { type: string, default: "" }
+      work_experience:         { type: string, default: "" }   # enum: Fresher / Worked before / Returning after a break
+      experience_years:        { type: string, default: "" }   # enum: 0, < 1 Year, 1 Year, 2 Years, …
+      qualification:           { type: string, default: "" }   # enum: School / College / ITI Other Vocational Trainings / Certification Learned on the job
+      job_nature:              { type: string, default: "" }   # enum: Internship / Apprenticeship / Full-time / Flexible
+      help_needed:             { type: string, default: "" }   # enum: Training / Accommodation / Travel / Other
+      # Search criteria (confirmed in profile_resolve subagent)
+      trade:                   { type: string, default: "" }
+      location:                { type: string, default: "" }
+      # Job search results + selection
+      last_jobs:               { type: list,   default: [] }   # compact dicts: item_id, role, company, city, salary_range
+      selected_job_item_id:    { type: string, default: "" }
+      selected_job_instance_url: { type: string, default: "" }
+      selected_job_role:       { type: string, default: "" }
+      selected_job_company:    { type: string, default: "" }
+      # Profile-choice state (written during profile_choice/profile_setup phases)
+      profile_action:          { type: enum,   values: ["use_existing", "create_new", "update_existing", ""], default: "" }
+      profile_setup_done:      { type: enum,   values: ["true", "false"], default: "false" }
+      profiles_from_onboard:   { type: list,   default: [] }   # snapshot of list_user_profiles result
+      # Application outcome
+      last_application_id:     { type: string, default: "" }
+      applications_submitted:  { type: int,    default: 0 }
+
+  persistent:
+    backend: memgraph
+    graph:
+      user_node:
+        label: User
+        key: user_id    # = phone number; set by Reach Layer at session init.
+
+      subnodes:
+        SeekerProfile:
+          rel: HAS_PROFILE
+          declared_fields:
+            # Identity layer (profile_1.0 required fields)
+            - name
+            - phone
+            - age
+            - gender
+            - location
+            - language_preference
+            # Capability layer (profile_1.0 optional fields)
+            - trade                  # nameOfJobRolesInterestedIn
+            - work_experience        # workExperience
+            - experience_years       # workExperienceYearsConditional
+            - qualification          # highestQualificationOrSkill
+            - job_nature             # natureOfJobsInterestedIn
+            - help_needed            # otherHelpNeeded
+            # Identity-on-upstream
+            - profile_item_id
+            - source_item_owner
+          adhoc:
+            label: UserAttribute
+            rel: HAS_ATTRIBUTE
+            fields: [key, value, raw, turn, journey_id]
+
+        JourneyHistory:
+          rel: HAS_JOURNEY_HISTORY
+          grouping: true
+          child:
+            label: Journey
+            rel: JOURNEY
+            fields: [journey_id, started_at, ended_at, end_reason]
+            children:
+              - label: JobOffered
+                rel: OFFERED
+                fields: [item_id, role, company, city, salary_range, employment_type, shortlisted, committed]
+              - label: Application
+                rel: APPLIED
+                fields: [application_id, target_item_id, source_item_id, source_item_owner, applied_at, status]
+              - label: DropOff
+                rel: DROPPED_AT
+                fields: [subagent_id, reason, timestamp]
+
+        ContextGraph:
+          rel: HAS_CONTEXT
+          grouping: true
+          child:
+            label: Signal
+            rel: SIGNAL
+            fields: [type, turn, raw, journey_id]
+            adhoc:
+              label: ContextAttribute
+              rel: HAS_ATTRIBUTE
+              fields: [key, value, raw, turn, journey_id]
+
+    merge_on_session_end:
+      # Promote selected session-state fields to Journey-node properties
+      # when the session closes.
+      - session_field: trade
+        target: Journey.trade_at_end
+      - session_field: location
+        target: Journey.city_at_end
+      - session_field: selected_job_item_id
+        target: Journey.selected_job_item_id
+      - session_field: last_application_id
+        target: Journey.application_id
+      - session_field: last_jobs
+        target: JobOffered    # creates OFFERED edges from the compact dicts
+
+user_data_persistence:
+  # "saved" — User + SeekerProfile data persists in Memgraph across
+  # sessions. Returning callers (is_returning=True) skip the consent
+  # prompt and hear the returning_user_greeting instead. Canonical
+  # profile data lives on the Blue Dots upstream; Memgraph only
+  # mirrors session-derived state.
+  default_mode: saved
+
+reengagement:
+  # Trigger scheduler not yet wired (GH-168). Config is validated at
+  # startup; no runtime code acts on these entries yet.
+  triggers: []
+
+observability:
+  domain: "blue_dot"
