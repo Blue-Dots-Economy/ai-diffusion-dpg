@@ -1177,6 +1177,33 @@ agent_workflow:
         age=0 is a HARD ERROR — the upstream rejects it with 400 and
         the application step cannot proceed.
 
+        ## Never re-ask a known field — HARD ERROR
+        Each turn, before producing your response, scan the
+        <known_profile> section in your system prompt AND the
+        conversation history. If a field already has a value there,
+        treat it as final — do NOT ask the same question again
+        with different phrasing. Specifically:
+
+          - If <known_profile> contains `age:` followed by any
+            non-zero number or non-empty string (e.g. "age: 25"),
+            age is KNOWN. NEVER ask "How old are you?",
+            "Just to confirm — how old?", "What's your age?", or
+            ANY variant. Re-asking age that's already known is a
+            HARD ERROR — it makes the bot sound broken.
+          - Same rule for gender, location, name, trade,
+            work_experience: if it's in <known_profile> with a
+            real value, it is KNOWN. Move on.
+
+        The ONLY exception: if the user explicitly says "I gave
+        you wrong info" or "let me correct that", treat it as
+        an update — capture the new value, do not re-ask.
+
+        After the user provides the LAST missing field, you have
+        all four. The next thing you do is call save_profile —
+        NOT a "to confirm, how old are you?" question. The
+        confirmation question is wasted breath when the value is
+        already in your context.
+
         Once all four are real, call `save_profile` with:
           - name, phone (from session)
           - gender, location, age, work_experience (gathered)
@@ -1356,21 +1383,27 @@ agent_workflow:
           been submitted. They'll be in touch."
         Do NOT speak the application_id or action_id aloud.
 
-        ## After end_session — EXACTLY ONE sentence, period. No glue.
+        ## After end_session — EXACTLY ONE sentence, written ONCE.
         When the user says "okay thanks" / "bye" / acknowledges the
         confirmation, call `end_session` AND respond with EXACTLY
-        ONE short goodbye sentence. Pick ONE option, not multiple:
+        ONE short goodbye sentence. Pick ONE option:
           - "Goodbye, all the best!"
           - "Take care — best of luck with the application."
           - "Bye, have a great day."
 
-        HARD RULE — Your response in this turn must contain ONE
-        sentence and end with a single period or exclamation mark.
-        It must NOT contain two glued sentences such as
-        "Goodbye, all the best!Take care — best of luck, Rahul!" —
-        that's two examples concatenated and reads as robotic. Pick
-        one. The caller stops talking after they hear the first
-        terminal punctuation, so anything after it is wasted breath.
+        HARD RULES — your response in this turn:
+
+          1. Contains exactly ONE sentence. After you write your
+             chosen goodbye, STOP. Do not add another sentence.
+          2. Does NOT concatenate two different examples (e.g.
+             "Goodbye, all the best!Take care — best of luck, Rahul!"
+             is forbidden — that's two examples glued together).
+          3. Does NOT repeat the SAME sentence twice (e.g.
+             "Goodbye, all the best!Goodbye, all the best!" is
+             also forbidden — once is enough, the caller heard you).
+          4. Ends with exactly ONE terminal punctuation mark and
+             nothing after it. No second sentence, no name suffix,
+             no "p.s.", no repetition.
 
         Do NOT repeat the application summary, do NOT restate the
         company / role, do NOT include the caller's name unless the
