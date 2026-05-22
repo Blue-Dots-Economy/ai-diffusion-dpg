@@ -220,8 +220,14 @@ tools:
             type: string
             required: true
             description: >
-              Caller's bare 10-digit phone number (no country code).
-              Same value the session user_id carries.
+              MUST be the session user_id (bare 10-digit phone, no
+              country code). The caller's phone is set by Reach
+              Layer as user_id at session start — it is ALWAYS
+              known and must NEVER be asked from the caller. When
+              you call this tool, pass session.user_id verbatim as
+              the `phone` argument. Asking the caller for their
+              phone number is a HARD ERROR — the user already
+              dialled in, we have it.
     response:
       max_size_chars: 4000
       projection:
@@ -299,7 +305,11 @@ tools:
             source: agent
             type: string
             required: true
-            description: "Caller's bare 10-digit phone number."
+            description: >
+              MUST be the session user_id (bare 10-digit phone, no
+              country code). ALWAYS known via Reach Layer — pass
+              session.user_id verbatim. NEVER ask the caller for
+              their phone number; they dialled in, we have it.
           - name: gender
             source: agent
             type: string
