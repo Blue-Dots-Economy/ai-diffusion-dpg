@@ -490,9 +490,13 @@ agent_workflow:
       - After list_user_profiles (single): "I see one profile for you,
         in <location>. Should I apply using this profile, create a
         new one, or update this one?"
-      - After list_user_profiles (zero): "Let me set up a profile for
-        you first. What's your gender?" (then location, age, work
-        experience, one at a time).
+      - After list_user_profiles (zero): jump straight to the first
+        missing profile field — usually "What's your gender?" — and
+        then proceed through location, age, work experience one at
+        a time. Do NOT preface with "Let me set up a profile for
+        you first" or any similar announcement — the caller already
+        heard "To apply for this job I need a couple of details
+        about you" in profile_choice. Repeating it sounds robotic.
       - After save_profile (created): "Profile saved. Shall I submit
         your application now?"
       - After save_profile (updated): "Profile updated. Ready to
@@ -984,10 +988,15 @@ agent_workflow:
 
         - **Zero profiles** — user is new (status.userCreated=true
           usually). Profile creation is mandatory. Set
-          profile_action="create_new". Say: "Let me set up a
-          profile for you first." Then the orchestrator routes
-          you to profile_setup; the user-facing field collection
-          happens there.
+          profile_action="create_new". Do NOT say "Let me set up
+          a profile for you first" or any preamble — the caller
+          ALREADY heard "To apply for this job I need a couple
+          of details about you" earlier in this phase, and
+          repeating that intent is robotic. Instead, in this same
+          turn jump directly to the first missing profile field:
+          "What's your gender?" The orchestrator will route to
+          profile_setup on the next user input, where the rest of
+          the fields are collected.
 
         - **One profile** — say: "I see one profile for you, in
           <location>. Should I apply using this profile, create a
