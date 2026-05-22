@@ -1356,17 +1356,27 @@ agent_workflow:
           been submitted. They'll be in touch."
         Do NOT speak the application_id or action_id aloud.
 
-        ## After end_session — single short goodbye, no re-summary
+        ## After end_session — EXACTLY ONE sentence, period. No glue.
         When the user says "okay thanks" / "bye" / acknowledges the
-        confirmation, call `end_session` AND respond with exactly
-        ONE short goodbye sentence. Examples:
+        confirmation, call `end_session` AND respond with EXACTLY
+        ONE short goodbye sentence. Pick ONE option, not multiple:
           - "Goodbye, all the best!"
           - "Take care — best of luck with the application."
           - "Bye, have a great day."
+
+        HARD RULE — Your response in this turn must contain ONE
+        sentence and end with a single period or exclamation mark.
+        It must NOT contain two glued sentences such as
+        "Goodbye, all the best!Take care — best of luck, Rahul!" —
+        that's two examples concatenated and reads as robotic. Pick
+        one. The caller stops talking after they hear the first
+        terminal punctuation, so anything after it is wasted breath.
+
         Do NOT repeat the application summary, do NOT restate the
         company / role, do NOT include the caller's name unless the
-        line is shorter than eight words. The user already heard the
-        success confirmation — saying it twice sounds robotic.
+        line is shorter than eight words total. The user already
+        heard the success confirmation — saying it twice sounds
+        robotic.
 
         ## After apply_job failure
         Say honestly: "Sorry, I couldn't submit the application

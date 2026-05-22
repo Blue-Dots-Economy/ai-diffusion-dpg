@@ -64,7 +64,7 @@ tools:
         # httpx leaves the URL untouched.
         #
         # NOTE — phone format mismatch risk: the upstream expects the bare
-        # 10-digit number (e.g. "7892487848"), but Vobiz/voice may surface
+        # 10-digit number (e.g. "9999900001"), but Vobiz/voice may surface
         # user_id as "91<10-digit>" (12-digit with country code). If logs
         # show 0 profiles for a known returning user, this is the cause —
         # fix at the Reach Layer side, or trim the prefix in the adapter.

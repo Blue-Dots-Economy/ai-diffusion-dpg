@@ -831,14 +831,14 @@ class TestRestApiAdapterPathTemplating:
                 "create_user",
                 {"name": "Rahul"},
                 "sess-id-1",
-                "7892487848",
+                "9999900001",
             )
 
         sent_body = mock_client.request.call_args.kwargs["json"]
         assert sent_body == {
             "user": {
                 "name": "Rahul",
-                "phoneNumber": "7892487848",
+                "phoneNumber": "9999900001",
             }
         }
 
