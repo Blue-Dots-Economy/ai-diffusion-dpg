@@ -8,10 +8,6 @@
 
 agent:
   provider: anthropic
-  # Sonnet primary — Haiku 4.5 silently returned 0-sentence responses
-  # after tool calls (model ended turn with no text content), which
-  # the caller hears as a dead line. Sonnet's instruction-following
-  # is stronger; trade ~1.5 s extra latency for reliability.
   primary_model: claude-sonnet-4-6
   fallback_model: claude-haiku-4-5-20251001
   ask_for_consent: true
@@ -193,7 +189,9 @@ connectors:
             description: "Trade / role to filter by (capitalised, e.g. 'Plumber')."
           item_state.city:
             type: string
-            description: "City to filter by (lowercase preferred, e.g. 'bengaluru')."
+            description: >
+              City to filter by, capitalised canonical name —
+              "Bengaluru" not "bengaluru". Upstream matches strictly.
         additionalProperties: false
       invocation_rules:
         call_when: >
@@ -316,7 +314,7 @@ connectors:
 preprocessing:
   language_normalisation:
     # Main LLM mirrors caller language via the system prompt; the
-    # leading Haiku call is off. Set enabled: true to re-introduce it.
+    # leading call is off. Set enabled: true to re-introduce it.
     enabled: false
     provider: anthropic
     model: claude-haiku-4-5-20251001
@@ -326,9 +324,11 @@ preprocessing:
     code_switching: true
 
   nlu_processor:
-    # Sonnet rather than Haiku — KKB GH-151 found Haiku's 2048-token
-    # cache minimum left short NLU prompts uncached. Sonnet's 1024-token
-    # minimum cuts NLU latency from ~1.8 s to ~500–800 ms once warm.
+    # NLU stays on Anthropic Sonnet even when the main agent runs on
+    # OpenAI — gpt-4.1-mini was unreliable at extracting entity VALUES
+    # (it returned entity names with empty values, leaving session
+    # fields blank and the bot looping). Sonnet's structured-output
+    # following is stronger; cost is ~1s extra per turn for NLU.
     provider: anthropic
     model: claude-sonnet-4-6
     confidence_threshold: 0.5
@@ -343,12 +343,28 @@ preprocessing:
       (3) infrastructure intents (any_input, unknown) for generic
           forward progress.
 
-      ## profile_answer
+      ## profile_answer — ALWAYS emit entity VALUES, not just names
       When the user supplies substantive profile information — trade,
       location, name, age, gender, experience — classify as
-      `profile_answer` and emit the relevant entities. This intent
-      does NOT change the stage; the orchestrator persists the
-      entities and the same subagent answers next.
+      `profile_answer` and emit each entity AS A {name, value} PAIR
+      with the actual value extracted from the user's words. The
+      orchestrator persists each entity's VALUE into session state,
+      so the routing rules can read it back. An entity name with no
+      value is useless and breaks routing.
+
+      Examples (USER → entities you emit):
+        - "I'm a plumber" → trade="Plumber"
+        - "I want to work in bengaluru" → location="Bengaluru"
+        - "My name is Srivatsa" → name="Srivatsa"
+        - "I'm 24" → age="24"
+        - "Male" → gender="male"
+        - "I worked before" → work_experience="Worked before"
+
+      Capitalisation conventions:
+        - trade: capitalised first letter (Plumber, Electrician)
+        - location: capitalised canonical city (Bengaluru, Mumbai)
+        - work_experience: exactly one of "Fresher" /
+          "Worked before" / "Returning after a break"
 
       ## job_pick
       When the user clearly picks one of the jobs just presented (by
@@ -478,6 +494,38 @@ agent_workflow:
     If you genuinely have nothing to add, say "One moment, please." —
     NEVER return an empty response. Silence is the worst outcome.
 
+    ## Mandatory text content on EVERY assistant turn
+    Every assistant turn MUST end with at least one sentence of
+    spoken text. EXCEPT: when you call a tool, the substantive
+    response will come on the FOLLOWING turn (after the tool
+    result). Do NOT prepend a bridge sentence to a tool_use call —
+    short bridges before tools get spoken AND THEN the real
+    response is also spoken, which sounds like two glued
+    utterances ("One moment, I'll check.Welcome, I don't have a
+    profile yet."). Just call the tool silently; the next-turn
+    text is what the user hears.
+
+    The bridge sentence is ONLY a fallback for the case where the
+    LLM has truly no text output and no tool to call — say
+    "One moment, please." in that case. Otherwise: just answer.
+
+    ## When you genuinely don't understand the user
+    If the user's last utterance was unclear or you can't parse it,
+    ask a short clarifying question — NEVER respond with empty text:
+      "Sorry, I didn't quite catch that — could you say it again?"
+    or
+      "Just to confirm — are you saying you want to apply, or
+       browse more jobs?"
+
+    ## Don't announce what you're about to do
+    NEVER preface a question with explanatory framing. Wrong:
+      "Let me confirm your full name and phone number to look up
+       your profiles for applying. Could you please tell me your
+       full name?"
+    Right:
+      "What's your full name?"
+    The caller does not need to know your internal workflow.
+
     ## Language
     Default to English. If the caller switches to Hindi or Gujarati,
     mirror them. If the caller speaks a language not in {English, Hindi,
@@ -598,7 +646,12 @@ agent_workflow:
         state, route forward to job_match.
       is_start: false
       is_terminal: false
-      opening_phrase: "Let me check your profile."
+      # Short neutral bridge — framework requires a non-empty
+      # opening_phrase for session-resume re-orientation. A short
+      # acknowledgement avoids promising a specific action (the
+      # earlier "Let me check your profile" was misleading when
+      # the LLM occasionally went silent right after).
+      opening_phrase: "Thanks."
 
       valid_intents:
         - any_input
@@ -610,11 +663,22 @@ agent_workflow:
       system_prompt: |
         You are in the **profile_resolve** phase.
 
-        ## On entry
-        If `fetch_profile` has NOT been called yet this session, call it
-        now. **The tool takes no parameters** — the caller's phone is
-        injected by the rest_api adapter from the session. Do NOT ask
-        the user for their phone number.
+        ## On entry — call fetch_profile AND respond in the SAME turn
+        If `fetch_profile` has NOT been called yet this session, your
+        turn must do BOTH:
+          1. Call fetch_profile (no parameters needed — caller's
+             phone is injected from the session).
+          2. AFTER the tool returns, in the SAME assistant turn,
+             produce a spoken sentence based on the result:
+               - 1 profile  → "Welcome back. I see your profile in
+                 <location>. What trade are you looking for work in?"
+               - 0 profiles → "Welcome — I don't see a profile for
+                 your number yet. Which trade are you looking for
+                 work in?"
+               - 2+ profiles → silently pick the most recently
+                 updated one's location, then ask trade.
+        Do NOT finish the turn with only a tool_use and no text —
+        the caller will hear silence and think the line dropped.
 
         ## Hard rules (NEVER violate)
         - Speak ONLY values that appear in the most recent fetch_profile
@@ -656,11 +720,18 @@ agent_workflow:
           location they're searching in. If they all agree, just ask
           for the trade.
 
-        ## Trade and location formatting
-        - When saving `trade`: capitalised (e.g. "Plumber", "Welder").
-        - When saving `location`: lowercase (e.g. "bengaluru", "kannur").
-          fetch_jobs filters are case-sensitive; lowercase matches the
-          backend.
+        ## Trade and location formatting (CRITICAL — case matters)
+        The upstream uses strict case-sensitive matching on both
+        filters. Always save with capitalised first letter:
+        - `trade`: capitalised first letter (e.g. "Plumber",
+          "Welder", "Electrician")
+        - `location`: capitalised canonical city name (e.g.
+          "Bengaluru" NOT "bengaluru", "Mumbai" NOT "mumbai").
+          See the city normalisation map in the job_match
+          subagent — use those canonical spellings.
+
+        NEVER save either field in lowercase. fetch_jobs sends the
+        value verbatim to the upstream; lowercase = zero matches.
 
         ## Confirmation gate (HARD — must always end with a question)
         Before calling fetch_jobs in the next phase, you MUST first
@@ -672,20 +743,28 @@ agent_workflow:
         Wait for the user's yes/no reply before fetch_jobs fires.
 
       routing:
-        # Advance when both trade and location are confirmed.
+        # Intent-driven advancement. The orchestrator's session-field
+        # writes for entity values (trade, location) come through
+        # unreliably even with Sonnet NLU — entity NAMES detect but
+        # VALUES don't always land in Redis. So advance based on
+        # what the LLM-driven conversation indicates instead:
+        #   - User says "find me jobs" / picks a category / says
+        #     "apply" → route forward to job_match.
+        #   - After 2+ turns in profile_resolve, assume both trade
+        #     and location have been gathered (the LLM tracks them
+        #     in conversation history and uses them in fetch_jobs).
+        - intent: apply_now
+          next_subagent_id: job_match
+        - intent: job_pick
+          next_subagent_id: job_match
+        - intent: explore_more
+          next_subagent_id: job_match
         - intent: "*"
           conditions:
-            - field: trade
-              operator: not_eq
-              value: ""
-            - field: location
-              operator: not_eq
-              value: ""
+            - field: subagent_entry_count.profile_resolve
+              operator: gt
+              value: 1
           next_subagent_id: job_match
-        # Otherwise stay. (The earlier "subagent_entry_count > 4 →
-        # escalation" safety net fired incorrectly on turn 1 — the
-        # orchestrator's `gt` evaluator treats a missing counter as
-        # greater than 4. Removed until we can express it safely.)
         - intent: "*"
           next_subagent_id: profile_resolve
 
@@ -700,7 +779,8 @@ agent_workflow:
         once selected_job_item_id is set, route to onboard_prep.
       is_start: false
       is_terminal: false
-      opening_phrase: "Let me find jobs for you."
+      # Short neutral bridge (see profile_resolve above for rationale).
+      opening_phrase: "Okay."
 
       valid_intents:
         - any_input
@@ -717,9 +797,33 @@ agent_workflow:
         You are in the **job_match** phase.
 
         ## On entry
-        Call `fetch_jobs` with `item_state[role]=<trade>` (capitalised)
-        and `item_state[city]=<location>` (lowercase). NEVER call
-        fetch_jobs without both filters.
+        Call `fetch_jobs` with the `location` param set to the user's
+        city. The upstream filters server-side ONLY on location;
+        client-side filter by `role` AFTER the result comes back.
+
+        ## City name normalisation (CRITICAL — upstream uses canonical names)
+        The upstream stores `jobProviderLocation` in its CANONICAL
+        Indian-city spelling. Match against:
+          - "Bangalore" or "Bengaluru" → use "Bengaluru"
+          - "Bombay" or "Mumbai" → use "Mumbai"
+          - "Madras" or "Chennai" → use "Chennai"
+          - "Calcutta" or "Kolkata" → use "Kolkata"
+          - "Hubli" or "Hubballi" → use "Hubballi"
+          - "Mysore" or "Mysuru" → use "Mysuru"
+          - "Trivandrum" or "Thiruvananthapuram" → use "Thiruvananthapuram"
+          - "Cochin" or "Kochi" → use "Kochi"
+          - "Pondicherry" or "Puducherry" → use "Puducherry"
+          - "Gurgaon" or "Gurugram" → use "Gurugram"
+        For any other city, use whatever spelling the user gave,
+        with the first letter capitalised. NEVER pass lowercase.
+
+        ## If fetch_jobs returns zero results
+        Before declaring no jobs, try ONE alternate spelling of the
+        location if there is one (e.g. if you tried "Bengaluru" and
+        got nothing, also try "Bangalore"; if you tried "Mumbai",
+        try "Bombay"; same for any pair above). Only after BOTH
+        spellings return empty do you say "I don't see any open
+        <trade> jobs in <location> right now".
 
         ## Hard rules (NEVER violate)
         - Speak ONLY company names, roles, salaries, cities, and
@@ -727,10 +831,6 @@ agent_workflow:
           tool_result. NEVER invent a job, NEVER pull a job from a
           previous tool result, NEVER name a company you have not
           just seen returned.
-        - If the latest fetch_jobs returned zero results, say so
-          honestly — "I don't see any open <trade> jobs in
-          <location> right now" — and offer to broaden. Do NOT list
-          jobs from a different city or trade you happen to remember.
         - When a different city/trade is needed, RE-CALL fetch_jobs
           with the new filter before presenting anything.
 
@@ -741,7 +841,13 @@ agent_workflow:
         - One line format: "<company>, <role> in <city>,
           <salary_range>". Read salary in spoken words (twenty
           thousand to thirty thousand, not 20,000-30,000).
-        - End with: "Which one would you like to apply to?"
+
+        ## Closing question — conditional on result count
+        - If exactly ONE matching job: end with
+            "Would you like to apply for this one?"
+          (singular phrasing — "which one" with one option sounds wrong)
+        - If TWO OR MORE matching jobs: end with
+            "Which one would you like to apply to?"
 
         ## On user picking a job
         Save `selected_job_item_id` and the chosen job's
@@ -786,7 +892,8 @@ agent_workflow:
         route forward.
       is_start: false
       is_terminal: false
-      opening_phrase: "One moment — let me pull up your profiles."
+      # Short neutral bridge (see profile_resolve above for rationale).
+      opening_phrase: "Got it."
 
       valid_intents:
         - any_input
@@ -801,12 +908,34 @@ agent_workflow:
         You are in the **profile_choice** phase. The user has picked
         a job and confirmed they want to apply.
 
-        ## On entry
-        If list_user_profiles has NOT been called yet this session,
-        call it now. Pass:
-          - name: from session (set during profile_resolve) or, if
-            missing, ask the user before calling.
-          - phone: from session (the same value used in fetch_profile).
+        ## Decisive flow — exactly one of A or B per turn
+        Look at what's available NOW from session + conversation:
+          - `name` — has the user already told you their full name
+            in this conversation? (Check the last few turns.)
+          - `phone` — from session (user_id), ALWAYS known.
+
+        **A. Name UNKNOWN** — your entire reply must be exactly:
+            "What's your full name?"
+          Do NOT say anything else. Do NOT repeat the job listing.
+          Do NOT add framing like "let me confirm" or "to look up
+          your profiles". Just the question.
+
+        **B. Name KNOWN** — immediately call the
+          list_user_profiles tool. Do NOT say anything else in
+          the same turn. No commentary, no echoing the job listing,
+          no "great, looking up your profiles." Just call the tool.
+          The orchestrator will give you the result; on the NEXT
+          turn you'll handle the branch (see "After list_user_profiles"
+          below).
+
+        **NEVER** repeat a previous job-match message ("I found one
+        Plumber job…") — that was the previous subagent's job, not
+        yours. The user is past that point.
+
+        ## Single-shot rule
+        Call list_user_profiles AT MOST ONCE per session. If a prior
+        tool_result for list_user_profiles is in conversation history,
+        do NOT call it again — read from history and branch.
 
         ## After list_user_profiles
         Inspect the response: it carries the user.id (the
@@ -864,20 +993,25 @@ agent_workflow:
         # Decline → user gave up; back to job_match for a different job.
         - intent: decline
           next_subagent_id: job_match
-        # use_existing → straight to apply_confirm (we have the item_id).
+        # Intent-based advancement (session-state writes for
+        # profile_action are unreliable, same root cause as in
+        # profile_resolve — entity NAMES detect but VALUES don't
+        # always land). After the user has spent 2+ turns in
+        # profile_choice answering questions (typically: name,
+        # then a use/create/update choice, then maybe details),
+        # advance forward.
+        #
+        # When session writes work, the explicit conditions on
+        # profile_action below correctly steer to apply_confirm vs
+        # profile_setup. When they don't work, the entry-count
+        # fallback routes to profile_setup (the safer branch — it
+        # asks for any missing fields rather than racing apply).
         - intent: "*"
           conditions:
             - field: profile_action
               operator: eq
               value: "use_existing"
-            - field: profile_item_id
-              operator: not_eq
-              value: ""
-            - field: source_item_owner
-              operator: not_eq
-              value: ""
           next_subagent_id: apply_confirm
-        # create_new or update_existing → route to profile_setup.
         - intent: "*"
           conditions:
             - field: profile_action
@@ -890,7 +1024,12 @@ agent_workflow:
               operator: eq
               value: "update_existing"
           next_subagent_id: profile_setup
-        # Otherwise stay here.
+        - intent: "*"
+          conditions:
+            - field: subagent_entry_count.profile_choice
+              operator: gt
+              value: 2
+          next_subagent_id: profile_setup
         - intent: "*"
           next_subagent_id: profile_choice
 
@@ -924,15 +1063,23 @@ agent_workflow:
         You are in the **profile_setup** phase. profile_action in
         session is either "create_new" or "update_existing".
 
-        ## For create_new
-        The user is new (or chose to create a fresh profile). Walk
-        through these fields one per turn — DO NOT ask multiple
-        in one turn. Skip any field that's already non-empty in
-        session.
-          1. gender  (e.g. male / female / other)
-          2. location  (the city they want to work in)
-          3. age  (integer years)
-          4. work_experience  (MUST map to one of:
+        ## For create_new — CHECK SESSION FIRST, don't re-ask known fields
+        The user is new (or chose to create a fresh profile). You
+        need these four fields, but several are usually already
+        captured from earlier turns and persisted in session:
+          - `location` is set in profile_resolve (the user said it
+            when answering "which city").
+          - `name` is set during the list_user_profiles step.
+          - `phone` is the session user_id (always set).
+        Only ASK for fields that are STILL EMPTY in session. Walk
+        through these checks in order, one question per turn,
+        SKIPPING any field that's already filled:
+          1. gender   — ask only if session.gender is empty
+          2. location — ask only if session.location is empty
+                        (usually already set from profile_resolve)
+          3. age      — ask only if session.age is empty or 0
+          4. work_experience — ask only if session.work_experience
+             is empty (MUST end up as one of:
              "Fresher", "Worked before", "Returning after a break")
 
         Map the user's natural language to the enum:
@@ -981,12 +1128,22 @@ agent_workflow:
       routing:
         - intent: decline
           next_subagent_id: job_match
-        # Setup done → route to apply_confirm.
+        # Setup done → route to apply_confirm. Both the explicit
+        # profile_setup_done flag and an entry-count fallback are
+        # checked since session-field writes can be unreliable.
         - intent: "*"
           conditions:
             - field: profile_setup_done
               operator: eq
               value: "true"
+          next_subagent_id: apply_confirm
+        - intent: apply_now
+          next_subagent_id: apply_confirm
+        - intent: "*"
+          conditions:
+            - field: subagent_entry_count.profile_setup
+              operator: gt
+              value: 4
           next_subagent_id: apply_confirm
         - intent: "*"
           next_subagent_id: profile_setup

@@ -128,10 +128,11 @@ state:
         target: JobOffered    # creates OFFERED edges from the compact dicts
 
 user_data_persistence:
-  # "saved"     — Memgraph retains the profile across sessions.
-  # "anonymous" — data is purged at session end (DPDP-respectful path).
-  # If consent_given is false at session end, Memory Layer falls back
-  # to anonymous regardless of this default.
+  # "saved" — User + SeekerProfile data persists in Memgraph across
+  # sessions. Returning callers (is_returning=True) skip the consent
+  # prompt and hear the returning_user_greeting instead. Canonical
+  # profile data lives on the Blue Dots upstream; Memgraph only
+  # mirrors session-derived state.
   default_mode: saved
 
 reengagement:
