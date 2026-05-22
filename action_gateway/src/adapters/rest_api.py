@@ -533,6 +533,18 @@ class RestApiAdapter(ToolAdapter):
 
         if response.is_error:
             error_msg = f"http_error: {response.status_code}"
+            # Capture the upstream body (capped) so the LLM can READ what
+            # actually went wrong — e.g. ``{"error":"INVALID_ITEM_STATE",
+            # "message":"Invalid item_state: must be >= 14"}`` — and re-ask
+            # the offending field instead of silently announcing success.
+            # Previously this body was logged only at DEBUG level and the
+            # tool_result content was an empty string, which Sonnet treats
+            # as a benign empty success.
+            body_excerpt = (response.text or "").strip()[:1500]
+            result_text = (
+                f"upstream returned HTTP {response.status_code}. "
+                f"response body: {body_excerpt}"
+            ) if body_excerpt else f"upstream returned HTTP {response.status_code} with empty body."
             logger.warning(
                 "rest_api_http_error",
                 extra={
@@ -542,6 +554,7 @@ class RestApiAdapter(ToolAdapter):
                     "tool_name": tool_name,
                     "session_id": session_id,
                     "latency_ms": latency_ms,
+                    "body": body_excerpt,
                 },
             )
             return ToolResult(
@@ -550,6 +563,7 @@ class RestApiAdapter(ToolAdapter):
                 result={},
                 success=False,
                 error=error_msg,
+                result_text=result_text,
             )
 
         try:

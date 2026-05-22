@@ -21,8 +21,18 @@ from src.models import ToolDefinition, ToolResult
 # ---------------------------------------------------------------------------
 
 
-def make_mock_response(status_code: int, json_data: dict | None = None) -> MagicMock:
-    """Build a mock httpx.Response."""
+def make_mock_response(
+    status_code: int,
+    json_data: dict | None = None,
+    text: str | None = None,
+) -> MagicMock:
+    """Build a mock httpx.Response.
+
+    ``text`` is the raw response body (used by the adapter on 4xx/5xx
+    to surface the upstream error message to the LLM). Defaults to the
+    JSON-encoded form of ``json_data`` when not supplied, mirroring
+    httpx's own behaviour.
+    """
     resp = MagicMock(spec=httpx.Response)
     resp.status_code = status_code
     resp.is_error = status_code >= 400
@@ -30,6 +40,11 @@ def make_mock_response(status_code: int, json_data: dict | None = None) -> Magic
         resp.json.return_value = json_data
     else:
         resp.json.return_value = {}
+    if text is not None:
+        resp.text = text
+    else:
+        import json as _json
+        resp.text = _json.dumps(json_data) if json_data is not None else ""
     return resp
 
 
@@ -262,6 +277,47 @@ class TestRestApiAdapterExecute:
         assert result.success is False
         assert "http_error" in result.error
         assert "404" in result.error
+
+    @pytest.mark.asyncio
+    async def test_http_error_surfaces_upstream_body_to_llm(self, rest_tool_config):
+        """4xx with a JSON error body puts that body into result_text so the
+        LLM downstream can read why the call failed and re-ask the missing
+        field. Previously the body was logged at debug level and
+        result_text was empty — the LLM saw an empty "{}" content and
+        treated it as a benign success."""
+        adapter = RestApiAdapter(rest_tool_config)
+        upstream_body = (
+            '{"error": "INVALID_ITEM_STATE", '
+            '"message": "Invalid item_state: must be >= 14"}'
+        )
+        mock_resp = make_mock_response(400, json_data={}, text=upstream_body)
+
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=mock_resp)
+            result = await adapter.execute("test_weather", {"location": "X"}, "sess-err")
+
+        assert result.success is False
+        assert "http_error" in result.error
+        assert "400" in result.error
+        assert "INVALID_ITEM_STATE" in result.result_text
+        assert "must be >= 14" in result.result_text
+        assert "400" in result.result_text
+
+    @pytest.mark.asyncio
+    async def test_http_error_with_empty_body_still_describes_failure(self, rest_tool_config):
+        """4xx with no body still produces a non-empty result_text describing
+        the status so the LLM can branch on failure rather than guessing
+        from an empty payload."""
+        adapter = RestApiAdapter(rest_tool_config)
+        mock_resp = make_mock_response(500, json_data={}, text="")
+
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=mock_resp)
+            result = await adapter.execute("test_weather", {"location": "X"}, "sess-empty")
+
+        assert result.success is False
+        assert "500" in result.result_text
+        assert "empty body" in result.result_text
 
     @pytest.mark.asyncio
     async def test_timeout_returns_failure(self, rest_tool_config):
