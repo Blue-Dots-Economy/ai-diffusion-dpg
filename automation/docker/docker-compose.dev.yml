@@ -38,8 +38,6 @@ services:
       - CONFIG_FOLDER=/app/config
       # Connector API keys are injected here at deploy time by dev-kit (e.g. ONEST_API_KEY=...).
       # When running docker compose manually, add KEY=value lines to this section.
-      # Blue Dots Economy domain — onboard + apply_job use x-api-key auth.
-      - BLUE_DOTS_API_KEY=${BLUE_DOTS_API_KEY:-}
     volumes:
       - ../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-kkb}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
