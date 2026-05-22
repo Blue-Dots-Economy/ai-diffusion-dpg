@@ -460,7 +460,20 @@ class RestApiAdapter(ToolAdapter):
                 else:
                     body_template = endpoint.get("body_template")
                     if body_template is not None:
-                        rendered = _render_body_template(body_template, all_params)
+                        # Make session identifiers available to body
+                        # substitution alongside agent + static params,
+                        # mirroring how path templating already exposes them.
+                        # Lets a YAML write e.g. ``phoneNumber: "{user_id}"``
+                        # so the adapter injects the session identity
+                        # automatically and the LLM never has to know or
+                        # transcribe it (which it would otherwise emit as
+                        # a literal "{{session.user_id}}" placeholder).
+                        template_values = {
+                            "session_id": session_id or "",
+                            "user_id": user_id or "",
+                            **all_params,
+                        }
+                        rendered = _render_body_template(body_template, template_values)
                         body = {} if rendered is _DROP else rendered
                     else:
                         body = all_params

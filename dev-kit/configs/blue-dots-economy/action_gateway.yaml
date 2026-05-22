@@ -208,26 +208,18 @@ tools:
         body_template:
           user:
             name: "{name}"
-            phoneNumber: "{phone}"
+            # phoneNumber resolves from session.user_id automatically via
+            # the adapter's body-template substitution — LLM does NOT pass
+            # phone, never sees it as a tool input. This avoids the
+            # "{{session.user_id}}" literal-placeholder leak we hit when
+            # phone was an agent-supplied param.
+            phoneNumber: "{user_id}"
         params:
           - name: name
             source: agent
             type: string
             required: true
             description: "Caller's full name."
-          - name: phone
-            source: agent
-            type: string
-            required: true
-            description: >
-              MUST be the session user_id (bare 10-digit phone, no
-              country code). The caller's phone is set by Reach
-              Layer as user_id at session start — it is ALWAYS
-              known and must NEVER be asked from the caller. When
-              you call this tool, pass session.user_id verbatim as
-              the `phone` argument. Asking the caller for their
-              phone number is a HARD ERROR — the user already
-              dialled in, we have it.
     response:
       max_size_chars: 4000
       projection:
@@ -275,9 +267,13 @@ tools:
         method: POST
         path: /api/v1/admin/onboard
         body_template:
+          # phoneNumber and item_state.phone both resolve from
+          # session.user_id automatically via the adapter — LLM does
+          # NOT pass phone, never sees it as a tool input. Avoids
+          # the "{{session.user_id}}" literal-placeholder leak.
           user:
             name: "{name}"
-            phoneNumber: "{phone}"
+            phoneNumber: "{user_id}"
           profile:
             item_id: "{profile_item_id}"     # missing → CREATE, present → UPDATE
             item_network: "blue_dot"
@@ -285,7 +281,7 @@ tools:
             item_type: "profile_1.0"
             item_state:
               name: "{name}"
-              phone: "{phone}"
+              phone: "{user_id}"
               gender: "{gender}"
               location: "{location}"
               age: "{age}"
@@ -301,15 +297,6 @@ tools:
             type: string
             required: true
             description: "Caller's full name."
-          - name: phone
-            source: agent
-            type: string
-            required: true
-            description: >
-              MUST be the session user_id (bare 10-digit phone, no
-              country code). ALWAYS known via Reach Layer — pass
-              session.user_id verbatim. NEVER ask the caller for
-              their phone number; they dialled in, we have it.
           - name: gender
             source: agent
             type: string

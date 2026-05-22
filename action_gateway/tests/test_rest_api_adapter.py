@@ -780,3 +780,114 @@ class TestRestApiAdapterPathTemplating:
 
         url = mock_client.request.call_args.kwargs["url"]
         assert url == "http://memory_layer:8002/sessions/abc-123/summary"
+
+    @pytest.mark.asyncio
+    async def test_user_id_substituted_into_body_template(self, monkeypatch):
+        """body_template ``"{user_id}"`` placeholders are filled from the
+        session identity, mirroring path-templating. Lets a YAML wire the
+        caller's identity into a POST body without asking the LLM to know
+        or echo it — otherwise the LLM tends to emit a literal
+        ``"{{session.user_id}}"`` placeholder string into the body and the
+        upstream stores garbage."""
+        from unittest.mock import AsyncMock, patch
+        from src.adapters.rest_api import RestApiAdapter
+
+        cfg = {
+            "id": "create_user",
+            "type": "rest_api",
+            "category": "write",
+            "description": "Create user from session identity.",
+            "base_url": "http://upstream",
+            "endpoints": [
+                {
+                    "name": "create",
+                    "method": "POST",
+                    "path": "/users",
+                    "body_template": {
+                        "user": {
+                            "name": "{name}",
+                            "phoneNumber": "{user_id}",
+                        },
+                    },
+                    "params": [
+                        {
+                            "name": "name",
+                            "source": "agent",
+                            "type": "string",
+                            "required": True,
+                            "description": "Caller's full name.",
+                        },
+                    ],
+                }
+            ],
+            "response": {"max_size_chars": 1000},
+        }
+        adapter = RestApiAdapter(cfg)
+        mock_resp = make_mock_response(200, {"ok": True})
+
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=mock_resp)
+            await adapter.execute(
+                "create_user",
+                {"name": "Rahul"},
+                "sess-id-1",
+                "7892487848",
+            )
+
+        sent_body = mock_client.request.call_args.kwargs["json"]
+        assert sent_body == {
+            "user": {
+                "name": "Rahul",
+                "phoneNumber": "7892487848",
+            }
+        }
+
+    @pytest.mark.asyncio
+    async def test_body_template_session_id_substitution(self):
+        """body_template ``"{session_id}"`` also resolves, same as paths."""
+        from unittest.mock import AsyncMock, patch
+        from src.adapters.rest_api import RestApiAdapter
+
+        cfg = {
+            "id": "log_event",
+            "type": "rest_api",
+            "category": "write",
+            "description": "Log a session event.",
+            "base_url": "http://upstream",
+            "endpoints": [
+                {
+                    "name": "log",
+                    "method": "POST",
+                    "path": "/events",
+                    "body_template": {
+                        "session": "{session_id}",
+                        "event": "{event}",
+                    },
+                    "params": [
+                        {
+                            "name": "event",
+                            "source": "agent",
+                            "type": "string",
+                            "required": True,
+                            "description": "Event name.",
+                        },
+                    ],
+                }
+            ],
+            "response": {"max_size_chars": 1000},
+        }
+        adapter = RestApiAdapter(cfg)
+        mock_resp = make_mock_response(200, {})
+
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=mock_resp)
+            await adapter.execute(
+                "log_event",
+                {"event": "started"},
+                "sess-xyz",
+                "ignored-user",
+            )
+
+        sent_body = mock_client.request.call_args.kwargs["json"]
+        assert sent_body == {"session": "sess-xyz", "event": "started"}
+
