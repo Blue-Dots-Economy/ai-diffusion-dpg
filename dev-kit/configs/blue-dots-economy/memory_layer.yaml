@@ -58,7 +58,14 @@ state:
         key: user_id    # = phone number; set by Reach Layer at session init.
 
       subnodes:
-        SeekerProfile:
+        # Runtime memory_layer.py hardcodes the lookup key as
+        # ``subnodes["UserProfile"]``. The label is fixed; only fields
+        # are domain-driven. (The seeker terminology is preserved in
+        # session/persistent semantics below, but the subnode key
+        # itself must be ``UserProfile`` for declared_fields to take
+        # effect — otherwise every write falls through to UserAttribute
+        # ad-hoc storage and nothing lands on the profile node.)
+        UserProfile:
           rel: HAS_PROFILE
           declared_fields:
             # Identity layer (profile_1.0 required fields)

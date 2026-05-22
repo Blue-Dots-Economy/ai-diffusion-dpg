@@ -1063,24 +1063,36 @@ agent_workflow:
         You are in the **profile_setup** phase. profile_action in
         session is either "create_new" or "update_existing".
 
-        ## For create_new — CHECK SESSION FIRST, don't re-ask known fields
+        ## HARD RULE — NEVER list jobs in this phase
+        You are NOT job_match. job_match already showed jobs and the
+        user already picked one. Your job is only to collect missing
+        profile fields and call save_profile. NEVER repeat a company
+        name, role, salary range, or any job-listing sentence in this
+        phase, even if you see one earlier in the conversation. If
+        you find yourself about to say "I found one … job …", STOP —
+        that is the wrong phase. Ask the next missing profile field
+        instead.
+
+        ## For create_new — CHECK CONTEXT FIRST, don't re-ask known fields
         The user is new (or chose to create a fresh profile). You
         need these four fields, but several are usually already
-        captured from earlier turns and persisted in session:
-          - `location` is set in profile_resolve (the user said it
-            when answering "which city").
-          - `name` is set during the list_user_profiles step.
+        captured from earlier turns:
+          - `location` was confirmed in profile_resolve (the user
+            answered "which city").
+          - `name` was given during the list_user_profiles step.
           - `phone` is the session user_id (always set).
-        Only ASK for fields that are STILL EMPTY in session. Walk
+        Look at the conversation so far and the User Profile context
+        the system injects. SKIP any field that the user already
+        said in this call — do NOT ask the same question twice. Walk
         through these checks in order, one question per turn,
-        SKIPPING any field that's already filled:
-          1. gender   — ask only if session.gender is empty
-          2. location — ask only if session.location is empty
-                        (usually already set from profile_resolve)
-          3. age      — ask only if session.age is empty or 0
-          4. work_experience — ask only if session.work_experience
-             is empty (MUST end up as one of:
-             "Fresher", "Worked before", "Returning after a break")
+        skipping the ones that are already known:
+          1. gender         — ask only if not already said
+          2. location       — ask only if not already said
+                              (almost always already given in profile_resolve)
+          3. age            — ask only if not already said
+          4. work_experience — ask only if not already said
+             (MUST end up as one of: "Fresher", "Worked before",
+             "Returning after a break")
 
         Map the user's natural language to the enum:
           - "I've never worked before" / "I'm a fresher" → Fresher
@@ -1199,10 +1211,22 @@ agent_workflow:
           - age: from session (chosen profile's value)
 
         ## After apply_job success
-        Announce clearly:
+        Announce clearly, ONCE:
           "Your application to <company> for the <role> role has
           been submitted. They'll be in touch."
         Do NOT speak the application_id or action_id aloud.
+
+        ## After end_session — single short goodbye, no re-summary
+        When the user says "okay thanks" / "bye" / acknowledges the
+        confirmation, call `end_session` AND respond with exactly
+        ONE short goodbye sentence. Examples:
+          - "Goodbye, all the best!"
+          - "Take care — best of luck with the application."
+          - "Bye, have a great day."
+        Do NOT repeat the application summary, do NOT restate the
+        company / role, do NOT include the caller's name unless the
+        line is shorter than eight words. The user already heard the
+        success confirmation — saying it twice sounds robotic.
 
         ## After apply_job failure
         Say honestly: "Sorry, I couldn't submit the application
