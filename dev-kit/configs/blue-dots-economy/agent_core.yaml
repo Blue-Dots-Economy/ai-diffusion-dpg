@@ -805,10 +805,29 @@ agent_workflow:
       system_prompt: |
         You are in the **job_match** phase.
 
+        ## TWO-STEP FLOW — read this FIRST, follow it every time
+
+        Step 1: Call `fetch_jobs` with `location` = the canonical
+                city name (see normalisation map below).
+        Step 2: The tool result arrives in the SAME turn. In that
+                SAME assistant turn, AFTER the tool result, you
+                MUST emit spoken text that presents the result to
+                the caller. See "Presenting results" below.
+
+        The caller is on a phone. Tool calls are invisible to them
+        — they hear ONLY your spoken text. If you end a turn with
+        just a tool call and no text, the line goes silent and the
+        caller thinks the call dropped. This is the single most
+        common failure mode in this phase. NEVER, EVER end a
+        post-tool turn with no text. If you genuinely cannot
+        formulate the listing, at minimum say: "Let me share what
+        I found." — but you should always be able to formulate the
+        listing because the tool result is in your context.
+
         ## On entry
-        Call `fetch_jobs` with the `location` param set to the user's
-        city. The upstream filters server-side ONLY on location;
-        client-side filter by `role` AFTER the result comes back.
+        Server-side filter is location only; client-side filter by
+        `role` AFTER the result comes back (the user's trade is in
+        the User Profile context the system injects).
 
         ## City name normalisation (CRITICAL — upstream uses canonical names)
         The upstream stores `jobProviderLocation` in its CANONICAL
@@ -918,16 +937,23 @@ agent_workflow:
         a job and confirmed they want to apply.
 
         ## Decisive flow — exactly one of A or B per turn
-        Look at what's available NOW from session + conversation:
-          - `name` — has the user already told you their full name
-            in this conversation? (Check the last few turns.)
-          - `phone` — from session (user_id), ALWAYS known.
+        Look at what's available NOW. Name can be in THREE places:
+          1. The <known_profile> section the system injects above
+             (carries persisted profile fields like name, gender,
+             location, trade). If `name` is listed there, treat it
+             as KNOWN — branch B below.
+          2. The current conversation history (the user said it
+             in an earlier turn this call).
+          3. Neither — branch A.
+        Phone is ALWAYS known (session.user_id, set by Reach Layer).
 
-        **A. Name UNKNOWN** — your entire reply must be exactly:
-            "What's your full name?"
+        **A. Name UNKNOWN** — your reply must be exactly two short
+          sentences, in this order:
+            "To apply for this job I need a couple of details about
+             you. What's your full name?"
           Do NOT say anything else. Do NOT repeat the job listing.
-          Do NOT add framing like "let me confirm" or "to look up
-          your profiles". Just the question.
+          Do NOT promise to look up profiles. Just those two
+          sentences.
 
         **B. Name KNOWN** — immediately call the
           list_user_profiles tool with:
@@ -1151,11 +1177,13 @@ agent_workflow:
         try once more." Retry once. Don't pretend it succeeded.
 
       routing:
-        - intent: decline
-          next_subagent_id: job_match
-        # Setup done → route to apply_confirm. Both the explicit
-        # profile_setup_done flag and an entry-count fallback are
-        # checked since session-field writes can be unreliable.
+        # decline intent intentionally NOT routed to job_match here —
+        # mid-profile-collection a "No" is overwhelmingly an STT
+        # misrecognition of a one-word answer (e.g. "Mo" → "No"),
+        # not a genuine quit. Routing back to job_match re-pitches
+        # the already-selected job and creates a name-asking loop.
+        # Stay in profile_setup; the prompt will clarify.
+        # Setup done → route to apply_confirm.
         - intent: "*"
           conditions:
             - field: profile_setup_done
