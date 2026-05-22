@@ -40,8 +40,11 @@ def test_kkb_config_boots_with_user_state_model_enabled():
     assert p._user_state_enabled is True
 
 
-def test_obsrv_docs_assistant_boots():
-    """Obsrv-docs-assistant domain boots cleanly; user_state disabled by default."""
-    cfg = _load_merged_domain_config("obsrv-docs-assistant")
+def test_user_state_disabled_when_flag_false():
+    """NLUProcessor reports user_state as disabled when the config explicitly
+    sets ``conversation.user_state_model.enabled: false`` — covers the
+    stateless-agent code path (GH-139)."""
+    cfg = _load_merged_domain_config("kkb")
+    cfg.setdefault("conversation", {})["user_state_model"] = {"enabled": False}
     p = NLUProcessor(cfg, chat_provider=_mock_provider())
     assert p._user_state_enabled is False

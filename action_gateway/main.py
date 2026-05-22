@@ -136,7 +136,7 @@ def _assert_all_tools_registered(config: dict, registry: "AdapterRegistry") -> N
     - REST API adapters: register under the bare config ``id``
       (e.g. ``onest_market_lookup``).
     - MCP adapters: register each discovered sub-tool as ``{id}__{tool_name}``
-      (e.g. ``obsrv_docs__searchDocumentation``). The bare ``id`` is never a
+      (e.g. ``docs_api__searchDocumentation``). The bare ``id`` is never a
       registered name, so the check uses a prefix match instead.
 
     Args:

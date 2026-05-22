@@ -174,7 +174,7 @@ def test_mcp_tool_requires_server_url_and_transport():
 
 def test_mcp_tool_valid():
     t = ToolDefinition(
-        id="obsrv_docs", description="d",
+        id="docs_api", description="d",
         type="mcp", server_url="https://x", transport="streamable_http",
     )
     assert t.type.value == "mcp"

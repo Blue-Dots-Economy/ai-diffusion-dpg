@@ -549,9 +549,10 @@ class TestGetDeployStatus:
 class TestDeployExecuteServiceFiltering:
     """``deploy/execute`` must filter ``state.services`` by the same
     selective-deploy logic the compose generator uses, otherwise the
-    status endpoint surfaces non-deployed services as ``failed``
-    (poem-bot regression: KE / AG appeared as failed on the Config
-    Review screen even though the compose correctly dropped them).
+    status endpoint surfaces non-deployed services as ``failed`` —
+    e.g. KE / AG appearing as failed on the Config Review screen
+    even though the compose correctly dropped them when those blocks
+    were disabled by the intake flags.
     """
 
     def _patch_intake(self, project_dir: Path, **overrides) -> None:

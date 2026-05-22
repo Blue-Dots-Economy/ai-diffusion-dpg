@@ -345,7 +345,7 @@ Two-step discover-then-write pattern:
 
    > "Here are the tools exposed by this MCP server. I'll register
    > them under the namespace `<short_snake_case_id>` (e.g.
-   > `obsrv_docs`). Do you want me to register all of them, or
+   > `docs_api`). Do you want me to register all of them, or
    > should I skip any?"
 
    On confirmation, call `add_tool` ONCE for the server (NOT once
@@ -354,7 +354,7 @@ Two-step discover-then-write pattern:
 
    ```
    add_tool(spec={{
-     id: "<short_snake_case_namespace, e.g. obsrv_docs>",
+     id: "<short_snake_case_namespace, e.g. docs_api>",
      type: "mcp",
      category: "read" | "write",
      description: "<one-line plain English summarising what this MCP server provides>",
@@ -368,7 +368,7 @@ Two-step discover-then-write pattern:
    ask. GitBook MCP and most modern servers use
    `streamable_http`; older servers may use `sse`. MCP tools do NOT
    auto-create connectors; subagents reference them by namespaced
-   names (e.g. `obsrv_docs__searchDocumentation`).
+   names (e.g. `docs_api__searchDocumentation`).
 
 **No manual / imagined tool definitions.** Reject any path that
 isn't backed by a parsed OpenAPI spec (Path A) or an MCP discovery

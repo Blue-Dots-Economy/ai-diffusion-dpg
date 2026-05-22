@@ -1,9 +1,0 @@
-tools:
-- id: obsrv_docs
-  type: mcp
-  category: read
-  description: Access the Obsrv documentation via MCP. Supports searching across all
-    documentation pages and fetching full page content with navigation links.
-  server_url: https://docs.obsrv.ai/~gitbook/mcp
-  transport: streamable_http   # GitBook MCP uses POST-only Streamable HTTP (MCP spec 2025-03-26)
-  timeout_ms: 5000

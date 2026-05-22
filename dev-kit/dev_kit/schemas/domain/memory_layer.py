@@ -148,8 +148,7 @@ class StateSection(BaseModel):
     """memory_layer.state — session + persistent state config.
 
     persistent is optional — runtime memory_layer reads `.get("persistent", {})`
-    and informational/stateless agents (e.g. obsrv-docs-assistant) skip the
-    persistent graph entirely.
+    and informational/stateless agents skip the persistent graph entirely.
     """
     model_config = ConfigDict(extra="forbid")
     session: SessionStateConfig

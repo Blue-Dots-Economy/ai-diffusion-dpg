@@ -65,13 +65,13 @@ def test_accepts_empty_config_with_defaults():
 def test_accepts_mcp_tool():
     cfg = MergedConfig.validate_full({
         "tools": [{
-            "id": "obsrv_docs",
+            "id": "docs_api",
             "type": "mcp",
             "category": "read",
             "description": "Docs search",
             "server_url": "https://mcp.example.com",
             "transport": "sse",
-            "namespace": "obsrv_docs",
+            "namespace": "docs_api",
         }],
     })
     assert cfg.tools[0].type == ToolType.mcp
