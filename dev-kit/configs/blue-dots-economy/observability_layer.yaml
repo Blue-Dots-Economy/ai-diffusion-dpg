@@ -30,7 +30,7 @@ observability:
     metrics:
       - name: "blue_dots.applications"
         instrument: counter
-        description: "Total job applications submitted via Blue Dots."
+        description: "Total job applications submitted via the Porbandar Job Fair 2026."
         attributes:
           - "trade"
           - "city"

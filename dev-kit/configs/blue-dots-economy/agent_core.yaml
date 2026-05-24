@@ -12,7 +12,7 @@ agent:
   fallback_model: claude-haiku-4-5-20251001
   ask_for_consent: true
   consent_prompt: >
-    Hello! Welcome to Blue Dots. Can I save your profile and submit job
+    Hello! Welcome to the Porbandar Job Fair 2026. Can I save your profile and submit job
     applications on your behalf during this call? Please say yes to continue.
 
   # Apply flow chains up to three tools (onboard → apply_job is the worst
@@ -126,7 +126,7 @@ conversation:
   escalation_message: "Let me connect you with a counsellor who can help further."
   output_blocked_message: "Sorry, I'm having trouble responding. Could you ask that again?"
   unknown_intent_message: "Sorry, I didn't catch that. Could you say it again?"
-  termination_message: "Thank you for calling Blue Dots. Have a good day."
+  termination_message: "Thank you for calling the Porbandar Job Fair 2026. Have a good day."
   unsupported_language_message: >
     Sorry, I can only speak in English, Hindi, or Gujarati. Could you continue
     in one of those?
@@ -185,7 +185,7 @@ connectors:
           profiles, the user is new and trade + city must be asked
           explicitly.
         on_empty: >
-          Welcome to Blue Dots. I don't see any profile for you yet.
+          Welcome to the Porbandar Job Fair 2026. I don't see any profile for you yet.
           Let's set one up — which trade are you looking for work in?
         on_failure: >
           Sorry, I couldn't reach the profile service. Let me try again
@@ -194,7 +194,7 @@ connectors:
 
     - name: fetch_jobs
       description: >
-        Search the Blue Dots provider network for current job postings,
+        Search the Porbandar Job Fair 2026 provider network for current job postings,
         filtered by trade (role) and city. Call only after trade and
         city are confirmed in memory.
       input_schema:
@@ -331,7 +331,7 @@ preprocessing:
     confidence_threshold: 0.5
     user_state_confidence_threshold: 0.4
     domain_instruction: |
-      You are an NLU classifier for Blue Dots Agent, a voice job-search
+      You are an NLU classifier for the Porbandar Job Fair 2026 voice agent, a voice job-search
       assistant. Classify user turns into one of three classes:
       (1) routing intents that move the user between intake / search /
           apply stages;
@@ -480,7 +480,7 @@ agent_workflow:
     # "update existing".
 
   agent_system_prompt: |
-    You are Blue Dots Agent — a warm, calm, conversational voice guide for
+    You are the Porbandar Job Fair 2026 voice assistant — a warm, calm, conversational voice guide for
     job seekers in India. Your job is to help the caller find a job and
     submit an application, end to end, in a single phone call.
 
@@ -620,7 +620,7 @@ agent_workflow:
       is_start: true
       is_terminal: false
       opening_phrase: >
-        Hello! Welcome to Blue Dots. Can I save your profile and submit
+        Hello! Welcome to the Porbandar Job Fair 2026. Can I save your profile and submit
         job applications on your behalf during this call? Please say
         yes to continue.
 
@@ -1426,7 +1426,7 @@ agent_workflow:
       description: Graceful session termination.
       is_start: false
       is_terminal: true
-      opening_phrase: "Thank you for calling Blue Dots. Have a good day."
+      opening_phrase: "Thank you for calling the Porbandar Job Fair 2026. Have a good day."
       special_handler: null
       valid_intents: []
       tools: []

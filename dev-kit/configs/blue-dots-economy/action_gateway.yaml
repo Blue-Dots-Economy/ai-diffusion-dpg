@@ -27,7 +27,7 @@ tools:
     category: read
     description: >
       Fetch any existing seeker profiles for the caller's phone number
-      from the Blue Dots provider network. Returns zero profiles for a
+      from the Porbandar Job Fair 2026 provider network. Returns zero profiles for a
       new user, one profile for a returning user, or multiple profiles
       when the same phone has been used to create several accounts.
       ALWAYS call this once on the first turn after consent has been
@@ -112,7 +112,7 @@ tools:
     type: rest_api
     category: read
     description: >
-      Search the Blue Dots provider network for live job postings,
+      Search the Porbandar Job Fair 2026 provider network for live job postings,
       filtered by the user's location (jobProviderLocation). ALWAYS
       call this once after location is confirmed. The trade/role is
       NOT filtered server-side — read the projected results and pick
