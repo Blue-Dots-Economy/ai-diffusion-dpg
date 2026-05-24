@@ -944,3 +944,358 @@ class TestRestApiAdapterPathTemplating:
         sent_body = mock_client.request.call_args.kwargs["json"]
         assert sent_body == {"session": "sess-xyz", "event": "started"}
 
+
+# ---------------------------------------------------------------------------
+# TestRestApiAdapterExtraHeadersValidation
+# ---------------------------------------------------------------------------
+
+
+class TestRestApiAdapterExtraHeadersValidation:
+    """Init-time validation of the extra_headers config block."""
+
+    def test_empty_string_env_var_rejected_like_missing(self, rest_tool_config, monkeypatch):
+        """An exported-but-empty env var must fail the same way as unset.
+
+        Catches the silent-partial-auth failure mode: the operator runs
+        ``export TENANT_ID=""`` (or docker compose expands a missing
+        variable to empty), and the adapter previously sent
+        ``X-Tenant-Id: ""`` on every request indefinitely.
+        """
+        monkeypatch.setenv("TEST_WEATHER_KEY", "k")
+        monkeypatch.setenv("TEST_TENANT_ID", "")
+        cfg = dict(rest_tool_config)
+        cfg["extra_headers"] = [
+            {"name": "X-Tenant-Id", "secret_env": "TEST_TENANT_ID"},
+        ]
+        with pytest.raises(ValueError, match="TEST_TENANT_ID"):
+            RestApiAdapter(cfg)
+
+    def test_empty_string_auth_secret_env_rejected(self, rest_tool_config, monkeypatch):
+        """Same empty-string contract on auth.secret_env — symmetric with extra_headers."""
+        monkeypatch.setenv("TEST_WEATHER_KEY", "")
+        with pytest.raises(ValueError, match="TEST_WEATHER_KEY"):
+            RestApiAdapter(rest_tool_config)
+
+    def test_multiple_entries_all_resolved(self, rest_tool_config, monkeypatch):
+        """Several extra_headers entries all resolve independently — guards
+        against a regression that broke on len > 1."""
+        monkeypatch.setenv("TEST_WEATHER_KEY", "k")
+        monkeypatch.setenv("TEST_TENANT_ID", "org_abc")
+        monkeypatch.setenv("TEST_REQUESTOR_ID", "req_42")
+        cfg = dict(rest_tool_config)
+        cfg["extra_headers"] = [
+            {"name": "X-Tenant-Id", "secret_env": "TEST_TENANT_ID"},
+            {"name": "X-Requestor-Id", "secret_env": "TEST_REQUESTOR_ID"},
+        ]
+        adapter = RestApiAdapter(cfg)
+        assert adapter._extra_headers == {
+            "X-Tenant-Id": "org_abc",
+            "X-Requestor-Id": "req_42",
+        }
+
+    def test_malformed_entry_missing_name_raises(self, rest_tool_config, monkeypatch):
+        """An entry with no 'name' is a config bug, not a runtime no-op."""
+        monkeypatch.setenv("TEST_WEATHER_KEY", "k")
+        monkeypatch.setenv("TEST_TENANT_ID", "org_abc")
+        cfg = dict(rest_tool_config)
+        cfg["extra_headers"] = [
+            {"name": "", "secret_env": "TEST_TENANT_ID"},
+        ]
+        with pytest.raises(ValueError, match="extra_headers"):
+            RestApiAdapter(cfg)
+
+    def test_malformed_entry_missing_secret_env_raises(self, rest_tool_config, monkeypatch):
+        """An entry with no 'secret_env' is a config bug, not a runtime no-op."""
+        monkeypatch.setenv("TEST_WEATHER_KEY", "k")
+        cfg = dict(rest_tool_config)
+        cfg["extra_headers"] = [
+            {"name": "X-Tenant-Id", "secret_env": ""},
+        ]
+        with pytest.raises(ValueError, match="extra_headers"):
+            RestApiAdapter(cfg)
+
+    def test_collision_with_auth_header_rejected_case_insensitive(
+        self, rest_tool_config, monkeypatch
+    ):
+        """An extra_headers entry whose name collides with the auth header
+        is rejected at init — papering over the conflict with
+        ``headers.setdefault`` would silently ignore the operator's
+        misconfiguration. Collision check is case-insensitive (HTTP header
+        names are case-insensitive)."""
+        monkeypatch.setenv("TEST_WEATHER_KEY", "real-key")
+        monkeypatch.setenv("DECOY_KEY", "decoy")
+        cfg = dict(rest_tool_config)
+        cfg["extra_headers"] = [
+            # rest_tool_config's auth.header is "X-API-Key" — different case
+            {"name": "x-api-key", "secret_env": "DECOY_KEY"},
+        ]
+        with pytest.raises(ValueError, match="collides with the auth header"):
+            RestApiAdapter(cfg)
+
+
+# ---------------------------------------------------------------------------
+# TestRestApiAdapterHttpErrorBodySurfacing
+# ---------------------------------------------------------------------------
+
+
+class TestRestApiAdapterHttpErrorBodySurfacing:
+    """Tests for the 4xx/5xx response-body capture path."""
+
+    @pytest.mark.asyncio
+    async def test_5xx_with_body_surfaced_to_result_text(self, rest_tool_config, monkeypatch):
+        """A 5xx with a body must also include the body in result_text —
+        not just 4xx. Guards against a future regression where the body
+        capture is mistakenly gated to ``status < 500``."""
+        monkeypatch.setenv("TEST_WEATHER_KEY", "k")
+        adapter = RestApiAdapter(rest_tool_config)
+        upstream_body = '{"error": "BACKEND_DOWN", "request_id": "abc-123"}'
+        mock_resp = make_mock_response(503, json_data={}, text=upstream_body)
+
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=mock_resp)
+            result = await adapter.execute("test_weather", {"location": "X"}, "sess-5xx")
+
+        assert result.success is False
+        assert "http_error" in result.error
+        assert "503" in result.error
+        assert "BACKEND_DOWN" in result.result_text
+        assert "503" in result.result_text
+
+    @pytest.mark.asyncio
+    async def test_body_excerpt_capped_at_max_size_chars(self, rest_tool_config, monkeypatch):
+        """An oversized 4xx body is capped at ``response.max_size_chars``,
+        not unbounded — guards against a giant upstream error response
+        blowing the LLM context window."""
+        monkeypatch.setenv("TEST_WEATHER_KEY", "k")
+        adapter = RestApiAdapter(rest_tool_config)
+        # rest_tool_config sets response.max_size_chars (default 4000); use
+        # the adapter's own configured cap so the assertion tracks config.
+        cap = adapter._max_size_chars
+        huge_body = "x" * (cap * 3)
+        mock_resp = make_mock_response(400, json_data={}, text=huge_body)
+
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=mock_resp)
+            result = await adapter.execute("test_weather", {"location": "X"}, "sess-cap")
+
+        # result_text adds a short prefix; the body excerpt itself must be
+        # capped at max_size_chars. Allow a small slack for the prefix.
+        assert "x" * cap in result.result_text
+        assert "x" * (cap + 1) not in result.result_text
+
+    @pytest.mark.asyncio
+    async def test_non_utf8_body_does_not_raise(self, rest_tool_config, monkeypatch):
+        """Undecodable upstream bytes don't break the adapter's no-raise
+        contract — the 4xx path falls back to a lossy decode rather than
+        propagating UnicodeDecodeError out of the adapter."""
+        monkeypatch.setenv("TEST_WEATHER_KEY", "k")
+        adapter = RestApiAdapter(rest_tool_config)
+
+        # Mock a response where .text raises UnicodeDecodeError but .content
+        # is still readable (the realistic httpx failure mode).
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 400
+        resp.is_error = True
+        resp.json.return_value = {}
+        type(resp).text = property(
+            lambda self: (_ for _ in ()).throw(
+                UnicodeDecodeError("utf-8", b"\xff\xfe", 0, 1, "bad bytes")
+            )
+        )
+        resp.content = b"\xff\xfe{\"error\":\"x\"}"
+
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=resp)
+            result = await adapter.execute("test_weather", {"location": "X"}, "sess-bad-bytes")
+
+        # Adapter must not have raised; it returns a structured failure.
+        assert result.success is False
+        assert "400" in result.error
+        # Lossy decode preserves at least the readable tail.
+        assert "error" in result.result_text
+
+    @pytest.mark.asyncio
+    async def test_warn_log_does_not_include_body_field(
+        self, rest_tool_config, monkeypatch, caplog
+    ):
+        """The WARN-level ``rest_api_http_error`` log must not contain the
+        upstream body verbatim — upstream 4xx bodies routinely echo
+        submitted PII (phone numbers, age, names) and operator stdout/Loki
+        is not the designated audit log path."""
+        import logging as _logging
+        monkeypatch.setenv("TEST_WEATHER_KEY", "k")
+        adapter = RestApiAdapter(rest_tool_config)
+        pii_body = '{"error": "DUPLICATE", "echo": "phone 9999900001 already exists"}'
+        mock_resp = make_mock_response(400, json_data={}, text=pii_body)
+
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=mock_resp)
+            with caplog.at_level(_logging.WARNING, logger="src.adapters.rest_api"):
+                await adapter.execute("test_weather", {"location": "X"}, "sess-pii")
+
+        warn_records = [
+            r for r in caplog.records
+            if r.name == "src.adapters.rest_api" and r.levelno == _logging.WARNING
+        ]
+        assert warn_records, "expected a WARN record for the 4xx response"
+        for record in warn_records:
+            # The body excerpt must not appear in any field of the record's
+            # extras — only the length metadata is allowed.
+            assert not hasattr(record, "body"), (
+                "WARN log must not carry the response body verbatim"
+            )
+            assert "9999900001" not in record.getMessage()
+
+
+# ---------------------------------------------------------------------------
+# TestRestApiAdapterBodyTemplateSessionIdentity
+# ---------------------------------------------------------------------------
+
+
+class TestRestApiAdapterBodyTemplateSessionIdentity:
+    """Tests for the session-identity warning path in body_template."""
+
+    @pytest.mark.asyncio
+    async def test_empty_user_id_warns_when_referenced_in_body_template(
+        self, monkeypatch, caplog
+    ):
+        """If body_template references ``{user_id}`` but the caller passed
+        an empty user_id, the renderer silently drops the enclosing field
+        and the upstream gets a corrupted body. The adapter must emit a
+        structured WARN so operators can distinguish 'LLM omitted a field'
+        from 'session lost identity mid-call'."""
+        import logging as _logging
+        cfg = {
+            "id": "create_user",
+            "type": "rest_api",
+            "category": "write",
+            "description": "Create user from session identity.",
+            "base_url": "http://upstream",
+            "endpoints": [
+                {
+                    "name": "create",
+                    "method": "POST",
+                    "path": "/users",
+                    "body_template": {
+                        "phoneNumber": "{user_id}",
+                        "name": "{name}",
+                    },
+                    "params": [
+                        {
+                            "name": "name",
+                            "source": "agent",
+                            "type": "string",
+                            "required": True,
+                            "description": "Caller's full name.",
+                        },
+                    ],
+                }
+            ],
+            "response": {"max_size_chars": 1000},
+        }
+        adapter = RestApiAdapter(cfg)
+        mock_resp = make_mock_response(200, {"ok": True})
+
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=mock_resp)
+            with caplog.at_level(_logging.WARNING, logger="src.adapters.rest_api"):
+                # user_id deliberately empty — simulates session-state loss.
+                await adapter.execute("create_user", {"name": "Rahul"}, "sess-1", "")
+
+        warn_records = [
+            r for r in caplog.records
+            if r.name == "src.adapters.rest_api"
+            and r.levelno == _logging.WARNING
+            and getattr(r, "operation", None) == "RestApiAdapter.execute"
+        ]
+        assert warn_records, "expected a WARN record for missing session identity"
+        assert any(
+            getattr(r, "missing_placeholder", None) == "user_id" for r in warn_records
+        )
+
+        # And the enclosing phoneNumber field is dropped, as the renderer
+        # has always done — the warn just makes the silent drop visible.
+        sent_body = mock_client.request.call_args.kwargs["json"]
+        assert "phoneNumber" not in sent_body
+        assert sent_body == {"name": "Rahul"}
+
+    @pytest.mark.asyncio
+    async def test_empty_user_id_does_not_warn_when_not_referenced(self, monkeypatch, caplog):
+        """No warning fires when the body_template does not reference
+        ``{user_id}`` — an empty user_id is only suspicious if the template
+        expected one."""
+        import logging as _logging
+        cfg = {
+            "id": "log_event",
+            "type": "rest_api",
+            "category": "write",
+            "description": "Log an event.",
+            "base_url": "http://upstream",
+            "endpoints": [
+                {
+                    "name": "log",
+                    "method": "POST",
+                    "path": "/events",
+                    "body_template": {"event": "{event}"},
+                    "params": [
+                        {
+                            "name": "event",
+                            "source": "agent",
+                            "type": "string",
+                            "required": True,
+                            "description": "Event name.",
+                        },
+                    ],
+                }
+            ],
+            "response": {"max_size_chars": 1000},
+        }
+        adapter = RestApiAdapter(cfg)
+        mock_resp = make_mock_response(200, {})
+
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=mock_resp)
+            with caplog.at_level(_logging.WARNING, logger="src.adapters.rest_api"):
+                await adapter.execute("log_event", {"event": "ok"}, "sess-2", "")
+
+        identity_warns = [
+            r for r in caplog.records
+            if getattr(r, "missing_placeholder", None) in ("user_id", "session_id")
+        ]
+        assert not identity_warns
+
+    @pytest.mark.asyncio
+    async def test_user_id_substituted_into_embedded_placeholder(self, monkeypatch):
+        """Embedded placeholders (e.g. ``"+91{user_id}"``) substitute the
+        session identity inline — exercises the embedded branch of
+        _render_body_template, distinct from the whole-string branch
+        covered by the existing test."""
+        cfg = {
+            "id": "create_user",
+            "type": "rest_api",
+            "category": "write",
+            "description": "Create user with country-coded phone.",
+            "base_url": "http://upstream",
+            "endpoints": [
+                {
+                    "name": "create",
+                    "method": "POST",
+                    "path": "/users",
+                    "body_template": {
+                        "phoneNumber": "+91{user_id}",
+                    },
+                    "params": [],
+                }
+            ],
+            "response": {"max_size_chars": 1000},
+        }
+        adapter = RestApiAdapter(cfg)
+        mock_resp = make_mock_response(200, {"ok": True})
+
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=mock_resp)
+            await adapter.execute("create_user", {}, "sess-1", "9999900001")
+
+        sent_body = mock_client.request.call_args.kwargs["json"]
+        assert sent_body == {"phoneNumber": "+919999900001"}
+

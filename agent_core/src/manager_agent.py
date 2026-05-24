@@ -219,7 +219,11 @@ class ManagerAgent:
 
                 result_text = ""
                 if not tool_result.success and tool_result.error:
-                    result_text = tool_result.error
+                    # Prefer the structured upstream body if the adapter
+                    # captured one (e.g. a 4xx response excerpt) so the LLM
+                    # can recover on the next turn — falling back to the
+                    # bare error tag only when no body is available.
+                    result_text = tool_result.result_text or tool_result.error
                 else:
                     result_text = tool_result.result_text or str(tool_result.result)
 
@@ -649,7 +653,10 @@ class ManagerAgent:
         # Append user message with the tool_result block
         result_content: str = ""
         if not tool_result.success and tool_result.error:
-            result_content = tool_result.error
+            # Prefer the structured upstream body if the adapter captured one
+            # (e.g. a 4xx response excerpt) so the LLM can recover on the
+            # next turn — fall back to the bare error tag otherwise.
+            result_content = tool_result.result_text or tool_result.error
         else:
             result_content = tool_result.result_text or str(tool_result.result)
 
