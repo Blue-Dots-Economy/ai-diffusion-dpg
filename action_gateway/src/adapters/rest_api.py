@@ -273,6 +273,28 @@ class RestApiAdapter(ToolAdapter):
                 )
             self._auth_secret = secret_val
 
+        # extra_headers — generic block for additional static headers an
+        # upstream might require alongside the auth header (e.g. a tenant /
+        # organisation id). Each entry declares a header name + an env var
+        # whose value is sent as the header's value. Same env-var contract
+        # as auth.secret_env: missing env at startup is a hard error.
+        self._extra_headers: dict[str, str] = {}
+        for entry in config.get("extra_headers", []) or []:
+            header_name = entry.get("name", "").strip()
+            env_var = entry.get("secret_env", "").strip()
+            if not header_name or not env_var:
+                raise ValueError(
+                    f"extra_headers entry on adapter '{config.get('id')}' "
+                    f"requires both 'name' and 'secret_env'"
+                )
+            header_val = os.environ.get(env_var)
+            if header_val is None:
+                raise ValueError(
+                    f"Required extra_headers env var '{env_var}' "
+                    f"is not set for adapter '{config.get('id')}'"
+                )
+            self._extra_headers[header_name] = header_val
+
         # Lazily-created HTTP client; replaced by patch.object in tests.
         self._http_client: httpx.AsyncClient = httpx.AsyncClient()
 
@@ -416,6 +438,11 @@ class RestApiAdapter(ToolAdapter):
             headers[self._auth_header] = self._auth_secret
         elif self._auth_type == "bearer" and self._auth_secret:
             headers["Authorization"] = f"Bearer {self._auth_secret}"
+        # Merge in extra static headers (e.g. tenant / org identifiers).
+        # extra_headers does NOT override auth (auth wins on key collision)
+        # so a misconfigured YAML can't accidentally clobber the auth header.
+        for h_name, h_val in self._extra_headers.items():
+            headers.setdefault(h_name, h_val)
 
         timeout_s = self._timeout_ms / 1000.0
 

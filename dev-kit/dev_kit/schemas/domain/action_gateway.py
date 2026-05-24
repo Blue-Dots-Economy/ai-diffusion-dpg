@@ -26,6 +26,19 @@ class AuthConfig(BaseModel):
     token_url: str = ""    # reserved (no oauth2 support today)
 
 
+class ExtraHeaderConfig(BaseModel):
+    """One additional static HTTP header attached to every REST request.
+
+    Mirrors ``action_gateway/src/schema/config.py::ExtraHeaderConfig``.
+    Used when an upstream requires a second identifier alongside the API
+    key (e.g. a tenant / organisation id). Value is read from an env var
+    at startup, same contract as ``auth.secret_env``.
+    """
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(..., min_length=1)
+    secret_env: str = Field(..., min_length=1)
+
+
 class ParamDefinition(BaseModel):
     """One REST endpoint parameter or MCP tool input field."""
     model_config = ConfigDict(extra="forbid")
@@ -114,6 +127,7 @@ class ToolDefinition(BaseModel):
     # REST-only
     base_url: Optional[str] = None
     auth: Optional[AuthConfig] = None
+    extra_headers: list[ExtraHeaderConfig] = Field(default_factory=list)
     endpoints: Optional[list[EndpointDefinition]] = None
     response: Optional[ResponseConfig] = None
 

@@ -90,6 +90,28 @@ class AuthConfig(BaseModel):
     token_url: str = ""
 
 
+class ExtraHeaderConfig(BaseModel):
+    """One additional static HTTP header attached to every request a REST tool makes.
+
+    Sits alongside ``auth`` (which contributes one auth-specific header). Used
+    for upstreams that require a second identifier next to the API key — e.g.
+    a tenant / organisation id. Generic: each header's name and the env var
+    holding its value are declared per-tool in YAML; nothing here is
+    domain-specific.
+
+    Attributes:
+        name: HTTP header name (e.g. ``X-Acting-Org-Id``).
+        secret_env: Environment variable that holds the header's value. The
+            adapter reads this at startup. Missing env vars cause tool
+            registration to fail, same contract as ``auth.secret_env``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    secret_env: str
+
+
 class HealthCheckConfig(BaseModel):
     """Controls the startup reachability probe for a tool.
 
@@ -258,6 +280,7 @@ class ToolDefinition(BaseModel):
     # REST-only fields
     base_url: Optional[str] = None
     auth: Optional[AuthConfig] = None
+    extra_headers: list[ExtraHeaderConfig] = Field(default_factory=list)
     health_check: Optional[HealthCheckConfig] = None
     endpoints: Optional[list[EndpointDefinition]] = None
     response: Optional[ResponseConfig] = None

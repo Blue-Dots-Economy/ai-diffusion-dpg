@@ -84,6 +84,59 @@ class TestRestApiAdapterInit:
         with pytest.raises(ValueError, match="TEST_WEATHER_KEY"):
             RestApiAdapter(rest_tool_config)
 
+    def test_extra_headers_resolved_from_env(self, rest_tool_config, monkeypatch):
+        """``extra_headers`` entries are read from env at startup and attached
+        alongside the auth header on every request. Used for upstreams that
+        require a second identifier next to the API key (e.g. tenant id)."""
+        monkeypatch.setenv("TEST_WEATHER_KEY", "test-key-123")
+        monkeypatch.setenv("TEST_TENANT_ID", "org_abc")
+        cfg = dict(rest_tool_config)
+        cfg["extra_headers"] = [
+            {"name": "X-Tenant-Id", "secret_env": "TEST_TENANT_ID"},
+        ]
+        adapter = RestApiAdapter(cfg)
+        assert adapter._extra_headers == {"X-Tenant-Id": "org_abc"}
+
+    def test_extra_headers_missing_env_var_raises(self, rest_tool_config, monkeypatch):
+        """Missing extra_headers env var is a hard error at startup — same
+        contract as auth.secret_env."""
+        monkeypatch.setenv("TEST_WEATHER_KEY", "test-key-123")
+        os.environ.pop("TEST_TENANT_ID", None)
+        cfg = dict(rest_tool_config)
+        cfg["extra_headers"] = [
+            {"name": "X-Tenant-Id", "secret_env": "TEST_TENANT_ID"},
+        ]
+        with pytest.raises(ValueError, match="TEST_TENANT_ID"):
+            RestApiAdapter(cfg)
+
+    def test_extra_headers_no_entries_no_op(self, rest_tool_config, monkeypatch):
+        """No extra_headers in config is a clean no-op (default empty dict)."""
+        monkeypatch.setenv("TEST_WEATHER_KEY", "test-key-123")
+        adapter = RestApiAdapter(rest_tool_config)
+        assert adapter._extra_headers == {}
+
+    @pytest.mark.asyncio
+    async def test_extra_headers_attached_to_request(self, rest_tool_config, monkeypatch):
+        """The extra header value reaches the outbound httpx request alongside
+        the auth header — end-to-end through .execute()."""
+        from unittest.mock import AsyncMock, patch
+        monkeypatch.setenv("TEST_WEATHER_KEY", "test-key-123")
+        monkeypatch.setenv("TEST_TENANT_ID", "org_abc")
+        cfg = dict(rest_tool_config)
+        cfg["extra_headers"] = [
+            {"name": "X-Tenant-Id", "secret_env": "TEST_TENANT_ID"},
+        ]
+        adapter = RestApiAdapter(cfg)
+        mock_resp = make_mock_response(200, {"ok": True})
+
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=mock_resp)
+            await adapter.execute("test_weather", {"location": "X"}, "sess-eh")
+
+        sent_headers = mock_client.request.call_args.kwargs["headers"]
+        assert sent_headers["X-API-Key"] == "test-key-123"
+        assert sent_headers["X-Tenant-Id"] == "org_abc"
+
 
 # ---------------------------------------------------------------------------
 # TestRestApiAdapterToolDefinition

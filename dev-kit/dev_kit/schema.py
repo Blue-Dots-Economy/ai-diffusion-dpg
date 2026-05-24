@@ -1061,6 +1061,19 @@ class AuthConfig(BaseModel):
         return self
 
 
+class ExtraHeaderConfig(BaseModel):
+    """One additional static HTTP header attached to every REST request.
+
+    Mirrors ``action_gateway/src/schema/config.py::ExtraHeaderConfig``.
+    Used when an upstream requires a second identifier alongside the API
+    key (e.g. a tenant / organisation id). Value is read from an env var
+    at startup, same contract as ``auth.secret_env``.
+    """
+
+    name: str = Field(..., min_length=1, description="HTTP header name, e.g. X-Acting-Org-Id")
+    secret_env: str = Field(..., min_length=1, description="Environment variable that holds the header value")
+
+
 class RestApiToolDef(BaseModel):
     """Full definition of a REST API tool executed by the Action Gateway."""
 
@@ -1072,6 +1085,10 @@ class RestApiToolDef(BaseModel):
     description: str = Field(..., description="What this tool does — shown to LLM for routing decisions")
     base_url: str = Field(..., description="Base URL of the API, e.g. https://api.example.com/v1")
     auth: AuthConfig = Field(..., description="Authentication scheme for this API")
+    extra_headers: list[ExtraHeaderConfig] = Field(
+        default_factory=list,
+        description="Additional static headers (e.g. tenant id) attached to every request alongside the auth header.",
+    )
     timeout_ms: int = Field(default=5000, description="Request timeout in milliseconds")
     endpoints: list[ToolEndpointDef] = Field(default=[], description="One or more endpoint definitions")
     response: ToolResponseConfig = Field(default_factory=ToolResponseConfig, description="Response handling config")
