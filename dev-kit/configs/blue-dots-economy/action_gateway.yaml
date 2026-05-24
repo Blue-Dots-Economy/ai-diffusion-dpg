@@ -47,28 +47,31 @@ tools:
       / Full-time / Flexible), help_needed (otherHelpNeeded: Training /
       Accommodation / Travel / Other). The trade field may be empty or
       noisy in older records — still ask the user to confirm.
-    base_url: "http://65.2.66.144:2742"
-    # Public endpoint — no auth header required.
+    # Signals-DPG runs on the host at port 2742; from inside the
+    # action_gateway container we reach it via host.docker.internal.
+    base_url: "http://host.docker.internal:2742"
+    # fetch_local is a public endpoint — no auth headers required.
     timeout_ms: 5000
     health_check:
       enabled: false
     endpoints:
       - name: seeker_fetch
-        method: GET
-        # Caller's phone is injected from session user_id (Reach Layer
-        # sets user_id = caller's phone). Static params (item_network,
-        # item_domain, limit) are baked into the path string rather than
-        # passed via `params:` because httpx's params= kwarg REPLACES the
-        # URL's existing query string — which would strip the phone segment
-        # produced by the {user_id} substitution. With an empty params list,
-        # httpx leaves the URL untouched.
-        #
-        # NOTE — phone format mismatch risk: the upstream expects the bare
-        # 10-digit number (e.g. "9999900001"), but Vobiz/voice may surface
-        # user_id as "91<10-digit>" (12-digit with country code). If logs
-        # show 0 profiles for a known returning user, this is the cause —
-        # fix at the Reach Layer side, or trim the prefix in the adapter.
-        path: "/api/v1/network/item/fetch?item_network=blue_dot&item_domain=seeker&limit=100&item_state[phone]={user_id}"
+        method: POST
+        path: /api/v1/network/item/fetch_local
+        # POST body declares the filter (item_state.phone) inline.
+        # Caller's phone is auto-injected from session.user_id via the
+        # adapter's body-template substitution. Upstream stores phone
+        # in bare 10-digit form ("7892487848"), which matches what
+        # Reach Layer surfaces as user_id after the 91-prefix strip
+        # in reach_layer/voice/server.py.
+        body_template:
+          item_network: "blue_dot"
+          item_domain: "seeker"
+          item_type: "profile_1.0"
+          item_state:
+            phone: "{user_id}"
+          limit: 20
+          offset: 0
         params: []
     response:
       max_size_chars: 4000
@@ -123,34 +126,39 @@ tools:
       stipend_min / stipend_max, or task_rate_min / task_rate_max.
       Read out whichever is populated. Hiring-manager contact
       details are intentionally not exposed to the LLM.
-    base_url: "http://65.2.66.144:2742"
-    # Public endpoint — no auth header required.
+    base_url: "http://host.docker.internal:2742"
+    # fetch_local is a public endpoint — no auth headers required.
     timeout_ms: 5000
     health_check:
       enabled: false
     endpoints:
       - name: job_fetch
-        method: GET
-        # Location is substituted from the LLM input_param {location}
-        # into the bracketed query key. The adapter handles the
-        # substitution + URL-encoding and removes the param from the
-        # httpx params= kwarg so the path's existing query string
-        # survives intact. Static params (network, domain, limit) are
-        # baked into the path for the same reason fetch_profile does
-        # — they go through as literal query.
-        path: "/api/v1/network/item/fetch?item_network=blue_dot&item_domain=provider&limit=100&item_state[jobProviderLocation]={location}"
+        method: POST
+        path: /api/v1/network/item/fetch_local
+        # Server-side filter on jobProviderLocation. The LLM supplies
+        # the canonical city name ("Bengaluru", "Mumbai", etc.) and
+        # the adapter substitutes it into the body. Upstream returns
+        # only matching jobs.
+        body_template:
+          item_network: "blue_dot"
+          item_domain: "provider"
+          item_type: "job_posting_1.0"
+          item_state:
+            jobProviderLocation: "{location}"
+          limit: 20
+          offset: 0
         params:
           - name: location
             source: agent
             type: string
             required: true
             description: >
-              City to filter jobs by. Pass the same spelling the
-              user (or their profile) used — e.g. "Bengaluru",
-              "Kannur". The upstream matches jobProviderLocation
-              against this value; if the user's location and the
-              job listings use different spellings the filter
-              won't match.
+              City to filter jobs by. Pass the canonical spelling
+              ("Bengaluru", "Mumbai", "Kannur", etc.). The upstream
+              matches jobProviderLocation EXACTLY — a different
+              spelling = zero matches. The job_match subagent's
+              prompt has a normalisation map for common Indian
+              cities.
     response:
       max_size_chars: 4000
       projection:
@@ -183,121 +191,83 @@ tools:
           # LLM to mention or read aloud.
 
   # ────────────────────────────────────────────────────────────────────
-  # WRITE — List the user's existing profiles (and create the user
-  # record if new). Calls /api/v1/admin/onboard with ONLY the user
-  # block. Returns user.id (used as source_item_owner in apply_job)
-  # plus the list of profiles already on this phone number.
-  # ────────────────────────────────────────────────────────────────────
-  - id: list_user_profiles
-    type: rest_api
-    category: write
-    description: >
-      Look up the user's existing profiles on the Blue Dots seeker
-      backend by their name and phone number. Side-effect: creates
-      the user record if this is the first time we've seen this
-      phone. Call this AFTER the user has confirmed they want to
-      apply to a specific job (intent=apply_now). The response
-      contains user.id (save as source_item_owner) and a profiles
-      array — present each profile to the caller and have them pick
-      one to apply with, ask to update one, or create a new one.
-    base_url: "http://65.2.66.144:2742"
-    auth:
-      type: api_key
-      header: x-api-key
-      secret_env: BLUE_DOTS_API_KEY
-    timeout_ms: 5000
-    health_check:
-      enabled: false
-    endpoints:
-      - name: list_user_profiles
-        method: POST
-        path: /api/v1/admin/onboard
-        body_template:
-          user:
-            name: "{name}"
-            # phoneNumber resolves from session.user_id automatically via
-            # the adapter's body-template substitution — LLM does NOT pass
-            # phone, never sees it as a tool input. This avoids the
-            # "{{session.user_id}}" literal-placeholder leak we hit when
-            # phone was an agent-supplied param.
-            phoneNumber: "{user_id}"
-        params:
-          - name: name
-            source: agent
-            type: string
-            required: true
-            description: "Caller's full name."
-    response:
-      max_size_chars: 4000
-      projection:
-        fields:
-          user_id: user.id
-          user_name: user.name
-          user_phone: user.phoneNumber
-          profiles: profiles
-          user_created: status.userCreated
-          user_existed: status.userExisted
-
-  # ────────────────────────────────────────────────────────────────────
-  # WRITE — Create a new seeker profile, or update an existing one.
-  # Hits the same /api/v1/admin/onboard endpoint but with the
-  # `profile` block filled in. item_id absent → create; item_id
-  # present → update (full item_state required, partial not
-  # supported by the upstream).
+  # WRITE — Create or update the seeker profile via the Signals
+  # /api/v1/admin/participant endpoint. The same call covers both
+  # CREATE and UPDATE: omit ``item_id`` to insert a new profile;
+  # include ``item_id`` (the existing profile's UUID) to update that
+  # one. The upstream does NOT support partial updates — pass the
+  # full ``item_state`` every time. Response carries the upserting
+  # participant's ``user_id`` (= acting_as_user_id for apply_job) and
+  # an ``items`` array containing the affected profile (1 item for
+  # UPDATE, all of the user's profiles for CREATE).
   # ────────────────────────────────────────────────────────────────────
   - id: save_profile
     type: rest_api
     category: write
     description: >
-      Create a brand-new seeker profile, OR update an existing one.
-      Call this when the user has chosen `create_new` or
-      `update_existing` (profile_action in session). Pass ALL
-      profile fields every time — the upstream does NOT support
-      partial updates. For UPDATE, pass the existing profile's
-      item_id along with the full item_state (with the user's
-      changes overlaid on the previous values). For CREATE, omit
-      item_id. workExperience MUST be one of:
-      "Fresher" / "Worked before" / "Returning after a break".
-      The response returns the created/updated profile in the
-      profiles array — use its item_id as the chosen profile for
-      apply_job.
-    base_url: "http://65.2.66.144:2742"
+      Create a new seeker profile, OR update an existing one. Call this
+      when the user has chosen create_new or update_existing
+      (profile_action in session). For UPDATE, pass the chosen profile's
+      item_id along with the full item_state (existing values with the
+      user's changes overlaid). For CREATE, omit item_id. workExperience
+      MUST be one of "Fresher" / "Worked before" / "Returning after a
+      break". The response returns the affected profile in the items
+      array — for UPDATE it has just the updated profile; for CREATE it
+      has all the user's profiles and the newly-created one is the last
+      by created_at.
+    base_url: "http://host.docker.internal:2742"
     auth:
       type: api_key
       header: x-api-key
       secret_env: BLUE_DOTS_API_KEY
+    # Signals' admin endpoints require a tenant identifier alongside
+    # the API key — generic adapter feature, env-driven.
+    extra_headers:
+      - name: x-acting-org-id
+        secret_env: BLUE_DOTS_ORG_ID
     timeout_ms: 5000
     health_check:
       enabled: false
     endpoints:
       - name: save_profile
         method: POST
-        path: /api/v1/admin/onboard
+        path: /api/v1/admin/participant
         body_template:
-          # phoneNumber and item_state.phone both resolve from
-          # session.user_id automatically via the adapter — LLM does
-          # NOT pass phone, never sees it as a tool input. Avoids
-          # the "{{session.user_id}}" literal-placeholder leak.
-          user:
+          # Top-level participant identity. name is the participant's
+          # display name; phone_number must be E.164 (+91 prefix is
+          # required by the upstream's regex). The adapter substitutes
+          # session.user_id (bare 10-digit) into the embedded +91 prefix.
+          name: "{name}"
+          phone_number: "+91{user_id}"
+          # Both consent flags MUST be literal true — schema-enforced.
+          # Voice consent has already been captured at session start.
+          terms_accepted: true
+          privacy_accepted: true
+          # channel must be one of bulk/link/voice/self — we're voice.
+          channel: "voice"
+          # source_id is the Vobiz outbound number — tags every profile
+          # written via the voice bot for analytics / audit.
+          source_id: "919240024229"
+          network: "blue_dot"
+          domain: "seeker"
+          item_type: "profile_1.0"
+          # When the LLM omits profile_item_id (create_new path), the
+          # body_template renderer DROPS the item_id field entirely.
+          # When present, the upstream treats the call as UPDATE on
+          # that specific item_id.
+          item_id: "{profile_item_id}"
+          item_state:
             name: "{name}"
-            phoneNumber: "{user_id}"
-          profile:
-            item_id: "{profile_item_id}"     # missing → CREATE, present → UPDATE
-            item_network: "blue_dot"
-            item_domain: "seeker"
-            item_type: "profile_1.0"
-            item_state:
-              name: "{name}"
-              phone: "{user_id}"
-              gender: "{gender}"
-              location: "{location}"
-              age: "{age}"
-              workExperience: "{work_experience}"
-              workExperienceYearsConditional: "{experience_years}"
-              nameOfJobRolesInterestedIn: "{trade}"
-              highestQualificationOrSkill: "{qualification}"
-              natureOfJobsInterestedIn: "{job_nature}"
-              otherHelpNeeded: "{help_needed}"
+            phone: "{user_id}"
+            gender: "{gender}"
+            location: "{location}"
+            age: "{age}"
+            workExperience: "{work_experience}"
+            workExperienceYearsConditional: "{experience_years}"
+            nameOfJobRolesInterestedIn: "{trade}"
+            highestQualificationOrSkill: "{qualification}"
+            natureOfJobsInterestedIn: "{job_nature}"
+            otherHelpNeeded: "{help_needed}"
         params:
           - name: name
             source: agent
@@ -308,7 +278,7 @@ tools:
             source: agent
             type: string
             required: true
-            description: 'Gender (e.g. "male", "female", "other").'
+            description: 'Gender (e.g. "Male", "Female", "Other").'
           - name: location
             source: agent
             type: string
@@ -325,8 +295,8 @@ tools:
             required: true
             description: >
               Must be EXACTLY one of: "Fresher", "Worked before",
-              "Returning after a break". Map the caller's words to
-              the closest enum value.
+              "Returning after a break". Map the caller's words to the
+              closest enum value.
           - name: profile_item_id
             source: agent
             type: string
@@ -353,9 +323,9 @@ tools:
             type: string
             required: false
             description: >
-              highestQualificationOrSkill. One of: "School",
-              "College", "ITI / Other Vocational Trainings",
-              "Certification / Learned on the job".
+              highestQualificationOrSkill. One of: "School", "College",
+              "ITI / Other Vocational Trainings", "Certification /
+              Learned on the job".
           - name: job_nature
             source: agent
             type: string
@@ -372,12 +342,15 @@ tools:
               "Travel", "Other".
     response:
       max_size_chars: 4000
+      # Expose user_id (= acting_as_user_id for apply_job) and the items
+      # array. For UPDATE the array has one element (the updated profile);
+      # for CREATE it contains all the user's profiles and the new one
+      # is the last by created_at — the LLM picks the right one.
       projection:
         fields:
-          user_id: user.id
-          profiles: profiles
-          profile_created: status.profileCreated
-          profile_updated: status.profileUpdated
+          user_id: user_id
+          user_existed: user_existed
+          items: items
 
   # ────────────────────────────────────────────────────────────────────
   # WRITE — Submit the application linking caller profile to the job.
@@ -386,19 +359,22 @@ tools:
     type: rest_api
     category: write
     description: >
-      Submit a job application linking the chosen seeker profile to
-      the selected job posting. Call ONLY after a profile has been
-      chosen (use_existing) or created/updated (via save_profile)
-      AND source_item_owner is in session. The LLM passes the three
-      dynamic IDs plus the requirements_snapshot fields — all the
-      static envelope (item_network, item_domain, item_type,
-      item_instance_url, action_type) lives in the body_template
-      below and never needs to be supplied by the LLM.
-    base_url: "http://65.2.66.144:2742"
+      Submit a job application linking the chosen seeker profile to the
+      selected job posting. Call ONLY after a profile has been chosen
+      (use_existing) or created/updated via save_profile AND the
+      acting_as_user_id is known. The LLM passes the three dynamic IDs
+      plus the requirements_snapshot fields — the static envelope
+      (item_network, item_domain, item_type, item_instance_url,
+      action_type) lives in body_template and never needs to be
+      supplied by the LLM.
+    base_url: "http://host.docker.internal:2742"
     auth:
       type: api_key
       header: x-api-key
       secret_env: BLUE_DOTS_API_KEY
+    extra_headers:
+      - name: x-acting-org-id
+        secret_env: BLUE_DOTS_ORG_ID
     timeout_ms: 5000
     health_check:
       enabled: false
@@ -407,46 +383,48 @@ tools:
         method: POST
         path: /api/v1/action/perform
         body_template:
-          # Static envelope — never supplied by the LLM.
           action_type: "apply"
           source_item:
             item_network: "blue_dot"
             item_domain: "seeker"
             item_type: "profile_1.0"
-            item_instance_url: "http://65.2.66.144:2742/"
-            # Dynamic — from the chosen profile.
             item_id: "{profile_item_id}"
-          # Dynamic — user.id returned by list_user_profiles or save_profile.
-          source_item_owner: "{source_item_owner}"
           target_item:
             item_network: "blue_dot"
             item_domain: "provider"
             item_type: "job_posting_1.0"
-            item_instance_url: "http://65.2.66.144:2742/"
-            # Dynamic — selected job item_id from fetch_jobs.
             item_id: "{job_item_id}"
-          # Dynamic — from the chosen profile + selected job.
+            # The Signals self-URL — the target lives on this same
+            # Signals instance. Localhost is what Signals knows itself
+            # as; from action_gateway's docker network we send it
+            # back through host.docker.internal but the URL value
+            # embedded in the action record is what the upstream uses.
+            item_instance_url: "http://localhost:2742"
           requirements_snapshot:
             role: "{role}"
             workExperience: "{work_experience}"
             age: "{age}"
+          # The acting user — the seeker who is applying. From
+          # fetch_profile's `source_item_owner` (use_existing path)
+          # or save_profile's `user_id` (create_new / update_existing).
+          acting_as_user_id: "{acting_as_user_id}"
         params:
           - name: profile_item_id
             source: agent
             type: string
             required: true
             description: >
-              The chosen profile's item_id — from the profiles list
-              returned by list_user_profiles (use_existing /
-              update_existing path) or from save_profile's response
-              (create_new path).
-          - name: source_item_owner
+              The chosen profile's item_id — from fetch_profile (use_existing
+              path) or save_profile's response (create_new / update_existing).
+          - name: acting_as_user_id
             source: agent
             type: string
             required: true
             description: >
-              The user.id from the list_user_profiles or
-              save_profile response. Backend rejects apply without it.
+              The seeker's user UUID. From fetch_profile's
+              source_item_owner field (use_existing) or save_profile's
+              user_id (create_new / update_existing). The upstream rejects
+              the apply without it.
           - name: job_item_id
             source: agent
             type: string
@@ -460,7 +438,7 @@ tools:
             description: >
               The role being applied for — the SELECTED JOB's role
               (e.g. "Plumber"), NOT the user's intended trade. They
-              usually match anyway.
+              usually match.
           - name: work_experience
             source: agent
             type: string
