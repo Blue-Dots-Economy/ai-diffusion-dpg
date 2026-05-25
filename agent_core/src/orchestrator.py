@@ -509,6 +509,11 @@ class AgentCore(AgentCoreBase):
             pref_scope: str = self._config.get("entity_persistence", {}).get("scope", "persistent")
             self._write_memory_sync(session_id, user_id, pref_scope, "language_preference", language_preference)
             bundle.session["language_preference"] = language_preference
+            # Mirror persistent writes into bundle.profile so the same-turn
+            # prompt assembly reads the fresh value directly, without relying
+            # on a stale-prone session overlay. See _build_profile_context.
+            if pref_scope == "persistent":
+                bundle.profile["language_preference"] = language_preference
 
         logger.info(
             "  [STEP 4] Language Normalisation  ✓  detected=%s  preference=%s  normalised=%r  latency=%dms",
@@ -798,6 +803,12 @@ class AgentCore(AgentCoreBase):
                     continue
             self._write_memory_sync(session_id, user_id, entity_scope, profile_field, entity_val)
             bundle.session[profile_field] = entity_val
+            # Mirror persistent NLU writes into bundle.profile so the same-turn
+            # prompt assembly sees the fresh value. Without this, profile_context
+            # is sourced from the pre-NLU bundle.profile snapshot and shows the
+            # old value, even though Memgraph already has the new one.
+            if entity_scope == "persistent":
+                bundle.profile[profile_field] = entity_val
 
         # Write context graph signal if this intent is configured as a signal-producing intent.
         # Captures objections, emotions, and constraints for longitudinal analysis.
@@ -966,11 +977,23 @@ class AgentCore(AgentCoreBase):
             "  [STEP 7] Prompt Assembly  →  subagent=%s (%s)",
             next_subagent.id, next_subagent.name,
         )
-        # Merge collected session fields into profile for LLM grounding context
+        # Merge collected session fields into profile for LLM grounding context.
+        # bundle.profile is the source of truth for declared profile fields —
+        # persistent NLU writes update it in-place earlier in this turn. The
+        # overlay below only fills profile fields that bundle.profile does NOT
+        # already carry, supporting the entity_persistence.scope="session" path
+        # without letting stale session copies overwrite fresh persistent values
+        # (the previous unconditional overlay was the cause of the age-stuck-at-0
+        # leak: an "0" string from session-init copy outranked a fresh "25" in
+        # Memgraph because the empty-check did not catch "0").
         profile_context = dict(bundle.profile)
         profile_field_names = set(entity_map.values())
         for k, v in bundle.session.items():
-            if k in profile_field_names and v not in (None, "", "[]"):
+            if (
+                k in profile_field_names
+                and v not in (None, "", "[]")
+                and not profile_context.get(k)
+            ):
                 profile_context[k] = v
 
         # Ensure the prompt builder uses the most up-to-date language preference
@@ -3103,6 +3126,10 @@ class AgentCore(AgentCoreBase):
                         continue
                 await self._async_memory.write(session_id, user_id, entity_scope, profile_field, entity_val)
                 bundle.session[profile_field] = entity_val
+                # Mirror persistent NLU writes into bundle.profile (see same-turn
+                # overlay rationale in the sync path above).
+                if entity_scope == "persistent":
+                    bundle.profile[profile_field] = entity_val
 
             # ── Language switch — handle before routing ───────────────
             if nlu_result.intent == "language_switch_request":
@@ -3225,10 +3252,18 @@ class AgentCore(AgentCoreBase):
                 next_subagent_id, detected_language,
             )
             next_subagent: SubAgent = self._workflow.subagents[next_subagent_id]
+            # bundle.profile is the source of truth for declared profile fields;
+            # persistent NLU writes update it in-place earlier this turn. The
+            # overlay only fills fields bundle.profile doesn't already carry
+            # (see sync-path build-context for the full rationale).
             profile_context = dict(bundle.profile)
             profile_field_names = set(entity_map.values())
             for k, v in bundle.session.items():
-                if k in profile_field_names and v not in (None, "", "[]"):
+                if (
+                    k in profile_field_names
+                    and v not in (None, "", "[]")
+                    and not profile_context.get(k)
+                ):
                     profile_context[k] = v
 
             final_language = profile_context.get("language_preference", detected_language)
