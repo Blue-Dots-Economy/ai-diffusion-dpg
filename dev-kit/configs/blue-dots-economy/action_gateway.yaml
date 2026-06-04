@@ -382,32 +382,37 @@ tools:
       - name: apply
         method: POST
         path: /api/v1/action/perform
+        # Signals `/api/v1/action/perform` is array-only (bulk) as of
+        # Signals-DPG PR #55. apply_job always submits exactly one
+        # application, so the body is a single-element array; the
+        # response is the bulk envelope ({ results[], summary }) read
+        # back via the `results` list_key projection below.
         body_template:
-          action_type: "apply"
-          source_item:
-            item_network: "blue_dot"
-            item_domain: "seeker"
-            item_type: "profile_1.0"
-            item_id: "{profile_item_id}"
-          target_item:
-            item_network: "blue_dot"
-            item_domain: "provider"
-            item_type: "job_posting_1.0"
-            item_id: "{job_item_id}"
-            # The Signals self-URL — the target lives on this same
-            # Signals instance. Localhost is what Signals knows itself
-            # as; from action_gateway's docker network we send it
-            # back through host.docker.internal but the URL value
-            # embedded in the action record is what the upstream uses.
-            item_instance_url: "http://localhost:2742"
-          requirements_snapshot:
-            role: "{role}"
-            workExperience: "{work_experience}"
-            age: "{age}"
-          # The acting user — the seeker who is applying. From
-          # fetch_profile's `source_item_owner` (use_existing path)
-          # or save_profile's `user_id` (create_new / update_existing).
-          acting_as_user_id: "{acting_as_user_id}"
+          - action_type: "apply"
+            source_item:
+              item_network: "blue_dot"
+              item_domain: "seeker"
+              item_type: "profile_1.0"
+              item_id: "{profile_item_id}"
+            target_item:
+              item_network: "blue_dot"
+              item_domain: "provider"
+              item_type: "job_posting_1.0"
+              item_id: "{job_item_id}"
+              # The Signals self-URL — the target lives on this same
+              # Signals instance. Localhost is what Signals knows itself
+              # as; from action_gateway's docker network we send it
+              # back through host.docker.internal but the URL value
+              # embedded in the action record is what the upstream uses.
+              item_instance_url: "http://localhost:2742"
+            requirements_snapshot:
+              role: "{role}"
+              workExperience: "{work_experience}"
+              age: "{age}"
+            # The acting user — the seeker who is applying. From
+            # fetch_profile's `source_item_owner` (use_existing path)
+            # or save_profile's `user_id` (create_new / update_existing).
+            acting_as_user_id: "{acting_as_user_id}"
         params:
           - name: profile_item_id
             source: agent
@@ -456,8 +461,14 @@ tools:
               profile.
     response:
       max_size_chars: 1000
+      # Bulk envelope: { results: [ { index, status, action_id, ... } ],
+      # summary }. apply_job sends one element, so `results` has one
+      # item; list_key projects it into a single-element list the LLM
+      # reads. `status` lets the model confirm the per-item success.
       projection:
+        list_key: results
         fields:
+          status: status
           action_id: action_id
           action_status: action_status
           source_item_id: source_item_id
