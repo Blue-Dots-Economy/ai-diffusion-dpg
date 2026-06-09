@@ -461,14 +461,31 @@ tools:
               profile.
     response:
       max_size_chars: 1000
-      # Bulk envelope: { results: [ { index, status, action_id, ... } ],
-      # summary }. apply_job sends one element, so `results` has one
-      # item; list_key projects it into a single-element list the LLM
-      # reads. `status` lets the model confirm the per-item success.
+      # Bulk envelope (Signals-DPG PR #55): { results: [ ... ], summary }.
+      # apply_job sends one element, so `results` has one item; list_key
+      # projects it into a single-element list the LLM reads.
+      #   success element: { index, status: "success", action_id,
+      #                      action_type, action_status, update_count,
+      #                      source_item_id, target_item_id }
+      #   failure element: { index, status: "error", error: "<CODE>",
+      #                      message: "<human-readable reason>" }
+      # `status` lets the model confirm per-item success; `error` +
+      # `message` give it the reason on a per-item failure so it can
+      # explain (not silently announce success). On a success element
+      # error/message are absent and project to null; on a failure
+      # element the success fields are absent and project to null.
+      #
+      # NOTE: a single failed element comes back as an all-fail HTTP 422,
+      # which the engine's error branch catches before projection and
+      # surfaces the raw envelope to the LLM. error/message here cover the
+      # mixed-success (HTTP 207) path that bypasses that branch — harmless
+      # for apply_job's single element today, correct if it ever batches.
       projection:
         list_key: results
         fields:
           status: status
+          error: error
+          message: message
           action_id: action_id
           action_status: action_status
           source_item_id: source_item_id
