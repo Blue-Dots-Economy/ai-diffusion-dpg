@@ -509,6 +509,8 @@ def _load_project_meta(slug: str) -> dict:
 # ---------------------------------------------------------------------------
 
 _devkit_provider = os.environ.get("DEVKIT_PROVIDER", "").lower()
+if _devkit_provider == "gemini":
+    _devkit_provider = "google"
 if not _devkit_provider:
     model_env = os.environ.get("DEVKIT_MODEL", "")
     # NOTE: o1-/o3- reasoning models are excluded from auto-detection.
