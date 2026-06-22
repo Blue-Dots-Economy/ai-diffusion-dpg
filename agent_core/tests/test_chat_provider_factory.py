@@ -95,7 +95,7 @@ class TestGoogleBranch:
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
         monkeypatch.setenv("GEMINI_API_KEY", "dummy")
         cfg = {
-            "provider": "google",
+            "provider": "gemini",
             "primary_model": "gemini-3.5-flash",
             "timeout_ms": 5000,
             "retry_attempts": 2,
