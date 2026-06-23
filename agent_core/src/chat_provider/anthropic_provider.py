@@ -20,6 +20,7 @@ from opentelemetry import trace as otel_trace
 from src.chat_provider.base import (
     Capabilities,
     ChatProviderBase,
+    ProviderAPIError,
     ProviderConfigError,
     UnsupportedFeatureError,
 )
@@ -60,6 +61,11 @@ class _RetryableExhausted(Exception):
     and trigger its own fallback logic. This coupling is intentional and
     scoped — the adapter is deleted in PR5 (#292).
     """
+
+    def __init__(self, message: str, error_type: str, error_message: str) -> None:
+        super().__init__(message)
+        self.error_type = error_type
+        self.error_message = error_message
 
 
 def _safe_int(value) -> int:
@@ -179,10 +185,12 @@ class AnthropicChatProvider(ChatProviderBase):
 
         try:
             return self._call_with_retry(request)
-        except _RetryableExhausted:
+        except _RetryableExhausted as e:
             return ChatResponse(
                 content=[],
                 stop_reason="error",
+                error_type=e.error_type,
+                error_message=e.error_message,
                 model_used=self._active_model,
                 usage=TokenUsage(),
             )
@@ -318,6 +326,8 @@ class AnthropicChatProvider(ChatProviderBase):
                 return ChatResponse(
                     content=[],
                     stop_reason="error",
+                    error_type="api_error",
+                    error_message="We're having trouble connecting to the AI service right now. Please try again shortly.",
                     model_used=self._active_model,
                     usage=TokenUsage(),
                 )
@@ -337,6 +347,8 @@ class AnthropicChatProvider(ChatProviderBase):
                 return ChatResponse(
                     content=[],
                     stop_reason="error",
+                    error_type="api_error",
+                    error_message="We're having trouble connecting to the AI service right now. Please try again shortly.",
                     model_used=self._active_model,
                     usage=TokenUsage(),
                 )
@@ -351,9 +363,12 @@ class AnthropicChatProvider(ChatProviderBase):
                 "error": str(last_error),
             },
         )
+        error_type = "rate_limit" if isinstance(last_error, anthropic.RateLimitError) else "timeout"
+        error_message = "We're having trouble connecting to the AI service right now. Please try again shortly."
         raise _RetryableExhausted(
-            f"All {self._max_attempts} retry attempts exhausted for model "
-            f"{self._active_model}"
+            f"All {self._max_attempts} retry attempts exhausted for model {self._active_model}",
+            error_type=error_type,
+            error_message=error_message,
         )
 
     async def stream(
@@ -389,8 +404,12 @@ class AnthropicChatProvider(ChatProviderBase):
         try:
             async for token in self._stream_with_retry(request, abort_event):
                 yield token
-        except _RetryableExhausted:
-            return
+        except _RetryableExhausted as e:
+            raise ProviderAPIError(
+                f"All {self._max_attempts} stream retry attempts exhausted: {e.error_message}",
+                error_type=e.error_type,
+                error_message=e.error_message,
+            ) from e
 
     async def _stream_with_retry(
         self,
@@ -545,7 +564,7 @@ class AnthropicChatProvider(ChatProviderBase):
                         "latency_ms": int((time.time() - start) * 1000),
                     },
                 )
-                return
+                raise ProviderAPIError("We're having trouble connecting to the AI service right now. Please try again shortly.") from e
 
         logger.error(
             "chat_provider.anthropic.stream_exhausted",
@@ -557,9 +576,12 @@ class AnthropicChatProvider(ChatProviderBase):
                 "error": str(last_error),
             },
         )
+        error_type = "rate_limit" if isinstance(last_error, anthropic.RateLimitError) else "timeout"
+        error_message = "We're having trouble connecting to the AI service right now. Please try again shortly."
         raise _RetryableExhausted(
-            f"All {self._max_attempts} stream retry attempts exhausted for model "
-            f"{self._active_model}"
+            f"All {self._max_attempts} stream retry attempts exhausted for model {self._active_model}",
+            error_type=error_type,
+            error_message=error_message,
         )
 
     def get_active_model(self) -> str:

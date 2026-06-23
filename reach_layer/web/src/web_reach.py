@@ -191,12 +191,24 @@ class WebReachLayer(TextChannelBase):
                 "was_tool_used": False,
                 "session_id": session_id,
                 "latency_ms": latency_ms,
+                "error_type": "empty_response",
+                "error_message": "We're having trouble connecting to the AI service right now. Please try again shortly.",
             }
 
+        error_type = data.get("error_type")
+        error_message = data.get("error_message")
+        response_text = data.get("response_text", "") or ""
+
+        if not response_text and not error_type:
+            error_type = "empty_response"
+            error_message = "We're having trouble connecting to the AI service right now. Please try again shortly."
+
         return {
-            "response_text": data.get("response_text", "") or "",
+            "response_text": response_text,
             "was_escalated": bool(data.get("was_escalated", False)),
             "was_tool_used": bool(data.get("was_tool_used", False)),
             "session_id": session_id,
             "latency_ms": latency_ms,
+            "error_type": error_type,
+            "error_message": error_message,
         }

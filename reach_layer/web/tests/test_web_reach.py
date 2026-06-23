@@ -118,6 +118,8 @@ class TestFormatResult:
             "was_tool_used": False,
             "session_id": "s1",
             "latency_ms": 123,
+            "error_type": "empty_response",
+            "error_message": "We're having trouble connecting to the AI service right now. Please try again shortly.",
         }
 
     def test_populated_data(self) -> None:

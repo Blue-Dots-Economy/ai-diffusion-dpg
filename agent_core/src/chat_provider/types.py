@@ -200,6 +200,8 @@ class ChatResponse(BaseModel):
     content: list[ContentBlock]
     parsed_output: dict | None = None
     stop_reason: Literal["end_turn", "tool_use", "max_tokens", "stop_sequence", "error"]
+    error_type: str | None = None
+    error_message: str | None = None
     model_used: str
     usage: TokenUsage
     raw: dict | None = None

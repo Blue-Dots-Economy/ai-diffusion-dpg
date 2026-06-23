@@ -55,6 +55,8 @@ class ProcessTurnResponse(BaseModel):
     was_tool_used: bool
     model_used: str
     latency_ms: int
+    error_type: str | None = None
+    error_message: str | None = None
 
 
 class SegmentInputRequest(BaseModel):
@@ -165,6 +167,8 @@ def create_orchestration_app(
                 was_tool_used=result.was_tool_used,
                 model_used=result.model_used,
                 latency_ms=result.latency_ms,
+                error_type=result.error_type,
+                error_message=result.error_message,
             )
 
         except Exception as e:
@@ -180,13 +184,20 @@ def create_orchestration_app(
                 },
             )
             # Return a safe structured error response rather than crashing
+            error_type = getattr(e, "error_type", None)
+            error_message = getattr(e, "error_message", None) or str(e)
+            if error_type is None:
+                from src.chat_provider.base import ProviderAPIError
+                error_type = "api_error" if isinstance(e, ProviderAPIError) else "internal_server_error"
             return ProcessTurnResponse(
                 session_id=session_id,
-                response_text="I'm having trouble processing your request right now. Please try again.",
+                response_text="We're having trouble connecting to the AI service right now. Please try again shortly.",
                 was_escalated=False,
                 was_tool_used=False,
                 model_used="",
                 latency_ms=latency_ms,
+                error_type=error_type,
+                error_message=error_message,
             )
 
     @app.post("/stream_turn")

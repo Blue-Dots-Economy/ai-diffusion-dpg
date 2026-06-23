@@ -60,6 +60,18 @@ class ProviderConfigError(ChatProviderError):
 class ProviderAPIError(ChatProviderError):
     """Non-retryable provider-side error (auth failure, persistent 4xx/5xx)."""
 
+    def __init__(self, message: str, error_type: str | None = None, error_message: str | None = None) -> None:
+        """Initialise ProviderAPIError.
+
+        Args:
+            message: The raw error message string.
+            error_type: The categorized error type (e.g. rate_limit, timeout, safety_blocked).
+            error_message: The detailed, original error message string.
+        """
+        super().__init__(message)
+        self.error_type = error_type
+        self.error_message = error_message
+
 
 class ToolUseRequested(Exception):
     """Streaming-only signal: model emitted tool_use blocks; caller executes and resumes.

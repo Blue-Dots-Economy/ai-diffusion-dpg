@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { MessageBubble } from '../components/chat/MessageBubble'
+import { formatTime } from '../utils'
 
 // Silence MarkdownRenderer child-component render issues in tests
 vi.mock('../components/markdown/MarkdownRenderer', () => ({
@@ -96,5 +97,31 @@ describe('MessageBubble — agent role', () => {
   it('does not show Show more for short messages', () => {
     render(<MessageBubble message={agentMsg} isNew={false} agentAvatar="🤖" userAvatar="👤" />)
     expect(screen.queryByText(/show more/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('MessageBubble — system_error role', () => {
+  const errorMsg = {
+    id: 'e1',
+    role: 'system_error',
+    text: 'Connection timeout',
+    timestamp: '2024-01-15T10:00:02Z',
+  }
+
+  it('renders system error message text and title', () => {
+    render(<MessageBubble message={errorMsg} isNew={false} agentAvatar="🤖" userAvatar="👤" />)
+    expect(screen.getByText('System Error')).toBeInTheDocument()
+    expect(screen.getByText('Connection timeout')).toBeInTheDocument()
+  })
+
+  it('does not render avatars', () => {
+    render(<MessageBubble message={errorMsg} isNew={false} agentAvatar="🤖" userAvatar="👤" />)
+    expect(screen.queryByText('🤖')).not.toBeInTheDocument()
+    expect(screen.queryByText('👤')).not.toBeInTheDocument()
+  })
+
+  it('renders timestamp', () => {
+    render(<MessageBubble message={errorMsg} isNew={false} agentAvatar="🤖" userAvatar="👤" />)
+    expect(screen.getByText(formatTime(errorMsg.timestamp))).toBeInTheDocument()
   })
 })

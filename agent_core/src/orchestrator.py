@@ -29,7 +29,7 @@ from typing import Any, Optional
 
 from src.base import AgentCoreBase
 from src.chat_provider import build_chat_provider
-from src.chat_provider.base import ChatProviderBase, ToolUseRequested
+from src.chat_provider.base import ChatProviderBase, ToolUseRequested, ProviderAPIError
 from src.chat_provider.types import (
     ChatRequest,
     ChatResponse,
@@ -1121,6 +1121,36 @@ class AgentCore(AgentCoreBase):
             (llm_response.usage.input_tokens or 0), (llm_response.usage.output_tokens or 0),
             int((time.time() - t8) * 1000),
         )
+        if llm_response.stop_reason == "error":
+            logger.error(
+                "orchestrator.llm_call_error",
+                extra={
+                    "operation": "orchestrator.process_turn",
+                    "status": "failure",
+                    "session_id": session_id,
+                    "error_type": llm_response.error_type,
+                    "error_message": llm_response.error_message,
+                },
+            )
+            latency_ms = int((time.time() - start) * 1000)
+            return self._build_result(
+                session_id=session_id,
+                user_id=user_id,
+                response_text="",
+                was_escalated=False,
+                was_tool_used=False,
+                model_used=llm_response.model_used,
+                latency_ms=latency_ms,
+                turn_input=turn_input,
+                turn_id=turn_id,
+                intent=nlu_result.intent,
+                tool_calls=[],
+                trust_input=trust_input,
+                trust_output=TrustCheckResult(passed=True, action="allow"),
+                trace_id=_trace_id,
+                error_type=llm_response.error_type,
+                error_message=llm_response.error_message,
+            )
         if llm_response.stop_reason == "tool_use":
             logger.info("  [STEP 8]   → LLM requested tool use — entering tool loop")
 
@@ -1249,6 +1279,8 @@ class AgentCore(AgentCoreBase):
             flush_reason=_flush_reason,
             trace_id=_trace_id,
             session_ended=bool(getattr(self._manager_agent, "session_ended", False)),
+            error_type=llm_response.error_type,
+            error_message=llm_response.error_message,
         )
 
         logger.info(
@@ -1942,6 +1974,8 @@ class AgentCore(AgentCoreBase):
         flush_reason: str = "",
         trace_id: str = "",
         session_ended: bool = False,
+        error_type: Optional[str] = None,
+        error_message: Optional[str] = None,
     ) -> TurnResult:
         """
         Construct the TurnResult and schedule async post-turn work.
@@ -1978,6 +2012,8 @@ class AgentCore(AgentCoreBase):
             model_used=model_used,
             latency_ms=latency_ms,
             session_ended=session_ended,
+            error_type=error_type,
+            error_message=error_message,
         )
 
         turn_event = TurnEvent(
@@ -3842,10 +3878,16 @@ class AgentCore(AgentCoreBase):
                     "error": f"{type(e).__name__}: {e}",
                 },
             )
+            error_type = getattr(e, "error_type", None)
+            error_message = getattr(e, "error_message", None) or str(e)
+            if error_type is None:
+                error_type = "api_error" if isinstance(e, ProviderAPIError) else "internal_server_error"
             yield _stamp(DoneEvent(
                 turn_id=turn_id,
                 turn_status="abandoned",
                 latency_ms=int((time.time() - start) * 1000),
+                error_type=error_type,
+                error_message=error_message,
             ))
 
     async def _async_post_turn(

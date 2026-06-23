@@ -131,8 +131,14 @@ async def _chat_direct_mode(
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
-            return {"response_text": "[Agent Core did not respond in time. Please try again.]",
-                    "was_escalated": False, "session_id": session_id, "latency_ms": 0}
+            return {
+                "response_text": "We're having trouble connecting to the AI service right now. Please try again shortly.",
+                "was_escalated": False,
+                "session_id": session_id,
+                "latency_ms": 0,
+                "error_type": "timeout",
+                "error_message": "We're having trouble connecting to the AI service right now. Please try again shortly.",
+            }
         if isinstance(err, httpx.ConnectError):
             logger.error(
                 "reach_server.chat_connect_error",
@@ -143,8 +149,14 @@ async def _chat_direct_mode(
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
-            return {"response_text": "[Could not reach Agent Core. Is the backend running?]",
-                    "was_escalated": False, "session_id": session_id, "latency_ms": 0}
+            return {
+                "response_text": "We're having trouble connecting to the AI service right now. Please try again shortly.",
+                "was_escalated": False,
+                "session_id": session_id,
+                "latency_ms": 0,
+                "error_type": "backend_unreachable",
+                "error_message": "We're having trouble connecting to the AI service right now. Please try again shortly.",
+            }
         logger.error(
             "reach_server.chat_error",
             extra={
@@ -154,8 +166,14 @@ async def _chat_direct_mode(
                 "latency_ms": int((time.time() - start) * 1000),
             },
         )
-        return {"response_text": f"[Unexpected error: {type(err).__name__}]",
-                "was_escalated": False, "session_id": session_id, "latency_ms": 0}
+        return {
+            "response_text": "We're experiencing a temporary issue with the AI service. Please try again.",
+            "was_escalated": False,
+            "session_id": session_id,
+            "latency_ms": 0,
+            "error_type": "internal_server_error",
+            "error_message": "We're experiencing a temporary issue with the AI service. Please try again.",
+        }
 
     latency_ms = int((time.time() - start) * 1000)
     formatted = web_reach.format_result(session_id, data, latency_ms)
@@ -203,12 +221,20 @@ async def _chat_session_mode(
                 "latency_ms": int((time.time() - start) * 1000),
             },
         )
-        return {"response_text": f"[Unexpected error: {type(e).__name__}]",
-                "was_escalated": False, "session_id": session_id, "latency_ms": 0}
+        return {
+            "response_text": "We're experiencing a temporary issue with the AI service. Please try again.",
+            "was_escalated": False,
+            "session_id": session_id,
+            "latency_ms": 0,
+            "error_type": "internal_server_error",
+            "error_message": "We're experiencing a temporary issue with the AI service. Please try again.",
+        }
 
     parts: list[str] = []
     was_escalated = False
     was_tool_used = False
+    error_type: Optional[str] = None
+    error_message: Optional[str] = None
     try:
         # Web intentionally does NOT pass user_id here — the /chat endpoint is
         # request/response per user message, so the SSE only opens AFTER the user
@@ -223,6 +249,8 @@ async def _chat_session_mode(
             elif isinstance(event, DoneEvent):
                 was_escalated = event.was_escalated
                 was_tool_used = event.was_tool_used
+                error_type = getattr(event, "error_type", None)
+                error_message = getattr(event, "error_message", None)
                 break
     except Exception as e:
         span.record_exception(e)
@@ -237,8 +265,14 @@ async def _chat_session_mode(
                 "latency_ms": int((time.time() - start) * 1000),
             },
         )
-        return {"response_text": "[Agent Core stream failed. Please try again.]",
-                "was_escalated": False, "session_id": session_id, "latency_ms": 0}
+        return {
+            "response_text": "We're having trouble connecting to the AI service right now. Please try again shortly.",
+            "was_escalated": False,
+            "session_id": session_id,
+            "latency_ms": 0,
+            "error_type": "stream_error",
+            "error_message": "We're having trouble connecting to the AI service right now. Please try again shortly.",
+        }
 
     latency_ms = int((time.time() - start) * 1000)
     formatted = {
@@ -247,6 +281,8 @@ async def _chat_session_mode(
         "was_tool_used": was_tool_used,
         "session_id": session_id,
         "latency_ms": latency_ms,
+        "error_type": error_type,
+        "error_message": error_message,
     }
     logger.info(
         "reach_server.chat_success",

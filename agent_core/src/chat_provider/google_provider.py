@@ -106,6 +106,11 @@ def _is_transient_error(exc: Exception) -> bool:
 class _RetryableExhausted(Exception):
     """Internal: all retry attempts on transient errors were consumed."""
 
+    def __init__(self, message: str, error_type: str, error_message: str) -> None:
+        super().__init__(message)
+        self.error_type = error_type
+        self.error_message = error_message
+
 
 class GoogleChatProvider(ChatProviderBase):
     """Google Gemini implementation of ChatProviderBase.
@@ -228,10 +233,12 @@ class GoogleChatProvider(ChatProviderBase):
 
         try:
             return self._call_with_retry(request)
-        except _RetryableExhausted:
+        except _RetryableExhausted as e:
             return ChatResponse(
                 content=[],
                 stop_reason="error",
+                error_type=e.error_type,
+                error_message=e.error_message,
                 model_used=self._active_model,
                 usage=TokenUsage(),
             )
@@ -338,6 +345,8 @@ class GoogleChatProvider(ChatProviderBase):
                 return ChatResponse(
                     content=[],
                     stop_reason="error",
+                    error_type="api_error",
+                    error_message="We're having trouble connecting to the AI service right now. Please try again shortly.",
                     model_used=self._active_model,
                     usage=TokenUsage(),
                 )
@@ -352,8 +361,18 @@ class GoogleChatProvider(ChatProviderBase):
                 "error": str(last_error),
             },
         )
+        err_str = str(last_error).lower()
+        if "429" in err_str or "rate" in err_str or "resource" in err_str:
+            error_type = "rate_limit"
+        elif "timeout" in err_str or "deadline" in err_str:
+            error_type = "timeout"
+        else:
+            error_type = "timeout"
+        error_message = "We're having trouble connecting to the AI service right now. Please try again shortly."
         raise _RetryableExhausted(
-            f"All {self._max_attempts} retry attempts exhausted for model {self._active_model}"
+            f"All {self._max_attempts} retry attempts exhausted for model {self._active_model}",
+            error_type=error_type,
+            error_message=error_message,
         )
 
     async def stream(
@@ -389,8 +408,12 @@ class GoogleChatProvider(ChatProviderBase):
         try:
             async for token in self._stream_with_retry(request, abort_event):
                 yield token
-        except _RetryableExhausted:
-            return
+        except _RetryableExhausted as e:
+            raise ProviderAPIError(
+                f"All {self._max_attempts} stream retry attempts exhausted: {e.error_message}",
+                error_type=e.error_type,
+                error_message=e.error_message,
+            ) from e
 
     async def _stream_with_retry(
         self,
@@ -531,8 +554,11 @@ class GoogleChatProvider(ChatProviderBase):
                 )
 
                 if mapped_stop_reason == "error":
+                    err_t = "safety_blocked" if stop_reason == "SAFETY" else ("recitation_blocked" if stop_reason == "RECITATION" else "api_error")
                     raise ProviderAPIError(
-                        f"Google stream stopped due to {stop_reason or 'safety/recitation block'}"
+                        f"Google stream stopped due to {stop_reason or 'safety/recitation block'}",
+                        error_type=err_t,
+                        error_message="We're experiencing a temporary issue with the AI service. Please try again.",
                     )
 
                 if mapped_stop_reason == "tool_use" and tool_calls_buf:
@@ -564,7 +590,7 @@ class GoogleChatProvider(ChatProviderBase):
                     )
                     continue
 
-                # Non-retryable error — log and return silently.
+                # Non-retryable error — log and raise.
                 logger.error(
                     "chat_provider.google.stream_error: %s — %s",
                     type(e).__name__,
@@ -578,7 +604,7 @@ class GoogleChatProvider(ChatProviderBase):
                         "latency_ms": latency_ms,
                     },
                 )
-                return
+                raise ProviderAPIError("We're having trouble connecting to the AI service right now. Please try again shortly.") from e
 
         logger.error(
             "chat_provider.google.stream_exhausted",
@@ -590,8 +616,18 @@ class GoogleChatProvider(ChatProviderBase):
                 "error": str(last_error),
             },
         )
+        err_str = str(last_error).lower()
+        if "429" in err_str or "rate" in err_str or "resource" in err_str:
+            error_type = "rate_limit"
+        elif "timeout" in err_str or "deadline" in err_str:
+            error_type = "timeout"
+        else:
+            error_type = "timeout"
+        error_message = "We're having trouble connecting to the AI service right now. Please try again shortly."
         raise _RetryableExhausted(
-            f"All {self._max_attempts} stream retry attempts exhausted for model {self._active_model}"
+            f"All {self._max_attempts} stream retry attempts exhausted for model {self._active_model}",
+            error_type=error_type,
+            error_message=error_message,
         )
 
     def get_active_model(self) -> str:
@@ -757,13 +793,15 @@ class GoogleChatProvider(ChatProviderBase):
         content_blocks: list = []
         parsed_output: dict | None = None
         stop_reason = "end_turn"
-
+        error_type: str | None = None
+        error_message: str | None = None
+ 
         # Guard: check candidates exist before accessing content.
         has_candidates = bool(raw.candidates and len(raw.candidates) > 0)
-
+ 
         if has_candidates:
             candidate = raw.candidates[0]
-
+ 
             # Extract text and function_call parts from the candidate.
             if candidate.content and candidate.content.parts:
                 for part in candidate.content.parts:
@@ -778,7 +816,7 @@ class GoogleChatProvider(ChatProviderBase):
                                 input=dict(fc.args) if fc.args else {}
                             )
                         )
-
+ 
             # Parse JSON output if output_format was requested.
             if output_format is not None:
                 text_parts = [b.text for b in content_blocks if b.type == "text"]
@@ -788,12 +826,12 @@ class GoogleChatProvider(ChatProviderBase):
                     except json.JSONDecodeError:
                         parsed_output = None
                         stop_reason = "error"
-
+ 
             # Check for tool_use blocks.
             has_tool_use = any(b.type == "tool_use" for b in content_blocks)
             if has_tool_use:
                 stop_reason = "tool_use"
-
+ 
             # Map candidate finish_reason.
             if candidate.finish_reason:
                 fr = candidate.finish_reason
@@ -802,6 +840,8 @@ class GoogleChatProvider(ChatProviderBase):
                     stop_reason = "max_tokens"
                 elif cand_reason in ("SAFETY", "RECITATION"):
                     stop_reason = "error"
+                    error_type = "safety_blocked" if cand_reason == "SAFETY" else "recitation_blocked"
+                    error_message = f"Google API block: {cand_reason}"
         else:
             # No candidates — likely a safety block or server error.
             logger.warning(
@@ -814,21 +854,25 @@ class GoogleChatProvider(ChatProviderBase):
                 },
             )
             stop_reason = "error"
-
+            error_type = "api_error"
+            error_message = "We're experiencing a temporary issue with the AI service. Please try again."
+ 
         # --- Usage -----------------------------------------------------------
         input_tokens = 0
         output_tokens = 0
         cache_read_tokens = 0
-
+ 
         if raw.usage_metadata:
             input_tokens = _safe_int(getattr(raw.usage_metadata, "prompt_token_count", 0))
             output_tokens = _safe_int(getattr(raw.usage_metadata, "candidates_token_count", 0))
             cache_read_tokens = _safe_int(getattr(raw.usage_metadata, "cached_content_token_count", 0))
-
+ 
         return ChatResponse(
             content=content_blocks,
             parsed_output=parsed_output,
             stop_reason=stop_reason,  # type: ignore[arg-type]
+            error_type=error_type,
+            error_message=error_message,
             model_used=self._active_model,
             usage=TokenUsage(
                 input_tokens=input_tokens,

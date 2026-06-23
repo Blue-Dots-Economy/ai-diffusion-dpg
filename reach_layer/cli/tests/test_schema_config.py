@@ -97,7 +97,15 @@ def test_accepts_valid_full_config():
 
 
 def test_accepts_empty_config_with_defaults():
-    cfg = MergedConfig.validate_full({})
+    cfg = MergedConfig.validate_full({
+        "reach_layer": {
+            "channels": {
+                "cli": {},
+                "web": {},
+                "voice": {},
+            }
+        }
+    })
     assert cfg.reach_layer.channels.cli.enabled is True
     assert cfg.reach_layer.channels.web.server.port == 8005
     assert cfg.reach_layer.channels.voice.port == 8006

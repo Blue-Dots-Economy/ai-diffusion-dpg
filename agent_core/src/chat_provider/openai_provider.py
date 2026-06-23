@@ -31,6 +31,7 @@ from opentelemetry import trace as otel_trace
 from src.chat_provider.base import (
     Capabilities,
     ChatProviderBase,
+    ProviderAPIError,
     ProviderConfigError,
     UnsupportedFeatureError,
 )
@@ -90,6 +91,11 @@ class _RetryableExhausted(Exception):
     Caught only inside OpenAIChatProvider.call() / .stream() to
     transition into the error-response path. Never escapes.
     """
+
+    def __init__(self, message: str, error_type: str, error_message: str) -> None:
+        super().__init__(message)
+        self.error_type = error_type
+        self.error_message = error_message
 
 
 class OpenAIChatProvider(ChatProviderBase):
@@ -190,10 +196,12 @@ class OpenAIChatProvider(ChatProviderBase):
 
         try:
             return self._call_with_retry(request)
-        except _RetryableExhausted:
+        except _RetryableExhausted as e:
             return ChatResponse(
                 content=[],
                 stop_reason="error",
+                error_type=e.error_type,
+                error_message=e.error_message,
                 model_used=self._active_model,
                 usage=TokenUsage(),
             )
@@ -301,6 +309,8 @@ class OpenAIChatProvider(ChatProviderBase):
                 return ChatResponse(
                     content=[],
                     stop_reason="error",
+                    error_type="api_error",
+                    error_message="We're having trouble connecting to the AI service right now. Please try again shortly.",
                     model_used=self._active_model,
                     usage=TokenUsage(),
                 )
@@ -319,6 +329,8 @@ class OpenAIChatProvider(ChatProviderBase):
                 return ChatResponse(
                     content=[],
                     stop_reason="error",
+                    error_type="api_error",
+                    error_message="We're having trouble connecting to the AI service right now. Please try again shortly.",
                     model_used=self._active_model,
                     usage=TokenUsage(),
                 )
@@ -333,8 +345,12 @@ class OpenAIChatProvider(ChatProviderBase):
                 "error": str(last_error),
             },
         )
+        error_type = "rate_limit" if isinstance(last_error, openai.RateLimitError) else "timeout"
+        error_message = "We're having trouble connecting to the AI service right now. Please try again shortly."
         raise _RetryableExhausted(
-            f"All {self._max_attempts} retry attempts exhausted for model {self._active_model}"
+            f"All {self._max_attempts} retry attempts exhausted for model {self._active_model}",
+            error_type=error_type,
+            error_message=error_message,
         )
 
     async def stream(
@@ -370,8 +386,12 @@ class OpenAIChatProvider(ChatProviderBase):
         try:
             async for token in self._stream_with_retry(request, abort_event):
                 yield token
-        except _RetryableExhausted:
-            return
+        except _RetryableExhausted as e:
+            raise ProviderAPIError(
+                f"All {self._max_attempts} stream retry attempts exhausted: {e.error_message}",
+                error_type=e.error_type,
+                error_message=e.error_message,
+            ) from e
 
     async def _stream_with_retry(
         self,
@@ -500,6 +520,13 @@ class OpenAIChatProvider(ChatProviderBase):
                     },
                 )
 
+                if stop_reason == "content_filter":
+                    raise ProviderAPIError(
+                        "OpenAI stream stopped due to content_filter block",
+                        error_type="safety_blocked",
+                        error_message="We're experiencing a temporary issue with the AI service. Please try again.",
+                    )
+
                 # If any tool calls accumulated, raise ToolUseRequested.
                 if stop_reason == "tool_calls" and tool_call_buf:
                     from src.chat_provider.base import ToolUseRequested
@@ -552,7 +579,7 @@ class OpenAIChatProvider(ChatProviderBase):
                         "latency_ms": int((time.time() - start) * 1000),
                     },
                 )
-                return
+                raise ProviderAPIError("We're having trouble connecting to the AI service right now. Please try again shortly.") from e
 
         logger.error(
             "chat_provider.openai.stream_exhausted",
@@ -564,8 +591,12 @@ class OpenAIChatProvider(ChatProviderBase):
                 "error": str(last_error),
             },
         )
+        error_type = "rate_limit" if isinstance(last_error, openai.RateLimitError) else "timeout"
+        error_message = "We're having trouble connecting to the AI service right now. Please try again shortly."
         raise _RetryableExhausted(
-            f"All {self._max_attempts} stream retry attempts exhausted for model {self._active_model}"
+            f"All {self._max_attempts} stream retry attempts exhausted for model {self._active_model}",
+            error_type=error_type,
+            error_message=error_message,
         )
 
     def get_active_model(self) -> str:
@@ -817,6 +848,12 @@ class OpenAIChatProvider(ChatProviderBase):
             "function_call": "tool_use",
         }
         stop_reason = finish_map.get(choice.finish_reason, "end_turn")
+        error_type: str | None = None
+        error_message: str | None = None
+
+        if choice.finish_reason == "content_filter":
+            error_type = "safety_blocked"
+            error_message = "We're experiencing a temporary issue with the AI service. Please try again."
 
         # Structured output unwrap.
         parsed_output: dict | None = None
@@ -834,6 +871,8 @@ class OpenAIChatProvider(ChatProviderBase):
             content=content_blocks,
             parsed_output=parsed_output,
             stop_reason=stop_reason,
+            error_type=error_type,
+            error_message=error_message,
             model_used=self._active_model,
             usage=usage,
         )

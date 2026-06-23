@@ -127,3 +127,58 @@ class TestProcessTurnFailure:
         data = response.json()
         assert "response_text" in data
         assert data["response_text"] != ""
+
+    def test_agent_core_error_response_contains_error_metadata(self):
+        mock_ac = MagicMock()
+        mock_ac.process_turn.return_value = TurnResult(
+            session_id="s1",
+            turn_id="t1",
+            response_text="",
+            was_escalated=False,
+            was_tool_used=False,
+            model_used="claude-test",
+            latency_ms=200,
+            error_type="api_error",
+            error_message="Anthropic API Error: Rate limited",
+        )
+        c = TestClient(create_orchestration_app(mock_ac))
+        response = c.post(
+            "/process_turn",
+            json={"session_id": "s1", "user_message": "hello"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["error_type"] == "api_error"
+        assert data["error_message"] == "Anthropic API Error: Rate limited"
+
+    def test_agent_core_exception_propagates_custom_error_fields(self):
+        from src.chat_provider.base import ProviderAPIError
+        mock_ac = MagicMock()
+        mock_ac.process_turn.side_effect = ProviderAPIError(
+            "Service Unavailable",
+            error_type="timeout",
+            error_message="OpenAI timeout",
+        )
+        c = TestClient(create_orchestration_app(mock_ac))
+        response = c.post(
+            "/process_turn",
+            json={"session_id": "s1", "user_message": "hello"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["error_type"] == "timeout"
+        assert data["error_message"] == "OpenAI timeout"
+
+    def test_agent_core_exception_fallback_error_message(self):
+        from src.chat_provider.base import ProviderAPIError
+        mock_ac = MagicMock()
+        mock_ac.process_turn.side_effect = ProviderAPIError("Something went wrong")
+        c = TestClient(create_orchestration_app(mock_ac))
+        response = c.post(
+            "/process_turn",
+            json={"session_id": "s1", "user_message": "hello"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["error_type"] == "api_error"
+        assert data["error_message"] == "Something went wrong"

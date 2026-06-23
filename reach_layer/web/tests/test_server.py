@@ -154,7 +154,7 @@ def test_chat_agent_core_timeout_returns_safe_message(client):
     )
     response = client.post("/chat", json={"session_id": "sess-1", "message": "hi"})
     assert response.status_code == 200
-    assert "did not respond" in response.json()["response_text"].lower()
+    assert "trouble connecting to the ai service" in response.json()["response_text"].lower()
 
 
 @respx.mock
@@ -164,7 +164,7 @@ def test_chat_agent_core_connect_error_returns_safe_message(client):
     )
     response = client.post("/chat", json={"session_id": "sess-1", "message": "hi"})
     assert response.status_code == 200
-    assert "reach agent core" in response.json()["response_text"].lower()
+    assert "trouble connecting to the ai service" in response.json()["response_text"].lower()
 
 
 @respx.mock

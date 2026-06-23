@@ -107,6 +107,17 @@ export function useChat({ onError }) {
           message: text.trim(),
           fresh: sendingFresh,
         })
+        if (data.error_type) {
+          const errorMsg = {
+            id: generateUUID(),
+            role: 'system_error',
+            text: data.error_message || 'An error occurred.',
+            timestamp: new Date().toISOString(),
+          }
+          setMessages(prev => [...prev, errorMsg])
+          if (sendingFresh) setFreshOnNextSend(false)
+          return
+        }
         const agentId = generateUUID()
         const agentMsg = {
           id: agentId,
@@ -120,7 +131,14 @@ export function useChat({ onError }) {
         setMessages(prev => [...prev, agentMsg])
         setNewestAgentId(agentId)
         if (sendingFresh) setFreshOnNextSend(false)
-      } catch {
+      } catch (err) {
+        const errorMsg = {
+          id: generateUUID(),
+          role: 'system_error',
+          text: 'Connection error. Please check your network and try again.',
+          timestamp: new Date().toISOString(),
+        }
+        setMessages(prev => [...prev, errorMsg])
         onError('Connection error. Please check your network and try again.')
       } finally {
         setIsSending(false)

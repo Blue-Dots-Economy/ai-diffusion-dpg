@@ -256,6 +256,13 @@ class CLIReachLayer(TextChannelBase):
                 )
                 sys.stdout.flush()
         elif isinstance(event, DoneEvent):
+            error_type = getattr(event, "error_type", None)
+            error_message = getattr(event, "error_message", None)
+            if error_type:
+                sys.stdout.write(f"\n[System Error: {error_message}]\n")
+                sys.stdout.flush()
+                return
+
             suffix = []
             if event.was_escalated:
                 suffix.append("escalated")
@@ -273,6 +280,13 @@ class CLIReachLayer(TextChannelBase):
             sys.stdout.write("\n[Error: no response from Agent Core]\n")
             sys.stdout.flush()
             return
+        error_type = result.get("error_type")
+        error_message = result.get("error_message")
+        if error_type:
+            sys.stdout.write(f"\n[System Error: {error_message}]\n")
+            sys.stdout.flush()
+            return
+
         text = result.get("response_text", "(no response)")
         was_escalated = result.get("was_escalated", False)
         sys.stdout.write(f"\n{self._agent_prefix}{text}\n")

@@ -16,7 +16,7 @@ import logging
 import time
 from typing import Optional
 
-from src.chat_provider.base import ChatProviderBase
+from src.chat_provider.base import ChatProviderBase, ProviderAPIError
 from src.chat_provider.types import (
     ChatRequest,
     ChatResponse,
@@ -254,6 +254,12 @@ class ManagerAgent:
             )
             start = time.time()
             current_response = self._llm.call(request)
+            if current_response.stop_reason == "error":
+                raise ProviderAPIError(
+                    f"LLM followup call failed: {current_response.error_message}",
+                    error_type=current_response.error_type,
+                    error_message=current_response.error_message,
+                )
             logger.info(
                 "manager_agent.llm_followup",
                 extra={
