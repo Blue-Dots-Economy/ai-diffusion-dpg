@@ -29,7 +29,7 @@ from typing import Any, Optional
 
 from src.base import AgentCoreBase
 from src.chat_provider import build_chat_provider
-from src.chat_provider.base import ChatProviderBase, ToolUseRequested, ProviderAPIError
+from src.chat_provider.base import ChatProviderBase, ToolUseRequested, ProviderAPIError, SAFE_MESSAGES, DEFAULT_SAFE_MESSAGE
 from src.chat_provider.types import (
     ChatRequest,
     ChatResponse,
@@ -2003,6 +2003,11 @@ class AgentCore(AgentCoreBase):
         Returns:
             Fully constructed TurnResult.
         """
+        safe_error_message = (
+            SAFE_MESSAGES.get(error_type, DEFAULT_SAFE_MESSAGE)
+            if error_type
+            else error_message
+        )
         result = TurnResult(
             session_id=session_id,
             turn_id=turn_id,
@@ -2013,7 +2018,7 @@ class AgentCore(AgentCoreBase):
             latency_ms=latency_ms,
             session_ended=session_ended,
             error_type=error_type,
-            error_message=error_message,
+            error_message=safe_error_message,
         )
 
         turn_event = TurnEvent(
@@ -3871,6 +3876,7 @@ class AgentCore(AgentCoreBase):
         except Exception as e:
             logger.error(
                 "orchestrator.stream_turn_error",
+                exc_info=True,
                 extra={
                     "operation": "orchestrator.stream_turn",
                     "status": "failure",
@@ -3879,9 +3885,9 @@ class AgentCore(AgentCoreBase):
                 },
             )
             error_type = getattr(e, "error_type", None)
-            error_message = getattr(e, "error_message", None) or str(e)
             if error_type is None:
                 error_type = "api_error" if isinstance(e, ProviderAPIError) else "internal_server_error"
+            error_message = SAFE_MESSAGES.get(error_type, DEFAULT_SAFE_MESSAGE)
             yield _stamp(DoneEvent(
                 turn_id=turn_id,
                 turn_status="abandoned",

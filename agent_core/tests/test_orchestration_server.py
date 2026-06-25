@@ -149,7 +149,7 @@ class TestProcessTurnFailure:
         assert response.status_code == 200
         data = response.json()
         assert data["error_type"] == "api_error"
-        assert data["error_message"] == "Anthropic API Error: Rate limited"
+        assert data["error_message"] == "We're having trouble connecting to the AI service right now. Please try again shortly."
 
     def test_agent_core_exception_propagates_custom_error_fields(self):
         from src.chat_provider.base import ProviderAPIError
@@ -167,7 +167,7 @@ class TestProcessTurnFailure:
         assert response.status_code == 200
         data = response.json()
         assert data["error_type"] == "timeout"
-        assert data["error_message"] == "OpenAI timeout"
+        assert data["error_message"] == "We're having trouble connecting to the AI service right now. Please try again shortly."
 
     def test_agent_core_exception_fallback_error_message(self):
         from src.chat_provider.base import ProviderAPIError
@@ -181,4 +181,4 @@ class TestProcessTurnFailure:
         assert response.status_code == 200
         data = response.json()
         assert data["error_type"] == "api_error"
-        assert data["error_message"] == "Something went wrong"
+        assert data["error_message"] == "We're having trouble connecting to the AI service right now. Please try again shortly."

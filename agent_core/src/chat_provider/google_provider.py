@@ -367,7 +367,7 @@ class GoogleChatProvider(ChatProviderBase):
         elif "timeout" in err_str or "deadline" in err_str:
             error_type = "timeout"
         else:
-            error_type = "timeout"
+            error_type = "api_error"
         error_message = "We're having trouble connecting to the AI service right now. Please try again shortly."
         raise _RetryableExhausted(
             f"All {self._max_attempts} retry attempts exhausted for model {self._active_model}",
@@ -622,7 +622,7 @@ class GoogleChatProvider(ChatProviderBase):
         elif "timeout" in err_str or "deadline" in err_str:
             error_type = "timeout"
         else:
-            error_type = "timeout"
+            error_type = "api_error"
         error_message = "We're having trouble connecting to the AI service right now. Please try again shortly."
         raise _RetryableExhausted(
             f"All {self._max_attempts} stream retry attempts exhausted for model {self._active_model}",

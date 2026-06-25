@@ -403,8 +403,8 @@ class OllamaChatProvider(ChatProviderBase):
         elif "429" in err_str or "rate" in err_str:
             error_type = "rate_limit"
         else:
-            error_type = "timeout"
-        error_message = str(last_error) if last_error else "All retry attempts exhausted"
+            error_type = "api_error"
+        error_message = "We're having trouble connecting to the AI service right now. Please try again shortly."
         raise _RetryableExhausted(
             f"All {self._max_attempts} retry attempts exhausted for model {self._active_model}",
             error_type=error_type,
@@ -660,7 +660,7 @@ class OllamaChatProvider(ChatProviderBase):
         elif "429" in err_str or "rate" in err_str:
             error_type = "rate_limit"
         else:
-            error_type = "timeout"
+            error_type = "api_error"
         error_message = "We're having trouble connecting to the AI service right now. Please try again shortly."
         raise _RetryableExhausted(
             f"All {self._max_attempts} stream retry attempts exhausted for model {self._active_model}",

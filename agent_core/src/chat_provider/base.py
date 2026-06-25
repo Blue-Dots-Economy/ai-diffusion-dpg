@@ -86,6 +86,20 @@ class ToolUseRequested(Exception):
         super().__init__(f"LLM requested tool use: {names}")
 
 
+
+SAFE_MESSAGES: dict[str, str] = {
+    "rate_limit": "We're receiving too many requests right now. Please wait a moment and try again.",
+    "timeout": "We're having trouble connecting to the AI service right now. Please try again shortly.",
+    "safety_blocked": "The request was blocked by the safety filters.",
+    "recitation_blocked": "The request was blocked because it contained copyrighted or repetitive content.",
+    "api_error": "We're having trouble connecting to the AI service right now. Please try again shortly.",
+    "internal_server_error": "An unexpected server error occurred. Please try again shortly.",
+    "empty_response": "We're having trouble connecting to the AI service right now. Please try again shortly.",
+}
+
+DEFAULT_SAFE_MESSAGE = "We're having trouble connecting to the AI service right now. Please try again shortly."
+
+
 # ---------------------------------------------------------------------------
 # ChatProviderBase
 # ---------------------------------------------------------------------------
