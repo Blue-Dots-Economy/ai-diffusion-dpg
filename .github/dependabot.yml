@@ -1,0 +1,74 @@
+# Dependabot (Sec-Audit A2 — Blue-Dots-Economy/signals-dpg#300)
+#
+# This repo is the only one of the six with no Dependabot config, which is why it
+# reports zero vulnerable dependencies while the others report dozens. That zero is
+# absence of monitoring, not absence of vulnerabilities.
+#
+# Ecosystem is `uv`, NOT `pip`: the pip ecosystem does not understand uv projects,
+# so it would silently find nothing and the config would look healthy while doing
+# nothing at all.
+#
+# ⚠️ Version updates will work from pyproject.toml, but SECURITY alerting stays
+# limited until lockfiles exist. Every dependency here is declared as a floating
+# `>=` range with no uv.lock committed, so nothing can determine which version is
+# actually installed. Running `uv lock` per package and committing the results is
+# the single change that would make dependency scanning meaningful across this
+# repo — and would make the Docker builds reproducible at the same time.
+#
+# No `target-branch`: this repo has no `feature` integration branch, so PRs
+# correctly target the default branch (main). The other five repos set it to
+# `feature` because that is where their work integrates.
+
+version: 2
+updates:
+  # ── Python (uv) — one entry covering all 12 packages ─────────────────────────
+  - package-ecosystem: "uv"
+    directories:
+      - "/action_gateway"
+      - "/agent_core"
+      - "/dev-kit"
+      - "/knowledge_engine"
+      - "/memory_layer"
+      - "/observability_layer"
+      - "/reach_layer/base"
+      - "/reach_layer/cli"
+      - "/reach_layer/mcp"
+      - "/reach_layer/voice"
+      - "/reach_layer/web"
+      - "/trust_layer"
+    schedule:
+      interval: "weekly"
+    # Twelve packages sharing many dependencies would otherwise produce a wall of
+    # near-identical PRs. Grouping keeps the queue reviewable.
+    groups:
+      python-minor-patch:
+        update-types: ["minor", "patch"]
+    open-pull-requests-limit: 5
+
+  # ── Base images for the 11 service Dockerfiles ───────────────────────────────
+  - package-ecosystem: "docker"
+    directories:
+      - "/action_gateway"
+      - "/agent_core"
+      - "/dev-kit"
+      - "/knowledge_engine"
+      - "/memory_layer"
+      - "/observability_layer"
+      - "/reach_layer/cli"
+      - "/reach_layer/mcp"
+      - "/reach_layer/voice"
+      - "/reach_layer/web"
+      - "/trust_layer"
+    schedule:
+      interval: "weekly"
+    groups:
+      docker-base-images:
+        patterns: ["*"]
+    open-pull-requests-limit: 3
+
+  # ── The workflows added alongside this file ──────────────────────────────────
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3

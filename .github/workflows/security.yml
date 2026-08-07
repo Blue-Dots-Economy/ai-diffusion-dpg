@@ -1,0 +1,63 @@
+# Security scanning (Sec-Audit A2 — Blue-Dots-Economy/signals-dpg#300)
+#
+# This repo's FIRST workflow. Thin caller: all scanning logic lives once in
+# bluedots-automation so the six in-scope repos can't drift apart. See that repo's
+# .github/workflows/security-scan.yml and signals-dpg
+# docs/operations/security-scanning-a2*.md.
+#
+# What runs here (language: python, no image-refs, gitleaks off):
+#   * trivy-fs    — Dockerfile misconfig across the 11 service Dockerfiles, plus
+#                   filesystem secret detection -> SARIF. This is the real value
+#                   here today; see the dependency caveat below.
+#   * deps-audit  — `uv-secure`. Currently a no-op: see below.
+#   * image-scan  — SKIPPED here on purpose. Images publish to Docker Hub
+#                   (sanketikahub/*), not GHCR, and the reusable workflow's
+#                   image-scan job authenticates with GITHUB_TOKEN, which is not a
+#                   Docker Hub credential. Those images are scanned by this repo's
+#                   own image-scan.yml instead.
+#   * gitleaks    — SKIPPED: run-gitleaks defaults to false. Native GitHub secret
+#                   scanning covers history once enabled on this repo.
+#
+# ⚠️ DEPENDENCY SCANNING IS BLIND HERE, and that is a finding rather than a defect
+# in this workflow. There is no uv.lock (or any other lockfile) anywhere in the
+# repo — all 12 pyproject.toml files declare floating `>=` ranges. Both Trivy and
+# uv-secure resolve Python dependencies from a LOCKFILE, so with none present
+# neither can tell which versions actually ship. Running `uv lock` per package and
+# committing the results would light up dependency scanning across the whole repo
+# and make the Docker builds reproducible. Tracked as a follow-up on #300.
+#
+# Report-only (`block: false`): findings land in Security > Code scanning and the
+# job still passes. Green means "the scan ran", NOT "nothing found".
+#
+# Pinned @feature: the reusable workflow currently only exists on that branch of
+# bluedots-automation. Repin to @main once it is promoted feature -> develop -> main.
+
+name: security
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  # Weekly sweep: new CVEs get published against code nobody has touched.
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    # Declared here as well as in the reusable workflow: a called workflow cannot
+    # escalate beyond what the caller grants, so without security-events: write
+    # the SARIF upload fails with a 403 on repos whose default token is read-only.
+    permissions:
+      contents: read
+      security-events: write
+      packages: read
+    uses: Blue-Dots-Economy/bluedots-automation/.github/workflows/security-scan.yml@feature
+    with:
+      language: python
+      block: false

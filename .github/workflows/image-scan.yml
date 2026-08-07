@@ -1,0 +1,85 @@
+# Published-image scanning (Sec-Audit A2 — Blue-Dots-Economy/signals-dpg#300)
+#
+# WHY THIS IS A SEPARATE WORKFLOW, unlike the other five repos.
+#
+# Everywhere else, the Trivy image scan is bolted onto the existing image-build job
+# so it scans the exact artifact just built, before it is published. That is not
+# possible here for two reasons:
+#
+#   1. There is no CI image build. Images are built and pushed by a human running
+#      docker-build-push.sh locally (docker compose build && push), so there is no
+#      build job to attach a scan to.
+#   2. They publish to Docker Hub under sanketikahub/*, not GHCR. The reusable
+#      security-scan workflow's image-scan job logs in with GITHUB_TOKEN, which is
+#      not a Docker Hub credential, so passing `image-refs` to it would fail at the
+#      login step.
+#
+# So this scans what is actually live in the registry instead — "Option B" in
+# docs/operations/security-scanning-a2-callers.md. The images are public, so no
+# registry login is needed at all.
+#
+# This is the WEAKER form of image scanning: it tells you what is wrong with what
+# is already deployed, rather than stopping a bad image from shipping. It is the
+# right shape while publishing happens off-CI. If image builds ever move into CI,
+# fold the scan into that job and delete this file.
+#
+# Worth knowing: at the time of writing these images were last pushed in May 2026.
+# A months-old image accumulates CVEs in its base layers without a single line of
+# our code changing, which is exactly what a scheduled re-scan is for.
+
+name: image-scan
+
+on:
+  # Weekly, because the finding here changes even when the repo does not.
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: image-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write   # required to upload SARIF to code-scanning
+
+jobs:
+  scan:
+    name: trivy-image / ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false   # one bad image must not hide the other nine
+      matrix:
+        # Mirrors automation/docker/docker-compose.yml. reach-layer-cli is
+        # commented out there and so is deliberately absent here.
+        image:
+          - dpg-action-gateway
+          - dpg-agent-core
+          - dpg-dev-kit
+          - dpg-knowledge-engine
+          - dpg-memory-layer
+          - dpg-observability-layer
+          - dpg-reach-layer-mcp
+          - dpg-reach-layer-voice
+          - dpg-reach-layer-web
+          - dpg-trust-layer
+    steps:
+      # No docker/login-action: these are public Docker Hub repositories, and
+      # adding a login would need a Docker Hub credential this repo does not hold.
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: docker.io/sanketikahub/${{ matrix.image }}:latest
+          format: sarif
+          output: trivy-image.sarif
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          exit-code: "0"   # Phase A: report-only, never fails the run
+
+      - name: Upload Trivy image SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif
+          # One category per image so the ten results don't overwrite each other.
+          category: trivy-image-${{ matrix.image }}
