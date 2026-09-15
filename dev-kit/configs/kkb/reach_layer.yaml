@@ -38,9 +38,13 @@ reach_layer:
         agent_avatar: "💼"
         user_avatar: "👤"
         setup_heading: "Kaam Ki Baat में आपका स्वागत है · Welcome to Kaam Ki Baat"
-        setup_subtitle: "अपना यूज़र ID दर्ज करें · Enter your user ID to begin or resume a conversation."
-        user_id_placeholder: "e.g. rahul_electrician"
-        user_id_hint: "Use your name and trade, e.g. rahul_electrician"
+        # The phone number doubles as the user ID: Action Gateway substitutes
+        # session.user_id into the Signals profile lookup and write calls, so
+        # what is typed here must be the caller's mobile number in the same
+        # 91XXXXXXXXXX form the voice channel produces.
+        setup_subtitle: "अपना मोबाइल नंबर दर्ज करें (91 के साथ) · Enter your mobile number with the 91 country code to begin or resume."
+        user_id_placeholder: "e.g. 919920067821"
+        user_id_hint: "12 digits, country code first, no + sign — e.g. 919920067821"
         start_btn_label: "बातचीत शुरू करें · Start chatting →"
         new_session_msg: "नमस्ते! मैं Kaam Ki Baat हूँ। आज मैं आपकी कैसे मदद कर सकता हूँ? · Hello! I'm Kaam Ki Baat. How can I help you today?"
         returning_user_msg: "वापस आने पर स्वागत है! · Welcome back! Continuing your previous conversation."

@@ -1,244 +1,506 @@
 # dev-kit/configs/kkb/action_gateway.yaml
 # KKB domain values for Action Gateway.
 # Merged with dev-kit/dpg/action_gateway.yaml by loader.py before deployment.
+#
+# ─────────────────────────────────────────────────────────────────────
+# All four tools target Signals-DPG on the test cluster
+# (https://dev-signals.serveirc.com, network `blue_dot`).
+#
+#   onest_market_lookup — POST {search}/v1/search            (job discovery)
+#   get_profile         — GET  /api/v1/admin/participant     (lookup by phone)
+#   update_profile      — POST /api/v1/admin/participant     (create OR update)
+#   apply_job           — POST /api/v1/action/perform        (submit application)
+#
+# Design + evidence: docs/superpowers/specs/2026-09-15-kkb-signals-integration-design.md
+#
+# Two DISTINCT API keys are in play:
+#   SIGNALS_API_KEY        + SIGNALS_ORG_ID  → the Signals API (admin/action)
+#   SIGNALS_SEARCH_API_KEY                   → signals-search only
+# Do not cross them.
+#
+# `{user_id}` in a path or body_template is substituted by the adapter from
+# the caller's session identity — the LLM never supplies it. On web the user
+# types their phone (91XXXXXXXXXX) as their user ID; on voice it arrives as
+# the caller's number. See the phone-format note on get_profile below.
+# ─────────────────────────────────────────────────────────────────────
 
 tools:
+
+  # ────────────────────────────────────────────────────────────────────
+  # READ — Live job discovery via signals-search semantic search.
+  #
+  # Replaces the former ONEST /search/top connector. The tool ID is kept
+  # so the agent_workflow global_tools list and every prompt reference
+  # stay valid; only the upstream changed.
+  #
+  # Text-only by design: `item_state.jobProviderLocation` is PII-masked
+  # to "B***" on this cluster for both fetch_local and /v1/search, so a
+  # server-side city filter cannot match. Location therefore enters the
+  # query semantically, inside query_text.
+  # ────────────────────────────────────────────────────────────────────
   - id: onest_market_lookup
     type: rest_api
     category: read
     description: >
-      Search the ONEST job network for live job listings. Returns verified job postings
-      from the ONEST network including roles, employers, locations, and salary details.
-      Always call with a natural language query_text describing what the user is looking for.
-      Add structured filters only when the user has explicitly stated those preferences.
-    base_url: "https://up-onest-lite-bap.dhiway.net/api/v1"
+      Search the live job network for current verified job postings. Returns
+      real openings with role, employer, number of positions, pay range, the
+      experience and qualification expected, and a relevance score.
+      Always call with a natural language query_text describing what the user
+      is looking for, including BOTH the trade and the city in the sentence —
+      the search is semantic, so the city belongs in the sentence rather than
+      in a separate filter.
+
+      IMPORTANT — the job's location is NOT returned by this API. Never state
+      or imply where a job is located, and never estimate a distance. Present
+      the role, employer, pay range, positions and requirements only.
+    base_url: "https://dev-signals.serveirc.com/signals-search"
     auth:
       type: api_key
-      header: X-API-KEY
-      secret_env: ONEST_API_KEY
-    timeout_ms: 5000
+      header: x-api-key
+      # signals-search key — NOT the Signals API key.
+      secret_env: SIGNALS_SEARCH_API_KEY
+    timeout_ms: 8000
     health_check:
       enabled: false
     endpoints:
       - name: search
         method: POST
-        path: /search/top
+        path: /v1/search
+        # messageId is bound to the session so a search can be traced back
+        # to the conversation in Loki / Jaeger.
+        body_template:
+          context:
+            messageId: "{session_id}"
+            networkId: "blue_dot"
+            domain: "provider"
+            itemType: "job_posting_1.0"
+          message:
+            intent:
+              textSearch: "{query_text}"
+            pagination:
+              limit: 10
+              offset: 0
         params:
           - name: query_text
             source: agent
             type: string
             required: true
             description: >
-              Natural language sentence describing the user's job search in English.
-              Always include location and trade. 1-2 sentences max.
-              Examples: "electrician jobs in Hubballi with 15000 monthly in-hand",
-              "ITI fitter mechanical jobs in Pune immediate joining",
-              "helper warehouse jobs in Noida full-time day shift".
-          - name: industry
-            source: agent
-            type: string
-            required: false
-            description: >
-              Broad industry category. Include only if clearly known.
-              Examples: Manufacturing, Electrical, Construction, Customer Facing, Logistics.
-          - name: age
-            source: agent
-            type: integer
-            required: false
-            description: "Candidate age in years. Include only if known from profile."
-          - name: languages
-            source: agent
-            type: array
-            required: false
-            description: >
-              Languages the candidate speaks. Capitalised strings.
-              Examples: ["Hindi"], ["Hindi", "Kannada"].
-          - name: preferred_work_mode
-            source: agent
-            type: array
-            required: false
-            description: >
-              Work preference from: on-site-no-shift, on-site-shifts, remote, hybrid.
-              Include only if the user has stated a preference.
-          - name: monthly_in_hand
-            source: agent
-            type: integer
-            required: false
-            description: "Expected monthly in-hand salary in INR. Include only if stated."
-          - name: work_hours_per_day
-            source: agent
-            type: integer
-            required: false
-            description: "Preferred working hours per day. Include only if stated."
-          - name: limit
-            source: static
-            type: integer
-            value: 10
-          - name: page
-            source: static
-            type: integer
-            value: 1
-          - name: role
-            source: agent
-            type: string
-            required: false
-            description: "Preferred role. Include only if stated."
-          - name: location
-            source: agent
-            type: string
-            required: false
-            description: "Preferred location of search. Include only if stated."
+              Natural English sentence describing the user's job search.
+              ALWAYS include the trade AND the city in the sentence.
+              1-2 sentences max.
+              Examples: "electrician jobs in Bengaluru with around 18000
+              monthly in-hand", "ITI fitter mechanical jobs in Pune for
+              immediate joining", "helper or warehouse jobs in Noida,
+              full-time day shift".
     response:
       max_size_chars: 4000
       # Slim LLM-visible projection — shapes what flows back into the second
       # LLM call as result_text. The raw response is still retained on
       # ToolResult.result for observability.
+      #
+      # Deliberately NOT projected:
+      #   jobProviderLocation  — PII-masked upstream ("B***"), unusable.
+      #   hiringManager*       — PII; the prompt forbids speaking them.
+      #   item_locations       — GPS; the prompt forbids speaking coordinates.
       projection:
-        list_key: data
+        list_key: message.items
         fields:
-          role_id: job_id
-          title: metadata.tags.jobDetails.title
-          employer: metadata.tags.basicInfo.jobProviderName
-          city: metadata.locations.city
-          state: metadata.locations.state
-          pay_min: metadata.tags.jobDetails.minMonthlyInHand
-          pay_max: metadata.tags.jobDetails.maxMonthlyInHand
-          positions: metadata.tags.jobDetails.positions
-          industry: metadata.tags.industry
-          status: metadata.tags.status
-          role: metadata.tags.role
+          job_id: item_id
+          role: item_state.role
+          company: item_state.jobProviderName
+          positions: item_state.positions
+          nature_of_job: item_state.natureOfJob
+          # Three pay models; only one pair is populated per posting.
+          salary_min: item_state.salaryMin
+          salary_max: item_state.salaryMax
+          stipend_min: item_state.stipendMin
+          stipend_max: item_state.stipendMax
+          task_rate_min: item_state.taskRateMin
+          task_rate_max: item_state.taskRateMax
+          # Fit signals the agent can use when the user asks about suitability.
+          experience_required: item_state.candidateExperienceType
+          work_experience_years: item_state.workExperienceYears
+          min_qualification: item_state.minEducationalInstitute
+          job_type: item_state.typeOfJob
+          job_category: item_state.jobCategory
+          working_hours: item_state.workingHours
+          # "live" is the only presentable lifecycle state.
+          status: lifecycle_status
+          # Ranking only — the prompt forbids speaking this aloud.
+          match_score: score
 
   # ────────────────────────────────────────────────────────────────────
-  # Mocked profile / apply flow (demo fixtures).
+  # READ — Look the caller up by phone number.
   #
-  # All three tools point at Action Gateway's own /mock/* routes — no
-  # external service is required to exercise the end-to-end tool path.
-  # Swap each base_url to a real upstream once one exists.
+  # Phone format: this endpoint wants the country-code form WITHOUT a
+  # leading "+" (919920067821). Note the asymmetry with update_profile,
+  # whose body wants "+919920067821".
   #
-  # The ``{user_id}`` in the paths is substituted by the rest_api adapter
-  # from the caller's session user_id — the LLM does NOT supply it.
+  # The LLM supplies NO parameters — the phone comes from session.user_id
+  # via the adapter's path templating.
   # ────────────────────────────────────────────────────────────────────
-
   - id: get_profile
     type: rest_api
     category: read
     description: >
-      Fetch the caller's saved profile. Call ONLY after the user has
-      explicitly agreed to let you look up their profile. Returns the
-      stored fields (trade, location, age, languages, years_experience,
-      certifications, preferred_work_mode, monthly_in_hand_expected,
-      actions_taken, profile_id) for returning users; returns an empty
-      object when the user is new. After receiving a profile, briefly
-      summarise what you found in one sentence and continue with one
-      open-ended question — do NOT immediately make another tool call.
-    base_url: "http://action_gateway:9999"
-    timeout_ms: 3000
-    # Self-referential mocks would deadlock the synchronous /health probe;
-    # skip the reachability HEAD and always report healthy.
+      Fetch the caller's saved job-seeker profiles, looked up by their phone
+      number. Takes NO parameters — the caller's phone is supplied
+      automatically from the session; never ask the user for it and never
+      pass it yourself.
+
+      Returns one row per saved profile. An empty list means this is a new
+      caller with no profile yet. When more than one profile comes back,
+      use the one with the most recent updated_at.
+
+      Each row carries profile_item_id and acting_as_user_id — you MUST
+      keep both, as apply_job needs them later. After receiving a profile,
+      briefly summarise what you found in one sentence and continue with one
+      open-ended question; do NOT immediately make another tool call.
+    base_url: "https://dev-signals.serveirc.com"
+    auth:
+      type: api_key
+      header: x-api-key
+      secret_env: SIGNALS_API_KEY
+    # Signals' admin endpoints require a tenant identifier alongside the key.
+    extra_headers:
+      - name: x-acting-org-id
+        secret_env: SIGNALS_ORG_ID
+    timeout_ms: 5000
     health_check:
       enabled: false
     endpoints:
       - name: get_profile
         method: GET
-        path: "/mock/profile/{user_id}"
+        # {user_id} is substituted from the session and URL-encoded.
+        path: "/api/v1/admin/participant?phone_number={user_id}"
         params: []
     response:
-      max_size_chars: 3000
+      max_size_chars: 4000
+      # A list_key projection can only read fields inside each item, so the
+      # response root's `user_id` is not reachable here. Each item carries
+      # `created_by` — the owning participant's UUID, which is exactly what
+      # apply_job needs as acting_as_user_id.
+      projection:
+        list_key: items
+        fields:
+          profile_item_id: item_id
+          acting_as_user_id: created_by
+          name: item_state.name
+          phone: item_state.phone
+          age: item_state.age
+          gender: item_state.gender
+          # The SEEKER's own location is not masked (unlike a job's).
+          location: item_state.location
+          trade: item_state.nameOfJobRolesInterestedIn
+          work_experience: item_state.workExperience
+          experience_years: item_state.workExperienceYearsConditional
+          education: item_state.educationCategory
+          certifications: item_state.certificationDetails
+          languages: item_state.languageSpoken
+          job_nature: item_state.natureOfJobsInterestedIn
+          salary_expected: item_state.salaryMin
+          # Multi-profile disambiguation — most recently updated wins.
+          updated_at: updated_at
 
+  # ────────────────────────────────────────────────────────────────────
+  # WRITE — Create OR update the caller's seeker profile.
+  #
+  # One endpoint serves both, distinguished by item_id:
+  #   profile_item_id absent  → the renderer DROPS the item_id key → CREATE
+  #   profile_item_id present → upstream UPDATEs that profile
+  #
+  # Consent is sent in BOTH shapes on purpose: the test cluster's GET still
+  # returns the legacy user_consent{} object while newer builds expect the
+  # compliance[] array. A build that understands one ignores the other.
+  # ────────────────────────────────────────────────────────────────────
   - id: update_profile
     type: rest_api
     category: write
     description: >
-      Save a correction or an addition to the caller's profile. Call when
-      the user explicitly restates a field (e.g. "my trade is plumber,
-      not electrician" or "I'm based in Pune now"). Pass only the fields
-      the user actually mentioned — do NOT echo back the entire profile.
-      Returns the list of fields that were applied so you can confirm the
-      update to the user in one short sentence.
-    base_url: "http://action_gateway:9999"
-    timeout_ms: 3000
+      Save the caller's job-seeker profile — creating it the first time, or
+      updating it afterwards. Pass profile_item_id (from a prior get_profile
+      result) to update that profile; omit it to create a new one.
+
+      Pass the FULL profile you know about on every call, not just the field
+      that changed — this call replaces the stored profile rather than
+      merging into it, so omitted fields may be lost.
+
+      `name` is required by the upstream. The caller's phone number is added
+      automatically from the session — never ask for it.
+
+      Returns acting_as_user_id and the saved profiles; keep both, as
+      apply_job needs acting_as_user_id and the new profile's item_id.
+    base_url: "https://dev-signals.serveirc.com"
+    auth:
+      type: api_key
+      header: x-api-key
+      secret_env: SIGNALS_API_KEY
+    extra_headers:
+      - name: x-acting-org-id
+        secret_env: SIGNALS_ORG_ID
+    timeout_ms: 8000
     health_check:
       enabled: false
     endpoints:
       - name: update_profile
         method: POST
-        path: "/mock/profile/{user_id}"
+        path: /api/v1/admin/participant
+        body_template:
+          # Participant identity. phone_number must carry the "+" prefix
+          # here, unlike the GET above which wants it bare.
+          name: "{name}"
+          phone_number: "+{user_id}"
+          age: "{age}"
+          # Upstream enum is bulk|link|voice|self — "web" is NOT valid.
+          # Declared as a static param below so it is one line to switch
+          # to "voice" when the voice channel is re-enabled.
+          channel: "{channel}"
+          source_id: "{session_id}"
+          network: "blue_dot"
+          domain: "seeker"
+          item_type: "profile_1.0"
+          # Dropped entirely when the LLM omits profile_item_id → CREATE.
+          item_id: "{profile_item_id}"
+          # Current consent shape.
+          compliance:
+            - key: "user_terms"
+              value: true
+            - key: "user_privacy"
+              value: true
+            - key: "profile_creation"
+              value: true
+          # Legacy consent shape, for builds predating `compliance`.
+          terms_accepted: true
+          privacy_accepted: true
+          item_state:
+            name: "{name}"
+            phone: "{user_id}"
+            age: "{age}"
+            gender: "{gender}"
+            location: "{location}"
+            nameOfJobRolesInterestedIn: "{trade}"
+            workExperience: "{work_experience}"
+            workExperienceYearsConditional: "{experience_years}"
+            educationCategory: "{education}"
+            certificationDetails: "{certifications}"
+            languageSpoken: "{languages}"
+            natureOfJobsInterestedIn: "{job_nature}"
+            salaryMin: "{monthly_in_hand_expected}"
         params:
+          - name: channel
+            source: static
+            type: string
+            value: "self"
+          - name: name
+            source: agent
+            type: string
+            required: true
+            description: "The caller's full name. Required by the upstream."
+          - name: profile_item_id
+            source: agent
+            type: string
+            required: false
+            description: >
+              The profile's ID from a previous get_profile or update_profile
+              result. Include it to UPDATE that profile; omit it entirely to
+              CREATE a new one.
           - name: trade
             source: agent
             type: string
             required: false
-            description: "User's primary trade (e.g. electrician, fitter, plumber)."
+            description: >
+              The job role the caller is looking for, e.g. "Electrician",
+              "Plumber", "Fitter". Free text.
           - name: location
             source: agent
             type: string
             required: false
-            description: "City or district the user wants to work in."
+            description: "City or district the caller wants to work in."
           - name: age
             source: agent
             type: integer
             required: false
-            description: "User's age in years."
+            description: "The caller's age in years."
+          - name: gender
+            source: agent
+            type: string
+            required: false
+            description: >
+              One of exactly: "Male", "Female", "Other",
+              "Don't want to share".
+          - name: work_experience
+            source: agent
+            type: string
+            required: false
+            description: >
+              One of exactly: "Fresher", "Worked before",
+              "Returning after a break".
+          - name: experience_years
+            source: agent
+            type: string
+            required: false
+            description: >
+              One of exactly: "< 1 Year", "1 Year", "2 Years", "3 Years",
+              "3-5 Years", "5-10 Years", "10-15 Years", "15+ Years".
+          - name: education
+            source: agent
+            type: string
+            required: false
+            description: >
+              Highest qualification. One of exactly: "School", "PU College",
+              "College", "ITI", "Other Vocational Training", "Polytechnic".
+          - name: certifications
+            source: agent
+            type: string
+            required: false
+            description: >
+              Free-text certification or skill details, e.g.
+              "ITI Electrician NCVT, 2019".
           - name: languages
             source: agent
             type: array
+            items: {type: string}
             required: false
             description: 'Capitalised language names, e.g. ["Hindi", "Kannada"].'
-          - name: years_experience
-            source: agent
-            type: integer
-            required: false
-            description: "Years of experience in the stated trade."
-          - name: certifications
+          - name: job_nature
             source: agent
             type: array
-            required: false
-            description: 'Any formal certifications, e.g. ["ITI", "NCVT"].'
-          - name: preferred_work_mode
-            source: agent
-            type: array
+            items: {type: string}
             required: false
             description: >
-              One or more of: on-site-no-shift, on-site-shifts, remote, hybrid.
+              One or more of exactly: "Internship", "Apprenticeship",
+              "Full-time", "Flexible".
           - name: monthly_in_hand_expected
             source: agent
             type: integer
             required: false
-            description: "Expected monthly in-hand salary in INR."
+            description: "Expected monthly in-hand salary in INR, number only."
     response:
-      max_size_chars: 1000
+      max_size_chars: 4000
+      # On CREATE `items` holds all of the user's profiles, the new one last
+      # by created_at. On UPDATE it holds just the updated profile.
+      projection:
+        fields:
+          acting_as_user_id: user_id
+          user_existed: user_existed
+          profiles: items
 
+  # ────────────────────────────────────────────────────────────────────
+  # WRITE — Submit the application, linking the caller's profile to the job.
+  #
+  # POST /api/v1/action/perform takes a SINGLE OBJECT (not an array); the
+  # array form moved to /action/perform/bulk. The response is the
+  # {results[], summary} envelope either way, including on the 422
+  # business-failure path.
+  # ────────────────────────────────────────────────────────────────────
   - id: apply_job
     type: rest_api
     category: write
     description: >
       Submit a job application on the caller's behalf. Call ONLY after the
-      user has explicitly confirmed they want to apply to a specific job.
-      Both job_id (from a prior onest_market_lookup result) and profile_id
-      (from a prior get_profile result) are REQUIRED. Returns the
-      application_id, expected callback window, and employer name so you
-      can confirm the submission to the user.
-    base_url: "http://action_gateway:9999"
-    timeout_ms: 5000
+      caller has explicitly confirmed they want to apply to a specific job.
+
+      All three IDs are REQUIRED and must come from earlier tool results:
+        profile_item_id   — from get_profile, or from update_profile after
+                            you created the profile
+        job_id            — from the onest_market_lookup result for the job
+                            the caller chose
+        acting_as_user_id — from get_profile or update_profile
+
+      Returns action_status "created" on success. On failure the result
+      carries an error code; tell the caller plainly that the application
+      did not go through and offer to try again.
+    base_url: "https://dev-signals.serveirc.com"
+    auth:
+      type: api_key
+      header: x-api-key
+      secret_env: SIGNALS_API_KEY
+    extra_headers:
+      - name: x-acting-org-id
+        secret_env: SIGNALS_ORG_ID
+    timeout_ms: 8000
     health_check:
       enabled: false
     endpoints:
       - name: apply_job
         method: POST
-        path: "/mock/apply"
+        path: /api/v1/action/perform
+        body_template:
+          action_type: "apply"
+          source_item:
+            item_network: "blue_dot"
+            item_domain: "seeker"
+            item_type: "profile_1.0"
+            item_id: "{profile_item_id}"
+          target_item:
+            item_network: "blue_dot"
+            item_domain: "provider"
+            item_type: "job_posting_1.0"
+            item_id: "{job_id}"
+            # The Signals instance the target job lives on.
+            item_instance_url: "{instance_url}"
+          requirements_snapshot:
+            role: "{role}"
+            location: "{location}"
+            workExperience: "{work_experience}"
+          acting_as_user_id: "{acting_as_user_id}"
+          # Not schema-required upstream, but the agent must obtain explicit
+          # spoken consent before applying — record it.
+          consent:
+            acknowledged: true
+            version: 1
         params:
+          - name: instance_url
+            source: static
+            type: string
+            value: "https://dev-signals.serveirc.com"
+          - name: profile_item_id
+            source: agent
+            type: string
+            required: true
+            description: >
+              The caller's profile ID, from a prior get_profile or
+              update_profile result.
           - name: job_id
             source: agent
             type: string
             required: true
-            description: "Job listing ID from a previous onest_market_lookup result."
-          - name: profile_id
+            description: >
+              The chosen job's ID, from a prior onest_market_lookup result.
+          - name: acting_as_user_id
             source: agent
             type: string
             required: true
-            description: "User's profile_id from a prior get_profile call."
+            description: >
+              The caller's user ID, from a prior get_profile or
+              update_profile result.
+          - name: role
+            source: agent
+            type: string
+            required: false
+            description: "The role applied for — recorded on the application."
+          - name: location
+            source: agent
+            type: string
+            required: false
+            description: "The caller's location — recorded on the application."
+          - name: work_experience
+            source: agent
+            type: string
+            required: false
+            description: >
+              The caller's experience bucket — recorded on the application.
     response:
-      max_size_chars: 1000
+      max_size_chars: 2000
+      projection:
+        list_key: results
+        fields:
+          status: status
+          action_id: action_id
+          action_status: action_status
+          error: error
+          message: message
 
   # - id: counsellor_schedule
   #   type: rest_api
