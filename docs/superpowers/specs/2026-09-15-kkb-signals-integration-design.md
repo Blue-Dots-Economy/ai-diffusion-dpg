@@ -47,7 +47,7 @@ rewrite.
 | D2 | How much to wire | **All four tools** | A read-only slice would leave the apply path — the most fragile part — untested. |
 | D3 | How the phone reaches the tools on web | **Type the phone as the web user ID** | The KKB web UI already prompts for a user ID. Typing `919920067821` makes `{user_id}` resolve identically on web and voice, so one config serves both channels. |
 | D4 | Consent payload shape | **Send both `compliance[]` and `terms_accepted`/`privacy_accepted`** | The cluster's build is ambiguous (see F2). The newer build ignores the deprecated pair; the older build ignores the unknown array. Sending both is correct on either. |
-| D5 | Tool ID `onest_market_lookup` | **Keep the name** | Renaming means editing every prompt reference in `agent_core.yaml`. Deferred to a follow-up so this branch stays testable. |
+| D5 | Tool ID `onest_market_lookup` | **Renamed to `job_market_lookup`** | No part of the domain talks to ONEST any more, so the name was actively misleading. Renamed across `action_gateway.yaml` and every `agent_core.yaml` prompt reference. |
 | D6 | `channel` value on participant writes | **`self`**, via a static param | The schema enum is `bulk \| link \| voice \| self`. `web` is **not** a legal value. One-line switch to `voice` later. |
 
 ---
@@ -148,7 +148,7 @@ they are. All of it is existing, unmodified `RestApiAdapter` behaviour.
 
 | KKB tool | Today | After this change | Auth |
 |---|---|---|---|
-| `onest_market_lookup` | `POST up-onest-lite-bap.dhiway.net/api/v1/search/top` | `POST {searchBaseUrl}/v1/search` | `x-api-key: SIGNALS_SEARCH_API_KEY` |
+| `job_market_lookup` (was `onest_market_lookup`) | `POST up-onest-lite-bap.dhiway.net/api/v1/search/top` | `POST {searchBaseUrl}/v1/search` | `x-api-key: SIGNALS_SEARCH_API_KEY` |
 | `get_profile` | `GET action_gateway:9999/mock/profile/{user_id}` | `GET {baseUrl}/api/v1/admin/participant?phone_number={user_id}` | `x-api-key: SIGNALS_API_KEY` + `x-acting-org-id: SIGNALS_ORG_ID` |
 | `update_profile` | `POST action_gateway:9999/mock/profile/{user_id}` | `POST {baseUrl}/api/v1/admin/participant` | same |
 | `apply_job` | `POST action_gateway:9999/mock/apply` | `POST {baseUrl}/api/v1/action/perform` | same |
@@ -159,7 +159,7 @@ Where `baseUrl = https://dev-signals.serveirc.com` and
 
 ---
 
-### 5.1 `onest_market_lookup` — live job discovery
+### 5.1 `job_market_lookup` — live job discovery
 
 **Signals API:** `POST {searchBaseUrl}/v1/search` (signals-search semantic discovery)
 **Category:** `read` (no Trust Layer consent gate)
@@ -417,7 +417,7 @@ the honest representation of that.
 | Param | Required | Origin in the conversation |
 |---|---|---|
 | `profile_item_id` | **yes** | `get_profile.profile_item_id`, or `update_profile.profiles[…].item_id` after a create |
-| `job_id` | **yes** | `onest_market_lookup.job_id` for the job the user chose |
+| `job_id` | **yes** | `job_market_lookup.job_id` for the job the user chose |
 | `acting_as_user_id` | **yes** | `get_profile.acting_as_user_id` or `update_profile.acting_as_user_id` |
 | `role` | no | snapshot only |
 | `location` | no | snapshot only |
@@ -502,7 +502,7 @@ POST /chat → Agent Core POST /process_turn          (web = direct mode)
                                    hold profile_item_id + acting_as_user_id
 
   TURN B — show the market                        (needs trade + location)
-    LLM → onest_market_lookup(query_text="electrician jobs in Bengaluru…")
+    LLM → job_market_lookup(query_text="electrician jobs in Bengaluru…")
       AG → POST {searchBaseUrl}/v1/search   x-api-key: SEARCH key
       ← message.items[] → top 3 read out, each with job_id held
 
@@ -526,7 +526,7 @@ POST /chat → Agent Core POST /process_turn          (web = direct mode)
 **Tool-round budget.** KKB sets `max_tool_rounds: 2` (GH-206, to cap voice
 latency). The sequence above deliberately spreads the four calls across four
 *turns*, so no single turn needs more than one tool round. If testing shows the
-model trying to chain `get_profile → onest_market_lookup → apply_job` inside
+model trying to chain `get_profile → job_market_lookup → apply_job` inside
 one turn, the options are to raise the cap to 3 (blue-dots uses 3) or to tighten
 the prompt. Noted as a risk, not pre-emptively changed.
 
@@ -538,14 +538,14 @@ the prompt. Noted as a risk, not pre-emptively changed.
 
 | Location | Change | Why |
 |---|---|---|
-| `connectors.read.onest_market_lookup` | Rewrite the description and `input_schema` to the single `query_text` param; drop the ONEST-era structured properties | Keep the documented contract aligned with what AG actually registers (mechanic 2) |
+| `connectors.read.job_market_lookup` | Rewrite the description and `input_schema` to the single `query_text` param; drop the ONEST-era structured properties | Keep the documented contract aligned with what AG actually registers (mechanic 2) |
 | `connectors.write` | Add `get_profile` / `update_profile` / `apply_job` entries (documentation parity — not runtime-consumed) | These three tools are in `global_tools` but have never been documented in `connectors` |
 | `enquiry.system_prompt` → "On session start" | "call `get_profile` **with the user's phone number**" → `get_profile` takes **no** parameters; the phone comes from the session | The instruction is currently false and invites the model to invent a param |
 | `enquiry.system_prompt` → "Market picture delivery" | `is_active=false, status≠open` → `status != "live"`; add "job location is not available — never state a job's city" | Signals uses `lifecycle_status: "live"`; F1 |
 | `commitment.system_prompt` → "Deep dive" | Remove `[locality], [city] — लगभग [distance] किलोमीटर दूर` from the spoken format | F1 — neither city nor distance is available |
 | `commitment.system_prompt` → "Pay / distance concerns" | Drop "re-run ONEST with tighter radius"; distance-based refinement is not available | D1 is text-only; no spatial clause |
 | `commitment.system_prompt` → "Apply" | State the three IDs `apply_job` needs and where each comes from | The model must carry `profile_item_id` / `job_id` / `acting_as_user_id` across turns |
-| all prompts | "ONEST" → "the job network" in user-facing and instruction text | The upstream is no longer ONEST |
+| all prompts | "ONEST" → "the job network"; tool renamed `onest_market_lookup` → `job_market_lookup` | The upstream is no longer ONEST and the name should not imply it |
 
 ### 8.2 `dev-kit/configs/kkb/reach_layer.yaml`
 
@@ -557,6 +557,33 @@ the prompt. Noted as a risk, not pre-emptively changed.
 
 No Reach Layer code changes — the SPA already sends whatever the user types as
 `user_id`, and `POST /chat` passes it through to Agent Core.
+
+### 8.4 Removing the last ONEST references
+
+`dev-kit/configs/kkb/` must not name ONEST anywhere — the domain no longer talks to it.
+
+| File | Change | Why |
+|---|---|---|
+| `action_gateway.yaml`, `agent_core.yaml` | `onest_market_lookup` → `job_market_lookup` (12 references) | D5 |
+| `observability_layer.yaml` | `trigger_tool: "onest_apply"` → `"apply_job"` | **Latent bug** — no tool named `onest_apply` has ever been registered, so the `applied` outcome state could never fire |
+| `observability_layer.yaml` | `trigger_tool: "onest_status_check"` → `null` (2 states) | No status-check connector exists against Signals. Explicit null beats naming a tool that is never registered |
+| `observability_layer.yaml` | metric description "submitted via ONEST" → "to the Signals job network" | |
+| `knowledge_engine.yaml` | `./data/onest_market_truth_framing.md` → `./data/market_truth_framing.md` | |
+
+The knowledge-base document itself was rewritten, not just renamed. It is an
+`always_include` doc, so it entered **every** KE retrieval, and it instructed the
+agent to say *"as per ONEST data"* and to *"encourage the user to apply through
+ONEST"* — the most user-visible ONEST leak in the domain. Two of its other
+instructions were also factually wrong against Signals: it told the agent to
+quote a *growth trend* (Signals returns none) and to offer *nearest-district
+data* (the job location is masked). Rewritten to describe the three pay models,
+state plainly that location and trend data do not exist, and offer to submit the
+application directly.
+
+> `knowledge_engine/data/` is covered by `**/data` in `.gitignore`, so the KB
+> documents are local artefacts and this rewrite does not appear in the diff.
+> Anyone with an existing checkout must rename their own copy to match the new
+> path, or KE ingestion will silently skip it.
 
 ### 8.3 What is **not** changing
 
@@ -607,7 +634,7 @@ the agent.**
 | R7 | Writes land on a shared test cluster | Real participants and actions are created | Use a dedicated throwaway phone number per run; never a real user's number. |
 | R8 | Voice channel | `server.py` strips the `91` prefix from `caller_id`, but `GET /admin/participant` needs it | **Deferred.** Voice re-enablement needs either a config flag on the strip, or a `+91`-aware template. Out of scope here. |
 | R9 | `blue-dots-economy` sends the deprecated `terms_accepted`/`privacy_accepted` and a **top-level array** to `/action/perform` | That domain will 400 on the new contract and records no consent | Out of scope. Flagged separately; see the `action-perform-raya-293` note. |
-| R10 | Tool still named `onest_market_lookup` (D5) | Misleading for future maintainers | Follow-up rename once the flow is green. |
+| R10 | ~~Tool still named `onest_market_lookup`~~ | — | **Resolved.** Renamed to `job_market_lookup`; no ONEST reference remains anywhere in `dev-kit/configs/kkb/`. |
 
 ---
 
@@ -623,12 +650,12 @@ Only `reach_layer_web` publishes a port → http://localhost:8005.
 
 | # | Test | Method | Pass criteria |
 |---|---|---|---|
-| T1 | AG registers the tools | `GET` Action Gateway `/tools` from inside `dpg_net` | 4 tools; `onest_market_lookup.input_schema` has exactly `query_text` |
+| T1 | AG registers the tools | `GET` Action Gateway `/tools` from inside `dpg_net` | 4 tools; `job_market_lookup.input_schema` has exactly `query_text` |
 | T2 | `get_profile` returning user | Chat as an existing phone | `200`; projection yields `profile_item_id` **and a non-null `acting_as_user_id`** → resolves R2 |
 | T3 | `get_profile` new user | Chat as the throwaway phone | `items: []`, projection `[]`, agent treats caller as new |
 | T4 | `update_profile` create | Complete name/trade/location, let it write | `200`; `user_id` + new `item_id` returned; re-run T2 and confirm the stored `item_state` — resolves R3 and R4 |
 | T5 | `update_profile` update | Change one field in a later turn | Same `item_id`; **previously-stored fields still present** |
-| T6 | `onest_market_lookup` | Ask for jobs in a trade | `200`; ≥1 item; `match_score` populated; bot names employer + pay and **never** a city |
+| T6 | `job_market_lookup` | Ask for jobs in a trade | `200`; ≥1 item; `match_score` populated; bot names employer + pay and **never** a city |
 | T7 | `apply_job` happy path | Consent, then apply to a listed job | `results[0].action_status == "created"`; `action_id` present |
 | T8 | `apply_job` bad id | Force a stale `job_id` | `422` envelope surfaced as a graceful spoken failure, not a crash |
 | T9 | Trust consent gate | Attempt a write before consent | Write is blocked by Trust Layer |

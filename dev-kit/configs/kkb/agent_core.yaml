@@ -261,7 +261,7 @@ connectors:
   # `connectors.internal` below is read at runtime. Keep the two in sync by
   # hand — a change here alone has no effect.
   read:
-    - name: onest_market_lookup
+    - name: job_market_lookup
       description: >
         Search the live job network for current verified job postings matching
         the user's trade and location. ALWAYS call this before presenting any
@@ -430,7 +430,7 @@ connectors:
         type: object
         properties:
           profile_item_id: {type: string, description: "From get_profile or update_profile."}
-          job_id: {type: string, description: "From the onest_market_lookup result the caller chose."}
+          job_id: {type: string, description: "From the job_market_lookup result the caller chose."}
           acting_as_user_id: {type: string, description: "From get_profile or update_profile."}
           role: {type: string, description: "Role applied for — recorded on the application."}
           location: {type: string, description: "The caller's location — recorded on the application."}
@@ -463,7 +463,7 @@ connectors:
         Search the verified Kaam Ki Baat knowledge base for information on job trades,
         government schemes (PMKVY, NAPS, etc.), training institutes, and market context.
         Use this when the user asks a specific question that requires verified facts
-        or scheme details — not for live job listings (use onest_market_lookup for that).
+        or scheme details — not for live job listings (use job_market_lookup for that).
       input_schema:
         type: object
         properties:
@@ -643,7 +643,7 @@ agent_workflow:
   global_tools:
     - get_profile
     - update_profile
-    - onest_market_lookup
+    - job_market_lookup
     - knowledge_retrieval
     - apply_job
     # - counsellor_schedule   # enable once action_gateway connector is live
@@ -733,7 +733,7 @@ agent_workflow:
         4. Never ask for user_id, full address, or government ID.
 
         ## Minimum viable fetch set
-        Before calling `onest_market_lookup` you need:
+        Before calling `job_market_lookup` you need:
           - location
           - trade_or_stream
           - user consent to fetch
@@ -745,7 +745,7 @@ agent_workflow:
         Commute and income are refinement fields — ask only after the first list, unless volunteered earlier.
 
         ## Market picture delivery
-        - Use ONLY `onest_market_lookup` results. Never invent roles, employers, or pay figures.
+        - Use ONLY `job_market_lookup` results. Never invent roles, employers, or pay figures.
         - Present exact pay ranges (lower → higher). A posting carries ONE of three pay
           models — salary_min/max, stipend_min/max, or task_rate_min/max. Read out
           whichever is populated. If min > max, silently swap. If none is populated, say
@@ -891,7 +891,7 @@ agent_workflow:
         "क्या मैं आपकी तरफ़ से आगे बढ़ूँ?", "अप्लाई कर दूँ?". Do not pressure. Once consent is
         clear, call `apply_job`. It needs three IDs, all carried over from earlier tool
         results — `profile_item_id` and `acting_as_user_id` (from `get_profile` or
-        `update_profile`) and `job_id` (from the `onest_market_lookup` entry the caller
+        `update_profile`) and `job_id` (from the `job_market_lookup` entry the caller
         chose). If any is missing, get it first: call `get_profile`, or `update_profile`
         when no profile exists yet. Confirm the application ONLY when the result comes
         back with action_status "created"; on any error say plainly that it did not go
@@ -942,7 +942,7 @@ agent_workflow:
         Do not defend. Do not dismiss. Acknowledge:
           "यह सुनकर बुरा लगा। क्या difference था, थोड़ा बताइए."
         Then understand what changed, then reopen options (via knowledge_retrieval /
-        onest_market_lookup as needed).
+        job_market_lookup as needed).
 
         ## Return after training or life change
         Resume directly with upgraded fit. Update only the changed constraint, re-evaluate.

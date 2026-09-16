@@ -6,7 +6,7 @@
 # All four tools target Signals-DPG on the test cluster
 # (https://dev-signals.serveirc.com, network `blue_dot`).
 #
-#   onest_market_lookup — POST {search}/v1/search            (job discovery)
+#   job_market_lookup   — POST {search}/v1/search            (job discovery)
 #   get_profile         — GET  /api/v1/admin/participant     (lookup by phone)
 #   update_profile      — POST /api/v1/admin/participant     (create OR update)
 #   apply_job           — POST /api/v1/action/perform        (submit application)
@@ -29,16 +29,15 @@ tools:
   # ────────────────────────────────────────────────────────────────────
   # READ — Live job discovery via signals-search semantic search.
   #
-  # Replaces the former ONEST /search/top connector. The tool ID is kept
-  # so the agent_workflow global_tools list and every prompt reference
-  # stay valid; only the upstream changed.
+  # Replaced the previous third-party job-network connector; the whole
+  # domain now reads from Signals.
   #
   # Text-only by design: `item_state.jobProviderLocation` is PII-masked
   # to "B***" on this cluster for both fetch_local and /v1/search, so a
   # server-side city filter cannot match. Location therefore enters the
   # query semantically, inside query_text.
   # ────────────────────────────────────────────────────────────────────
-  - id: onest_market_lookup
+  - id: job_market_lookup
     type: rest_api
     category: read
     description: >
@@ -404,7 +403,7 @@ tools:
       All three IDs are REQUIRED and must come from earlier tool results:
         profile_item_id   — from get_profile, or from update_profile after
                             you created the profile
-        job_id            — from the onest_market_lookup result for the job
+        job_id            — from the job_market_lookup result for the job
                             the caller chose
         acting_as_user_id — from get_profile or update_profile
 
@@ -467,7 +466,7 @@ tools:
             type: string
             required: true
             description: >
-              The chosen job's ID, from a prior onest_market_lookup result.
+              The chosen job's ID, from a prior job_market_lookup result.
           - name: acting_as_user_id
             source: agent
             type: string
