@@ -152,8 +152,11 @@ tools:
       caller with no profile yet. When more than one profile comes back,
       use the one with the most recent updated_at.
 
-      Each row carries profile_item_id and acting_as_user_id — you MUST
-      keep both, as apply_job needs them later. After receiving a profile,
+      The result has `acting_as_user_id` (the caller's user UUID) at the top
+      level and a `profiles` list. Each entry in `profiles` has `item_id` —
+      that is the `profile_item_id` apply_job needs — and `item_state` with the
+      stored fields. You MUST keep `acting_as_user_id` and the chosen
+      `item_id`, as apply_job needs both. After receiving a profile,
       briefly summarise what you found in one sentence and continue with one
       open-ended question; do NOT immediately make another tool call.
     base_url: "https://dev-signals.serveirc.com"
@@ -176,31 +179,22 @@ tools:
         params: []
     response:
       max_size_chars: 4000
-      # A list_key projection can only read fields inside each item, so the
-      # response root's `user_id` is not reachable here. Each item carries
-      # `created_by` — the owning participant's UUID, which is exactly what
-      # apply_job needs as acting_as_user_id.
+      # Project the ROOT, not each item. `/admin/participant` returns the
+      # owning participant's UUID only at the root as `user_id` — its items
+      # do NOT carry `created_by` (unlike `network/item/fetch_local` items,
+      # which do). A `list_key: items` projection can only read fields inside
+      # each item, so it could never surface the owner and apply_job was left
+      # without `acting_as_user_id`.
       projection:
-        list_key: items
         fields:
-          profile_item_id: item_id
-          acting_as_user_id: created_by
-          name: item_state.name
-          phone: item_state.phone
-          age: item_state.age
-          gender: item_state.gender
-          # The SEEKER's own location is not masked (unlike a job's).
-          location: item_state.location
-          trade: item_state.nameOfJobRolesInterestedIn
-          work_experience: item_state.workExperience
-          experience_years: item_state.workExperienceYearsConditional
-          education: item_state.educationCategory
-          certifications: item_state.certificationDetails
-          languages: item_state.languageSpoken
-          job_nature: item_state.natureOfJobsInterestedIn
-          salary_expected: item_state.salaryMin
-          # Multi-profile disambiguation — most recently updated wins.
-          updated_at: updated_at
+          # The caller's user UUID — this is apply_job's acting_as_user_id.
+          acting_as_user_id: user_id
+          # Consent already recorded upstream for this user.
+          compliance: compliance
+          # One entry per saved profile. Each has `item_id` (= the
+          # profile_item_id apply_job needs) and `item_state` with the
+          # profile fields, plus `updated_at` for multi-profile choice.
+          profiles: items
 
   # ────────────────────────────────────────────────────────────────────
   # WRITE — Create OR update the caller's seeker profile.
@@ -400,6 +394,12 @@ tools:
       Submit a job application on the caller's behalf. Call ONLY after the
       caller has explicitly confirmed they want to apply to a specific job.
 
+      NEVER call this tool in the same turn as get_profile, update_profile or
+      job_market_lookup. Their results do not exist yet when you do, so the
+      call fails. If you do not already hold all three IDs from an EARLIER
+      turn, call the tool that provides them, tell the caller you are checking,
+      and apply on the NEXT turn once you can see the IDs. Never guess an ID.
+
       All three IDs are REQUIRED and must come from earlier tool results:
         profile_item_id   — from get_profile, or from update_profile after
                             you created the profile
@@ -439,10 +439,12 @@ tools:
             item_id: "{job_id}"
             # The Signals instance the target job lives on.
             item_instance_url: "{instance_url}"
-          requirements_snapshot:
-            role: "{role}"
-            location: "{location}"
-            workExperience: "{work_experience}"
+          # NOTE: no `requirements_snapshot`. The upstream validates it with
+          # additionalProperties:false, so ANY field here fails the whole call
+          # with 422 INVALID_ACTION_REQUEST "must NOT have additional
+          # properties". The Signals Postman collection sends `{}` for the same
+          # reason. Omitting it is equivalent — the body-template renderer drops
+          # an empty dict anyway.
           acting_as_user_id: "{acting_as_user_id}"
           # Not schema-required upstream, but the agent must obtain explicit
           # spoken consent before applying — record it.
@@ -474,22 +476,6 @@ tools:
             description: >
               The caller's user ID, from a prior get_profile or
               update_profile result.
-          - name: role
-            source: agent
-            type: string
-            required: false
-            description: "The role applied for — recorded on the application."
-          - name: location
-            source: agent
-            type: string
-            required: false
-            description: "The caller's location — recorded on the application."
-          - name: work_experience
-            source: agent
-            type: string
-            required: false
-            description: >
-              The caller's experience bucket — recorded on the application.
     response:
       max_size_chars: 2000
       projection:
