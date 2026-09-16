@@ -5,8 +5,14 @@ agent:
   # Provider selection (#287). Defaults to anthropic on the schema; making
   # the choice explicit so deployments are auditable.
   provider: openai
-  primary_model: gpt-4.1-mini-2025-04-14
-  fallback_model: gpt-5.4-mini-2026-03-17
+  # gpt-5.4-mini as primary, swapped with gpt-4.1-mini on 2026-09-16.
+  # 4.1-mini could not reliably carry a job_id UUID from a job_market_lookup
+  # result into the following apply_job call — it passed the employer name
+  # (even translated: 'ABC Ltd प्लंबर'), which the upstream rejects with 400.
+  # Note the GPT-5 family requires `max_completion_tokens`; the OpenAI provider
+  # already sends that, so no code change is needed.
+  primary_model: gpt-5.4-mini-2026-03-17
+  fallback_model: gpt-4.1-mini-2025-04-14
   # provider: anthropic
   # primary_model: claude-haiku-4-5-20251001
   # fallback_model: claude-sonnet-4-5-20250929
@@ -17,7 +23,13 @@ agent:
   # market_lookup → apply_job) chained 3 serial tool calls into a ~18 s
   # turn under the framework default of 3. Two rounds covers every
   # legitimate KKB flow we have today; the third gets a graceful fallback.
-  max_tool_rounds: 2
+  # Raised 2 -> 3 on 2026-09-16. The apply turn legitimately needs three
+  # rounds: the model re-fetches get_profile and job_market_lookup (round 1,
+  # both in parallel) and only then has the job_id UUID it needs for
+  # apply_job (round 2)... except a parallel round counts once, so the
+  # follow-up text needs the third. At 2 the loop exhausted mid-flow and the
+  # caller got an EMPTY reply — no error, no fallback.
+  max_tool_rounds: 3
 
   # GH-204: skip the LLM round trip when NLU is confident the user wants to end
   # the call. Saves ~9 s on the goodbye turn — the bot speaks
