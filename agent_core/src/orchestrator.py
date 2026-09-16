@@ -1213,6 +1213,12 @@ class AgentCore(AgentCoreBase):
             system=system,
             active_tools=active_tools,
             ke_context=ke_context,
+            # Without this the sync /process_turn path drops the caller's
+            # identity, so connectors that template {user_id} into a path or
+            # body (get_profile, update_profile) silently receive an empty
+            # string. stream_turn already forwarded it; this brings the two
+            # paths in line.
+            user_id=user_id,
         )
         if tool_calls:
             tool_names = [tc.tool_name for tc in tool_calls]

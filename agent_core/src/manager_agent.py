@@ -93,6 +93,7 @@ class ManagerAgent:
         system: SystemPrompt | None = None,
         active_tools: list[dict] | None = None,
         ke_context: dict | None = None,
+        user_id: str = "",
     ) -> tuple[str, list[ToolCall], list[ToolResult]]:
         """
         Drive the tool-use loop starting from the initial LLM response.
@@ -106,6 +107,10 @@ class ManagerAgent:
                               initial_response. Extended in-place with tool_use and
                               tool_result blocks as Message objects.
             session_id:       Used for consent checks and gateway calls.
+            user_id:          Stable user identity forwarded to the Action Gateway so
+                              connectors can substitute ``{user_id}`` into paths and
+                              body templates. Defaults to "" for callers that have no
+                              user context.
             initial_response: First LLM response from orchestrator's LLM call #1.
             system:           System prompt passed to follow-up LLM calls so language
                               and persona instructions are preserved after tool use.
@@ -207,7 +212,7 @@ class ManagerAgent:
                 if self._registry.get_route(tool_call.tool_name) == "knowledge_engine":
                     tool_result = self._execute_knowledge_retrieval(tool_call, ke_context)
                 else:
-                    tool_result = self._execute_tool(tool_call, session_id)
+                    tool_result = self._execute_tool(tool_call, session_id, user_id)
                 all_tool_calls.append(tool_call)
                 all_tool_results.append(tool_result)
 
@@ -580,7 +585,9 @@ class ManagerAgent:
                 error=str(e),
             )
 
-    def _execute_tool(self, tool_call: ToolCall, session_id: str) -> ToolResult:
+    def _execute_tool(
+        self, tool_call: ToolCall, session_id: str, user_id: str = ""
+    ) -> ToolResult:
         """
         Enforce consent gate then delegate to Action Gateway.
 
@@ -609,7 +616,7 @@ class ManagerAgent:
                 )
 
         start = time.time()
-        result = self._gateway.execute(tool_call, session_id)
+        result = self._gateway.execute(tool_call, session_id, user_id)
         logger.info(
             "manager_agent.tool_executed",
             extra={
