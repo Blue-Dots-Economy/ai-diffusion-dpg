@@ -5,8 +5,14 @@ agent:
   # Provider selection (#287). Defaults to anthropic on the schema; making
   # the choice explicit so deployments are auditable.
   provider: openai
-  primary_model: gpt-4.1-mini-2025-04-14
-  fallback_model: gpt-5.4-mini-2026-03-17
+  # gpt-5.4-mini as primary, swapped with gpt-4.1-mini on 2026-09-16.
+  # 4.1-mini could not reliably carry a job_id UUID from a job_market_lookup
+  # result into the following apply_job call — it passed the employer name
+  # (even translated: 'ABC Ltd प्लंबर'), which the upstream rejects with 400.
+  # Note the GPT-5 family requires `max_completion_tokens`; the OpenAI provider
+  # already sends that, so no code change is needed.
+  primary_model: gpt-5.4-mini-2026-03-17
+  fallback_model: gpt-4.1-mini-2025-04-14
   # provider: anthropic
   # primary_model: claude-haiku-4-5-20251001
   # fallback_model: claude-sonnet-4-5-20250929
@@ -17,7 +23,13 @@ agent:
   # market_lookup → apply_job) chained 3 serial tool calls into a ~18 s
   # turn under the framework default of 3. Two rounds covers every
   # legitimate KKB flow we have today; the third gets a graceful fallback.
-  max_tool_rounds: 2
+  # Raised 2 -> 3 on 2026-09-16. The apply turn legitimately needs three
+  # rounds: the model re-fetches get_profile and job_market_lookup (round 1,
+  # both in parallel) and only then has the job_id UUID it needs for
+  # apply_job (round 2)... except a parallel round counts once, so the
+  # follow-up text needs the third. At 2 the loop exhausted mid-flow and the
+  # caller got an EMPTY reply — no error, no fallback.
+  max_tool_rounds: 3
 
   # GH-204: skip the LLM round trip when NLU is confident the user wants to end
   # the call. Saves ~9 s on the goodbye turn — the bot speaks
@@ -255,13 +267,20 @@ conversation:
     fail_action: "none"
 
 connectors:
+  # NOTE: this block is documentation, not wiring. Agent Core builds the
+  # LLM-visible tool definitions from the Action Gateway's /tools endpoint
+  # (i.e. from dev-kit/configs/kkb/action_gateway.yaml). Only
+  # `connectors.internal` below is read at runtime. Keep the two in sync by
+  # hand — a change here alone has no effect.
   read:
-    - name: onest_market_lookup
+    - name: job_market_lookup
       description: >
-        Search the ONEST job network for live job listings matching the user's
-        trade and location. ALWAYS call this before presenting any job options,
-        pay range, count, or market picture. NEVER describe current availability
-        from memory, prior options, summaries, or past conversations.
+        Search the live job network for current verified job postings matching
+        the user's trade and location. ALWAYS call this before presenting any
+        job options, pay range, count, or market picture. NEVER describe current
+        availability from memory, prior options, summaries, or past
+        conversations. The job's own location is NOT returned — never state or
+        imply where a job is, and never estimate a distance to it.
       input_schema:
         type: object
         properties:
@@ -269,51 +288,20 @@ connectors:
             type: string
             description: >
               Natural English sentence paraphrasing exactly what the user is
-              looking for. ALWAYS include this parameter with a non-empty value.
-              Keep concise (1–2 sentences max). Examples:
-                "I am looking for electrician jobs in Hubballi with day shift
+              looking for. ALWAYS include this parameter with a non-empty value,
+              and ALWAYS name both the trade and the city inside the sentence —
+              the search is semantic, so the city belongs in the text, not in a
+              separate filter. Keep concise (1-2 sentences max). Examples:
+                "I am looking for electrician jobs in Bengaluru with day shift
                  and around 18 thousand in-hand salary."
                 "I have factory and fitting experience, please find stable
                  day-shift jobs in Ghaziabad."
                 "Need helper or warehouse jobs in Noida, full-time, near my
                  location."
-                "I can work as a delivery executive in Gurgaon, prefer on-site
-                 no-shift roles and salary above 20k."
                 "I am an ITI fitter, looking for mechanical or fitter jobs in
                  Pune with immediate joining."
-                "Looking for CNC operator jobs in Bengaluru, I can work 8 hours
-                 and speak Hindi and Kannada."
                 "I need apprenticeship electrician jobs in Dharwad, fresher
                  candidates accepted."
-                "Searching for security guard jobs in Hyderabad, night shift is
-                 okay and food/accommodation preferred."
-          industry:
-            type: string
-            description: >
-              Broad industry category. Include only if clearly known, never
-              empty string. Examples: Manufacturing, Electrical, Construction,
-              Customer Facing, Logistics.
-          age:
-            type: integer
-            description: "Candidate age in years. Include only if known from profile."
-          languages:
-            type: array
-            items: {type: string}
-            description: >
-              Languages the candidate speaks. Always capitalised, never empty
-              array. Examples: ["Hindi"], ["Hindi", "Kannada"], ["English", "Hindi"].
-          preferred_work_mode:
-            type: array
-            items:
-              type: string
-              enum: ["on-site-no-shift", "on-site-shifts", "remote", "hybrid"]
-            description: "Work preference. Include only if user has stated a preference."
-          monthly_in_hand:
-            type: integer
-            description: "Expected monthly in-hand salary in INR. Number only, no ₹ symbol. Include only if stated."
-          work_hours_per_day:
-            type: integer
-            description: "Preferred working hours per day. Include only if stated by user."
         required:
           - query_text
         additionalProperties: false
@@ -348,20 +336,138 @@ connectors:
         on_failure: >
           अभी market data available नहीं है। थोड़ी देर में दोबारा try करते हैं।
         bridge_line: "ठीक है, एक बार आपके एरिया का current picture देख लेती हूँ।"
-        ranking_order: ["match_score", "distance", "freshness", "positions"]
+        ranking_order: ["match_score", "freshness", "positions"]
         presentation_limit: 3
         refinement_loop_max: 3
         safety:
           never_present:
-            - "is_active == false"
-            - "status != open"
+            - "status != live"
             - "positions == null or 0"
           never_speak:
+            - "job location or city"
+            - "distance to a job"
             - "GPS coordinates"
-            - "hiring manager phone number"
+            - "hiring manager name, phone number or email"
             - "internal IDs"
             - "match_score"
 
+    - name: get_profile
+      description: >
+        Fetch the caller's saved job-seeker profiles from the Signals network,
+        looked up by their phone number. Takes NO parameters — the phone comes
+        from the session. An empty list means a new caller. Each row carries
+        profile_item_id and acting_as_user_id, both of which apply_job needs
+        later.
+      input_schema:
+        type: object
+        properties: {}
+        additionalProperties: false
+      invocation_rules:
+        call_when: >
+          Once at the start of a session, after consent has been granted, to
+          find out whether this is a returning caller and what is already known
+          about them.
+        required_before_calling: []
+        must_not_substitute: >
+          Never assume a caller is new or returning from session memory alone
+          at the start of a session — always look them up.
+        on_empty: ""
+        on_failure: >
+          अभी आपका profile load नहीं हो पा रहा। चलिए आगे बढ़ते हैं, बाद में
+          दोबारा try करेंगे।
+        bridge_line: ""
+
+  write:
+    - name: update_profile
+      description: >
+        Create or update the caller's job-seeker profile on the Signals
+        network. Include profile_item_id to update an existing profile; omit it
+        to create a new one. This call REPLACES the stored profile rather than
+        merging, so always pass the full profile you know about.
+      input_schema:
+        type: object
+        properties:
+          name: {type: string, description: "The caller's full name. Required by the upstream."}
+          profile_item_id: {type: string, description: "Existing profile ID — include to update, omit to create."}
+          trade: {type: string, description: "Job role the caller wants, e.g. Electrician."}
+          location: {type: string, description: "City or district the caller wants to work in."}
+          age: {type: integer, description: "The caller's age in years."}
+          gender:
+            type: string
+            enum: ["Male", "Female", "Other", "Don't want to share"]
+          work_experience:
+            type: string
+            enum: ["Fresher", "Worked before", "Returning after a break"]
+          experience_years:
+            type: string
+            enum: ["< 1 Year", "1 Year", "2 Years", "3 Years", "3-5 Years", "5-10 Years", "10-15 Years", "15+ Years"]
+          education:
+            type: string
+            enum: ["School", "PU College", "College", "ITI", "Other Vocational Training", "Polytechnic"]
+          certifications: {type: string, description: "Free-text certification or skill details."}
+          languages:
+            type: array
+            items: {type: string}
+            description: 'Capitalised language names, e.g. ["Hindi", "Kannada"].'
+          job_nature:
+            type: array
+            items:
+              type: string
+              enum: ["Internship", "Apprenticeship", "Full-time", "Flexible"]
+          monthly_in_hand_expected: {type: integer, description: "Expected monthly in-hand salary in INR."}
+        required:
+          - name
+        additionalProperties: false
+      invocation_rules:
+        call_when: >
+          The caller has granted storage consent AND enough of the profile is
+          known to be worth persisting (at minimum a name), OR the caller has
+          explicitly corrected a stored field.
+        required_before_calling:
+          - name
+        must_not_substitute: >
+          Never claim a profile was saved without calling this tool.
+        on_empty: ""
+        on_failure: >
+          अभी profile save नहीं हो पाया। हम आगे बढ़ सकते हैं, मैं बाद में दोबारा
+          try करूँगी।
+        bridge_line: ""
+
+    - name: apply_job
+      description: >
+        Submit a job application on the caller's behalf, linking their profile
+        to the chosen job posting. Requires profile_item_id, job_id and
+        acting_as_user_id, all carried over from earlier tool results.
+      input_schema:
+        type: object
+        properties:
+          profile_item_id: {type: string, description: "From get_profile or update_profile."}
+          job_id: {type: string, description: "From the job_market_lookup result the caller chose."}
+          acting_as_user_id: {type: string, description: "From get_profile or update_profile."}
+          role: {type: string, description: "Role applied for — recorded on the application."}
+          location: {type: string, description: "The caller's location — recorded on the application."}
+          work_experience: {type: string, description: "Experience bucket — recorded on the application."}
+        required:
+          - profile_item_id
+          - job_id
+          - acting_as_user_id
+        additionalProperties: false
+      invocation_rules:
+        call_when: >
+          The caller has explicitly and unambiguously confirmed they want to
+          apply to one specific job, AND all three IDs are known.
+        required_before_calling:
+          - profile_item_id
+          - job_id
+          - acting_as_user_id
+        must_not_substitute: >
+          NEVER apply without explicit spoken confirmation from the caller.
+          Never tell the caller an application was submitted unless this tool
+          returned action_status "created".
+        on_empty: ""
+        on_failure: >
+          अभी application submit नहीं हो पाया। चाहें तो मैं दोबारा try करूँ?
+        bridge_line: ""
   internal:
     - name: knowledge_retrieval
       route: knowledge_engine
@@ -369,7 +475,7 @@ connectors:
         Search the verified Kaam Ki Baat knowledge base for information on job trades,
         government schemes (PMKVY, NAPS, etc.), training institutes, and market context.
         Use this when the user asks a specific question that requires verified facts
-        or scheme details — not for live job listings (use onest_market_lookup for that).
+        or scheme details — not for live job listings (use job_market_lookup for that).
       input_schema:
         type: object
         properties:
@@ -549,7 +655,7 @@ agent_workflow:
   global_tools:
     - get_profile
     - update_profile
-    - onest_market_lookup
+    - job_market_lookup
     - knowledge_retrieval
     - apply_job
     # - counsellor_schedule   # enable once action_gateway connector is live
@@ -628,13 +734,18 @@ agent_workflow:
         You are in the **enquiry** stage. The user is exploring; nothing has been chosen yet.
 
         ## On session start
-        1. If session has no profile, call `get_profile` with the user's phone number.
-        2. Open with a short, natural greeting. If the profile already has trade + location,
+        1. If the session has no profile, call `get_profile`. It takes NO arguments —
+           the caller's phone comes from the session. Never ask the caller for their
+           phone number and never pass one yourself.
+        2. From the result, keep `profile_item_id` and `acting_as_user_id` for the rest
+           of the session — `apply_job` needs both later. If several profiles come back,
+           use the one with the most recent `updated_at`.
+        3. Open with a short, natural greeting. If the profile already has trade + location,
            ask whether to show the current market picture now.
-        3. Never ask for user_id, full address, or government ID.
+        4. Never ask for user_id, full address, or government ID.
 
         ## Minimum viable fetch set
-        Before calling `onest_market_lookup` you need:
+        Before calling `job_market_lookup` you need:
           - location
           - trade_or_stream
           - user consent to fetch
@@ -646,10 +757,17 @@ agent_workflow:
         Commute and income are refinement fields — ask only after the first list, unless volunteered earlier.
 
         ## Market picture delivery
-        - Use ONLY `onest_market_lookup` results. Never invent roles, employers, or pay figures.
-        - Present exact salary ranges (lower → higher). If min > max, silently swap.
-        - Never present jobs with is_active=false, status≠open, or positions=null/0.
-        - Never speak GPS, hiring-manager phone, internal IDs, or match_score.
+        - Use ONLY `job_market_lookup` results. Never invent roles, employers, or pay figures.
+        - Present exact pay ranges (lower → higher). A posting carries ONE of three pay
+          models — salary_min/max, stipend_min/max, or task_rate_min/max. Read out
+          whichever is populated. If min > max, silently swap. If none is populated, say
+          plainly that pay is not listed rather than guessing.
+        - Never present jobs with status != "live", or positions null/0.
+        - The job's LOCATION IS NOT AVAILABLE from the tool. Never state or imply which
+          city, area or address a job is in, and never estimate a distance to it. If the
+          caller asks where a job is, say honestly that the listing does not show the
+          location and that it will be confirmed by the employer.
+        - Never speak GPS, hiring-manager name/phone/email, internal IDs, or match_score.
         - Short-list the top 3 in one compact spoken block; end with a question inviting selection.
 
         ## If the user selects or drills into one option
@@ -729,20 +847,26 @@ agent_workflow:
         ## Profile persistence on entry
         If `consent == true` in the session and the profile has changes since last write,
         call `update_profile` once at the start of this stage — then continue.
+        `name` is required. Pass the FULL profile you know about, not just the changed
+        field — the call replaces the stored profile rather than merging into it.
+        Include `profile_item_id` to update the existing profile; omit it to create a new
+        one. Keep `acting_as_user_id` and the saved profile's id from the response.
 
         ## Skill fit (in-prompt, no separate subagent)
-        Using the known profile and the ONEST results, classify honestly:
+        Using the known profile and the job-network results, classify honestly:
           - DIRECT MATCH — "good news, you are a direct match for these roles."
           - PARTIAL MATCH — state the gap ("certificate", "specific skill") and how to close it.
           - SIGNIFICANT GAP — if income is urgent: bridge income + parallel training.
                             if flexible: training path first.
         Present as honest trade-offs. Never push. Do not invent "Private Contractors" /
-        "Local Projects" — only what ONEST returned. Use exact salary ranges from the tool.
+        "Local Projects" — only what the job network returned. Use exact pay ranges from
+        the tool.
 
         ## Deep dive on a selected option
-        Spoken format: "[employer], [locality], [city] — लगभग [distance] किलोमीटर दूर.
-        [nature], [salary range], [positions] positions. [qualification] चाहिए.
+        Spoken format: "[employer] — [role]. [nature], [pay range], [positions] positions.
+        [qualification] चाहिए. लोकेशन लिस्टिंग में नहीं दी गई — वो employer कन्फ़र्म करेंगे.
         एक्ज़ैक्ट काम वहाँ जाकर क्लियर होगा."
+        Do NOT state a city, locality or distance — the tool does not return them.
         End with: "यह ठीक लगता है? अप्लाई कर दूँ?"
         Always include one honest uncertainty line when details are incomplete.
 
@@ -760,8 +884,9 @@ agent_workflow:
         ## Pay / distance concerns
         Acknowledge. Test flexibility gently. If expectation is close to market: show the
         upper end and a 1–2 year growth trajectory. If far: state the real rate, offer
-        lateral options, do not push. For distance: re-run ONEST with tighter radius if
-        needed; mention transport / allowance when known.
+        lateral options, do not push. Distance cannot be narrowed — the job network does
+        not return job locations, so never promise a nearer option; acknowledge the concern
+        honestly and mention transport / allowance only when the listing states it.
 
         ## Overwhelmed / wants to think
         Short pause → wait. Longer pause → one gentle bridge, not another question.
@@ -776,8 +901,16 @@ agent_workflow:
         ## Apply
         Never apply without explicit user consent. Ask clearly in natural Hindi:
         "क्या मैं आपकी तरफ़ से आगे बढ़ूँ?", "अप्लाई कर दूँ?". Do not pressure. Once consent is
-        clear, call `apply_job`. On success, confirm briefly — the orchestrator moves the
-        user to post-apply follow-up for the next turn.
+        clear, call `apply_job`. Get `job_id` by calling `job_market_lookup` again in
+        the SAME turn and copying the `job_id` of the entry whose company and role
+        match what the caller chose — never from memory, never the employer's name,
+        never a translated label. It needs three IDs — `profile_item_id` and `acting_as_user_id` (from `get_profile` or
+        `update_profile`) and `job_id` (from the `job_market_lookup` entry the caller
+        chose). If any is missing, get it first: call `get_profile`, or `update_profile`
+        when no profile exists yet. Confirm the application ONLY when the result comes
+        back with action_status "created"; on any error say plainly that it did not go
+        through and offer to try again. On success, confirm briefly — the orchestrator
+        moves the user to post-apply follow-up for the next turn.
 
         ## If the user changes their mind
         Acknowledge calmly. Use the explore_more signal by rejoining enquiry for alternatives.
@@ -823,7 +956,7 @@ agent_workflow:
         Do not defend. Do not dismiss. Acknowledge:
           "यह सुनकर बुरा लगा। क्या difference था, थोड़ा बताइए."
         Then understand what changed, then reopen options (via knowledge_retrieval /
-        onest_market_lookup as needed).
+        job_market_lookup as needed).
 
         ## Return after training or life change
         Resume directly with upgraded fit. Update only the changed constraint, re-evaluate.

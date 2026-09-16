@@ -13,21 +13,25 @@ observability:
       # trigger_condition values below are reserved — not yet evaluated at runtime (tracked in GH-115).
       # Until then, ANY successful invocation of trigger_tool transitions into the state.
       - state: "applied"
-        trigger_tool: "onest_apply"
+        trigger_tool: "apply_job"
         trigger_condition: "result == 'success'"
 
+      # No status-check connector exists against Signals yet, so nothing can
+      # drive these two states. Left explicitly null rather than naming a tool
+      # that is never registered — see the `applied` state above for the shape
+      # to use once a status connector lands.
       - state: "shortlisted"
-        trigger_tool: "onest_status_check"
+        trigger_tool: null
         trigger_condition: "status == 'shortlisted'"
 
       - state: "placed"
-        trigger_tool: "onest_status_check"
+        trigger_tool: null
         trigger_condition: "status == 'placed'"
 
     metrics:
       - name: "placement.applications"
         instrument: counter
-        description: "Total job applications submitted via ONEST"
+        description: "Total job applications submitted to the Signals job network"
         attributes:
           - "intent"
           - "state"

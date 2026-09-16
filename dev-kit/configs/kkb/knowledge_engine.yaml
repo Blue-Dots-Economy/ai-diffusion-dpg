@@ -51,7 +51,7 @@ knowledge:
           type: static
           doc_type: bridge_income
           refresh: manual
-        - path: ./data/onest_market_truth_framing.md
+        - path: ./data/market_truth_framing.md
           type: always_include
           doc_type: always_include
           refresh: manual
