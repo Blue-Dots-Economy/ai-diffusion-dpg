@@ -77,7 +77,10 @@ tools:
             intent:
               textSearch: "{query_text}"
             pagination:
-              limit: 10
+              # 5, not 10: the model has to carry a job_id UUID across turns to
+              # apply_job, and long result lists make it likelier to truncate or
+              # invent one. The prompt only ever reads out the top 3.
+              limit: 5
               offset: 0
         params:
           - name: query_text
@@ -394,11 +397,14 @@ tools:
       Submit a job application on the caller's behalf. Call ONLY after the
       caller has explicitly confirmed they want to apply to a specific job.
 
-      NEVER call this tool in the same turn as get_profile, update_profile or
-      job_market_lookup. Their results do not exist yet when you do, so the
-      call fails. If you do not already hold all three IDs from an EARLIER
-      turn, call the tool that provides them, tell the caller you are checking,
-      and apply on the NEXT turn once you can see the IDs. Never guess an ID.
+      HOW TO GET job_id RIGHT — this is the most common failure. When the
+      caller confirms they want to apply, do NOT try to remember the job's id
+      from an earlier turn. Call job_market_lookup FIRST in this same turn,
+      find the entry whose `company` and `role` match the job the caller chose,
+      and copy that entry's `job_id` verbatim into this call. The id is a
+      36-character UUID. Passing the employer name, the role, the list
+      position, or a translated label instead of the UUID makes the upstream
+      reject the whole request.
 
       All three IDs are REQUIRED and must come from earlier tool results:
         profile_item_id   — from get_profile, or from update_profile after
@@ -468,7 +474,13 @@ tools:
             type: string
             required: true
             description: >
-              The chosen job's ID, from a prior job_market_lookup result.
+              The chosen job's `job_id` from a prior job_market_lookup result.
+              It is a 36-character UUID like
+              "0913fe07-ea54-4d3e-80ce-46b44ac2031a". Copy it EXACTLY and in
+              full from the tool result. Never shorten it, never reconstruct it
+              from memory, and never substitute the employer name or the list
+              position — the upstream rejects anything that is not a UUID and
+              the application fails.
           - name: acting_as_user_id
             source: agent
             type: string

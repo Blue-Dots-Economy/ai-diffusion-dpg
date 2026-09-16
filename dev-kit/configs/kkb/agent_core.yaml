@@ -889,8 +889,10 @@ agent_workflow:
         ## Apply
         Never apply without explicit user consent. Ask clearly in natural Hindi:
         "क्या मैं आपकी तरफ़ से आगे बढ़ूँ?", "अप्लाई कर दूँ?". Do not pressure. Once consent is
-        clear, call `apply_job`. It needs three IDs, all carried over from earlier tool
-        results — `profile_item_id` and `acting_as_user_id` (from `get_profile` or
+        clear, call `apply_job`. Get `job_id` by calling `job_market_lookup` again in
+        the SAME turn and copying the `job_id` of the entry whose company and role
+        match what the caller chose — never from memory, never the employer's name,
+        never a translated label. It needs three IDs — `profile_item_id` and `acting_as_user_id` (from `get_profile` or
         `update_profile`) and `job_id` (from the `job_market_lookup` entry the caller
         chose). If any is missing, get it first: call `get_profile`, or `update_profile`
         when no profile exists yet. Confirm the application ONLY when the result comes
