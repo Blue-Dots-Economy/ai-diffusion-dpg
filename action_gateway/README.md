@@ -290,6 +290,6 @@ Requires Python 3.11+.
 
 **No OpenAPI spec ingestion.** Adding a new tool requires hand-authoring the YAML entry. A planned Dev-Kit feature (#94) will ingest an OpenAPI spec and emit a ready-to-use `tools[]` YAML block, removing the manual step.
 
-**MCP adapter timeout handling.** The `McpAdapter` delegates timeout management to the underlying MCP SDK. An explicit per-call timeout matching the `action_gateway.timeout_ms` config is not yet enforced at the adapter level.
+**MCP adapter timeout handling.** The `McpAdapter` delegates timeout management to the underlying MCP SDK. An explicit per-call timeout matching the connector's `tools[].timeout_ms` config is not yet enforced at the adapter level.
 
 **Tool configuration phase in Dev-Kit not yet built.** The Configuration Agent (Dev-Kit Tier 1) does not yet have a tool configuration phase that walks domain experts through defining connector entries. This is tracked in #95.
