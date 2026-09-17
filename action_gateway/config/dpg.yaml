@@ -6,11 +6,11 @@ server:
 
 tools: []
 
-action_gateway:
-  timeout_ms: 5000
-
-response:
-  default_max_size_chars: 4000
+# NOTE: `action_gateway.timeout_ms` and `response.default_max_size_chars` used
+# to live here. Both were removed from the schema — timeout and response size
+# are now per-tool (`tools[].timeout_ms`, `tools[].response.max_size_chars`).
+# They lingered here after the change and made every host-mode start fail with
+# a pydantic extra_forbidden error; see action_gateway/tests/test_schema_config.py.
 
 # Observability — OTel collector endpoint for trace/metric export.
 observability:
