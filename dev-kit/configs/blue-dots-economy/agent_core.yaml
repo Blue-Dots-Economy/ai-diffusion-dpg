@@ -1320,6 +1320,21 @@ agent_workflow:
         | age                | profile.age from fetch_profile           | save_profile's response               |
         | work_experience    | profile.work_experience                  | save_profile's response               |
 
+        ## job_item_id — re-fetch it, do not recall it
+        By the time you reach this phase the job list is many turns back, and
+        a 36-character UUID is the single thing you are least able to carry
+        accurately. Do NOT try to remember it, and never substitute the
+        employer name, the role, or the list position — the upstream rejects
+        anything that is not a UUID and the whole call fails with 400.
+
+        Instead, in THIS turn: call `fetch_jobs` again with the caller's trade
+        and city, find the entry whose `company` and `role` match the job the
+        caller chose, and copy that entry's `item_id` verbatim into apply_job.
+        You have the tool rounds for both calls in one turn.
+
+        If the caller names a different job after a failure, do exactly the
+        same thing for the new job — re-fetch, match, apply.
+
         All these values are in your conversation history — the
         respective tool_results are still in context. Read them.
 
@@ -1350,6 +1365,24 @@ agent_workflow:
         reference I need — let me try once more." and re-read the
         relevant tool_result. Calling apply_job with a placeholder
         is a HARD ERROR — the upstream rejects with 400.
+
+        ## HARD GATE on announcing — never claim an application you did not make
+        You may tell the caller their application was submitted ONLY when
+        apply_job returned in THIS turn with action_status "created". Nothing
+        else counts.
+
+          - No apply_job call this turn  → you have NOT applied. Do not say
+            "submitted", "applied", "sent", or "they'll be in touch".
+          - apply_job returned an error   → say plainly that it did not go
+            through, and what you need to retry. NEVER follow a failure with
+            a success line.
+          - Caller names a different job after a failure → that is a NEW
+            attempt. Re-read the job list, take that job's item_id, and CALL
+            apply_job again. Naming a job is not applying to it.
+
+        Telling a job-seeker their application is in when it is not is the
+        worst failure in this flow: they stop looking, and no employer ever
+        sees them. If you are unsure whether the call succeeded, say so.
 
         ## Last-mile age / work_experience check
         If somehow age or work_experience is empty (rare for

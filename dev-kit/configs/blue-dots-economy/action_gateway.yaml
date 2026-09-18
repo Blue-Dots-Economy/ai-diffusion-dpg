@@ -47,63 +47,47 @@ tools:
       / Full-time / Flexible), help_needed (otherHelpNeeded: Training /
       Accommodation / Travel / Other). The trade field may be empty or
       noisy in older records — still ask the user to confirm.
-    # Signals-DPG runs on the host at port 2742; from inside the
-    # action_gateway container we reach it via host.docker.internal.
-    base_url: "http://host.docker.internal:2742"
-    # fetch_local is a public endpoint — no auth headers required.
+    base_url: "https://dev-signals.serveirc.com"
+    # The phone lookup moved off network/item/fetch_local: `item_state.phone`
+    # is a masked PII field upstream, so filtering on it now matches nothing.
+    # GET /admin/participant?phone_number= looks the caller up by their account
+    # phone and returns their profiles unmasked. Needs the API key + acting org.
+    auth:
+      type: api_key
+      header: x-api-key
+      secret_env: BLUE_DOTS_API_KEY
+    extra_headers:
+      - name: x-acting-org-id
+        secret_env: BLUE_DOTS_ORG_ID
     timeout_ms: 5000
     health_check:
       enabled: false
     endpoints:
       - name: seeker_fetch
-        method: POST
-        path: /api/v1/network/item/fetch_local
-        # POST body declares the filter (item_state.phone) inline.
-        # Caller's phone is auto-injected from session.user_id via the
-        # adapter's body-template substitution. Upstream stores phone
-        # in bare 10-digit form ("7892487848"), which matches what
-        # Reach Layer surfaces as user_id after the 91-prefix strip
-        # in reach_layer/voice/server.py.
-        body_template:
-          item_network: "blue_dot"
-          item_domain: "seeker"
-          item_type: "profile_1.0"
-          item_state:
-            phone: "{user_id}"
-          limit: 20
-          offset: 0
+        method: GET
+        # {user_id} is the caller's phone in 91XXXXXXXXXX form, substituted
+        # from the session by the adapter. The LLM passes nothing.
+        path: "/api/v1/admin/participant?phone_number={user_id}"
         params: []
     response:
       max_size_chars: 4000
+      # Project the ROOT. /admin/participant returns the owning participant's
+      # UUID only at the root as `user_id`; its items carry no `created_by`
+      # (unlike fetch_local items), so a list_key projection could never
+      # surface the owner that apply_job needs as acting_as_user_id.
       projection:
-        list_key: items
         fields:
-          # Identity + required fields per the profile_1.0 schema.
-          item_id: item_id
-          # ``source_item_owner`` is what apply_job needs to pass as
-          # the profile owner's UUID. The upstream stores it as
-          # ``created_by`` on the seeker item. Projecting it here lets
-          # the existing-profile path skip the list_user_profiles call
-          # entirely — fetch_profile already returns everything the
-          # downstream apply step needs.
-          source_item_owner: created_by
-          name: item_state.name
-          phone: item_state.phone
-          age: item_state.age
-          gender: item_state.gender
-          location: item_state.location
-          # Optional fields — may be absent on older / partial profiles.
-          # `trade` is the user's intended role; may be empty or noisy
-          # ("1") on older records, so always confirm with the user.
-          trade: item_state.nameOfJobRolesInterestedIn
-          # Fed into apply_job.requirements_snapshot
-          work_experience: item_state.workExperience
-          experience_years: item_state.workExperienceYearsConditional
-          qualification: item_state.highestQualificationOrSkill
-          job_nature: item_state.natureOfJobsInterestedIn
-          help_needed: item_state.otherHelpNeeded
-          # For multi-profile disambiguation (most recently updated wins).
-          updated_at: updated_at
+          # Both names map to the same root value. The existing prompts refer
+          # to `source_item_owner` (it used to come from each item's
+          # `created_by` on fetch_local); `acting_as_user_id` is what apply_job
+          # actually takes. Keeping both means no prompt has to change.
+          source_item_owner: user_id
+          acting_as_user_id: user_id
+          compliance: compliance
+          # Kept as `items` — the prompts already say items[0].item_id, and
+          # that is the profile_item_id apply_job needs. item_state holds the
+          # profile fields; updated_at picks the newest for multi-profile.
+          items: items
 
   # ────────────────────────────────────────────────────────────────────
   # READ — Job listings filtered by city and role.
@@ -126,69 +110,71 @@ tools:
       stipend_min / stipend_max, or task_rate_min / task_rate_max.
       Read out whichever is populated. Hiring-manager contact
       details are intentionally not exposed to the LLM.
-    base_url: "http://host.docker.internal:2742"
-    # fetch_local is a public endpoint — no auth headers required.
-    timeout_ms: 5000
+    base_url: "https://dev-signals.serveirc.com/signals-search"
+    # Job discovery moved off network/item/fetch_local to signals-search.
+    # `item_state.jobProviderLocation` is PII-masked upstream ("B***"), so the
+    # old server-side city filter matches nothing. Search is semantic instead:
+    # the trade and the city both travel inside query_text.
+    auth:
+      type: api_key
+      header: x-api-key
+      # signals-search key — DISTINCT from BLUE_DOTS_API_KEY.
+      secret_env: BLUE_DOTS_SEARCH_API_KEY
+    timeout_ms: 8000
     health_check:
       enabled: false
     endpoints:
       - name: job_fetch
         method: POST
-        path: /api/v1/network/item/fetch_local
-        # Server-side filter on jobProviderLocation. The LLM supplies
-        # the canonical city name ("Bengaluru", "Mumbai", etc.) and
-        # the adapter substitutes it into the body. Upstream returns
-        # only matching jobs.
+        path: /v1/search
         body_template:
-          item_network: "blue_dot"
-          item_domain: "provider"
-          item_type: "job_posting_1.0"
-          item_state:
-            jobProviderLocation: "{location}"
-          limit: 20
-          offset: 0
+          context:
+            messageId: "{session_id}"
+            networkId: "blue_dot"
+            domain: "provider"
+            itemType: "job_posting_1.0"
+          message:
+            intent:
+              textSearch: "{query_text}"
+            pagination:
+              limit: 5
+              offset: 0
         params:
-          - name: location
+          - name: query_text
             source: agent
             type: string
             required: true
             description: >
-              City to filter jobs by. Pass the canonical spelling
-              ("Bengaluru", "Mumbai", "Kannur", etc.). The upstream
-              matches jobProviderLocation EXACTLY — a different
-              spelling = zero matches. The job_match subagent's
-              prompt has a normalisation map for common Indian
-              cities.
+              Natural English sentence describing the search, naming BOTH the
+              role and the city — the search is semantic, so the city belongs
+              in the sentence, not in a separate filter. Examples:
+              "plumber jobs in Bengaluru full time",
+              "electrician jobs in Rajkot for a fresher".
     response:
       max_size_chars: 4000
       projection:
-        list_key: items
+        list_key: message.items
         fields:
-          # Identity + display fields (used by the bot when reading jobs aloud).
           item_id: item_id
           role: item_state.role
           company: item_state.jobProviderName
-          location: item_state.jobProviderLocation
           positions: item_state.positions
           nature_of_job: item_state.natureOfJob
-          # Three pay-model pairs; only one is populated per job. Bot
-          # reads out whichever pair has values.
+          # Three pay models; only one is populated per posting.
           salary_min: item_state.salaryMin
           salary_max: item_state.salaryMax
           stipend_min: item_state.stipendMin
           stipend_max: item_state.stipendMax
           task_rate_min: item_state.taskRateMin
           task_rate_max: item_state.taskRateMax
-          # Match-quality fields the LLM can use if the user asks
-          # about fit. Optional on the upstream side.
           candidate_experience_type: item_state.candidateExperienceType
           work_experience_years: item_state.workExperienceYears
           min_educational_institute: item_state.minEducationalInstitute
           last_role_held: item_state.lastRoleHeld
-          # Hiring-manager fields (hiringManagerName,
-          # hiringManagerPhoneNumber, hiringManagerEmail) are
-          # intentionally NOT projected — internal/PII, not for the
-          # LLM to mention or read aloud.
+          status: lifecycle_status
+          match_score: score
+          # NOT projected: jobProviderLocation (masked upstream), all
+          # hiringManager* fields (PII), item_locations (GPS).
 
   # ────────────────────────────────────────────────────────────────────
   # WRITE — Create or update the seeker profile via the Signals
@@ -215,7 +201,7 @@ tools:
       array — for UPDATE it has just the updated profile; for CREATE it
       has all the user's profiles and the newly-created one is the last
       by created_at.
-    base_url: "http://host.docker.internal:2742"
+    base_url: "https://dev-signals.serveirc.com"
     auth:
       type: api_key
       header: x-api-key
@@ -238,9 +224,26 @@ tools:
           # required by the upstream's regex). The adapter substitutes
           # session.user_id (bare 10-digit) into the embedded +91 prefix.
           name: "{name}"
-          phone_number: "+91{user_id}"
-          # Both consent flags MUST be literal true — schema-enforced.
-          # Voice consent has already been captured at session start.
+          # {user_id} already carries the 91 country code — the GET lookup
+          # above requires that form, so prefix only the "+" here. Do NOT add
+          # another 91.
+          phone_number: "+{user_id}"
+          # Top-level age is REQUIRED alongside consent on this network —
+          # without it the upstream rejects with 400 AGE_REQUIRED
+          # ("age is required with consent on this domain"). item_state.age
+          # below is the profile field and does NOT satisfy it.
+          age: "{age}"
+          # Consent. `compliance` is the current shape (it replaced the
+          # terms_accepted/privacy_accepted pair, which newer builds ignore).
+          # Both are sent so this works against either build; whichever one a
+          # given cluster does not understand is simply ignored.
+          compliance:
+            - key: "user_terms"
+              value: true
+            - key: "user_privacy"
+              value: true
+            - key: "profile_creation"
+              value: true
           terms_accepted: true
           privacy_accepted: true
           # channel must be one of bulk/link/voice/self — we're voice.
@@ -278,7 +281,11 @@ tools:
             source: agent
             type: string
             required: true
-            description: 'Gender (e.g. "Male", "Female", "Other").'
+            description: >
+              Gender. The upstream enum is CASE-SENSITIVE — send exactly one
+              of "Male", "Female", "Other", "Don't want to share". Capitalise
+              it: "male" is rejected with 400, and the caller will almost
+              always say it in lower case.
           - name: location
             source: agent
             type: string
@@ -367,7 +374,7 @@ tools:
       (item_network, item_domain, item_type, item_instance_url,
       action_type) lives in body_template and never needs to be
       supplied by the LLM.
-    base_url: "http://host.docker.internal:2742"
+    base_url: "https://dev-signals.serveirc.com"
     auth:
       type: api_key
       header: x-api-key
@@ -382,38 +389,42 @@ tools:
       - name: apply
         method: POST
         path: /api/v1/action/perform
-        # Signals `/api/v1/action/perform` is array-only (bulk) as of
-        # Signals-DPG PR #55. apply_job always submits exactly one
-        # application, so the body is a single-element array; the
-        # response is the bulk envelope ({ results[], summary }) read
-        # back via the `results` list_key projection below.
+        # POST /api/v1/action/perform takes a SINGLE OBJECT. It was
+        # array-only until contract change signals-dpg#293 moved the array
+        # form to /api/v1/action/perform/bulk. The response is still the
+        # { results[], summary } envelope, read back via the `results`
+        # list_key projection below.
         body_template:
-          - action_type: "apply"
-            source_item:
-              item_network: "blue_dot"
-              item_domain: "seeker"
-              item_type: "profile_1.0"
-              item_id: "{profile_item_id}"
-            target_item:
-              item_network: "blue_dot"
-              item_domain: "provider"
-              item_type: "job_posting_1.0"
-              item_id: "{job_item_id}"
-              # The Signals self-URL — the target lives on this same
-              # Signals instance. Localhost is what Signals knows itself
-              # as; from action_gateway's docker network we send it
-              # back through host.docker.internal but the URL value
-              # embedded in the action record is what the upstream uses.
-              item_instance_url: "http://localhost:2742"
-            requirements_snapshot:
-              role: "{role}"
-              workExperience: "{work_experience}"
-              age: "{age}"
-            # The acting user — the seeker who is applying. From
-            # fetch_profile's `source_item_owner` (use_existing path)
-            # or save_profile's `user_id` (create_new / update_existing).
-            acting_as_user_id: "{acting_as_user_id}"
+          action_type: "apply"
+          source_item:
+            item_network: "blue_dot"
+            item_domain: "seeker"
+            item_type: "profile_1.0"
+            item_id: "{profile_item_id}"
+          target_item:
+            item_network: "blue_dot"
+            item_domain: "provider"
+            item_type: "job_posting_1.0"
+            item_id: "{job_item_id}"
+            # The Signals instance the target job lives on — the value the
+            # upstream embeds in the action record.
+            item_instance_url: "{instance_url}"
+          # NOTE: no `requirements_snapshot`. The upstream validates it with
+          # additionalProperties:false, so ANY field in it fails the whole
+          # call with 422 INVALID_ACTION_REQUEST "must NOT have additional
+          # properties". The Signals Postman collection sends {} for the same
+          # reason; omitting it is equivalent.
+          # The acting user — the seeker who is applying. From fetch_profile's
+          # `acting_as_user_id`, or save_profile's `user_id` after a create.
+          acting_as_user_id: "{acting_as_user_id}"
+          consent:
+            acknowledged: true
+            version: 1
         params:
+          - name: instance_url
+            source: static
+            type: string
+            value: "https://dev-signals.serveirc.com"
           - name: profile_item_id
             source: agent
             type: string
@@ -436,29 +447,6 @@ tools:
             required: true
             description: >
               The chosen job's item_id from the prior fetch_jobs result.
-          - name: role
-            source: agent
-            type: string
-            required: true
-            description: >
-              The role being applied for — the SELECTED JOB's role
-              (e.g. "Plumber"), NOT the user's intended trade. They
-              usually match.
-          - name: work_experience
-            source: agent
-            type: string
-            required: true
-            description: >
-              workExperience for requirements_snapshot. One of:
-              "Fresher", "Worked before", "Returning after a break".
-              Pull from the chosen profile; ask the user if missing.
-          - name: age
-            source: agent
-            type: integer
-            required: true
-            description: >
-              age for requirements_snapshot — pull from the chosen
-              profile.
     response:
       max_size_chars: 1000
       # Bulk envelope (Signals-DPG PR #55): { results: [ ... ], summary }.
