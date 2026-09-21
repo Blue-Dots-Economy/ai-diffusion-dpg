@@ -5,10 +5,6 @@
 **Status:** design — not implemented
 **Date:** 2026-09-21
 
-**Source documents (authoritative):**
-- `2026-09-09-voicera-integration-analysis.md` — capability analysis and demo scope
-- `2026-09-09-voicera-integration-action-plan.md` — action plan by team
-
 ---
 
 ## 1. Purpose
@@ -25,17 +21,15 @@ any OpenAI client  ──▶  [ SHIM ]  ──▶  Agent Core  ──▶  Trust 
 The client believes it is talking to OpenAI. It is configured with our base URL and
 changes nothing else.
 
-This is **Option A** in the analysis, chosen for the demo:
+This is **Option A**, the integration approach chosen for the demo: a small service
+speaking OpenAI chat-completions on the front and Agent Core on the back, with the client
+configured to point its LLM provider at it. It is the fastest path to a working call and
+needs no change to the client's pipeline.
 
-> A small service speaking OpenAI chat-completions on the front and `POST /process_turn`
-> on the back. VoicEra is configured to point its LLM provider at the shim. Fastest path
-> to a working call. No changes to VoicEra's pipeline.
-
-The analysis is explicit that the shim's job is confined to protocol translation. The
-division of responsibility it sets is:
-
-> VoicEra contributes the voice pipeline only: STT, TTS, VAD, turn-taking, transport,
-> telephony. ai-diffusion owns all agent logic: config, tools, memory, knowledge, trust.
+The division of responsibility is fixed: **the client contributes the voice pipeline only**
+— STT, TTS, VAD, turn-taking, transport, telephony — and **ai-diffusion owns all agent
+logic**: config, tools, memory, knowledge, trust. The shim's job is confined to protocol
+translation.
 
 The shim is therefore specified here as a faithful implementation of a published HTTP
 contract, not as an adapter to any one client's internals. Built to the contract it keeps
@@ -43,31 +37,24 @@ working as the client evolves, and it can be tested without the client present.
 
 ### Why the turn API, and not the LLM proxy
 
-The analysis rules out the obvious shortcut:
-
-> Agent Core exposes `POST /internal/llm/call`. It is a **bare provider passthrough** — no
-> Trust Layer, no Memory, no NLU, no tool routing. Routing conversational turns through it
-> would bypass the Trust Layer on every turn, violating development guideline #4… **VoicEra
-> must reach Agent Core through the turn API, not the LLM proxy.**
+The obvious shortcut is ruled out. Agent Core exposes `POST /internal/llm/call`, but it
+is a **bare provider passthrough** — no Trust Layer, no Memory, no NLU, no tool routing.
+Routing conversational turns through it would bypass the Trust Layer on every turn, which
+development guideline #4 forbids ("runs on every I/O pass, never skipped"). **The client
+must reach Agent Core through the turn API, not the LLM proxy.**
 
 ### Throwaway by design
 
-From the action plan's working agreements:
+**The shim is throwaway.** It must not accrete features. Its replacement is the
+`agent_core` provider inside the client's own registry (Option B, #376), and every feature
+added here is migration debt.
 
-> **The shim is throwaway.** Do not let it accrete features. Its replacement is the
-> `agent_core` provider (Option B), and every feature added to the shim is migration debt.
-
-Accepted losses for Option A, per the analysis: barge-in cancellation, consent events and
-streaming fidelity. This design recovers the third (§8); the first two stay out of scope.
+Option A's accepted losses are barge-in cancellation, consent events and streaming
+fidelity. This design recovers the third (§8); the first two stay out of scope.
 
 ---
 
 ## 2. Sources
-
-**The two design documents named above are the authoritative source** for scope,
-integration approach and deployment shape. They were not in the repository when this
-design was started; they have since been recovered and are treated as governing. A third
-companion, `2026-09-09-voicera-integration-estimate.md`, is not required for this work.
 
 **The HTTP contract** is taken from OpenAI's canonical machine-readable specification
 (`https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.yaml`, OpenAPI
@@ -179,11 +166,9 @@ Authentication: a configured key, accepted as `Authorization: Bearer <key>` (Ope
 convention). Requests without a valid key get `401` in the error envelope.
 
 Both `stream: true` and `stream: false` are implemented (§8, §9). A faithful
-implementation supports both, and `stream: false` directly serves the action plan's
-working agreement:
-
-> **Debug one system at a time.** Prove KKB over `/process_turn` with curl before adding
-> voice.
+implementation supports both, and `stream: false` directly serves the agreed working
+practice of **debugging one system at a time** — proving KKB over `/process_turn` with
+curl before any voice is involved.
 
 ---
 
@@ -192,7 +177,7 @@ working agreement:
 | Incoming | Treatment |
 |---|---|
 | `messages` | **§11.1 — open.** |
-| `model` | Recorded and echoed back in the response; does not select a model. Agent Core owns model choice via domain config. The analysis marks the client's `config.models.llm` as *"Vestigial — points at the shim."* |
+| `model` | Recorded and echoed back in the response; does not select a model. Agent Core owns model choice via domain config; the client's own LLM model setting is vestigial and merely points at the shim. |
 | `stream` | Selects `/stream_turn` (true) or `/process_turn` (false). |
 | `tools`, `tool_choice`, `functions`, `function_call` | **§11.3 — open.** |
 | `n` | Values greater than 1 rejected with `400`; Agent Core produces one response. |
@@ -204,10 +189,8 @@ Unknown fields are ignored rather than rejected, so a newer client does not brea
 
 ### The client's system prompt is ignored
 
-Settled by the analysis's configuration-ownership table, which marks
-`config.prompts.system_prompt` as:
-
-> **Vestigial** — Agent Core builds the real prompt. Leave empty.
+Settled by the agreed configuration-ownership split: the client's `system_prompt` is
+**vestigial and left empty**, because Agent Core builds the real prompt.
 
 The shim therefore ignores any `system` or `developer` message. Honouring one would put
 two personas in competition with Agent Core's own persona and per-subagent prompts.
@@ -233,32 +216,29 @@ Every chunk carries the same `id`, `object: "chat.completion.chunk"`, `created` 
 
 ### `/stream_turn`, not `/process_turn` — and why this is not a departure
 
-The analysis rules out Agent Core's session API, for a sound reason:
+Agent Core's session API is ruled out, for a sound reason: running the client's
+own turn assembly *and* Agent Core's TurnAssembler would double-batch and stack latency
+against an 800–1200 ms per-turn budget. The client already performs turn assembly
+competently, so **direct mode** is correct and the client should own turn-taking.
 
-> Running VoicEra's client-side turn assembly *and* Agent Core's TurnAssembler would
-> double-batch and stack latency against an 800–1200 ms per-turn budget. VoicEra already
-> performs turn assembly competently. The recommendation is therefore to use
-> `POST /process_turn` (direct mode) and let VoicEra own turn-taking.
-
-That argument is against **session mode**, and it is correct. This design honours it in
-full: no TurnAssembler, the client owns turn-taking.
+That argument is against **session mode**, and it holds. This design honours it in full:
+no TurnAssembler, the client owns turn-taking.
 
 But *direct mode* and *blocking* are two different things. `/stream_turn` is also direct
 mode — it does not engage the TurnAssembler either (§4). It is the streaming variant of
-exactly the mode the analysis chose. #369 carried forward `/process_turn`, the blocking
+exactly the mode already chosen. #369 carried forward `/process_turn`, the blocking
 variant, and for a streaming client that is the wrong one of the two:
 
 - `/process_turn` returns nothing until the whole turn completes, so a streaming client
   hears silence for the entire turn.
 - Measured turn latency in the blue-dots web flow on 2026-09-21 was **4.0–6.2 s** (4878,
-  4070, 4417, 4432, 4605, 6010, 6216 ms) against the **800–1200 ms** budget the analysis
-  sets.
+  4070, 4417, 4432, 4605, 6010, 6216 ms) against the **800–1200 ms** per-turn budget.
 - With `/stream_turn` the first sentence is emitted as soon as it clears the trust check,
   so time-to-first-chunk is the time to the first sentence rather than the whole turn.
 - `SentenceEvent` and `DoneEvent` map almost 1:1 onto chunks.
 
-It also recovers one of the three losses the analysis attributes to Option A —
-"streaming fidelity". Barge-in cancellation and consent events remain out of scope.
+It also recovers one of Option A's three accepted losses — streaming fidelity. Barge-in
+cancellation and consent events remain out of scope.
 
 If barge-in is wanted later, `DELETE /sessions/{session_id}/active_turn` and the
 `abort_event` hook in `agent_core/src/base.py` are the extension points.
@@ -295,18 +275,17 @@ accounting is wanted later it belongs in Agent Core's `DoneEvent`, not in the sh
 
 ## 10. The greeting is not ours to emit
 
-A direct-mode consequence the shim must not try to solve. From the analysis:
+A direct-mode consequence the shim must not try to solve.
 
-> in direct mode Agent Core does not proactively emit the entry subagent's
-> `opening_phrase` — that is a session-mode feature (GH-149). VoicEra's
-> `greeting_message` is what plays. KKB's opening phrase must be copied into the VoicEra
-> agent record, or the bot answers silently.
+In direct mode Agent Core does **not** proactively emit the entry subagent's
+`opening_phrase` — that is a session-mode feature (GH-149). The client's own greeting is
+what plays, so KKB's opening phrase must be copied into the client's agent record, **or
+the bot answers silently**.
 
 The shim is request-response: it speaks only when spoken to. The first thing the caller
-hears is the client's own greeting, configured on the client side. The action plan
-assigns this to the VoicEra agent record, and the analysis lists
-`config.prompts.greeting_message` as **required** — *"the only place the demo expresses
-what the caller hears first."*
+hears is the client's own greeting, configured on the client side. The client's
+`greeting_message` is **required** for the demo — it is the only place the demo expresses
+what the caller hears first.
 
 Recorded here because "the bot answers silently" is a failure the shim cannot cause and
 cannot fix, and would otherwise be debugged in the wrong place.
@@ -326,9 +305,9 @@ turn 2   [system, u1, a1, u2]
 turn 3   [system, u1, a1, u2, a2, u3]
 ```
 
-Agent Core is the opposite. The analysis states the split plainly — VoicEra keeps
-"conversation state client-side in `LLMContext`", ai-diffusion is "stateless, with state
-server-side in Memory Layer". Agent Core's request takes a single `user_message`. So both
+Agent Core is the opposite. The client keeps conversation state client-side; ai-diffusion
+keeps it server-side in Memory Layer, and Agent Core's request takes a single
+`user_message`. So both
 sides are tracking the same conversation, and the client is telling us things Agent Core
 already knows.
 
@@ -354,10 +333,8 @@ in testing. (b) is not achievable without changing Agent Core.
 
 ### 11.2 The caller's phone number
 
-**Session identity is provided.** The analysis records it as an existing extension seam:
-
-> `pipeline.py:34` already calls `llm.set_call_id(call_id)` when present, so a custom LLM
-> service receives call identity with no upstream change.
+**Session identity is provided.** The client already passes call identity to its LLM
+service through an existing extension seam, with no upstream change required.
 
 The shim therefore takes **call identity as given** — it is delivered by the client, and
 how the client arranges that is the client's concern, not this design's. `session_id` is
@@ -421,7 +398,7 @@ tool. Stays within the contract — we only ever name something the client asked
 
 **(c) Support tool calling generally.** Let Agent Core decide to call client tools, and
 accept `role: "tool"` results back. Substantially more work, no current requirement, and
-squarely the feature accretion the action plan warns against.
+squarely the feature accretion a throwaway service must avoid.
 
 **Suggestion: (b).** The rule is easy to state: *the shim may name a tool the client
 declared; it may never invent one, and it never exposes Agent Core's internal tools.*
@@ -454,7 +431,7 @@ status is no longer available. The stream terminates with a chunk carrying
 `finish_reason: "stop"` followed by `[DONE]`, and the failure is logged.
 
 > **Note for the reviewer.** #369 asks the shim to "map errors to a safe fallback
-> utterance", and the action plan repeats it. This design deliberately does not: strict
+> utterance". This design deliberately does not: strict
 > error semantics are what the OpenAI contract requires, and a client that receives a
 > well-formed 502 can decide for itself what to say.
 >
@@ -489,7 +466,7 @@ Caller-facing strings and the configured key come from configuration, never sour
 
 ## 14. Deployment
 
-The analysis places the shim on a shared demo VM running both stacks:
+The shim runs on a shared demo VM alongside both stacks:
 
 | Stack | Services | Budget |
 |---|---|---|
@@ -503,10 +480,10 @@ The shim is an additional service on top of the nine.
 > frames the ~2.5 CPU estimate as exceeding a *"confirmed 2 CPU / 4 GB allocation"*. The
 > analysis specifies a 4 vCPU / 16 GB VM and calls it comfortable. These cannot both be
 > current. If the epic's smaller allocation is the real one, CPU headroom is a genuine
-> risk and the shim adds to it; if the analysis's VM is provisioned, it is not a concern.
+> risk and the shim adds to it; if the larger VM is provisioned, it is not a concern.
 
-The analysis also notes CPU scales with concurrent calls, since Silero VAD runs per call,
-and advises sizing up beyond 2–3 simultaneous callers.
+CPU scales with concurrent calls, since VAD runs per call; size up beyond 2–3
+simultaneous callers.
 
 ---
 
@@ -518,8 +495,8 @@ number especially: without it the domain's Signals calls cannot function.
 **Unverified end to end.** No OpenAI client has yet been pointed at a running shim. The
 contract is read from the canonical specification, but a live interop check with the
 official `openai` Python client — both stream modes — should be the first implementation
-step, before any client-side integration. This follows the action plan's own working
-agreement to debug one system at a time.
+step, before any client-side integration. This follows the working practice of debugging
+one system at a time.
 
 **Throwaway status.** #376 / Option B replaces this. Anything beyond implementing the
 contract should be refused.
@@ -552,7 +529,7 @@ Time-to-first-chunk is the number that matters for a voice client and is the one
 ## 17. Out of scope
 
 - Option B / #376 — the `agent_core` provider in the client's registry
-- Barge-in cancellation and consent events — accepted Option A losses per the analysis
+- Barge-in cancellation and consent events — accepted Option A losses
 - The greeting (§10) — configured on the client side
 - `/v1/models`, `/v1/completions` and every other OpenAI endpoint
 - Multi-tenancy; conversations are identified by `session_id`, callers by `user_id`
@@ -562,18 +539,16 @@ Time-to-first-chunk is the number that matters for a voice client and is the one
 
 ## Appendix — reaching the shim from a client that cannot set `base_url`
 
-A deployment concern, not a design one. From the analysis:
+A deployment concern, not a design one.
 
-> `azure_openai` is the only provider config today exposing a settable `endpoint`, so a
-> zero-change variant exists via Azure wire-format emulation. Cleaner is a small
-> `base_url` field on the OpenAI config.
+Some clients expose a settable endpoint only on their Azure provider configuration, in
+which case a zero-change variant exists via Azure wire-format emulation. The cleaner route
+is a small `base_url` field on the client's OpenAI configuration — a change of roughly five
+lines on their side.
 
-The action plan lists the `base_url` field as a VoicEra-side change of roughly five
-lines, and is explicit that it must not gate us:
-
-> **Neither ask belongs on the critical path.** If review is slow: `base_url` — emulate
-> Azure's deployment-scoped URL scheme instead. Costs ~2 extra days in the shim, buys
-> total independence from the review cycle.
+Neither belongs on the critical path. If that change is slow to land, emulating Azure's
+deployment-scoped URL scheme instead buys total independence from the review cycle, at an
+estimated cost of about two extra days.
 
 Should the fallback be needed, it means serving an additional URL shape
 (`/openai/deployments/{deployment}/chat/completions?api-version=...`) and accepting an
