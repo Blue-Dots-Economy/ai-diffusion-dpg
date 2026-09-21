@@ -333,8 +333,29 @@ in testing. (b) is not achievable without changing Agent Core.
 
 ### 11.2 How does the caller's phone number reach the shim?
 
-**This one is a requirement, not a choice.** The shim must receive the caller's phone
-number on every request. The open part is only *how* it gets there.
+**The problem in one line: a normal OpenAI call carries no phone number, so by default we
+will not receive one.**
+
+The whole premise of this shim is that the client points at us believing we are OpenAI and
+changes nothing else. That premise breaks here, and only here. An LLM has no reason to be
+told who is on the phone, so nothing in the chat-completions contract carries it. Of the
+37 request fields there is no caller-identity field — `user` exists but is optional, is
+documented as a caching and abuse-detection hint, and is being superseded by
+`safety_identifier` / `prompt_cache_key`, so it is not something to build on.
+
+**If the client calls us exactly as it calls OpenAI, the shim receives nothing that
+identifies the caller.** That cannot be worked around on our side: the value was never
+sent, and no amount of inference recovers it. Deriving it from the conversation is not an
+option either — the caller does not say their own number, and the client is explicitly
+instructed elsewhere never to ask for it.
+
+**So this is a requirement on the client, not a design choice for us.** The client must
+deliberately send the caller's phone number on every request. The only open part is *which
+mechanism* it uses.
+
+This is the one item in this design that cannot be settled on our side alone, and the one
+place where "point at us and change nothing" does not hold. It needs agreeing with the
+client team and writing into the integration contract before implementation starts.
 
 Without it this domain does not degrade — it stops working. Every Signals connector is
 keyed on it:
@@ -350,11 +371,8 @@ against a malformed number. This is not hypothetical: on 2026-09-21 the blue-dot
 flow sent a literal `"null"` where a caller identifier belonged and the upstream returned
 422.
 
-A `chat.completions` request has no field for this. The 37 request fields include `user`,
-but it is optional, documented as a caching and abuse-detection hint, and being superseded
-by `safety_identifier` / `prompt_cache_key` — not something to build on.
-
-**Options for the transport.**
+**Options for the transport.** All four require the client to do something deliberate;
+there is no option in which the number simply arrives.
 
 **(a) Alongside whatever already carries call identity.** The client already passes a
 per-call identity to its LLM service. The same mechanism can carry the caller's number.
@@ -370,18 +388,24 @@ schema.
 **(d) Agent Core resolves it from the call id.** Rejected: no such mapping exists, and it
 would add a dependency the shim cannot satisfy on its own.
 
-**Suggestion: (a), with (c) as the fallback.**
-
-Whichever is chosen must be **agreed with the client team and written into the integration
-contract**, because the client is the only party that knows the caller's number. This is
-the one item in this design that cannot be settled on our side alone.
+**Suggestion: (a), with (c) as the fallback.** (a) reuses a path the client already has;
+(c) is the most contract-aligned, since `metadata` is a published OpenAI field.
 
 ### 11.3 Is `session_id` the phone number, or a separate per-call id?
 
-Agent Core requires a `session_id` and keys all conversation memory on it — history,
-journey state, collected profile fields, tool results. `ProcessTurnRequest` takes
-`session_id` and `user_id` as **two separate fields**, so using different values for them
-costs nothing structurally.
+The same gap applies: **chat-completions has no session concept.** It is stateless by
+design — the client resends the whole conversation each turn precisely because the server
+is not expected to remember anything, so there is no conversation identifier in the
+request.
+
+Agent Core is the opposite. It requires a `session_id` and keys all conversation memory on
+it — history, journey state, collected profile fields, tool results. `ProcessTurnRequest`
+takes `session_id` and `user_id` as **two separate fields**, so using different values for
+them costs nothing structurally.
+
+Unlike §11.2 there is a fallback that needs nothing further from the client: if the phone
+number is being sent anyway, it can serve as the session key too. That is option (a), and
+it has a real cost.
 
 **(a) Use the phone number for both.** One value to obtain, one thing to agree with the
 client, and §11.2 then covers everything.
@@ -531,8 +555,15 @@ simultaneous callers.
 
 ## 15. Risks
 
-**The open questions in §11 are blocking for a working call.** The caller's phone
-number especially: without it the domain's Signals calls cannot function.
+**The caller's phone number is the top risk, and it is not ours to close.** A standard
+OpenAI call does not carry one, so unless the client is changed to send it deliberately,
+the shim never receives it and every Signals call in this domain fails (§11.2). This is
+an integration-contract item that needs agreeing with the client team **before**
+implementation, not discovered during call testing. Everything else in this design can
+proceed without it; a working call cannot.
+
+**The other open questions in §11 are also blocking** for a working call, but each can be
+settled on our side or with a small agreement.
 
 **Unverified end to end.** No OpenAI client has yet been pointed at a running shim. The
 contract is read from the canonical specification, but a live interop check with the
