@@ -13,7 +13,7 @@ agent:
   ask_for_consent: true
   consent_prompt: >
     Hello! Welcome to Blue Dots. Can I save your profile and submit job
-    applications on your behalf during this call? Please say yes to continue.
+    applications on your behalf? Please say yes to continue.
 
   # Apply flow chains up to three tools (onboard → apply_job is the worst
   # case after the user picks a job; profile fetch and job fetch are
@@ -147,13 +147,13 @@ conversation:
   escalation_message: "Let me connect you with a counsellor who can help further."
   output_blocked_message: "Sorry, I'm having trouble responding. Could you ask that again?"
   unknown_intent_message: "Sorry, I didn't catch that. Could you say it again?"
-  termination_message: "Thank you for calling Blue Dots. Have a good day."
+  termination_message: "Thank you for using Blue Dots. Have a good day."
   unsupported_language_message: >
-    Sorry, I can only speak in English, Hindi, or Gujarati. Could you continue
+    Sorry, I can only help in English, Hindi, or Gujarati. Could you continue
     in one of those?
   consent_decline_ack: >
     No problem — we respect your privacy. Your details will not be saved.
-    I'll still help you explore jobs in this call.
+    I'll still help you explore jobs.
   profile_complete_message: "Thanks — let me look up jobs for you now."
   returning_user_greeting: "Welcome back! Let me see what's available for you today."
 
@@ -642,7 +642,7 @@ agent_workflow:
       is_terminal: false
       opening_phrase: >
         Hello! Welcome to Blue Dots. Can I save your profile and submit
-        job applications on your behalf during this call? Please say
+        job applications on your behalf? Please say
         yes to continue.
 
       valid_intents:
@@ -1480,7 +1480,7 @@ agent_workflow:
       description: Graceful session termination.
       is_start: false
       is_terminal: true
-      opening_phrase: "Thank you for calling Blue Dots. Have a good day."
+      opening_phrase: "Thank you for using Blue Dots. Have a good day."
       special_handler: null
       valid_intents: []
       tools: []
