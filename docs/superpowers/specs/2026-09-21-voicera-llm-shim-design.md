@@ -152,7 +152,7 @@ Three differences between the two contracts drive the design.
 | **Identity** | No session concept in the request body. | Requires `session_id`; this domain also requires `user_id` (the caller's phone) for every Signals call. |
 | **Tools** | The client declares tools and expects the model to call them. | Owns its own tools (`fetch_jobs`, `save_profile`, `apply_job`) and executes them internally. |
 
-These are §11.1, §11.2 and §11.3. Everything else is mechanical.
+These are §11.1 to §11.4. Everything else is mechanical.
 
 ---
 
@@ -179,7 +179,7 @@ curl before any voice is involved.
 | `messages` | **§11.1 — open.** |
 | `model` | Recorded and echoed back in the response; does not select a model. Agent Core owns model choice via domain config; the client's own LLM model setting is vestigial and merely points at the shim. |
 | `stream` | Selects `/stream_turn` (true) or `/process_turn` (false). |
-| `tools`, `tool_choice`, `functions`, `function_call` | **§11.3 — open.** |
+| `tools`, `tool_choice`, `functions`, `function_call` | **§11.4 — open.** |
 | `n` | Values greater than 1 rejected with `400`; Agent Core produces one response. |
 | `temperature`, `top_p`, `seed`, `max_tokens`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `stop`, ... | Accepted and ignored. Agent Core owns sampling. Ignoring unsupported parameters is the norm for OpenAI-compatible servers and keeps clients working. |
 | `stream_options.include_usage` | Honoured — adds the final usage chunk (§9). |
@@ -315,7 +315,7 @@ already knows.
 
 **(a) Send the last user message only.** Agent Core supplies the rest from its own
 memory. Fits how Agent Core is built and is the only option that preserves journey state,
-tool results and the collected profile across turns. Depends on §11.2 for a correct
+tool results and the collected profile across turns. Depends on §11.3 for a correct
 session id.
 
 **(b) Be genuinely stateless.** Forward the whole conversation each turn and hold nothing
@@ -331,46 +331,88 @@ client that reconnects, retries or replays — at the cost of bookkeeping.
 **Suggestion: (a),** with (c) as a cheap safety net if replay proves to be a real problem
 in testing. (b) is not achievable without changing Agent Core.
 
-### 11.2 The caller's phone number
+### 11.2 How does the caller's phone number reach the shim?
 
-**Session identity is provided.** The client already passes call identity to its LLM
-service through an existing extension seam, with no upstream change required.
+**This one is a requirement, not a choice.** The shim must receive the caller's phone
+number on every request. The open part is only *how* it gets there.
 
-The shim therefore takes **call identity as given** — it is delivered by the client, and
-how the client arranges that is the client's concern, not this design's. `session_id` is
-derived from it.
+Without it this domain does not degrade — it stops working. Every Signals connector is
+keyed on it:
 
-**The caller's phone number is a separate value, and the documents do not address it.**
-This domain needs it as `user_id`: the Signals connectors substitute it into
-`?phone_number={user_id}` and `"+{user_id}"`, so `fetch_profile`, `save_profile` and
-`apply_job` all depend on it. A call id identifies the conversation; it does not say who
-is on the line.
+```
+fetch_profile   GET  /admin/participant?phone_number={user_id}
+save_profile    POST /admin/participant     phone_number = "+{user_id}"
+apply_job       operates on the profile resolved from that number
+```
 
-**Options.**
+An empty `user_id` produces `?phone_number=` (rejected upstream) or writes a participant
+against a malformed number. This is not hypothetical: on 2026-09-21 the blue-dots web
+flow sent a literal `"null"` where a caller identifier belonged and the upstream returned
+422.
 
-**(a) Delivered alongside call identity.** If the client can pass a call id to the LLM
-service, the same mechanism can carry the caller's number. Cleanest, and consistent with
-how session identity is already solved.
+A `chat.completions` request has no field for this. The 37 request fields include `user`,
+but it is optional, documented as a caching and abuse-detection hint, and being superseded
+by `safety_identifier` / `prompt_cache_key` — not something to build on.
 
-**(b) An HTTP header** (e.g. `X-User-Id`) or the standard `metadata` field on the request
-body. Explicit, contract-compatible, and independent of any client-side extension seam.
+**Options for the transport.**
 
-**(c) Agent Core resolves it.** The shim passes only the call id and something downstream
-maps it to a caller. Nothing in either document describes such a mapping, and it would
-add a dependency the shim cannot satisfy alone.
+**(a) Alongside whatever already carries call identity.** The client already passes a
+per-call identity to its LLM service. The same mechanism can carry the caller's number.
+Consistent with how session identity is already solved, and nothing new to invent.
 
-**Suggestion: (a), with (b) as the fallback.** What matters is that `user_id` and
-`session_id` are **separate values**. The phone identifies the person and is stable across
-calls; the call id identifies one conversation. Collapsing them would make a second call
-from the same person resume the first conversation mid-flow.
+**(b) An HTTP header**, e.g. `X-User-Id`. Explicit, outside the request body so it does
+not strain the OpenAI contract, and trivial for any client to set.
 
-**Missing identity means fail fast.** If either value is absent, return `400` in the error
-envelope and do not call Agent Core. Proceeding would leave `user_id` empty, and the
-Signals connectors would then issue `?phone_number=` or write a participant against a
-malformed number. This is not hypothetical: on 2026-09-21 the blue-dots web flow sent a
-literal `"null"` as `acting_as_user_id` and the upstream returned 422.
+**(c) The `metadata` field** on the request body — a standard OpenAI field accepting up to
+16 key-value pairs. The most contract-aligned option, since it is part of the published
+schema.
 
-### 11.3 What do we do with `tools`?
+**(d) Agent Core resolves it from the call id.** Rejected: no such mapping exists, and it
+would add a dependency the shim cannot satisfy on its own.
+
+**Suggestion: (a), with (c) as the fallback.**
+
+Whichever is chosen must be **agreed with the client team and written into the integration
+contract**, because the client is the only party that knows the caller's number. This is
+the one item in this design that cannot be settled on our side alone.
+
+### 11.3 Is `session_id` the phone number, or a separate per-call id?
+
+Agent Core requires a `session_id` and keys all conversation memory on it — history,
+journey state, collected profile fields, tool results. `ProcessTurnRequest` takes
+`session_id` and `user_id` as **two separate fields**, so using different values for them
+costs nothing structurally.
+
+**(a) Use the phone number for both.** One value to obtain, one thing to agree with the
+client, and §11.2 then covers everything.
+
+The cost is that a phone number identifies a *person*, not a *conversation*. The same
+caller ringing a second time reuses the session and **resumes the previous conversation
+mid-flow** — the bot picks up at "what's your age?" instead of greeting them. Partly
+mitigable: `ProcessTurnRequest` has a `fresh` flag to force a new session, triggered on an
+idle gap. That is a heuristic, and choosing the gap correctly is guesswork.
+
+**(b) Use a separate per-call identifier.** The client already passes a per-call identity
+to its LLM service, so such a value exists on its side; `session_id` derives from it.
+
+Correct by construction: the phone identifies the person and is stable forever, the
+per-call id identifies one conversation and is new every call. No resume surprise, no idle
+heuristic.
+
+**Suggestion: (b).** Given the client can already supply a per-call identity, (b) is no
+more work to obtain than (a) and removes a whole class of confusing behaviour.
+
+**If (b) is chosen, the identifier must be named in the integration contract** — the shim
+treats it as an opaque string and does not care about its format, but it must be stable
+for the life of one conversation and unique across concurrent ones.
+
+### Both values: fail fast when missing
+
+If either `user_id` or `session_id` is absent or unusable, the shim returns `400` in the
+error envelope and **does not call Agent Core**. Guessing, defaulting or proceeding with
+an empty value is what produces the corrupted-record failures described in §11.2.
+
+### 11.4 What do we do with `tools`?
 
 **The problem.** An OpenAI client may declare `tools` and expects the assistant to
 respond with `tool_calls` that the client then executes. Agent Core owns its own tools and
@@ -417,7 +459,7 @@ Failures return the **OpenAI error envelope with real HTTP status codes**:
 |---|---|---|
 | Malformed body, missing `messages` or `model` | 400 | `invalid_request_error` |
 | `n` greater than 1 | 400 | `invalid_request_error` |
-| Identity missing (§11.2) | 400 | `invalid_request_error` |
+| `user_id` or `session_id` missing (§11.2, §11.3) | 400 | `invalid_request_error` |
 | Bad or missing key | 401 | `authentication_error` |
 | Agent Core unreachable or timed out | 502 | `api_error` |
 | `DoneEvent.error_type` or `ProcessTurnResponse.error_type` set | 502 | `api_error` |
@@ -454,7 +496,7 @@ New logic is small and separable:
 | Unit | Responsibility |
 |---|---|
 | `routes` | `POST /v1/chat/completions`, auth, request validation |
-| `identity` | Resolve `user_id` and `session_id` (§11.2); reject when absent |
+| `identity` | Resolve `user_id` (§11.2) and `session_id` (§11.3); reject when absent |
 | `translate_request` | OpenAI request to `ProcessTurnRequest` |
 | `translate_response` | `ProcessTurnResponse` to `chat.completion` |
 | `translate_stream` | `SentenceEvent` and `DoneEvent` to `chat.completion.chunk` plus `[DONE]` |
@@ -489,7 +531,7 @@ simultaneous callers.
 
 ## 15. Risks
 
-**The three open questions in §11 are blocking for a working call.** The caller's phone
+**The open questions in §11 are blocking for a working call.** The caller's phone
 number especially: without it the domain's Signals calls cannot function.
 
 **Unverified end to end.** No OpenAI client has yet been pointed at a running shim. The
