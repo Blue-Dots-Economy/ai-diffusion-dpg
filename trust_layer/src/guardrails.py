@@ -18,9 +18,51 @@ Design:
 from __future__ import annotations
 
 import logging
+import re
 import time
 
 logger = logging.getLogger(__name__)
+
+
+
+def _contains_term(haystack: str, needle: str) -> bool:
+    """Return True iff ``needle`` occurs in ``haystack`` as a whole word.
+
+    Used for escalation topics only. A naked substring test is wrong for short
+    topics: the KKB topic "FIR" (a police report) matched "first", "confirm",
+    "firm" and "fire", so an ordinary "yes confirm" was escalated to a human
+    agent mid-flow. Anchoring on word boundaries keeps multi-word topics like
+    "police case" working while making short ones safe.
+
+    Also used for blocked phrases. A bare substring test false-positives there
+    too: "kill" matched inside the employer name "SkillBridge Network", so a
+    caller could never select that job — every attempt was blocked as
+    prohibited content. The optional trailing "s" keeps the stem matching those
+    rules rely on ("weapon" still catches "weapons" — see
+    test_partial_match_blocked) while "kill" no longer matches "Skill".
+
+    Falls back to a plain substring test when the term has no word characters
+    at its edges (e.g. punctuation-only or script without \b semantics), so no
+    existing rule silently stops matching.
+
+    Args:
+        haystack: Lower-cased text to search.
+        needle: Lower-cased phrase or topic to look for.
+
+    Returns:
+        True when the term is present as a standalone word or phrase.
+    """
+    if not needle:
+        return False
+    left = r"\b" if needle[0].isalnum() else ""
+    # Allow a trailing plural "s" so a topic still catches its plural —
+    # tourism-bot lists "complaint" and must keep matching "complaints".
+    # The closing \b is what stops "fir" matching "first" or "confirm".
+    right = r"s?\b" if needle[-1].isalnum() else ""
+    try:
+        return re.search(left + re.escape(needle) + right, haystack) is not None
+    except re.error:
+        return needle in haystack
 
 
 class BasicTrustLayer:
@@ -90,7 +132,7 @@ class BasicTrustLayer:
 
         # Blocked phrases take priority over escalation
         for phrase in self._blocked_phrases:
-            if phrase in lower_msg:
+            if _contains_term(lower_msg, phrase):
                 logger.warning(
                     "trust_layer.input_blocked",
                     extra={
@@ -105,7 +147,7 @@ class BasicTrustLayer:
 
         # Escalation topics — route to human agent
         for topic in self._escalation_topics:
-            if topic in lower_msg:
+            if _contains_term(lower_msg, topic):
                 logger.warning(
                     "trust_layer.input_escalated",
                     extra={

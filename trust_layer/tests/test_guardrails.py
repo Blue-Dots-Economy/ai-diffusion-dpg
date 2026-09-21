@@ -188,3 +188,52 @@ def test_none_session_id_raises_on_check_output(trust):
 def test_none_session_id_raises_on_check_consent(trust):
     with pytest.raises(ValueError, match="session_id must not be None"):
         trust.check_consent(None, "tool")
+
+
+# ---------------------------------------------------------------------------
+# Whole-word matching — regressions from live blue-dots calls
+# ---------------------------------------------------------------------------
+
+def test_employer_name_containing_a_blocked_stem_is_allowed(trust):
+    """"kill" inside "SkillBridge" must not block the message.
+
+    Observed live: the job list contained the employer "SkillBridge Network",
+    so every attempt to select that job was blocked as prohibited content and
+    the caller could never apply to it.
+    """
+    result = trust.check_input("s1", "I want to apply to SkillBridge Network")
+    assert result["action"] == "allow"
+
+
+@pytest.mark.parametrize("message", [
+    "the first one",
+    "yes confirm",
+    "please confirm the first job",
+    "a firm in Bengaluru",
+])
+def test_words_containing_an_escalation_topic_do_not_escalate(trust, message):
+    """"FIR" (a police report) must not match "first", "confirm" or "firm".
+
+    Observed live: answering "the first one" to a job list escalated the
+    caller to a human agent mid-flow.
+    """
+    assert trust.check_input("s1", message)["action"] == "allow"
+
+
+def test_blocked_phrase_still_matches_as_a_whole_word(trust):
+    """The narrowing must not stop real hits from blocking."""
+    assert trust.check_input("s1", "I will kill him")["action"] == "block"
+
+
+def test_escalation_topic_still_matches_as_a_whole_word(trust):
+    """Standalone "FIR" still escalates, case-insensitively."""
+    assert trust.check_input("s1", "should I file an FIR")["action"] == "escalate"
+
+
+def test_multi_word_escalation_topic_still_matches(trust):
+    assert trust.check_input("s1", "there is a court notice")["action"] == "escalate"
+
+
+def test_plural_of_a_term_still_matches(trust):
+    """The trailing "s" allowance keeps stem rules working."""
+    assert trust.check_input("s1", "he made threats")["action"] == "block"
