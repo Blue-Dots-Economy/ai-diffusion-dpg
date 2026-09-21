@@ -7,9 +7,15 @@
 # of the apply flow.
 
 agent:
-  provider: anthropic
-  primary_model: claude-sonnet-4-6
-  fallback_model: claude-haiku-4-5-20251001
+  # OpenAI, because that is what this domain was actually validated on --
+  # the full journey (job discovery through action/perform) was run end to
+  # end against the Signals dev cluster on these models. The domain was
+  # originally authored for Anthropic; switching the declared provider to
+  # match the tested one keeps the config honest. Re-validate before
+  # changing it back.
+  provider: openai
+  primary_model: gpt-5.4-mini-2026-03-17
+  fallback_model: gpt-4.1-mini-2025-04-14
   ask_for_consent: true
   consent_prompt: >
     Hello! Welcome to Blue Dots. Can I save your profile and submit job
@@ -337,21 +343,31 @@ preprocessing:
     # Main LLM mirrors caller language via the system prompt; the
     # leading call is off. Set enabled: true to re-introduce it.
     enabled: false
-    provider: anthropic
-    model: claude-haiku-4-5-20251001
+    provider: openai
+    model: gpt-4.1-mini-2025-04-14
     default_language: english
     supported_languages: [english, hindi, gujarati]
     transliteration: true
     code_switching: true
 
   nlu_processor:
-    # NLU stays on Anthropic Sonnet even when the main agent runs on
-    # OpenAI — gpt-4.1-mini was unreliable at extracting entity VALUES
-    # (it returned entity names with empty values, leaving session
-    # fields blank and the bot looping). Sonnet's structured-output
-    # following is stronger; cost is ~1s extra per turn for NLU.
-    provider: anthropic
-    model: claude-sonnet-4-6
+    # NLU runs on the same OpenAI model as the rest of the stack, which is
+    # the configuration the journey was validated on.
+    #
+    # KNOWN DEGRADATION, accepted for now. An earlier note here recorded
+    # gpt-4.1-mini returning entity names with empty values and looping the
+    # bot. That specific failure was not reproduced in the end-to-end runs —
+    # entities came back populated — but the model does still occasionally
+    # misclassify the INTENT: an "invalid_intent" warning followed by
+    # intent=unknown was observed on a plain "yes find jobs" turn, which the
+    # orchestrator routes to the clarification fallback. Recoverable, and the
+    # user simply repeats themselves.
+    #
+    # Anthropic Sonnet was measurably better at this and is the right target
+    # if intent accuracy matters more than a single-provider setup; it costs
+    # roughly 1s extra per turn. Revisit together with the main agent.
+    provider: openai
+    model: gpt-4.1-mini-2025-04-14
     confidence_threshold: 0.5
     user_state_confidence_threshold: 0.4
     domain_instruction: |
