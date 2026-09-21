@@ -103,6 +103,34 @@ Three consequences:
 3. **Everything except `messages` is per-agent configuration** — byte-identical on every
    call from every caller. The conversation content is the only thing that varies.
 
+### What Pipecat does with our response — the compatibility target
+
+The shim does not need to satisfy the OpenAI specification in general. It needs to
+satisfy exactly one consumer: Pipecat's chunk loop
+(`pipecat/services/openai/base_llm.py:484-553`). Read from that loop:
+
+| Behaviour | Consequence for the shim |
+|---|---|
+| `finish_reason` is **never read** | Setting it is spec-correct and harmless, but it is *not* what ends a call. Tool calls are detected purely from `delta.tool_calls` being present. |
+| `tool_call.id` is captured only inside the `function.name` branch | **`id` and `function.name` must be in the same chunk.** Split across chunks, the id is silently dropped. |
+| `tool_call.index != func_idx` starts a new function | A single `end_conversation` must use `index: 0`. |
+| `chunk.choices` empty → `continue` | A usage-only final chunk is safe. |
+| `chunk.usage` read when present | Pipecat always sends `stream_options: {include_usage: True}`. Omitting usage only disables their token metrics; it is not fatal. |
+| `chunk.model` → `set_full_model_name` | Echo Agent Core's `model_used`. Cosmetic. |
+| empty `delta` → `continue` | A role-only opening chunk is safe. |
+| `stop_ttfb_metrics()` fires on the first chunk with choices | VoicEra's own time-to-first-byte metric keys off our first content chunk — another reason the turn must stream (§8). |
+
+Wire format, confirmed from the SDK's stream decoder
+(`openai/_streaming.py`): events are terminated by `\n\n`, payloads are `data: ` lines,
+and the stream ends with a literal `data: [DONE]` (`sse.data.startswith("[DONE]")`).
+
+> The official REST reference was not used: both
+> `developers.openai.com/api/reference/...` and
+> `platform.openai.com/docs/api-reference/...` refuse automated fetches (404 / 403).
+> The SDK types, the SDK stream decoder and Pipecat's consumer were read instead. For
+> this purpose they are the better source anyway — they describe what VoicEra actually
+> sends and actually accepts, rather than what the API permits in general.
+
 ---
 
 ## 4. Placement
@@ -314,7 +342,12 @@ DoneEvent.was_escalated == True   ─┴─▶  tool_calls chunk: end_conversati
                                         finish_reason: "tool_calls"
 ```
 
-VoicEra executes it and drops the call. This satisfies #369's *"translate
+The emitted chunk must satisfy Pipecat's coalescing rules (§3): `index: 0`, and `id`
+together with `function.name` **in the same chunk**, or the call id is dropped.
+
+Note that `finish_reason` is set for specification correctness only — Pipecat never
+reads it (§3). What actually ends the call is the presence of `delta.tool_calls` naming
+`end_conversation`. VoicEra executes it and drops the call. This satisfies #369's *"translate
 `was_escalated` into call termination"* with no VoicEra code change — one agent setting.
 
 The shim should check that `end_conversation` is present in the incoming `tools` before
@@ -440,7 +473,7 @@ A mocked OpenAI client shaped like Pipecat's requests. Requires no VoicEra.
 | Session continuity | Multi-turn: identity extracted once, `session_id` stable, Agent Core sees one session |
 | Chunk shape and ordering | Valid `chat.completion.chunk` objects, content in order, terminal `[DONE]` |
 | Error paths | Agent Core down, timeout, `DoneEvent.error_type` → fallback utterance, never a bare HTTP error |
-| Call termination | `was_escalated` / `session_ended` → `end_conversation` tool call + `finish_reason: "tool_calls"` |
+| Call termination | `was_escalated` / `session_ended` → `end_conversation` tool call with `index: 0` and `id` + `function.name` in the **same** chunk; assert a real Pipecat `OpenAILLMService` recovers both the name and the id |
 | Missing identity | Absent or malformed marker → fallback, and **no** Agent Core call |
 | Azure URL shape | `/openai/deployments/{x}/chat/completions?api-version=y` with an `api-key` header is accepted |
 | Latency | Time-to-first-chunk recorded against the 800–1200 ms target, reported separately from whole-turn latency |
