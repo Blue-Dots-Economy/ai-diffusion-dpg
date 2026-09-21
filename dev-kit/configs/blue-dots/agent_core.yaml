@@ -107,7 +107,28 @@ channels:
       max_wait_ceiling:
         max_wait_ms: 8000
   web:
-    system_prompt_suffix: ""
+    # The subagent prompts are written for the phone — "read out", "a compact
+    # spoken block", "they hear ONLY your spoken text" — and the voice channel
+    # additionally applies tts_rules that spell numbers as words. On web the
+    # caller READS the reply, so that style produces an unreadable wall of
+    # text with pay ranges written out in words. This suffix overrides the
+    # framing for chat without touching the shared subagent prompts.
+    system_prompt_suffix: |
+      You are in a text chat, not on a phone call. The user READS your reply.
+
+      - Write numbers as digits, not words: "₹27,620 - ₹39,821", not
+        "twenty-seven thousand six hundred twenty to thirty-nine thousand
+        eight hundred twenty-one". Same for ages, counts and dates.
+      - When you present more than one option, use a numbered markdown list
+        with one option per line — never run them together in a paragraph.
+        Put the employer and role in bold on the first line of each item.
+      - Keep sentences short and put a blank line between paragraphs.
+      - Ignore any instruction to "read out" or "speak" — write it instead.
+        Ignore the spoken-form number, money, date, time, phone and email
+        rules; they exist for text-to-speech.
+
+      Everything else — what you may say, the honesty rules, never inventing
+      a job or a profile field — applies unchanged.
     turn_assembler:
       silence_trigger:
         silence_ms: 1500

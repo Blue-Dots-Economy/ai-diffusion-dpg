@@ -190,6 +190,29 @@ async def _chat_direct_mode(
     return formatted
 
 
+
+def _join_sentences(parts: list[str]) -> str:
+    """Join streamed sentences into one readable message.
+
+    Args:
+        parts: Sentence texts in emission order, as received from
+            SentenceEvents.
+
+    Returns:
+        The sentences separated by a single space, except where a part
+        already ends with a newline (markdown lists, paragraph breaks),
+        whose own separator is preserved. Empty parts are dropped.
+    """
+    out = ""
+    for raw in parts:
+        part = raw.strip()
+        if not part:
+            continue
+        if out and not out.endswith(("\n", " ")):
+            out += " "
+        out += part
+    return out.strip()
+
 async def _chat_session_mode(
     web_reach: WebReachLayer,
     session_id: str,
@@ -276,7 +299,13 @@ async def _chat_session_mode(
 
     latency_ms = int((time.time() - start) * 1000)
     formatted = {
-        "response_text": "".join(parts).strip(),
+        # Join on a space, not "". Each SentenceEvent is one already-stripped
+        # sentence, so concatenating them bare runs them together:
+        # "...for you yet." + "Which trade..." -> "yet.Which trade...".
+        # stream_turn builds its own copy with `emit + " "` for the same
+        # reason; this path had drifted from it. Parts that already end in a
+        # newline (markdown lists) keep their own separator.
+        "response_text": _join_sentences(parts),
         "was_escalated": was_escalated,
         "was_tool_used": was_tool_used,
         "session_id": session_id,
