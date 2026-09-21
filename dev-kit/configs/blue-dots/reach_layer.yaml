@@ -29,9 +29,16 @@ reach_layer:
         agent_avatar: "🔵"
         user_avatar: "👤"
         setup_heading: "Welcome to Blue Dots"
-        setup_subtitle: "Enter your phone number to begin a session."
-        user_id_placeholder: "e.g. 9876543210"
-        user_id_hint: "Use your phone number — no spaces, no country code."
+        # The country code is required. What is typed here becomes
+        # session.user_id, which the Action Gateway substitutes into
+        # `?phone_number={user_id}` for the lookup and `"+{user_id}"` for the
+        # write — and /admin/participant keys on the account phone, which
+        # carries the code. A 10-digit entry still "works" end to end, but it
+        # stores a malformed number that will never match the same caller
+        # arriving by voice.
+        setup_subtitle: "Enter your phone number with the country code to begin a session."
+        user_id_placeholder: "e.g. 919876543210"
+        user_id_hint: "12 digits — country code first, no + and no spaces."
         start_btn_label: "Start →"
         new_session_msg: "Hello! I'm the Blue Dots assistant. How can I help you find work today?"
         returning_user_msg: "Welcome back!"
