@@ -152,7 +152,7 @@ Three differences between the two contracts drive the design.
 | **Identity** | No session concept in the request body. | Requires `session_id`; this domain also requires `user_id` (the caller's phone) for every Signals call. |
 | **Tools** | The client declares tools and expects the model to call them. | Owns its own tools (`fetch_jobs`, `save_profile`, `apply_job`) and executes them internally. |
 
-These are §11.1 to §11.4. Everything else is mechanical.
+These are §11.1 to §11.5. Everything else is mechanical.
 
 ---
 
@@ -179,7 +179,8 @@ curl before any voice is involved.
 | `messages` | **§11.1 — open.** |
 | `model` | Recorded and echoed back in the response; does not select a model. Agent Core owns model choice via domain config; the client's own LLM model setting is vestigial and merely points at the shim. |
 | `stream` | Selects `/stream_turn` (true) or `/process_turn` (false). |
-| `tools`, `tool_choice`, `functions`, `function_call` | **§11.4 — open.** |
+| *(not from the request)* `channel` | **§11.4 — open.** Required by Agent Core; omitting it fails the turn. |
+| `tools`, `tool_choice`, `functions`, `function_call` | **§11.5 — open.** |
 | `n` | Values greater than 1 rejected with `400`; Agent Core produces one response. |
 | `temperature`, `top_p`, `seed`, `max_tokens`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `stop`, ... | Accepted and ignored. Agent Core owns sampling. Ignoring unsupported parameters is the norm for OpenAI-compatible servers and keeps clients working. |
 | `stream_options.include_usage` | Honoured — adds the final usage chunk (§9). |
@@ -458,7 +459,114 @@ If either `user_id` or `session_id` is absent or unusable, the shim returns `400
 error envelope and **does not call Agent Core**. Guessing, defaulting or proceeding with
 an empty value is what produces the corrupted-record failures described in §11.2.
 
-### 11.4 What do we do with `tools`?
+### 11.4 Which `channel` do we declare — `voice` or `web`?
+
+**Why it matters.** `ProcessTurnRequest.channel` is not a label. Agent Core uses it to
+select which `system_prompt_suffix` and `tts_rules` apply to the turn, and the two
+candidates instruct the model to do **opposite** things:
+
+| channel | what the model is told |
+|---|---|
+| `voice` | ~2,000 chars of phone rules plus `tts_rules` for numbers, money, dates, time, phone, email, abbreviations and output script. Write numbers **as words**. No markdown. |
+| `web` | *"You are in a text chat, not on a phone call. The user READS your reply."* Digits, markdown lists, bold. |
+
+**Omitting it is a hard failure**, not a fallback. `channel` defaults to `None` and Agent
+Core raises:
+
+```python
+config = channels.get(channel)
+if config is None:
+    raise ValueError(f"Unsupported channel: {channel}")
+```
+
+So the shim must send something, and the something decides how every reply sounds.
+
+**A distinction worth stating, because it is easy to conflate:** where the shim's code
+lives and what channel it declares are independent. The shim is a wrapper on top of
+`reach_layer/web` (§13), but `channel` describes **the medium the caller is using**, not
+the service hosting the shim. Hosting inside `reach_layer/web` does not oblige us to send
+`channel: "web"`.
+
+**Options.**
+
+**(a) `voice`.** Correct for the actual caller: someone on a phone who will *hear* the
+reply. The model writes numbers as words and avoids markup, which is what a TTS engine
+needs.
+
+**(b) `web`.** Matches where the code is hosted, and is the natural default if the shim is
+built as web routes without thinking about it. It is wrong for the caller: the model is
+explicitly told the user will *read* the reply, so it produces markdown bullets and digit
+strings — and a telephony client will read `**Titan Retail**` and `₹27,620` aloud, markup
+and all.
+
+**(c) A new channel, e.g. `shim` or `telephony`.** Cleanest in principle — the domain
+config could carry rules tuned for this path specifically. But it means adding a channel
+block to every domain config that wants to use the shim, and for a throwaway service that
+is configuration debt for no behavioural gain over `voice`.
+
+**Suggestion: (a) `voice`.** The caller is on a phone; the channel should say so.
+
+This choice also settles the TTS-sanitizer question (§15): with `voice`, the model is
+already instructed to emit speech-ready text, so a sanitizer is optional insurance. With
+`web` it would be mandatory, because markdown would arrive on every single turn.
+
+### 11.5 Session end — the closing word and the hang-up
+
+#### How it works today
+
+When a conversation reaches a natural end, three things happen in sequence:
+
+```
+caller: "thank you, bye"
+   |
+   v
+the LLM calls the internal `end_session` tool
+   |
+   v
+Agent Core intercepts it and sets  session_ended = true
+   |
+   v
+the VOICE REACH LAYER reacts to that flag by doing two things:
+   1. appends `channels.voice.terminal_word` to the outbound speech
+   2. closes the transport, so the call actually hangs up
+```
+
+The third step is the **reach layer's** responsibility. Agent Core only decides; something
+downstream carries it out.
+
+This is live in this domain today: `conversation.session_end_eval.enabled: true`, with the
+LLM explicitly instructed to call `end_session` on "thank you", "bye", "bas ho gaya",
+"alvida", and `channels.voice.terminal_word: "Thank you"`.
+
+#### What is missing here
+
+**In this topology there is no reach layer.** The client replaces it. So when the LLM ends
+the session, the flag reaches the shim and nothing acts on it: no closing word is spoken,
+and the call stays open with the caller sitting in silence after saying goodbye.
+
+The shim inherits both jobs. They are separable, so they are decided separately.
+
+#### Part A — who speaks the closing word?
+
+**(a) The shim appends it.** On `DoneEvent.session_ended`, emit
+`channels.voice.terminal_word` as one final content chunk before closing the stream.
+Reproduces today's behaviour exactly, and the value is already in domain config.
+
+**(b) Nobody.** The conversation simply stops after the last real sentence. Acceptable if
+the agent's own final reply already reads as a goodbye — but `terminal_word` exists
+because it often does not.
+
+**(c) The client says it.** Configure a closing phrase on the client side. Splits one
+behaviour across two systems and drifts from the domain config.
+
+**Suggestion: (a).** It is a few lines, it matches current behaviour, and the value is
+already configured.
+
+#### Part B — who hangs up? (and what we do with `tools`)
+
+Hanging up is not something the shim can do directly — it has no control over the
+caller's line. It can only send the client something the client acts on, which makes this
+the same question as what we do with `tools`.
 
 **The problem.** An OpenAI client may declare `tools` and expects the assistant to
 respond with `tool_calls` that the client then executes. Agent Core owns its own tools and
@@ -592,6 +700,40 @@ contract is read from the canonical specification, but a live interop check with
 official `openai` Python client — both stream modes — should be the first implementation
 step, before any client-side integration. This follows the working practice of debugging
 one system at a time.
+
+**No TTS sanitizer anywhere in this path — accepted.** `TTSTextSanitizerProcessor`
+(markdown and emoji to spoken text, Devanagari-safe) is a Pipecat processor inside
+`reach_layer/voice`, which is not deployed here, and the client has no equivalent. Agent
+Core's text therefore reaches the client's TTS unmodified.
+
+With `channel: "voice"` (§11.4) the model is already instructed to emit speech-ready
+text, so this is insurance rather than a gap — and the decision is to **go without it**,
+per the rule that a throwaway service should not accrete features. The accepted failure
+mode: when the model disobeys its own formatting rules, the caller hears the markup. On
+2026-09-21 the model produced a numbered list where the config demanded bullets and
+silently dropped one of four items, so this is a real behaviour, not a theoretical one.
+Ugly and recoverable, not data-corrupting. Revisit if it proves frequent on real calls.
+
+**Caller hang-up never reaches Agent Core.** If the caller drops mid-conversation, the
+shim simply stops receiving requests; nothing informs Agent Core and the session state
+lingers. Self-correcting if `session_id` is a per-call value (§11.3 option b) — the next
+call starts fresh regardless. Persistent if `session_id` is the phone number, where the
+next call resumes a half-finished conversation.
+
+**Client request timeout against turn latency.** Measured turns are 4-6 s. If the
+client's HTTP timeout is below that, turns fail before Agent Core answers. Streaming
+mitigates this only if the client's timeout applies to time-to-first-byte rather than to
+the whole response. Worth confirming with the client team rather than assuming.
+
+**One domain per Agent Core deployment.** Agent Core serves a single domain
+configuration, so one shim instance fronts one domain. `ProcessTurnRequest` carries
+`caller_agent_id`, but nothing uses it for routing today. Adequate for the demo; stated
+so it is not mistaken for multi-tenancy.
+
+**Reply language against TTS voice** — client-side, noted for completeness. This domain
+mirrors the caller into Hindi or Gujarati mid-conversation, while the client's TTS voice
+is configured per agent. A Hindi reply may be spoken by a voice configured for English.
+Nothing the shim can influence.
 
 **Throwaway status.** #376 / Option B replaces this. Anything beyond implementing the
 contract should be refused.
