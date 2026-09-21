@@ -5,6 +5,10 @@
 **Status:** design — not implemented
 **Date:** 2026-09-21
 
+**Source documents (authoritative):**
+- `2026-09-09-voicera-integration-analysis.md` — capability analysis and demo scope
+- `2026-09-09-voicera-integration-action-plan.md` — action plan by team
+
 ---
 
 ## 1. Purpose
@@ -21,32 +25,64 @@ any OpenAI client  ──▶  [ SHIM ]  ──▶  Agent Core  ──▶  Trust 
 The client believes it is talking to OpenAI. It is configured with our base URL and
 changes nothing else.
 
-The immediate consumer is VoicEra, which needs to drive a KKB / blue-dots call while
-Agent Core keeps ownership of every turn — VoicEra runs its LLM inside its own voice
-service, which inverts this framework's architecture (conflict A in
-`docs/voicera-telephony-adapter-gap-analysis.md`). But **the shim is not a VoicEra
-adapter.** It is a faithful implementation of a published HTTP contract. Anything
-VoicEra-specific is a deployment note (Appendix B), not part of the design.
+This is **Option A** in the analysis, chosen for the demo:
 
-That distinction is deliberate: built to the contract, the shim keeps working when
-VoicEra changes, and any OpenAI-compatible client can drive it. Built to VoicEra's
-current internals, it would be brittle and single-purpose.
+> A small service speaking OpenAI chat-completions on the front and `POST /process_turn`
+> on the back. VoicEra is configured to point its LLM provider at the shim. Fastest path
+> to a working call. No changes to VoicEra's pipeline.
+
+The analysis is explicit that the shim's job is confined to protocol translation. The
+division of responsibility it sets is:
+
+> VoicEra contributes the voice pipeline only: STT, TTS, VAD, turn-taking, transport,
+> telephony. ai-diffusion owns all agent logic: config, tools, memory, knowledge, trust.
+
+The shim is therefore specified here as a faithful implementation of a published HTTP
+contract, not as an adapter to any one client's internals. Built to the contract it keeps
+working as the client evolves, and it can be tested without the client present.
+
+### Why the turn API, and not the LLM proxy
+
+The analysis rules out the obvious shortcut:
+
+> Agent Core exposes `POST /internal/llm/call`. It is a **bare provider passthrough** — no
+> Trust Layer, no Memory, no NLU, no tool routing. Routing conversational turns through it
+> would bypass the Trust Layer on every turn, violating development guideline #4… **VoicEra
+> must reach Agent Core through the turn API, not the LLM proxy.**
 
 ### Throwaway by design
 
-The production target is #376 — an `agent_core` provider inside VoicEra's own registry.
-Every feature here is migration debt. The design implements the contract and nothing
-beyond it.
+From the action plan's working agreements:
+
+> **The shim is throwaway.** Do not let it accrete features. Its replacement is the
+> `agent_core` provider (Option B), and every feature added to the shim is migration debt.
+
+Accepted losses for Option A, per the analysis: barge-in cancellation, consent events and
+streaming fidelity. This design recovers the third (§8); the first two stay out of scope.
 
 ---
 
-## 2. The contract we implement
+## 2. Sources
 
-Taken from OpenAI's canonical machine-readable specification
-(`https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.yaml`,
-OpenAPI 3.1.0, retrieved 2026-09-21). This is the same contract rendered at
-`developers.openai.com/api/reference/.../chat/completions/create`; the HTML pages return
-404/403 to automated fetches, so the machine-readable source was used.
+**The two design documents named above are the authoritative source** for scope,
+integration approach and deployment shape. They were not in the repository when this
+design was started; they have since been recovered and are treated as governing. A third
+companion, `2026-09-09-voicera-integration-estimate.md`, is not required for this work.
+
+**The HTTP contract** is taken from OpenAI's canonical machine-readable specification
+(`https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.yaml`, OpenAPI
+3.1.0, retrieved 2026-09-21). The HTML reference pages at `developers.openai.com` and
+`platform.openai.com` return 404 and 403 to automated fetches, so the machine-readable
+source was used. It is the same contract.
+
+**Agent Core's contract** is taken from the running service's own OpenAPI document and
+`agent_core/src/models.py`.
+
+Where this design differs from issue #369, it says so and gives the reason (§8, §12).
+
+---
+
+## 3. The contract we implement
 
 ### Request — `CreateChatCompletionRequest`
 
@@ -82,8 +118,7 @@ across several chunks.
 ### Wire format
 
 SSE. Each event is `data: {json}\n\n`; the stream terminates with a literal
-`data: [DONE]\n\n`. Confirmed against the official client's own decoder
-(`openai/_streaming.py` — `sse.data.startswith("[DONE]")`, events delimited by `\n\n`).
+`data: [DONE]\n\n`. Confirmed against the official client's own stream decoder.
 
 ### Errors — `ErrorResponse`
 
@@ -95,9 +130,7 @@ All four inner fields are required by the schema.
 
 ---
 
-## 3. The contract we call
-
-Agent Core, verified against the live service's OpenAPI:
+## 4. The contract we call
 
 | Endpoint | Shape |
 |---|---|
@@ -116,23 +149,27 @@ ProcessTurnResponse  session_id, response_text, was_escalated, was_tool_used,
 turn_status, error_type, error_message}` is always terminal
 (`agent_core/src/models.py:248-307`).
 
+Both endpoints are **direct mode**. Neither engages Agent Core's TurnAssembler, which is
+reached only through the session API (`/sessions/{id}/input` + `/events`). That
+distinction matters — see §8.
+
 ---
 
-## 4. The impedance mismatch
+## 5. The impedance mismatch
 
-Three differences between the two contracts drive the whole design.
+Three differences between the two contracts drive the design.
 
 | | OpenAI | Agent Core |
 |---|---|---|
 | **Memory** | Stateless. The client resends the full conversation every turn. | Stateful. Holds history, journey state and collected profile fields in Memory Layer, keyed on `session_id`. |
-| **Identity** | No session concept. No caller identity. | Requires `session_id`; this domain also requires `user_id` (the caller's phone) for every Signals call. |
+| **Identity** | No session concept in the request body. | Requires `session_id`; this domain also requires `user_id` (the caller's phone) for every Signals call. |
 | **Tools** | The client declares tools and expects the model to call them. | Owns its own tools (`fetch_jobs`, `save_profile`, `apply_job`) and executes them internally. |
 
-These are the three open questions in §10. Everything else in this design is mechanical.
+These are §11.1, §11.2 and §11.3. Everything else is mechanical.
 
 ---
 
-## 5. Surface
+## 6. Surface
 
 ```
 POST /v1/chat/completions
@@ -141,50 +178,39 @@ POST /v1/chat/completions
 Authentication: a configured key, accepted as `Authorization: Bearer <key>` (OpenAI
 convention). Requests without a valid key get `401` in the error envelope.
 
-Both `stream: true` and `stream: false` are implemented (§7, §8). A faithful
-implementation supports both, and `stream: false` makes the service testable with plain
-`curl`.
+Both `stream: true` and `stream: false` are implemented (§8, §9). A faithful
+implementation supports both, and `stream: false` directly serves the action plan's
+working agreement:
+
+> **Debug one system at a time.** Prove KKB over `/process_turn` with curl before adding
+> voice.
 
 ---
 
-## 6. Request translation
+## 7. Request translation
 
 | Incoming | Treatment |
 |---|---|
-| `messages` | **§10.1 — open.** |
-| `model` | Recorded and echoed back in the response; does not select a model. Agent Core owns model choice via domain config. |
+| `messages` | **§11.1 — open.** |
+| `model` | Recorded and echoed back in the response; does not select a model. Agent Core owns model choice via domain config. The analysis marks the client's `config.models.llm` as *"Vestigial — points at the shim."* |
 | `stream` | Selects `/stream_turn` (true) or `/process_turn` (false). |
-| `tools`, `tool_choice`, `functions`, `function_call` | **§10.3 — open.** |
+| `tools`, `tool_choice`, `functions`, `function_call` | **§11.3 — open.** |
 | `n` | Values greater than 1 rejected with `400`; Agent Core produces one response. |
 | `temperature`, `top_p`, `seed`, `max_tokens`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `stop`, ... | Accepted and ignored. Agent Core owns sampling. Ignoring unsupported parameters is the norm for OpenAI-compatible servers and keeps clients working. |
-| `stream_options.include_usage` | Honoured — adds the final usage chunk (§8). |
+| `stream_options.include_usage` | Honoured — adds the final usage chunk (§9). |
 | everything else | Accepted and ignored. |
 
 Unknown fields are ignored rather than rejected, so a newer client does not break.
 
----
+### The client's system prompt is ignored
 
-## 7. Response translation — `stream: false`
+Settled by the analysis's configuration-ownership table, which marks
+`config.prompts.system_prompt` as:
 
-`POST /process_turn` maps to one `chat.completion` object.
+> **Vestigial** — Agent Core builds the real prompt. Leave empty.
 
-```
-ProcessTurnResponse            chat.completion
---------------------------     -----------------------------------------
-response_text              ->  choices[0].message.content
-                           ->  choices[0].message.role = "assistant"
-                           ->  choices[0].index = 0
-                           ->  choices[0].logprobs = null      (required field)
-                           ->  choices[0].finish_reason = "stop"
-model_used                 ->  model
-session_id                 ->  (not exposed; internal)
-                           ->  id = "chatcmpl-<generated>"
-                           ->  object = "chat.completion"
-                           ->  created = unix seconds
-                           ->  usage (§9)
-```
-
-`error_type` set produces the error envelope instead (§11).
+The shim therefore ignores any `system` or `developer` message. Honouring one would put
+two personas in competition with Agent Core's own persona and per-subagent prompts.
 
 ---
 
@@ -205,42 +231,91 @@ DoneEvent            ->       delta = {},  finish_reason = "stop"
 Every chunk carries the same `id`, `object: "chat.completion.chunk"`, `created` and
 `model`, and `choices[0].index = 0`.
 
-**Why `/stream_turn` and not `/process_turn`.** #369 names `/process_turn`. That endpoint
-blocks until the whole turn completes, so a streaming client receives nothing until the
-end and any first-token latency target is unreachable. Measured turn latency in the
-blue-dots web flow on 2026-09-21 was **4.0-6.2 s** (4878, 4070, 4417, 4432, 4605, 6010,
-6216 ms) against the **800-1200 ms** target in #370. With `/stream_turn` the first
-sentence is emitted as soon as it clears the trust check, so time-to-first-chunk is the
-time to the first sentence rather than the whole turn. `SentenceEvent` and `DoneEvent`
-also map almost 1:1 onto chunks.
+### `/stream_turn`, not `/process_turn` — and why this is not a departure
 
-The specification is corrected here deliberately: **#369's choice of `/process_turn` is
-wrong.**
+The analysis rules out Agent Core's session API, for a sound reason:
 
-Session mode (`POST /sessions/{id}/input` plus `GET /sessions/{id}/events`) was considered
-and rejected: it streams equally well and adds native barge-in, but requires a long-lived
-subscription per conversation and event-to-turn correlation — too much machinery for a
-throwaway service. If barge-in is needed later,
-`DELETE /sessions/{session_id}/active_turn` and the `abort_event` hook in
-`agent_core/src/base.py` are the extension points.
+> Running VoicEra's client-side turn assembly *and* Agent Core's TurnAssembler would
+> double-batch and stack latency against an 800–1200 ms per-turn budget. VoicEra already
+> performs turn assembly competently. The recommendation is therefore to use
+> `POST /process_turn` (direct mode) and let VoicEra own turn-taking.
+
+That argument is against **session mode**, and it is correct. This design honours it in
+full: no TurnAssembler, the client owns turn-taking.
+
+But *direct mode* and *blocking* are two different things. `/stream_turn` is also direct
+mode — it does not engage the TurnAssembler either (§4). It is the streaming variant of
+exactly the mode the analysis chose. #369 carried forward `/process_turn`, the blocking
+variant, and for a streaming client that is the wrong one of the two:
+
+- `/process_turn` returns nothing until the whole turn completes, so a streaming client
+  hears silence for the entire turn.
+- Measured turn latency in the blue-dots web flow on 2026-09-21 was **4.0–6.2 s** (4878,
+  4070, 4417, 4432, 4605, 6010, 6216 ms) against the **800–1200 ms** budget the analysis
+  sets.
+- With `/stream_turn` the first sentence is emitted as soon as it clears the trust check,
+  so time-to-first-chunk is the time to the first sentence rather than the whole turn.
+- `SentenceEvent` and `DoneEvent` map almost 1:1 onto chunks.
+
+It also recovers one of the three losses the analysis attributes to Option A —
+"streaming fidelity". Barge-in cancellation and consent events remain out of scope.
+
+If barge-in is wanted later, `DELETE /sessions/{session_id}/active_turn` and the
+`abort_event` hook in `agent_core/src/base.py` are the extension points.
 
 ---
 
-## 9. Usage
+## 9. Response translation — `stream: false`
 
-`CompletionUsage` requires `prompt_tokens`, `completion_tokens`, `total_tokens`. Agent
-Core's turn responses do not expose token counts, so the shim reports zeros rather than
-omitting the object or inventing numbers. Clients that read usage get a well-formed
-object; none of them depend on the values being non-zero.
+`POST /process_turn` maps to one `chat.completion` object.
 
-If per-turn token accounting is wanted later, it belongs in Agent Core's `DoneEvent`, not
-in the shim.
+```
+ProcessTurnResponse            chat.completion
+--------------------------     -----------------------------------------
+response_text              ->  choices[0].message.content
+                           ->  choices[0].message.role = "assistant"
+                           ->  choices[0].index = 0
+                           ->  choices[0].logprobs = null      (required field)
+                           ->  choices[0].finish_reason = "stop"
+model_used                 ->  model
+                           ->  id = "chatcmpl-<generated>"
+                           ->  object = "chat.completion"
+                           ->  created = unix seconds
+                           ->  usage (below)
+```
+
+`error_type` set produces the error envelope instead (§12).
+
+**Usage.** `CompletionUsage` requires `prompt_tokens`, `completion_tokens`,
+`total_tokens`. Agent Core's turn responses do not expose token counts, so the shim
+reports zeros rather than omitting the object or inventing numbers. If per-turn token
+accounting is wanted later it belongs in Agent Core's `DoneEvent`, not in the shim.
 
 ---
 
-## 10. Open questions
+## 10. The greeting is not ours to emit
 
-### 10.1 What do we send to Agent Core from `messages[]`?
+A direct-mode consequence the shim must not try to solve. From the analysis:
+
+> in direct mode Agent Core does not proactively emit the entry subagent's
+> `opening_phrase` — that is a session-mode feature (GH-149). VoicEra's
+> `greeting_message` is what plays. KKB's opening phrase must be copied into the VoicEra
+> agent record, or the bot answers silently.
+
+The shim is request-response: it speaks only when spoken to. The first thing the caller
+hears is the client's own greeting, configured on the client side. The action plan
+assigns this to the VoicEra agent record, and the analysis lists
+`config.prompts.greeting_message` as **required** — *"the only place the demo expresses
+what the caller hears first."*
+
+Recorded here because "the bot answers silently" is a failure the shim cannot cause and
+cannot fix, and would otherwise be debugged in the wrong place.
+
+---
+
+## 11. Open questions
+
+### 11.1 What do we send to Agent Core from `messages[]`?
 
 **The problem.** OpenAI is stateless, so a client sends the entire conversation on every
 request and it grows each turn:
@@ -251,17 +326,18 @@ turn 2   [system, u1, a1, u2]
 turn 3   [system, u1, a1, u2, a2, u3]
 ```
 
-Agent Core is the opposite. It stores history, journey state, collected profile fields
-and tool results in Memory Layer against a `session_id`, and its request takes a single
-`user_message`. The two models overlap: the client is telling us things Agent Core
+Agent Core is the opposite. The analysis states the split plainly — VoicEra keeps
+"conversation state client-side in `LLMContext`", ai-diffusion is "stateless, with state
+server-side in Memory Layer". Agent Core's request takes a single `user_message`. So both
+sides are tracking the same conversation, and the client is telling us things Agent Core
 already knows.
 
 **Options.**
 
 **(a) Send the last user message only.** Agent Core supplies the rest from its own
 memory. Fits how Agent Core is built and is the only option that preserves journey state,
-tool results and the collected profile across turns. Depends entirely on §10.2 — without
-a correct session id, Agent Core either sees no history or sees the wrong caller's.
+tool results and the collected profile across turns. Depends on §11.2 for a correct
+session id.
 
 **(b) Be genuinely stateless.** Forward the whole conversation each turn and hold nothing
 server-side. Most faithful to the OpenAI contract. But `ProcessTurnRequest` has no field
@@ -273,73 +349,55 @@ out of scope for a throwaway shim.
 messages against what Agent Core believes the history is and flag divergence. Catches a
 client that reconnects, retries or replays — at the cost of bookkeeping.
 
-**Suggestion: (a),** with (c) as a cheap safety net if replay turns out to be a real
-problem in testing. (b) is not achievable without changing Agent Core.
+**Suggestion: (a),** with (c) as a cheap safety net if replay proves to be a real problem
+in testing. (b) is not achievable without changing Agent Core.
 
-**Also to decide:** what the shim does with a client-supplied `system` message. Agent
-Core has its own persona and per-subagent prompts tuned for the domain; honouring a
-client system prompt would put two personas in competition. The suggestion is to ignore
-it, but that should be a conscious choice rather than an omission.
+### 11.2 The caller's phone number
 
-### 10.2 Where does the session id — and the caller's identity — come from?
+**Session identity is provided.** The analysis records it as an existing extension seam:
 
-**The problem.** `ProcessTurnRequest` requires `session_id`, and this domain requires
-`user_id` (the caller's phone number): the Signals connectors substitute it into
+> `pipeline.py:34` already calls `llm.set_call_id(call_id)` when present, so a custom LLM
+> service receives call identity with no upstream change.
+
+The shim therefore takes **call identity as given** — it is delivered by the client, and
+how the client arranges that is the client's concern, not this design's. `session_id` is
+derived from it.
+
+**The caller's phone number is a separate value, and the documents do not address it.**
+This domain needs it as `user_id`: the Signals connectors substitute it into
 `?phone_number={user_id}` and `"+{user_id}"`, so `fetch_profile`, `save_profile` and
-`apply_job` all depend on it.
-
-**A `chat.completions` request carries neither.** The protocol has no session concept,
-and nothing in the 37 request fields identifies an end user in a way we can rely on
-(`user` exists but is documented as a cache and abuse-detection hint, is optional, and is
-being superseded by `safety_identifier` / `prompt_cache_key`).
-
-Getting this wrong has two failure modes, and the second is serious:
-
-- Key too unstable, and a fresh session is created per turn, so Agent Core never sees
-  history and the conversation loops.
-- Key too coarse, and two concurrent callers share a session. In this domain that means
-  one caller's details written against another's phone number, and a job application
-  submitted on the mixed-up profile.
+`apply_job` all depend on it. A call id identifies the conversation; it does not say who
+is on the line.
 
 **Options.**
 
-**(a) An HTTP header** such as `X-Session-Id` and `X-User-Id`. Clean, explicit, outside
-the OpenAI body so it does not violate the contract, and trivially supported by any
-client that can set headers. Requires the client to set them.
+**(a) Delivered alongside call identity.** If the client can pass a call id to the LLM
+service, the same mechanism can carry the caller's number. Cleanest, and consistent with
+how session identity is already solved.
 
-**(b) Carry them inside the request body** — a documented marker in the system message,
-or an agreed key in `metadata` (a standard OpenAI field: up to 16 key-value pairs).
-`metadata` is the most contract-aligned place. Requires the client to populate it.
+**(b) An HTTP header** (e.g. `X-User-Id`) or the standard `metadata` field on the request
+body. Explicit, contract-compatible, and independent of any client-side extension seam.
 
-**(c) Derive them from the conversation** — hash a stable prefix of `messages[]`, or match
-an incoming array against stored histories. **Not recommended.** A bot with a scripted
-opening produces byte-identical arrays across different callers for the first several
-turns, so two callers are indistinguishable exactly when it matters most. This is the
-cross-contamination case above.
+**(c) Agent Core resolves it.** The shim passes only the call id and something downstream
+maps it to a caller. Nothing in either document describes such a mapping, and it would
+add a dependency the shim cannot satisfy alone.
 
-**(d) One conversation at a time.** No identification; a single active session with an
-idle reset. Adequate only for a single-user demo.
+**Suggestion: (a), with (b) as the fallback.** What matters is that `user_id` and
+`session_id` are **separate values**. The phone identifies the person and is stable across
+calls; the call id identifies one conversation. Collapsing them would make a second call
+from the same person resume the first conversation mid-flow.
 
-**Suggestion: (a) or (b) — the client must supply identity**, with `metadata` preferred
-because it is part of the published contract. Whichever is chosen, `user_id` and
-`session_id` should be **separate values**: the phone identifies the person and is stable
-forever; the session identifies one conversation. Using the phone for both means a second
-call from the same person resumes the first conversation mid-flow.
-
-**Missing identity means fail fast.** If identity is absent, return `400` in the error
+**Missing identity means fail fast.** If either value is absent, return `400` in the error
 envelope and do not call Agent Core. Proceeding would leave `user_id` empty, and the
 Signals connectors would then issue `?phone_number=` or write a participant against a
 malformed number. This is not hypothetical: on 2026-09-21 the blue-dots web flow sent a
 literal `"null"` as `acting_as_user_id` and the upstream returned 422.
 
-### 10.3 What do we do with `tools`?
+### 11.3 What do we do with `tools`?
 
 **The problem.** An OpenAI client may declare `tools` and expects the assistant to
 respond with `tool_calls` that the client then executes. Agent Core owns its own tools and
 executes them internally; it never asks the caller to run anything.
-
-So there is a genuine semantic gap: the client offers capabilities we cannot use, and we
-have internal tool activity the client must not see.
 
 Two things are settled either way:
 
@@ -351,29 +409,26 @@ Two things are settled either way:
 **Options for the remaining question — may the shim ever emit `tool_calls`?**
 
 **(a) Never.** Accept `tools`, ignore it, always return plain content. Simplest and
-honest. But then nothing on the client side can ever be triggered by Agent Core. Notably
-#369 requires that `was_escalated` terminate the call, and for a telephony client the
-only in-band way to do that is a tool call the client understands — so (a) means that
-requirement cannot be met through the protocol.
+honest. But then nothing on the client side can be triggered by Agent Core. #369 requires
+that `was_escalated` terminate the call, and for a telephony client the only in-band way
+to do that is a tool call the client understands — so (a) means that requirement cannot
+be met through the protocol and must be descoped.
 
 **(b) Emit `tool_calls` only for a tool the client itself declared.** Never invent one.
 When Agent Core signals a terminal condition (`was_escalated`, `session_ended`) and the
 client has declared a matching tool, respond with `finish_reason: "tool_calls"` and that
-tool. Stays within the contract — we only ever name something the client asked for — and
-gives Agent Core a way to drive a client-side action.
+tool. Stays within the contract — we only ever name something the client asked for.
 
 **(c) Support tool calling generally.** Let Agent Core decide to call client tools, and
 accept `role: "tool"` results back. Substantially more work, no current requirement, and
-squarely migration debt for a throwaway service.
+squarely the feature accretion the action plan warns against.
 
-**Suggestion: (b).** It satisfies #369's termination requirement without inventing
-protocol, and the rule is easy to state: *the shim may name a tool the client declared;
-it may never invent one, and it never exposes Agent Core's internal tools.* If (a) is
-chosen instead, #369's call-termination requirement should be explicitly descoped.
+**Suggestion: (b).** The rule is easy to state: *the shim may name a tool the client
+declared; it may never invent one, and it never exposes Agent Core's internal tools.*
 
 ---
 
-## 11. Error handling
+## 12. Error handling
 
 Failures return the **OpenAI error envelope with real HTTP status codes**:
 
@@ -385,7 +440,7 @@ Failures return the **OpenAI error envelope with real HTTP status codes**:
 |---|---|---|
 | Malformed body, missing `messages` or `model` | 400 | `invalid_request_error` |
 | `n` greater than 1 | 400 | `invalid_request_error` |
-| Identity missing (§10.2) | 400 | `invalid_request_error` |
+| Identity missing (§11.2) | 400 | `invalid_request_error` |
 | Bad or missing key | 401 | `authentication_error` |
 | Agent Core unreachable or timed out | 502 | `api_error` |
 | `DoneEvent.error_type` or `ProcessTurnResponse.error_type` set | 502 | `api_error` |
@@ -394,23 +449,24 @@ Failures return the **OpenAI error envelope with real HTTP status codes**:
 All four inner fields are always present, with `param` and `code` null when not
 applicable, as the schema requires.
 
-For a mid-stream failure — where headers and some chunks have already been sent — an
-HTTP status is no longer available. The stream terminates with a chunk carrying
-`finish_reason: "stop"` followed by `[DONE]`, and the failure is logged. Silently
-truncating a stream is the only option the protocol leaves; inventing content to explain
-the error would be worse.
+For a mid-stream failure — where headers and some chunks have already been sent — an HTTP
+status is no longer available. The stream terminates with a chunk carrying
+`finish_reason: "stop"` followed by `[DONE]`, and the failure is logged.
 
-> **A note for the reviewer.** Strict error semantics are correct for the contract, and
-> that is what this specifies. It has a consequence worth accepting knowingly: a live
-> voice caller experiences a 502 as silence or a dropped call rather than a spoken
-> apology. If graceful degradation matters more than fidelity for the PoC, the
-> alternative is to return `200` with a fallback sentence for **backend** failures only
-> (never for client errors). That is a deliberate deviation from the contract, not an
-> oversight, and should be recorded as such if chosen.
+> **Note for the reviewer.** #369 asks the shim to "map errors to a safe fallback
+> utterance", and the action plan repeats it. This design deliberately does not: strict
+> error semantics are what the OpenAI contract requires, and a client that receives a
+> well-formed 502 can decide for itself what to say.
+>
+> The consequence should be accepted knowingly: a live voice caller experiences a 502 as
+> silence or a dropped call rather than a spoken apology. If graceful degradation matters
+> more than fidelity for the demo, the alternative is to return `200` with a fallback
+> sentence for **backend** failures only, never for client errors. That is a deliberate
+> deviation from the contract and should be recorded as such if chosen.
 
 ---
 
-## 12. Placement
+## 13. Placement
 
 A wrapper on top of `reach_layer/web`, reusing its Agent Core client, configuration
 loader and health surface. Whether it ships as extra routes on that service or as a
@@ -421,7 +477,7 @@ New logic is small and separable:
 | Unit | Responsibility |
 |---|---|
 | `routes` | `POST /v1/chat/completions`, auth, request validation |
-| `identity` | Resolve `user_id` and `session_id` (§10.2); reject when absent |
+| `identity` | Resolve `user_id` and `session_id` (§11.2); reject when absent |
 | `translate_request` | OpenAI request to `ProcessTurnRequest` |
 | `translate_response` | `ProcessTurnResponse` to `chat.completion` |
 | `translate_stream` | `SentenceEvent` and `DoneEvent` to `chat.completion.chunk` plus `[DONE]` |
@@ -431,96 +487,96 @@ Caller-facing strings and the configured key come from configuration, never sour
 
 ---
 
-## 13. Risks
+## 14. Deployment
 
-**The three open questions in §10 are all blocking for a working call.** Identity
-especially: without it the domain's Signals calls cannot function at all.
+The analysis places the shim on a shared demo VM running both stacks:
 
-**Service count against the CPU budget.** #366 specifies a trimmed 9-service stack and
-drops all reach layers. The shim reintroduces one, making ten, on a stack the analysis
-already budgets at ~2.5 CPU against a confirmed 2 CPU allocation. Memory is comfortable;
-CPU is not.
+| Stack | Services | Budget |
+|---|---|---|
+| ai-diffusion (trimmed) | 9 — `agent_core`, `trust_layer`, `memory_layer`, `knowledge_engine`, `action_gateway`, `observability_layer`, `memgraph`, `redis`, `otelcol` | ~2.5 CPU / 2.5 GB |
+| VoicEra (trimmed) | 7 — `postgres`, `ferretdb`, `redis`, `api`, `minio`, `minio-init`, `runtime` | ~3 CPU / 4 GB |
+| VM | **4 vCPU / 16 GB / 100 GB** | "comfortable for the demo" |
 
-**Throwaway status.** #376 replaces this with adapter interfaces on both sides. Anything
-beyond implementing the contract should be refused.
+The shim is an additional service on top of the nine.
 
-**Unverified end to end.** No real OpenAI client has yet been pointed at a running shim.
-The contract is taken from the canonical specification, but a live interop check with the
-official `openai` Python client — both stream modes — should be the first implementation
-step, before any client-specific integration.
+> **Discrepancy to resolve.** Issue #31 states *"Blue-dots footprint is 2 CPU / 4 GB"* and
+> frames the ~2.5 CPU estimate as exceeding a *"confirmed 2 CPU / 4 GB allocation"*. The
+> analysis specifies a 4 vCPU / 16 GB VM and calls it comfortable. These cannot both be
+> current. If the epic's smaller allocation is the real one, CPU headroom is a genuine
+> risk and the shim adds to it; if the analysis's VM is provisioned, it is not a concern.
+
+The analysis also notes CPU scales with concurrent calls, since Silero VAD runs per call,
+and advises sizing up beyond 2–3 simultaneous callers.
 
 ---
 
-## 14. Testing (#370)
+## 15. Risks
+
+**The three open questions in §11 are blocking for a working call.** The caller's phone
+number especially: without it the domain's Signals calls cannot function.
+
+**Unverified end to end.** No OpenAI client has yet been pointed at a running shim. The
+contract is read from the canonical specification, but a live interop check with the
+official `openai` Python client — both stream modes — should be the first implementation
+step, before any client-side integration. This follows the action plan's own working
+agreement to debug one system at a time.
+
+**Throwaway status.** #376 / Option B replaces this. Anything beyond implementing the
+contract should be refused.
+
+---
+
+## 16. Testing (#370)
 
 Driven by the official `openai` Python client, so the tests prove contract compliance
-rather than compliance with one consumer's quirks. No VoicEra required.
+rather than compliance with one consumer's quirks. No VoicEra required — which is the
+point of #370.
 
 | Area | Check |
 |---|---|
-| Non-streaming | `client.chat.completions.create(stream=False)` returns a valid `ChatCompletion`; `object`, `id`, `created`, `model` and all four `choices[0]` fields present |
+| Non-streaming | `stream=False` returns a valid `ChatCompletion`; `object`, `id`, `created`, `model` and all four `choices[0]` fields present |
 | Streaming | `stream=True` yields valid `ChatCompletionChunk` objects, content in order, terminal `[DONE]`; the SDK's own parser accepts every chunk |
 | SSE framing | Raw bytes are `data: {json}\n\n`, ending `data: [DONE]\n\n` |
 | Usage | With `stream_options.include_usage`, a final usage chunk appears with all three required fields |
-| Errors | Each row of §11 returns the right status and a well-formed envelope with all four inner fields |
+| Errors | Each row of §12 returns the right status and a well-formed envelope with all four inner fields |
 | Identity | Absent identity gives 400, and **no** Agent Core call |
 | Session continuity | Multi-turn: one `session_id` throughout, Agent Core sees one session, history not double-counted |
-| Concurrency | Two interleaved conversations never share state — the cross-contamination case in §10.2 |
-| Latency | **Time-to-first-chunk** recorded against the 800-1200 ms target, reported separately from whole-turn latency |
+| Concurrency | Two interleaved conversations never share state |
+| Latency | **Time-to-first-chunk** recorded against the 800–1200 ms budget, reported separately from whole-turn latency |
 
 Time-to-first-chunk is the number that matters for a voice client and is the one #370's
 "latency per turn" wording obscures. Both should be recorded.
 
 ---
 
-## 15. Out of scope
+## 17. Out of scope
 
-- Option B / #376 — the `agent_core` provider in the client's own registry
-- Barge-in and `cancel_turn`
+- Option B / #376 — the `agent_core` provider in the client's registry
+- Barge-in cancellation and consent events — accepted Option A losses per the analysis
+- The greeting (§10) — configured on the client side
 - `/v1/models`, `/v1/completions` and every other OpenAI endpoint
 - Multi-tenancy; conversations are identified by `session_id`, callers by `user_id`
 - Token accounting (§9)
 
 ---
 
-## Appendix A — client compatibility notes
+## Appendix — reaching the shim from a client that cannot set `base_url`
 
-Observations from the client that will drive the shim first. These are **not** part of
-the contract; implementing §2 correctly satisfies them. Recorded so a reviewer can see
-they were checked.
+A deployment concern, not a design one. From the analysis:
 
-VoicEra reaches its LLM through Pipecat's `OpenAILLMService`. From
-`pipecat/services/openai/base_llm.py`:
+> `azure_openai` is the only provider config today exposing a settable `endpoint`, so a
+> zero-change variant exists via Azure wire-format emulation. Cleaner is a small
+> `base_url` field on the OpenAI config.
 
-- It always sends `stream: True` and `stream_options: {"include_usage": True}`.
-- It sends `messages`, `tools`, `tool_choice`, `model` and the sampling parameters. It
-  does **not** send `user`.
-- Its chunk loop never reads `finish_reason`. It detects a tool call purely from
-  `delta.tool_calls` being present.
-- It captures `tool_call.id` only inside the branch guarded by `tool_call.function.name`,
-  so a conformant implementation must emit `id` and `function.name` in the **same** chunk
-  — which is what OpenAI itself does.
-- Tool-call coalescing keys on `tool_call.index`.
-- Chunks with empty `choices` and chunks with an empty `delta` are skipped, so a
-  usage-only final chunk and a role-only opening chunk are both safe.
-- `stop_ttfb_metrics()` fires on the first chunk carrying choices, so the client's own
-  time-to-first-byte metric keys off our first chunk.
+The action plan lists the `base_url` field as a VoicEra-side change of roughly five
+lines, and is explicit that it must not gate us:
 
-## Appendix B — reaching the shim from a client that cannot set `base_url`
+> **Neither ask belongs on the critical path.** If review is slow: `base_url` — emulate
+> Azure's deployment-scoped URL scheme instead. Costs ~2 extra days in the shim, buys
+> total independence from the review cycle.
 
-Purely a deployment convenience; no bearing on the design.
-
-Some clients expose a configurable endpoint only on their Azure provider. Pipecat's
-`AzureLLMService` builds
-`{endpoint}/openai/deployments/{model}/chat/completions?api-version=...` and authenticates
-with an `api-key` header instead of `Authorization: Bearer`.
-
-If such a client must be supported, serving that additional URL shape and accepting that
-header is a small addition — one route and one header name — and requires no change on
-the client side. It is **not** required by this design and should only be added if a
-specific deployment needs it.
-
-> #369 states the shim is blocked until the client's OpenAI config accepts a custom
-> `base_url`, budgeting roughly two extra days to emulate Azure's URL scheme otherwise.
-> That dependency is smaller than stated: the Azure shape is already available and
-> emulating it is trivial.
+Should the fallback be needed, it means serving an additional URL shape
+(`/openai/deployments/{deployment}/chat/completions?api-version=...`) and accepting an
+`api-key` header in place of `Authorization: Bearer`. Everything else in this design is
+unchanged, since the request and response bodies are identical. It should be added only
+if a specific deployment requires it.
