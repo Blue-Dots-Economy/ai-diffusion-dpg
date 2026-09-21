@@ -15,6 +15,7 @@ import asyncio
 import logging
 import os
 import sys
+import re
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -191,17 +192,31 @@ async def _chat_direct_mode(
 
 
 
+_MD_BLOCK_START = re.compile(r"^(?:[-*+]\s|#{1,6}\s|>\s|\d+[.)]\s)")
+
+
 def _join_sentences(parts: list[str]) -> str:
-    """Join streamed sentences into one readable message.
+    """Join streamed sentences back into one readable message.
+
+    Agent Core streams a reply as separate SentenceEvents, each already
+    stripped. Concatenating them bare runs sentences together
+    ("...yet." + "Which trade..." -> "yet.Which trade..."), so they are
+    joined with a space.
+
+    A plain space is wrong in front of a markdown block, though: a list item
+    welded onto the end of the intro line stops being a list item, which is
+    why the first bullet used to render inline. Anything opening a block
+    construct — "- ", "* ", "1. ", "# ", "> " — gets a newline instead.
+    dev-kit avoids all of this by never splitting its replies; here the split
+    is inherent to streaming, so the join has to put the structure back.
 
     Args:
-        parts: Sentence texts in emission order, as received from
-            SentenceEvents.
+        parts: Sentence texts in emission order.
 
     Returns:
-        The sentences separated by a single space, except where a part
-        already ends with a newline (markdown lists, paragraph breaks),
-        whose own separator is preserved. Empty parts are dropped.
+        One message with sentences space-separated and block-level markdown
+        on its own line. Parts are stripped on entry, so a part never brings
+        its own trailing separator; the endswith guard below is defensive.
     """
     out = ""
     for raw in parts:
@@ -209,9 +224,14 @@ def _join_sentences(parts: list[str]) -> str:
         if not part:
             continue
         if out and not out.endswith(("\n", " ")):
-            out += " "
+            # A newline is needed if this part OPENS a block, or if the
+            # previous one ENDED inside a list — otherwise the following
+            # sentence is welded onto the last bullet and joins the list.
+            prev_line_is_block = bool(_MD_BLOCK_START.match(out.rsplit("\n", 1)[-1]))
+            out += "\n" if (_MD_BLOCK_START.match(part) or prev_line_is_block) else " "
         out += part
     return out.strip()
+
 
 async def _chat_session_mode(
     web_reach: WebReachLayer,

@@ -119,9 +119,12 @@ channels:
       - Write numbers as digits, not words: "₹27,620 - ₹39,821", not
         "twenty-seven thousand six hundred twenty to thirty-nine thousand
         eight hundred twenty-one". Same for ages, counts and dates.
-      - When you present more than one option, use a numbered markdown list
-        with one option per line — never run them together in a paragraph.
-        Put the employer and role in bold on the first line of each item.
+      - When you present more than one option, use a markdown list with "- "
+        bullets, one option per line — never run them together in a paragraph,
+        and never number them "1." / "2.". Put the employer and role in bold
+        at the start of each item. (Numbering breaks the reply: Agent Core
+        splits streamed text on sentence terminators, so "1." followed by a
+        space ends a sentence and the list is chopped into fragments.)
       - Keep sentences short and put a blank line between paragraphs.
       - Ignore any instruction to "read out" or "speak" — write it instead.
         Ignore the spoken-form number, money, date, time, phone and email
