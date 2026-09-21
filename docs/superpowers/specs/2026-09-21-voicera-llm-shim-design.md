@@ -333,46 +333,68 @@ in testing. (b) is not achievable without changing Agent Core.
 
 ### 11.2 How does the caller's phone number reach the shim?
 
-**The problem in one line: a normal OpenAI call carries no phone number, so by default we
-will not receive one.**
+#### Why we need it
 
-The whole premise of this shim is that the client points at us believing we are OpenAI and
-changes nothing else. That premise breaks here, and only here. An LLM has no reason to be
-told who is on the phone, so nothing in the chat-completions contract carries it. Of the
-37 request fields there is no caller-identity field — `user` exists but is optional, is
-documented as a caching and abuse-detection hint, and is being superseded by
+The caller's phone number **is the user's identity** in this domain. It is not a
+convenience or a logging field — it is the primary key every downstream write is made
+against.
+
+Agent Core passes it to the Action Gateway as `user_id`, and the Signals connectors
+substitute it directly into the upstream calls:
+
+```
+fetch_profile   GET  /admin/participant?phone_number={user_id}
+                     -> does this caller already have a profile?
+
+save_profile    POST /admin/participant     phone_number = "+{user_id}"
+                     -> creates or updates the participant record
+
+apply_job       POST /action/perform
+                     -> submits an application on the profile resolved from that number
+```
+
+So the number decides *whose* profile is read, *whose* record is written, and *who* the
+job application is submitted for. A conversation without it cannot do the one thing this
+domain exists to do.
+
+Nor can it be collected during the conversation. The caller is never asked for their own
+number — the domain's prompts forbid it, because on a phone call the platform already
+knows who dialled and asking would be absurd. The number has to arrive with the request.
+
+**What happens without it.** Not graceful degradation — corruption. An empty `user_id`
+renders as `?phone_number=` (rejected upstream) or writes a participant against a
+malformed number. This is not hypothetical: on 2026-09-21 the blue-dots web flow sent a
+literal `"null"` where a caller identifier belonged and the upstream returned 422.
+
+#### Why we will not get it by default
+
+**A normal OpenAI call carries no phone number.**
+
+The premise of this shim is that the client points at us believing we are OpenAI and
+changes nothing else. That premise holds everywhere except here. An LLM has no reason to
+be told who is on the phone, so nothing in the chat-completions contract carries it. Of
+the 37 request fields there is no caller-identity field — `user` exists but is optional,
+is documented as a caching and abuse-detection hint, and is being superseded by
 `safety_identifier` / `prompt_cache_key`, so it is not something to build on.
 
 **If the client calls us exactly as it calls OpenAI, the shim receives nothing that
 identifies the caller.** That cannot be worked around on our side: the value was never
-sent, and no amount of inference recovers it. Deriving it from the conversation is not an
-option either — the caller does not say their own number, and the client is explicitly
-instructed elsewhere never to ask for it.
+sent, and no amount of inference recovers it.
 
-**So this is a requirement on the client, not a design choice for us.** The client must
-deliberately send the caller's phone number on every request. The only open part is *which
-mechanism* it uses.
+#### Therefore
 
-This is the one item in this design that cannot be settled on our side alone, and the one
+This is a **requirement on the client, not a design choice for us**. The client must
+deliberately send the caller's phone number on every request. The only open part is
+*which mechanism* it uses.
+
+It is the one item in this design that cannot be settled on our side alone, and the one
 place where "point at us and change nothing" does not hold. It needs agreeing with the
 client team and writing into the integration contract before implementation starts.
 
-Without it this domain does not degrade — it stops working. Every Signals connector is
-keyed on it:
+#### Options for the transport
 
-```
-fetch_profile   GET  /admin/participant?phone_number={user_id}
-save_profile    POST /admin/participant     phone_number = "+{user_id}"
-apply_job       operates on the profile resolved from that number
-```
-
-An empty `user_id` produces `?phone_number=` (rejected upstream) or writes a participant
-against a malformed number. This is not hypothetical: on 2026-09-21 the blue-dots web
-flow sent a literal `"null"` where a caller identifier belonged and the upstream returned
-422.
-
-**Options for the transport.** All four require the client to do something deliberate;
-there is no option in which the number simply arrives.
+All four require the client to do something deliberate; there is no option in which the
+number simply arrives.
 
 **(a) Alongside whatever already carries call identity.** The client already passes a
 per-call identity to its LLM service. The same mechanism can carry the caller's number.
