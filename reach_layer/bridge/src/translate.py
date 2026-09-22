@@ -30,7 +30,10 @@ def _content_to_text(content: Any) -> str:
 
     The contract allows content to be a string or an array of typed parts.
     Non-text parts (image, audio, file) are skipped: this channel is text in,
-    text out.
+    text out. A part whose ``text`` is present but not a string is also
+    skipped rather than coerced — ``str(123)`` would silently turn the number
+    123 into the user "saying" the word "123", which is a worse failure than
+    dropping the part.
     """
     if isinstance(content, str):
         return content
@@ -38,7 +41,9 @@ def _content_to_text(content: Any) -> str:
         parts = [
             p.get("text", "")
             for p in content
-            if isinstance(p, dict) and p.get("type") == "text"
+            if isinstance(p, dict)
+            and p.get("type") == "text"
+            and isinstance(p.get("text"), str)
         ]
         return "".join(parts)
     return ""
@@ -66,6 +71,11 @@ def to_turn_request(body: dict, *, channel: str) -> dict[str, Any]:
     Raises:
         RequestError: On any malformed or unsupported field.
     """
+    if not isinstance(body, dict):
+        raise RequestError(
+            "The request body must be a JSON object.", param=None
+        )
+
     if not body.get("model"):
         raise RequestError("'model' is a required field.", param="model")
 

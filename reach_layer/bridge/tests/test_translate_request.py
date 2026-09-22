@@ -131,3 +131,38 @@ def test_list_content_parts_are_joined():
         {"type": "text", "text": " the first one"},
     ]}]), channel="bridge")
     assert out["user_message"] == "yes, the first one"
+
+
+def test_non_dict_body_raises_request_error():
+    """Defence-in-depth: the server checks isinstance(body, dict) before
+    calling this function, but a pure function should honour its own
+    documented contract rather than rely on a caller's guard."""
+    with pytest.raises(RequestError) as exc:
+        to_turn_request(None, channel="bridge")
+    assert exc.value.param is None
+
+
+def test_list_body_raises_request_error():
+    with pytest.raises(RequestError) as exc:
+        to_turn_request([], channel="bridge")
+    assert exc.value.param is None
+
+
+def test_int_text_part_is_skipped_not_coerced():
+    """A conformant client can send a non-string text part; it must not be
+    stringified (that would silently invent user speech) and must not crash
+    the server with a raw TypeError."""
+    with pytest.raises(RequestError) as exc:
+        to_turn_request(_body(messages=[{"role": "user", "content": [
+            {"type": "text", "text": 123},
+        ]}]), channel="bridge")
+    assert exc.value.param == "messages"
+
+
+def test_none_text_part_is_skipped_not_coerced():
+    with pytest.raises(RequestError) as exc:
+        to_turn_request(_body(messages=[{"role": "user", "content": [
+            {"type": "text", "text": None},
+        ]}]), channel="bridge")
+    assert exc.value.param == "messages"
+
