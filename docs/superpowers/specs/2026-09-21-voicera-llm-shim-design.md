@@ -541,82 +541,57 @@ directory does.
 The same name is used for the directory (`reach_layer/bridge/`) and for the
 `channels.bridge` key in domain config, so there is one concept with one name.
 
-### 11.5 Session end — the closing word and the hang-up
+### 11.5 Session end — DECIDED
 
-#### How it works today
+When a conversation reaches a natural end, Agent Core detects it: the LLM calls an
+internal `end_session` tool, which the orchestrator intercepts and turns into
+`session_ended = true` on the terminal `DoneEvent`. This is live in this domain —
+`conversation.session_end_eval.enabled: true`, with the LLM instructed to call it on
+"thank you", "bye", "bas ho gaya", "alvida".
 
-When a conversation reaches a natural end, three things happen in sequence:
+Two things follow from that flag. One is ours; the other is not.
 
-```
-caller: "thank you, bye"
-   |
-   v
-the LLM calls the internal `end_session` tool
-   |
-   v
-Agent Core intercepts it and sets  session_ended = true
-   |
-   v
-the VOICE REACH LAYER reacts to that flag by doing two things:
-   1. appends `channels.voice.terminal_word` to the outbound speech
-   2. closes the transport, so the call actually hangs up
-```
+#### The closing word — ours
 
-The third step is the **reach layer's** responsibility. Agent Core only decides; something
-downstream carries it out.
+**Decision: on `DoneEvent.session_ended`, the shim emits the channel's `terminal_word` as
+a final content chunk before closing the stream.** The value is already in domain config
+(`channels.bridge.terminal_word`, currently `"Thank you"`).
 
-This is live in this domain today: `conversation.session_end_eval.enabled: true`, with the
-LLM explicitly instructed to call `end_session` on "thank you", "bye", "bas ho gaya",
-"alvida", and `channels.voice.terminal_word: "Thank you"`.
+`terminal_word` exists because a final reply often does not read as a goodbye on its own,
+so ending the stream after the last real sentence was rejected.
 
-#### What is missing here
+#### Hanging up — the client's
 
-**In this topology the client replaces the voice reach layer.** So when the LLM ends the
-session, the flag reaches the shim and nothing acts on it.
+**The shim does not end calls, and does not try to.** It has no access to the caller's
+line; the client owns the call and its own call-ending behaviour — idle timeout, silence
+detection, whatever it already does — is what terminates it. This is the same division as
+everywhere else in the design: the client owns the transport, we own the turn.
 
-#### Part A — who speaks the closing word? — DECIDED
+One consequence worth recording, so nobody later builds against an assumption that is not
+true: **`session_ended` has no consumer in this topology.** Agent Core still emits it, and
+the shim uses it only as the cue to speak the closing word. Nothing is signalled to the
+client. In practice the line stays open after the goodbye until the client's idle handling
+closes it, which is its normal behaviour for any call where the caller goes quiet.
 
-**Decision: the shim appends it.** On `DoneEvent.session_ended`, emit the channel's
-`terminal_word` as one final content chunk before closing the stream. This reproduces what
-the voice reach layer does today, and the value is already in domain config
-(`channels.<name>.terminal_word`, currently `"Thank you"`).
+This also settles a requirement in #369 — *"translate `was_escalated` into call
+termination"*. It assumed the shim would drive termination. It does not, so the
+requirement does not apply here and should be treated as descoped rather than outstanding.
 
-It matters more here than it would elsewhere: because the shim cannot hang up (Part B),
-the closing word is the *only* signal the caller gets that the conversation has finished.
-Without it the line simply goes quiet.
+#### `tools` — DECIDED
 
-The alternative — ending the stream after the agent's last real sentence — was rejected
-because `terminal_word` exists precisely because a final reply often does not read as a
-goodbye.
-
-#### Part B — who hangs up, and what about `tools`? — DECIDED
-
-**Decision: the shim ignores `tools` entirely and never emits `tool_calls`.** The client
-is not expected to send any; if it does, they are accepted and discarded.
-
-This keeps the rules simple and absolute:
+**The shim ignores `tools` entirely and never emits `tool_calls`.** The client is not
+expected to send any; if it does, they are accepted and discarded.
 
 - The client's tool definitions are **never forwarded** to Agent Core, which owns its own
-  tools.
-- Agent Core's internal tool calls (`fetch_jobs`, `save_profile`, `apply_job`) are
-  **never surfaced** to the client. `was_tool_used` is metadata, not a `tool_calls`
-  response.
-- The shim **never emits** `tool_calls`. Every response is plain content.
+  tools and executes them internally.
+- Agent Core's internal tool calls (`fetch_jobs`, `save_profile`, `apply_job`) are **never
+  surfaced** to the client. `was_tool_used` is metadata, not a `tool_calls` response.
+- Every response the shim produces is plain content.
 
-**The consequence, accepted knowingly: the shim cannot hang up the call.** A tool call was
-the only in-band mechanism available — the shim has no control over the caller's line and
-can only send the client something the client acts on. With tool calls ruled out, there is
-no such signal.
-
-So after the agent finishes and speaks its closing word, **the line stays open until the
-client's own idle or session-timeout handling ends it.** Whatever call-ending behaviour
-the client already has is what terminates the call. This also means #369's requirement
-that `was_escalated` terminate the call **is not met by this design** and should be
-treated as descoped rather than outstanding.
-
-If clean hang-up later proves necessary, the options are to revisit tool calls, or to have
-the client end the call on its own signal — and the right long-term answer is #376, where
-a native provider can drive termination directly.
+Emitting a `tool_calls` response was considered as a way to signal call termination, since
+that is how a telephony client would normally act on an out-of-band instruction. It was
+rejected: it is not needed once hanging up is the client's concern, and it would be the
+kind of feature accretion a throwaway service should refuse.
 
 ## 12. Error handling
 
@@ -801,6 +776,7 @@ Time-to-first-chunk is the number that matters for a voice client and is the one
 
 - Option B / #376 — the `agent_core` provider in the client's registry
 - Barge-in cancellation and consent events — accepted Option A losses
+- Ending the call — the client owns the transport and its own call-ending behaviour (§11.5)
 - The greeting (§10) — configured on the client side
 - `/v1/models`, `/v1/completions` and every other OpenAI endpoint
 - Multi-tenancy; conversations are identified by `session_id`, callers by `user_id`
