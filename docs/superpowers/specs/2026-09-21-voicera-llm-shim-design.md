@@ -262,8 +262,35 @@ variant, and for a streaming client that is the wrong one of the two:
 It also recovers one of Option A's three accepted losses — streaming fidelity. Barge-in
 cancellation and consent events remain out of scope.
 
-If barge-in is wanted later, `DELETE /sessions/{session_id}/active_turn` and the
-`abort_event` hook in `agent_core/src/base.py` are the extension points.
+### Barge-in: the client disconnecting mid-turn
+
+The client interrupts. It stops consuming the moment the caller talks over the bot, which
+in practice closes the HTTP connection. This is not an edge case to handle later — it is
+ordinary behaviour on every call.
+
+**Agent Core does not notice.** Measured: a `/stream_turn` request whose consumer was
+killed four seconds in still logged `STREAM TURN COMPLETE` and ran the full pipeline. The
+turn completes whether or not anyone is listening.
+
+For most turns that is harmless. For a turn that calls `save_profile` or `apply_job` it is
+not: a profile gets created, or a job application submitted, from a sentence the caller
+interrupted and never finished.
+
+**The shim therefore cancels explicitly.** On client disconnect it calls:
+
+```
+DELETE /sessions/{session_id}/active_turn     ("Interrupt the active turn for a session")
+```
+
+**This protection is partial, deliberately so upstream.** From
+`agent_core/src/base.py`, the abort "exits cleanly at the next stage boundary without
+yielding further events. **Tool calls and trust checks that are already in-flight run to
+completion** to preserve external-side-effect safety."
+
+So cancelling narrows the window rather than closing it. A tool call already in flight
+still lands, and a `save_profile` issued microseconds before the caller interrupted will
+still write. Cancelling is worth doing because it prevents every *subsequent* stage, but
+the design should not claim an interrupted turn has no effect.
 
 ---
 
@@ -652,6 +679,14 @@ observed fabricating profile fields and writing them to Signals, which is why th
 work moved to blue-dots. Adding the same channel block to `kkb` later is a config change,
 not a shim change.
 
+**All protocol translation lives here, and Agent Core is unchanged.** `/stream_turn`'s
+event format serves every other consumer — `reach_layer/voice`, `web` in session mode,
+`cli`, `mcp` — so converting at source would break them. It also carries what the OpenAI
+format has no place for: `was_escalated`, `session_ended`, `was_tool_used`, `turn_status`,
+`sentence_index`, and the `SignalEvent` pipeline visibility. Adapting a transport is what
+a Reach Layer channel is for, and this one is throwaway, so the translation is disposable
+with it rather than becoming permanent framework debt.
+
 New logic is small and separable:
 
 | Unit | Responsibility |
@@ -660,7 +695,7 @@ New logic is small and separable:
 | `identity` | Resolve the caller's phone into `user_id` and `session_id` (§11.2, §11.3); reject when absent |
 | `translate_request` | OpenAI request to `ProcessTurnRequest` |
 | `translate_response` | `ProcessTurnResponse` to `chat.completion` |
-| `translate_stream` | `SentenceEvent` and `DoneEvent` to `chat.completion.chunk` plus `[DONE]` |
+| `translate_stream` | `SentenceEvent` and `DoneEvent` to `chat.completion.chunk` plus `[DONE]`; cancels the Agent Core turn on client disconnect (§8) |
 
 Caller-facing strings and the configured key come from configuration, never source
 (`.claude/rules/configuration-discipline.md`).
@@ -698,6 +733,12 @@ looks like a first-time caller and the record written holds a number the employe
 ring. The shim validates the format itself for this reason, and the first integration test
 should confirm a real record is created and retrievable rather than only that the call
 returned 200.
+
+**An interrupted turn can still write (§8).** The shim cancels on client disconnect, but
+Agent Core deliberately lets in-flight tool calls finish. A caller who interrupts at the
+wrong moment can still end up with a profile written or an application submitted for a
+sentence they cut off. Nothing in the shim can close that window — it would need the abort
+to propagate into the tool loop, which is an Agent Core change and out of scope here.
 
 **The no-auth decision depends on a deployment property, not on code (§6).** Internal-only
 traffic is the sole access control. Nothing in the shim enforces or checks it, and an
@@ -775,7 +816,8 @@ Time-to-first-chunk is the number that matters for a voice client and is the one
 ## 17. Out of scope
 
 - Option B / #376 — the `agent_core` provider in the client's registry
-- Barge-in cancellation and consent events — accepted Option A losses
+- Consent events — an accepted Option A loss
+- Full barge-in safety — the shim cancels the turn (§8), but in-flight tool calls still complete; closing that window needs an Agent Core change
 - Ending the call — the client owns the transport and its own call-ending behaviour (§11.5)
 - The greeting (§10) — configured on the client side
 - `/v1/models`, `/v1/completions` and every other OpenAI endpoint
