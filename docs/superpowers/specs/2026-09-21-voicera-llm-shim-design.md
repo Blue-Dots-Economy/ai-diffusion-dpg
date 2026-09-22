@@ -179,8 +179,8 @@ curl before any voice is involved.
 | `messages` | **§11.1 — open.** |
 | `model` | Recorded and echoed back in the response; does not select a model. Agent Core owns model choice via domain config; the client's own LLM model setting is vestigial and merely points at the shim. |
 | `stream` | Selects `/stream_turn` (true) or `/process_turn` (false). |
-| *(not from the request)* `channel` | **§11.4 — open.** Required by Agent Core; omitting it fails the turn. |
-| `tools`, `tool_choice`, `functions`, `function_call` | **§11.5 — open.** |
+| *(not from the request)* `channel` | Set by the shim to its own channel name (§11.4). Required by Agent Core; omitting it fails the turn. |
+| `tools`, `tool_choice`, `functions`, `function_call` | Accepted and discarded; the shim never emits `tool_calls` (§11.5). |
 | `n` | Values greater than 1 rejected with `400`; Agent Core produces one response. |
 | `temperature`, `top_p`, `seed`, `max_tokens`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `stop`, ... | Accepted and ignored. Agent Core owns sampling. Ignoring unsupported parameters is the norm for OpenAI-compatible servers and keeps clients working. |
 | `stream_options.include_usage` | Honoured — adds the final usage chunk (§9). |
@@ -295,10 +295,15 @@ cannot fix, and would otherwise be debugged in the wrong place.
 
 ## 11. Open questions
 
+Three remain open. Two more (§11.4, §11.5 Part B) have since been decided and are
+recorded below with their consequences.
+
 ### 11.1 What do we send to Agent Core from `messages[]`?
 
-**The problem.** OpenAI is stateless, so a client sends the entire conversation on every
-request and it grows each turn:
+**Status: open, pending confirmation from the client team.**
+
+OpenAI is stateless, so a client normally sends the entire conversation on every request
+and it grows each turn:
 
 ```
 turn 1   [system, u1]
@@ -306,31 +311,24 @@ turn 2   [system, u1, a1, u2]
 turn 3   [system, u1, a1, u2, a2, u3]
 ```
 
-Agent Core is the opposite. The client keeps conversation state client-side; ai-diffusion
-keeps it server-side in Memory Layer, and Agent Core's request takes a single
-`user_message`. So both
-sides are tracking the same conversation, and the client is telling us things Agent Core
-already knows.
+Agent Core is the opposite. It stores history, journey state, collected profile fields
+and tool results in Memory Layer, and its request takes a single `user_message`. Passing
+the whole array would double-count everything Agent Core already knows.
 
-**Options.**
+**Preferred: ask the client to send only the newest user message.** The shim then passes
+`messages[-1].content` straight through with no interpretation. Simplest on our side and
+unambiguous — there is no guessing about which message is "the new one".
 
-**(a) Send the last user message only.** Agent Core supplies the rest from its own
-memory. Fits how Agent Core is built and is the only option that preserves journey state,
-tool results and the collected profile across turns. Depends on §11.3 for a correct
-session id.
+**Fallback, if they decline or cannot:** the shim extracts the last `user`-role message
+itself and discards the rest. Functionally equivalent for well-formed input, but it puts
+the burden of interpretation on us and is fragile if a client ever sends two user
+messages in a row, replays after a reconnect, or reorders.
 
-**(b) Be genuinely stateless.** Forward the whole conversation each turn and hold nothing
-server-side. Most faithful to the OpenAI contract. But `ProcessTurnRequest` has no field
-for an inbound history, and journey state, subagent routing and collected fields are not
-reconstructible from message text alone. This would require changing Agent Core, which is
-out of scope for a throwaway shim.
+Either way the earlier messages are discarded; the question is only who does the
+discarding. **To be confirmed with the client team before implementation starts.**
 
-**(c) Send the last message, and verify the rest.** As (a), but compare the earlier
-messages against what Agent Core believes the history is and flag divergence. Catches a
-client that reconnects, retries or replays — at the cost of bookkeeping.
-
-**Suggestion: (a),** with (c) as a cheap safety net if replay proves to be a real problem
-in testing. (b) is not achievable without changing Agent Core.
+Note that a client sending only the last message is no longer behaving like a standard
+OpenAI client — the same caveat as §11.2. If that ask is refused, the fallback works.
 
 ### 11.2 How does the caller's phone number reach the shim?
 
@@ -373,10 +371,7 @@ literal `"null"` where a caller identifier belonged and the upstream returned 42
 
 The premise of this shim is that the client points at us believing we are OpenAI and
 changes nothing else. That premise holds everywhere except here. An LLM has no reason to
-be told who is on the phone, so nothing in the chat-completions contract carries it. Of
-the 37 request fields there is no caller-identity field — `user` exists but is optional,
-is documented as a caching and abuse-detection hint, and is being superseded by
-`safety_identifier` / `prompt_cache_key`, so it is not something to build on.
+be told who is on the phone, so nothing in the chat-completions contract carries it.
 
 **If the client calls us exactly as it calls OpenAI, the shim receives nothing that
 identifies the caller.** That cannot be worked around on our side: the value was never
@@ -386,49 +381,66 @@ sent, and no amount of inference recovers it.
 
 This is a **requirement on the client, not a design choice for us**. The client must
 deliberately send the caller's phone number on every request. The only open part is
-*which mechanism* it uses.
+*which mechanism* it uses, and that has to be agreed with them.
 
-It is the one item in this design that cannot be settled on our side alone, and the one
-place where "point at us and change nothing" does not hold. It needs agreeing with the
-client team and writing into the integration contract before implementation starts.
+#### Options to put to the client team, in preference order
 
-#### Options for the transport
+All require the client to do something deliberate; there is no option in which the number
+simply arrives. Listed so that if one is refused, the next can be proposed.
 
-All four require the client to do something deliberate; there is no option in which the
-number simply arrives.
+**1. `metadata` — recommended.** A published, optional field on the request body:
 
-**(a) Alongside whatever already carries call identity.** The client already passes a
-per-call identity to its LLM service. The same mechanism can carry the caller's number.
-Consistent with how session identity is already solved, and nothing new to invent.
+> Set of 16 key-value pairs that can be attached to an object. This can be useful for
+> storing additional information about the object in a structured format.
 
-**(b) An HTTP header**, e.g. `X-User-Id`. Explicit, outside the request body so it does
-not strain the OpenAI contract, and trivial for any client to set.
+Keys up to 64 characters, values up to 512. It is the only field in the contract designed
+for arbitrary per-request data, so nothing is being repurposed. It also carries the
+session identifier (§11.3) in the same place, solving both with one ask:
 
-**(c) The `metadata` field** on the request body — a standard OpenAI field accepting up to
-16 key-value pairs. The most contract-aligned option, since it is part of the published
-schema.
+```json
+"metadata": { "caller_phone": "919900112233", "call_id": "..." }
+```
 
-**(d) Agent Core resolves it from the call id.** Rejected: no such mapping exists, and it
-would add a dependency the shim cannot satisfy on its own.
+**2. An HTTP header**, e.g. `X-Caller-Phone` and `X-Session-Id`. Outside the request body
+entirely, so it places no strain on the OpenAI contract at all, and any HTTP client can
+set one. The constraint is whether the client's LLM configuration exposes custom headers
+on outbound calls — worth asking before proposing it.
 
-**Suggestion: (a), with (c) as the fallback.** (a) reuses a path the client already has;
-(c) is the most contract-aligned, since `metadata` is a published OpenAI field.
+**3. `user`.** A plain string field documented as *"a stable identifier for your
+end-users."* Semantically the closest of the legacy identity fields and carries no
+transformation advice. It is marked as being replaced by `safety_identifier` and
+`prompt_cache_key`, but remains in the schema and is still accepted.
+
+**4. `safety_identifier` — works, but carries a trap.** A `string | null`, max 64
+characters, so a phone number fits and would reach us intact. But the field's own
+documentation says:
+
+> We recommend **hashing** their username or email address, in order to avoid sending us
+> any identifying information.
+
+A client team following that guidance will hash the value, and we would receive an opaque
+digest that cannot be used for `?phone_number=`. It only works if they knowingly send the
+raw number against the field's stated intent. If this option is chosen, that caveat must
+be stated explicitly in the request to them.
+
+**Not viable: a custom message role.** Adding something like
+`{"role": "contact", "content": "<phone>"}` to `messages[]` looks attractive but the role
+enum is closed — `developer`, `system`, `user`, `assistant`, `tool`, `function`. A
+conformant client SDK rejects an unknown role before the request is sent, so this would
+require the client to bypass its own SDK. It would also put caller PII into the
+conversation transcript.
 
 ### 11.3 Is `session_id` the phone number, or a separate per-call id?
 
-The same gap applies: **chat-completions has no session concept.** It is stateless by
-design — the client resends the whole conversation each turn precisely because the server
-is not expected to remember anything, so there is no conversation identifier in the
-request.
+**Status: open — ours to decide, no external dependency.**
 
-Agent Core is the opposite. It requires a `session_id` and keys all conversation memory on
-it — history, journey state, collected profile fields, tool results. `ProcessTurnRequest`
-takes `session_id` and `user_id` as **two separate fields**, so using different values for
-them costs nothing structurally.
+The same gap applies: chat-completions has no session concept. It is stateless by
+design, so there is no conversation identifier in the request.
 
-Unlike §11.2 there is a fallback that needs nothing further from the client: if the phone
-number is being sent anyway, it can serve as the session key too. That is option (a), and
-it has a real cost.
+Agent Core requires a `session_id` and keys all conversation memory on it — history,
+journey state, collected profile fields, tool results. `ProcessTurnRequest` takes
+`session_id` and `user_id` as **two separate fields**, so using different values costs
+nothing structurally.
 
 **(a) Use the phone number for both.** One value to obtain, one thing to agree with the
 client, and §11.2 then covers everything.
@@ -436,18 +448,16 @@ client, and §11.2 then covers everything.
 The cost is that a phone number identifies a *person*, not a *conversation*. The same
 caller ringing a second time reuses the session and **resumes the previous conversation
 mid-flow** — the bot picks up at "what's your age?" instead of greeting them. Partly
-mitigable: `ProcessTurnRequest` has a `fresh` flag to force a new session, triggered on an
-idle gap. That is a heuristic, and choosing the gap correctly is guesswork.
+mitigable: `ProcessTurnRequest` has a `fresh` flag to force a new session, triggered on
+an idle gap. That is a heuristic, and choosing the gap correctly is guesswork.
 
-**(b) Use a separate per-call identifier.** The client already passes a per-call identity
-to its LLM service, so such a value exists on its side; `session_id` derives from it.
-
+**(b) Use a separate per-call identifier**, supplied by the client alongside the phone.
 Correct by construction: the phone identifies the person and is stable forever, the
-per-call id identifies one conversation and is new every call. No resume surprise, no idle
-heuristic.
+per-call id identifies one conversation and is new every call. No resume surprise, no
+idle heuristic. It also makes the abandoned-session problem self-correcting (§15).
 
-**Suggestion: (b).** Given the client can already supply a per-call identity, (b) is no
-more work to obtain than (a) and removes a whole class of confusing behaviour.
+**Suggestion: (b).** If `metadata` is chosen for §11.2 it carries both values at no extra
+cost, so (b) becomes free.
 
 **If (b) is chosen, the identifier must be named in the integration contract** — the shim
 treats it as an opaque string and does not care about its format, but it must be stable
@@ -459,56 +469,44 @@ If either `user_id` or `session_id` is absent or unusable, the shim returns `400
 error envelope and **does not call Agent Core**. Guessing, defaulting or proceeding with
 an empty value is what produces the corrupted-record failures described in §11.2.
 
-### 11.4 Which `channel` do we declare — `voice` or `web`?
+### 11.4 Which `channel` do we declare? — DECIDED
 
-**Why it matters.** `ProcessTurnRequest.channel` is not a label. Agent Core uses it to
-select which `system_prompt_suffix` and `tts_rules` apply to the turn, and the two
-candidates instruct the model to do **opposite** things:
+**Decision: a new Reach Layer channel of its own, alongside `web` and `voice`.**
+
+`ProcessTurnRequest.channel` is not a label. Agent Core uses it to select which
+`system_prompt_suffix` and `tts_rules` apply, and the existing two instruct the model to
+do opposite things:
 
 | channel | what the model is told |
 |---|---|
 | `voice` | ~2,000 chars of phone rules plus `tts_rules` for numbers, money, dates, time, phone, email, abbreviations and output script. Write numbers **as words**. No markdown. |
 | `web` | *"You are in a text chat, not on a phone call. The user READS your reply."* Digits, markdown lists, bold. |
 
-**Omitting it is a hard failure**, not a fallback. `channel` defaults to `None` and Agent
-Core raises:
+Omitting it is a hard failure, not a fallback — `channel` defaults to `None` and Agent
+Core raises `ValueError(f"Unsupported channel: {channel}")`.
 
-```python
-config = channels.get(channel)
-if config is None:
-    raise ValueError(f"Unsupported channel: {channel}")
-```
+Neither existing value is right. `web` is wrong for a caller who will *hear* the reply —
+they would be read `**Titan Retail**` and digit strings aloud. `voice` is closer but
+assumes the voice Reach Layer is downstream, and it is not: in this topology there is no
+TTS sanitizer to clean up after the model (§15), so this path needs its own, stricter
+rules.
 
-So the shim must send something, and the something decides how every reply sounds.
+So the shim becomes **a third Reach Layer channel in its own right**, not a variant of
+either. Reach Layer gains a fourth text surface alongside `web`, `voice` and `cli`, and
+the domain config gains a matching `channels.<name>` block whose prompt rules are tuned
+for it — speech-ready output like `voice`, with no reliance on downstream sanitizing.
 
-**A distinction worth stating, because it is easy to conflate:** where the shim's code
-lives and what channel it declares are independent. The shim is a wrapper on top of
-`reach_layer/web` (§13), but `channel` describes **the medium the caller is using**, not
-the service hosting the shim. Hosting inside `reach_layer/web` does not oblige us to send
-`channel: "web"`.
+**Naming.** The existing directories are named either for a medium (`web`, `voice`,
+`cli`) or a protocol (`mcp`). This one is a protocol surface, so a protocol name fits:
 
-**Options.**
+- **`openai_api`** — recommended. Self-describing and parallel to `mcp`; anyone opening
+  `reach_layer/openai_api/` knows immediately what it speaks.
+- `llm_api` — the same idea, vendor-neutral, if tying the directory to one vendor's name
+  is unwelcome.
+- `bridge` — describes the role rather than the surface; less precise.
 
-**(a) `voice`.** Correct for the actual caller: someone on a phone who will *hear* the
-reply. The model writes numbers as words and avoids markup, which is what a TTS engine
-needs.
-
-**(b) `web`.** Matches where the code is hosted, and is the natural default if the shim is
-built as web routes without thinking about it. It is wrong for the caller: the model is
-explicitly told the user will *read* the reply, so it produces markdown bullets and digit
-strings — and a telephony client will read `**Titan Retail**` and `₹27,620` aloud, markup
-and all.
-
-**(c) A new channel, e.g. `shim` or `telephony`.** Cleanest in principle — the domain
-config could carry rules tuned for this path specifically. But it means adding a channel
-block to every domain config that wants to use the shim, and for a throwaway service that
-is configuration debt for no behavioural gain over `voice`.
-
-**Suggestion: (a) `voice`.** The caller is on a phone; the channel should say so.
-
-This choice also settles the TTS-sanitizer question (§15): with `voice`, the model is
-already instructed to emit speech-ready text, so a sanitizer is optional insurance. With
-`web` it would be mandatory, because markdown would arrive on every single turn.
+`custom` is accurate but tells a future reader nothing. The same name should be used for
+the directory and for the `channels.<name>` key, so there is one concept with one name.
 
 ### 11.5 Session end — the closing word and the hang-up
 
@@ -540,66 +538,50 @@ LLM explicitly instructed to call `end_session` on "thank you", "bye", "bas ho g
 
 #### What is missing here
 
-**In this topology there is no reach layer.** The client replaces it. So when the LLM ends
-the session, the flag reaches the shim and nothing acts on it: no closing word is spoken,
-and the call stays open with the caller sitting in silence after saying goodbye.
+**In this topology the client replaces the voice reach layer.** So when the LLM ends the
+session, the flag reaches the shim and nothing acts on it.
 
-The shim inherits both jobs. They are separable, so they are decided separately.
+#### Part A — who speaks the closing word? — open, low stakes, ours to decide
 
-#### Part A — who speaks the closing word?
+**(a) The shim appends it.** On `DoneEvent.session_ended`, emit the channel's
+`terminal_word` as one final content chunk before closing the stream. Reproduces today's
+behaviour, and the value is already in domain config.
 
-**(a) The shim appends it.** On `DoneEvent.session_ended`, emit
-`channels.voice.terminal_word` as one final content chunk before closing the stream.
-Reproduces today's behaviour exactly, and the value is already in domain config.
+**(b) Nobody.** The conversation stops after the last real sentence. Acceptable if the
+agent's final reply already reads as a goodbye — but `terminal_word` exists because it
+often does not.
 
-**(b) Nobody.** The conversation simply stops after the last real sentence. Acceptable if
-the agent's own final reply already reads as a goodbye — but `terminal_word` exists
-because it often does not.
+**Suggestion: (a).** A few lines, matches current behaviour, and given Part B below it is
+the *only* signal the caller gets that the conversation has finished.
 
-**(c) The client says it.** Configure a closing phrase on the client side. Splits one
-behaviour across two systems and drifts from the domain config.
+#### Part B — who hangs up, and what about `tools`? — DECIDED
 
-**Suggestion: (a).** It is a few lines, it matches current behaviour, and the value is
-already configured.
+**Decision: the shim ignores `tools` entirely and never emits `tool_calls`.** The client
+is not expected to send any; if it does, they are accepted and discarded.
 
-#### Part B — who hangs up? (and what we do with `tools`)
+This keeps the rules simple and absolute:
 
-Hanging up is not something the shim can do directly — it has no control over the
-caller's line. It can only send the client something the client acts on, which makes this
-the same question as what we do with `tools`.
-
-**The problem.** An OpenAI client may declare `tools` and expects the assistant to
-respond with `tool_calls` that the client then executes. Agent Core owns its own tools and
-executes them internally; it never asks the caller to run anything.
-
-Two things are settled either way:
-
-- The client's tool definitions are **never forwarded** to Agent Core.
+- The client's tool definitions are **never forwarded** to Agent Core, which owns its own
+  tools.
 - Agent Core's internal tool calls (`fetch_jobs`, `save_profile`, `apply_job`) are
   **never surfaced** to the client. `was_tool_used` is metadata, not a `tool_calls`
   response.
+- The shim **never emits** `tool_calls`. Every response is plain content.
 
-**Options for the remaining question — may the shim ever emit `tool_calls`?**
+**The consequence, accepted knowingly: the shim cannot hang up the call.** A tool call was
+the only in-band mechanism available — the shim has no control over the caller's line and
+can only send the client something the client acts on. With tool calls ruled out, there is
+no such signal.
 
-**(a) Never.** Accept `tools`, ignore it, always return plain content. Simplest and
-honest. But then nothing on the client side can be triggered by Agent Core. #369 requires
-that `was_escalated` terminate the call, and for a telephony client the only in-band way
-to do that is a tool call the client understands — so (a) means that requirement cannot
-be met through the protocol and must be descoped.
+So after the agent finishes and speaks its closing word, **the line stays open until the
+client's own idle or session-timeout handling ends it.** Whatever call-ending behaviour
+the client already has is what terminates the call. This also means #369's requirement
+that `was_escalated` terminate the call **is not met by this design** and should be
+treated as descoped rather than outstanding.
 
-**(b) Emit `tool_calls` only for a tool the client itself declared.** Never invent one.
-When Agent Core signals a terminal condition (`was_escalated`, `session_ended`) and the
-client has declared a matching tool, respond with `finish_reason: "tool_calls"` and that
-tool. Stays within the contract — we only ever name something the client asked for.
-
-**(c) Support tool calling generally.** Let Agent Core decide to call client tools, and
-accept `role: "tool"` results back. Substantially more work, no current requirement, and
-squarely the feature accretion a throwaway service must avoid.
-
-**Suggestion: (b).** The rule is easy to state: *the shim may name a tool the client
-declared; it may never invent one, and it never exposes Agent Core's internal tools.*
-
----
+If clean hang-up later proves necessary, the options are to revisit tool calls, or to have
+the client end the call on its own signal — and the right long-term answer is #376, where
+a native provider can drive termination directly.
 
 ## 12. Error handling
 
@@ -641,9 +623,15 @@ status is no longer available. The stream terminates with a chunk carrying
 
 ## 13. Placement
 
-A wrapper on top of `reach_layer/web`, reusing its Agent Core client, configuration
-loader and health surface. Whether it ships as extra routes on that service or as a
-sibling module is an implementation-time decision; the design is identical either way.
+**A new Reach Layer channel in its own right** (§11.4), alongside `web`, `voice`, `cli`
+and `mcp` — recommended name `reach_layer/openai_api/`. It follows the shape the existing
+channels use (`Dockerfile`, `main.py`, `pyproject.toml`, `src/`, `tests/`) and reuses the
+shared `reach_layer/base` config loader and Agent Core client rather than reimplementing
+them.
+
+It is not built on top of `reach_layer/web`. It needs its own `channels.<name>` block in
+the domain config, because neither the `web` nor the `voice` prompt rules are right for a
+caller who hears the reply through a client that does no TTS sanitizing.
 
 New logic is small and separable:
 
@@ -670,7 +658,7 @@ The shim runs on a shared demo VM alongside both stacks:
 | VoicEra (trimmed) | 7 — `postgres`, `ferretdb`, `redis`, `api`, `minio`, `minio-init`, `runtime` | ~3 CPU / 4 GB |
 | VM | **4 vCPU / 16 GB / 100 GB** | "comfortable for the demo" |
 
-The shim is an additional service on top of the nine.
+The shim is an additional service on top of the nine — one more Reach Layer channel.
 
 > **Discrepancy to resolve.** Issue #31 states *"Blue-dots footprint is 2 CPU / 4 GB"* and
 > frames the ~2.5 CPU estimate as exceeding a *"confirmed 2 CPU / 4 GB allocation"*. The
