@@ -77,45 +77,6 @@ it does not, we understand the Azure provider exposes a settable `endpoint` — 
 that URL shape instead, which needs no code change on your side. Either works; we need to
 know which so we build the right surface.
 
-## 5. LLM request timeout of at least 30 seconds
-
-Our turns currently take **4–6 seconds**, and a turn that performs several lookups can run
-longer. If your HTTP timeout on LLM calls is shorter, requests will fail before we
-respond.
-
-Please also confirm whether that timeout applies to **time to first byte** or to the
-**whole response**. We stream the reply, so audio begins well before the turn completes —
-which helps only if the timeout is measured on first byte.
-
-## 6. End the call on silence, and tell us the duration
-
-Our service responds only when spoken to; it has no control over the line and cannot hang
-up. When the conversation reaches its natural end we speak a closing word and stop.
-
-VoicEra needs to end the call after that. Please confirm there is an idle or silence
-timeout that will do so, and what it is set to. Without one, a caller who says goodbye is
-left sitting on an open line.
-
-If VoicEra can act on some in-band signal to terminate a call, tell us what it is and we
-will send it.
-
-## 7. Put our greeting text in the agent's `greeting_message`
-
-The first thing the caller hears comes from VoicEra, not from us — our service only
-responds once spoken to. If the greeting field is empty, the bot answers silently and the
-caller hears nothing.
-
-We will supply the exact wording to place there.
-
-## 8. Make VAD timing configurable, or raise the default
-
-Your default `stop_secs` of `0.4` cuts callers off mid-sentence. We run `1.0`, because
-older and rural callers' inter-word pauses run 0.6–1.0 seconds and the shorter window
-turns those into false turn boundaries.
-
-Please make this configurable per agent, or raise the default. This affects VoicEra's own
-Indic-language use cases as much as ours.
-
 ---
 
 ## What we are not asking for
@@ -131,8 +92,7 @@ Indic-language use cases as much as ours.
 
 ## Priority
 
-If discussion time is short, these three need settling first:
+If discussion time is short, these two need settling first:
 
 1. **Item 1** — the caller's phone number. Nothing works without it.
 2. **Item 4** — how we get pointed at: `base_url` or the Azure URL shape.
-3. **Item 6** — how calls end, given our service cannot hang up.
