@@ -383,12 +383,15 @@ This is a **requirement on the client, not a design choice for us**. The client 
 deliberately send the caller's phone number on every request. The only open part is
 *which mechanism* it uses, and that has to be agreed with them.
 
-#### Options to put to the client team, in preference order
+#### Options to put to the client team
 
 All require the client to do something deliberate; there is no option in which the number
-simply arrives. Listed so that if one is refused, the next can be proposed.
+simply arrives. Two are appropriate. Two would function but are the wrong field, and are
+recorded so they are not re-proposed later as oversights.
 
-**1. `metadata` — recommended.** A published, optional field on the request body:
+**Recommended.**
+
+**1. `metadata`.** A published, optional field on the request body:
 
 > Set of 16 key-value pairs that can be attached to an object. This can be useful for
 > storing additional information about the object in a structured format.
@@ -400,39 +403,43 @@ for arbitrary per-request data, so nothing is being repurposed:
 "metadata": { "caller_phone": "919900112233" }
 ```
 
-**2. An HTTP header**, e.g. `X-Caller-Phone` and `X-Session-Id`. Outside the request body
-entirely, so it places no strain on the OpenAI contract at all, and any HTTP client can
-set one. The constraint is whether the client's LLM configuration exposes custom headers
-on outbound calls — worth asking before proposing it.
+**2. An HTTP header**, e.g. `X-Caller-Phone`. Outside the request body entirely, so it
+places no strain on the OpenAI contract at all, and any HTTP client can set one. The
+constraint is whether the client's LLM configuration exposes custom headers on outbound
+calls — worth asking before proposing it.
 
-**3. `prompt_cache_key`.** A plain `string | null` that is not deprecated and carries no
-instruction to transform the value. Its documented purpose is cache bucketing —
-*"Replaces the `user` field"* — so using it for identity is a repurposing, but a harmless
-one: a stable per-caller key is exactly the shape it expects.
+**Not recommended.**
 
-> The `user` field was considered and rejected. It is the obvious identity slot —
-> *"a stable identifier for your end-users"* — but the schema marks it
-> `"deprecated": true`, and asking a partner team to adopt a deprecated field invites
-> pushback and creates future migration work.
+Both of the following would carry the value to us intact, and both are the wrong field.
+The phone number is the user's identity in this domain; putting it in a slot named for
+something else means anyone reading either codebase later finds caller PII somewhere it
+has no business being, with no indication of why.
 
-**4. `safety_identifier` — works, but carries a trap.** A `string | null`, max 64
-characters, so a phone number fits and would reach us intact. But the field's own
-documentation says:
+**`safety_identifier`** exists to flag users who may be abusing the API. Its own
+documentation instructs implementers to *hash* the value "in order to avoid sending us
+any identifying information" — so sending a raw phone number is the direct opposite of
+its stated purpose, and a client following that guidance would hand us an unusable
+digest.
 
-> We recommend **hashing** their username or email address, in order to avoid sending us
-> any identifying information.
+**`prompt_cache_key`** is a cache-bucketing hint, described as *"used to cache responses
+for similar requests"*. It has no relationship to caller identity at all. It is not
+deprecated and carries no transformation advice, which makes it the less bad of the two,
+but that is the only thing recommending it.
 
-A client team following that guidance will hash the value, and we would receive an opaque
-digest that cannot be used for `?phone_number=`. It only works if they knowingly send the
-raw number against the field's stated intent. If this option is chosen, that caveat must
-be stated explicitly in the request to them.
+If neither recommended option is available, either of these can be made to work — but the
+choice should be recorded in the integration contract as a known compromise, not adopted
+silently.
 
-**Not viable: a custom message role.** Adding something like
-`{"role": "contact", "content": "<phone>"}` to `messages[]` looks attractive but the role
-enum is closed — `developer`, `system`, `user`, `assistant`, `tool`, `function`. A
-conformant client SDK rejects an unknown role before the request is sent, so this would
-require the client to bypass its own SDK. It would also put caller PII into the
-conversation transcript.
+**Not viable.** A custom message role such as
+`{"role": "contact", "content": "<phone>"}` looks attractive but the role enum is closed —
+`developer`, `system`, `user`, `assistant`, `tool`, `function`. A conformant client SDK
+rejects an unknown role before the request is sent, so this would require the client to
+bypass its own SDK. It would also put caller PII into the conversation transcript.
+
+**Also rejected: the `user` field.** It is the obvious identity slot —
+*"a stable identifier for your end-users"* — but the schema marks it
+`"deprecated": true`, and asking a partner team to adopt a deprecated field invites
+pushback and creates future migration work.
 
 ### 11.3 What is `session_id`? — DECIDED
 

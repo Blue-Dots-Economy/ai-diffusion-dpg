@@ -34,14 +34,26 @@ also cannot obtain it during the conversation: on a phone call the platform alre
 who dialled, and the agent is specifically instructed never to ask a caller for their own
 number.
 
-**Please pick whichever of these is easiest on your side.**
+**Please pick whichever of these two is easiest on your side.**
 
 | | Where | Note |
 |---|---|---|
-| **1** | `metadata` on the request body | A standard OpenAI field — 16 key-value pairs, values up to 512 characters. Designed for exactly this. `{"caller_phone": "919900112233"}` |
-| **2** | An HTTP header, e.g. `X-Caller-Phone` | Outside the request body entirely. Requires your LLM configuration to support custom headers on outbound calls — please confirm whether it does. |
-| **3** | `prompt_cache_key` | A plain string. Not deprecated, and carries no instruction to transform the value — unlike option 4. Its stated purpose is cache bucketing rather than identity, so it is a repurposing, but a harmless one. |
-| **4** | `safety_identifier` | Works — **but** its documentation instructs implementers to *hash* the value to avoid transmitting identifying information. If this option is used we need the **raw** number. A hash is unusable for us. |
+| **1** | `metadata` on the request body | A standard OpenAI field — 16 key-value pairs, values up to 512 characters. It exists precisely for attaching extra information to a request, so nothing is being bent out of shape. `{"caller_phone": "919900112233"}` |
+| **2** | An HTTP header, e.g. `X-Caller-Phone` | Outside the request body entirely, so it places no strain on the OpenAI contract at all. Requires your LLM configuration to support custom headers on outbound calls — please confirm whether it does. |
+
+**Two other fields would technically work, but we do not recommend either.** They are
+listed only so they are not proposed later as though they had been overlooked.
+
+- **`safety_identifier`** is for detecting abusive users, and its documentation instructs
+  implementers to *hash* the value to avoid transmitting identifying information. Sending
+  a raw phone number is the opposite of its stated intent, and a hash would be unusable
+  for us.
+- **`prompt_cache_key`** is a cache-bucketing hint. It has no relationship to caller
+  identity, and using it as one means a future reader of either codebase finds a phone
+  number in a field named for caching.
+
+Both are the wrong field for the job. Where the value lands should still make sense to
+someone reading the code in six months, and neither of these would.
 
 A custom message role such as `{"role": "contact", ...}` will not work: the role enum is
 closed, so a conformant SDK rejects it before the request is sent.
