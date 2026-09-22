@@ -38,7 +38,7 @@ number.
 
 | | Where | Note |
 |---|---|---|
-| **1** | `metadata` on the request body | A standard OpenAI field — 16 key-value pairs, values up to 512 characters. Designed for exactly this, and can carry item 3 in the same place. `{"caller_phone": "919900112233", "call_id": "..."}` |
+| **1** | `metadata` on the request body | A standard OpenAI field — 16 key-value pairs, values up to 512 characters. Designed for exactly this. `{"caller_phone": "919900112233"}` |
 | **2** | An HTTP header, e.g. `X-Caller-Phone` | Outside the request body entirely. Requires your LLM configuration to support custom headers on outbound calls — please confirm whether it does. |
 | **3** | The `user` field | A plain string, documented as "a stable identifier for your end-users". Deprecated but still accepted. |
 | **4** | `safety_identifier` | Works — **but** its documentation instructs implementers to *hash* the value to avoid transmitting identifying information. If this option is used we need the **raw** number. A hash is unusable for us. |
@@ -58,17 +58,7 @@ collected profile fields itself, and its API takes a single new message.
 
 Please send only the latest user utterance.
 
-## 3. Send a per-call identifier alongside the phone number
-
-Our platform needs to know which conversation a request belongs to, and chat-completions
-carries no session concept. The phone number identifies the *person*, not the *call* — so
-without a per-call id, a caller who rings back resumes their previous conversation
-mid-flow, and the agent picks up at "what's your age?" instead of greeting them.
-
-Please send whatever per-call identifier VoicEra already generates, alongside the phone
-number. If `metadata` is used for item 1, this costs nothing extra.
-
-## 4. Point the LLM provider at our base URL
+## 3. Point the LLM provider at our base URL
 
 This is how VoicEra reaches us at all.
 
@@ -95,4 +85,4 @@ know which so we build the right surface.
 If discussion time is short, these two need settling first:
 
 1. **Item 1** — the caller's phone number. Nothing works without it.
-2. **Item 4** — how we get pointed at: `base_url` or the Azure URL shape.
+2. **Item 3** — how we get pointed at: `base_url` or the Azure URL shape.

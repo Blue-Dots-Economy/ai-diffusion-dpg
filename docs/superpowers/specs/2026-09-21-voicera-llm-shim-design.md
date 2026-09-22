@@ -295,8 +295,8 @@ cannot fix, and would otherwise be debugged in the wrong place.
 
 ## 11. Open questions
 
-Three remain open. Two more (§11.4, §11.5 Part B) have since been decided and are
-recorded below with their consequences.
+Two remain open — §11.1 and §11.2. The rest (§11.3, §11.4, §11.5 Part B) have been
+decided and are recorded below with their consequences.
 
 ### 11.1 What do we send to Agent Core from `messages[]`?
 
@@ -394,11 +394,10 @@ simply arrives. Listed so that if one is refused, the next can be proposed.
 > storing additional information about the object in a structured format.
 
 Keys up to 64 characters, values up to 512. It is the only field in the contract designed
-for arbitrary per-request data, so nothing is being repurposed. It also carries the
-session identifier (§11.3) in the same place, solving both with one ask:
+for arbitrary per-request data, so nothing is being repurposed:
 
 ```json
-"metadata": { "caller_phone": "919900112233", "call_id": "..." }
+"metadata": { "caller_phone": "919900112233" }
 ```
 
 **2. An HTTP header**, e.g. `X-Caller-Phone` and `X-Session-Id`. Outside the request body
@@ -430,43 +429,75 @@ conformant client SDK rejects an unknown role before the request is sent, so thi
 require the client to bypass its own SDK. It would also put caller PII into the
 conversation transcript.
 
-### 11.3 Is `session_id` the phone number, or a separate per-call id?
+### 11.3 What is `session_id`? — DECIDED
 
-**Status: open — ours to decide, no external dependency.**
+**Decision: the phone number, the same value as `user_id`.** No separate per-call
+identifier is requested from the client.
 
-The same gap applies: chat-completions has no session concept. It is stateless by
-design, so there is no conversation identifier in the request.
+#### Why this is right, and why the obvious objection does not hold
 
-Agent Core requires a `session_id` and keys all conversation memory on it — history,
-journey state, collected profile fields, tool results. `ProcessTurnRequest` takes
-`session_id` and `user_id` as **two separate fields**, so using different values costs
-nothing structurally.
+The objection to reusing the phone is that it identifies a *person*, not a *conversation*,
+so a caller ringing back would resume their previous conversation rather than starting
+afresh. That is true — and for this domain it is the desired behaviour, not a defect. A
+caller whose line drops mid-application should continue where they left off, not answer
+everything again.
 
-**(a) Use the phone number for both.** One value to obtain, one thing to agree with the
-client, and §11.2 then covers everything.
+It is also less consequential than it first appears, because the two kinds of state are
+stored separately and only one of them is keyed on the session:
 
-The cost is that a phone number identifies a *person*, not a *conversation*. The same
-caller ringing a second time reuses the session and **resumes the previous conversation
-mid-flow** — the bot picks up at "what's your age?" instead of greeting them. Partly
-mitigable: `ProcessTurnRequest` has a `fresh` flag to force a new session, triggered on
-an idle gap. That is a heuristic, and choosing the gap correctly is guesswork.
+| Keyed on | Holds | Survives into a new session? |
+|---|---|---|
+| `user_id` | name, age, gender, location, trade, plus the previous journey summary | **Yes** |
+| `session_id` | current subagent, pending question, fetched job list, `selected_job_item_id`, `profile_action` | No |
 
-**(b) Use a separate per-call identifier**, supplied by the client alongside the phone.
-Correct by construction: the phone identifies the person and is stable forever, the
-per-call id identifies one conversation and is new every call. No resume surprise, no
-idle heuristic. It also makes the abandoned-session problem self-correcting (§15).
+At session start, Memory Layer hydrates a new session for a returning caller from the
+persistent profile (`memory_layer/src/memory_layer.py:250-259`):
 
-**Suggestion: (b).** If `metadata` is chosen for §11.2 it carries both values at no extra
-cost, so (b) becomes free.
+```python
+if is_returning:
+    profile = self._user_store.get_profile(user_id)
+    journey = self._journey_store.get_last_journey_summary(user_id, session_id)
+    for field_name in self._declared_fields:
+        val = profile.get(field_name)
+        if val is not None:
+            initial_state[field_name] = str(val)
+```
 
-**If (b) is chosen, the identifier must be named in the integration contract** — the shim
-treats it as an opaque string and does not care about its format, but it must be stable
-for the life of one conversation and unique across concurrent ones.
+So a returning caller is **never re-asked their profile questions**, whatever `session_id`
+is. The choice is not "resume versus start from scratch" — it is only whether the
+*conversation* continues.
+
+#### The TTL is the boundary
+
+The domain already sets this deliberately:
+
+```yaml
+ttl_minutes: 2880    # 2 days — caller can resume next day if dropped.
+```
+
+Within two days the session is still in Redis and the conversation resumes. After that it
+has expired, and the caller gets a clean conversation with their profile still known. The
+idle boundary is therefore already configured and does not need inventing, and
+`ProcessTurnRequest.fresh` is not needed.
+
+#### Consequences, accepted
+
+**A stale job list inside the TTL window.** `last_jobs` and `selected_job_item_id` persist
+with the session, so a caller who browsed jobs on Monday and rings back on Tuesday resumes
+against Monday's search results — the agent could ask "shall I submit your application?"
+about a listing from the previous call. Job postings change slowly, so within two days
+this is minor. If it proves to be a problem, the fix belongs in the domain config (expire
+the job list sooner than the session) rather than in the shim.
+
+**Two simultaneous calls from one number would share a session.** Unlikely on telephony,
+and the only case a per-call identifier would have prevented. Recorded rather than
+designed around.
 
 ### Both values: fail fast when missing
 
-If either `user_id` or `session_id` is absent or unusable, the shim returns `400` in the
-error envelope and **does not call Agent Core**. Guessing, defaulting or proceeding with
+If the caller's phone number is absent or unusable, the shim returns `400` in the error
+envelope and **does not call Agent Core**. `session_id` is derived from the same value
+(§11.3), so one missing input fails both. Guessing, defaulting or proceeding with
 an empty value is what produces the corrupted-record failures described in §11.2.
 
 ### 11.4 Which `channel` do we declare? — DECIDED
@@ -595,7 +626,7 @@ Failures return the **OpenAI error envelope with real HTTP status codes**:
 |---|---|---|
 | Malformed body, missing `messages` or `model` | 400 | `invalid_request_error` |
 | `n` greater than 1 | 400 | `invalid_request_error` |
-| `user_id` or `session_id` missing (§11.2, §11.3) | 400 | `invalid_request_error` |
+| Caller's phone number missing (§11.2) | 400 | `invalid_request_error` |
 | Bad or missing key | 401 | `authentication_error` |
 | Agent Core unreachable or timed out | 502 | `api_error` |
 | `DoneEvent.error_type` or `ProcessTurnResponse.error_type` set | 502 | `api_error` |
@@ -638,7 +669,7 @@ New logic is small and separable:
 | Unit | Responsibility |
 |---|---|
 | `routes` | `POST /v1/chat/completions`, auth, request validation |
-| `identity` | Resolve `user_id` (§11.2) and `session_id` (§11.3); reject when absent |
+| `identity` | Resolve the caller's phone into `user_id` and `session_id` (§11.2, §11.3); reject when absent |
 | `translate_request` | OpenAI request to `ProcessTurnRequest` |
 | `translate_response` | `ProcessTurnResponse` to `chat.completion` |
 | `translate_stream` | `SentenceEvent` and `DoneEvent` to `chat.completion.chunk` plus `[DONE]` |
@@ -704,9 +735,9 @@ Ugly and recoverable, not data-corrupting. Revisit if it proves frequent on real
 
 **Caller hang-up never reaches Agent Core.** If the caller drops mid-conversation, the
 shim simply stops receiving requests; nothing informs Agent Core and the session state
-lingers. Self-correcting if `session_id` is a per-call value (§11.3 option b) — the next
-call starts fresh regardless. Persistent if `session_id` is the phone number, where the
-next call resumes a half-finished conversation.
+lingers. With `session_id` being the phone number (§11.3), the next call
+resumes that conversation — intended for a dropped call, and bounded by the 2-day session
+TTL after which it expires and the caller starts clean.
 
 **Client request timeout against turn latency.** Measured turns are 4-6 s. If the
 client's HTTP timeout is below that, turns fail before Agent Core answers. Streaming
