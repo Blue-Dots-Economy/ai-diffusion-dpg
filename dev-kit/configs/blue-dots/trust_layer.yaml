@@ -19,6 +19,10 @@ trust:
       - "violence"
     escalation_topics:
       - "suicide"
+      # "suicidal" is a separate entry, not an inflection: it does not contain
+      # "suicide" as a substring (suicid-al vs suicid-e), so no suffix rule in
+      # the matcher can reach it. It is also the more common phrasing.
+      - "suicidal"
       - "arrested"
       - "police case"
       - "FIR"

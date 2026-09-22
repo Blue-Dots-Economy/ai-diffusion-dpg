@@ -207,6 +207,12 @@ def _join_sentences(parts: list[str]) -> str:
     welded onto the end of the intro line stops being a list item, which is
     why the first bullet used to render inline. Anything opening a block
     construct — "- ", "* ", "1. ", "# ", "> " — gets a newline instead.
+
+    Leaving a list needs *two* newlines rather than one. Under CommonMark a
+    single newline between a list item and a following plain sentence is a
+    lazy continuation, so the renderer folds that sentence into the last
+    <li> — the trailing "Which one would you like to apply to?" ends up
+    inside the final bullet. A blank line closes the list properly.
     dev-kit avoids all of this by never splitting its replies; here the split
     is inherent to streaming, so the join has to put the structure back.
 
@@ -224,11 +230,18 @@ def _join_sentences(parts: list[str]) -> str:
         if not part:
             continue
         if out and not out.endswith(("\n", " ")):
-            # A newline is needed if this part OPENS a block, or if the
-            # previous one ENDED inside a list — otherwise the following
-            # sentence is welded onto the last bullet and joins the list.
             prev_line_is_block = bool(_MD_BLOCK_START.match(out.rsplit("\n", 1)[-1]))
-            out += "\n" if (_MD_BLOCK_START.match(part) or prev_line_is_block) else " "
+            if _MD_BLOCK_START.match(part):
+                # Another block line: a single newline keeps consecutive
+                # bullets in one list.
+                out += "\n"
+            elif prev_line_is_block:
+                # Plain text after a list item needs a BLANK line, not one
+                # newline. CommonMark treats a single newline here as a lazy
+                # continuation and folds the sentence into the last <li>.
+                out += "\n\n"
+            else:
+                out += " "
         out += part
     return out.strip()
 

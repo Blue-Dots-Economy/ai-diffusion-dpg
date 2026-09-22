@@ -237,3 +237,55 @@ def test_multi_word_escalation_topic_still_matches(trust):
 def test_plural_of_a_term_still_matches(trust):
     """The trailing "s" allowance keeps stem rules working."""
     assert trust.check_input("s1", "he made threats")["action"] == "block"
+
+
+# ---------------------------------------------------------------------------
+# Inflected forms must still match — the direction whole-word matching breaks
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("message", [
+    "thinking about killing myself",
+    "he killed my brother",
+    "he is a killer",
+    "they threatened me",
+    "my employer is threatening me",
+    "there was a bombing at the site",
+])
+def test_inflected_blocked_terms_still_block(trust, message):
+    """A rule must catch the forms a caller actually types.
+
+    Anchoring on word boundaries without allowing inflections would let all of
+    these through: the stem is present but the typed word is not the stem. This
+    is the failure direction that a plural-only suffix missed.
+    """
+    assert trust.check_input("s1", message)["action"] == "block"
+
+
+def test_inflected_escalation_topic_still_escalates(trust):
+    """Multi-word topics inflect too — "court notice" must catch "court notices"."""
+    assert trust.check_input("s1", "i received two court notices")["action"] == "escalate"
+
+
+# ---------------------------------------------------------------------------
+# ...but short terms must NOT inflect — they collide with ordinary words
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("message", [
+    "i was fired from my job",
+    "they are firing staff",
+    "the company fires people often",
+    "i am a firefighter",
+    "fire safety officer role",
+])
+def test_short_topic_does_not_match_inflections_of_other_words(trust, message):
+    """"FIR" is three characters and must match as a whole word only.
+
+    With inflections enabled it would also match "fired", "firing" and "fires" —
+    three of the most ordinary words in a jobs conversation, each of which would
+    escalate the caller to a human agent mid-flow.
+    """
+    assert trust.check_input("s1", message)["action"] == "allow"
+
+
+def test_short_topic_still_matches_on_its_own(trust):
+    assert trust.check_input("s1", "should i file an FIR")["action"] == "escalate"

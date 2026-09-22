@@ -774,10 +774,34 @@ def test_join_sentences_puts_a_list_item_on_its_own_line():
 
 
 def test_join_sentences_breaks_out_of_a_list_before_a_trailing_sentence():
-    """A sentence after the last bullet must not be welded onto it."""
+    """A sentence after the last bullet needs a BLANK line, not one newline.
+
+    Under CommonMark a single newline here is a lazy continuation, so the
+    renderer folds the sentence into the final <li> instead of starting a new
+    paragraph. Asserting the single newline passed while the browser output was
+    still wrong.
+    """
     out = _join_sentences(["- **Titan Retail** — Site Electrician",
                            "Which one would you like to apply to?"])
-    assert out == ("- **Titan Retail** — Site Electrician\n"
+    assert out == ("- **Titan Retail** — Site Electrician\n\n"
+                   "Which one would you like to apply to?")
+
+
+def test_join_sentences_keeps_consecutive_bullets_in_one_list():
+    """Block-to-block stays a single newline, or the list splits in two."""
+    out = _join_sentences(["- one", "- two", "- three"])
+    assert out == "- one\n- two\n- three"
+
+
+def test_join_sentences_full_job_list_shape():
+    """Intro, bullets, then a question — the shape the domain actually emits."""
+    out = _join_sentences(["I found 2 electrician jobs in Bengaluru.",
+                           "- **Titan Retail** — Site Electrician",
+                           "- **Flipkart** — Site Electrician",
+                           "Which one would you like to apply to?"])
+    assert out == ("I found 2 electrician jobs in Bengaluru.\n"
+                   "- **Titan Retail** — Site Electrician\n"
+                   "- **Flipkart** — Site Electrician\n\n"
                    "Which one would you like to apply to?")
 
 
@@ -797,7 +821,7 @@ def test_join_sentences_keeps_newlines_inside_a_multi_line_part():
     starts on a new line rather than extending the last bullet."""
     out = _join_sentences(["- **Titan Retail**\n- **Flipkart**",
                            "Which one would you like to apply to?"])
-    assert out == ("- **Titan Retail**\n- **Flipkart**\n"
+    assert out == ("- **Titan Retail**\n- **Flipkart**\n\n"
                    "Which one would you like to apply to?")
 
 
