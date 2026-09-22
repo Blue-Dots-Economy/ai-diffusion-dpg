@@ -56,6 +56,23 @@ def test_non_streaming_returns_a_valid_completion(client):
     assert r.json()["choices"][0]["message"]["content"] == "Hello there."
 
 
+def test_non_streaming_response_carries_present_null_logprobs(client):
+    """The OpenAI contract requires `logprobs` present-and-null on a choice,
+    not omitted (see src/openai_models.py's module docstring). This checks
+    the actual HTTP response body, not just the builder's return value —
+    `ChatCompletion.model_validate()` alone would not catch the field being
+    dropped, since it is Optional with its own default in the openai SDK's
+    pydantic model.
+    """
+    with patch("src.server.AgentCoreClient.process_turn", new_callable=AsyncMock) as m:
+        m.return_value = {"response_text": "Hello there.", "model_used": "",
+                          "session_id": PHONE, "error_type": None}
+        r = client.post("/v1/chat/completions", json=_body(stream=False))
+    choice = r.json()["choices"][0]
+    assert "logprobs" in choice
+    assert choice["logprobs"] is None
+
+
 def test_absent_stream_field_defaults_to_non_streaming(client):
     with patch("src.server.AgentCoreClient.process_turn", new_callable=AsyncMock) as m:
         m.return_value = {"response_text": "hi", "model_used": "", "error_type": None}
@@ -404,3 +421,46 @@ def test_streaming_error_path_respects_include_usage(client):
     )
     usage_chunks = [p for p in payloads if p.get("choices") == [] and "usage" in p]
     assert len(usage_chunks) == 1
+
+
+# --- fix round 2 (2026-09-22) -----------------------------------------------
+#
+# Review found `except AgentCoreError` set `finished = True`, reusing the
+# comment from the `done` branch ("genuine and terminal here too"). That
+# reasoning does not hold: a `done` event proves Agent Core finished the
+# turn, but an AgentCoreError of kind `timeout` or `protocol` means only
+# that *this bridge* gave up waiting — the turn can still be running
+# upstream and can still commit a write (`save_profile`, `apply_job`)
+# after this generator stops listening. Setting `finished = True` there
+# suppressed the `finally` cancel for exactly the case it exists to cover.
+# This test is deliberately mid-stream (not the very first event) so it
+# also proves the cancel fires after partial output, not just on an
+# immediate failure.
+
+
+def test_agent_core_timeout_mid_stream_still_cancels(client):
+    """A mid-stream AgentCoreError(kind='timeout') must still cancel the turn.
+
+    Restoring the deleted `finished = True` line in the `except
+    AgentCoreError` branch must make this test fail — that is what makes it
+    discriminating rather than incidentally green.
+    """
+
+    def _fake_stream_then_timeout(events):
+        async def _gen(self, payload):
+            for e in events:
+                yield e
+            raise AgentCoreError("Agent Core timed out", "timeout")
+        return _gen
+
+    with patch("src.server.AgentCoreClient.stream_turn",
+               _fake_stream_then_timeout(
+                   [{"type": "sentence", "text": "hi", "sentence_index": 0}])), \
+         patch("src.server.AgentCoreClient.cancel_turn",
+               new_callable=AsyncMock) as cancel:
+        r = client.post("/v1/chat/completions", json=_body(stream=True))
+
+    assert r.status_code == 200
+    lines = [l for l in r.text.split("\n\n") if l.startswith("data: ")]
+    assert lines[-1] == "data: [DONE]"
+    cancel.assert_awaited_once_with(PHONE)

@@ -270,8 +270,11 @@ async def _stream(client: AgentCoreClient, turn: dict, model: str,
     ``finished`` False when ``GeneratorExit`` arrives, and the ``finally``
     below would fire a stray cancel against a turn that already completed
     — landing, at worst, on the caller's *next* turn. So the flag is set as
-    soon as a ``done`` event (or a terminal ``AgentCoreError``) is
-    observed, before any further chunks are yielded.
+    soon as the terminal ``done`` event is *read*, before any further
+    chunks are yielded. An ``AgentCoreError`` does NOT set the flag: unlike
+    a ``done`` event, it is not evidence the upstream turn stopped (see the
+    ``except AgentCoreError`` block below), so the cancel must still fire
+    for it.
 
     The generator body runs inside ``try/finally``; if the flag is still
     unset when the ``finally`` runs — disconnect, ``aclose()``, an
@@ -349,10 +352,19 @@ async def _stream(client: AgentCoreClient, turn: dict, model: str,
     except AgentCoreError as exc:
         # Headers are already sent, so no HTTP status code is available at
         # this point. Close the stream cleanly with a terminal chunk and
-        # [DONE] rather than truncating it mid-event. The failure is
-        # genuine and terminal here too, so mark `finished` before yielding
-        # for the same race-avoidance reason as the `done` branch above.
-        finished = True
+        # [DONE] rather than truncating it mid-event.
+        #
+        # Deliberately do NOT set `finished = True` here. An AgentCoreError
+        # means *this bridge's view* of the turn ended abnormally — it is
+        # not evidence the upstream Agent Core turn stopped. For `timeout`
+        # and `protocol` (and `http`, if Agent Core ever returns non-2xx
+        # mid-turn) the turn can still be running server-side and can still
+        # commit a `save_profile` or `apply_job` write after this generator
+        # gives up on it — exactly what the cancel in `finally` exists to
+        # prevent. For `connect` there is no reachable turn to cancel, but
+        # `cancel_turn` is documented best-effort and never raises, so
+        # firing it anyway is a harmless no-op rather than a special case
+        # worth branching on here.
         logger.error(
             "bridge.stream_failed",
             extra={"operation": "server.stream", "status": "failure",

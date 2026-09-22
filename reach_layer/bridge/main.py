@@ -29,6 +29,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# session_id is the caller's phone number, and AgentCoreClient.cancel_turn
+# puts it directly in the DELETE /sessions/{session_id}/active_turn URL
+# path. httpx (and httpx2, which this repo's stack also uses) logs the full
+# request URL at INFO, so leaving those loggers at the root INFO level
+# leaks the caller's phone number into the logs on every barge-in cancel.
+# Neither package is imported directly here — silencing both by name is
+# enough regardless of which one httpcore/the installed client resolves to.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpx2").setLevel(logging.WARNING)
+
 _HERE = Path(__file__).resolve().parent
 # The unified Reach Layer config is shared across cli/web/voice/mcp/bridge and
 # lives one level up from any single channel's directory.
@@ -62,11 +72,12 @@ def _domain_config_path() -> Path:
     """
     config_folder = os.getenv("CONFIG_FOLDER")
     if config_folder:
-        # Matches the mount convention used by every other reach_layer
-        # channel service in automation/docker/docker-compose.dev.yml
-        # (reach_layer_web, reach_layer_voice, reach_layer_mcp): the
-        # domain overrides file is always mounted as domain.yaml under
-        # CONFIG_FOLDER, regardless of its source filename on the host.
+        # Matches what automation/docker/docker-compose.dev.yml actually
+        # mounts for this service: CONFIG_FOLDER/domain.yaml, regardless of
+        # the source filename on the host. This is not universal across
+        # reach_layer channels — reach_layer_mcp reads reach_layer.yaml
+        # instead (see reach_layer/mcp/main.py) — so treat this as the
+        # bridge's own compose-mount convention, not a shared one.
         resolved = Path(config_folder) / "domain.yaml"
         if not resolved.exists():
             raise FileNotFoundError(
