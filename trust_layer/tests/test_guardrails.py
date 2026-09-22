@@ -188,3 +188,104 @@ def test_none_session_id_raises_on_check_output(trust):
 def test_none_session_id_raises_on_check_consent(trust):
     with pytest.raises(ValueError, match="session_id must not be None"):
         trust.check_consent(None, "tool")
+
+
+# ---------------------------------------------------------------------------
+# Whole-word matching — regressions from live blue-dots calls
+# ---------------------------------------------------------------------------
+
+def test_employer_name_containing_a_blocked_stem_is_allowed(trust):
+    """"kill" inside "SkillBridge" must not block the message.
+
+    Observed live: the job list contained the employer "SkillBridge Network",
+    so every attempt to select that job was blocked as prohibited content and
+    the caller could never apply to it.
+    """
+    result = trust.check_input("s1", "I want to apply to SkillBridge Network")
+    assert result["action"] == "allow"
+
+
+@pytest.mark.parametrize("message", [
+    "the first one",
+    "yes confirm",
+    "please confirm the first job",
+    "a firm in Bengaluru",
+])
+def test_words_containing_an_escalation_topic_do_not_escalate(trust, message):
+    """"FIR" (a police report) must not match "first", "confirm" or "firm".
+
+    Observed live: answering "the first one" to a job list escalated the
+    caller to a human agent mid-flow.
+    """
+    assert trust.check_input("s1", message)["action"] == "allow"
+
+
+def test_blocked_phrase_still_matches_as_a_whole_word(trust):
+    """The narrowing must not stop real hits from blocking."""
+    assert trust.check_input("s1", "I will kill him")["action"] == "block"
+
+
+def test_escalation_topic_still_matches_as_a_whole_word(trust):
+    """Standalone "FIR" still escalates, case-insensitively."""
+    assert trust.check_input("s1", "should I file an FIR")["action"] == "escalate"
+
+
+def test_multi_word_escalation_topic_still_matches(trust):
+    assert trust.check_input("s1", "there is a court notice")["action"] == "escalate"
+
+
+def test_plural_of_a_term_still_matches(trust):
+    """The trailing "s" allowance keeps stem rules working."""
+    assert trust.check_input("s1", "he made threats")["action"] == "block"
+
+
+# ---------------------------------------------------------------------------
+# Inflected forms must still match — the direction whole-word matching breaks
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("message", [
+    "thinking about killing myself",
+    "he killed my brother",
+    "he is a killer",
+    "they threatened me",
+    "my employer is threatening me",
+    "there was a bombing at the site",
+])
+def test_inflected_blocked_terms_still_block(trust, message):
+    """A rule must catch the forms a caller actually types.
+
+    Anchoring on word boundaries without allowing inflections would let all of
+    these through: the stem is present but the typed word is not the stem. This
+    is the failure direction that a plural-only suffix missed.
+    """
+    assert trust.check_input("s1", message)["action"] == "block"
+
+
+def test_inflected_escalation_topic_still_escalates(trust):
+    """Multi-word topics inflect too — "court notice" must catch "court notices"."""
+    assert trust.check_input("s1", "i received two court notices")["action"] == "escalate"
+
+
+# ---------------------------------------------------------------------------
+# ...but short terms must NOT inflect — they collide with ordinary words
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("message", [
+    "i was fired from my job",
+    "they are firing staff",
+    "the company fires people often",
+    "i am a firefighter",
+    "fire safety officer role",
+])
+def test_short_topic_does_not_match_inflections_of_other_words(trust, message):
+    """"FIR" is three characters and must match as a whole word only.
+
+    With inflections enabled it would also match "fired", "firing" and "fires" —
+    three of the most ordinary words in a jobs conversation, each of which would
+    escalate the caller to a human agent mid-flow.
+    """
+    assert trust.check_input("s1", message)["action"] == "allow"
+
+
+def test_short_topic_still_matches_on_its_own(trust):
+    assert trust.check_input("s1", "should i file an FIR")["action"] == "escalate"

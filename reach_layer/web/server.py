@@ -15,6 +15,7 @@ import asyncio
 import logging
 import os
 import sys
+import re
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -190,6 +191,61 @@ async def _chat_direct_mode(
     return formatted
 
 
+
+_MD_BLOCK_START = re.compile(r"^(?:[-*+]\s|#{1,6}\s|>\s|\d+[.)]\s)")
+
+
+def _join_sentences(parts: list[str]) -> str:
+    """Join streamed sentences back into one readable message.
+
+    Agent Core streams a reply as separate SentenceEvents, each already
+    stripped. Concatenating them bare runs sentences together
+    ("...yet." + "Which trade..." -> "yet.Which trade..."), so they are
+    joined with a space.
+
+    A plain space is wrong in front of a markdown block, though: a list item
+    welded onto the end of the intro line stops being a list item, which is
+    why the first bullet used to render inline. Anything opening a block
+    construct — "- ", "* ", "1. ", "# ", "> " — gets a newline instead.
+
+    Leaving a list needs *two* newlines rather than one. Under CommonMark a
+    single newline between a list item and a following plain sentence is a
+    lazy continuation, so the renderer folds that sentence into the last
+    <li> — the trailing "Which one would you like to apply to?" ends up
+    inside the final bullet. A blank line closes the list properly.
+    dev-kit avoids all of this by never splitting its replies; here the split
+    is inherent to streaming, so the join has to put the structure back.
+
+    Args:
+        parts: Sentence texts in emission order.
+
+    Returns:
+        One message with sentences space-separated and block-level markdown
+        on its own line. Parts are stripped on entry, so a part never brings
+        its own trailing separator; the endswith guard below is defensive.
+    """
+    out = ""
+    for raw in parts:
+        part = raw.strip()
+        if not part:
+            continue
+        if out and not out.endswith(("\n", " ")):
+            prev_line_is_block = bool(_MD_BLOCK_START.match(out.rsplit("\n", 1)[-1]))
+            if _MD_BLOCK_START.match(part):
+                # Another block line: a single newline keeps consecutive
+                # bullets in one list.
+                out += "\n"
+            elif prev_line_is_block:
+                # Plain text after a list item needs a BLANK line, not one
+                # newline. CommonMark treats a single newline here as a lazy
+                # continuation and folds the sentence into the last <li>.
+                out += "\n\n"
+            else:
+                out += " "
+        out += part
+    return out.strip()
+
+
 async def _chat_session_mode(
     web_reach: WebReachLayer,
     session_id: str,
@@ -276,7 +332,13 @@ async def _chat_session_mode(
 
     latency_ms = int((time.time() - start) * 1000)
     formatted = {
-        "response_text": "".join(parts).strip(),
+        # Join on a space, not "". Each SentenceEvent is one already-stripped
+        # sentence, so concatenating them bare runs them together:
+        # "...for you yet." + "Which trade..." -> "yet.Which trade...".
+        # stream_turn builds its own copy with `emit + " "` for the same
+        # reason; this path had drifted from it. Parts that already end in a
+        # newline (markdown lists) keep their own separator.
+        "response_text": _join_sentences(parts),
         "was_escalated": was_escalated,
         "was_tool_used": was_tool_used,
         "session_id": session_id,

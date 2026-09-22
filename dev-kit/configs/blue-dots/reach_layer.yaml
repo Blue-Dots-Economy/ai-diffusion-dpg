@@ -1,0 +1,85 @@
+# dev-kit/configs/blue-dots/reach_layer.yaml
+# Blue Dots — Reach Layer domain config.
+# Deep-merged on top of dev-kit/dpg/reach_layer.yaml at startup.
+#
+# Voice channel only. Web is left disabled but present so the config
+# is structurally complete and easy to flip on later.
+
+reach_layer:
+
+  common:
+    observability:
+      domain: "blue_dot"
+
+  channels:
+
+    cli:
+      prompt: "You: "
+      agent_prefix: "Agent: "
+
+    web:
+      auth:
+        enabled: false
+        google_client_id: ""
+        cookie_secure: false
+      ui:
+        app_name: "Blue Dots"
+        app_tagline: "Voice job assistant"
+        app_icon: "🔵"
+        agent_avatar: "🔵"
+        user_avatar: "👤"
+        setup_heading: "Welcome to Blue Dots"
+        # The country code is required. What is typed here becomes
+        # session.user_id, which the Action Gateway substitutes into
+        # `?phone_number={user_id}` for the lookup and `"+{user_id}"` for the
+        # write — and /admin/participant keys on the account phone, which
+        # carries the code. A 10-digit entry still "works" end to end, but it
+        # stores a malformed number that will never match the same caller
+        # arriving by voice.
+        setup_subtitle: "Enter your phone number with the country code to begin a session."
+        user_id_placeholder: "e.g. 919876543210"
+        user_id_hint: "12 digits — country code first, no + and no spaces."
+        start_btn_label: "Start →"
+        new_session_msg: "Hello! I'm the Blue Dots assistant. How can I help you find work today?"
+        returning_user_msg: "Welcome back!"
+        storage_key: "blue_dots_user_id"
+        theme_storage_key: "blue_dots_theme"
+        sign_out_confirm: "Sign out?"
+        switch_user_confirm: "Switch user? Your current session will be closed."
+        delete_conversation_confirm: "Delete this conversation? This cannot be undone."
+
+    voice:
+      # English / Hindi / Gujarati. VAD tuned for English (shorter
+      # pauses than Hindi-only callers); Hindi/Gujarati turns still
+      # land within the ceiling.
+      vad:
+        stop_secs: 0.7
+      raya:
+        stt_language: "en"
+        tts_language: "en-in"
+        voice_id: "0f24fb66-e495-4781-9e84-1224aa7dacde"   # Nayra, en-in
+      agent_core:
+        timeout_ms: 15000
+        # Opening line on call pickup is emitted by Agent Core as the
+        # entry subagent's opening_phrase (greet_consent). Do not add
+        # a static greeting here.
+        fallback_phrase: "Sorry, I didn't catch that. Could you say it again?"
+        # GH-152: brief acknowledgement spoken when the caller barges
+        # in mid-response. TTS already flushed by the time this plays.
+        barge_in_acknowledgement: "One second."
+      # GH-242: short filler if the first SentenceEvent hasn't reached
+      # TTS within filler_threshold_ms of submit_input completing.
+      filler_threshold_ms: 1500
+      filler_phrase: "One second"
+      # GH-137: spoken just before WebSocket close on bot-initiated hangup.
+      terminal_word: "Thank you"
+      recording:
+        source: pipeline
+        consent_purpose: storage    # piggy-backs on the storage consent grant.
+        min_duration_ms: 500
+        caller_id_hash_salt: "blue-dots-local-salt-change-me-32chars+"
+        store:
+          backend: local
+          local:
+            base_path: /var/recordings
+        start_on_connect: true
