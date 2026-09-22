@@ -32,6 +32,14 @@ from src.translate import (
 
 logger = logging.getLogger(__name__)
 
+# Strong references for fire-and-forget cancel tasks scheduled from _stream.
+# asyncio.create_task() only keeps a *weak* reference internally (see the
+# "Important" warning in the asyncio docs and the RUF006 lint rule) — if
+# nothing else holds the task, the event loop is free to garbage-collect it
+# mid-flight, and the cancel silently never reaches Agent Core. Retaining a
+# reference here until the task itself reports completion closes that gap.
+_pending_cancel_tasks: set[asyncio.Task] = set()
+
 
 def _error_response(status: int, message: str, err_type: str,
                      param: str | None = None) -> JSONResponse:
@@ -74,6 +82,33 @@ def create_app(config: dict) -> FastAPI:
     async def _shutdown() -> None:
         """Release the Agent Core connection pool on app shutdown."""
         await client.aclose()
+
+    @app.exception_handler(Exception)
+    async def _unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+        """Return the OpenAI error envelope for any exception a route missed.
+
+        Without this handler, an unhandled exception falls through to
+        Starlette's default ``text/plain`` "Internal Server Error" body,
+        which is not valid JSON — an OpenAI SDK client parsing the response
+        gets a decode failure on top of the original fault. The exception
+        text is never included in the response or the log message: request
+        bodies on this endpoint carry ``metadata.caller_phone`` (PII), and an
+        unanticipated exception's ``str()`` is exactly the kind of place
+        that could leak it.
+
+        Args:
+            request: The request being served when the exception escaped.
+            exc: The unhandled exception.
+
+        Returns:
+            A 500 JSON response using the OpenAI error envelope.
+        """
+        logger.error(
+            "bridge.unhandled_exception",
+            extra={"operation": "server.chat_completions", "status": "failure",
+                   "error": type(exc).__name__},
+        )
+        return _error_response(500, "An internal error occurred.", "api_error")
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -169,6 +204,39 @@ def create_app(config: dict) -> FastAPI:
     return app
 
 
+def _schedule_cancel(client: AgentCoreClient, session_id: str) -> None:
+    """Fire-and-forget an Agent Core turn cancel from inside a `finally`.
+
+    Never awaited: see the module-level note in :func:`_stream` for why an
+    ``await`` here is unsafe on the disconnect path. The task is kept in
+    :data:`_pending_cancel_tasks` — a bare ``asyncio.create_task`` call
+    without retaining the result is only weakly referenced by the event
+    loop and can be garbage-collected before it runs, which would silently
+    defeat the whole mechanism.
+
+    Args:
+        client: The Agent Core client whose ``cancel_turn`` should run.
+        session_id: The caller's phone number — passed through only, never
+            logged.
+    """
+    try:
+        task = asyncio.create_task(client.cancel_turn(session_id))
+    except RuntimeError as exc:
+        # No running event loop to schedule onto — e.g. the generator is
+        # being finalised (GeneratorExit) during interpreter/loop shutdown.
+        # This is best-effort by design (see AgentCoreClient.cancel_turn),
+        # so log and move on rather than letting this mask the original
+        # GeneratorExit/exception already propagating.
+        logger.warning(
+            "bridge.turn_cancel_not_scheduled",
+            extra={"operation": "server.stream", "status": "failure",
+                   "error": str(exc)},
+        )
+        return
+    _pending_cancel_tasks.add(task)
+    task.add_done_callback(_pending_cancel_tasks.discard)
+
+
 async def _stream(client: AgentCoreClient, turn: dict, model: str,
                    terminal_word: str, include_usage: bool,
                    session_id: str) -> AsyncIterator[str]:
@@ -192,13 +260,25 @@ async def _stream(client: AgentCoreClient, turn: dict, model: str,
     ignored GeneratorExit``. So the cancel cannot be awaited inline in a
     handler for that exception either way.
 
-    Instead, completion is tracked with a local flag set only on the
-    success path (immediately after ``SSE_DONE`` is yielded). The generator
-    body runs inside ``try/finally``; if the flag is still unset when the
-    ``finally`` runs — whatever the reason: disconnect, ``aclose()``, an
-    unexpected exception — the cancel is scheduled with
-    ``asyncio.create_task`` and NOT awaited. Do not "fix" this into an
-    ``await`` — that reintroduces the ``RuntimeError`` above on the
+    Instead, completion is tracked with a local flag. The turn is provably
+    complete the moment the terminal ``done`` event is *read* off the
+    stream — not when this function finishes emitting the chunks derived
+    from it. An OpenAI SSE client is free to close its connection the
+    instant it reads ``[DONE]``, and that close races the still-suspended
+    ``yield SSE_DONE`` in this generator: if the flag were set *after* that
+    yield, a client that disconnects right on schedule would still find
+    ``finished`` False when ``GeneratorExit`` arrives, and the ``finally``
+    below would fire a stray cancel against a turn that already completed
+    — landing, at worst, on the caller's *next* turn. So the flag is set as
+    soon as a ``done`` event (or a terminal ``AgentCoreError``) is
+    observed, before any further chunks are yielded.
+
+    The generator body runs inside ``try/finally``; if the flag is still
+    unset when the ``finally`` runs — disconnect, ``aclose()``, an
+    unexpected exception, or a stream that ends with no terminal event at
+    all — the cancel is scheduled via :func:`_schedule_cancel`
+    (``asyncio.create_task``, retained, NOT awaited). Do not "fix" this
+    into an ``await`` — that reintroduces the ``RuntimeError`` above on the
     disconnect path. ``AgentCoreClient.cancel_turn`` is documented as
     best-effort and never raises, so firing it without awaiting is safe:
     there is no exception to lose track of.
@@ -229,6 +309,10 @@ async def _stream(client: AgentCoreClient, turn: dict, model: str,
             if kind == "sentence":
                 yield sse(translator.sentence(event.get("text", "")))
             elif kind == "done":
+                # The turn is complete as of this event being read, whether
+                # or not the client sticks around for the chunks below —
+                # set the flag before emitting anything further.
+                finished = True
                 if event.get("error_type"):
                     logger.error(
                         "bridge.stream_turn_error",
@@ -238,7 +322,6 @@ async def _stream(client: AgentCoreClient, turn: dict, model: str,
                 for chunk in translator.finish(event, include_usage=include_usage):
                     yield sse(chunk)
                 yield SSE_DONE
-                finished = True
                 logger.info(
                     "bridge.stream_complete",
                     extra={"operation": "server.stream", "status": "success",
@@ -247,24 +330,43 @@ async def _stream(client: AgentCoreClient, turn: dict, model: str,
                 return
             # signal events (pipeline progress) are dropped — not part of
             # the OpenAI contract.
+
+        # The event stream ended without a terminal `done` event — Agent
+        # Core closed the SSE body cleanly with no AgentCoreError raised.
+        # The turn did not genuinely finish (no DoneEvent was ever seen), so
+        # `finished` stays False and the `finally` below still cancels it.
+        # The client still gets a well-formed close rather than a silent
+        # truncation.
+        logger.warning(
+            "bridge.stream_ended_without_done",
+            extra={"operation": "server.stream", "status": "failure",
+                   "latency_ms": int((time.time() - start) * 1000)},
+        )
+        for chunk in translator.finish({"session_ended": False},
+                                        include_usage=include_usage):
+            yield sse(chunk)
+        yield SSE_DONE
     except AgentCoreError as exc:
         # Headers are already sent, so no HTTP status code is available at
         # this point. Close the stream cleanly with a terminal chunk and
-        # [DONE] rather than truncating it mid-event.
+        # [DONE] rather than truncating it mid-event. The failure is
+        # genuine and terminal here too, so mark `finished` before yielding
+        # for the same race-avoidance reason as the `done` branch above.
+        finished = True
         logger.error(
             "bridge.stream_failed",
             extra={"operation": "server.stream", "status": "failure",
                    "error": exc.kind,
                    "latency_ms": int((time.time() - start) * 1000)},
         )
-        yield sse(translator.finish({"session_ended": False},
-                                     include_usage=False)[-1])
+        for chunk in translator.finish({"session_ended": False},
+                                        include_usage=include_usage):
+            yield sse(chunk)
         yield SSE_DONE
-        finished = True
     finally:
         if not finished:
             # Fire-and-forget by design: see the docstring above. Do not
             # await this — GeneratorExit is propagating on the disconnect
             # path and awaiting here raises RuntimeError. cancel_turn()
             # never raises, so an un-awaited task is safe.
-            asyncio.create_task(client.cancel_turn(session_id))
+            _schedule_cancel(client, session_id)

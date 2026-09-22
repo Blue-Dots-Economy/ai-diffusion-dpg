@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, patch
 
@@ -10,7 +11,7 @@ from fastapi.testclient import TestClient
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 
 from src.agent_core_client import AgentCoreError
-from src.server import create_app
+from src.server import _stream, create_app
 
 CONFIG = {
     "agent_core_url": "http://agent-core-test:8000",
@@ -19,6 +20,7 @@ CONFIG = {
     "timeout_s": 30.0,
 }
 PHONE = "919900112233"
+MODEL = "gpt-4.1-mini-2025-04-14"
 
 
 @pytest.fixture
@@ -187,10 +189,6 @@ def test_error_response_never_leaks_the_phone_number(client):
 # try/finally with a fire-and-forget `asyncio.create_task` — actually fires
 # the cancel when the client walks away mid-stream.
 
-import asyncio
-
-from src.server import _stream
-
 
 def test_cancel_turn_fires_on_early_generator_close():
     """Closing the stream generator early must schedule a real turn cancel."""
@@ -210,7 +208,7 @@ def test_cancel_turn_fires_on_early_generator_close():
         client.stream_turn = _slow_stream
         client.cancel_turn = AsyncMock()
 
-        gen = _stream(client, {"session_id": PHONE}, "gpt-4.1-mini-2025-04-14",
+        gen = _stream(client, {"session_id": PHONE}, MODEL,
                       "Thank you", False, PHONE)
 
         # Drive it far enough to get at least one chunk out, then abandon it —
@@ -244,7 +242,7 @@ def test_cancel_turn_not_called_when_stream_finishes_normally():
         client.stream_turn = _fast_stream
         client.cancel_turn = AsyncMock()
 
-        gen = _stream(client, {"session_id": PHONE}, "gpt-4.1-mini-2025-04-14",
+        gen = _stream(client, {"session_id": PHONE}, MODEL,
                       "Thank you", False, PHONE)
 
         chunks = [c async for c in gen]
@@ -254,3 +252,155 @@ def test_cancel_turn_not_called_when_stream_finishes_normally():
         client.cancel_turn.assert_not_awaited()
 
     asyncio.run(_run())
+
+
+# --- fix round 1 (2026-09-22) -----------------------------------------------
+#
+# Review found the `finished` flag was set one yield too late: `yield
+# SSE_DONE` followed by `finished = True`. An OpenAI client is free to close
+# its connection the instant it reads "[DONE]", which races the still-
+# suspended `yield SSE_DONE` — GeneratorExit can land at that yield before
+# the following statement ever runs, so `finished` is still False and the
+# `finally` fires a stray `cancel_turn` against a turn that already
+# completed (which could land on the caller's *next* turn). The fix moves
+# the flag write to the point where the turn is provably complete: as soon
+# as the terminal `done` event is *read*, before any further chunks are
+# emitted.
+
+
+def test_no_cancel_fires_when_client_closes_right_after_reading_done():
+    """A consumer that reads [DONE] and immediately closes must not cancel.
+
+    This reproduces the exact race the fix addresses: pull events one at a
+    time via `__anext__()` — never letting the generator run past the
+    `yield SSE_DONE` statement on its own — then call `aclose()` the moment
+    `[DONE]` is the value in hand, exactly as an SSE client disconnecting
+    right on schedule would. `GeneratorExit` is thrown into that suspended
+    `yield`, so any statement written *after* it (as in the pre-fix code)
+    never executes. Only a flag set *before* the final yield survives this.
+    """
+
+    async def _run():
+        events = [
+            {"type": "sentence", "text": "Goodbye.", "sentence_index": 0},
+            {"type": "done", "session_ended": False, "error_type": None},
+        ]
+
+        async def _fast_stream(payload):
+            for e in events:
+                yield e
+
+        client = AsyncMock()
+        client.stream_turn = _fast_stream
+        client.cancel_turn = AsyncMock()
+
+        gen = _stream(client, {"session_id": PHONE}, MODEL,
+                      "Thank you", False, PHONE)
+
+        chunk = None
+        while chunk != "data: [DONE]\n\n":
+            chunk = await gen.__anext__()
+        # `gen` is now suspended exactly at `yield SSE_DONE`, having not yet
+        # resumed past it. Closing here is what a real client's disconnect
+        # looks like from the generator's point of view.
+        await gen.aclose()
+
+        await asyncio.sleep(0)
+        client.cancel_turn.assert_not_awaited()
+
+    asyncio.run(_run())
+
+
+def test_unhandled_exception_returns_500_envelope_without_leaking_detail():
+    """A bare exception must not fall through to Starlette's plain-text 500.
+
+    Uses its own TestClient with ``raise_server_exceptions=False``: the
+    default (used by the ``client`` fixture) re-raises the original
+    exception into the test process for debugging, which would make this
+    test pass even if the app-level handler were missing entirely. Turning
+    that off is what actually exercises the handler's HTTP response.
+    """
+    local_client = TestClient(create_app(CONFIG), raise_server_exceptions=False)
+    with patch("src.server.AgentCoreClient.process_turn", new_callable=AsyncMock) as m:
+        m.side_effect = RuntimeError(f"boom near caller {PHONE}")
+        r = local_client.post("/v1/chat/completions", json=_body(stream=False))
+    assert r.status_code == 500
+    assert r.headers["content-type"].startswith("application/json")
+    body = r.json()
+    err = body["error"]
+    assert err["type"] == "api_error"
+    assert set(err) == {"message", "type", "param", "code"}
+    # Neither the phone number nor the raw exception text may leak.
+    assert PHONE not in r.text
+    assert "boom" not in r.text
+
+
+def test_streaming_without_a_done_event_closes_cleanly_and_cancels(client):
+    """A stream that ends with no terminal `done` event must not truncate.
+
+    Agent Core closing the SSE body cleanly with no DoneEvent is not an
+    AgentCoreError, so the `except AgentCoreError` branch never runs — the
+    only way to still close the stream properly is the post-loop fallback.
+    Because no DoneEvent was ever seen, the turn did not genuinely finish,
+    so the cancel must still fire.
+    """
+    events = [
+        {"type": "sentence", "text": "Hello there.", "sentence_index": 0},
+        # No terminal `done` event — the upstream SSE body just ends.
+    ]
+    with patch("src.server.AgentCoreClient.stream_turn", _fake_stream(events)), \
+         patch("src.server.AgentCoreClient.cancel_turn",
+               new_callable=AsyncMock) as cancel:
+        r = client.post("/v1/chat/completions", json=_body(stream=True))
+
+    assert r.status_code == 200
+    lines = [l for l in r.text.split("\n\n") if l.startswith("data: ")]
+    assert lines[-1] == "data: [DONE]"
+    payloads = [json.loads(l[6:]) for l in lines[:-1]]
+    for payload in payloads:
+        ChatCompletionChunk.model_validate(payload)
+    # A finish_reason chunk must still be present — the stream is closed,
+    # not truncated.
+    assert any(
+        p["choices"] and p["choices"][0].get("finish_reason") == "stop"
+        for p in payloads
+    )
+    cancel.assert_awaited_once_with(PHONE)
+
+
+def test_streaming_error_path_respects_include_usage(client):
+    """A mid-stream AgentCoreError must still honour stream_options.include_usage.
+
+    Also guards against silently dropping the finish_reason chunk: the
+    error path emits every chunk `StreamTranslator.finish()` returns, not
+    just the last one, so a usage-requesting client gets both the
+    finish_reason chunk and the trailing usage chunk.
+    """
+
+    def _fake_stream_then_fail(events):
+        async def _gen(self, payload):
+            for e in events:
+                yield e
+            raise AgentCoreError("down", "connect")
+        return _gen
+
+    with patch("src.server.AgentCoreClient.stream_turn",
+               _fake_stream_then_fail(
+                   [{"type": "sentence", "text": "hi", "sentence_index": 0}])):
+        r = client.post(
+            "/v1/chat/completions",
+            json=_body(stream=True, stream_options={"include_usage": True}),
+        )
+
+    assert r.status_code == 200
+    lines = [l for l in r.text.split("\n\n") if l.startswith("data: ")]
+    assert lines[-1] == "data: [DONE]"
+    payloads = [json.loads(l[6:]) for l in lines[:-1]]
+    for payload in payloads:
+        ChatCompletionChunk.model_validate(payload)
+    assert any(
+        p["choices"] and p["choices"][0].get("finish_reason") == "stop"
+        for p in payloads
+    )
+    usage_chunks = [p for p in payloads if p.get("choices") == [] and "usage" in p]
+    assert len(usage_chunks) == 1
