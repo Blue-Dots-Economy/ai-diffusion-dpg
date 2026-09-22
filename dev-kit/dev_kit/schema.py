@@ -546,6 +546,17 @@ class ChannelsTopLevelConfig(BaseModel):
         default_factory=ChannelConfig,
         description="MCP channel configuration",
     )
+    # Mirrors agent_core.src.schema.config.ChannelsConfig.bridge. This is the
+    # class AgentCoreConfig.channels actually uses (the agent_core host-mode
+    # gate), unlike the differently-shaped ChannelsConfig further down this
+    # file which mirrors reach_layer/base instead. Round-1 fix: the bridge
+    # field was previously (and wrongly) added only to that other class,
+    # where it is not extra="forbid" and so silently dropped bridge instead
+    # of rejecting it -- this field is the one that actually closes the gap.
+    bridge: ChannelConfig = Field(
+        default_factory=ChannelConfig,
+        description="Bridge channel configuration",
+    )
 
 
 class AgentCoreConfig(BaseModel):
@@ -1266,6 +1277,29 @@ class McpChannelConfig(BaseModel):
     callers: list[CallerConfig] = Field(default_factory=list, description="Authorised inbound callers")
 
 
+class BridgeServerConfig(BaseModel):
+    """Uvicorn bind for the bridge channel service.
+
+    Mirrors runtime ``reach_layer/base/schema/config.py:BridgeServerConfig``.
+    """
+    host: str = Field(default="0.0.0.0", description="Bind host for the bridge server")
+    port: int = Field(default=8008, description="Port the bridge server binds to")
+
+
+class BridgeChannelConfig(BaseModel):
+    """Configuration for the bridge (OpenAI chat-completions) channel adapter.
+
+    Mirrors runtime ``reach_layer/base/schema/config.py:BridgeChannelConfig``.
+    Always ``direct`` assembly: the client owns turn-taking.
+    """
+    enabled: bool = Field(default=True, description="Enable the bridge channel")
+    assembly_mode: str = Field(default="direct", description="Assembly mode: session or direct")
+    server: BridgeServerConfig = Field(default_factory=BridgeServerConfig, description="Uvicorn bind settings")
+    agent_core_url: str = Field(default="http://agent_core:8000", description="Agent Core base URL")
+    terminal_word: str = Field(default="", description="Sentinel word appended to signal turn completion")
+    timeout_s: float = Field(default=60.0, description="Upstream Agent Core request timeout in seconds")
+
+
 class ChannelsConfig(BaseModel):
     """Per-channel configuration. Omit channels that are not deployed."""
 
@@ -1273,13 +1307,12 @@ class ChannelsConfig(BaseModel):
     web: WebChannelConfig | None = Field(default=None, description="Web channel config. None = not deployed.")
     voice: VoiceChannelConfig | None = Field(default=None, description="Voice channel config. None = not deployed.")
     mcp: McpChannelConfig | None = Field(default=None, description="MCP channel config. None = not deployed.")
-    # Mirrors agent_core.src.schema.config.ChannelsConfig.bridge (extra="forbid"
-    # there, so this field must exist for channels.bridge to pass host-mode
-    # validation). Defaulted, so existing domains that omit it are unaffected.
-    bridge: ChannelConfig = Field(
-        default_factory=ChannelConfig,
-        description="Bridge (OpenAI chat-completions) channel configuration",
-    )
+    # Mirrors agent_core.src.schema.config.ChannelsConfig.bridge in shape
+    # (Optional[XChannelConfig] = None, like every sibling here) rather than
+    # the bare ChannelConfig used incorrectly here in round 1 -- that made
+    # bridge the only channel always emitted by ChannelsConfig().model_dump()
+    # and silently discarded every real bridge key into an empty ChannelConfig.
+    bridge: BridgeChannelConfig | None = Field(default=None, description="Bridge channel config. None = not deployed.")
 
 
 class ReachHttpClientConfig(BaseModel):

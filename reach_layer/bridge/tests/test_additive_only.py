@@ -74,3 +74,91 @@ def test_every_existing_domain_still_validates(domain):
         pytest.skip(f"{domain} not present in this checkout")
     raw = yaml.safe_load(path.read_text())
     ChannelsConfig.model_validate(raw.get("channels") or {})
+
+
+# ---------------------------------------------------------------------------
+# Round-1 fix-up: dev-kit mirrors (`.claude/rules/runtime-devkit-sync.md` #4).
+#
+# `dev-kit/dev_kit/schema.py` is loaded by explicit file path too, for the
+# same collision reason as agent_core's above -- and additionally because
+# `dev-kit` is not an installed dependency of this package; its directory is
+# put on `sys.path` only for the one transitive import
+# (`dev_kit.schemas.domain.reach_layer` -> `from dev_kit.schemas.enums import
+# ...`) that needs `dev_kit` to resolve as a real package rather than a
+# loose module.
+# ---------------------------------------------------------------------------
+
+_DEV_KIT_SCHEMA_PATH = _REPO / "dev-kit" / "dev_kit" / "schema.py"
+
+_devkit_spec = importlib.util.spec_from_file_location(
+    "devkit_schema", _DEV_KIT_SCHEMA_PATH
+)
+_devkit_mod = importlib.util.module_from_spec(_devkit_spec)
+sys.modules[_devkit_spec.name] = _devkit_mod
+_devkit_spec.loader.exec_module(_devkit_mod)
+assert _devkit_mod.__file__ == str(_DEV_KIT_SCHEMA_PATH)
+
+ChannelsTopLevelConfig = _devkit_mod.ChannelsTopLevelConfig  # agent_core host-mode gate
+DevKitReachChannelsConfig = _devkit_mod.ChannelsConfig  # reach_layer/base mirror
+DevKitBridgeChannelConfig = _devkit_mod.BridgeChannelConfig
+
+if str(_REPO / "dev-kit") not in sys.path:
+    sys.path.insert(0, str(_REPO / "dev-kit"))
+from dev_kit.schemas.domain.reach_layer import ChannelsSection as DomainReachChannelsSection  # noqa: E402
+
+
+def test_channels_top_level_config_preserves_bridge():
+    """Item 1 (Critical): this is the class AgentCoreConfig.channels actually
+    uses -- the host-mode deploy gate. Round 1 wrongly edited a different,
+    non-forbid ChannelsConfig further down the same file, which silently
+    dropped ``bridge`` instead of validating it. Assert the keys, not just
+    that validation doesn't raise, since silent-drop looks identical to
+    success if you only check for an exception.
+    """
+    cfg = ChannelsTopLevelConfig.model_validate({
+        "bridge": {"system_prompt_suffix": "x"},
+        "web": {"system_prompt_suffix": "w"},
+    })
+    dumped = cfg.model_dump()
+    assert "bridge" in dumped
+    assert dumped["bridge"]["system_prompt_suffix"] == "x"
+
+
+def test_channels_top_level_config_bridge_defaults_when_absent():
+    cfg = ChannelsTopLevelConfig.model_validate({"web": {"system_prompt_suffix": "w"}})
+    assert cfg.bridge.system_prompt_suffix == ""
+
+
+def test_devkit_reach_channels_config_bridge_is_typed_and_optional():
+    """Item 2 (Important): the reach_layer/base mirror's ``bridge`` field
+    must be ``BridgeChannelConfig | None = None`` like every sibling in that
+    class, not a bare non-Optional ``ChannelConfig`` (which discarded every
+    real bridge key into an empty object and made bridge the only channel
+    always emitted by ``ChannelsConfig().model_dump()``).
+    """
+    cfg = DevKitReachChannelsConfig.model_validate({})
+    assert cfg.bridge is None  # not deployed by default, like cli/web/voice/mcp
+
+    cfg = DevKitReachChannelsConfig.model_validate({
+        "bridge": {"agent_core_url": "http://agent_core:8000", "timeout_s": 30}
+    })
+    assert isinstance(cfg.bridge, DevKitBridgeChannelConfig)
+    assert cfg.bridge.agent_core_url == "http://agent_core:8000"
+    assert cfg.bridge.timeout_s == 30
+
+
+def test_domain_reach_layer_channels_section_accepts_bridge():
+    """Item 3 (Important): dev-kit/dev_kit/schemas/domain/reach_layer.py's
+    ChannelsSection is extra="forbid" with no bridge field before this fix,
+    so reach_layer.channels.bridge was rejected at the wizard's per-write
+    gate. This is a different file from domain/agent_core.py (whose
+    pre-existing missing ``mcp`` is a separate, out-of-scope drift).
+    """
+    section = DomainReachChannelsSection.model_validate({
+        "bridge": {"enabled": True, "terminal_word": "Thank you"}
+    })
+    assert section.bridge.terminal_word == "Thank you"
+
+    # Still rejects genuinely unknown channels -- not loosened.
+    with pytest.raises(Exception):
+        DomainReachChannelsSection.model_validate({"telepathy": {"enabled": True}})

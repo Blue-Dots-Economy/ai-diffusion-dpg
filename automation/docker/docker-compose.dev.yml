@@ -438,6 +438,16 @@ services:
   # in-repo Dockerfiles. Config wiring mirrors reach_layer_mcp above: the
   # unified reach_layer.yaml (dpg defaults + domain overrides) is mounted at
   # CONFIG_FOLDER as dpg.yaml/domain.yaml.
+  #
+  # Port 8008 is intentionally NOT host-published. The bridge channel has no
+  # authentication by design -- that decision is explicitly conditional on
+  # the endpoint not being externally routable. Anyone who could reach it
+  # could create a profile / submit an application against any phone number
+  # using the shim's Signals credentials. The service is reachable within
+  # dpg_net by co-deployed callers. For local development/testing, add:
+  #   ports:
+  #     - "8008:8008"
+  # before running docker compose.
   # ---------------------------------------------------------------------------
   reach_layer_bridge:
     build:
@@ -450,8 +460,6 @@ services:
     volumes:
       - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
-    ports:
-      - "8008:8008"
     networks:
       - dpg_net
     deploy:
