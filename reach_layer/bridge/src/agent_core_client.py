@@ -66,7 +66,9 @@ class AgentCoreClient:
             The parsed JSON response body.
 
         Raises:
-            AgentCoreError: On timeout, connection failure, non-2xx response
+            AgentCoreError: On timeout, connection failure, any other
+                transport-level failure (e.g. ``ReadError``,
+                ``RemoteProtocolError``, ``WriteError``), non-2xx response,
                 or an undecodable response body.
         """
         start = time.time()
@@ -86,6 +88,16 @@ class AgentCoreClient:
             ) from exc
         except ValueError as exc:
             raise AgentCoreError(f"Agent Core sent invalid JSON: {exc}", "protocol") from exc
+        except httpx.RequestError as exc:
+            # httpx's transport-error tree is wider than TimeoutException/ConnectError
+            # (e.g. ReadError, WriteError, RemoteProtocolError — the last is not exotic
+            # here: turns take 4-6s, and a server closing mid-response produces exactly
+            # this). Left uncaught, any of these leaks as a raw httpx exception and
+            # becomes a 500 instead of a clean 502. Must stay last so it doesn't shadow
+            # the precise .kind values above.
+            raise AgentCoreError(
+                f"Agent Core request failed ({type(exc).__name__}): {exc}", "connect"
+            ) from exc
 
         logger.info(
             "bridge.process_turn",
@@ -111,8 +123,9 @@ class AgentCoreClient:
             Each decoded SSE event as a dict, in arrival order.
 
         Raises:
-            AgentCoreError: On timeout, connection failure or non-2xx
-                response.
+            AgentCoreError: On timeout, connection failure, any other
+                transport-level failure (e.g. ``ReadError``,
+                ``RemoteProtocolError``, ``WriteError``) or non-2xx response.
         """
         start = time.time()
         try:
@@ -141,6 +154,13 @@ class AgentCoreClient:
         except httpx.HTTPStatusError as exc:
             raise AgentCoreError(
                 f"Agent Core returned {exc.response.status_code}", "http"
+            ) from exc
+        except httpx.RequestError as exc:
+            # See the matching fallback in process_turn: httpx's transport-error tree
+            # is wider than TimeoutException/ConnectError, and a leak here becomes a
+            # 500 instead of a clean 502.
+            raise AgentCoreError(
+                f"Agent Core request failed ({type(exc).__name__}): {exc}", "connect"
             ) from exc
 
         logger.info(

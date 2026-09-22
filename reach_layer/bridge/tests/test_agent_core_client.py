@@ -52,6 +52,23 @@ async def test_process_turn_http_error_raises_typed_error():
     assert exc.value.kind == "http"
 
 
+@pytest.mark.parametrize(
+    "exc_type",
+    [httpx.ReadError, httpx.RemoteProtocolError, httpx.WriteError],
+    ids=["ReadError", "RemoteProtocolError", "WriteError"],
+)
+async def test_process_turn_other_transport_errors_map_to_connect(exc_type):
+    """httpx's transport-error tree is wider than Timeout/ConnectError — a turn
+    is 4-6s, so a mid-response RemoteProtocolError is a realistic failure, not
+    an exotic one. These must not leak as raw httpx exceptions."""
+    def handler(request):
+        raise exc_type("boom", request=request)
+
+    with pytest.raises(AgentCoreError) as exc:
+        await _client(handler).process_turn({})
+    assert exc.value.kind == "connect"
+
+
 async def test_stream_turn_yields_each_event_in_order():
     body = (
         'data: {"type": "signal", "stage": "nlu", "status": "start"}\n\n'
@@ -97,6 +114,23 @@ async def test_stream_turn_ignores_blank_and_comment_lines():
 
     events = [e async for e in _client(handler).stream_turn({})]
     assert [e["type"] for e in events] == ["done"]
+
+
+@pytest.mark.parametrize(
+    "exc_type",
+    [httpx.ReadError, httpx.RemoteProtocolError, httpx.WriteError],
+    ids=["ReadError", "RemoteProtocolError", "WriteError"],
+)
+async def test_stream_turn_other_transport_errors_map_to_connect(exc_type):
+    """stream_turn is an async generator, so the exception surfaces on first
+    iteration rather than at call time."""
+    def handler(request):
+        raise exc_type("boom", request=request)
+
+    with pytest.raises(AgentCoreError) as exc:
+        async for _ in _client(handler).stream_turn({}):
+            pass
+    assert exc.value.kind == "connect"
 
 
 async def test_cancel_turn_calls_the_documented_endpoint():
