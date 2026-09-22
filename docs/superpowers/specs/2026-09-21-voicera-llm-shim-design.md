@@ -148,7 +148,7 @@ Three differences between the two contracts drive the design.
 
 | | OpenAI | Agent Core |
 |---|---|---|
-| **Memory** | Stateless. The client resends the full conversation every turn. | Stateful. Holds history, journey state and collected profile fields in Memory Layer, keyed on `session_id`. |
+| **Memory** | Stateless. The client would normally resend the full conversation every turn. | Keeps no transcript. Extracts and stores state — collected profile fields, flow position, selected job — against the caller (§11.1). |
 | **Identity** | No session concept in the request body. | Requires `session_id`; this domain also requires `user_id` (the caller's phone) for every Signals call. |
 | **Tools** | The client declares tools and expects the model to call them. | Owns its own tools (`fetch_jobs`, `save_profile`, `apply_job`) and executes them internally. |
 
@@ -162,8 +162,14 @@ These are §11.1 to §11.5. Everything else is mechanical.
 POST /v1/chat/completions
 ```
 
-Authentication: a configured key, accepted as `Authorization: Bearer <key>` (OpenAI
-convention). Requests without a valid key get `401` in the error envelope.
+**Authentication is unresolved and currently absent.** No key is being issued to the
+client, so as specified the endpoint accepts any request that can reach it. That is
+tolerable only if the shim is not publicly routable.
+
+If a key is introduced later it should follow the OpenAI convention —
+`Authorization: Bearer <key>`, `401` in the error envelope when missing or wrong — and
+`AUTH-1` in §12 covers it. Until then the deployment must restrict access at the network
+level, and that restriction is load-bearing rather than defence in depth.
 
 Both `stream: true` and `stream: false` are implemented (§8, §9). A faithful
 implementation supports both, and `stream: false` directly serves the agreed working
@@ -295,151 +301,120 @@ cannot fix, and would otherwise be debugged in the wrong place.
 
 ## 11. Open questions
 
-Two remain open — §11.1 and §11.2. The rest (§11.3, §11.4, §11.5 Part B) have been
-decided and are recorded below with their consequences.
+**One remains open: §11.5 Part A.** Everything else has been decided, and §11.1 and
+§11.2 were agreed with the client team on a call (2026-09-22). Each is recorded below
+with its consequences.
 
-### 11.1 What do we send to Agent Core from `messages[]`?
+### 11.1 What do we send to Agent Core from `messages[]`? — DECIDED
 
-**Status: open, pending confirmation from the client team.**
+**Decision: the client sends only the caller's newest utterance, and the shim passes it
+straight through.** Agreed with the client team on 2026-09-22.
 
-OpenAI is stateless, so a client normally sends the entire conversation on every request
-and it grows each turn:
+An OpenAI client would normally resend the whole conversation each turn, because the API
+is stateless. Ours is not — but it is worth being precise about what it actually keeps,
+because "it stores the history" is wrong:
 
-```
-turn 1   [system, u1]
-turn 2   [system, u1, a1, u2]
-turn 3   [system, u1, a1, u2, a2, u3]
-```
+**Agent Core keeps no transcript.** Each turn it extracts what matters — the profile
+fields the caller has supplied, where they are in the flow, which job they selected, the
+recent tool exchanges — and stores only that, against the caller. Verified against a live
+session: the stored keys are `name`, `age`, `gender`, `location`, `trade`,
+`work_experience`, `current_question`, `current_subagent_id`, `subagent_entry_count`,
+`last_jobs`, `selected_job_item_id`, `profile_action`, `consent_given`, `turn_count` and
+similar. There is no `messages`, no `history`, no transcript anywhere. It is also why the
+prompt injects `[Last question asked: ...]` separately — there is no transcript to read it
+from.
 
-Agent Core is the opposite. It stores history, journey state, collected profile fields
-and tool results in Memory Layer, and its request takes a single `user_message`. Passing
-the whole array would double-count everything Agent Core already knows.
+So `ProcessTurnRequest.user_message` is populated from the single inbound message. The
+request shape becomes:
 
-**Preferred: ask the client to send only the newest user message.** The shim then passes
-`messages[-1].content` straight through with no interpretation. Simplest on our side and
-unambiguous — there is no guessing about which message is "the new one".
-
-**Fallback, if they decline or cannot:** the shim extracts the last `user`-role message
-itself and discards the rest. Functionally equivalent for well-formed input, but it puts
-the burden of interpretation on us and is fragile if a client ever sends two user
-messages in a row, replays after a reconnect, or reorders.
-
-Either way the earlier messages are discarded; the question is only who does the
-discarding. **To be confirmed with the client team before implementation starts.**
-
-Note that a client sending only the last message is no longer behaving like a standard
-OpenAI client — the same caveat as §11.2. If that ask is refused, the fallback works.
-
-### 11.2 How does the caller's phone number reach the shim?
-
-#### Why we need it
-
-The caller's phone number **is the user's identity** in this domain. It is not a
-convenience or a logging field — it is the primary key every downstream write is made
-against.
-
-Agent Core passes it to the Action Gateway as `user_id`, and the Signals connectors
-substitute it directly into the upstream calls:
-
-```
-fetch_profile   GET  /admin/participant?phone_number={user_id}
-                     -> does this caller already have a profile?
-
-save_profile    POST /admin/participant     phone_number = "+{user_id}"
-                     -> creates or updates the participant record
-
-apply_job       POST /action/perform
-                     -> submits an application on the profile resolved from that number
+```json
+"messages": [ { "role": "user", "content": "yes, the first one" } ]
 ```
 
-So the number decides *whose* profile is read, *whose* record is written, and *who* the
-job application is submitted for. A conversation without it cannot do the one thing this
-domain exists to do.
+**Why the full array was declined rather than tolerated.** Three costs, and the second is
+the one that matters:
 
-Nor can it be collected during the conversation. The caller is never asked for their own
-number — the domain's prompts forbid it, because on a phone call the platform already
-knows who dialled and asking would be absurd. The number has to arrive with the request.
+- The earlier messages are redundant — everything needed to continue is already held on
+  our side, in the form the agent uses.
+- **A replayed request is indistinguishable from a genuine new turn.** On a retry or a
+  re-established connection the array looks identical to a fresh one, and in this domain
+  that can mean a duplicate profile write or the same job applied to twice.
+- Cost and latency grow linearly across the call, on a path targeting sub-second
+  time-to-first-audio.
 
-**What happens without it.** Not graceful degradation — corruption. An empty `user_id`
-renders as `?phone_number=` (rejected upstream) or writes a participant against a
-malformed number. This is not hypothetical: on 2026-09-21 the blue-dots web flow sent a
-literal `"null"` where a caller identifier belonged and the upstream returned 422.
+**Defensive handling.** The shim still takes the last `user`-role message rather than
+assuming `messages[0]`, so a client that sends more than it was asked to still works. Any
+`system` or `developer` message is discarded: Agent Core owns the persona, and honouring a
+client system prompt would put two personas in competition.
 
-#### Why we will not get it by default
+### 11.2 How does the caller's phone number reach the shim? — DECIDED
 
-**A normal OpenAI call carries no phone number.**
-
-The premise of this shim is that the client points at us believing we are OpenAI and
-changes nothing else. That premise holds everywhere except here. An LLM has no reason to
-be told who is on the phone, so nothing in the chat-completions contract carries it.
-
-**If the client calls us exactly as it calls OpenAI, the shim receives nothing that
-identifies the caller.** That cannot be worked around on our side: the value was never
-sent, and no amount of inference recovers it.
-
-#### Therefore
-
-This is a **requirement on the client, not a design choice for us**. The client must
-deliberately send the caller's phone number on every request. The only open part is
-*which mechanism* it uses, and that has to be agreed with them.
-
-#### Options to put to the client team
-
-All require the client to do something deliberate; there is no option in which the number
-simply arrives. Two are appropriate. Two would function but are the wrong field, and are
-recorded so they are not re-proposed later as oversights.
-
-**Recommended.**
-
-**1. `metadata`.** A published, optional field on the request body:
-
-> Set of 16 key-value pairs that can be attached to an object. This can be useful for
-> storing additional information about the object in a structured format.
-
-Keys up to 64 characters, values up to 512. It is the only field in the contract designed
-for arbitrary per-request data, so nothing is being repurposed:
+**Decision: in the OpenAI `metadata` field, as `caller_phone`, on every request.** Agreed
+with the client team on 2026-09-22.
 
 ```json
 "metadata": { "caller_phone": "919900112233" }
 ```
 
-**2. An HTTP header**, e.g. `X-Caller-Phone`. Outside the request body entirely, so it
-places no strain on the OpenAI contract at all, and any HTTP client can set one. The
-constraint is whether the client's LLM configuration exposes custom headers on outbound
-calls — worth asking before proposing it.
+**Format: digits only, country code first, no leading `+`, no spaces or punctuation.**
 
-**Not recommended.**
+#### Why it is needed at all
 
-Both of the following would carry the value to us intact, and both are the wrong field.
-The phone number is the user's identity in this domain; putting it in a slot named for
-something else means anyone reading either codebase later finds caller PII somewhere it
-has no business being, with no indication of why.
+Signals DPG is the system of record, and it keys everything on the phone number — it is
+the identity, not an attribute stored alongside one. Three operations there depend on it:
 
-**`safety_identifier`** exists to flag users who may be abusing the API. Its own
-documentation instructs implementers to *hash* the value "in order to avoid sending us
-any identifying information" — so sending a raw phone number is the direct opposite of
-its stated purpose, and a client following that guidance would hand us an unusable
-digest.
+```
+fetch_profile   GET  /admin/participant?phone_number={user_id}
+save_profile    POST /admin/participant     phone_number = "+{user_id}"
+apply_job       operates on the profile that number resolves to
+```
 
-**`prompt_cache_key`** is a cache-bucketing hint, described as *"used to cache responses
-for similar requests"*. It has no relationship to caller identity at all. It is not
-deprecated and carries no transformation advice, which makes it the less bad of the two,
-but that is the only thing recommending it.
+It must also be a real number, because the employer contacts the applicant afterwards. And
+it cannot be collected in conversation: on a phone call the platform already knows who
+dialled, so the domain's prompts forbid asking.
 
-If neither recommended option is available, either of these can be made to work — but the
-choice should be recorded in the integration contract as a known compromise, not adopted
-silently.
+A `chat.completions` request has no field for this, which is why it had to be an explicit
+ask rather than something we could derive.
 
-**Not viable.** A custom message role such as
-`{"role": "contact", "content": "<phone>"}` looks attractive but the role enum is closed —
-`developer`, `system`, `user`, `assistant`, `tool`, `function`. A conformant client SDK
-rejects an unknown role before the request is sent, so this would require the client to
-bypass its own SDK. It would also put caller PII into the conversation transcript.
+#### The format fails silently, which drives the validation rule
 
-**Also rejected: the `user` field.** It is the obvious identity slot —
-*"a stable identifier for your end-users"* — but the schema marks it
-`"deprecated": true`, and asking a partner team to adopt a deprecated field invites
-pushback and creates future migration work.
+Measured against the live API:
+
+| Sent | Result |
+|---|---|
+| `919900000502` | 200, profile found |
+| `9900000502` — same caller, no country code | **200, `items: 0`** — matches nothing, no error |
+| `+919900000502` | 200 — the lookup tolerates a `+`, but `save_profile` renders `"+{user_id}"`, so a supplied `+` produces `"++91..."` and breaks the write |
+| `91 99000 00502` | 400 validation error |
+
+A missing country code is the dangerous case: it raises no error anywhere. Every call
+looks like a first-time caller, the profile is rebuilt from scratch each time, duplicate
+records accumulate, and the stored number is one the employer cannot ring.
+
+**So the shim validates the format itself** — digits only, and long enough to include a
+country code — and returns `400` rather than passing a malformed value downstream.
+Silent data corruption is worse than a visible rejection.
+
+#### Rejected alternatives, recorded
+
+**A stable per-caller UUID instead of the phone.** Would work for `session_id` and for
+Agent Core's own profile persistence, but not for Signals: the API validates the format
+(`"must be digits, optionally E.164"`) and returns `400` for a UUID. Beyond the API, a
+job-seeker profile without a reachable number is one no employer can act on, so the
+application would attach to a dead record. A UUID does not avoid sharing the phone — it
+only delays it.
+
+**`safety_identifier`** — its documentation instructs implementers to hash the value "to
+avoid sending us any identifying information", so a client following that guidance would
+send an unusable digest.
+
+**`prompt_cache_key`** — a cache-bucketing hint with no relationship to caller identity.
+
+**The `user` field** — marked `"deprecated": true` in the schema.
+
+**A custom message role** such as `{"role": "contact", ...}` — the role enum is closed, so
+a conformant SDK rejects it before sending, and it would place caller PII in the
+transcript.
 
 ### 11.3 What is `session_id`? — DECIDED
 
@@ -639,7 +614,7 @@ Failures return the **OpenAI error envelope with real HTTP status codes**:
 | Malformed body, missing `messages` or `model` | 400 | `invalid_request_error` |
 | `n` greater than 1 | 400 | `invalid_request_error` |
 | Caller's phone number missing (§11.2) | 400 | `invalid_request_error` |
-| Bad or missing key | 401 | `authentication_error` |
+| Bad or missing key — *only if a key is introduced (§6)* | 401 | `authentication_error` |
 | Agent Core unreachable or timed out | 502 | `api_error` |
 | `DoneEvent.error_type` or `ProcessTurnResponse.error_type` set | 502 | `api_error` |
 | Unhandled shim fault | 500 | `api_error` |
@@ -716,15 +691,21 @@ simultaneous callers.
 
 ## 15. Risks
 
-**The caller's phone number is the top risk, and it is not ours to close.** A standard
-OpenAI call does not carry one, so unless the client is changed to send it deliberately,
-the shim never receives it and every Signals call in this domain fails (§11.2). This is
-an integration-contract item that needs agreeing with the client team **before**
-implementation, not discovered during call testing. Everything else in this design can
-proceed without it; a working call cannot.
+**The phone-number format fails silently (§11.2).** The ask itself is agreed, but a value
+without a country code raises no error anywhere — it simply matches nothing, so every call
+looks like a first-time caller and the record written holds a number the employer cannot
+ring. The shim validates the format itself for this reason, and the first integration test
+should confirm a real record is created and retrievable rather than only that the call
+returned 200.
 
-**The other open questions in §11 are also blocking** for a working call, but each can be
-settled on our side or with a small agreement.
+**§11.5 Part A is the only open question left**, it is ours to decide, and it is small.
+
+**The endpoint is unauthenticated as specified (§6).** No key is being issued, so access
+control rests entirely on the deployment not being publicly reachable. Anyone who can
+reach the shim can drive a conversation and, because the caller's phone arrives in the
+request body, write a profile and submit a job application against **any** number they
+choose. That is worth a deliberate decision before the shim is exposed anywhere beyond a
+private host.
 
 **Unverified end to end.** No OpenAI client has yet been pointed at a running shim. The
 contract is read from the canonical specification, but a live interop check with the
