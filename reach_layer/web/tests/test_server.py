@@ -19,7 +19,7 @@ import httpx
 from fastapi.testclient import TestClient
 from unittest.mock import MagicMock, patch
 
-from server import create_app
+from server import create_app, _join_sentences
 from src.web_reach import WebReachLayer
 
 
@@ -744,3 +744,90 @@ def test_routing_only_boots_without_google_client_id(config, monkeypatch):
 
 def test_full_mode_health_still_works(client):
     assert client.get("/health").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# _join_sentences — reassembling streamed SentenceEvents (session mode)
+# ---------------------------------------------------------------------------
+
+def test_join_sentences_separates_plain_sentences_with_a_space():
+    assert _join_sentences(["I don't have a profile for you yet.",
+                            "Which trade are you looking for work in?"]) == (
+        "I don't have a profile for you yet. Which trade are you looking for work in?"
+    )
+
+
+def test_join_sentences_puts_a_list_item_on_its_own_line():
+    """The intro must not swallow the first bullet.
+
+    A space here is what made the first job render inline with "I found 4
+    electrician jobs in Bengaluru." while the rest formed a list.
+    """
+    out = _join_sentences(["I found 4 electrician jobs in Bengaluru.",
+                           "- **Titan Retail** — Site Electrician",
+                           "- **Flipkart** — Electrician"])
+    assert out == (
+        "I found 4 electrician jobs in Bengaluru.\n"
+        "- **Titan Retail** — Site Electrician\n"
+        "- **Flipkart** — Electrician"
+    )
+
+
+def test_join_sentences_breaks_out_of_a_list_before_a_trailing_sentence():
+    """A sentence after the last bullet needs a BLANK line, not one newline.
+
+    Under CommonMark a single newline here is a lazy continuation, so the
+    renderer folds the sentence into the final <li> instead of starting a new
+    paragraph. Asserting the single newline passed while the browser output was
+    still wrong.
+    """
+    out = _join_sentences(["- **Titan Retail** — Site Electrician",
+                           "Which one would you like to apply to?"])
+    assert out == ("- **Titan Retail** — Site Electrician\n\n"
+                   "Which one would you like to apply to?")
+
+
+def test_join_sentences_keeps_consecutive_bullets_in_one_list():
+    """Block-to-block stays a single newline, or the list splits in two."""
+    out = _join_sentences(["- one", "- two", "- three"])
+    assert out == "- one\n- two\n- three"
+
+
+def test_join_sentences_full_job_list_shape():
+    """Intro, bullets, then a question — the shape the domain actually emits."""
+    out = _join_sentences(["I found 2 electrician jobs in Bengaluru.",
+                           "- **Titan Retail** — Site Electrician",
+                           "- **Flipkart** — Site Electrician",
+                           "Which one would you like to apply to?"])
+    assert out == ("I found 2 electrician jobs in Bengaluru.\n"
+                   "- **Titan Retail** — Site Electrician\n"
+                   "- **Flipkart** — Site Electrician\n\n"
+                   "Which one would you like to apply to?")
+
+
+@pytest.mark.parametrize("opener", ["- item", "* item", "+ item", "1. item",
+                                    "2) item", "# Heading", "> quote"])
+def test_join_sentences_newlines_before_every_block_opener(opener):
+    assert _join_sentences(["Intro.", opener]) == f"Intro.\n{opener}"
+
+
+def test_join_sentences_strips_a_parts_own_trailing_newline():
+    """Parts are stripped on entry, so the join — not the part — sets spacing."""
+    assert _join_sentences(["Line one.\n", "Line two."]) == "Line one. Line two."
+
+
+def test_join_sentences_keeps_newlines_inside_a_multi_line_part():
+    """A part that is itself a list keeps its shape, and what follows it
+    starts on a new line rather than extending the last bullet."""
+    out = _join_sentences(["- **Titan Retail**\n- **Flipkart**",
+                           "Which one would you like to apply to?"])
+    assert out == ("- **Titan Retail**\n- **Flipkart**\n\n"
+                   "Which one would you like to apply to?")
+
+
+def test_join_sentences_drops_empty_and_whitespace_only_parts():
+    assert _join_sentences(["Hello.", "", "   ", "Goodbye."]) == "Hello. Goodbye."
+
+
+def test_join_sentences_empty_input_returns_empty_string():
+    assert _join_sentences([]) == ""

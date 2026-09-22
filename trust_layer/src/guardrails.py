@@ -18,9 +18,68 @@ Design:
 from __future__ import annotations
 
 import logging
+import re
 import time
 
 logger = logging.getLogger(__name__)
+
+
+
+# Suffixes a rule should still catch. A blocked phrase must match the forms a
+# caller actually types: "kill" has to catch "killed", "killing" and "killer",
+# or the rule only fires on the bare stem and the safety gate is decorative.
+_INFLECTIONS = r"(?:s|es|ed|ing|er|ers|ings|ened|ening)?\b"
+
+# ...but only for terms long enough that the stem is distinctive. Short terms
+# are collision-prone: the escalation topic "FIR" (a police report) would, with
+# inflections enabled, also match "fired", "firing" and "fires" — three of the
+# most ordinary words in a jobs conversation, each of which would escalate the
+# caller to a human agent. Terms below this length match as whole words only.
+_INFLECT_MIN_LEN = 4
+
+
+def _contains_term(haystack: str, needle: str) -> bool:
+    """Return True iff ``needle`` occurs in ``haystack`` as a whole word.
+
+    Used for escalation topics only. A naked substring test is wrong for short
+    topics: the KKB topic "FIR" (a police report) matched "first", "confirm",
+    "firm" and "fire", so an ordinary "yes confirm" was escalated to a human
+    agent mid-flow. Anchoring on word boundaries keeps multi-word topics like
+    "police case" working while making short ones safe.
+
+    Also used for blocked phrases. A bare substring test false-positives there
+    too: "kill" matched inside the employer name "SkillBridge Network", so a
+    caller could never select that job — every attempt was blocked as
+    prohibited content.
+
+    Word boundaries alone would be too strict, though: a rule must still catch
+    the inflected forms a caller actually types ("killed", "killing", "killer",
+    "threatened", "bombing", "jailed"). Terms of ``_INFLECT_MIN_LEN`` characters
+    or more therefore allow a trailing inflection; shorter terms match as whole
+    words only, because a short stem collides with too much (see the constants
+    above).
+
+    Falls back to a plain substring test when the term has no word characters
+    at its edges (e.g. punctuation-only or script without \b semantics), so no
+    existing rule silently stops matching.
+
+    Args:
+        haystack: Lower-cased text to search.
+        needle: Lower-cased phrase or topic to look for.
+
+    Returns:
+        True when the term is present as a standalone word or phrase.
+    """
+    if not needle:
+        return False
+    left = r"\b" if needle[0].isalnum() else ""
+    right = _INFLECTIONS if len(needle) >= _INFLECT_MIN_LEN else r"\b"
+    if not needle[-1].isalnum():
+        right = ""
+    try:
+        return re.search(left + re.escape(needle) + right, haystack) is not None
+    except re.error:
+        return needle in haystack
 
 
 class BasicTrustLayer:
@@ -90,7 +149,7 @@ class BasicTrustLayer:
 
         # Blocked phrases take priority over escalation
         for phrase in self._blocked_phrases:
-            if phrase in lower_msg:
+            if _contains_term(lower_msg, phrase):
                 logger.warning(
                     "trust_layer.input_blocked",
                     extra={
@@ -105,7 +164,7 @@ class BasicTrustLayer:
 
         # Escalation topics — route to human agent
         for topic in self._escalation_topics:
-            if topic in lower_msg:
+            if _contains_term(lower_msg, topic):
                 logger.warning(
                     "trust_layer.input_escalated",
                     extra={
@@ -148,8 +207,12 @@ class BasicTrustLayer:
 
         lower_resp = llm_response.lower()
 
+        # Same matcher as check_input, deliberately. Today's output phrases are
+        # all multi-word so a substring test would not misfire, but input and
+        # output matching differently is a trap for whoever adds the first short
+        # output rule.
         for phrase in self._blocked_output_phrases:
-            if phrase in lower_resp:
+            if _contains_term(lower_resp, phrase):
                 logger.warning(
                     "trust_layer.output_blocked",
                     extra={
