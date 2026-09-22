@@ -2082,7 +2082,7 @@ def main() -> None:
                 extra={"operation": "main.startup", "status": "success"})
     uvicorn.run(create_app(config),
                 host=server.get("host", "0.0.0.0"),
-                port=int(server.get("port", 8007)))
+                port=int(server.get("port", 8008)))
 
 
 if __name__ == "__main__":
@@ -2105,7 +2105,7 @@ RUN uv sync --no-dev
 
 COPY reach_layer/bridge /app/reach_layer/bridge
 
-EXPOSE 8007
+EXPOSE 8008
 CMD ["uv", "run", "python", "main.py"]
 ```
 
@@ -2124,7 +2124,7 @@ BridgeReachLayer implements TextChannelBase. run_loop is a no-op because
 inbound requests arrive over HTTP rather than from a read loop, the same
 shape the MCP channel uses.
 
-Binds 8007, which no existing service uses."
+Binds 8008, which no existing service uses."
 ```
 
 ---
@@ -2253,7 +2253,7 @@ class BridgeServerConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     host: str = "0.0.0.0"
-    port: int = Field(default=8007, gt=0, lt=65536)
+    port: int = Field(default=8008, gt=0, lt=65536)
 
 
 class BridgeChannelConfig(BaseModel):
@@ -2294,11 +2294,11 @@ In `automation/docker/docker-compose.dev.yml`, add a service alongside the other
       - DOMAIN=${DOMAIN:-blue-dots}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     ports:
-      - "8007:8007"
+      - "8008:8008"
     networks:
       - dpg_net
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8007/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8008/health')"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -2463,7 +2463,7 @@ In `dev-kit/configs/blue-dots/reach_layer.yaml`, add under `channels:`:
       assembly_mode: direct
       server:
         host: "0.0.0.0"
-        port: 8007
+        port: 8008
       agent_core_url: "http://agent_core:8000"
       terminal_word: "Thank you"
       timeout_s: 60.0
@@ -2811,12 +2811,12 @@ bash ~/.claude/skills/run-ai-diffusion-dpg/scripts/dpg-local.sh up --domain blue
 cd reach_layer/bridge && uv run python main.py &
 ```
 
-Expected: `/health` returns 200 on 8007, and Agent Core is healthy on 8000.
+Expected: `/health` returns 200 on 8008, and Agent Core is healthy on 8000.
 
 - [ ] **Step 2: Non-streaming turn with curl**
 
 ```bash
-curl -s -X POST http://localhost:8007/v1/chat/completions \
+curl -s -X POST http://localhost:8008/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"any","stream":false,
        "metadata":{"caller_phone":"919900000801"},
@@ -2829,7 +2829,7 @@ domain's consent greeting.
 - [ ] **Step 3: Streaming turn with curl**
 
 ```bash
-curl -sN -X POST http://localhost:8007/v1/chat/completions \
+curl -sN -X POST http://localhost:8008/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"any","stream":true,
        "metadata":{"caller_phone":"919900000801"},
@@ -2892,4 +2892,4 @@ producing a live Signals profile with the values the caller gave."
 
 **Type consistency.** `extract_caller_phone` / `IdentityError.param` (2) are consumed by `to_turn_request` (4). `build_chunk` / `build_completion` / `build_error` / `ZERO_USAGE` (3) are consumed by `translate.py` (5) and `server.py` (7). `StreamTranslator.opening/sentence/finish` and `sse` / `SSE_DONE` (5) are consumed by `server.py` (7). `AgentCoreClient.process_turn/stream_turn/cancel_turn` and `AgentCoreError.kind` (6) are consumed by `server.py` (7). `create_app(config)` (7) is consumed by 8, 11, 12.
 
-**One gap worth naming.** Task 9's port `8007` and Task 10's `tts_rules` keys are asserted against the repo as it stands; if `channels.voice` in blue-dots uses different `tts_rules` field names, Task 10 Step 3 says to copy them from that file rather than trusting the sample.
+**One gap worth naming.** Task 9's port `8008` and Task 10's `tts_rules` keys are asserted against the repo as it stands; if `channels.voice` in blue-dots uses different `tts_rules` field names, Task 10 Step 3 says to copy them from that file rather than trusting the sample.
