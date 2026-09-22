@@ -50,7 +50,9 @@ must reach Agent Core through the turn API, not the LLM proxy.**
 added here is migration debt.
 
 Option A's accepted losses are barge-in cancellation, consent events and streaming
-fidelity. This design recovers the third (§8); the first two stay out of scope.
+fidelity. This design recovers streaming fidelity in full (§8) and barge-in cancellation
+in part — the shim cancels the turn on disconnect, though in-flight tool calls still
+complete. Consent events stay out of scope.
 
 ---
 
@@ -259,8 +261,8 @@ variant, and for a streaming client that is the wrong one of the two:
   so time-to-first-chunk is the time to the first sentence rather than the whole turn.
 - `SentenceEvent` and `DoneEvent` map almost 1:1 onto chunks.
 
-It also recovers one of Option A's three accepted losses — streaming fidelity. Barge-in
-cancellation and consent events remain out of scope.
+It also recovers streaming fidelity, one of Option A's three accepted losses. Barge-in
+cancellation is partially recovered below; consent events remain out of scope.
 
 ### Barge-in: the client disconnecting mid-turn
 
