@@ -40,7 +40,7 @@ number.
 |---|---|---|
 | **1** | `metadata` on the request body | A standard OpenAI field — 16 key-value pairs, values up to 512 characters. Designed for exactly this. `{"caller_phone": "919900112233"}` |
 | **2** | An HTTP header, e.g. `X-Caller-Phone` | Outside the request body entirely. Requires your LLM configuration to support custom headers on outbound calls — please confirm whether it does. |
-| **3** | The `user` field | A plain string, documented as "a stable identifier for your end-users". Deprecated but still accepted. |
+| **3** | `prompt_cache_key` | A plain string. Not deprecated, and carries no instruction to transform the value — unlike option 4. Its stated purpose is cache bucketing rather than identity, so it is a repurposing, but a harmless one. |
 | **4** | `safety_identifier` | Works — **but** its documentation instructs implementers to *hash* the value to avoid transmitting identifying information. If this option is used we need the **raw** number. A hash is unusable for us. |
 
 A custom message role such as `{"role": "contact", ...}` will not work: the role enum is

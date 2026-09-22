@@ -405,10 +405,15 @@ entirely, so it places no strain on the OpenAI contract at all, and any HTTP cli
 set one. The constraint is whether the client's LLM configuration exposes custom headers
 on outbound calls — worth asking before proposing it.
 
-**3. `user`.** A plain string field documented as *"a stable identifier for your
-end-users."* Semantically the closest of the legacy identity fields and carries no
-transformation advice. It is marked as being replaced by `safety_identifier` and
-`prompt_cache_key`, but remains in the schema and is still accepted.
+**3. `prompt_cache_key`.** A plain `string | null` that is not deprecated and carries no
+instruction to transform the value. Its documented purpose is cache bucketing —
+*"Replaces the `user` field"* — so using it for identity is a repurposing, but a harmless
+one: a stable per-caller key is exactly the shape it expects.
+
+> The `user` field was considered and rejected. It is the obvious identity slot —
+> *"a stable identifier for your end-users"* — but the schema marks it
+> `"deprecated": true`, and asking a partner team to adopt a deprecated field invites
+> pushback and creates future migration work.
 
 **4. `safety_identifier` — works, but carries a trap.** A `string | null`, max 64
 characters, so a phone number fits and would reach us intact. But the field's own
