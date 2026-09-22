@@ -152,7 +152,7 @@ Three differences between the two contracts drive the design.
 | **Identity** | No session concept in the request body. | Requires `session_id`; this domain also requires `user_id` (the caller's phone) for every Signals call. |
 | **Tools** | The client declares tools and expects the model to call them. | Owns its own tools (`fetch_jobs`, `save_profile`, `apply_job`) and executes them internally. |
 
-These are §11.1 to §11.5. Everything else is mechanical.
+These are settled in §11.1 to §11.5. Everything else is mechanical.
 
 ---
 
@@ -162,14 +162,29 @@ These are §11.1 to §11.5. Everything else is mechanical.
 POST /v1/chat/completions
 ```
 
-**Authentication is unresolved and currently absent.** No key is being issued to the
-client, so as specified the endpoint accepts any request that can reach it. That is
-tolerable only if the shim is not publicly routable.
+**No authentication — DECIDED, conditional on the deployment.** Both stacks run in the
+same cluster and the client reaches the shim over internal traffic only, so no key is
+issued and the endpoint accepts any request that reaches it.
 
-If a key is introduced later it should follow the OpenAI convention —
-`Authorization: Bearer <key>`, `401` in the error envelope when missing or wrong — and
-`AUTH-1` in §12 covers it. Until then the deployment must restrict access at the network
-level, and that restriction is load-bearing rather than defence in depth.
+**The condition this rests on:** the shim must not be externally routable — a ClusterIP
+service, with no Ingress and no LoadBalancer. That restriction is the *only* access
+control, not defence in depth, and nothing in the code will notice if it stops being true.
+Adding one Ingress rule later would silently open it.
+
+Worth being explicit about the exposure, because it is not read-only:
+
+- The caller's phone number arrives in the request body (§11.2), so anything that can
+  reach the shim can create a profile and submit a job application against **any** number,
+  writing real records to Signals on behalf of people who never called.
+- The shim holds the Signals API key, so an unauthenticated endpoint here is a
+  credentialled write path into the system of record for anything else in the cluster.
+
+Acceptable for the PoC. It needs revisiting before the shim is reachable from anywhere
+wider, and "internal only" should be an owned deployment requirement rather than an
+assumption.
+
+If a key is added later it should follow the OpenAI convention — `Authorization: Bearer
+<key>`, `401` in the error envelope when missing or wrong — which §12 already covers.
 
 Both `stream: true` and `stream: false` are implemented (§8, §9). A faithful
 implementation supports both, and `stream: false` directly serves the agreed working
@@ -299,11 +314,11 @@ cannot fix, and would otherwise be debugged in the wrong place.
 
 ---
 
-## 11. Open questions
+## 11. Decisions
 
-**One remains open: §11.5 Part A.** Everything else has been decided, and §11.1 and
-§11.2 were agreed with the client team on a call (2026-09-22). Each is recorded below
-with its consequences.
+**All decided.** §11.1 and §11.2 were agreed with the client team on a call
+(2026-09-22); the rest were settled on our side. Each is recorded below with its
+consequences, and with the alternatives that were rejected and why.
 
 ### 11.1 What do we send to Agent Core from `messages[]`? — DECIDED
 
@@ -559,18 +574,20 @@ LLM explicitly instructed to call `end_session` on "thank you", "bye", "bas ho g
 **In this topology the client replaces the voice reach layer.** So when the LLM ends the
 session, the flag reaches the shim and nothing acts on it.
 
-#### Part A — who speaks the closing word? — open, low stakes, ours to decide
+#### Part A — who speaks the closing word? — DECIDED
 
-**(a) The shim appends it.** On `DoneEvent.session_ended`, emit the channel's
-`terminal_word` as one final content chunk before closing the stream. Reproduces today's
-behaviour, and the value is already in domain config.
+**Decision: the shim appends it.** On `DoneEvent.session_ended`, emit the channel's
+`terminal_word` as one final content chunk before closing the stream. This reproduces what
+the voice reach layer does today, and the value is already in domain config
+(`channels.<name>.terminal_word`, currently `"Thank you"`).
 
-**(b) Nobody.** The conversation stops after the last real sentence. Acceptable if the
-agent's final reply already reads as a goodbye — but `terminal_word` exists because it
-often does not.
+It matters more here than it would elsewhere: because the shim cannot hang up (Part B),
+the closing word is the *only* signal the caller gets that the conversation has finished.
+Without it the line simply goes quiet.
 
-**Suggestion: (a).** A few lines, matches current behaviour, and given Part B below it is
-the *only* signal the caller gets that the conversation has finished.
+The alternative — ending the stream after the agent's last real sentence — was rejected
+because `terminal_word` exists precisely because a final reply often does not read as a
+goodbye.
 
 #### Part B — who hangs up, and what about `tools`? — DECIDED
 
@@ -647,9 +664,18 @@ channels use (`Dockerfile`, `main.py`, `pyproject.toml`, `src/`, `tests/`) and r
 shared `reach_layer/base` config loader and Agent Core client rather than reimplementing
 them.
 
-It is not built on top of `reach_layer/web`. It needs its own `channels.<name>` block in
+It is not built on top of `reach_layer/web`. It needs its own `channels.bridge` block in
 the domain config, because neither the `web` nor the `voice` prompt rules are right for a
 caller who hears the reply through a client that does no TTS sanitizing.
+
+**Domain: `blue-dots`.** Agent Core serves one domain per deployment, so `channels.bridge`
+is added to `dev-kit/configs/blue-dots/agent_core.yaml`. blue-dots is the domain whose
+apply flow has been verified end to end against the live Signals cluster
+(`action/perform` 201, profile retrievable by phone). `kkb` is named as the reference use
+case in the epic, but it has no `profile_choice` or `profile_setup` phases and was
+observed fabricating profile fields and writing them to Signals, which is why the domain
+work moved to blue-dots. Adding the same channel block to `kkb` later is a config change,
+not a shim change.
 
 New logic is small and separable:
 
@@ -698,14 +724,10 @@ ring. The shim validates the format itself for this reason, and the first integr
 should confirm a real record is created and retrievable rather than only that the call
 returned 200.
 
-**§11.5 Part A is the only open question left**, it is ours to decide, and it is small.
-
-**The endpoint is unauthenticated as specified (§6).** No key is being issued, so access
-control rests entirely on the deployment not being publicly reachable. Anyone who can
-reach the shim can drive a conversation and, because the caller's phone arrives in the
-request body, write a profile and submit a job application against **any** number they
-choose. That is worth a deliberate decision before the shim is exposed anywhere beyond a
-private host.
+**The no-auth decision depends on a deployment property, not on code (§6).** Internal-only
+traffic is the sole access control. Nothing in the shim enforces or checks it, and an
+Ingress added later would open a credentialled write path into Signals without any code
+change. Someone needs to own "internal only" as a requirement.
 
 **Unverified end to end.** No OpenAI client has yet been pointed at a running shim. The
 contract is read from the canonical specification, but a live interop check with the
