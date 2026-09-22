@@ -496,17 +496,17 @@ either. Reach Layer gains a fourth text surface alongside `web`, `voice` and `cl
 the domain config gains a matching `channels.<name>` block whose prompt rules are tuned
 for it — speech-ready output like `voice`, with no reliance on downstream sanitizing.
 
-**Naming.** The existing directories are named either for a medium (`web`, `voice`,
-`cli`) or a protocol (`mcp`). This one is a protocol surface, so a protocol name fits:
+**Naming: `bridge`.** The channel must stay generic. Although it speaks OpenAI's API
+today, that is an implementation detail of the current client, and naming the directory
+after one vendor would wrongly imply the channel is only ever for them. `bridge` names
+the role instead — an external platform reaching Agent Core through a translated
+protocol — and survives the protocol changing.
 
-- **`openai_api`** — recommended. Self-describing and parallel to `mcp`; anyone opening
-  `reach_layer/openai_api/` knows immediately what it speaks.
-- `llm_api` — the same idea, vendor-neutral, if tying the directory to one vendor's name
-  is unwelcome.
-- `bridge` — describes the role rather than the surface; less precise.
+`custom` was considered. It is accurate but tells a future reader nothing about what the
+directory does.
 
-`custom` is accurate but tells a future reader nothing. The same name should be used for
-the directory and for the `channels.<name>` key, so there is one concept with one name.
+The same name is used for the directory (`reach_layer/bridge/`) and for the
+`channels.bridge` key in domain config, so there is one concept with one name.
 
 ### 11.5 Session end — the closing word and the hang-up
 
@@ -624,7 +624,7 @@ status is no longer available. The stream terminates with a chunk carrying
 ## 13. Placement
 
 **A new Reach Layer channel in its own right** (§11.4), alongside `web`, `voice`, `cli`
-and `mcp` — recommended name `reach_layer/openai_api/`. It follows the shape the existing
+and `mcp` — named `reach_layer/bridge/` (§11.4). It follows the shape the existing
 channels use (`Dockerfile`, `main.py`, `pyproject.toml`, `src/`, `tests/`) and reuses the
 shared `reach_layer/base` config loader and Agent Core client rather than reimplementing
 them.
