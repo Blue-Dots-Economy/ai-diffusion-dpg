@@ -197,7 +197,7 @@ curl before any voice is involved.
 
 | Incoming | Treatment |
 |---|---|
-| `messages` | **§11.1 — open.** |
+| `messages` | The last `user`-role message becomes `user_message`; everything else discarded (§11.1). |
 | `model` | Recorded and echoed back in the response; does not select a model. Agent Core owns model choice via domain config; the client's own LLM model setting is vestigial and merely points at the shim. |
 | `stream` | Selects `/stream_turn` (true) or `/process_turn` (false). |
 | *(not from the request)* `channel` | Set by the shim to its own channel name (§11.4). Required by Agent Core; omitting it fails the turn. |
