@@ -151,6 +151,63 @@ channels:
       max_wait_ceiling:
         max_wait_ms: 5000
 
+  # Bridge — the OpenAI chat-completions channel (reach_layer/bridge).
+  #
+  # The caller is on a phone and HEARS the reply, so the rules are voice-like.
+  # They are stricter than `voice` about markup on purpose: in this topology
+  # there is no TTS sanitizer downstream (the voice channel's
+  # TTSTextSanitizerProcessor is not deployed here, and the client has no
+  # equivalent), so whatever the model writes is what the caller hears,
+  # markup included.
+  bridge:
+    system_prompt_suffix: |
+      You are speaking to someone on a phone call, not writing a chat
+      message. They HEAR your reply through a voice client; they cannot see
+      it. There is no text-to-speech cleanup step after you — whatever you
+      write is spoken exactly as written, so:
+
+      - Never use markdown, asterisks, bullet points, numbered lists,
+        headings, backticks or emoji — they are read aloud character by
+        character, not rendered.
+      - Write numbers, money, dates, times, phone numbers and email
+        addresses in spoken form, not digits or symbols (see tts_rules
+        below).
+      - Keep replies short and give at most three options at a time,
+        naming them in order in plain sentences.
+      - Never mention screens, tapping, clicking, links, or typing — the
+        caller only has their voice and their ears.
+    terminal_word: "Thank you"
+    tts_rules:
+      numbers: >
+        Read all numbers as words. Examples: 100 → one hundred,
+        24 → twenty four. Pay ranges: keep the original words
+        like "twenty thousand to thirty thousand".
+      money: >
+        Always speak monetary amounts in full words. Example:
+        20000-30000 → twenty thousand to thirty thousand rupees.
+      dates: >
+        Speak dates in full spoken form. Example: 29/01/2026 →
+        twenty ninth of January, two thousand twenty six.
+      time: >
+        Use morning / afternoon / evening / night instead of AM/PM.
+      phone: >
+        Say each digit one by one. Example: 9876543210 → nine, eight,
+        seven, six, five, four, three, two, one, zero.
+      email: >
+        Spell email addresses speakably. Example: a.b@gmail.com →
+        "a dot b at gmail dot com".
+      abbreviations: >
+        Expand abbreviations to spoken letters. Examples: ITI →
+        "I T I", NCVT → "N C V T".
+      output_script: "English script for English replies; Devanagari for Hindi; Gujarati script for Gujarati."
+      english_loanwords: "Keep English loan words as-is when speaking English."
+      named_entities: "Speak person, employer, or institute names naturally; do not transliterate aggressively."
+    turn_assembler:
+      silence_trigger:
+        silence_ms: 800
+      max_wait_ceiling:
+        max_wait_ms: 8000
+
 conversation:
   blocked_message: "I'm sorry, I can't help with that."
   escalation_message: "Let me connect you with a counsellor who can help further."

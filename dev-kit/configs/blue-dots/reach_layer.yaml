@@ -48,6 +48,12 @@ reach_layer:
         switch_user_confirm: "Switch user? Your current session will be closed."
         delete_conversation_confirm: "Delete this conversation? This cannot be undone."
 
+    bridge:
+      # GH-137-style: spoken/written just before the caller's client closes
+      # the call. The shim never ends the call itself, so this word is the
+      # only signal the caller gets that the conversation is finished.
+      terminal_word: "Thank you"
+
     voice:
       # English / Hindi / Gujarati. VAD tuned for English (shorter
       # pauses than Hindi-only callers); Hindi/Gujarati turns still
