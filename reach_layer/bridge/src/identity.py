@@ -21,8 +21,12 @@ import re
 
 # Digits only. The minimum length excludes a bare national number: an Indian
 # mobile is 10 digits, so 11 is the shortest value that can carry a country
-# code. The upper bound is E.164's maximum.
-_PHONE_RE = re.compile(r"^\d{11,15}$")
+# code. The upper bound is E.164's maximum. re.ASCII is required: \d in a str
+# pattern is Unicode-aware by default and matches non-ASCII decimal digits
+# (e.g. full-width, Arabic-Indic, Devanagari) as well as 0-9 — a number typed
+# in Devanagari numerals would pass this check and then match nothing
+# upstream, the same silent-corruption failure as a missing country code.
+_PHONE_RE = re.compile(r"^\d{11,15}$", re.ASCII)
 
 METADATA_PHONE_KEY = "caller_phone"
 _PARAM_PATH = f"metadata.{METADATA_PHONE_KEY}"

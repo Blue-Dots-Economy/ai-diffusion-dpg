@@ -53,3 +53,38 @@ def test_malformed_phone_raises(value):
 def test_non_string_phone_raises():
     with pytest.raises(IdentityError):
         extract_caller_phone({"metadata": {"caller_phone": 919900112233}})
+
+
+@pytest.mark.parametrize("value", [
+    "9" * 11,   # shortest valid length
+    "9" * 15,   # longest valid length (E.164 maximum)
+])
+def test_boundary_length_accepted(value):
+    assert extract_caller_phone({"metadata": {"caller_phone": value}}) == value
+
+
+@pytest.mark.parametrize("value", [
+    "9" * 10,   # one digit short of the minimum
+    "9" * 16,   # one digit over the E.164 maximum
+])
+def test_boundary_length_rejected(value):
+    with pytest.raises(IdentityError) as exc:
+        extract_caller_phone({"metadata": {"caller_phone": value}})
+    assert exc.value.param == "metadata.caller_phone"
+
+
+def test_devanagari_numerals_rejected():
+    r"""Non-ASCII decimal digits must be rejected, not just non-digit chars.
+
+    Python's `\d` in a str regex is Unicode-aware by default, so it matches
+    any Unicode decimal digit, not just 0-9 -- full-width, Arabic-Indic, and
+    Devanagari numerals all pass `\d` without `re.ASCII`. Devanagari is the
+    realistic case here, not a hypothetical: this domain's callers speak
+    Hindi. A Devanagari-numeral phone number would pass a Unicode-aware
+    check and then fail the exact same silent way as a missing country
+    code -- it looks like a valid query upstream and matches nothing.
+    """
+    devanagari_phone = "९१९९००११२२३३"  # 919900112233 in Devanagari numerals
+    with pytest.raises(IdentityError) as exc:
+        extract_caller_phone({"metadata": {"caller_phone": devanagari_phone}})
+    assert exc.value.param == "metadata.caller_phone"
