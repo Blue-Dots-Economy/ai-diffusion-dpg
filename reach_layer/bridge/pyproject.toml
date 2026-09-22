@@ -21,7 +21,12 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
-    "openai>=1.50.0",
+    # Pinned to the 3.x major: resolved 3.17.0 uses httpx2 internally rather
+    # than httpx, and the contract tests (httpx.MockTransport-based, Tasks 6
+    # and 11) were verified working against that build. A future major bump
+    # needs re-verifying against MockTransport before the pin is widened,
+    # not left to silently resolve.
+    "openai>=3.17,<4",
 ]
 
 [tool.pytest.ini_options]
