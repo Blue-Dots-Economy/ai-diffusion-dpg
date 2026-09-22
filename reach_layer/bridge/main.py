@@ -58,11 +58,16 @@ def _domain_config_path() -> Path:
 
     Raises:
         FileNotFoundError: If ``CONFIG_FOLDER`` is set but the expected
-            ``reach_layer.yaml`` does not exist under it.
+            ``domain.yaml`` does not exist under it.
     """
     config_folder = os.getenv("CONFIG_FOLDER")
     if config_folder:
-        resolved = Path(config_folder) / "reach_layer.yaml"
+        # Matches the mount convention used by every other reach_layer
+        # channel service in automation/docker/docker-compose.dev.yml
+        # (reach_layer_web, reach_layer_voice, reach_layer_mcp): the
+        # domain overrides file is always mounted as domain.yaml under
+        # CONFIG_FOLDER, regardless of its source filename on the host.
+        resolved = Path(config_folder) / "domain.yaml"
         if not resolved.exists():
             raise FileNotFoundError(
                 f"CONFIG_FOLDER='{config_folder}' is set but "

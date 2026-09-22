@@ -377,6 +377,32 @@ class McpChannelConfig(BaseModel):
     callers: list[CallerConfig] = Field(default_factory=list)
 
 
+class BridgeServerConfig(BaseModel):
+    """Uvicorn bind for the bridge channel service."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    host: str = "0.0.0.0"
+    port: int = Field(default=8008, gt=0, lt=65536)
+
+
+class BridgeChannelConfig(BaseModel):
+    """Bridge channel service config.
+
+    Always ``direct`` assembly: the client owns turn-taking, so Agent Core's
+    TurnAssembler is not engaged.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = True
+    assembly_mode: AssemblyMode = AssemblyMode.direct
+    server: BridgeServerConfig = Field(default_factory=BridgeServerConfig)
+    agent_core_url: str = "http://agent_core:8000"
+    terminal_word: str = ""
+    timeout_s: float = Field(default=60.0, gt=0)
+
+
 # ---------------------------------------------------------------------------
 # Channels container + top-level
 # ---------------------------------------------------------------------------
@@ -398,6 +424,9 @@ class ChannelsConfig(BaseModel):
     web: Optional[WebChannelConfig] = None
     voice: Optional[VoiceChannelConfig] = None
     mcp: Optional[McpChannelConfig] = None
+    # Bridge: the OpenAI chat-completions channel (reach_layer/bridge). Optional
+    # like every other channel so deployments that don't select it are unaffected.
+    bridge: Optional[BridgeChannelConfig] = None
 
 
 class ReachLayerConfig(BaseModel):

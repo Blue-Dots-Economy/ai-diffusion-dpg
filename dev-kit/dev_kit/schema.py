@@ -1273,6 +1273,13 @@ class ChannelsConfig(BaseModel):
     web: WebChannelConfig | None = Field(default=None, description="Web channel config. None = not deployed.")
     voice: VoiceChannelConfig | None = Field(default=None, description="Voice channel config. None = not deployed.")
     mcp: McpChannelConfig | None = Field(default=None, description="MCP channel config. None = not deployed.")
+    # Mirrors agent_core.src.schema.config.ChannelsConfig.bridge (extra="forbid"
+    # there, so this field must exist for channels.bridge to pass host-mode
+    # validation). Defaulted, so existing domains that omit it are unaffected.
+    bridge: ChannelConfig = Field(
+        default_factory=ChannelConfig,
+        description="Bridge (OpenAI chat-completions) channel configuration",
+    )
 
 
 class ReachHttpClientConfig(BaseModel):
