@@ -1,10 +1,12 @@
 # ai-diffusion-dpg on the VoicEra VM
 
-Self-contained Docker Compose deployment. The VM needs **this directory only** —
-no git clone, no repo tree. The images carry the code.
+Docker Compose deployment for the shared EC2 host. Run it from a clone of this
+repo on the VM — the images carry the code, and the clone supplies the domain
+config, which is mounted straight out of `dev-kit/`.
 
 Kept separate from `automation/docker/*` on purpose: those two files serve local
-development, and nothing here changes them.
+development, and nothing here changes them. The secrets init container below is
+needed by this deployment only.
 
 ## What runs
 
@@ -70,16 +72,26 @@ customer-managed key rather than `alias/aws/ssm`.
 ## Deploy
 
 ```bash
-./sync-config.sh blue-dots     # from a checkout: fills ./config and ./otelcol
-cp env.example .env           # set AWS_REGION, SSM_PREFIX, BLUE_DOTS_ORG_ID
+git clone https://github.com/Blue-Dots-Economy/ai-diffusion-dpg.git
+cd ai-diffusion-dpg/automation/deploy/voicera-vm
+
+cp env.example .env     # AWS_REGION, SSM_PREFIX, BLUE_DOTS_ORG_ID, DPG_IMAGE_TAG
 chmod 600 .env
-# ship this directory to the VM, then:
+
 docker compose up -d
 docker compose ps
 ```
 
-`config/`, `otelcol/` and `.env` are git-ignored — they are produced per
-deployment, not committed.
+`.env` is the only file you create, and it is git-ignored.
+
+Config is mounted from the clone: `dev-kit/dpg/*.yaml` for framework defaults
+and `dev-kit/configs/${DOMAIN:-blue-dots}/*.yaml` for the domain. Set `DOMAIN`
+in `.env` to deploy a different one.
+
+The clone is there for config, not code — **keep it on a release tag or a known
+commit**, not a moving branch, or a stray `git pull` silently changes what the
+running containers are configured with. `DPG_IMAGE_TAG` and the checkout are two
+separate versions; keep them deliberately in step.
 
 ### Verify
 

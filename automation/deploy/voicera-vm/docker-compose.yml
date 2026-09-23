@@ -1,22 +1,24 @@
 # ai-diffusion-dpg — VoicEra shared VM deployment.
 #
-# Self-contained: does NOT reference the repo tree, so the VM needs only this
-# directory. Separate from automation/docker/* on purpose — those two files
-# serve local development and are not changed by this deployment.
+# Separate from automation/docker/* on purpose — those two files serve local
+# development and are not changed by this deployment. The secrets init
+# container below is needed by this deployment only.
 #
 # 11 services: the 6 DPG blocks, the bridge channel, redis, memgraph, otelcol,
 # and a one-shot secrets init container.
 # Deliberately absent: the voice channel and ngrok (VoicEra owns telephony),
 # web/cli/mcp, dev-kit, and the grafana/jaeger/loki/prometheus UIs.
 #
-# Layout expected on the VM:
-#   .
-#   ├── docker-compose.yml
-#   ├── .env
-#   ├── otelcol/otelcol-config.yaml
-#   └── config/{dpg,domain}/*.yaml      (see sync-config.sh)
+# Run from a clone of the repo on the VM — config is mounted straight out of
+# the tree, so the only file you create is .env next to this one:
 #
+#   git clone https://github.com/Blue-Dots-Economy/ai-diffusion-dpg.git
+#   cd ai-diffusion-dpg/automation/deploy/voicera-vm
+#   cp env.example .env && chmod 600 .env
 #   docker compose up -d
+#
+# Only the images carry code — the clone is here for config, so keep it on a
+# release tag or a known commit rather than a moving branch.
 
 x-logging: &logging
   driver: json-file
@@ -102,7 +104,7 @@ services:
     # Ports intentionally not published — all exporters are inside dpg_net.
     command: ["--config=/etc/otelcol/otelcol-config.yaml"]
     volumes:
-      - ./otelcol/otelcol-config.yaml:/etc/otelcol/otelcol-config.yaml:ro
+      - ../../docker/otelcol/otelcol-config.yaml:/etc/otelcol/otelcol-config.yaml:ro
     networks: [dpg_net]
     logging: *logging
     restart: unless-stopped
@@ -115,8 +117,8 @@ services:
     container_name: dpg_observability_layer
     environment: [CONFIG_FOLDER=/app/config, "LOG_LEVEL=${LOG_LEVEL:-INFO}"]
     volumes:
-      - ./config/dpg/observability_layer.yaml:/app/config/dpg.yaml:ro
-      - ./config/domain/observability_layer.yaml:/app/config/observability_layer.yaml:ro
+      - ../../../dev-kit/dpg/observability_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/observability_layer.yaml:/app/config/observability_layer.yaml:ro
     networks: [dpg_net]
     logging: *logging
     healthcheck:
@@ -138,8 +140,8 @@ services:
       - MEMGRAPH_USER=memgraph
       - MEMGRAPH_PASSWORD=${MEMGRAPH_PASSWORD:-}
     volumes:
-      - ./config/dpg/memory_layer.yaml:/app/config/dpg.yaml:ro
-      - ./config/domain/memory_layer.yaml:/app/config/memory_layer.yaml:ro
+      - ../../../dev-kit/dpg/memory_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/memory_layer.yaml:/app/config/memory_layer.yaml:ro
     networks: [dpg_net]
     logging: *logging
     depends_on:
@@ -162,8 +164,8 @@ services:
       - KB_DATA_DIR=/data/kb
       - CHROMA_PERSIST_DIR=/app/chroma_db
     volumes:
-      - ./config/dpg/knowledge_engine.yaml:/app/config/dpg.yaml:ro
-      - ./config/domain/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
+      - ../../../dev-kit/dpg/knowledge_engine.yaml:/app/config/dpg.yaml:ro
+      - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
       - chroma_data:/app/chroma_db
       - kb_data:/data/kb
     networks: [dpg_net]
@@ -181,8 +183,8 @@ services:
     container_name: dpg_trust_layer
     environment: [CONFIG_FOLDER=/app/config, "LOG_LEVEL=${LOG_LEVEL:-INFO}"]
     volumes:
-      - ./config/dpg/trust_layer.yaml:/app/config/dpg.yaml:ro
-      - ./config/domain/trust_layer.yaml:/app/config/trust_layer.yaml:ro
+      - ../../../dev-kit/dpg/trust_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/trust_layer.yaml:/app/config/trust_layer.yaml:ro
     networks: [dpg_net]
     logging: *logging
     healthcheck:
@@ -211,8 +213,8 @@ services:
       - BLUE_DOTS_ORG_ID=${BLUE_DOTS_ORG_ID:?set BLUE_DOTS_ORG_ID in .env}
     volumes:
       - secrets:/secrets:ro
-      - ./config/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
-      - ./config/domain/action_gateway.yaml:/app/config/action_gateway.yaml:ro
+      - ../../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
+      - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
     networks: [dpg_net]
     logging: *logging
     depends_on:
@@ -237,8 +239,8 @@ services:
     environment: [CONFIG_FOLDER=/app/config, "LOG_LEVEL=${LOG_LEVEL:-INFO}"]
     volumes:
       - secrets:/secrets:ro
-      - ./config/dpg/agent_core.yaml:/app/config/dpg.yaml:ro
-      - ./config/domain/agent_core.yaml:/app/config/agent_core.yaml:ro
+      - ../../../dev-kit/dpg/agent_core.yaml:/app/config/dpg.yaml:ro
+      - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/agent_core.yaml:/app/config/agent_core.yaml:ro
     networks: [dpg_net]
     logging: *logging
     depends_on:
@@ -271,8 +273,8 @@ services:
     container_name: dpg_reach_layer_bridge
     environment: [CONFIG_FOLDER=/app/config, "LOG_LEVEL=${LOG_LEVEL:-INFO}"]
     volumes:
-      - ./config/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
-      - ./config/domain/reach_layer.yaml:/app/config/domain.yaml:ro
+      - ../../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/reach_layer.yaml:/app/config/domain.yaml:ro
     ports:
       - "127.0.0.1:8008:8008"
     networks: [dpg_net]
