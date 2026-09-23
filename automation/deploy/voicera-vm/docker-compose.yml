@@ -335,7 +335,12 @@ volumes:
     driver_opts:
       type: tmpfs
       device: tmpfs
-      o: "size=1m,mode=0700"
+      # 0755, not 0700. The volume is created root-owned, and every DPG image
+      # runs as a non-root user, so a 0700 directory cannot be traversed by the
+      # processes that need the file inside it — the file's own mode is
+      # irrelevant if /secrets itself cannot be entered. This tmpfs is mounted
+      # only into the two containers that consume it, and read-only there.
+      o: "size=1m,mode=0755"
   redis_data:
   memgraph_data:
   chroma_data:
