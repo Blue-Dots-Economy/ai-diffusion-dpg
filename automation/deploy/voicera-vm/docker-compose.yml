@@ -1,0 +1,305 @@
+# ai-diffusion-dpg — VoicEra shared VM deployment.
+#
+# Self-contained: does NOT reference the repo tree, so the VM needs only this
+# directory. Separate from automation/docker/* on purpose — those two files
+# serve local development and are not changed by this deployment.
+#
+# 11 services: the 6 DPG blocks, the bridge channel, redis, memgraph, otelcol,
+# and a one-shot secrets init container.
+# Deliberately absent: the voice channel and ngrok (VoicEra owns telephony),
+# web/cli/mcp, dev-kit, and the grafana/jaeger/loki/prometheus UIs.
+#
+# Layout expected on the VM:
+#   .
+#   ├── docker-compose.yml
+#   ├── .env
+#   ├── otelcol/otelcol-config.yaml
+#   └── config/{dpg,domain}/*.yaml      (see sync-config.sh)
+#
+#   docker compose up -d
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # One-shot: fetch secrets from AWS SSM Parameter Store into a tmpfs volume.
+  #
+  # Runs to completion before agent_core and action_gateway start. Uses the
+  # EC2 instance role — no AWS credentials on the box.
+  #
+  # NOTE: reaching instance metadata from inside a container needs the
+  # instance's IMDSv2 hop limit set to 2 (the AWS default of 1 blocks
+  # containers). Confirm with the infra team before first run.
+  # ---------------------------------------------------------------------------
+  init_secrets:
+    image: amazon/aws-cli:2.17.20
+    container_name: dpg_init_secrets
+    entrypoint: ["/bin/sh", "-c"]
+    environment:
+      - AWS_REGION=${AWS_REGION:?set AWS_REGION in .env}
+      - SSM_PREFIX=${SSM_PREFIX:?set SSM_PREFIX in .env}
+    command:
+      - |
+        set -eu
+        umask 077
+        get() { aws ssm get-parameter --name "$$1" --with-decryption \
+                  --query Parameter.Value --output text; }
+        OPENAI=$$(get "$$SSM_PREFIX/openai_api_key")
+        SIGNALS=$$(get "$$SSM_PREFIX/blue_dots_api_key")
+        # The search connector reads a distinct variable NAME but currently
+        # carries the SAME VALUE, so only two parameters are stored.
+        {
+          echo "export OPENAI_API_KEY='$$OPENAI'"
+          echo "export BLUE_DOTS_API_KEY='$$SIGNALS'"
+          echo "export BLUE_DOTS_SEARCH_API_KEY='$$SIGNALS'"
+        } > /secrets/env
+        chmod 400 /secrets/env
+        # Never print the values.
+        echo "init_secrets: wrote /secrets/env (openai=$${#OPENAI} signals=$${#SIGNALS})"
+    volumes:
+      - secrets:/secrets
+    networks: [dpg_net]
+    logging: *logging
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # Infrastructure
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: dpg_redis
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    volumes: [redis_data:/data]
+    networks: [dpg_net]
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  memgraph:
+    image: memgraph/memgraph:2.17.0
+    container_name: dpg_memgraph
+    volumes: [memgraph_data:/var/lib/memgraph]
+    networks: [dpg_net]
+    logging: *logging
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'RETURN 1;' | mgconsole --output-format=csv || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:0.96.0
+    container_name: dpg_otelcol
+    # Ports intentionally not published — all exporters are inside dpg_net.
+    command: ["--config=/etc/otelcol/otelcol-config.yaml"]
+    volumes:
+      - ./otelcol/otelcol-config.yaml:/etc/otelcol/otelcol-config.yaml:ro
+    networks: [dpg_net]
+    logging: *logging
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # DPG blocks
+  # ---------------------------------------------------------------------------
+  observability_layer:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/observability-layer:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_observability_layer
+    environment: [CONFIG_FOLDER=/app/config, "LOG_LEVEL=${LOG_LEVEL:-INFO}"]
+    volumes:
+      - ./config/dpg/observability_layer.yaml:/app/config/dpg.yaml:ro
+      - ./config/domain/observability_layer.yaml:/app/config/observability_layer.yaml:ro
+    networks: [dpg_net]
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  memory_layer:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/memory-layer:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_memory_layer
+    environment:
+      - CONFIG_FOLDER=/app/config
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - MEMGRAPH_URI=bolt://memgraph:7687
+      - MEMGRAPH_USER=memgraph
+      - MEMGRAPH_PASSWORD=${MEMGRAPH_PASSWORD:-}
+    volumes:
+      - ./config/dpg/memory_layer.yaml:/app/config/dpg.yaml:ro
+      - ./config/domain/memory_layer.yaml:/app/config/memory_layer.yaml:ro
+    networks: [dpg_net]
+    logging: *logging
+    depends_on:
+      redis: { condition: service_healthy }
+      memgraph: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  knowledge_engine:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/knowledge-engine:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_knowledge_engine
+    environment:
+      - CONFIG_FOLDER=/app/config
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - KB_DATA_DIR=/data/kb
+      - CHROMA_PERSIST_DIR=/app/chroma_db
+    volumes:
+      - ./config/dpg/knowledge_engine.yaml:/app/config/dpg.yaml:ro
+      - ./config/domain/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
+      - chroma_data:/app/chroma_db
+      - kb_data:/data/kb
+    networks: [dpg_net]
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  trust_layer:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/trust-layer:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_trust_layer
+    environment: [CONFIG_FOLDER=/app/config, "LOG_LEVEL=${LOG_LEVEL:-INFO}"]
+    volumes:
+      - ./config/dpg/trust_layer.yaml:/app/config/dpg.yaml:ro
+      - ./config/domain/trust_layer.yaml:/app/config/trust_layer.yaml:ro
+    networks: [dpg_net]
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  # Reads BLUE_DOTS_API_KEY / BLUE_DOTS_SEARCH_API_KEY from /secrets/env via the
+  # shared entrypoint. BLUE_DOTS_ORG_ID is an organisation UUID, not a
+  # credential, so it stays in .env.
+  action_gateway:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/action-gateway:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_action_gateway
+    # Sources the secrets file written by init_secrets, then execs the image's
+    # own command. Done here rather than baked into the image so no rebuild is
+    # needed and no other deployment is affected. Keep `command` in step with
+    # the image CMD (currently `uv run python main.py`).
+    entrypoint: ["/bin/sh", "-c"]
+    command: ['. /secrets/env && exec uv run python main.py']
+    environment:
+      - CONFIG_FOLDER=/app/config
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - BLUE_DOTS_ORG_ID=${BLUE_DOTS_ORG_ID:?set BLUE_DOTS_ORG_ID in .env}
+    volumes:
+      - secrets:/secrets:ro
+      - ./config/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
+      - ./config/domain/action_gateway.yaml:/app/config/action_gateway.yaml:ro
+    networks: [dpg_net]
+    logging: *logging
+    depends_on:
+      init_secrets:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9999/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  # Reads OPENAI_API_KEY from /secrets/env via the shared entrypoint.
+  agent_core:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/agent-core:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_agent_core
+    # See the note on action_gateway: secrets are sourced at runtime, no image
+    # change required. Keep in step with the image CMD.
+    entrypoint: ["/bin/sh", "-c"]
+    command: ['. /secrets/env && exec uv run python main.py']
+    environment: [CONFIG_FOLDER=/app/config, "LOG_LEVEL=${LOG_LEVEL:-INFO}"]
+    volumes:
+      - secrets:/secrets:ro
+      - ./config/dpg/agent_core.yaml:/app/config/dpg.yaml:ro
+      - ./config/domain/agent_core.yaml:/app/config/agent_core.yaml:ro
+    networks: [dpg_net]
+    logging: *logging
+    depends_on:
+      init_secrets: { condition: service_completed_successfully }
+      action_gateway: { condition: service_healthy }
+      trust_layer: { condition: service_healthy }
+      memory_layer: { condition: service_healthy }
+      knowledge_engine: { condition: service_healthy }
+      observability_layer: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Reach Layer — Bridge channel. The endpoint VoicEra's LLM provider calls.
+  #
+  # Bound to 127.0.0.1, never 0.0.0.0: the bridge has NO AUTHENTICATION (shim
+  # design spec section 6), and that decision is conditional on it not being
+  # externally routable.
+  #
+  # If VoicEra's compose joins dpg_net as an external network instead, they can
+  # reach http://reach_layer_bridge:8008 by DNS — then delete the ports: block.
+  # ---------------------------------------------------------------------------
+  reach_layer_bridge:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-bridge:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_reach_layer_bridge
+    environment: [CONFIG_FOLDER=/app/config, "LOG_LEVEL=${LOG_LEVEL:-INFO}"]
+    volumes:
+      - ./config/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
+      - ./config/domain/reach_layer.yaml:/app/config/domain.yaml:ro
+    ports:
+      - "127.0.0.1:8008:8008"
+    networks: [dpg_net]
+    logging: *logging
+    depends_on:
+      agent_core: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8008/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
+    restart: unless-stopped
+
+networks:
+  dpg_net:
+    name: dpg_net
+    driver: bridge
+    attachable: true      # so VoicEra's compose project can join it
+
+volumes:
+  secrets:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=1m,mode=0700"
+  redis_data:
+  memgraph_data:
+  chroma_data:
+  kb_data:
