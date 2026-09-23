@@ -136,3 +136,39 @@ def test_completion_does_not_leak_the_session_id():
         MODEL,
     )
     assert "919900112233" not in json.dumps(obj)
+
+
+def test_consecutive_sentences_are_separated_by_a_space():
+    """Agent Core sends one event per sentence with no trailing whitespace.
+
+    Concatenated verbatim the caller receives "...yet.Which trade...", which
+    a TTS engine reads as one run-on word.
+    """
+    t = StreamTranslator(MODEL)
+    spoken = "".join(
+        t.sentence(s)["choices"][0]["delta"]["content"]
+        for s in ("I don't have a profile for you yet.", "Which trade?")
+    )
+    assert spoken == "I don't have a profile for you yet. Which trade?"
+
+
+def test_first_sentence_is_not_left_padded():
+    t = StreamTranslator(MODEL)
+    assert t.sentence("Hello.")["choices"][0]["delta"]["content"] == "Hello."
+
+
+def test_already_spaced_sentence_is_not_double_spaced():
+    t = StreamTranslator(MODEL)
+    t.sentence("One.")
+    assert t.sentence(" Two.")["choices"][0]["delta"]["content"] == " Two."
+
+
+def test_terminal_word_is_spaced_off_the_preceding_sentence():
+    t = StreamTranslator(MODEL, terminal_word="Thank you")
+    t.sentence("Your application has been submitted.")
+    spoken = "".join(
+        c["choices"][0]["delta"].get("content", "")
+        for c in t.finish(_done(session_ended=True), include_usage=False)
+        if c["choices"]
+    )
+    assert spoken == " Thank you"

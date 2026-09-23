@@ -175,6 +175,7 @@ class StreamTranslator:
         self._terminal_word = terminal_word
         self._id = new_completion_id()
         self._created = int(time.time())
+        self._emitted_content = False
 
     def _chunk(self, **kwargs) -> dict:
         return build_chunk(self._id, self._created, self._model, **kwargs)
@@ -190,12 +191,21 @@ class StreamTranslator:
     def sentence(self, text: str) -> dict:
         """Translate one ``SentenceEvent`` into a content delta chunk.
 
+        Agent Core emits one event per sentence with no trailing whitespace,
+        so the deltas are separated here: concatenated verbatim they would
+        reach the caller as "...for you yet.Which trade...", which a TTS
+        engine reads as a single run-on word.
+
         Args:
             text: The trust-checked sentence text.
 
         Returns:
             A ``chat.completion.chunk`` carrying ``text`` as content.
         """
+        if self._emitted_content and text and not text[0].isspace():
+            text = " " + text
+        if text:
+            self._emitted_content = True
         return self._chunk(delta={"content": text})
 
     def finish(self, done: dict, *, include_usage: bool) -> list[dict]:
@@ -216,7 +226,7 @@ class StreamTranslator:
         """
         out: list[dict] = []
         if done.get("session_ended") and self._terminal_word:
-            out.append(self.sentence(" " + self._terminal_word))
+            out.append(self.sentence(self._terminal_word))
         out.append(self._chunk(delta={}, finish_reason="stop"))
         if include_usage:
             out.append(self._chunk(usage=ZERO_USAGE, empty_choices=True))
