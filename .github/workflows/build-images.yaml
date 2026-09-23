@@ -20,11 +20,7 @@ name: build-images
 # loki, otelcol, prometheus, ngrok) are pulled upstream and are not built here.
 on:
   push:
-    # TEMPORARY: ci/ghcr-image-builds is here so this workflow can be proved on
-    # a push before it reaches the default branch. Drop it before merge —
-    # otherwise every commit to that branch rebuilds images nobody asked for.
-    branches: [main, ci/ghcr-image-builds]
-    tags: ['v*.*.*']
+    branches: [main]
   workflow_dispatch:
     inputs:
       ref:
