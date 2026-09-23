@@ -379,6 +379,8 @@ class ChannelsSection(BaseModel):
     voice: Optional[ChannelEntry] = None
     cli: Optional[ChannelEntry] = None
     mcp: Optional[ChannelEntry] = None
+    # Bridge: the OpenAI chat-completions channel (reach_layer/bridge).
+    bridge: Optional[ChannelEntry] = None
 
 
 # -- agent_core.connectors (knowledge, tools phases) -------------------------

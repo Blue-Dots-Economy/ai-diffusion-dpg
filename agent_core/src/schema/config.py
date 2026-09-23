@@ -605,6 +605,11 @@ class ChannelsConfig(BaseModel):
     web: ChannelConfig = Field(default_factory=ChannelConfig)
     cli: ChannelConfig = Field(default_factory=ChannelConfig)
     mcp: ChannelConfig = Field(default_factory=ChannelConfig)
+    # Bridge: the OpenAI chat-completions channel (reach_layer/bridge). Added
+    # as a field because ChannelsConfig is extra="forbid", so channels.bridge
+    # in a domain config is rejected at boot otherwise. Defaulted, so every
+    # existing domain that omits it validates unchanged.
+    bridge: ChannelConfig = Field(default_factory=ChannelConfig)
 
 
 # ---------------------------------------------------------------------------

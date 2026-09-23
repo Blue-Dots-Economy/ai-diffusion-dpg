@@ -432,6 +432,53 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
+  # Reach Layer — Bridge (port 8008)
+  # OpenAI chat-completions compatible channel backed by Agent Core. No
+  # published image yet (new channel), so built from source like the other
+  # in-repo Dockerfiles. Config wiring mirrors reach_layer_mcp above: the
+  # unified reach_layer.yaml (dpg defaults + domain overrides) is mounted at
+  # CONFIG_FOLDER as dpg.yaml/domain.yaml.
+  #
+  # Port 8008 is intentionally NOT host-published. The bridge channel has no
+  # authentication by design -- that decision is explicitly conditional on
+  # the endpoint not being externally routable. Anyone who could reach it
+  # could create a profile / submit an application against any phone number
+  # using the shim's Signals credentials. The service is reachable within
+  # dpg_net by co-deployed callers. For local development/testing, add:
+  #   ports:
+  #     - "8008:8008"
+  # before running docker compose.
+  # ---------------------------------------------------------------------------
+  reach_layer_bridge:
+    build:
+      context: ../..
+      dockerfile: reach_layer/bridge/Dockerfile
+    container_name: reach_layer_bridge
+    environment:
+      - CONFIG_FOLDER=/app/config
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+    depends_on:
+      agent_core:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8008/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
   # Trust Layer — content safety gate (port 8003)
   # ---------------------------------------------------------------------------
   trust_layer:

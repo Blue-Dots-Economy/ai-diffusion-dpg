@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reach-layer-bridge"
+version = "0.1.0"
+description = "OpenAI chat-completions compatible Reach Layer channel backed by Agent Core"
+requires-python = ">=3.13"
+dependencies = [
+    "reach-layer-base",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+    "httpx>=0.27.0",
+    "pydantic>=2.9.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    # Pinned to the 3.x major: resolved 3.17.0 uses httpx2 internally rather
+    # than httpx, and the contract tests (httpx.MockTransport-based, Tasks 6
+    # and 11) were verified working against that build. A future major bump
+    # needs re-verifying against MockTransport before the pin is widened,
+    # not left to silently resolve.
+    "openai>=3.17,<4",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+
+[tool.uv.sources]
+reach-layer-base = { path = "../base", editable = true }

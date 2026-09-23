@@ -9,13 +9,21 @@
 agent:
   # OpenAI, because that is what this domain was actually validated on --
   # the full journey (job discovery through action/perform) was run end to
-  # end against the Signals dev cluster on these models. The domain was
+  # end against the Signals dev cluster on this provider. The domain was
   # originally authored for Anthropic; switching the declared provider to
   # match the tested one keeps the config honest. Re-validate before
   # changing it back.
   provider: openai
-  primary_model: gpt-5.4-mini-2026-03-17
-  fallback_model: gpt-4.1-mini-2025-04-14
+  # 4.1-mini is the primary because it performed better on this journey.
+  # On the job-list turn 5.4-mini often returned an empty completion on
+  # the post-tool-result call, ending the turn with no sentences:
+  # 5.4-mini 1/3 clean runs against 4.1-mini 3/3, measured over the same
+  # scripted journey. It reproduces on voice and web driven straight at
+  # Agent Core, so it tracks the model rather than any one channel.
+  # 5.4-mini stays as the fallback. Re-validate this pairing before
+  # changing either model.
+  primary_model: gpt-4.1-mini-2025-04-14
+  fallback_model: gpt-5.4-mini-2026-03-17
   ask_for_consent: true
   consent_prompt: >
     Hello! Welcome to Blue Dots. Can I save your profile and submit job
@@ -150,6 +158,101 @@ channels:
         silence_ms: 200
       max_wait_ceiling:
         max_wait_ms: 5000
+
+  # Bridge — the OpenAI chat-completions channel (reach_layer/bridge).
+  #
+  # The caller is on a phone and HEARS the reply, so the rules are voice-like.
+  # They are stricter than `voice` about markup on purpose: in this topology
+  # there is no TTS sanitizer downstream (the voice channel's
+  # TTSTextSanitizerProcessor is not deployed here, and the client has no
+  # equivalent), so whatever the model writes is what the caller hears,
+  # markup included.
+  bridge:
+    system_prompt_suffix: |
+      You are speaking to someone on a phone call, not writing a chat message.
+      They HEAR your reply through a voice client; they cannot see it. There is
+      no text-to-speech cleanup step after you — whatever you write is spoken
+      exactly as written, so:
+      - Never use markdown, asterisks, bullet points, numbered lists, headings,
+        backticks or emoji — they are read aloud character by character.
+      - Write numbers, money, dates, times, phone numbers and email addresses in
+        spoken form, not digits or symbols (see tts_rules below).
+      - Never mention screens, tapping, clicking, links or typing — the caller
+        only has their voice and their ears.
+
+      ## Response length (hard rule)
+      Reply in at most 2 short sentences. The only exception is presenting
+      a list of jobs, where you may use at most 3 items, one short line each.
+
+      ## Style
+      Warm, natural, conversational. Calm pace, one idea at a time. Plain
+      English by default; switch to Hindi or Gujarati if the caller does.
+      Never corporate, sales-like, scripted, or fake-warm.
+
+      ## Silence handling
+      Silence is meaningful — do not rush to fill it.
+      - Short pause: user is thinking. Wait.
+      - Longer pause: one gentle bridge, e.g. "Take your time."
+      - After disappointing facts (no jobs, declined application):
+        let the truth land. Do not pile on questions.
+
+      ## General voice etiquette
+      Never reply with "please wait" messages. Always reply with the
+      actual answer.
+
+      ## Prior tool results
+      Prior tool results in this conversation are visible to you as real
+      tool_result messages earlier in the message history. Do not re-invoke
+      a tool unless the relevant parameters have changed; reuse the
+      already-returned data when answering follow-up questions.
+
+      ## Phone numbers, IDs, and internal state
+      - Say phone digits one by one — never as a single chunk.
+      - Never speak internal IDs aloud (item_id, application_id,
+        action_id, profile_item_id, source_item_owner, UUIDs).
+      - Never narrate your internal reasoning or session state.
+        Specifically NEVER emit any of these patterns (real leaks):
+          "The session context shows the user has selected ABC Ltd
+           and the profile_action is create_new. I need to gather
+           remaining required fields for save_profile. I have name
+           (Rahul Krishna), gender (male), location (...)…"
+          "I'll map that to the second job in the fetch_jobs result…"
+          "From the fetch_jobs results, ABC ltd has item_id …"
+          "I have all the details I need." / "Let me save now."
+        These chain-of-thought leaks are forbidden. Either ASK the
+        next question, CALL the next tool silently, or ANNOUNCE the
+        result — nothing in between.
+    terminal_word: "Thank you"
+    tts_rules:
+      numbers: >
+        Read all numbers as words. Examples: 100 → one hundred,
+        24 → twenty four. Pay ranges: keep the original words
+        like "twenty thousand to thirty thousand".
+      money: >
+        Always speak monetary amounts in full words. Example:
+        20000-30000 → twenty thousand to thirty thousand rupees.
+      dates: >
+        Speak dates in full spoken form. Example: 29/01/2026 →
+        twenty ninth of January, two thousand twenty six.
+      time: >
+        Use morning / afternoon / evening / night instead of AM/PM.
+      phone: >
+        Say each digit one by one. Example: 9876543210 → nine, eight,
+        seven, six, five, four, three, two, one, zero.
+      email: >
+        Spell email addresses speakably. Example: a.b@gmail.com →
+        "a dot b at gmail dot com".
+      abbreviations: >
+        Expand abbreviations to spoken letters. Examples: ITI →
+        "I T I", NCVT → "N C V T".
+      output_script: "English script for English replies; Devanagari for Hindi; Gujarati script for Gujarati."
+      english_loanwords: "Keep English loan words as-is when speaking English."
+      named_entities: "Speak person, employer, or institute names naturally; do not transliterate aggressively."
+    turn_assembler:
+      silence_trigger:
+        silence_ms: 800
+      max_wait_ceiling:
+        max_wait_ms: 8000
 
 conversation:
   blocked_message: "I'm sorry, I can't help with that."

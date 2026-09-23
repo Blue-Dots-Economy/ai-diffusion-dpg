@@ -175,3 +175,19 @@ reach_layer:
       #       api_key: ${MCP_CALLER_MYAGENT_KEY}
       # The config loader expands ${VAR} and ${VAR:-default} placeholders at boot.
       callers: []
+
+    # ─── Bridge ──────────────────────────────────────────────────────────────
+    # OpenAI chat-completions channel (reach_layer/bridge). The client, not
+    # Agent Core's TurnAssembler, owns turn-taking, so assembly_mode is always
+    # direct — POST /process_turn, synchronous, one call in and one reply out.
+    bridge:
+      enabled: true
+      assembly_mode: direct
+      server:
+        host: 0.0.0.0
+        port: 8008
+      agent_core_url: "http://agent_core:8000"
+      timeout_s: 60.0
+      # terminal_word is per-domain (spoken/written closing signal — the shim
+      # does not end the call itself) → dev-kit/configs/<domain>/
+      terminal_word: ""

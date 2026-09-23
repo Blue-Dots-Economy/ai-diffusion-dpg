@@ -163,6 +163,20 @@ class McpChannelSection(BaseModel):
     callers: list[CallerSection] = Field(default_factory=list)
 
 
+class BridgeChannelSection(BaseModel):
+    """reach_layer.channels.bridge — bridge (OpenAI chat-completions) channel
+    domain config overrides. All fields optional: the framework default
+    (dev-kit/dpg/reach_layer.yaml) supplies the rest.
+    """
+    model_config = ConfigDict(extra="forbid")
+    enabled: Optional[bool] = None
+    assembly_mode: Optional[str] = None
+    port: Optional[int] = None
+    agent_core_url: Optional[str] = None
+    terminal_word: Optional[str] = None
+    timeout_s: Optional[float] = Field(default=None, gt=0)
+
+
 class ChannelsSection(BaseModel):
     """reach_layer.channels — at most one entry per channel type."""
     model_config = ConfigDict(extra="forbid")
@@ -170,6 +184,12 @@ class ChannelsSection(BaseModel):
     voice: Optional[VoiceChannelSection] = None
     cli: Optional[CliChannelSection] = None
     mcp: Optional[McpChannelSection] = None
+    # reach_layer.channels.bridge is extra="forbid" like every sibling here,
+    # so it must be declared or a domain config setting it is rejected at the
+    # wizard's per-write gate (a different gate from agent_core.py's
+    # ChannelsSection, whose pre-existing missing mcp is separate and out of
+    # scope for this task).
+    bridge: Optional[BridgeChannelSection] = None
 
 
 class CommonObservabilityConfig(BaseModel):

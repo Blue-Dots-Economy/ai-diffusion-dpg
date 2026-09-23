@@ -512,6 +512,54 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
+  # Reach Layer — Bridge channel (port 8008)
+  #
+  # OpenAI chat-completions front end backed by Agent Core, so an external
+  # voice platform can point its LLM provider base_url at us and Agent Core
+  # keeps ownership of every turn.
+  #
+  # Port 8008 is intentionally NOT host-published: the bridge has no
+  # authentication (see the shim design spec, section 6), so that decision is
+  # conditional on it not being externally routable. It is reachable within
+  # dpg_net by co-deployed callers. For local development/testing, add:
+  #   ports:
+  #     - "8008:8008"
+  # before running docker compose.
+  # ---------------------------------------------------------------------------
+  reach_layer_bridge:
+    build:
+      context: ../..
+      dockerfile: reach_layer/bridge/Dockerfile
+      platforms:
+        - linux/amd64
+        - linux/arm64
+    image: sanketikahub/dpg-reach-layer-bridge:${GIT_SHA:-latest}
+    container_name: reach_layer_bridge
+    environment:
+      - CONFIG_FOLDER=/app/config
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+    depends_on:
+      agent_core:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8008/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
   # Trust Layer — content safety gate (port 8003)
   # ---------------------------------------------------------------------------
   trust_layer:

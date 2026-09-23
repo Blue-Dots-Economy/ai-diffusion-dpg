@@ -1,0 +1,100 @@
+# VoicEra integration — what we need from the VoicEra side
+
+**Purpose:** everything the integration needs from VoicEra, for discussion and sign-off.
+**Date:** 2026-09-22
+
+---
+
+## Context
+
+We are building a small service that implements OpenAI's `POST /v1/chat/completions` and
+is backed by our agent platform. VoicEra points its LLM provider at our URL and otherwise
+behaves exactly as it does today — same request shape, same streaming, same response
+parsing.
+
+STT, TTS, VAD, turn-taking, transport and telephony all remain entirely VoicEra's. We are
+not asking for a custom provider, a plugin, or any change to the pipeline.
+
+The items below are what the integration needs in order to work.
+
+---
+
+## 1. Send the caller's phone number on every request · blocking
+
+In our jobs domain the phone number **is** the user's identity. Every downstream operation
+is keyed on it: checking whether the caller already has a profile, creating or updating
+their record, and submitting the job application on their behalf. Without it the demo
+cannot perform its core function, and any attempt would write records against an empty or
+malformed number.
+
+This is the one place where "point at us and change nothing" does not hold. A standard
+OpenAI request has no field for a caller's phone number and no reason to have one, so
+unless VoicEra sends it deliberately we receive nothing that identifies the caller. We
+also cannot obtain it during the conversation: on a phone call the platform already knows
+who dialled, and the agent is specifically instructed never to ask a caller for their own
+number.
+
+**Please pick whichever of these two is easiest on your side.**
+
+| | Where | Note |
+|---|---|---|
+| **1** | `metadata` on the request body | A standard OpenAI field — 16 key-value pairs, values up to 512 characters. It exists precisely for attaching extra information to a request, so nothing is being bent out of shape. `{"caller_phone": "919900112233"}` |
+| **2** | An HTTP header, e.g. `X-Caller-Phone` | Outside the request body entirely, so it places no strain on the OpenAI contract at all. Requires your LLM configuration to support custom headers on outbound calls — please confirm whether it does. |
+
+**Two other fields would technically work, but we do not recommend either.** They are
+listed only so they are not proposed later as though they had been overlooked.
+
+- **`safety_identifier`** is for detecting abusive users, and its documentation instructs
+  implementers to *hash* the value to avoid transmitting identifying information. Sending
+  a raw phone number is the opposite of its stated intent, and a hash would be unusable
+  for us.
+- **`prompt_cache_key`** is a cache-bucketing hint. It has no relationship to caller
+  identity, and using it as one means a future reader of either codebase finds a phone
+  number in a field named for caching.
+
+Both are the wrong field for the job. Where the value lands should still make sense to
+someone reading the code in six months, and neither of these would.
+
+A custom message role such as `{"role": "contact", ...}` will not work: the role enum is
+closed, so a conformant SDK rejects it before the request is sent.
+
+**Format:** country code first, digits only, no `+` and no spaces — e.g.
+`919900112233`. Our records are keyed on the account phone, which carries the country
+code.
+
+## 2. Send only the newest user message, not the whole conversation
+
+OpenAI is stateless, so clients normally resend the entire conversation on every request.
+Our platform is the opposite: it holds the conversation history, the journey state and the
+collected profile fields itself, and its API takes a single new message.
+
+Please send only the latest user utterance.
+
+## 3. Point the LLM provider at our base URL
+
+This is how VoicEra reaches us at all.
+
+Please confirm whether your OpenAI provider configuration accepts a custom `base_url`. If
+it does not, we understand the Azure provider exposes a settable `endpoint` — we can serve
+that URL shape instead, which needs no code change on your side. Either works; we need to
+know which so we build the right surface.
+
+---
+
+## What we are not asking for
+
+- **No change to your pipeline.** STT, TTS, VAD, turn-taking, transport and telephony
+  remain entirely yours.
+- **No change to how you call an LLM.** Same request shape, same streaming, same response
+  parsing.
+- **No custom provider or plugin** in your registry.
+- **No changes to your dashboard, campaigns or knowledge base.**
+
+---
+
+## Priority
+
+If discussion time is short, these two need settling first:
+
+1. **Item 1** — the caller's phone number. Nothing works without it.
+2. **Item 3** — how we get pointed at: `base_url` or the Azure URL shape.
