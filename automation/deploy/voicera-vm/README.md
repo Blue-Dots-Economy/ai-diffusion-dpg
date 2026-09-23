@@ -27,8 +27,19 @@ Two parameters are stored in AWS SSM Parameter Store as `SecureString`:
 | `<SSM_PREFIX>/blue_dots_api_key` | `BLUE_DOTS_API_KEY` |
 
 `init_secrets` runs first, fetches both using the EC2 instance role, and writes
-`/secrets/env` to a **tmpfs** volume — plaintext exists only in memory, never on
-disk and never in git. `agent_core` and `action_gateway` mount that volume
+`/secrets/env` into a bind-mounted host directory under **`/dev/shm`**, which is
+tmpfs on Linux — plaintext exists only in memory, never on persistent disk and
+never in git. `SECRETS_DIR` overrides the location.
+
+It is deliberately **not** a tmpfs-backed named volume. Those are not shared
+between containers: Docker mounts a fresh tmpfs into each one, so a file written
+by the init container is simply absent in the next. A host bind mount is what
+makes the handover work.
+
+The directory is `0711` and the file `0444`, so the non-root images can read it
+while the filename stays undiscoverable by listing. Anything running as root on
+the VM can still read it — as it could read the container's environment either
+way — so treat the host itself as the trust boundary. `agent_core` and `action_gateway` mount that volume
 read-only and are gated on `service_completed_successfully`, so they cannot
 start before it lands.
 
