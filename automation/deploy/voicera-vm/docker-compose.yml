@@ -32,6 +32,16 @@ services:
   # Runs to completion before agent_core and action_gateway start. Uses the
   # EC2 instance role — no AWS credentials on the box.
   #
+  # Secrets are handed over through a BIND MOUNT of a host directory under
+  # /dev/shm, which is tmpfs on Linux — in memory, never on persistent disk.
+  #
+  # NOT a tmpfs-backed named volume: those are not shared between containers.
+  # Docker mounts a fresh tmpfs per container, so a file written by this
+  # container is simply absent in the next one. Verified directly:
+  #   docker volume create --opt type=tmpfs ... t
+  #   docker run --rm -v t:/s alpine sh -c 'echo x > /s/f; ls /s'   -> f
+  #   docker run --rm -v t:/s alpine ls /s                          -> empty
+  #
   # NOTE: reaching instance metadata from inside a container needs the
   # instance's IMDSv2 hop limit set to 2 (the AWS default of 1 blocks
   # containers). Confirm with the infra team before first run.
@@ -65,11 +75,15 @@ services:
         # agentcore), so a root-owned owner-only file is unreadable to
         # the very processes that need it. The volume is tmpfs and is
         # mounted read-only into exactly those two containers.
+        # The images run as non-root, so the file must be readable by
+        # them; 0711 on the directory means it can be traversed but not
+        # listed, so the filename is not discoverable by other local users.
+        chmod 711 /secrets
         chmod 444 /secrets/env
         # Never print the values.
         echo "init_secrets: wrote /secrets/env (openai=$${#OPENAI} signals=$${#SIGNALS})"
     volumes:
-      - secrets:/secrets
+      - ${SECRETS_DIR:-/dev/shm/dpg-secrets}:/secrets
     networks: [dpg_net]
     logging: *logging
     restart: "no"
@@ -247,7 +261,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - BLUE_DOTS_ORG_ID=${BLUE_DOTS_ORG_ID:?set BLUE_DOTS_ORG_ID in .env}
     volumes:
-      - secrets:/secrets:ro
+      - ${SECRETS_DIR:-/dev/shm/dpg-secrets}:/secrets:ro
       - ../../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
       - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
     networks: [dpg_net]
@@ -273,7 +287,7 @@ services:
     command: ['. /secrets/env && exec uv run python main.py']
     environment: [CONFIG_FOLDER=/app/config, "LOG_LEVEL=${LOG_LEVEL:-INFO}"]
     volumes:
-      - secrets:/secrets:ro
+      - ${SECRETS_DIR:-/dev/shm/dpg-secrets}:/secrets:ro
       - ../../../dev-kit/dpg/agent_core.yaml:/app/config/dpg.yaml:ro
       - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/agent_core.yaml:/app/config/agent_core.yaml:ro
     networks: [dpg_net]
@@ -331,16 +345,6 @@ networks:
     attachable: true      # so VoicEra's compose project can join it
 
 volumes:
-  secrets:
-    driver_opts:
-      type: tmpfs
-      device: tmpfs
-      # 0755, not 0700. The volume is created root-owned, and every DPG image
-      # runs as a non-root user, so a 0700 directory cannot be traversed by the
-      # processes that need the file inside it — the file's own mode is
-      # irrelevant if /secrets itself cannot be entered. This tmpfs is mounted
-      # only into the two containers that consume it, and read-only there.
-      o: "size=1m,mode=0755"
   redis_data:
   memgraph_data:
   chroma_data:
