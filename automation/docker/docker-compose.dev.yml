@@ -1,6 +1,21 @@
 # automation/docker/docker-compose.yml
 #
-# Runs all 7 DPG services on a single machine using pre-built Docker Hub images.
+# Runs all 7 DPG services on a single machine using pre-built images from
+# GHCR: ghcr.io/blue-dots-economy/ai-diffusion-dpg/<service>. The packages are
+# public, so no `docker login` is needed to pull them. All are linux/amd64.
+#
+# Image tag: ${DPG_IMAGE_TAG}.
+#
+#   export DPG_IMAGE_TAG=sha-1a2b3c4     # pick a specific build
+#
+# The default is a `sha-` tag rather than a moving one because no moving tag
+# exists yet — the workflow that would publish `:main` has not landed on the
+# default branch. Bump this default whenever a newer build should become the
+# out-of-the-box one, or switch it to `main` once that tag is being published.
+#
+# GHCR tags are mutable. For a deployment that has to be reproducible, pin by
+# digest instead:
+#   image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/agent-core@sha256:<digest>
 # Each service receives two volume-mounted config files:
 #   /app/config/dpg.yaml    — DPG framework defaults (from dev-kit/dpg/)
 #   /app/config/domain.yaml — domain-specific values (from dev-kit/configs/${DOMAIN}/)
@@ -31,7 +46,7 @@ services:
   # Action Gateway — external API stub / ONEST mock (port 9999)
   # ---------------------------------------------------------------------------
   action_gateway:
-    image: sanketikahub/dpg-action-gateway:latest
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/action-gateway:${DPG_IMAGE_TAG:-sha-646216d}
     pull_policy: missing
     container_name: action_gateway
     environment:
@@ -60,7 +75,7 @@ services:
   # Agent Core — orchestrator and LLM caller (port 8000)
   # ---------------------------------------------------------------------------
   agent_core:
-    image: sanketikahub/dpg-agent-core:latest
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/agent-core:${DPG_IMAGE_TAG:-sha-646216d}
     pull_policy: missing
     container_name: agent_core
     environment:
@@ -97,7 +112,7 @@ services:
   # dev-kit — Configuration Agent UI (port 8080)
   # ---------------------------------------------------------------------------
   dev_kit:
-    image: sanketikahub/dpg-dev-kit:latest
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/dev-kit:${DPG_IMAGE_TAG:-sha-646216d}
     pull_policy: missing
     container_name: dev_kit
     environment:
@@ -159,7 +174,7 @@ services:
   # On startup: runs ingest first, then starts the server.
   # ---------------------------------------------------------------------------
   knowledge_engine:
-    image: sanketikahub/dpg-knowledge-engine:latest
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/knowledge-engine:${DPG_IMAGE_TAG:-sha-646216d}
     pull_policy: missing
     container_name: knowledge_engine
     environment:
@@ -213,7 +228,7 @@ services:
   # Memory Layer — session state store (port 8002)
   # ---------------------------------------------------------------------------
   memory_layer:
-    image: sanketikahub/dpg-memory-layer:latest
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/memory-layer:${DPG_IMAGE_TAG:-sha-646216d}
     pull_policy: missing
     container_name: memory_layer
     environment:
@@ -249,7 +264,7 @@ services:
   # Observability Layer — async observability (port 8004)
   # ---------------------------------------------------------------------------
   observability_layer:
-    image: sanketikahub/dpg-observability-layer:latest
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/observability-layer:${DPG_IMAGE_TAG:-sha-646216d}
     pull_policy: missing
     container_name: observability_layer
     environment:
@@ -281,7 +296,7 @@ services:
   # reach_layer_base HTTP helpers. Deploy only the channel(s) you need.
   # ---------------------------------------------------------------------------
   reach_layer_web:
-    image: sanketikahub/dpg-reach-layer-web:latest
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-web:${DPG_IMAGE_TAG:-sha-646216d}
     pull_policy: missing
     container_name: reach_layer_web
     environment:
@@ -329,7 +344,7 @@ services:
   #   docker compose -f docker-compose.dev.yml run --rm reach_layer_cli
   # ---------------------------------------------------------------------------
   # reach_layer_cli:
-  #   image: sanketikahub/dpg-reach-layer-cli:latest
+  #   image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-cli:${DPG_IMAGE_TAG:-sha-646216d}
   #   pull_policy: always
   #   container_name: reach_layer_cli
   #   volumes:
@@ -354,7 +369,7 @@ services:
   # Use the ngrok service to get a public URL automatically.
   # ---------------------------------------------------------------------------
   reach_layer_voice:
-    image: sanketikahub/dpg-reach-layer-voice:latest
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-voice:${DPG_IMAGE_TAG:-sha-646216d}
     pull_policy: missing
     container_name: reach_layer_voice
     environment:
@@ -405,7 +420,7 @@ services:
   # before running docker compose.
   # ---------------------------------------------------------------------------
   reach_layer_mcp:
-    image: sanketikahub/dpg-reach-layer-mcp:latest
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-mcp:${DPG_IMAGE_TAG:-sha-646216d}
     pull_policy: missing
     container_name: reach_layer_mcp
     environment:
@@ -433,9 +448,8 @@ services:
 
   # ---------------------------------------------------------------------------
   # Reach Layer — Bridge (port 8008)
-  # OpenAI chat-completions compatible channel backed by Agent Core. No
-  # published image yet (new channel), so built from source like the other
-  # in-repo Dockerfiles. Config wiring mirrors reach_layer_mcp above: the
+  # OpenAI chat-completions compatible channel backed by Agent Core.
+  # Config wiring mirrors reach_layer_mcp above: the
   # unified reach_layer.yaml (dpg defaults + domain overrides) is mounted at
   # CONFIG_FOLDER as dpg.yaml/domain.yaml.
   #
@@ -450,9 +464,8 @@ services:
   # before running docker compose.
   # ---------------------------------------------------------------------------
   reach_layer_bridge:
-    build:
-      context: ../..
-      dockerfile: reach_layer/bridge/Dockerfile
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-bridge:${DPG_IMAGE_TAG:-sha-646216d}
+    pull_policy: missing
     container_name: reach_layer_bridge
     environment:
       - CONFIG_FOLDER=/app/config
@@ -482,7 +495,7 @@ services:
   # Trust Layer — content safety gate (port 8003)
   # ---------------------------------------------------------------------------
   trust_layer:
-    image: sanketikahub/dpg-trust-layer:latest
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/trust-layer:${DPG_IMAGE_TAG:-sha-646216d}
     pull_policy: missing
     container_name: trust_layer
     environment:
