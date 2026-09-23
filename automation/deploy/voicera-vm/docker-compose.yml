@@ -61,11 +61,40 @@ services:
           echo "export BLUE_DOTS_API_KEY='$$SIGNALS'"
           echo "export BLUE_DOTS_SEARCH_API_KEY='$$SIGNALS'"
         } > /secrets/env
-        chmod 400 /secrets/env
+        # 444, not 400: the DPG images run as non-root (actiongateway,
+        # agentcore), so a root-owned owner-only file is unreadable to
+        # the very processes that need it. The volume is tmpfs and is
+        # mounted read-only into exactly those two containers.
+        chmod 444 /secrets/env
         # Never print the values.
         echo "init_secrets: wrote /secrets/env (openai=$${#OPENAI} signals=$${#SIGNALS})"
     volumes:
       - secrets:/secrets
+    networks: [dpg_net]
+    logging: *logging
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # One-shot: give knowledge_engine ownership of its kb_data volume.
+  #
+  # KB_DATA_DIR is /data/kb, but the knowledge-engine image never creates that
+  # path — its Dockerfile only declares VOLUME /app/chroma_db. A named volume
+  # with no matching directory in the image is created root-owned, and the
+  # image runs as the non-root `knowledgeengine`, so it cannot create its
+  # SQLite ledger there. The fallback in main.py does not catch this: the
+  # directory exists, so mkdir succeeds and only the later open() fails.
+  #
+  # Runs the knowledge-engine image itself as root so the username resolves
+  # without hardcoding a UID that could change when the image is rebuilt.
+  # ---------------------------------------------------------------------------
+  init_kb_perms:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/knowledge-engine:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_init_kb_perms
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["chown -R knowledgeengine:knowledgeengine /data/kb"]
+    volumes:
+      - kb_data:/data/kb
     networks: [dpg_net]
     logging: *logging
     restart: "no"
@@ -173,6 +202,9 @@ services:
       - kb_data:/data/kb
     networks: [dpg_net]
     logging: *logging
+    depends_on:
+      init_kb_perms:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=5)"]
       interval: 15s
