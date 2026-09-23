@@ -71,13 +71,12 @@ services:
           echo "export BLUE_DOTS_API_KEY='$$SIGNALS'"
           echo "export BLUE_DOTS_SEARCH_API_KEY='$$SIGNALS'"
         } > /secrets/env
-        # 444, not 400: the DPG images run as non-root (actiongateway,
-        # agentcore), so a root-owned owner-only file is unreadable to
-        # the very processes that need it. The volume is tmpfs and is
-        # mounted read-only into exactly those two containers.
-        # The images run as non-root, so the file must be readable by
-        # them; 0711 on the directory means it can be traversed but not
-        # listed, so the filename is not discoverable by other local users.
+        # The images run as non-root (actiongateway, agentcore), so a
+        # root-owned 0400 file is unreadable to the very processes that
+        # need it. 0711 on the directory lets them traverse in without
+        # being able to list it, so the filename is not discoverable by
+        # other local users; the file itself is 0444 and is bind-mounted
+        # read-only into exactly the two containers that consume it.
         chmod 711 /secrets
         chmod 444 /secrets/env
         # Never print the values.
