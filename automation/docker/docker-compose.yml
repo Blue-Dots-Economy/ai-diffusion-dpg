@@ -3,7 +3,18 @@
 # Builds all 7 DPG services from source using each service's Dockerfile.
 # Use this file for local development — images are built on your machine.
 #
-# For pre-built Docker Hub images, use docker-compose.dev.yml instead.
+# For pre-built images, use docker-compose.dev.yml instead.
+#
+# The `image:` lines here are the NAME A LOCAL BUILD PRODUCES, not something
+# pulled. They use the same GHCR path CI publishes to
+# (ghcr.io/blue-dots-economy/ai-diffusion-dpg/<service>) so a locally built
+# image is named identically to the published one and the two files agree.
+#
+# Publishing is CI's job — .github/workflows/build-images.yaml. Building here
+# and running `docker compose push` would write to the org's registry from a
+# laptop, which is the manual path that workflow exists to replace. The tag
+# variable is ${GIT_SHA}, distinct from ${DPG_IMAGE_TAG} in
+# docker-compose.dev.yml, so a local build cannot be mistaken for a pull.
 #
 # Each service receives two volume-mounted config files:
 #   /app/config/dpg.yaml    — DPG framework defaults (from dev-kit/dpg/)
@@ -58,7 +69,7 @@ services:
       platforms:
         - linux/amd64
         - linux/arm64
-    image: sanketikahub/dpg-action-gateway:${GIT_SHA:-latest}
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/action-gateway:${GIT_SHA:-latest}
     container_name: action_gateway
     environment:
       - CONFIG_FOLDER=/app/config
@@ -92,7 +103,7 @@ services:
       platforms:
         - linux/amd64
         - linux/arm64
-    image: sanketikahub/dpg-agent-core:${GIT_SHA:-latest}
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/agent-core:${GIT_SHA:-latest}
     container_name: agent_core
     environment:
       - OPENAI_API_KEY
@@ -145,7 +156,7 @@ services:
       platforms:
         - linux/amd64
         - linux/arm64
-    image: sanketikahub/dpg-dev-kit:${GIT_SHA:-latest}
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/dev-kit:${GIT_SHA:-latest}
     container_name: dev_kit
     environment:
       - OPENAI_API_KEY
@@ -213,7 +224,7 @@ services:
       platforms:
         - linux/amd64
         - linux/arm64
-    image: sanketikahub/dpg-knowledge-engine:${GIT_SHA:-latest}
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/knowledge-engine:${GIT_SHA:-latest}
     container_name: knowledge_engine
     environment:
       - CONFIG_FOLDER=/app/config
@@ -271,7 +282,7 @@ services:
       platforms:
         - linux/amd64
         - linux/arm64
-    image: sanketikahub/dpg-memory-layer:${GIT_SHA:-latest}
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/memory-layer:${GIT_SHA:-latest}
     container_name: memory_layer
     environment:
       - CONFIG_FOLDER=/app/config
@@ -312,7 +323,7 @@ services:
       platforms:
         - linux/amd64
         - linux/arm64
-    image: sanketikahub/dpg-observability-layer:${GIT_SHA:-latest}
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/observability-layer:${GIT_SHA:-latest}
     container_name: observability_layer
     environment:
       - CONFIG_FOLDER=/app/config
@@ -349,7 +360,7 @@ services:
       platforms:
         - linux/amd64
         - linux/arm64
-    image: sanketikahub/dpg-reach-layer-web:${GIT_SHA:-latest}
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-web:${GIT_SHA:-latest}
     container_name: reach_layer_web
     environment:
       - CONFIG_FOLDER=/app/config
@@ -400,7 +411,7 @@ services:
   #     platforms:
   #       - linux/amd64
   #       - linux/arm64
-  #   image: sanketikahub/dpg-reach-layer-cli:${GIT_SHA:-latest}
+  #   image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-cli:${GIT_SHA:-latest}
   #   container_name: reach_layer_cli
   #   volumes:
   #     # Unified Reach Layer config: DPG defaults + per-domain overrides.
@@ -429,7 +440,7 @@ services:
       platforms:
         - linux/amd64
         - linux/arm64
-    image: sanketikahub/dpg-reach-layer-voice:${GIT_SHA:-latest}
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-voice:${GIT_SHA:-latest}
     container_name: reach_layer_voice
     environment:
       - DPG_CONFIG_PATH=/app/config/dpg.yaml
@@ -486,7 +497,7 @@ services:
       platforms:
         - linux/amd64
         - linux/arm64
-    image: sanketikahub/dpg-reach-layer-mcp:${GIT_SHA:-latest}
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-mcp:${GIT_SHA:-latest}
     container_name: reach_layer_mcp
     environment:
       - CONFIG_FOLDER=/app/config
@@ -533,7 +544,7 @@ services:
       platforms:
         - linux/amd64
         - linux/arm64
-    image: sanketikahub/dpg-reach-layer-bridge:${GIT_SHA:-latest}
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-bridge:${GIT_SHA:-latest}
     container_name: reach_layer_bridge
     environment:
       - CONFIG_FOLDER=/app/config
@@ -569,7 +580,7 @@ services:
       platforms:
         - linux/amd64
         - linux/arm64
-    image: sanketikahub/dpg-trust-layer:${GIT_SHA:-latest}
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/trust-layer:${GIT_SHA:-latest}
     container_name: trust_layer
     environment:
       - CONFIG_FOLDER=/app/config
