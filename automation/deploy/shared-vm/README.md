@@ -1,4 +1,4 @@
-# ai-diffusion-dpg on the VoicEra VM
+# ai-diffusion-dpg on the shared VM
 
 Docker Compose deployment for the shared EC2 host. Run it from a clone of this
 repo on the VM — the images carry the code, and the clone supplies the domain
@@ -13,7 +13,8 @@ needed by this deployment only.
 11 services: the 6 DPG blocks, the bridge channel, `redis`, `memgraph`,
 `otelcol`, and a one-shot `init_secrets`.
 
-Deliberately absent: the **voice channel and ngrok** (VoicEra owns telephony),
+Deliberately absent: the **voice channel and ngrok** — the telephony platform
+owns the call path —
 `web` / `cli` / `mcp`, `dev-kit`, and the grafana / jaeger / loki / prometheus
 UIs.
 
@@ -84,7 +85,7 @@ customer-managed key rather than `alias/aws/ssm`.
 
 ```bash
 git clone https://github.com/Blue-Dots-Economy/ai-diffusion-dpg.git
-cd ai-diffusion-dpg/automation/deploy/voicera-vm
+cd ai-diffusion-dpg/automation/deploy/shared-vm
 
 cp env.example .env     # AWS_REGION, SSM_PREFIX, BLUE_DOTS_ORG_ID, DPG_IMAGE_TAG
 chmod 600 .env
@@ -111,7 +112,7 @@ docker compose logs init_secrets     # prints lengths only, never values
 curl -s localhost:8008/health        # {"status":"ok"}
 ```
 
-A full turn through the endpoint VoicEra calls:
+A full turn through the endpoint the telephony platform calls:
 
 ```bash
 curl -N localhost:8008/v1/chat/completions \
@@ -129,10 +130,10 @@ routable. Do not change this without an auth story.
 
 Two supported options:
 
-- **Shared network (preferred).** VoicEra's compose joins `dpg_net` as an
+- **Shared network (preferred).** The telephony platform's compose joins `dpg_net` as an
   external network and uses `http://reach_layer_bridge:8008`. Delete the
   `ports:` block from `reach_layer_bridge` when doing this.
-- **Loopback.** VoicEra reaches `127.0.0.1:8008` on the host, via host
+- **Loopback.** The telephony platform reaches `127.0.0.1:8008` on the host, via host
   networking or `extra_hosts: ["host.docker.internal:host-gateway"]`.
 
 ## Pinning by digest
