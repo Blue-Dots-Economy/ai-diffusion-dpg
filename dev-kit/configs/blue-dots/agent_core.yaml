@@ -785,14 +785,16 @@ agent_workflow:
         once consent is granted; politely end the call if declined.
       is_start: true
       is_terminal: false
-      # Deliberately empty. This subagent's opening phrase was identical to
-      # agent.consent_prompt, and the two are emitted by different gates on
-      # consecutive turns — the consent gate on turn 1, the opening-phrase
-      # gate on the first post-consent turn — so the caller was asked for
-      # consent twice in a row. The consent gate already asks; an empty
-      # value here sets the emitted flag and falls straight through to the
-      # normal turn (orchestrator.py, opening-phrase gate).
-      opening_phrase: ""
+      # NOT the consent text. This phrase and agent.consent_prompt are
+      # emitted by different gates on consecutive turns — the consent gate on
+      # turn 1, the opening-phrase gate on the first post-consent turn — so
+      # holding the same words in both asked the caller for consent twice in
+      # a row. It cannot simply be emptied either: workflow_loader rejects an
+      # empty opening_phrase for any subagent. So it carries the question
+      # that should follow consent, which makes the turn useful instead of a
+      # repeat.
+      opening_phrase: >
+        आप किस काम या ट्रेड में नौकरी ढूंढ रहे हैं?
 
       valid_intents:
         - any_input
