@@ -321,7 +321,13 @@ services:
     container_name: dpg_reach_layer_bridge
     environment: [CONFIG_FOLDER=/app/config, "LOG_LEVEL=${LOG_LEVEL:-INFO}"]
     volumes:
+      # CONFIG_FOLDER steers domain.yaml only. main.py resolves the framework
+      # defaults separately — _dpg_config_path() ignores the variable and falls
+      # back to "config/dpg.yaml" relative to the workdir — so dpg.yaml is
+      # mounted at BOTH paths. Without the second the container crash-loops on
+      # FileNotFoundError: /app/reach_layer/bridge/config/dpg.yaml.
       - ../../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../../dev-kit/dpg/reach_layer.yaml:/app/reach_layer/bridge/config/dpg.yaml:ro
       - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/reach_layer.yaml:/app/config/domain.yaml:ro
     ports:
       - "127.0.0.1:8008:8008"
