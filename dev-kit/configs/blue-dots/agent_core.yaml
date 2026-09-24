@@ -785,9 +785,14 @@ agent_workflow:
         once consent is granted; politely end the call if declined.
       is_start: true
       is_terminal: false
-      opening_phrase: >
-        क्या मैं आपकी प्रोफ़ाइल सेव करके आपकी ओर से नौकरी के आवेदन भेज सकता हूँ?
-        जारी रखने के लिए हाँ कहिए।
+      # Deliberately empty. This subagent's opening phrase was identical to
+      # agent.consent_prompt, and the two are emitted by different gates on
+      # consecutive turns — the consent gate on turn 1, the opening-phrase
+      # gate on the first post-consent turn — so the caller was asked for
+      # consent twice in a row. The consent gate already asks; an empty
+      # value here sets the emitted flag and falls straight through to the
+      # normal turn (orchestrator.py, opening-phrase gate).
+      opening_phrase: ""
 
       valid_intents:
         - any_input
