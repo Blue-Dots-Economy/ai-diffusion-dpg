@@ -3930,7 +3930,7 @@ class AgentCore(AgentCoreBase):
                     )
                 )
                 logger.info(
-                    "orchestrator.stream_turn_tool_persist",
+                    "orchestrator.tool_persist",
                     extra={
                         "operation": "orchestrator.stream_turn",
                         "status": "success",
