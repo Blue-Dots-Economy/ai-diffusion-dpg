@@ -2,7 +2,7 @@
 # Blue Dots — Agent Core domain config.
 # Merged with dev-kit/dpg/agent_core.yaml by loader.py before deployment.
 #
-# Voice-first job-seeker agent. English default; mirrors caller into Hindi
+# Voice-first job-seeker agent. Hindi default; mirrors caller into English
 # or Gujarati when they switch. Five linear subagents map to the 5 phases
 # of the apply flow.
 
@@ -25,9 +25,18 @@ agent:
   primary_model: gpt-4.1-mini-2025-04-14
   fallback_model: gpt-5.4-mini-2026-03-17
   ask_for_consent: true
+  # No greeting here. Whatever answered the call has already greeted the
+  # caller — VoicEra speaks its own greeting_message on the bridge channel,
+  # and the web UI shows its own opening line — so "Hello! Welcome to Blue
+  # Dots" lands as a second greeting in a row. Straight to the consent ask.
+  # Written in Hindi, not English, because this string is emitted VERBATIM.
+  # The consent gate short-circuits before the LLM, and _translate_consent_message
+  # is a no-op here: language_preference resolves to "" while
+  # preprocessing.language_normalisation.enabled is false, so nothing
+  # translates it. Whatever is written here is what the caller hears.
   consent_prompt: >
-    Hello! Welcome to Blue Dots. Can I save your profile and submit job
-    applications on your behalf? Please say yes to continue.
+    क्या मैं आपकी प्रोफ़ाइल सेव करके आपकी ओर से नौकरी के आवेदन भेज सकता हूँ?
+    जारी रखने के लिए हाँ कहिए।
 
   # Apply flow chains up to three tools (onboard → apply_job is the worst
   # case after the user picks a job; profile fetch and job fetch are
@@ -50,8 +59,15 @@ channels:
       a list of jobs, where you may use at most 3 items, one short line each.
 
       ## Style
-      Warm, natural, conversational. Calm pace, one idea at a time. Plain
-      English by default; switch to Hindi or Gujarati if the caller does.
+      Warm, natural, conversational. Calm pace, one idea at a time. Speak
+      Hindi by default. Switch to English or Gujarati only if the caller
+      does, and then stay in that language until they switch again.
+
+      Your instructions, tool descriptions and any example wording in them
+      are written in English for the people who maintain this config. They
+      are not a cue to answer in English. Say everything to the caller in
+      the conversation language — Hindi unless they switched — including
+      short filler lines, error messages and confirmations.
       Never corporate, sales-like, scripted, or fake-warm.
 
       ## Silence handling
@@ -110,7 +126,7 @@ channels:
       abbreviations: >
         Expand abbreviations to spoken letters. Examples: ITI →
         "I T I", NCVT → "N C V T".
-      output_script: "English script for English replies; Devanagari for Hindi; Gujarati script for Gujarati."
+      output_script: "Devanagari for Hindi, which is the default; English script for English replies; Gujarati script for Gujarati."
       english_loanwords: "Keep English loan words as-is when speaking English."
       named_entities: "Speak person, employer, or institute names naturally; do not transliterate aggressively."
     turn_assembler:
@@ -185,8 +201,15 @@ channels:
       a list of jobs, where you may use at most 3 items, one short line each.
 
       ## Style
-      Warm, natural, conversational. Calm pace, one idea at a time. Plain
-      English by default; switch to Hindi or Gujarati if the caller does.
+      Warm, natural, conversational. Calm pace, one idea at a time. Speak
+      Hindi by default. Switch to English or Gujarati only if the caller
+      does, and then stay in that language until they switch again.
+
+      Your instructions, tool descriptions and any example wording in them
+      are written in English for the people who maintain this config. They
+      are not a cue to answer in English. Say everything to the caller in
+      the conversation language — Hindi unless they switched — including
+      short filler lines, error messages and confirmations.
       Never corporate, sales-like, scripted, or fake-warm.
 
       ## Silence handling
@@ -245,7 +268,7 @@ channels:
       abbreviations: >
         Expand abbreviations to spoken letters. Examples: ITI →
         "I T I", NCVT → "N C V T".
-      output_script: "English script for English replies; Devanagari for Hindi; Gujarati script for Gujarati."
+      output_script: "Devanagari for Hindi, which is the default; English script for English replies; Gujarati script for Gujarati."
       english_loanwords: "Keep English loan words as-is when speaking English."
       named_entities: "Speak person, employer, or institute names naturally; do not transliterate aggressively."
     turn_assembler:
@@ -318,8 +341,8 @@ connectors:
           profiles, the user is new and trade + city must be asked
           explicitly.
         on_empty: >
-          Welcome to Blue Dots. I don't see any profile for you yet.
-          Let's set one up — which trade are you looking for work in?
+          I don't see any profile for you yet. Let's set one up — which
+          trade are you looking for work in?
         on_failure: >
           Sorry, I couldn't reach the profile service. Let me try again
           in a moment.
@@ -448,7 +471,7 @@ preprocessing:
     enabled: false
     provider: openai
     model: gpt-4.1-mini-2025-04-14
-    default_language: english
+    default_language: hindi
     supported_languages: [english, hindi, gujarati]
     transliteration: true
     code_switching: true
@@ -763,9 +786,8 @@ agent_workflow:
       is_start: true
       is_terminal: false
       opening_phrase: >
-        Hello! Welcome to Blue Dots. Can I save your profile and submit
-        job applications on your behalf? Please say
-        yes to continue.
+        क्या मैं आपकी प्रोफ़ाइल सेव करके आपकी ओर से नौकरी के आवेदन भेज सकता हूँ?
+        जारी रखने के लिए हाँ कहिए।
 
       valid_intents:
         - any_input
