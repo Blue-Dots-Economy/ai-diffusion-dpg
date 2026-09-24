@@ -1,0 +1,425 @@
+# ai-diffusion-dpg — shared VM deployment.
+#
+# Separate from automation/docker/* on purpose — those two files serve local
+# development and are not changed by this deployment. The secrets init
+# container below is needed by this deployment only.
+#
+# 13 services: the 6 DPG blocks, the bridge and web channels, redis, memgraph,
+# otelcol, and two one-shot init containers.
+# Deliberately absent: the voice channel and ngrok — the telephony platform
+# owns the call path — plus web/cli/mcp, dev-kit, and the grafana / jaeger /
+# loki / prometheus UIs.
+#
+# Run from a clone of the repo on the VM — config is mounted straight out of
+# the tree, so the only file you create is .env next to this one:
+#
+#   git clone https://github.com/Blue-Dots-Economy/ai-diffusion-dpg.git
+#   cd ai-diffusion-dpg/automation/deploy/shared-vm
+#   cp env.example .env && chmod 600 .env
+#   docker compose up -d
+#
+# Only the images carry code — the clone is here for config, so keep it on a
+# release tag or a known commit rather than a moving branch.
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # One-shot: fetch secrets from AWS SSM Parameter Store into a tmpfs volume.
+  #
+  # Runs to completion before agent_core and action_gateway start. Uses the
+  # EC2 instance role — no AWS credentials on the box.
+  #
+  # Secrets are handed over through a BIND MOUNT of a host directory under
+  # /dev/shm, which is tmpfs on Linux — in memory, never on persistent disk.
+  #
+  # NOT a tmpfs-backed named volume: those are not shared between containers.
+  # Docker mounts a fresh tmpfs per container, so a file written by this
+  # container is simply absent in the next one. Verified directly:
+  #   docker volume create --opt type=tmpfs ... t
+  #   docker run --rm -v t:/s alpine sh -c 'echo x > /s/f; ls /s'   -> f
+  #   docker run --rm -v t:/s alpine ls /s                          -> empty
+  #
+  # NOTE: reaching instance metadata from inside a container needs the
+  # instance's IMDSv2 hop limit set to 2 (the AWS default of 1 blocks
+  # containers). Confirm with the infra team before first run.
+  # ---------------------------------------------------------------------------
+  init_secrets:
+    # AWS's official CLI image, pulled from ECR Public rather than Docker Hub:
+    # no anonymous pull-rate limit, and it is in-region for an EC2 host.
+    # Only this container needs AWS tooling — the DPG images stay clean.
+    image: public.ecr.aws/aws-cli/aws-cli:2.37.0
+    container_name: dpg_init_secrets
+    entrypoint: ["/bin/sh", "-c"]
+    environment:
+      # Both sources are optional here; the script below decides. Set the KEY
+      # vars for a direct hand-over, or leave them blank and set AWS_REGION +
+      # SSM_PREFIX to fetch from Parameter Store.
+      - AWS_REGION=${AWS_REGION:-}
+      - SSM_PREFIX=${SSM_PREFIX:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - BLUE_DOTS_API_KEY=${BLUE_DOTS_API_KEY:-}
+    command:
+      - |
+        set -eu
+        umask 077
+        # Two supported sources, env first:
+        #   1. OPENAI_API_KEY / BLUE_DOTS_API_KEY passed straight in — for a
+        #      laptop, a CI run, or any host with no instance role.
+        #   2. AWS SSM Parameter Store via the EC2 instance role, used on the
+        #      shared VM so nothing is written to disk or kept in git.
+        # Env wins when both keys are set, so a deployment can override the
+        # store without editing this file.
+        if [ -n "$${OPENAI_API_KEY:-}" ] && [ -n "$${BLUE_DOTS_API_KEY:-}" ]; then
+          SOURCE=env
+          OPENAI="$$OPENAI_API_KEY"
+          SIGNALS="$$BLUE_DOTS_API_KEY"
+        else
+          if [ -z "$${SSM_PREFIX:-}" ]; then
+            echo "init_secrets: set OPENAI_API_KEY and BLUE_DOTS_API_KEY, or SSM_PREFIX" >&2
+            exit 1
+          fi
+          SOURCE=ssm
+          OPENAI=$$(aws ssm get-parameter --name "$$SSM_PREFIX/openai_api_key" \
+                      --with-decryption --query Parameter.Value --output text)
+          SIGNALS=$$(aws ssm get-parameter --name "$$SSM_PREFIX/blue_dots_api_key" \
+                      --with-decryption --query Parameter.Value --output text)
+        fi
+        # The search connector reads a distinct variable NAME but currently
+        # carries the SAME VALUE, so only two parameters are stored.
+        {
+          echo "export OPENAI_API_KEY='$$OPENAI'"
+          echo "export BLUE_DOTS_API_KEY='$$SIGNALS'"
+          echo "export BLUE_DOTS_SEARCH_API_KEY='$$SIGNALS'"
+        } > /secrets/env
+        # The images run as non-root (actiongateway, agentcore), so a
+        # root-owned 0400 file is unreadable to the very processes that
+        # need it. 0711 on the directory lets them traverse in without
+        # being able to list it, so the filename is not discoverable by
+        # other local users; the file itself is 0444 and is bind-mounted
+        # read-only into exactly the two containers that consume it.
+        chmod 711 /secrets
+        chmod 444 /secrets/env
+        # Never print the values.
+        echo "init_secrets: wrote /secrets/env from $$SOURCE (openai=$${#OPENAI} signals=$${#SIGNALS})"
+    volumes:
+      - ${SECRETS_DIR:-/dev/shm/dpg-secrets}:/secrets
+    networks: [dpg_net]
+    logging: *logging
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # One-shot: give knowledge_engine ownership of its kb_data volume.
+  #
+  # KB_DATA_DIR is /data/kb, but the knowledge-engine image never creates that
+  # path — its Dockerfile only declares VOLUME /app/chroma_db. A named volume
+  # with no matching directory in the image is created root-owned, and the
+  # image runs as the non-root `knowledgeengine`, so it cannot create its
+  # SQLite ledger there. The fallback in main.py does not catch this: the
+  # directory exists, so mkdir succeeds and only the later open() fails.
+  #
+  # Runs the knowledge-engine image itself as root so the username resolves
+  # without hardcoding a UID that could change when the image is rebuilt.
+  # ---------------------------------------------------------------------------
+  init_kb_perms:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/knowledge-engine:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_init_kb_perms
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["chown -R knowledgeengine:knowledgeengine /data/kb"]
+    volumes:
+      - kb_data:/data/kb
+    networks: [dpg_net]
+    logging: *logging
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # Infrastructure
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: dpg_redis
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    volumes: [redis_data:/data]
+    networks: [dpg_net]
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  memgraph:
+    image: memgraph/memgraph:2.17.0
+    container_name: dpg_memgraph
+    volumes: [memgraph_data:/var/lib/memgraph]
+    networks: [dpg_net]
+    logging: *logging
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'RETURN 1;' | mgconsole --output-format=csv || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:0.96.0
+    container_name: dpg_otelcol
+    # Ports intentionally not published — all exporters are inside dpg_net.
+    command: ["--config=/etc/otelcol/otelcol-config.yaml"]
+    volumes:
+      - ../../docker/otelcol/otelcol-config.yaml:/etc/otelcol/otelcol-config.yaml:ro
+    networks: [dpg_net]
+    logging: *logging
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # DPG blocks
+  # ---------------------------------------------------------------------------
+  observability_layer:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/observability-layer:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_observability_layer
+    environment: [CONFIG_FOLDER=/app/config, "LOG_LEVEL=${LOG_LEVEL:-INFO}"]
+    volumes:
+      - ../../../dev-kit/dpg/observability_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/observability_layer.yaml:/app/config/observability_layer.yaml:ro
+    networks: [dpg_net]
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  memory_layer:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/memory-layer:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_memory_layer
+    environment:
+      - CONFIG_FOLDER=/app/config
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - MEMGRAPH_URI=bolt://memgraph:7687
+      - MEMGRAPH_USER=memgraph
+      - MEMGRAPH_PASSWORD=${MEMGRAPH_PASSWORD:-}
+    volumes:
+      - ../../../dev-kit/dpg/memory_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/memory_layer.yaml:/app/config/memory_layer.yaml:ro
+    networks: [dpg_net]
+    logging: *logging
+    depends_on:
+      redis: { condition: service_healthy }
+      memgraph: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  knowledge_engine:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/knowledge-engine:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_knowledge_engine
+    environment:
+      - CONFIG_FOLDER=/app/config
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - KB_DATA_DIR=/data/kb
+      - CHROMA_PERSIST_DIR=/app/chroma_db
+    volumes:
+      - ../../../dev-kit/dpg/knowledge_engine.yaml:/app/config/dpg.yaml:ro
+      - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
+      - chroma_data:/app/chroma_db
+      - kb_data:/data/kb
+    networks: [dpg_net]
+    logging: *logging
+    depends_on:
+      init_kb_perms:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  trust_layer:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/trust-layer:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_trust_layer
+    environment: [CONFIG_FOLDER=/app/config, "LOG_LEVEL=${LOG_LEVEL:-INFO}"]
+    volumes:
+      - ../../../dev-kit/dpg/trust_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/trust_layer.yaml:/app/config/trust_layer.yaml:ro
+    networks: [dpg_net]
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  # Reads BLUE_DOTS_API_KEY / BLUE_DOTS_SEARCH_API_KEY from /secrets/env via the
+  # shared entrypoint. BLUE_DOTS_ORG_ID is an organisation UUID, not a
+  # credential, so it stays in .env.
+  action_gateway:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/action-gateway:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_action_gateway
+    # Sources the secrets file written by init_secrets, then execs the image's
+    # own command. Done here rather than baked into the image so no rebuild is
+    # needed and no other deployment is affected. Keep `command` in step with
+    # the image CMD (currently `uv run python main.py`).
+    entrypoint: ["/bin/sh", "-c"]
+    command: ['. /secrets/env && exec uv run python main.py']
+    environment:
+      - CONFIG_FOLDER=/app/config
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - BLUE_DOTS_ORG_ID=${BLUE_DOTS_ORG_ID:?set BLUE_DOTS_ORG_ID in .env}
+    volumes:
+      - ${SECRETS_DIR:-/dev/shm/dpg-secrets}:/secrets:ro
+      - ../../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
+      - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
+    networks: [dpg_net]
+    logging: *logging
+    depends_on:
+      init_secrets:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9999/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  # Reads OPENAI_API_KEY from /secrets/env via the shared entrypoint.
+  agent_core:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/agent-core:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_agent_core
+    # See the note on action_gateway: secrets are sourced at runtime, no image
+    # change required. Keep in step with the image CMD.
+    entrypoint: ["/bin/sh", "-c"]
+    command: ['. /secrets/env && exec uv run python main.py']
+    environment: [CONFIG_FOLDER=/app/config, "LOG_LEVEL=${LOG_LEVEL:-INFO}"]
+    volumes:
+      - ${SECRETS_DIR:-/dev/shm/dpg-secrets}:/secrets:ro
+      - ../../../dev-kit/dpg/agent_core.yaml:/app/config/dpg.yaml:ro
+      - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/agent_core.yaml:/app/config/agent_core.yaml:ro
+    networks: [dpg_net]
+    logging: *logging
+    depends_on:
+      init_secrets: { condition: service_completed_successfully }
+      action_gateway: { condition: service_healthy }
+      trust_layer: { condition: service_healthy }
+      memory_layer: { condition: service_healthy }
+      knowledge_engine: { condition: service_healthy }
+      observability_layer: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Reach Layer — Bridge channel. The endpoint the telephony platform's LLM
+  # provider calls.
+  #
+  # Bound to 127.0.0.1, never 0.0.0.0: the bridge has NO AUTHENTICATION (shim
+  # design spec section 6), and that decision is conditional on it not being
+  # externally routable.
+  #
+  # If the platform's compose joins dpg_net as an external network instead, it can
+  # reach http://reach_layer_bridge:8008 by DNS — then delete the ports: block.
+  # ---------------------------------------------------------------------------
+  reach_layer_bridge:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-bridge:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_reach_layer_bridge
+    environment: [CONFIG_FOLDER=/app/config, "LOG_LEVEL=${LOG_LEVEL:-INFO}"]
+    volumes:
+      # CONFIG_FOLDER steers domain.yaml only. main.py resolves the framework
+      # defaults separately — _dpg_config_path() ignores the variable and falls
+      # back to "config/dpg.yaml" relative to the workdir — so dpg.yaml is
+      # mounted at BOTH paths. Without the second the container crash-loops on
+      # FileNotFoundError: /app/reach_layer/bridge/config/dpg.yaml.
+      - ../../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../../dev-kit/dpg/reach_layer.yaml:/app/reach_layer/bridge/config/dpg.yaml:ro
+      - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/reach_layer.yaml:/app/config/domain.yaml:ro
+    ports:
+      - "127.0.0.1:8008:8008"
+    networks: [dpg_net]
+    logging: *logging
+    depends_on:
+      agent_core: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8008/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Reach Layer — Web channel (port 8005)
+  #
+  # Not what the telephony platform uses — it reaches us through the bridge —
+  # but kept here
+  # for operators to drive the same journey from a browser when diagnosing a
+  # call. It exercises a DIFFERENT transport: the web UI posts to Agent Core's
+  # /process_turn, while the bridge streams over /stream_turn, so a bug can
+  # show on one and not the other.
+  #
+  # Bound to 127.0.0.1 like the bridge: there is no authentication on this
+  # channel in the blue-dots config (reach_layer.yaml sets web.auth.enabled
+  # false). Reach it over an SSH tunnel:
+  #     ssh -L 8005:127.0.0.1:8005 <user>@<vm>
+  #
+  # Skip it entirely by naming the services you want:
+  #     docker compose up -d redis memgraph ... reach_layer_bridge
+  # ---------------------------------------------------------------------------
+  reach_layer_web:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-web:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_reach_layer_web
+    environment:
+      - CONFIG_FOLDER=/app/config
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - REACH_LAYER_WEB_MODE=full
+      - KE_INTERNAL_URL=http://knowledge_engine:8001
+    volumes:
+      - ../../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/reach_layer.yaml:/app/config/domain.yaml:ro
+    ports:
+      - "127.0.0.1:8005:8005"
+    networks: [dpg_net]
+    logging: *logging
+    depends_on:
+      agent_core:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8005/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+networks:
+  dpg_net:
+    name: dpg_net
+    driver: bridge
+    attachable: true      # so the platform's compose project can join it
+
+volumes:
+  redis_data:
+  memgraph_data:
+  chroma_data:
+  kb_data:

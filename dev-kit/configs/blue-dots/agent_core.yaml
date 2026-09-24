@@ -2,7 +2,7 @@
 # Blue Dots — Agent Core domain config.
 # Merged with dev-kit/dpg/agent_core.yaml by loader.py before deployment.
 #
-# Voice-first job-seeker agent. English default; mirrors caller into Hindi
+# Voice-first job-seeker agent. Hindi default; mirrors caller into English
 # or Gujarati when they switch. Five linear subagents map to the 5 phases
 # of the apply flow.
 
@@ -25,9 +25,18 @@ agent:
   primary_model: gpt-4.1-mini-2025-04-14
   fallback_model: gpt-5.4-mini-2026-03-17
   ask_for_consent: true
+  # No greeting here. Whatever answered the call has already greeted the
+  # caller — the telephony platform speaks its own greeting_message on the
+  # and the web UI shows its own opening line — so "Hello! Welcome to Blue
+  # Dots" lands as a second greeting in a row. Straight to the consent ask.
+  # Written in Hindi, not English, because this string is emitted VERBATIM.
+  # The consent gate short-circuits before the LLM, and _translate_consent_message
+  # is a no-op here: language_preference resolves to "" while
+  # preprocessing.language_normalisation.enabled is false, so nothing
+  # translates it. Whatever is written here is what the caller hears.
   consent_prompt: >
-    Hello! Welcome to Blue Dots. Can I save your profile and submit job
-    applications on your behalf? Please say yes to continue.
+    क्या मैं आपकी प्रोफ़ाइल सेव करके आपकी ओर से नौकरी के आवेदन भेज सकता हूँ?
+    जारी रखने के लिए हाँ कहिए।
 
   # Apply flow chains up to three tools (onboard → apply_job is the worst
   # case after the user picks a job; profile fetch and job fetch are
@@ -50,8 +59,15 @@ channels:
       a list of jobs, where you may use at most 3 items, one short line each.
 
       ## Style
-      Warm, natural, conversational. Calm pace, one idea at a time. Plain
-      English by default; switch to Hindi or Gujarati if the caller does.
+      Warm, natural, conversational. Calm pace, one idea at a time. Speak
+      Hindi by default. Switch to English or Gujarati only if the caller
+      does, and then stay in that language until they switch again.
+
+      Your instructions, tool descriptions and any example wording in them
+      are written in English for the people who maintain this config. They
+      are not a cue to answer in English. Say everything to the caller in
+      the conversation language — Hindi unless they switched — including
+      short filler lines, error messages and confirmations.
       Never corporate, sales-like, scripted, or fake-warm.
 
       ## Silence handling
@@ -87,7 +103,7 @@ channels:
         These chain-of-thought leaks are forbidden. Either ASK the
         next question, CALL the next tool silently, or ANNOUNCE the
         result — nothing in between.
-    terminal_word: "Thank you"
+    terminal_word: "धन्यवाद"
     tts_rules:
       numbers: >
         Read all numbers as words. Examples: 100 → one hundred,
@@ -110,7 +126,7 @@ channels:
       abbreviations: >
         Expand abbreviations to spoken letters. Examples: ITI →
         "I T I", NCVT → "N C V T".
-      output_script: "English script for English replies; Devanagari for Hindi; Gujarati script for Gujarati."
+      output_script: "Devanagari for Hindi, which is the default; English script for English replies; Gujarati script for Gujarati."
       english_loanwords: "Keep English loan words as-is when speaking English."
       named_entities: "Speak person, employer, or institute names naturally; do not transliterate aggressively."
     turn_assembler:
@@ -144,6 +160,17 @@ channels:
         Ignore the spoken-form number, money, date, time, phone and email
         rules; they exist for text-to-speech.
 
+      ## Language
+      Speak Hindi by default, in Devanagari. Switch to English or Gujarati
+      only if the user does, and then stay in that language until they
+      switch again.
+
+      Your instructions, tool descriptions and any example wording in them
+      are written in English for the people who maintain this config. They
+      are not a cue to answer in English. Say everything to the user in the
+      conversation language — Hindi unless they switched — including short
+      filler lines, error messages and confirmations.
+
       Everything else — what you may say, the honesty rules, never inventing
       a job or a profile field — applies unchanged.
     turn_assembler:
@@ -152,7 +179,18 @@ channels:
       max_wait_ceiling:
         max_wait_ms: 15000
   cli:
-    system_prompt_suffix: ""
+    # A terminal channel used for development. It carries the language rule
+    # only: the domain speaks Hindi on every channel, and an empty suffix
+    # here left the CLI answering in English.
+    system_prompt_suffix: |
+      ## Language
+      Speak Hindi by default, in Devanagari. Switch to English or Gujarati
+      only if the user does, and then stay in that language until they
+      switch again.
+
+      Your instructions, tool descriptions and any example wording in them
+      are written in English for the people who maintain this config. They
+      are not a cue to answer in English.
     turn_assembler:
       silence_trigger:
         silence_ms: 200
@@ -185,8 +223,15 @@ channels:
       a list of jobs, where you may use at most 3 items, one short line each.
 
       ## Style
-      Warm, natural, conversational. Calm pace, one idea at a time. Plain
-      English by default; switch to Hindi or Gujarati if the caller does.
+      Warm, natural, conversational. Calm pace, one idea at a time. Speak
+      Hindi by default. Switch to English or Gujarati only if the caller
+      does, and then stay in that language until they switch again.
+
+      Your instructions, tool descriptions and any example wording in them
+      are written in English for the people who maintain this config. They
+      are not a cue to answer in English. Say everything to the caller in
+      the conversation language — Hindi unless they switched — including
+      short filler lines, error messages and confirmations.
       Never corporate, sales-like, scripted, or fake-warm.
 
       ## Silence handling
@@ -222,7 +267,7 @@ channels:
         These chain-of-thought leaks are forbidden. Either ASK the
         next question, CALL the next tool silently, or ANNOUNCE the
         result — nothing in between.
-    terminal_word: "Thank you"
+    terminal_word: "धन्यवाद"
     tts_rules:
       numbers: >
         Read all numbers as words. Examples: 100 → one hundred,
@@ -245,7 +290,7 @@ channels:
       abbreviations: >
         Expand abbreviations to spoken letters. Examples: ITI →
         "I T I", NCVT → "N C V T".
-      output_script: "English script for English replies; Devanagari for Hindi; Gujarati script for Gujarati."
+      output_script: "Devanagari for Hindi, which is the default; English script for English replies; Gujarati script for Gujarati."
       english_loanwords: "Keep English loan words as-is when speaking English."
       named_entities: "Speak person, employer, or institute names naturally; do not transliterate aggressively."
     turn_assembler:
@@ -318,8 +363,8 @@ connectors:
           profiles, the user is new and trade + city must be asked
           explicitly.
         on_empty: >
-          Welcome to Blue Dots. I don't see any profile for you yet.
-          Let's set one up — which trade are you looking for work in?
+          I don't see any profile for you yet. Let's set one up — which
+          trade are you looking for work in?
         on_failure: >
           Sorry, I couldn't reach the profile service. Let me try again
           in a moment.
@@ -443,12 +488,25 @@ connectors:
 
 preprocessing:
   language_normalisation:
-    # Main LLM mirrors caller language via the system prompt; the
-    # leading call is off. Set enabled: true to re-introduce it.
+    # OFF, deliberately. Turning this on locks the caller's language from
+    # their FIRST turn and stores it on the persistent profile, so it follows
+    # them into later calls. Almost everyone opens with "hello" regardless of
+    # the language they actually want, which would pin Hindi speakers to
+    # English for the whole conversation and every conversation after it.
+    # Rejected on that basis; measured and working otherwise.
+    #
+    # With this off the main LLM is told to mirror the caller's language per
+    # turn (manager_agent.build_system_prompt, the empty detected_language
+    # branch) — no lock, no stored preference, so a caller who opens in
+    # English and continues in Hindi is followed rather than pinned.
+    #
+    # Revisit if the lock moves to session scope, or if min_detection_tokens
+    # can be raised so one-word openers fall through to the default instead
+    # of deciding the call.
     enabled: false
     provider: openai
     model: gpt-4.1-mini-2025-04-14
-    default_language: english
+    default_language: hindi
     supported_languages: [english, hindi, gujarati]
     transliteration: true
     code_switching: true
@@ -716,19 +774,19 @@ agent_workflow:
     Gujarati}, politely say so and ask them to continue in one of those.
 
     ## Linear flow
-    Six phases. Manager Agent routes you to the right subagent; follow
+    Five phases. Manager Agent routes you to the right subagent; follow
     that subagent's prompt:
-      1. greet_consent  — say hello, take consent to save details.
-      2. profile_resolve — fetch profile(s) by phone (silent); ask user
-         for trade (and location if profiles disagree on city).
-      3. job_match — fetch jobs by location, present results matching
+      1. profile_resolve — fetch profile(s) by phone (silent); ask user
+         for trade (and location if profiles disagree on city). Consent is
+         taken by the agent.ask_for_consent gate before this runs.
+      2. job_match — fetch jobs by location, present results matching
          the user's trade, user picks one.
-      4. profile_choice — after user confirms apply: call
+      3. profile_choice — after user confirms apply: call
          list_user_profiles, ask the user whether to USE an existing
          profile, CREATE a new one, or UPDATE one of theirs.
-      5. profile_setup — when create or update is needed, gather all
+      4. profile_setup — when create or update is needed, gather all
          required fields and call save_profile.
-      6. apply_confirm — confirm with the caller, then call apply_job.
+      5. apply_confirm — confirm with the caller, then call apply_job.
 
     ## Tool invocation
     Follow each tool's invocation_rules exactly. Stored memory and prior
@@ -752,71 +810,7 @@ agent_workflow:
   subagents:
 
     # ─────────────────────────────────────────────────────────────
-    # 1. greet_consent — greet the caller, take consent.
-    # ─────────────────────────────────────────────────────────────
-    - id: greet_consent
-      name: Greet & Consent
-      description: >
-        Opening turn. Greet the caller and ask consent to save details
-        and submit applications during this call. Move to profile_resolve
-        once consent is granted; politely end the call if declined.
-      is_start: true
-      is_terminal: false
-      opening_phrase: >
-        Hello! Welcome to Blue Dots. Can I save your profile and submit
-        job applications on your behalf? Please say
-        yes to continue.
-
-      valid_intents:
-        - any_input
-        - profile_answer
-        - decline
-        - language_switch_request
-
-      tools: []   # No tool calls in this phase.
-
-      system_prompt: |
-        You are in the **greet & consent** phase. The caller has just
-        connected.
-
-        ## Goal
-        Get explicit verbal consent to save profile data and submit
-        applications during this call. Without consent we cannot
-        proceed — politely close the call instead.
-
-        ## What to say
-        Greet warmly. Ask the consent question (already spoken as your
-        opening_phrase — do NOT repeat it verbatim unless the user
-        asks). Listen for yes / no.
-
-        ## On yes
-        Acknowledge briefly ("Great, thanks.") and the orchestrator
-        will move you to profile_resolve on the next turn.
-
-        ## On no
-        Acknowledge respectfully ("No problem, we respect your
-        privacy.") and ask if they'd still like to browse jobs in this
-        call without saving. If still no, close warmly. The
-        orchestrator handles termination on `termination_intent`.
-
-        ## Do not
-        - Do not ask for trade or city in this phase.
-        - Do not call any tool.
-        - Do not push or repeat the consent ask more than once.
-
-      routing:
-        # Decline → end the call.
-        - intent: decline
-          next_subagent_id: ended
-        # Anything else → advance. Agent Core's built-in consent gate
-        # (ask_for_consent: true) handles the actual yes/no parsing
-        # at a layer above the subagent, so by the time we're routing
-        # here the user has already said something past consent.
-        - intent: "*"
-          next_subagent_id: profile_resolve
-
-    # ─────────────────────────────────────────────────────────────
-    # 2. profile_resolve — fetch profile + resolve trade and city.
+    # 1. profile_resolve — entry point: fetch profile, resolve trade and city.
     # ─────────────────────────────────────────────────────────────
     - id: profile_resolve
       name: Profile & Resolve
@@ -828,18 +822,25 @@ agent_workflow:
             ask the user which to use.
         Once trade and location are both confirmed in session
         state, route forward to job_match.
-      is_start: false
+      # Entry point. greet_consent used to hold this slot, but it did
+      # nothing: tools were empty, its own prompt forbade asking for trade
+      # or city, and nothing routed into it. The consent ask is the
+      # agent.ask_for_consent gate, which runs before the workflow and is
+      # unaffected by this.
+      is_start: true
       is_terminal: false
-      # Short neutral bridge — framework requires a non-empty
+      # Framework requires a non-empty
       # opening_phrase for session-resume re-orientation. A short
       # acknowledgement avoids promising a specific action (the
       # earlier "Let me check your profile" was misleading when
       # the LLM occasionally went silent right after).
-      opening_phrase: "Thanks."
+      opening_phrase: >
+        आप किस काम या ट्रेड में नौकरी ढूंढ रहे हैं?
 
       valid_intents:
         - any_input
         - profile_answer
+        - decline                 # inherited from greet_consent
         - language_switch_request
 
       tools: []   # global_tools applies; only fetch_profile is appropriate here.
@@ -937,6 +938,10 @@ agent_workflow:
         #   - After 2+ turns in profile_resolve, assume both trade
         #     and location have been gathered (the LLM tracks them
         #     in conversation history and uses them in fetch_jobs).
+        # First, so it wins over the catch-alls below. greet_consent used
+        # to own this route; it moved here with the entry point.
+        - intent: decline
+          next_subagent_id: ended
         - intent: apply_now
           next_subagent_id: job_match
         - intent: job_pick
@@ -964,7 +969,7 @@ agent_workflow:
       is_start: false
       is_terminal: false
       # Short neutral bridge (see profile_resolve above for rationale).
-      opening_phrase: "Okay."
+      opening_phrase: "ठीक है।"
 
       valid_intents:
         - any_input
@@ -1094,7 +1099,7 @@ agent_workflow:
       is_start: false
       is_terminal: false
       # Short neutral bridge (see profile_resolve above for rationale).
-      opening_phrase: "Got it."
+      opening_phrase: "समझ गया।"
 
       valid_intents:
         - any_input
@@ -1271,7 +1276,7 @@ agent_workflow:
         the full item_state with item_id present.
       is_start: false
       is_terminal: false
-      opening_phrase: "Just a couple of quick details before I can save your profile."
+      opening_phrase: "प्रोफ़ाइल सेव करने से पहले बस कुछ जानकारी चाहिए।"
 
       valid_intents:
         - any_input
@@ -1428,7 +1433,7 @@ agent_workflow:
         unless work_experience is somehow still empty.
       is_start: false
       is_terminal: false
-      opening_phrase: "Ready to submit your application?"
+      opening_phrase: "क्या मैं आपका आवेदन भेज दूँ?"
 
       valid_intents:
         - any_input
@@ -1602,7 +1607,7 @@ agent_workflow:
       description: Graceful session termination.
       is_start: false
       is_terminal: true
-      opening_phrase: "Thank you for using Blue Dots. Have a good day."
+      opening_phrase: "ब्लू डॉट्स इस्तेमाल करने के लिए धन्यवाद। आपका दिन शुभ हो।"
       special_handler: null
       valid_intents: []
       tools: []
@@ -1622,8 +1627,8 @@ agent_workflow:
       is_start: false
       is_terminal: true
       opening_phrase: >
-        Let me have a counsellor call you back to help further —
-        they'll reach out within twenty four hours.
+        मैं एक काउंसलर से आपको कॉल करवाता हूँ जो आगे मदद करेंगे —
+        वे चौबीस घंटे के अंदर आपसे संपर्क करेंगे।
       valid_intents: []
       tools: []
       system_prompt: |
@@ -1641,8 +1646,8 @@ agent_workflow:
       is_start: false
       is_terminal: false
       opening_phrase: >
-        Sorry, I didn't quite catch that. Could you say a little more
-        about what you're looking for?
+        माफ़ कीजिए, मैं ठीक से समझ नहीं पाया। आप क्या ढूंढ रहे हैं,
+        थोड़ा और बता सकते हैं?
       special_handler: null
       valid_intents:
         - any_input
