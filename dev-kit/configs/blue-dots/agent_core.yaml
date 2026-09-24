@@ -488,26 +488,26 @@ connectors:
 
 preprocessing:
   language_normalisation:
-    # ON: detect the caller's language each turn and reply in it, rather
-    # than relying on the system prompt to mirror it — which drifted, and
-    # ignored an explicit "can you talk in english" because the
-    # opening-phrase gate answers before the model is ever called.
+    # OFF, deliberately. Turning this on locks the caller's language from
+    # their FIRST turn and stores it on the persistent profile, so it follows
+    # them into later calls. Almost everyone opens with "hello" regardless of
+    # the language they actually want, which would pin Hindi speakers to
+    # English for the whole conversation and every conversation after it.
+    # Rejected on that basis; measured and working otherwise.
     #
-    # The script bypass keeps this cheap: input already in Devanagari (the
-    # default language) returns without an LLM call. The call fires only for
-    # roman-script or English input, which is exactly when detection earns
-    # its latency.
-    enabled: true
+    # With this off the main LLM is told to mirror the caller's language per
+    # turn (manager_agent.build_system_prompt, the empty detected_language
+    # branch) — no lock, no stored preference, so a caller who opens in
+    # English and continues in Hindi is followed rather than pinned.
+    #
+    # Revisit if the lock moves to session scope, or if min_detection_tokens
+    # can be raised so one-word openers fall through to the default instead
+    # of deciding the call.
+    enabled: false
     provider: openai
     model: gpt-4.1-mini-2025-04-14
     default_language: hindi
     supported_languages: [english, hindi, gujarati]
-    # 1, not the default 3. Almost every answer in this journey is a single
-    # word — "yes", "electrician", "Bengaluru", "27" — and the default
-    # skipped detection on anything shorter than three words, falling back to
-    # the default language. That made the agent ignore the caller's actual
-    # language for most of the conversation.
-    min_detection_tokens: 1
     transliteration: true
     code_switching: true
 
