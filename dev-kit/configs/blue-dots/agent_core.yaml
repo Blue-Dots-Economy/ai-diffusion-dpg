@@ -488,13 +488,26 @@ connectors:
 
 preprocessing:
   language_normalisation:
-    # Main LLM mirrors caller language via the system prompt; the
-    # leading call is off. Set enabled: true to re-introduce it.
-    enabled: false
+    # ON: detect the caller's language each turn and reply in it, rather
+    # than relying on the system prompt to mirror it — which drifted, and
+    # ignored an explicit "can you talk in english" because the
+    # opening-phrase gate answers before the model is ever called.
+    #
+    # The script bypass keeps this cheap: input already in Devanagari (the
+    # default language) returns without an LLM call. The call fires only for
+    # roman-script or English input, which is exactly when detection earns
+    # its latency.
+    enabled: true
     provider: openai
     model: gpt-4.1-mini-2025-04-14
     default_language: hindi
     supported_languages: [english, hindi, gujarati]
+    # 1, not the default 3. Almost every answer in this journey is a single
+    # word — "yes", "electrician", "Bengaluru", "27" — and the default
+    # skipped detection on anything shorter than three words, falling back to
+    # the default language. That made the agent ignore the caller's actual
+    # language for most of the conversation.
+    min_detection_tokens: 1
     transliteration: true
     code_switching: true
 
