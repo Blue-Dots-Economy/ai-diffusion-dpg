@@ -54,16 +54,39 @@ services:
     container_name: dpg_init_secrets
     entrypoint: ["/bin/sh", "-c"]
     environment:
-      - AWS_REGION=${AWS_REGION:?set AWS_REGION in .env}
-      - SSM_PREFIX=${SSM_PREFIX:?set SSM_PREFIX in .env}
+      # Both sources are optional here; the script below decides. Set the KEY
+      # vars for a direct hand-over, or leave them blank and set AWS_REGION +
+      # SSM_PREFIX to fetch from Parameter Store.
+      - AWS_REGION=${AWS_REGION:-}
+      - SSM_PREFIX=${SSM_PREFIX:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - BLUE_DOTS_API_KEY=${BLUE_DOTS_API_KEY:-}
     command:
       - |
         set -eu
         umask 077
-        get() { aws ssm get-parameter --name "$$1" --with-decryption \
-                  --query Parameter.Value --output text; }
-        OPENAI=$$(get "$$SSM_PREFIX/openai_api_key")
-        SIGNALS=$$(get "$$SSM_PREFIX/blue_dots_api_key")
+        # Two supported sources, env first:
+        #   1. OPENAI_API_KEY / BLUE_DOTS_API_KEY passed straight in — for a
+        #      laptop, a CI run, or any host with no instance role.
+        #   2. AWS SSM Parameter Store via the EC2 instance role, used on the
+        #      shared VM so nothing is written to disk or kept in git.
+        # Env wins when both keys are set, so a deployment can override the
+        # store without editing this file.
+        if [ -n "$${OPENAI_API_KEY:-}" ] && [ -n "$${BLUE_DOTS_API_KEY:-}" ]; then
+          SOURCE=env
+          OPENAI="$$OPENAI_API_KEY"
+          SIGNALS="$$BLUE_DOTS_API_KEY"
+        else
+          if [ -z "$${SSM_PREFIX:-}" ]; then
+            echo "init_secrets: set OPENAI_API_KEY and BLUE_DOTS_API_KEY, or SSM_PREFIX" >&2
+            exit 1
+          fi
+          SOURCE=ssm
+          OPENAI=$$(aws ssm get-parameter --name "$$SSM_PREFIX/openai_api_key" \
+                      --with-decryption --query Parameter.Value --output text)
+          SIGNALS=$$(aws ssm get-parameter --name "$$SSM_PREFIX/blue_dots_api_key" \
+                      --with-decryption --query Parameter.Value --output text)
+        fi
         # The search connector reads a distinct variable NAME but currently
         # carries the SAME VALUE, so only two parameters are stored.
         {
@@ -80,7 +103,7 @@ services:
         chmod 711 /secrets
         chmod 444 /secrets/env
         # Never print the values.
-        echo "init_secrets: wrote /secrets/env (openai=$${#OPENAI} signals=$${#SIGNALS})"
+        echo "init_secrets: wrote /secrets/env from $$SOURCE (openai=$${#OPENAI} signals=$${#SIGNALS})"
     volumes:
       - ${SECRETS_DIR:-/dev/shm/dpg-secrets}:/secrets
     networks: [dpg_net]
