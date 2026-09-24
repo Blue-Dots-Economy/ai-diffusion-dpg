@@ -864,7 +864,7 @@ agent_workflow:
       # acknowledgement avoids promising a specific action (the
       # earlier "Let me check your profile" was misleading when
       # the LLM occasionally went silent right after).
-      opening_phrase: "Thanks."
+      opening_phrase: "शुक्रिया।"
 
       valid_intents:
         - any_input
@@ -993,7 +993,7 @@ agent_workflow:
       is_start: false
       is_terminal: false
       # Short neutral bridge (see profile_resolve above for rationale).
-      opening_phrase: "Okay."
+      opening_phrase: "ठीक है।"
 
       valid_intents:
         - any_input
@@ -1123,7 +1123,7 @@ agent_workflow:
       is_start: false
       is_terminal: false
       # Short neutral bridge (see profile_resolve above for rationale).
-      opening_phrase: "Got it."
+      opening_phrase: "समझ गया।"
 
       valid_intents:
         - any_input
@@ -1300,7 +1300,7 @@ agent_workflow:
         the full item_state with item_id present.
       is_start: false
       is_terminal: false
-      opening_phrase: "Just a couple of quick details before I can save your profile."
+      opening_phrase: "प्रोफ़ाइल सेव करने से पहले बस कुछ जानकारी चाहिए।"
 
       valid_intents:
         - any_input
@@ -1457,7 +1457,7 @@ agent_workflow:
         unless work_experience is somehow still empty.
       is_start: false
       is_terminal: false
-      opening_phrase: "Ready to submit your application?"
+      opening_phrase: "क्या मैं आपका आवेदन भेज दूँ?"
 
       valid_intents:
         - any_input
@@ -1631,7 +1631,7 @@ agent_workflow:
       description: Graceful session termination.
       is_start: false
       is_terminal: true
-      opening_phrase: "Thank you for using Blue Dots. Have a good day."
+      opening_phrase: "ब्लू डॉट्स इस्तेमाल करने के लिए धन्यवाद। आपका दिन शुभ हो।"
       special_handler: null
       valid_intents: []
       tools: []
@@ -1651,8 +1651,8 @@ agent_workflow:
       is_start: false
       is_terminal: true
       opening_phrase: >
-        Let me have a counsellor call you back to help further —
-        they'll reach out within twenty four hours.
+        मैं एक काउंसलर से आपको कॉल करवाता हूँ जो आगे मदद करेंगे —
+        वे चौबीस घंटे के अंदर आपसे संपर्क करेंगे।
       valid_intents: []
       tools: []
       system_prompt: |
@@ -1670,8 +1670,8 @@ agent_workflow:
       is_start: false
       is_terminal: false
       opening_phrase: >
-        Sorry, I didn't quite catch that. Could you say a little more
-        about what you're looking for?
+        माफ़ कीजिए, मैं ठीक से समझ नहीं पाया। आप क्या ढूंढ रहे हैं,
+        थोड़ा और बता सकते हैं?
       special_handler: null
       valid_intents:
         - any_input
