@@ -1100,6 +1100,13 @@ class AgentCore(AgentCoreBase):
             current_question=current_question,
         )
 
+        # #193: replay the previous turn's tool exchanges, exactly as
+        # stream_turn does. Without this the sync path starts every turn
+        # blind to results it has already fetched.
+        _prior_exchanges, _max_items, _max_chars = self._prepend_tool_replay(
+            messages, bundle, session_id, "orchestrator.process_turn",
+        )
+
         if not messages:
             logger.warning(
                 "orchestrator.empty_messages",
@@ -1220,6 +1227,40 @@ class AgentCore(AgentCoreBase):
             # paths in line.
             user_id=user_id,
         )
+
+        # #193: persist this turn's tool exchanges so the next turn can
+        # replay them. run_turn returns ToolResult objects; _capture_tool_exchange
+        # expects the tool_result content dicts that go into messages, so
+        # convert here rather than widening the helper.
+        _captured = self._capture_tool_exchange(
+            tool_calls,
+            [
+                {
+                    "tool_use_id": tr.tool_use_id,
+                    "content": tr.result_text or str(tr.result),
+                }
+                for tr in (tool_results or [])
+            ],
+            _max_chars,
+        )
+        _capped = self._merge_tool_exchanges(
+            _prior_exchanges, [_captured] if _captured else [], _max_items,
+        )
+        if _capped is not None:
+            bundle.session["recent_tool_exchanges"] = _capped
+            self._write_memory_sync(
+                session_id, user_id, "session", "recent_tool_exchanges", _capped,
+            )
+            logger.info(
+                "orchestrator.tool_persist",
+                extra={
+                    "operation": "orchestrator.process_turn",
+                    "status": "success",
+                    "session_id": session_id,
+                    "stored": len(_capped),
+                },
+            )
+
         if tool_calls:
             tool_names = [tc.tool_name for tc in tool_calls]
             logger.info(
@@ -1898,6 +1939,73 @@ class AgentCore(AgentCoreBase):
         if len(content) <= max_chars:
             return content
         return content[:max_chars]
+
+    def _prepend_tool_replay(
+        self,
+        messages: list,
+        bundle,
+        session_id: str,
+        operation: str,
+    ) -> tuple[list[dict], int, int]:
+        """Prepend the previous turn's tool exchanges to this turn's messages.
+
+        Shared by ``process_turn`` and ``stream_turn`` so both transports give
+        the LLM the same view of what it has already learned. Before this was
+        shared, only the streaming path replayed exchanges, so a caller on
+        ``/process_turn`` lost every tool result at the turn boundary — the
+        model could not see the ids a previous ``fetch_jobs`` returned, and
+        re-invoked tools it had already run.
+
+        Args:
+            messages: This turn's message list. Mutated in place.
+            bundle: Context bundle whose ``session`` holds the persisted
+                exchanges.
+            session_id: For logging.
+            operation: Caller name for the log entry.
+
+        Returns:
+            ``(prior_exchanges, max_items, max_chars)`` for the caller to pass
+            back to :meth:`_merge_tool_exchanges` at the end of the turn.
+        """
+        max_items, max_chars = self._recent_tool_exchanges_caps()
+        raw = bundle.session.get("recent_tool_exchanges") or []
+        if not isinstance(raw, list):
+            raw = []
+        prior: list[dict] = list(raw)
+        if max_items > 0 and prior:
+            replay = self._build_tool_exchange_messages(prior[-max_items:])
+            if replay:
+                messages[:0] = replay
+                logger.info(
+                    "orchestrator.tool_replay",
+                    extra={
+                        "operation": operation,
+                        "status": "success",
+                        "session_id": session_id,
+                        "replayed_exchanges": len(replay) // 2,
+                    },
+                )
+        return prior, max_items, max_chars
+
+    @staticmethod
+    def _merge_tool_exchanges(
+        prior: list[dict],
+        captured: list[dict],
+        max_items: int,
+    ) -> list[dict] | None:
+        """Combine prior and freshly captured exchanges, newest last.
+
+        Args:
+            prior: Exchanges replayed into this turn.
+            captured: Exchanges recorded during this turn's tool rounds.
+            max_items: Cap from ``agent.recent_tool_exchanges.max_items``.
+
+        Returns:
+            The capped list to persist, or ``None`` when there is nothing new.
+        """
+        if not captured or max_items <= 0:
+            return None
+        return (list(prior) + list(captured))[-max_items:]
 
     def _capture_tool_exchange(
         self,
@@ -3399,31 +3507,9 @@ class AgentCore(AgentCoreBase):
             )
 
             # ── #193: prepend prior tool_use/tool_result exchanges ──────
-            # Persisted by this same path on the previous turn under the
-            # session-scoped ``recent_tool_exchanges`` key. Replaying them
-            # as real Anthropic tool-use messages keeps the LLM aware of
-            # results it has already seen, so it does not re-invoke the
-            # same tool with identical params on every follow-up turn.
-            _max_items, _max_chars = self._recent_tool_exchanges_caps()
-            _prior_exchanges_raw = bundle.session.get("recent_tool_exchanges") or []
-            if not isinstance(_prior_exchanges_raw, list):
-                _prior_exchanges_raw = []
-            _prior_exchanges: list[dict] = list(_prior_exchanges_raw)
-            if _max_items > 0 and _prior_exchanges:
-                _replay_msgs = self._build_tool_exchange_messages(
-                    _prior_exchanges[-_max_items:]
-                )
-                if _replay_msgs:
-                    messages = _replay_msgs + messages
-                    logger.info(
-                        "orchestrator.stream_turn_tool_replay",
-                        extra={
-                            "operation": "orchestrator.stream_turn",
-                            "status": "success",
-                            "session_id": session_id,
-                            "replayed_exchanges": len(_replay_msgs) // 2,
-                        },
-                    )
+            _prior_exchanges, _max_items, _max_chars = self._prepend_tool_replay(
+                messages, bundle, session_id, "orchestrator.stream_turn",
+            )
 
             # Tool exchanges captured during *this* turn's tool rounds; persisted
             # at the end of the turn so the next turn can replay them.
@@ -3832,9 +3918,10 @@ class AgentCore(AgentCoreBase):
 
             # #193: persist captured tool exchanges (capped) so the next
             # turn can replay them as real tool_use/tool_result messages.
-            if _captured_exchanges_this_turn and _max_items > 0:
-                _merged = list(_prior_exchanges) + _captured_exchanges_this_turn
-                _capped = _merged[-_max_items:]
+            _capped = self._merge_tool_exchanges(
+                _prior_exchanges, _captured_exchanges_this_turn, _max_items,
+            )
+            if _capped is not None:
                 bundle.session["recent_tool_exchanges"] = _capped
                 asyncio.create_task(
                     self._async_memory.write(
@@ -3843,7 +3930,7 @@ class AgentCore(AgentCoreBase):
                     )
                 )
                 logger.info(
-                    "orchestrator.stream_turn_tool_persist",
+                    "orchestrator.tool_persist",
                     extra={
                         "operation": "orchestrator.stream_turn",
                         "status": "success",
