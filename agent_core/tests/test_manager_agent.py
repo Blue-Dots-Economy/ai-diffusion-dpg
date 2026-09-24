@@ -841,3 +841,86 @@ def test_build_system_prompt_xml_tags_are_balanced():
                 "channel_context", "resumption", "known_profile", "active_guardrails"):
         assert f"<{tag}>" in full_text, f"missing <{tag}>"
         assert f"</{tag}>" in full_text, f"missing </{tag}>"
+
+
+# ---------------------------------------------------------------------------
+# _is_collected — which profile values count as "already collected"
+# ---------------------------------------------------------------------------
+
+class TestIsCollected:
+    """Guards the age-rendered-as-zero defect.
+
+    `age` is the only integer profile field and its unset default is 0. The
+    old sentinel list (None, "", [], "[]") did not catch it, so a brand-new
+    session rendered `age: 0` under "Already collected — do NOT ask", the
+    agent never asked, and the profile API rejected the save as under-18.
+    """
+
+    def test_zero_age_is_not_collected(self):
+        from src.manager_agent import _is_collected
+        assert _is_collected(0) is False
+
+    def test_a_real_age_is_collected(self):
+        from src.manager_agent import _is_collected
+        assert _is_collected(24) is True
+
+    def test_empty_string_fields_stay_uncollected(self):
+        from src.manager_agent import _is_collected
+        for empty in (None, "", "[]", [], {}):
+            assert _is_collected(empty) is False, empty
+
+    def test_populated_values_stay_collected(self):
+        from src.manager_agent import _is_collected
+        for filled in ("Ravi Kumar", "Bengaluru", ["a"], {"k": "v"}, 1):
+            assert _is_collected(filled) is True, filled
+
+    def test_booleans_are_not_treated_as_numbers(self):
+        """False must read as absent, True as present — not as 0 and 1."""
+        from src.manager_agent import _is_collected
+        assert _is_collected(False) is False
+        assert _is_collected(True) is True
+
+    @staticmethod
+    def _agent():
+        from unittest.mock import MagicMock
+        from src.manager_agent import ManagerAgent
+        return ManagerAgent(
+            chat_provider=MagicMock(),
+            tool_registry=MagicMock(),
+            action_gateway=MagicMock(),
+            knowledge_engine=MagicMock(),
+            trust_layer=MagicMock(),
+            max_tool_rounds=1,
+        )
+
+    def test_zero_age_is_absent_from_the_rendered_prompt(self):
+        """The end-to-end shape: a zero age must not reach the LLM."""
+        prompt = self._agent().build_system_prompt(
+            agent_system_prompt="agent",
+            subagent_system_prompt="subagent",
+            detected_language="hindi",
+            channel="web",
+            profile={"name": "Ravi", "age": 0, "location": ""},
+            channel_config={},
+        )
+        text = prompt.text if hasattr(prompt, "text") else str(prompt)
+        assert "age: 0" not in text
+        assert "Ravi" in text
+
+    def test_a_real_age_does_reach_the_prompt(self):
+        """The counterpart: a real age must still be shown as collected.
+
+        orchestrator.py records an earlier defect where a stale 0 outranked a
+        fresh 25; this asserts the fix here does not swing the other way and
+        start hiding genuine ages.
+        """
+        prompt = self._agent().build_system_prompt(
+            agent_system_prompt="agent",
+            subagent_system_prompt="subagent",
+            detected_language="hindi",
+            channel="web",
+            profile={"name": "Ravi", "age": 25},
+            channel_config={},
+        )
+        text = prompt.text if hasattr(prompt, "text") else str(prompt)
+        assert "age: 25" in text

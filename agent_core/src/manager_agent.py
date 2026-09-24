@@ -38,6 +38,35 @@ from src.tool_registry import ToolRegistry
 logger = logging.getLogger(__name__)
 
 
+def _is_collected(value: object) -> bool:
+    """Whether a profile value counts as something the caller has told us.
+
+    The previous check listed the empty sentinels explicitly — ``None``,
+    ``""``, ``[]``, ``"[]"`` — which covers every string field, since those
+    default to ``""``. It does not cover ``age``, the one integer field,
+    whose unset default is ``0``.
+
+    A zero therefore rendered under "Already collected — do NOT ask for any
+    of these fields again", so the agent never asked the caller's age and
+    sent ``age=0`` to the profile API, which rejects it as under-18.
+
+    Args:
+        value: A profile field value.
+
+    Returns:
+        True when the value should be shown to the LLM as already collected.
+    """
+    if isinstance(value, bool):
+        return value
+    if value in (None, "", "[]"):
+        return False
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, (list, tuple, dict, set)):
+        return len(value) > 0
+    return bool(value)
+
+
 class ManagerAgent:
     """
     Drives the tool-use loop for one conversation turn.
@@ -411,7 +440,7 @@ class ManagerAgent:
             lines: list[str] = []
             skip_keys = {"attributes", "user_id"}
             for k, v in profile.items():
-                if k not in skip_keys and v not in (None, "", [], "[]"):
+                if k not in skip_keys and _is_collected(v):
                     lines.append(f"  {k}: {v}")
             for attr in profile.get("attributes", []) or []:
                 attr_key = attr.get("key") if isinstance(attr, dict) else None

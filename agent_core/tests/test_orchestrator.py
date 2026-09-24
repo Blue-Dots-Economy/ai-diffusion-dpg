@@ -1963,3 +1963,56 @@ def test_process_turn_writes_sanitized_current_question(caplog):
     assert any(
         "current_question_accumulation_detected" in r.message for r in caplog.records
     )
+
+
+# ---------------------------------------------------------------------------
+# Tool-exchange replay on the SYNC path (process_turn)
+# ---------------------------------------------------------------------------
+
+class TestProcessTurnToolReplay:
+    """process_turn must replay and persist tool exchanges like stream_turn.
+
+    Only stream_turn did this, so a caller on /process_turn — which is what
+    the web channel uses — started each turn blind to results it had already
+    fetched. On the blue-dots journey that meant the model could not see the
+    item_ids a previous fetch_jobs returned and sent a display name as the
+    job id, which the API rejected.
+    """
+
+    def test_helpers_exist_on_the_orchestrator(self):
+        from src.orchestrator import AgentCore as Orchestrator
+        assert hasattr(Orchestrator, "_prepend_tool_replay")
+        assert hasattr(Orchestrator, "_merge_tool_exchanges")
+
+    def test_merge_keeps_newest_and_respects_the_cap(self):
+        from src.orchestrator import AgentCore as Orchestrator
+        prior = [{"tool_uses": [{"id": "a"}], "tool_results": [{"tool_use_id": "a"}]}]
+        fresh = [{"tool_uses": [{"id": "b"}], "tool_results": [{"tool_use_id": "b"}]}]
+        merged = Orchestrator._merge_tool_exchanges(prior, fresh, max_items=1)
+        assert merged is not None
+        assert len(merged) == 1
+        assert merged[0]["tool_uses"][0]["id"] == "b", "newest must survive the cap"
+
+    def test_merge_returns_none_when_nothing_new(self):
+        from src.orchestrator import AgentCore as Orchestrator
+        prior = [{"tool_uses": [{"id": "a"}], "tool_results": [{"tool_use_id": "a"}]}]
+        assert Orchestrator._merge_tool_exchanges(prior, [], max_items=3) is None
+
+    def test_merge_returns_none_when_replay_is_disabled(self):
+        from src.orchestrator import AgentCore as Orchestrator
+        fresh = [{"tool_uses": [{"id": "b"}], "tool_results": [{"tool_use_id": "b"}]}]
+        assert Orchestrator._merge_tool_exchanges([], fresh, max_items=0) is None
+
+    def test_process_turn_replays_prior_exchanges(self):
+        """The sync path prepends stored exchanges before the first LLM call."""
+        import inspect
+        from src.orchestrator import AgentCore as Orchestrator
+        # process_turn is a thin tracing wrapper; the body lives in
+        # _process_turn_inner.
+        src = inspect.getsource(Orchestrator._process_turn_inner)
+        assert "_prepend_tool_replay" in src, (
+            "process_turn must replay prior tool exchanges"
+        )
+        assert "recent_tool_exchanges" in src, (
+            "process_turn must persist exchanges for the next turn"
+        )
