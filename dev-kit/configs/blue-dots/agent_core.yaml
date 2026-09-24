@@ -774,19 +774,19 @@ agent_workflow:
     Gujarati}, politely say so and ask them to continue in one of those.
 
     ## Linear flow
-    Six phases. Manager Agent routes you to the right subagent; follow
+    Five phases. Manager Agent routes you to the right subagent; follow
     that subagent's prompt:
-      1. greet_consent  — say hello, take consent to save details.
-      2. profile_resolve — fetch profile(s) by phone (silent); ask user
-         for trade (and location if profiles disagree on city).
-      3. job_match — fetch jobs by location, present results matching
+      1. profile_resolve — fetch profile(s) by phone (silent); ask user
+         for trade (and location if profiles disagree on city). Consent is
+         taken by the agent.ask_for_consent gate before this runs.
+      2. job_match — fetch jobs by location, present results matching
          the user's trade, user picks one.
-      4. profile_choice — after user confirms apply: call
+      3. profile_choice — after user confirms apply: call
          list_user_profiles, ask the user whether to USE an existing
          profile, CREATE a new one, or UPDATE one of theirs.
-      5. profile_setup — when create or update is needed, gather all
+      4. profile_setup — when create or update is needed, gather all
          required fields and call save_profile.
-      6. apply_confirm — confirm with the caller, then call apply_job.
+      5. apply_confirm — confirm with the caller, then call apply_job.
 
     ## Tool invocation
     Follow each tool's invocation_rules exactly. Stored memory and prior
@@ -810,77 +810,7 @@ agent_workflow:
   subagents:
 
     # ─────────────────────────────────────────────────────────────
-    # 1. greet_consent — greet the caller, take consent.
-    # ─────────────────────────────────────────────────────────────
-    - id: greet_consent
-      name: Greet & Consent
-      description: >
-        Opening turn. Greet the caller and ask consent to save details
-        and submit applications during this call. Move to profile_resolve
-        once consent is granted; politely end the call if declined.
-      is_start: true
-      is_terminal: false
-      # NOT the consent text. This phrase and agent.consent_prompt are
-      # emitted by different gates on consecutive turns — the consent gate on
-      # turn 1, the opening-phrase gate on the first post-consent turn — so
-      # holding the same words in both asked the caller for consent twice in
-      # a row. It cannot simply be emptied either: workflow_loader rejects an
-      # empty opening_phrase for any subagent. So it carries the question
-      # that should follow consent, which makes the turn useful instead of a
-      # repeat.
-      opening_phrase: >
-        आप किस काम या ट्रेड में नौकरी ढूंढ रहे हैं?
-
-      valid_intents:
-        - any_input
-        - profile_answer
-        - decline
-        - language_switch_request
-
-      tools: []   # No tool calls in this phase.
-
-      system_prompt: |
-        You are in the **greet & consent** phase. The caller has just
-        connected.
-
-        ## Goal
-        Get explicit verbal consent to save profile data and submit
-        applications during this call. Without consent we cannot
-        proceed — politely close the call instead.
-
-        ## What to say
-        Greet warmly. Ask the consent question (already spoken as your
-        opening_phrase — do NOT repeat it verbatim unless the user
-        asks). Listen for yes / no.
-
-        ## On yes
-        Acknowledge briefly ("Great, thanks.") and the orchestrator
-        will move you to profile_resolve on the next turn.
-
-        ## On no
-        Acknowledge respectfully ("No problem, we respect your
-        privacy.") and ask if they'd still like to browse jobs in this
-        call without saving. If still no, close warmly. The
-        orchestrator handles termination on `termination_intent`.
-
-        ## Do not
-        - Do not ask for trade or city in this phase.
-        - Do not call any tool.
-        - Do not push or repeat the consent ask more than once.
-
-      routing:
-        # Decline → end the call.
-        - intent: decline
-          next_subagent_id: ended
-        # Anything else → advance. Agent Core's built-in consent gate
-        # (ask_for_consent: true) handles the actual yes/no parsing
-        # at a layer above the subagent, so by the time we're routing
-        # here the user has already said something past consent.
-        - intent: "*"
-          next_subagent_id: profile_resolve
-
-    # ─────────────────────────────────────────────────────────────
-    # 2. profile_resolve — fetch profile + resolve trade and city.
+    # 1. profile_resolve — entry point: fetch profile, resolve trade and city.
     # ─────────────────────────────────────────────────────────────
     - id: profile_resolve
       name: Profile & Resolve
@@ -892,18 +822,25 @@ agent_workflow:
             ask the user which to use.
         Once trade and location are both confirmed in session
         state, route forward to job_match.
-      is_start: false
+      # Entry point. greet_consent used to hold this slot, but it did
+      # nothing: tools were empty, its own prompt forbade asking for trade
+      # or city, and nothing routed into it. The consent ask is the
+      # agent.ask_for_consent gate, which runs before the workflow and is
+      # unaffected by this.
+      is_start: true
       is_terminal: false
-      # Short neutral bridge — framework requires a non-empty
+      # Framework requires a non-empty
       # opening_phrase for session-resume re-orientation. A short
       # acknowledgement avoids promising a specific action (the
       # earlier "Let me check your profile" was misleading when
       # the LLM occasionally went silent right after).
-      opening_phrase: "शुक्रिया।"
+      opening_phrase: >
+        आप किस काम या ट्रेड में नौकरी ढूंढ रहे हैं?
 
       valid_intents:
         - any_input
         - profile_answer
+        - decline                 # inherited from greet_consent
         - language_switch_request
 
       tools: []   # global_tools applies; only fetch_profile is appropriate here.
@@ -1001,6 +938,10 @@ agent_workflow:
         #   - After 2+ turns in profile_resolve, assume both trade
         #     and location have been gathered (the LLM tracks them
         #     in conversation history and uses them in fetch_jobs).
+        # First, so it wins over the catch-alls below. greet_consent used
+        # to own this route; it moved here with the entry point.
+        - intent: decline
+          next_subagent_id: ended
         - intent: apply_now
           next_subagent_id: job_match
         - intent: job_pick
