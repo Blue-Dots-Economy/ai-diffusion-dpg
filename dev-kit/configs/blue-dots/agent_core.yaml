@@ -26,7 +26,7 @@ agent:
   fallback_model: gpt-5.4-mini-2026-03-17
   ask_for_consent: true
   # No greeting here. Whatever answered the call has already greeted the
-  # caller — VoicEra speaks its own greeting_message on the bridge channel,
+  # caller — the telephony platform speaks its own greeting_message on the
   # and the web UI shows its own opening line — so "Hello! Welcome to Blue
   # Dots" lands as a second greeting in a row. Straight to the consent ask.
   # Written in Hindi, not English, because this string is emitted VERBATIM.
