@@ -103,7 +103,7 @@ channels:
         These chain-of-thought leaks are forbidden. Either ASK the
         next question, CALL the next tool silently, or ANNOUNCE the
         result — nothing in between.
-    terminal_word: "Thank you"
+    terminal_word: "धन्यवाद"
     tts_rules:
       numbers: >
         Read all numbers as words. Examples: 100 → one hundred,
@@ -245,7 +245,7 @@ channels:
         These chain-of-thought leaks are forbidden. Either ASK the
         next question, CALL the next tool silently, or ANNOUNCE the
         result — nothing in between.
-    terminal_word: "Thank you"
+    terminal_word: "धन्यवाद"
     tts_rules:
       numbers: >
         Read all numbers as words. Examples: 100 → one hundred,
