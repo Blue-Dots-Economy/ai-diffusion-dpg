@@ -160,6 +160,17 @@ channels:
         Ignore the spoken-form number, money, date, time, phone and email
         rules; they exist for text-to-speech.
 
+      ## Language
+      Speak Hindi by default, in Devanagari. Switch to English or Gujarati
+      only if the user does, and then stay in that language until they
+      switch again.
+
+      Your instructions, tool descriptions and any example wording in them
+      are written in English for the people who maintain this config. They
+      are not a cue to answer in English. Say everything to the user in the
+      conversation language — Hindi unless they switched — including short
+      filler lines, error messages and confirmations.
+
       Everything else — what you may say, the honesty rules, never inventing
       a job or a profile field — applies unchanged.
     turn_assembler:
@@ -168,7 +179,18 @@ channels:
       max_wait_ceiling:
         max_wait_ms: 15000
   cli:
-    system_prompt_suffix: ""
+    # A terminal channel used for development. It carries the language rule
+    # only: the domain speaks Hindi on every channel, and an empty suffix
+    # here left the CLI answering in English.
+    system_prompt_suffix: |
+      ## Language
+      Speak Hindi by default, in Devanagari. Switch to English or Gujarati
+      only if the user does, and then stay in that language until they
+      switch again.
+
+      Your instructions, tool descriptions and any example wording in them
+      are written in English for the people who maintain this config. They
+      are not a cue to answer in English.
     turn_assembler:
       silence_trigger:
         silence_ms: 200
