@@ -4,8 +4,8 @@
 # development and are not changed by this deployment. The secrets init
 # container below is needed by this deployment only.
 #
-# 11 services: the 6 DPG blocks, the bridge channel, redis, memgraph, otelcol,
-# and a one-shot secrets init container.
+# 13 services: the 6 DPG blocks, the bridge and web channels, redis, memgraph,
+# otelcol, and two one-shot init containers.
 # Deliberately absent: the voice channel and ngrok (VoicEra owns telephony),
 # web/cli/mcp, dev-kit, and the grafana/jaeger/loki/prometheus UIs.
 #
@@ -335,6 +335,49 @@ services:
       timeout: 15s
       retries: 5
       start_period: 90s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Reach Layer — Web channel (port 8005)
+  #
+  # Not what VoicEra uses — they reach us through the bridge — but kept here
+  # for operators to drive the same journey from a browser when diagnosing a
+  # call. It exercises a DIFFERENT transport: the web UI posts to Agent Core's
+  # /process_turn, while the bridge streams over /stream_turn, so a bug can
+  # show on one and not the other.
+  #
+  # Bound to 127.0.0.1 like the bridge: there is no authentication on this
+  # channel in the blue-dots config (reach_layer.yaml sets web.auth.enabled
+  # false). Reach it over an SSH tunnel:
+  #     ssh -L 8005:127.0.0.1:8005 <user>@<vm>
+  #
+  # Skip it entirely by naming the services you want:
+  #     docker compose up -d redis memgraph ... reach_layer_bridge
+  # ---------------------------------------------------------------------------
+  reach_layer_web:
+    image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/reach-layer-web:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
+    container_name: dpg_reach_layer_web
+    environment:
+      - CONFIG_FOLDER=/app/config
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - REACH_LAYER_WEB_MODE=full
+      - KE_INTERNAL_URL=http://knowledge_engine:8001
+    volumes:
+      - ../../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
+      - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/reach_layer.yaml:/app/config/domain.yaml:ro
+    ports:
+      - "127.0.0.1:8005:8005"
+    networks: [dpg_net]
+    logging: *logging
+    depends_on:
+      agent_core:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8005/health', timeout=5)"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
     restart: unless-stopped
 
 networks:
