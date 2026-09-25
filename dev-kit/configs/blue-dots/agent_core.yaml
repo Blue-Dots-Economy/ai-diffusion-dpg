@@ -411,12 +411,12 @@ connectors:
           profiles, the user is new and trade + city must be asked
           explicitly.
         on_empty: >
-          I don't see any profile for you yet. Let's set one up — which
-          trade are you looking for work in?
+          अभी आपकी कोई प्रोफ़ाइल नहीं दिख रही। आप किस ट्रेड में काम ढूंढ
+          रहे हैं?
         on_failure: >
-          Sorry, I couldn't reach the profile service. Let me try again
-          in a moment.
-        bridge_line: "One moment — let me check your profile."
+          माफ़ कीजिए, प्रोफ़ाइल सेवा से संपर्क नहीं हो पा रहा। मैं थोड़ी
+          देर में दोबारा कोशिश करता हूँ।
+        bridge_line: "एक पल — मैं आपकी प्रोफ़ाइल देखता हूँ।"
 
     - name: fetch_jobs
       description: >
@@ -445,13 +445,12 @@ connectors:
           Never describe job availability from memory or prior runs.
           Always fetch fresh.
         on_empty: >
-          I don't see any open postings for that trade in that city right
-          now. Would you like me to broaden the search to nearby cities,
-          or try a different trade?
+          अभी उस शहर में उस ट्रेड की कोई नौकरी नहीं दिख रही। क्या मैं पास
+          के शहरों में देखूँ, या किसी और ट्रेड में?
         on_failure: >
-          Sorry, the job listings service is unavailable. Let me try
-          again shortly.
-        bridge_line: "Let me find jobs for you."
+          माफ़ कीजिए, नौकरियों की सेवा अभी उपलब्ध नहीं है। मैं थोड़ी देर
+          में दोबारा कोशिश करता हूँ।
+        bridge_line: "मैं आपके लिए नौकरियाँ देखता हूँ।"
 
   write:
     # list_user_profiles connector removed — replaced by re-calling
@@ -510,8 +509,8 @@ connectors:
           or from the chosen profile's existing state (for update
           paths).
         on_failure: >
-          Sorry, I couldn't save the profile. Let me try once more.
-        bridge_line: "Setting up your profile now."
+          माफ़ कीजिए, प्रोफ़ाइल सेव नहीं हो पाई। मैं एक बार और कोशिश करता हूँ।
+        bridge_line: "मैं आपकी प्रोफ़ाइल बना रहा हूँ।"
 
     - name: apply_job
       description: >
@@ -544,8 +543,8 @@ connectors:
           Never submit without an explicit yes/confirm in the most
           recent user turn.
         on_failure: >
-          Sorry, I couldn't submit the application. Let me try again.
-        bridge_line: "Submitting your application now."
+          माफ़ कीजिए, आवेदन जमा नहीं हो पाया। मैं दोबारा कोशिश करता हूँ।
+        bridge_line: "मैं आपका आवेदन भेज रहा हूँ।"
 
   internal: []   # No knowledge_retrieval — KE not used in this domain.
 
@@ -805,42 +804,52 @@ agent_workflow:
     The caller is on a phone — silence sounds like the line has dropped,
     and the user will hang up.
 
-    After EVERY tool call, you MUST speak. Concrete patterns:
-      - After fetch_profile (1 item): "I see your profile in <location>.
-        What trade are you looking for work in?" (Do NOT say
-        "Welcome back" — the consent prompt already greeted the caller.)
-      - After fetch_profile (0 items): "I don't see a profile for this
-        number yet. Which trade are you looking for work in?" (Do NOT
-        prefix with "Welcome —"; the consent prompt already greeted.)
-      - After fetch_jobs (some results): "I found <N> <trade> job(s) in
-        <location>. <Company A>, <salary range>. <Company B>, …
-        Which one would you like to apply to?"
-      - After fetch_jobs (no results): "I don't see any open <trade>
-        jobs in <location> right now. Want me to try a nearby city or
-        a different trade?"
-      - After list_user_profiles (multi): "I see you have a few
-        profiles on this number. The one in <location> as <trade>
-        looks closest to this job — should I use that one, or
-        create a fresh profile, or update one of them?"
-      - After list_user_profiles (single): "I see one profile for you,
-        in <location>. Should I apply using this profile, create a
-        new one, or update this one?"
-      - After list_user_profiles (zero): jump straight to the first
-        missing profile field — usually "What's your gender?" — and
-        then proceed through location, age, work experience one at
-        a time. Do NOT preface with "Let me set up a profile for
-        you first" or any similar announcement — the caller already
-        heard "To apply for this job I need a couple of details
-        about you" in profile_choice. Repeating it sounds robotic.
-      - After save_profile (created): "Profile saved. Shall I submit
-        your application now?"
-      - After save_profile (updated): "Profile updated. Ready to
-        submit the application?"
-      - After apply_job (success): "Your application to <company> for
-        the <role> role has been submitted. They'll be in touch."
+    After EVERY tool call, you MUST speak.
 
-    If you genuinely have nothing to add, say "One moment, please." —
-    NEVER return an empty response. Silence is the worst outcome.
+    The patterns below are the exact wording to use. They are written in
+    HINDI on purpose — these are not descriptions of what to say, they are
+    the words you say, and earlier versions of this block held the English
+    originals. The model copied them verbatim, which is how a Hindi caller
+    ended up hearing "I see one profile for you, in Raj Nagar Extension
+    Ghaziabad." on the 24 Sep calls. Speak these, not translations of some
+    English sentence you formed first.
+
+      - After fetch_profile (1 item):
+        "आपकी प्रोफ़ाइल <location> में दिख रही है। आप किस ट्रेड में काम
+         ढूंढ रहे हैं?"
+        (No "welcome back" — the caller has already been greeted.)
+      - After fetch_profile (0 items):
+        "इस नंबर पर अभी कोई प्रोफ़ाइल नहीं है। आप किस ट्रेड में काम ढूंढ
+         रहे हैं?"
+      - After fetch_jobs (some results):
+        "<location> में <trade> की <N> नौकरियाँ मिली हैं। <कंपनी क>,
+         <वेतन>। <कंपनी ख>, <वेतन>। इनमें से किसके लिए आवेदन करना
+         चाहेंगे?"
+        Say the city you actually searched, taken from the tool result —
+        never a different city.
+      - After fetch_jobs (no results):
+        "<location> में अभी <trade> की कोई नौकरी नहीं है। क्या मैं पास के
+         किसी शहर में या किसी और ट्रेड में देखूँ?"
+      - Profile choice (several profiles on the number):
+        "इस नंबर पर आपकी कुछ प्रोफ़ाइलें हैं। <location> वाली <trade> की
+         प्रोफ़ाइल इस नौकरी के सबसे क़रीब लगती है। क्या मैं उसी से आवेदन
+         करूँ, नई बनाऊँ, या उसे अपडेट करूँ?"
+      - Profile choice (one profile):
+        "आपकी एक प्रोफ़ाइल <location> में है। क्या मैं उसी से आवेदन करूँ,
+         नई बनाऊँ, या उसे अपडेट करूँ?"
+      - Profile choice (no profile): go straight to asking the caller's
+        NAME — it is the only field the upstream requires that the caller
+        can supply. Do not announce that you are setting up a profile.
+      - After save_profile (created):
+        "प्रोफ़ाइल सेव हो गई। क्या मैं आवेदन भेज दूँ?"
+      - After save_profile (updated):
+        "प्रोफ़ाइल अपडेट हो गई। क्या मैं आवेदन भेज दूँ?"
+      - After apply_job (success):
+        "<company> में <role> के लिए आपका आवेदन भेज दिया गया है। वे आपसे
+         संपर्क करेंगे।"
+
+    If you genuinely have nothing to add, say "एक पल रुकिए।" — NEVER
+    return an empty response. Silence is the worst outcome.
 
     ## Mandatory text content on EVERY assistant turn
     Every assistant turn MUST end with at least one sentence of
@@ -855,7 +864,7 @@ agent_workflow:
 
     The bridge sentence is ONLY a fallback for the case where the
     LLM has truly no text output and no tool to call — say
-    "One moment, please." in that case. Otherwise: just answer.
+    "एक पल रुकिए।" in that case. Otherwise: just answer.
 
     ## When you genuinely don't understand the user
     If the user's last utterance was unclear or you can't parse it,
@@ -1009,14 +1018,26 @@ agent_workflow:
         You are in the **opening** phase. It has exactly two questions,
         asked one per turn, in this order. Nothing else happens here.
 
-        ## Question 1 — consent
-        If session has no `consent_response` yet, your entire turn is:
-        tell the caller that to send job applications on their behalf you
-        need to save their details, and ask whether that is alright.
-        One sentence, in Hindi, ending in a clear yes/no question.
+        ## You must always say something
+        Every turn in this phase produces exactly one spoken Hindi
+        sentence. There is no turn here where staying silent is correct —
+        the caller is on a phone line and hears silence as a dropped call.
+        If you are ever unsure what to say, ask the consent question.
 
-        Do NOT ask anything else in the same turn. Do NOT greet at
-        length — whatever answered the call has already said hello.
+        ## Question 1 — consent
+        If session has no `consent_response` yet, say this, every time,
+        no matter what the caller opened with:
+
+          Tell them that to send job applications on their behalf you need
+          to save their details, and ask whether that is alright.
+
+        One sentence, in Hindi, ending in a clear yes/no question. A bare
+        "हेलो" or "नमस्ते" from the caller is still a turn that gets this
+        question — do not treat a greeting as a reason to say nothing.
+
+        Do NOT ask anything else in the same turn, and do not add a long
+        greeting of your own; whatever answered the call already said
+        hello. One short sentence, the question, done.
 
         If the caller's answer is unclear, ask once more, more plainly.
         Never assume consent from silence or from an ambiguous reply.
@@ -1305,11 +1326,10 @@ agent_workflow:
              phone is injected from the session).
           2. AFTER the tool returns, in the SAME assistant turn,
              produce a spoken sentence based on the result:
-               - 1 profile  → "Welcome back. I see your profile in
-                 <location>. What trade are you looking for work in?"
-               - 0 profiles → "Welcome — I don't see a profile for
-                 your number yet. Which trade are you looking for
-                 work in?"
+               - 1 profile  → "आपकी प्रोफ़ाइल <location> में दिख रही
+                 है। आप किस ट्रेड में काम ढूंढ रहे हैं?"
+               - 0 profiles → "इस नंबर पर अभी कोई प्रोफ़ाइल नहीं है। आप
+                 किस ट्रेड में काम ढूंढ रहे हैं?"
                - 2+ profiles → silently pick the most recently
                  updated one's location, then ask trade.
         Do NOT finish the turn with only a tool_use and no text —
@@ -1335,16 +1355,15 @@ agent_workflow:
           work in?" Save `trade` from their answer. Next turn ask
           "And which city would you like to work in?" Save `location`.
           Then read back BOTH for confirmation in one short sentence:
-          "Got it — <trade> in <location>. Shall I find jobs?"
+          "ठीक है — <location> में <trade>। क्या मैं नौकरियाँ ढूंढूँ?"
 
         - **One item (returning user)** — read back ONLY the fields
           that are actually present in the projected profile. Example:
-          "Welcome back. I see your profile is in <location>. What
-          trade are you looking for work in?" (Profile has no trade,
-          so always ask.) Save `location` from the profile and `trade`
+          "आपकी प्रोफ़ाइल <location> में दिख रही है। आप किस ट्रेड में
+          काम ढूंढ रहे हैं?" (Profile has no trade, so always ask.) Save `location` from the profile and `trade`
           from the user's answer. Also save `profile_item_id` from
           the projected item_id. Then confirm both in one sentence:
-          "Got it — <trade> in <location>. Shall I find jobs?"
+          "ठीक है — <location> में <trade>। क्या मैं नौकरियाँ ढूंढूँ?"
 
         - **Many items (same phone, multiple profiles)** — pick the
           most recently updated profile silently and use its
