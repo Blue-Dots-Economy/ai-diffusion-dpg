@@ -52,7 +52,12 @@ reach_layer:
       # GH-137-style: spoken/written just before the caller's client closes
       # the call. The shim never ends the call itself, so this word is the
       # only signal the caller gets that the conversation is finished.
-      terminal_word: "Thank you"
+      #
+      # Hindi, because it is emitted VERBATIM — the bridge appends it to the
+      # stream on session end without any translation step. On the 24 Sep
+      # PoC calls it was the English "Thank you", spoken to Hindi callers at
+      # the end of every terminated turn.
+      terminal_word: "धन्यवाद"
 
     voice:
       # English / Hindi / Gujarati. VAD tuned for English (shorter
@@ -72,13 +77,16 @@ reach_layer:
         fallback_phrase: "Sorry, I didn't catch that. Could you say it again?"
         # GH-152: brief acknowledgement spoken when the caller barges
         # in mid-response. TTS already flushed by the time this plays.
-        barge_in_acknowledgement: "One second."
+        # Spoken verbatim on barge-in — Hindi.
+        barge_in_acknowledgement: "एक सेकंड।"
       # GH-242: short filler if the first SentenceEvent hasn't reached
       # TTS within filler_threshold_ms of submit_input completing.
       filler_threshold_ms: 1500
-      filler_phrase: "One second"
+      # Spoken verbatim by TTS while a tool runs — Hindi, same reason.
+      filler_phrase: "एक सेकंड"
       # GH-137: spoken just before WebSocket close on bot-initiated hangup.
-      terminal_word: "Thank you"
+      # Emitted verbatim — Hindi.
+      terminal_word: "धन्यवाद"
       recording:
         source: pipeline
         consent_purpose: storage    # piggy-backs on the storage consent grant.

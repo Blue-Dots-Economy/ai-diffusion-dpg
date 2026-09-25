@@ -271,6 +271,22 @@ tools:
             highestQualificationOrSkill: "{qualification}"
             natureOfJobsInterestedIn: "{job_nature}"
             otherHelpNeeded: "{help_needed}"
+        # `required: true` here is not documentation — it becomes the
+        # `required` list of the JSON Schema handed to the LLM, which the
+        # provider's function-calling validation enforces. Anything marked
+        # required is a field the model MUST extract before it can call the
+        # tool, which in practice means a question asked on the call.
+        #
+        # The live upstream schema
+        # (GET /api/v1/network/schema/blue_dot/seeker/profile_1.0) requires
+        # only ["name", "phone"]. gender, location, age and work_experience
+        # are optional. Marking them required here cost the caller four
+        # extra questions — three of them closed English enums over a phone
+        # line — and was the direct cause of the profile-question loop seen
+        # on the 24 Sep PoC calls.
+        #
+        # Only `name` is required now. phone is injected from the session,
+        # not asked. Everything else is sent when known and skipped when not.
         params:
           - name: name
             source: agent
@@ -280,30 +296,38 @@ tools:
           - name: gender
             source: agent
             type: string
-            required: true
+            required: false
             description: >
-              Gender. The upstream enum is CASE-SENSITIVE — send exactly one
-              of "Male", "Female", "Other", "Don't want to share". Capitalise
-              it: "male" is rejected with 400, and the caller will almost
-              always say it in lower case.
+              Optional. Only send it if the caller volunteered it — do NOT
+              ask. The upstream enum is CASE-SENSITIVE: send exactly one of
+              "Male", "Female", "Other", "Don't want to share". Capitalise
+              it; "male" is rejected with 400.
           - name: location
             source: agent
             type: string
-            required: true
-            description: "City the caller is in / wants to work."
+            required: false
+            description: >
+              Optional for the upstream, but usually already known —
+              profile_resolve captures the city the caller wants to work in.
+              Send it when you have it; never hold up the save to ask.
           - name: age
             source: agent
             type: integer
-            required: true
-            description: "Caller's age in years."
+            required: false
+            description: >
+              Caller's age in years. Optional in the item schema, but the
+              participant endpoint returns 400 AGE_REQUIRED when consent is
+              sent without an age on file, so ALWAYS send it — the opening
+              subagent collects it before the journey starts, so it is in
+              session by the time this is called. Never ask for it again.
           - name: work_experience
             source: agent
             type: string
-            required: true
+            required: false
             description: >
-              Must be EXACTLY one of: "Fresher", "Worked before",
-              "Returning after a break". Map the caller's words to the
-              closest enum value.
+              Optional. Only send it if the caller volunteered it — do NOT
+              ask. Must be EXACTLY one of: "Fresher", "Worked before",
+              "Returning after a break".
           - name: profile_item_id
             source: agent
             type: string
