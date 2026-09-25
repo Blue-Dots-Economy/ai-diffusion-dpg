@@ -1,7 +1,7 @@
 # dev-kit/configs/blue-dots/trust_layer.yaml
 # Blue Dots — Trust Layer domain config.
 # Mirrors KKB's job-domain policy pack. Differences from KKB:
-#   - English consent / refusal / holding messages.
+#   - Caller-facing refusal / blocked / holding messages in Hindi (see below).
 #   - Gujarati consent + decline phrases added on top of KKB's
 #     Hindi / Romanised sets.
 #   - Output-blocked phrases keep the English subset and drop the
@@ -9,6 +9,15 @@
 
 trust:
   policy_pack: "blue_dots_advisory_jobs"
+
+  # NOTE on language. Two different kinds of string live in this file:
+  #   - prompt_constraints and required_disclosures are INSTRUCTIONS injected
+  #     into the agent's system prompt. The agent renders them in the
+  #     conversation language in its own words, so they stay in English for
+  #     the people maintaining this config.
+  #   - blocked_input_message, output_blocked_message, refusal_template and
+  #     hitl.holding_message are returned to Agent Core and spoken to the
+  #     caller VERBATIM. Those are Hindi.
 
   input_rules:
     blocked_phrases:
@@ -27,14 +36,17 @@ trust:
       - "police case"
       - "FIR"
       - "jail"
-    blocked_input_message: "I'm sorry, I can't help with that topic."
+    # Caller-facing strings below are returned to Agent Core and spoken to
+    # the caller VERBATIM — no LLM, no translation step. Hindi, like every
+    # other verbatim string in this domain.
+    blocked_input_message: "माफ़ कीजिए, मैं इस विषय में मदद नहीं कर सकता।"
 
   output_rules:
     blocked_phrases:
       - "guaranteed placement"
       - "100% job guarantee"
       - "as an AI, I"
-    output_blocked_message: "Sorry, I'm having trouble responding right now. Could you ask that again?"
+    output_blocked_message: "माफ़ कीजिए, जवाब देने में अभी दिक्कत आ रही है। क्या आप दोबारा पूछ सकते हैं?"
 
   policy_packs:
     # severity and failure_mode declare operator intent. Differential
@@ -50,7 +62,7 @@ trust:
             - "MUST frame all opportunities as possibilities, not certainties"
           required_disclosures:
             - "Hiring decisions rest with the employer"
-          refusal_template: "I can't guarantee any specific job outcome."
+          refusal_template: "मैं किसी नौकरी के मिलने की गारंटी नहीं दे सकता।"
 
         hallucinated_reality:
           severity: "blocker"
@@ -60,7 +72,7 @@ trust:
             - "MUST only reference verified signals available in context"
           required_disclosures:
             - "Information is based only on verified data"
-          refusal_template: "I don't have verified data on that yet."
+          refusal_template: "इसके बारे में मेरे पास अभी पुष्ट जानकारी नहीं है।"
 
         emotional_overreach:
           severity: "warning"
@@ -147,8 +159,8 @@ trust:
   hitl:
     queue_backend: "log"
     holding_message: >
-      I'm connecting you with an advisor — someone will call you back
-      within twenty four hours.
+      मैं आपको एक सलाहकार से जोड़ रहा हूँ — कोई चौबीस घंटे के अंदर आपको
+      वापस कॉल करेगा।
     # notification_webhook backend tracked in GH-36.
     notification_webhook: null
 

@@ -1116,7 +1116,7 @@ agent_workflow:
             - field: consent_response
               operator: eq
               value: "declined"
-          next_subagent_id: ended
+          next_subagent_id: consent_declined
           session_writes:
             user_storage_mode: "anonymous"
             consent_given: false
@@ -1128,7 +1128,7 @@ agent_workflow:
             - field: consent_given
               operator: not_eq
               value: true
-          next_subagent_id: ended
+          next_subagent_id: consent_declined
           session_writes:
             user_storage_mode: "anonymous"
             consent_given: false
@@ -1193,7 +1193,42 @@ agent_workflow:
           next_subagent_id: opening
 
     # ─────────────────────────────────────────────────────────────
-    # 1b. u18_blocked — terminal. A minor cannot be onboarded by voice.
+    # 1b. consent_declined — terminal. No consent, no journey.
+    #
+    # Its own subagent rather than a route to `ended`, so the caller hears
+    # WHY the call is ending. `ended` says a generic goodbye, which after a
+    # refusal reads as the line simply dropping. Symmetric with u18_blocked.
+    # ─────────────────────────────────────────────────────────────
+    - id: consent_declined
+      name: Consent Declined
+      description: >
+        Terminal. Reached when the caller refuses permission to save their
+        details. Acknowledges the refusal without pressure, states that no
+        information has been saved and that applications cannot be sent
+        without consent, and closes.
+      is_start: false
+      is_terminal: true
+      opening_phrase: >
+        कोई बात नहीं। आपकी कोई जानकारी सेव नहीं की गई है। आपकी सहमति के
+        बिना मैं आपकी ओर से नौकरी के आवेदन नहीं भेज सकता। फ़ोन करने के लिए
+        धन्यवाद।
+      special_handler: null
+      valid_intents: []
+      tools: []
+      system_prompt: |
+        The caller has refused permission to save their details.
+
+        Say, warmly and in one or two Hindi sentences: that is completely
+        fine, nothing has been saved, and without that permission
+        applications cannot be sent on their behalf. Thank them for
+        calling. Then stop.
+
+        Do NOT argue, do NOT re-ask for consent, do NOT offer a way around
+        it, and do NOT collect any other detail. Do NOT call any tool.
+      routing: []
+
+    # ─────────────────────────────────────────────────────────────
+    # 1c. u18_blocked — terminal. A minor cannot be onboarded by voice.
     #
     # Mirrors the upstream's own rule rather than duplicating policy:
     # POST /api/v1/admin/participant rejects any caller under 18 with
