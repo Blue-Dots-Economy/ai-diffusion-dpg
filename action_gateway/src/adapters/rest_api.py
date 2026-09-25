@@ -427,6 +427,7 @@ class RestApiAdapter(ToolAdapter):
         params: dict,
         session_id: str,
         user_id: str = "",
+        session_values: dict | None = None,
     ) -> ToolResult:
         """Execute the configured REST endpoint and return a normalised result.
 
@@ -454,6 +455,14 @@ class RestApiAdapter(ToolAdapter):
             session_id: Session identifier for log correlation and path
                 templating; may be empty.
             user_id: Stable user identifier for path templating; may be empty.
+            session_values: Turn state from Agent Core, used to fill params
+                declared ``source: session``. Those params are never shown to
+                the LLM (only ``source: agent`` reaches the input schema), so
+                a value the framework already knows — the caller's age, say —
+                is taken from state instead of being re-supplied by the model.
+                A model asked to always send a field it cannot see will invent
+                one: ``age`` came through as ``0``, which the participant API
+                rejects as under-18.
 
         Returns:
             ToolResult with success=True and populated result/result_text on
@@ -480,12 +489,26 @@ class RestApiAdapter(ToolAdapter):
         # and so httpx doesn't strip the path's existing query string.
         path_consumed = _path_placeholders(raw_path) & set(input_params.keys())
 
-        # Merge agent params with static params (full dict; body_template
-        # still sees everything, including path-consumed names).
+        # Merge agent params with session- and static-sourced params (full
+        # dict; body_template still sees everything, including path-consumed
+        # names).
+        #
+        # Precedence for a ``source: session`` param is session-first, with
+        # the LLM's value as the fallback: the framework's own state is more
+        # trustworthy than a value the model reconstructed, but a value the
+        # caller supplied this very turn may not have reached state yet.
+        # Empty / None session values never win — that would blank a field
+        # the model did fill.
+        state: dict = dict(session_values or {})
         all_params: dict = dict(input_params)
         for p in endpoint.get("params", []):
-            if p.get("source") == "static":
+            src = p.get("source")
+            if src == "static":
                 all_params[p["name"]] = p.get("value")
+            elif src == "session":
+                val = state.get(p["name"])
+                if val not in (None, "", []):
+                    all_params[p["name"]] = val
 
         # Build auth headers
         headers: dict = {}

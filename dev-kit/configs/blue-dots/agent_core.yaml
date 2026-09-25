@@ -1786,14 +1786,20 @@ agent_workflow:
           • name MISSING  → ask for the name, and nothing else.
                             Then STOP.
 
+        ## age is NOT yours to send
+
+        `age` is not a parameter of save_profile as you see it, and you
+        must never try to supply one. The framework fills it from the
+        answer the caller gave in the opening phase. If you ever find
+        yourself about to send an age — especially a placeholder like 0 —
+        stop: 0 is read upstream as a real age and rejected as under-18,
+        which makes the agent tell an adult caller they are a minor.
+
         ## Fields to SEND but never ASK for
 
         Include each of these in the save_profile call when you already
         have it, silently:
 
-          age              From the opening subagent — ALWAYS present, and
-                           the upstream returns 400 AGE_REQUIRED without
-                           it when consent is sent. Never re-ask.
           location         Usually captured by profile_resolve as the city
                            the caller wants to work in.
           trade            Also from profile_resolve.
@@ -1842,8 +1848,8 @@ agent_workflow:
 
         ## save_profile body — create_new
         With name KNOWN, call save_profile with:
-          - name (required), plus age and any other optional field
-            listed above that you already have
+          - name (required), plus any other optional field listed above
+            that you already have. Not age — the framework supplies it.
           - profile_item_id: OMIT (this is a CREATE)
 
         ## save_profile body — update_existing

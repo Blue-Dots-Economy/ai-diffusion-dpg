@@ -1021,8 +1021,13 @@ class ToolParamDef(BaseModel):
     """Definition of a single parameter for a REST API tool endpoint."""
 
     name: str = Field(..., description="Parameter name")
-    source: Literal["agent", "static"] = Field(
-        ..., description="'agent' = LLM fills this at call time; 'static' = fixed value"
+    source: Literal["agent", "static", "session"] = Field(
+        ...,
+        description=(
+            "'agent' = LLM fills this at call time; 'static' = fixed value; "
+            "'session' = Agent Core supplies it from turn state and the LLM "
+            "never sees the parameter"
+        ),
     )
     type: Literal["string", "integer", "boolean", "array"] = Field(default="string", description="JSON type")
     required: bool = Field(default=False, description="Whether the agent must provide this param")
