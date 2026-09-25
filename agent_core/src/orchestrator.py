@@ -1475,8 +1475,22 @@ class AgentCore(AgentCoreBase):
         """
         values: dict = {}
         for src in (getattr(bundle, "session", None), getattr(bundle, "profile", None)):
-            if isinstance(src, dict):
-                values.update({k: v for k, v in src.items() if k != "attributes"})
+            if not isinstance(src, dict):
+                continue
+            for key, val in src.items():
+                if key == "attributes":
+                    continue
+                # A seeded default is not an answer. Session state pre-seeds
+                # every profile field — strings as "" and the one integer
+                # field, age, as 0 — so a falsy value here means "the caller
+                # never told us", not "the caller said zero". Letting 0
+                # through would send it as a real age and be rejected as
+                # under-18. Same reasoning as manager_agent._is_collected,
+                # which keeps a seeded 0 out of the prompt's
+                # "already collected" block.
+                if val in (None, "", [], 0, "0"):
+                    continue
+                values[key] = val
         return values
 
     def _evaluate_condition(self, condition: RoutingCondition, session: dict) -> bool:

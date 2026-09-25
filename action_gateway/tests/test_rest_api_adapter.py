@@ -1415,6 +1415,48 @@ class TestRestApiAdapterSessionSourcedParams:
         assert "age" not in self._body(mock_client)
 
     @pytest.mark.asyncio
+    async def test_string_state_value_is_cast_to_the_declared_type(self, rest_save_config):
+        """Memory Layer stores NLU entities as strings; the API wants an int.
+
+        The second half of the age bug. With age sourced from state, `"27"`
+        reached the participant endpoint as a JSON string and was rejected:
+        400 INVALID_ITEM_STATE "Invalid item_state: must be integer".
+        """
+        from unittest.mock import AsyncMock, patch
+        from src.adapters.rest_api import RestApiAdapter
+
+        adapter = RestApiAdapter(rest_save_config)
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=make_mock_response(200, {"ok": True}))
+            await adapter.execute(
+                "save_profile", {"name": "Rahul"}, "sess-1", "919876543210",
+                session_values={"age": "27"},          # a STRING, as state holds it
+            )
+
+        sent = self._body(mock_client)["age"]
+        assert sent == 27 and isinstance(sent, int), f"sent {sent!r} ({type(sent).__name__})"
+
+    @pytest.mark.asyncio
+    async def test_uncastable_state_value_is_omitted_not_sent(self, rest_save_config):
+        """A value that cannot be cast is dropped, not passed through.
+
+        An absent field produces a clear upstream error; a wrong-typed one
+        produces a confusing one.
+        """
+        from unittest.mock import AsyncMock, patch
+        from src.adapters.rest_api import RestApiAdapter
+
+        adapter = RestApiAdapter(rest_save_config)
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=make_mock_response(200, {"ok": True}))
+            await adapter.execute(
+                "save_profile", {"name": "Rahul"}, "sess-1", "919876543210",
+                session_values={"age": "बाईस"},        # words, not digits
+            )
+
+        assert "age" not in self._body(mock_client)
+
+    @pytest.mark.asyncio
     async def test_session_params_are_hidden_from_the_llm_schema(self, rest_save_config):
         """Only ``source: agent`` params reach the tool schema.
 
