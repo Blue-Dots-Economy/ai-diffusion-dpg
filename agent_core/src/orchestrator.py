@@ -1226,6 +1226,10 @@ class AgentCore(AgentCoreBase):
             # string. stream_turn already forwarded it; this brings the two
             # paths in line.
             user_id=user_id,
+            # Same reasoning, for connector params declared ``source: session``:
+            # the framework supplies what it already knows rather than asking
+            # the model to reproduce it.
+            session_values=self._tool_session_values(bundle),
         )
 
         # #193: persist this turn's tool exchanges so the next turn can
@@ -1447,6 +1451,33 @@ class AgentCore(AgentCoreBase):
 
         # Pass 3: fallback
         return self._workflow.default_fallback_subagent_id, None
+
+    @staticmethod
+    def _tool_session_values(bundle) -> dict:
+        """Build the state lookup handed to the Action Gateway for a tool call.
+
+        Connector params declared ``source: session`` resolve from this instead
+        of from the LLM. Profile is layered over session for the same key,
+        matching how ``routing_state`` is built: the profile holds values the
+        caller actually gave, while the session carries seeded defaults under
+        the same names.
+
+        That ordering is the whole point. ``age`` is seeded into session as the
+        integer ``0`` and the caller's real age lands in the profile. Reading
+        session first would send ``0``, which the participant API rejects as
+        ``U18_NOT_ALLOWED`` — making the agent tell an adult they are a minor.
+
+        Args:
+            bundle: The turn's ContextBundle.
+
+        Returns:
+            Flat dict of state values; empty when the bundle carries none.
+        """
+        values: dict = {}
+        for src in (getattr(bundle, "session", None), getattr(bundle, "profile", None)):
+            if isinstance(src, dict):
+                values.update({k: v for k, v in src.items() if k != "attributes"})
+        return values
 
     def _evaluate_condition(self, condition: RoutingCondition, session: dict) -> bool:
         """
@@ -3559,39 +3590,74 @@ class AgentCore(AgentCoreBase):
                     tools=_legacy_tools_to_neutral(active_tools) if active_tools else [],
                     max_tokens=channel_max_tokens or 4096,
                 )
-                async for token in self._llm.stream(request, abort_event=abort_event):
-                    if _aborted():
-                        return
-                    token_buffer += token
-                    sentences, token_buffer = _split_sentences(token_buffer)
-                    # Stop accepting new sentences once a batch was blocked —
-                    # subsequent sentences in this turn must NOT reach TTS.
-                    if _trust_batcher.was_escalated:
-                        was_escalated = True
-                        continue
-                    pending_emit: list[str] = []
-                    for sentence in sentences:
-                        released = await _trust_batcher.add(sentence)
-                        if released:
-                            pending_emit.extend(released)
-                            yield _stamp(SignalEvent(stage="trust_output", status="complete"))
-                            yield _stamp(SignalEvent(stage="trust_output", status="start"))
-                    # Time-based flush even if no new sentence triggered size.
-                    timed = await _trust_batcher.maybe_flush_on_tick()
-                    if timed:
-                        pending_emit.extend(timed)
-                    if _trust_batcher.was_escalated:
-                        was_escalated = True
-                    for emit in pending_emit:
+                # GH-244: the model sometimes returns a COMPLETELY empty
+                # completion — no text, no tool call — and the caller hears
+                # silence, which on a phone line is indistinguishable from a
+                # dropped call. One retry, and only when nothing has reached
+                # the caller yet.
+                #
+                # The loop below emits each sentence as it is parsed, so a
+                # PARTIAL response must never be re-requested — that would
+                # speak the first half twice. The guard therefore requires
+                # all three to be empty: no sentence emitted, no
+                # un-terminated text still buffered, and no accumulated
+                # response. A tool call leaves via ToolUseRequested and never
+                # reaches the check.
+                for _empty_attempt in range(2):
+                    async for token in self._llm.stream(request, abort_event=abort_event):
                         if _aborted():
                             return
-                        full_response_text += emit + " "
-                        yield _stamp(SentenceEvent(text=emit, sentence_index=sentence_index))
-                        sentence_index += 1
+                        token_buffer += token
+                        sentences, token_buffer = _split_sentences(token_buffer)
+                        # Stop accepting new sentences once a batch was blocked —
+                        # subsequent sentences in this turn must NOT reach TTS.
                         if _trust_batcher.was_escalated:
-                            # Drop everything queued after the blocked batch.
-                            break
+                            was_escalated = True
+                            continue
+                        pending_emit: list[str] = []
+                        for sentence in sentences:
+                            released = await _trust_batcher.add(sentence)
+                            if released:
+                                pending_emit.extend(released)
+                                yield _stamp(SignalEvent(stage="trust_output", status="complete"))
+                                yield _stamp(SignalEvent(stage="trust_output", status="start"))
+                        # Time-based flush even if no new sentence triggered size.
+                        timed = await _trust_batcher.maybe_flush_on_tick()
+                        if timed:
+                            pending_emit.extend(timed)
+                        if _trust_batcher.was_escalated:
+                            was_escalated = True
+                        for emit in pending_emit:
+                            if _aborted():
+                                return
+                            full_response_text += emit + " "
+                            yield _stamp(SentenceEvent(text=emit, sentence_index=sentence_index))
+                            sentence_index += 1
+                            if _trust_batcher.was_escalated:
+                                # Drop everything queued after the blocked batch.
+                                break
 
+                    # Anything the model produced counts, whether or not the
+                    # caller has heard it yet — including sentences still
+                    # buffered in the trust batcher, which on a short turn is
+                    # the whole response (it flushes at turn end, not during
+                    # the stream).
+                    if (sentence_index
+                            or token_buffer.strip()
+                            or full_response_text.strip()
+                            or _trust_batcher.has_pending):
+                        break
+                    if _empty_attempt == 0:
+                        logger.warning(
+                            "orchestrator.stream_empty_completion_retry",
+                            extra={
+                                "operation": "orchestrator.stream_turn",
+                                "status": "degraded",
+                                "session_id": session_id,
+                                "subagent_id": current_subagent_id,
+                                "model": self._llm.get_active_model(),
+                            },
+                        )
                 model_used = self._llm.get_active_model()
                 logger.info(
                     "  [STEP 8] LLM Stream Call #1  ✓  model_used=%s"
@@ -3667,7 +3733,10 @@ class AgentCore(AgentCoreBase):
                             tc, _ke_context,
                         )
                     elif self._async_gateway:
-                        tool_result = await self._async_gateway.execute(tc, session_id, user_id)
+                        tool_result = await self._async_gateway.execute(
+                            tc, session_id, user_id,
+                            session_values=self._tool_session_values(bundle),
+                        )
                     else:
                         # Fallback: no async gateway — cannot execute tools in streaming mode
                         logger.error(
@@ -3823,7 +3892,10 @@ class AgentCore(AgentCoreBase):
                                     tc, _ke_context,
                                 )
                             elif self._async_gateway:
-                                tool_result = await self._async_gateway.execute(tc, session_id, user_id)
+                                tool_result = await self._async_gateway.execute(
+                            tc, session_id, user_id,
+                            session_values=self._tool_session_values(bundle),
+                        )
                             else:
                                 break
                             _nested_results.append({
@@ -4174,6 +4246,17 @@ class _TrustOutputBatcher:
         self._batch_start: float | None = None
         self.was_escalated: bool = False
         self.batch_count: int = 0
+
+    @property
+    def has_pending(self) -> bool:
+        """True while sentences are buffered awaiting a Trust /check/output.
+
+        The empty-completion retry in ``stream_turn`` asks whether anything
+        the model produced is still in flight. Sentences held here have not
+        reached the caller yet, but they exist — retrying would produce them
+        a second time.
+        """
+        return bool(self._buffer)
 
     def _should_flush(self) -> bool:
         """Return True iff size or time threshold has been crossed."""

@@ -61,7 +61,7 @@ def test_http_method_values():
     assert {m.value for m in HttpMethod} == {"GET", "POST", "PUT", "DELETE", "PATCH"}
 
 def test_param_source_values():
-    assert {s.value for s in ParamSource} == {"agent", "static"}
+    assert {s.value for s in ParamSource} == {"agent", "static", "session"}
 
 def test_param_type_values():
     assert {p.value for p in ParamType} == {

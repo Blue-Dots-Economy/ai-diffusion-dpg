@@ -310,16 +310,28 @@ tools:
               Optional for the upstream, but usually already known —
               profile_resolve captures the city the caller wants to work in.
               Send it when you have it; never hold up the save to ask.
+          # source: session, NOT agent. The LLM does not see this parameter
+          # and cannot supply it; Agent Core fills it from turn state.
+          #
+          # It used to be an agent param described as "always send it". The
+          # model cannot always see it — the value lives in profile state,
+          # not in the conversation — and a model told to always send a field
+          # it cannot see invents one. It sent 0, and the participant endpoint
+          # reads 0 as a real age: 400 U18_NOT_ALLOWED, which the agent then
+          # relayed to adult callers as "you are under eighteen". Measured on
+          # 2026-09-25: age=0 -> U18_NOT_ALLOWED, age omitted -> AGE_REQUIRED,
+          # age=26 -> 200.
+          #
+          # Sourced from state, a missing age now omits the field and yields
+          # AGE_REQUIRED — an honest error instead of a false accusation.
           - name: age
-            source: agent
+            source: session
             type: integer
             required: false
             description: >
-              Caller's age in years. Optional in the item schema, but the
-              participant endpoint returns 400 AGE_REQUIRED when consent is
-              sent without an age on file, so ALWAYS send it — the opening
-              subagent collects it before the journey starts, so it is in
-              session by the time this is called. Never ask for it again.
+              Caller's age in years, supplied by the framework from turn
+              state. The opening subagent collects it before the journey
+              starts. Not visible to the model.
           - name: work_experience
             source: agent
             type: string

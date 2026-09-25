@@ -18,6 +18,7 @@ class ActionGatewayBase(ABC):
         tool_call: ToolCall,
         session_id: str,
         user_id: str = "",
+        session_values: dict | None = None,
     ) -> ToolResult:
         """
         Execute a single tool call against the appropriate external connector.

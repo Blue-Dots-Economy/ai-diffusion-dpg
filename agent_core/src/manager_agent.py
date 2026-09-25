@@ -123,6 +123,7 @@ class ManagerAgent:
         active_tools: list[dict] | None = None,
         ke_context: dict | None = None,
         user_id: str = "",
+        session_values: dict | None = None,
     ) -> tuple[str, list[ToolCall], list[ToolResult]]:
         """
         Drive the tool-use loop starting from the initial LLM response.
@@ -165,7 +166,7 @@ class ManagerAgent:
             raise ValueError("initial_response must not be None")
 
         # GH-137: Reset per-turn flags before driving the tool loop.
-        self._reset_turn_flags()
+        self._reset_turn_flags(session_values)
 
         current_response = initial_response
         all_tool_calls: list[ToolCall] = []
@@ -321,9 +322,17 @@ class ManagerAgent:
         """
         return self._session_ended_flag
 
-    def _reset_turn_flags(self) -> None:
-        """Clear per-turn flags at the top of each ``run_turn`` invocation."""
+    def _reset_turn_flags(self, session_values: dict | None = None) -> None:
+        """Clear per-turn flags at the top of each ``run_turn`` invocation.
+
+        Args:
+            session_values: Turn state handed to the Action Gateway so
+                connector params declared ``source: session`` resolve from
+                what the framework knows rather than from what the model can
+                reproduce. Replaced every turn; defaults to empty.
+        """
         self._session_ended_flag = False
+        self._session_values: dict = dict(session_values or {})
 
     # ------------------------------------------------------------------
     # Prompt assembly helpers
@@ -645,7 +654,10 @@ class ManagerAgent:
                 )
 
         start = time.time()
-        result = self._gateway.execute(tool_call, session_id, user_id)
+        result = self._gateway.execute(
+            tool_call, session_id, user_id,
+            session_values=getattr(self, "_session_values", {}),
+        )
         logger.info(
             "manager_agent.tool_executed",
             extra={
