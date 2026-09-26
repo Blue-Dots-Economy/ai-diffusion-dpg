@@ -57,6 +57,7 @@ class ParamSource(str, Enum):
 
     agent = "agent"
     static = "static"
+    session = "session"
 
 
 class ParamType(str, Enum):
@@ -133,7 +134,12 @@ class ParamDefinition(BaseModel):
         name: Parameter name as sent to the API and as declared in the
             tool schema shown to the LLM.
         source: ``agent`` means the LLM provides the value at call time;
-            ``static`` means the value is baked into the config.
+            ``static`` means the value is baked into the config;
+            ``session`` means Agent Core supplies it from turn state, and
+            the LLM never sees the parameter at all. Use ``session`` for
+            anything the framework already knows — a model told to always
+            send a field it cannot see will invent a value rather than
+            omit it.
         type: JSON-schema type hint shown to the LLM.
         required: Whether the LLM must supply a value. Only meaningful
             when ``source=agent``.

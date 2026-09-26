@@ -110,6 +110,44 @@ def _get_nested(d, path: str):
     return current
 
 
+def _coerce_to_declared_type(value, declared: str):
+    """Cast a session-sourced value to the type its param declares.
+
+    Agent params arrive as JSON from the model, already the right type
+    because the tool schema told it so. Session-sourced values come from
+    Memory Layer, which stores NLU entity values as STRINGS — so an ``age``
+    of 27 arrives as ``"27"``.
+
+    That distinction is not cosmetic. ``_render_body_template`` preserves the
+    type of a sole ``"{placeholder}"``, so a string reaches the upstream as a
+    string, and the participant API rejects it:
+    ``400 INVALID_ITEM_STATE "Invalid item_state: must be integer"``.
+
+    Args:
+        value: The raw value from turn state.
+        declared: The param's ``type`` from config.
+
+    Returns:
+        The value cast to the declared type, or ``None`` when it cannot be
+        cast. Callers omit the param on ``None`` — an absent field yields a
+        clear upstream error, while a wrong-typed one yields a confusing one.
+    """
+    try:
+        if declared == "integer":
+            return int(str(value).strip())
+        if declared == "number":
+            return float(str(value).strip())
+        if declared == "boolean":
+            if isinstance(value, bool):
+                return value
+            return str(value).strip().lower() in ("true", "1", "yes")
+        if declared == "array":
+            return value if isinstance(value, list) else [value]
+        return str(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _render_body_template(template, values: dict):
     """Walk a body template tree, substituting ``{placeholder}`` strings.
 
@@ -427,6 +465,7 @@ class RestApiAdapter(ToolAdapter):
         params: dict,
         session_id: str,
         user_id: str = "",
+        session_values: dict | None = None,
     ) -> ToolResult:
         """Execute the configured REST endpoint and return a normalised result.
 
@@ -454,6 +493,14 @@ class RestApiAdapter(ToolAdapter):
             session_id: Session identifier for log correlation and path
                 templating; may be empty.
             user_id: Stable user identifier for path templating; may be empty.
+            session_values: Turn state from Agent Core, used to fill params
+                declared ``source: session``. Those params are never shown to
+                the LLM (only ``source: agent`` reaches the input schema), so
+                a value the framework already knows — the caller's age, say —
+                is taken from state instead of being re-supplied by the model.
+                A model asked to always send a field it cannot see will invent
+                one: ``age`` came through as ``0``, which the participant API
+                rejects as under-18.
 
         Returns:
             ToolResult with success=True and populated result/result_text on
@@ -480,12 +527,41 @@ class RestApiAdapter(ToolAdapter):
         # and so httpx doesn't strip the path's existing query string.
         path_consumed = _path_placeholders(raw_path) & set(input_params.keys())
 
-        # Merge agent params with static params (full dict; body_template
-        # still sees everything, including path-consumed names).
+        # Merge agent params with session- and static-sourced params (full
+        # dict; body_template still sees everything, including path-consumed
+        # names).
+        #
+        # Precedence for a ``source: session`` param is session-first, with
+        # the LLM's value as the fallback: the framework's own state is more
+        # trustworthy than a value the model reconstructed, but a value the
+        # caller supplied this very turn may not have reached state yet.
+        # Empty / None session values never win — that would blank a field
+        # the model did fill.
+        state: dict = dict(session_values or {})
         all_params: dict = dict(input_params)
         for p in endpoint.get("params", []):
-            if p.get("source") == "static":
+            src = p.get("source")
+            if src == "static":
                 all_params[p["name"]] = p.get("value")
+            elif src == "session":
+                val = state.get(p["name"])
+                if val in (None, "", []):
+                    continue
+                coerced = _coerce_to_declared_type(val, p.get("type", "string"))
+                if coerced is None:
+                    logger.warning(
+                        "session_param_type_mismatch",
+                        extra={
+                            "operation": "RestApiAdapter.execute",
+                            "status": "degraded",
+                            "tool_name": tool_name,
+                            "session_id": session_id,
+                            "param": p["name"],
+                            "declared_type": p.get("type", "string"),
+                        },
+                    )
+                    continue
+                all_params[p["name"]] = coerced
 
         # Build auth headers
         headers: dict = {}

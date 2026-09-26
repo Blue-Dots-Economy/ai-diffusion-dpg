@@ -24,16 +24,24 @@ agent:
   # changing either model.
   primary_model: gpt-4.1-mini-2025-04-14
   fallback_model: gpt-5.4-mini-2026-03-17
-  ask_for_consent: true
-  # No greeting here. Whatever answered the call has already greeted the
-  # caller — the telephony platform speaks its own greeting_message on the
-  # and the web UI shows its own opening line — so "Hello! Welcome to Blue
-  # Dots" lands as a second greeting in a row. Straight to the consent ask.
-  # Written in Hindi, not English, because this string is emitted VERBATIM.
-  # The consent gate short-circuits before the LLM, and _translate_consent_message
-  # is a no-op here: language_preference resolves to "" while
-  # preprocessing.language_normalisation.enabled is false, so nothing
-  # translates it. Whatever is written here is what the caller hears.
+  # OFF, deliberately. This gate intercepts turns 1 and 2 in the
+  # orchestrator, BEFORE the workflow runs — the LLM is never called and no
+  # subagent sees those turns. That made consent impossible to sequence
+  # with anything else, which is why age ended up being collected several
+  # phases later, long after the point where the upstream needs it.
+  #
+  # Consent now lives in the `opening` subagent, as its first question,
+  # immediately followed by age and the under-18 gate. See the subagent
+  # definition in agent_workflow.subagents for the full reasoning.
+  #
+  # Turning this off means user_storage_mode is no longer written by the
+  # orchestrator. The opening subagent's routing rules write it instead,
+  # via session_writes — "saved" on consent, "anonymous" on refusal — so
+  # Memory Layer's DPDP flush behaviour is unchanged.
+  ask_for_consent: false
+  # Retained for reference and for any deployment that turns the gate back
+  # on. Not read while ask_for_consent is false; the live consent wording
+  # is the `opening` subagent's opening_phrase and system prompt.
   consent_prompt: >
     क्या मैं आपकी प्रोफ़ाइल सेव करके आपकी ओर से नौकरी के आवेदन भेज सकता हूँ?
     जारी रखने के लिए हाँ कहिए।
@@ -300,19 +308,33 @@ channels:
         max_wait_ms: 8000
 
 conversation:
-  blocked_message: "I'm sorry, I can't help with that."
-  escalation_message: "Let me connect you with a counsellor who can help further."
-  output_blocked_message: "Sorry, I'm having trouble responding. Could you ask that again?"
-  unknown_intent_message: "Sorry, I didn't catch that. Could you say it again?"
-  termination_message: "Thank you for using Blue Dots. Have a good day."
+  # EVERY string in this block is spoken to the caller VERBATIM — the
+  # orchestrator emits them without an LLM call, so whatever language they
+  # are written in is the language the caller hears.
+  #
+  # They pass through _translate_consent_message (orchestrator.py:2540),
+  # which looks like it would translate them but does not: its first guard
+  # returns the message unchanged when the detected language is empty, and
+  # detection is off in this deployment (preprocessing.language_normalisation
+  # .enabled: false), so every turn resolves to "". Measured on the 24 Sep
+  # PoC calls: termination_message alone was spoken in English 38 times.
+  #
+  # So these are written in Hindi, to match the rest of the domain. If
+  # language detection is ever turned on, translation starts working and
+  # these become the Hindi source text rather than the final output.
+  blocked_message: "माफ़ कीजिए, मैं इसमें मदद नहीं कर सकता।"
+  escalation_message: "मैं आपको एक काउंसलर से जोड़ता हूँ जो आगे मदद कर सकेंगे।"
+  output_blocked_message: "माफ़ कीजिए, जवाब देने में दिक्कत आ रही है। क्या आप दोबारा पूछ सकते हैं?"
+  unknown_intent_message: "माफ़ कीजिए, मैं ठीक से सुन नहीं पाया। क्या आप दोबारा कह सकते हैं?"
+  termination_message: "ब्लू डॉट्स इस्तेमाल करने के लिए धन्यवाद। आपका दिन शुभ हो।"
   unsupported_language_message: >
-    Sorry, I can only help in English, Hindi, or Gujarati. Could you continue
-    in one of those?
+    माफ़ कीजिए, मैं सिर्फ़ हिंदी, अंग्रेज़ी या गुजराती में मदद कर सकता हूँ।
+    क्या आप इनमें से किसी एक भाषा में बात कर सकते हैं?
   consent_decline_ack: >
-    No problem — we respect your privacy. Your details will not be saved.
-    I'll still help you explore jobs.
-  profile_complete_message: "Thanks — let me look up jobs for you now."
-  returning_user_greeting: "Welcome back! Let me see what's available for you today."
+    कोई बात नहीं — हम आपकी निजता का सम्मान करते हैं। आपकी जानकारी सेव
+    नहीं की जाएगी।
+  profile_complete_message: "धन्यवाद — अब मैं आपके लिए नौकरियाँ देखता हूँ।"
+  returning_user_greeting: "आपका फिर से स्वागत है! देखता हूँ आज आपके लिए क्या उपलब्ध है।"
 
   # GH-139 user mental-state model — disabled for blue-dots; the flow is
   # linear enough not to need state-conditioned prompts.
@@ -325,12 +347,38 @@ conversation:
     enabled: true
     prompt: |
       ## Session-end evaluation
-      When the user clearly signals they want to end this conversation —
-      "thank you", "bye", "that's all", "bas ho gaya", "shukriya", "alvida",
-      "aabhar" — call the `end_session` tool to close the session and save
-      state. Do NOT call end_session while the user is still mid-flow
-      (e.g. picking a job, confirming a profile, waiting for application
-      confirmation).
+      `end_session` hangs up on the caller. Treat it as the last thing you
+      ever do on a call, and only when the caller has plainly asked to go.
+
+      Call it ONLY when BOTH are true:
+        1. The caller has clearly asked to end the call — "रखता हूँ",
+           "बाद में बात करते हैं", "अभी नहीं चाहिए", "bye", "alvida",
+           "that's all", "cut the call" — or has declined to continue and
+           there is nothing left to offer; AND
+        2. There is no question of yours still awaiting an answer.
+
+      NEVER call it because the caller said thank you.
+      "धन्यवाद", "शुक्रिया", "thank you", "ठीक है धन्यवाद" and
+      "आभार" are ordinary politeness in Hindi and are used constantly
+      MID-conversation — after an answer, after a job is read out, after
+      any small thing. On their own they mean "got it", not "goodbye".
+      A caller who says "ठीक है धन्यवाद" and then keeps talking has not
+      ended anything. Treating routine thanks as a hang-up signal was
+      measured on the 24 Sep PoC calls: end_session fired 29 times across
+      15 calls, including 16 times from mid-profile-collection and 18
+      from mid-job-browsing.
+
+      NEVER call it:
+        - in the `opening` phase — consent and age are not a conversation
+          the caller can conclude;
+        - while any question of yours is unanswered;
+        - mid-flow: picking a job, confirming a profile, waiting on an
+          application result;
+        - in the same turn as any other tool call.
+
+      When in doubt, do NOT call it. A call that stays open one turn too
+      long costs the caller a moment. A call cut off mid-sentence costs
+      them the whole journey and they have to redial.
     fail_action: "none"
 
 # Connector descriptions seen by the LLM when picking a tool. The full
@@ -363,12 +411,12 @@ connectors:
           profiles, the user is new and trade + city must be asked
           explicitly.
         on_empty: >
-          I don't see any profile for you yet. Let's set one up — which
-          trade are you looking for work in?
+          अभी आपकी कोई प्रोफ़ाइल नहीं दिख रही। आप किस ट्रेड में काम ढूंढ
+          रहे हैं?
         on_failure: >
-          Sorry, I couldn't reach the profile service. Let me try again
-          in a moment.
-        bridge_line: "One moment — let me check your profile."
+          माफ़ कीजिए, प्रोफ़ाइल सेवा से संपर्क नहीं हो पा रहा। मैं थोड़ी
+          देर में दोबारा कोशिश करता हूँ।
+        bridge_line: "एक पल — मैं आपकी प्रोफ़ाइल देखता हूँ।"
 
     - name: fetch_jobs
       description: >
@@ -397,13 +445,12 @@ connectors:
           Never describe job availability from memory or prior runs.
           Always fetch fresh.
         on_empty: >
-          I don't see any open postings for that trade in that city right
-          now. Would you like me to broaden the search to nearby cities,
-          or try a different trade?
+          अभी उस शहर में उस ट्रेड की कोई नौकरी नहीं दिख रही। क्या मैं पास
+          के शहरों में देखूँ, या किसी और ट्रेड में?
         on_failure: >
-          Sorry, the job listings service is unavailable. Let me try
-          again shortly.
-        bridge_line: "Let me find jobs for you."
+          माफ़ कीजिए, नौकरियों की सेवा अभी उपलब्ध नहीं है। मैं थोड़ी देर
+          में दोबारा कोशिश करता हूँ।
+        bridge_line: "मैं आपके लिए नौकरियाँ देखता हूँ।"
 
   write:
     # list_user_profiles connector removed — replaced by re-calling
@@ -433,22 +480,37 @@ connectors:
           qualification: {type: string}
           job_nature: {type: string}
           help_needed: {type: string}
-        required: ["name", "phone", "gender", "location", "age", "work_experience"]
+        # Mirrors the live upstream schema, fetched from
+        # GET /api/v1/network/schema/blue_dot/seeker/profile_1.0, which
+        # requires exactly ["name", "phone"]. gender, location, age and
+        # work_experience are all optional there.
+        #
+        # This list previously demanded all six, so the bot walked a
+        # five-question gauntlet before it could save anything — 57 of 201
+        # turns on the 24 Sep PoC calls were spent in profile collection and
+        # no application completed. phone comes free from the caller's
+        # number, so the caller is asked exactly one question: their name.
+        #
+        # age is NOT listed here but is still always sent: the participant
+        # endpoint rejects with 400 AGE_REQUIRED when consent is present and
+        # no age is on file, so the opening subagent collects it before the
+        # journey starts and it is in session by the time this fires.
+        required: ["name", "phone"]
         additionalProperties: false
       invocation_rules:
         call_when: >
           User is in the profile_setup subagent AND profile_action
-          in session is "create_new" or "update_existing" AND all
-          required fields (name, phone, gender, location, age,
-          work_experience) are gathered.
-        required_before_calling: [name, phone, gender, location, age, work_experience]
+          in session is "create_new" or "update_existing" AND name is
+          known. Send every other field you already have — do not ask
+          for them, and do not wait for them.
+        required_before_calling: [name, phone]
         must_not_substitute: >
           Never invent profile fields. Each must come from the user
           or from the chosen profile's existing state (for update
           paths).
         on_failure: >
-          Sorry, I couldn't save the profile. Let me try once more.
-        bridge_line: "Setting up your profile now."
+          माफ़ कीजिए, प्रोफ़ाइल सेव नहीं हो पाई। मैं एक बार और कोशिश करता हूँ।
+        bridge_line: "मैं आपकी प्रोफ़ाइल बना रहा हूँ।"
 
     - name: apply_job
       description: >
@@ -481,8 +543,8 @@ connectors:
           Never submit without an explicit yes/confirm in the most
           recent user turn.
         on_failure: >
-          Sorry, I couldn't submit the application. Let me try again.
-        bridge_line: "Submitting your application now."
+          माफ़ कीजिए, आवेदन जमा नहीं हो पाया। मैं दोबारा कोशिश करता हूँ।
+        bridge_line: "मैं आपका आवेदन भेज रहा हूँ।"
 
   internal: []   # No knowledge_retrieval — KE not used in this domain.
 
@@ -564,6 +626,31 @@ preprocessing:
         - work_experience: exactly one of "Fresher" /
           "Worked before" / "Returning after a break"
 
+      ## consent_response — the opening subagent's consent question
+      The call opens by telling the caller we will save their details to
+      apply on their behalf, and asking whether that is alright. When the
+      caller is ANSWERING that question, emit the entity
+      `consent_response` with EXACTLY ONE of two values:
+        - granted  — any form of yes: "हाँ", "हाँ जी", "ठीक है",
+                     "बिल्कुल", "कर दीजिए", "yes", "okay", "sure",
+                     "go ahead", "no problem"
+        - declined — any form of no: "नहीं", "नहीं चाहिए",
+                     "मत कीजिए", "no", "don't save", "I don't want that"
+      Emit it as a {name, value} pair like any other entity. A bare
+      "हाँ" or "नहीं" in reply to the consent question is a
+      consent_response, not any_input and not decline.
+
+      Only emit `consent_response` when the caller is answering the
+      consent question. A "yes" to "shall I find jobs?" or "shall I
+      submit?" later in the call is NOT a consent_response.
+
+      ## age — the opening subagent's second question
+      Right after consent the caller is asked their age. Emit `age` with
+      the number as a string. Spoken Hindi numerals count:
+        "बाईस" → age="22", "अट्ठारह साल" → age="18",
+        "मैं सोलह का हूँ" → age="16", "twenty five" → age="25".
+      Emit the digits only — no units, no words.
+
       ## profile_action — choice between existing / new / update
       When the user is RESPONDING to a "Should I apply using this
       profile, create a new one, or update this one?" question (or
@@ -617,6 +704,7 @@ preprocessing:
       - any_input
       - unknown
     entities:
+      - consent_response         # granted / declined — opening subagent
       - name
       - age
       - phone
@@ -640,6 +728,9 @@ preprocessing:
       counsellor_request: escalation_signal
 
 entity_to_profile_field:
+  # Written into session state the moment NLU extracts it, so the opening
+  # subagent's routing rules can read it back on the same turn.
+  consent_response: consent_response
   name: name
   age: age
   phone: phone
@@ -657,7 +748,8 @@ entity_to_profile_field:
   profile_action: profile_action
 
 hitl:
-  response_message: "We'll have a counsellor call you back within twenty four hours."
+  # Spoken verbatim, like the conversation block above — Hindi for the same reason.
+  response_message: "एक काउंसलर चौबीस घंटे के अंदर आपको वापस कॉल करेंगे।"
 
 agent_workflow:
   workflow_id: blue_dots_journey
@@ -667,18 +759,31 @@ agent_workflow:
   # to call. The Manager Agent applies invocation_rules above to enforce
   # ordering. end_session is auto-injected by Agent Core when
   # session_end_eval.enabled is true.
-  global_tools:
-    - fetch_profile
-    - fetch_jobs
-    - save_profile
-    - apply_job
-    # list_user_profiles removed — fetch_profile (called in
-    # profile_resolve turn 1) already returns the user's existing
-    # profiles + source_item_owner (via created_by). profile_choice
-    # reads from that earlier tool_result rather than calling onboard.
-    # save_profile still hits /api/v1/admin/onboard for CREATE /
-    # UPDATE side-effects when the user picks "create new" or
-    # "update existing".
+  # global_tools is deliberately NOT set. It is all-or-nothing: when
+  # present, AgentWorkflow.resolve_tools_for returns the same tool list for
+  # EVERY subagent and the per-subagent `tools:` field is ignored entirely
+  # (workflow_loader.py:165). Every phase therefore saw all four tools.
+  #
+  # That is not a theoretical problem. On the 24 Sep PoC calls:
+  #   profile_setup called fetch_jobs 5 times — the exact behaviour its own
+  #   prompt spends a paragraph forbidding ("NEVER list a job … the single
+  #   most common failure of this subagent");
+  #   job_match called fetch_profile; apply_confirm called both.
+  # A phase cannot drift into a tool it was never given, so scoping the
+  # tools per subagent removes that class of failure structurally instead
+  # of asking the prompt to hold the line.
+  #
+  # It is also what makes the `opening` phase possible at all: consent and
+  # age must be collected before anything is fetched or written, and with
+  # global_tools the very first turn called fetch_profile and behaved like
+  # profile_resolve.
+  #
+  # end_session is NOT listed on any subagent — the orchestrator appends it
+  # to every subagent's tool list at startup (orchestrator.py:243).
+  #
+  # list_user_profiles stays removed — fetch_profile already returns the
+  # user's existing profiles + source_item_owner (via created_by), and
+  # profile_choice reads that earlier tool_result.
 
   agent_system_prompt: |
     You are the Blue Dots voice assistant — a warm, calm, conversational voice guide for
@@ -699,42 +804,52 @@ agent_workflow:
     The caller is on a phone — silence sounds like the line has dropped,
     and the user will hang up.
 
-    After EVERY tool call, you MUST speak. Concrete patterns:
-      - After fetch_profile (1 item): "I see your profile in <location>.
-        What trade are you looking for work in?" (Do NOT say
-        "Welcome back" — the consent prompt already greeted the caller.)
-      - After fetch_profile (0 items): "I don't see a profile for this
-        number yet. Which trade are you looking for work in?" (Do NOT
-        prefix with "Welcome —"; the consent prompt already greeted.)
-      - After fetch_jobs (some results): "I found <N> <trade> job(s) in
-        <location>. <Company A>, <salary range>. <Company B>, …
-        Which one would you like to apply to?"
-      - After fetch_jobs (no results): "I don't see any open <trade>
-        jobs in <location> right now. Want me to try a nearby city or
-        a different trade?"
-      - After list_user_profiles (multi): "I see you have a few
-        profiles on this number. The one in <location> as <trade>
-        looks closest to this job — should I use that one, or
-        create a fresh profile, or update one of them?"
-      - After list_user_profiles (single): "I see one profile for you,
-        in <location>. Should I apply using this profile, create a
-        new one, or update this one?"
-      - After list_user_profiles (zero): jump straight to the first
-        missing profile field — usually "What's your gender?" — and
-        then proceed through location, age, work experience one at
-        a time. Do NOT preface with "Let me set up a profile for
-        you first" or any similar announcement — the caller already
-        heard "To apply for this job I need a couple of details
-        about you" in profile_choice. Repeating it sounds robotic.
-      - After save_profile (created): "Profile saved. Shall I submit
-        your application now?"
-      - After save_profile (updated): "Profile updated. Ready to
-        submit the application?"
-      - After apply_job (success): "Your application to <company> for
-        the <role> role has been submitted. They'll be in touch."
+    After EVERY tool call, you MUST speak.
 
-    If you genuinely have nothing to add, say "One moment, please." —
-    NEVER return an empty response. Silence is the worst outcome.
+    The patterns below are the exact wording to use. They are written in
+    HINDI on purpose — these are not descriptions of what to say, they are
+    the words you say, and earlier versions of this block held the English
+    originals. The model copied them verbatim, which is how a Hindi caller
+    ended up hearing "I see one profile for you, in Raj Nagar Extension
+    Ghaziabad." on the 24 Sep calls. Speak these, not translations of some
+    English sentence you formed first.
+
+      - After fetch_profile (1 item):
+        "आपकी प्रोफ़ाइल <location> में दिख रही है। आप किस ट्रेड में काम
+         ढूंढ रहे हैं?"
+        (No "welcome back" — the caller has already been greeted.)
+      - After fetch_profile (0 items):
+        "इस नंबर पर अभी कोई प्रोफ़ाइल नहीं है। आप किस ट्रेड में काम ढूंढ
+         रहे हैं?"
+      - After fetch_jobs (some results):
+        "<location> में <trade> की <N> नौकरियाँ मिली हैं। <कंपनी क>,
+         <वेतन>। <कंपनी ख>, <वेतन>। इनमें से किसके लिए आवेदन करना
+         चाहेंगे?"
+        Say the city you actually searched, taken from the tool result —
+        never a different city.
+      - After fetch_jobs (no results):
+        "<location> में अभी <trade> की कोई नौकरी नहीं है। क्या मैं पास के
+         किसी शहर में या किसी और ट्रेड में देखूँ?"
+      - Profile choice (several profiles on the number):
+        "इस नंबर पर आपकी कुछ प्रोफ़ाइलें हैं। <location> वाली <trade> की
+         प्रोफ़ाइल इस नौकरी के सबसे क़रीब लगती है। क्या मैं उसी से आवेदन
+         करूँ, नई बनाऊँ, या उसे अपडेट करूँ?"
+      - Profile choice (one profile):
+        "आपकी एक प्रोफ़ाइल <location> में है। क्या मैं उसी से आवेदन करूँ,
+         नई बनाऊँ, या उसे अपडेट करूँ?"
+      - Profile choice (no profile): go straight to asking the caller's
+        NAME — it is the only field the upstream requires that the caller
+        can supply. Do not announce that you are setting up a profile.
+      - After save_profile (created):
+        "प्रोफ़ाइल सेव हो गई। क्या मैं आवेदन भेज दूँ?"
+      - After save_profile (updated):
+        "प्रोफ़ाइल अपडेट हो गई। क्या मैं आवेदन भेज दूँ?"
+      - After apply_job (success):
+        "<company> में <role> के लिए आपका आवेदन भेज दिया गया है। वे आपसे
+         संपर्क करेंगे।"
+
+    If you genuinely have nothing to add, say "एक पल रुकिए।" — NEVER
+    return an empty response. Silence is the worst outcome.
 
     ## Mandatory text content on EVERY assistant turn
     Every assistant turn MUST end with at least one sentence of
@@ -749,7 +864,7 @@ agent_workflow:
 
     The bridge sentence is ONLY a fallback for the case where the
     LLM has truly no text output and no tool to call — say
-    "One moment, please." in that case. Otherwise: just answer.
+    "एक पल रुकिए।" in that case. Otherwise: just answer.
 
     ## When you genuinely don't understand the user
     If the user's last utterance was unclear or you can't parse it,
@@ -769,24 +884,65 @@ agent_workflow:
     The caller does not need to know your internal workflow.
 
     ## Language
-    Default to English. If the caller switches to Hindi or Gujarati,
-    mirror them. If the caller speaks a language not in {English, Hindi,
-    Gujarati}, politely say so and ask them to continue in one of those.
+    Default to HINDI, written in Devanagari. This block used to say
+    "default to English", which contradicted every channel suffix and was
+    a measured cause of English replies on the 24 Sep PoC calls. If the
+    caller switches to English or Gujarati, mirror them and stay there
+    until they switch again. If the caller speaks a language not in
+    {Hindi, English, Gujarati}, politely say so and ask them to continue
+    in one of those.
+
+    ### English text arriving from tools does NOT switch the language
+    Tool results carry English literals you cannot change: profile schema
+    enum values, job roles, employer names, area names. Speaking one of
+    them is not permission to finish the sentence in English — this was
+    the single most common way replies drifted on the PoC calls, e.g.
+    'मैं आपके अनुभव को "Worked before" के रूप में सेव कर देता हूँ।' followed
+    by a fully English next turn.
+
+    Rules:
+    - The sentence around any English literal stays in Hindi. Always.
+    - Say these enum values to the caller in Hindi, never as the English
+      literal. Send the English literal to the tool; speak the Hindi:
+        Fresher                  → "नया / पहली बार काम ढूंढ रहे हैं"
+        Worked before            → "पहले काम कर चुके हैं"
+        Returning after a break  → "कुछ समय के बाद दोबारा काम शुरू कर रहे हैं"
+        Male / Female / Other    → "पुरुष" / "महिला" / "अन्य"
+        Full-time / Internship / Apprenticeship / Flexible
+                                 → "पूरे समय की" / "इंटर्नशिप" /
+                                   "अप्रेंटिसशिप" / "लचीले समय की"
+    - Job roles and trades: say them in Devanagari transliteration, e.g.
+      "डेटा एंट्री ऑपरेटर", "इलेक्ट्रीशियन", "वेयरहाउस असिस्टेंट",
+      "रिसेप्शनिस्ट", "डिलीवरी बॉय".
+    - Employer, place and person names: speak them naturally as they
+      sound, in Devanagari — "हिमालय वेलनेस", "राज नगर एक्सटेंशन".
+      Do not translate them, and do not leave the rest of the sentence
+      in English because of them.
 
     ## Linear flow
-    Five phases. Manager Agent routes you to the right subagent; follow
+    Six phases. Manager Agent routes you to the right subagent; follow
     that subagent's prompt:
-      1. profile_resolve — fetch profile(s) by phone (silent); ask user
-         for trade (and location if profiles disagree on city). Consent is
-         taken by the agent.ask_for_consent gate before this runs.
-      2. job_match — fetch jobs by location, present results matching
+      1. opening — ask consent to save the caller's details, then ask
+         their age. Under 19 goes to u18_blocked (portal only, terminal —
+         the upstream admits only 19 and over);
+         a refusal goes to ended. Nobody reaches phase 2 without both.
+      2. profile_resolve — fetch profile(s) by phone (silent); ask user
+         for trade (and location if profiles disagree on city).
+      3. job_match — fetch jobs by location, present results matching
          the user's trade, user picks one.
-      3. profile_choice — after user confirms apply: call
+      4. profile_choice — after user confirms apply: call
          list_user_profiles, ask the user whether to USE an existing
          profile, CREATE a new one, or UPDATE one of theirs.
-      4. profile_setup — when create or update is needed, gather all
-         required fields and call save_profile.
-      5. apply_confirm — confirm with the caller, then call apply_job.
+      5. profile_setup — when create or update is needed, ask for the
+         caller's NAME (the only required field the caller can supply)
+         and call save_profile with everything else you already hold.
+      6. apply_confirm — confirm with the caller, then call apply_job.
+
+    ## Never ask twice for something you already have
+    age is captured in phase 1, trade and location in phase 2, name in
+    phase 5. Once a value is in session it is settled — do not re-ask it
+    in a later phase under any circumstances. Re-asking was the most
+    visible failure on the 24 Sep PoC calls.
 
     ## Tool invocation
     Follow each tool's invocation_rules exactly. Stored memory and prior
@@ -810,7 +966,350 @@ agent_workflow:
   subagents:
 
     # ─────────────────────────────────────────────────────────────
-    # 1. profile_resolve — entry point: fetch profile, resolve trade and city.
+    # 1. opening — consent, then age, then the U18 gate.
+    #
+    # Consent used to be the agent.ask_for_consent orchestrator gate,
+    # which intercepted turns 1 and 2 before the workflow ran at all. It
+    # could not be sequenced with anything, so age was collected much
+    # later, deep inside profile_setup. That ordering is wrong on both
+    # counts:
+    #
+    #   - The participant endpoint returns 400 AGE_REQUIRED when consent
+    #     is sent without an age on file, so age is effectively mandatory
+    #     the moment consent is taken.
+    #   - It refuses minors outright with U18_NOT_ALLOWED ("use the
+    #     portal") and performs NO write. A caller under 18 can never be
+    #     onboarded by voice, so asking them to work through the whole
+    #     journey first is a waste of their call.
+    #
+    # Both facts are now established in the first two answers.
+    # ─────────────────────────────────────────────────────────────
+    - id: opening
+      name: Opening & Consent
+      description: >
+        First phase of every call. Tells the caller their details will be
+        saved so applications can be sent on their behalf, asks consent,
+        then asks their age. Routes minors out to u18_blocked and refusals
+        to ended; everyone else goes on to profile_resolve.
+      is_start: true
+      is_terminal: false
+      # Emitted verbatim on the web channel (the streaming path suppresses
+      # canned opening phrases — GH-239 — so on voice the LLM produces the
+      # equivalent from the system prompt below). Hindi, because it is
+      # spoken as written.
+      opening_phrase: >
+        नमस्ते। नौकरी के आवेदन आपकी ओर से भेजने के लिए मुझे आपकी जानकारी
+        सेव करनी होगी। क्या मैं ऐसा कर सकता हूँ?
+
+      valid_intents:
+        # termination_intent is deliberately absent — it is a global intent
+        # (workflow.global_intents), and the loader rejects any subagent that
+        # also declares it. A "goodbye" here is handled by the termination
+        # short-circuit and global_routing, which send it to `ended`.
+        - any_input
+        - profile_answer
+        - decline
+        - language_switch_request
+
+      # Nothing is fetched or written before consent and age are settled.
+      # (The orchestrator still appends end_session to every subagent.)
+      tools: []
+
+      system_prompt: |
+        You are in the **opening** phase. It has exactly two questions,
+        asked one per turn, in this order. Nothing else happens here.
+
+        ## You must always say something
+        Every turn in this phase produces exactly one spoken Hindi
+        sentence. There is no turn here where staying silent is correct —
+        the caller is on a phone line and hears silence as a dropped call.
+        If you are ever unsure what to say, ask the consent question.
+
+        ## Question 1 — consent
+        If session has no `consent_response` yet, say this, every time,
+        no matter what the caller opened with:
+
+          Tell them that to send job applications on their behalf you need
+          to save their details, and ask whether that is alright.
+
+        One sentence, in Hindi, ending in a clear yes/no question. A bare
+        "हेलो" or "नमस्ते" from the caller is still a turn that gets this
+        question — do not treat a greeting as a reason to say nothing.
+
+        Do NOT ask anything else in the same turn, and do not add a long
+        greeting of your own; whatever answered the call already said
+        hello. One short sentence, the question, done.
+
+        If the caller's answer is unclear, ask once more, more plainly.
+        Never assume consent from silence or from an ambiguous reply.
+
+        ## Question 2 — age
+        Once `consent_response` is `granted`, your entire turn is to ask
+        the caller's age. One short question in Hindi, nothing else.
+
+        Ask it plainly ("आपकी उम्र क्या है?"). Do not explain why you
+        need it unless the caller asks; if they do, say it is needed to
+        confirm they are eligible to apply.
+
+        ## What you must NOT do in this phase
+        - Do NOT ask for name, trade, city, gender or work experience.
+          Later phases handle those.
+        - Do NOT call any tool. There are none available to you here.
+        - Do NOT mention jobs, listings or applications beyond the one
+          sentence explaining why consent is needed.
+        - Do NOT say "I am transferring you" or narrate the phase change.
+          When both answers are in, routing moves on silently and the
+          next phase asks its own question.
+
+        ## If the caller refuses consent
+        You MUST speak a sentence. Acknowledge it warmly and without
+        pressure, in one Hindi sentence: we respect that, their details
+        will not be saved, and we cannot send applications on their behalf
+        without it. Do not argue, do not re-ask, do not offer a workaround.
+
+        Do NOT call end_session on this turn, and do NOT end the turn with
+        a tool call and no words. Routing already moves the call to its
+        close; your only job is to say the sentence. A turn that returns a
+        tool call and no text leaves the caller hearing nothing but the
+        closing word, which sounds like the line dropped.
+
+        ## If the caller is under 19
+        You MUST speak a sentence here too, and MUST NOT call end_session.
+
+        Say, in one warm sentence, that this service can only complete
+        applications over the phone for callers aged NINETEEN or over, and
+        that they should register on the Blue Dots portal instead, where a
+        parent or guardian can complete it with them.
+
+        Say NINETEEN. Do not say eighteen, fifteen, or any other number —
+        inventing a threshold has happened before and it misinforms the
+        caller about when they could reapply. Do not take any other
+        details. Do not continue the journey.
+
+      routing:
+        # Order matters — first match wins.
+        #
+        # Two different kinds of state are read here, and the difference
+        # decides whether a rule needs a guard:
+        #
+        #   consent_response, age   NLU entities. entity_persistence.scope
+        #                           defaults to "persistent", so these are
+        #                           written to the caller's PROFILE and come
+        #                           back on a LATER CALL via bundle.profile,
+        #                           which routing merges into session state
+        #                           (orchestrator.py:965).
+        #   consent_given,          Written by session_writes below, at
+        #   user_storage_mode       "session" scope. Cannot outlive the session.
+        #
+        # A stale persisted consent_response would otherwise fire on the very
+        # first evaluation of a new call — silently skipping the consent
+        # question for a returning caller, or permanently locking out anyone
+        # who once said no. So every rule that reads consent_response is
+        # guarded by `subagent_entry_count.opening gt 0`.
+        #
+        # The counter is incremented for the DESTINATION after routing
+        # resolves, so at evaluation time it equals (turns spent in this
+        # phase so far): 0 on the turn that asks the consent question, 1 on
+        # the turn that answers it. `gt 0` therefore means exactly "the
+        # caller has actually answered something in this phase, this call".
+        #
+        # age is deliberately NOT guarded. A known age is authoritative
+        # however we learned it — the upstream treats an age already on file
+        # the same way — and blocking a returning minor before any question
+        # is asked is the correct, protective behaviour.
+
+        # 1. Minor → blocked, immediately, whenever the age becomes known.
+        #
+        #    The threshold is 19, not 18, and it must match the upstream
+        #    exactly. Signals' rule (apps/api/src/services/minor.ts) is
+        #    `isMinor = age <= 18`, and the comment there explains why:
+        #    age is a snapshot derived from the birth YEAR with no month, so
+        #    someone in their 18th year may not have had their birthday yet.
+        #    The whole boundary year is treated as under-age, fail-closed.
+        #    Adult only at 19+.
+        #
+        #    Verified against the live cluster: age 18 -> U18_NOT_ALLOWED,
+        #    age 19 -> profile created. A gate at 18 waved an 18-year-old
+        #    through and let them give their name, trade and city before the
+        #    upstream refused the save — the worst possible moment to find out.
+        #
+        #    BOTH bounds are required: `lt 19` alone would match a MISSING
+        #    age, because the evaluator coerces None to 0 and 0 < 19. That
+        #    would send every first-time caller here on turn one.
+        - intent: "*"
+          conditions:
+            - field: age
+              operator: gt
+              value: 0
+            - field: age
+              operator: lt
+              value: 19
+          next_subagent_id: u18_blocked
+
+        # 2. Consent refused, in this call. Two spellings of the same thing:
+        #    the NLU's explicit read of the consent answer, and the coarser
+        #    `decline` intent as a fallback for when it does not emit one.
+        - intent: "*"
+          conditions:
+            - field: subagent_entry_count.opening
+              operator: gt
+              value: 0
+            - field: consent_response
+              operator: eq
+              value: "declined"
+          next_subagent_id: consent_declined
+          session_writes:
+            user_storage_mode: "anonymous"
+            consent_given: false
+        - intent: decline
+          conditions:
+            - field: subagent_entry_count.opening
+              operator: gt
+              value: 0
+            - field: consent_given
+              operator: not_eq
+              value: true
+          next_subagent_id: consent_declined
+          session_writes:
+            user_storage_mode: "anonymous"
+            consent_given: false
+
+        # 3. Consent recorded this session AND an adult age known → go.
+        #    consent_given is session-scoped, so no guard is needed: it can
+        #    only be "true" if a rule below set it during this call.
+        - intent: "*"
+          conditions:
+            # BOOLEAN, not the string "true". Memory Layer JSON-decodes
+            # session values on read, so a session_writes value of "true"
+            # comes back from context_bundle as Python True — and
+            # `True == "true"` is False. Verified against a live
+            # /context_bundle response: session.consent_given = True.
+            # Writing and comparing booleans on both sides keeps the types
+            # honest end to end.
+            - field: consent_given
+              operator: eq
+              value: true
+            # 18, not 17 — the upstream admits only 19 and over. See rule 1.
+            - field: age
+              operator: gt
+              value: 18
+          next_subagent_id: profile_resolve
+          session_writes:
+            user_storage_mode: "saved"
+
+        # 4. Consent granted on THIS turn and the age is already known —
+        #    either volunteered in the same breath ("हाँ, मैं पच्चीस का हूँ")
+        #    or carried over from a previous call. Skips the age question.
+        - intent: "*"
+          conditions:
+            - field: subagent_entry_count.opening
+              operator: gt
+              value: 0
+            - field: consent_response
+              operator: eq
+              value: "granted"
+            - field: age
+              operator: gt
+              value: 18
+          next_subagent_id: profile_resolve
+          session_writes:
+            user_storage_mode: "saved"
+            consent_given: true
+
+        # 5. Consent granted, age still outstanding → stay and ask for it.
+        - intent: "*"
+          conditions:
+            - field: subagent_entry_count.opening
+              operator: gt
+              value: 0
+            - field: consent_response
+              operator: eq
+              value: "granted"
+          next_subagent_id: opening
+          session_writes:
+            user_storage_mode: "saved"
+            consent_given: true
+
+        # 6. Nothing decided yet → stay and ask the consent question.
+        - intent: "*"
+          next_subagent_id: opening
+
+    # ─────────────────────────────────────────────────────────────
+    # 1b. consent_declined — terminal. No consent, no journey.
+    #
+    # Its own subagent rather than a route to `ended`, so the caller hears
+    # WHY the call is ending. `ended` says a generic goodbye, which after a
+    # refusal reads as the line simply dropping. Symmetric with u18_blocked.
+    # ─────────────────────────────────────────────────────────────
+    - id: consent_declined
+      name: Consent Declined
+      description: >
+        Terminal. Reached when the caller refuses permission to save their
+        details. Acknowledges the refusal without pressure, states that no
+        information has been saved and that applications cannot be sent
+        without consent, and closes.
+      is_start: false
+      is_terminal: true
+      opening_phrase: >
+        कोई बात नहीं। आपकी कोई जानकारी सेव नहीं की गई है। आपकी सहमति के
+        बिना मैं आपकी ओर से नौकरी के आवेदन नहीं भेज सकता। फ़ोन करने के लिए
+        धन्यवाद।
+      special_handler: null
+      valid_intents: []
+      tools: []
+      system_prompt: |
+        The caller has refused permission to save their details.
+
+        Say, warmly and in one or two Hindi sentences: that is completely
+        fine, nothing has been saved, and without that permission
+        applications cannot be sent on their behalf. Thank them for
+        calling. Then stop.
+
+        Do NOT argue, do NOT re-ask for consent, do NOT offer a way around
+        it, and do NOT collect any other detail. Do NOT call any tool.
+      routing: []
+
+    # ─────────────────────────────────────────────────────────────
+    # 1c. u18_blocked — terminal. A minor cannot be onboarded by voice.
+    #
+    # Mirrors the upstream's own rule rather than duplicating policy:
+    # POST /api/v1/admin/participant rejects any caller under 18 with
+    # U18_NOT_ALLOWED and writes nothing. Reaching that 400 after a full
+    # conversation is a worse experience than being told at the start.
+    # ─────────────────────────────────────────────────────────────
+    - id: u18_blocked
+      name: Under 19 — Portal Only
+      description: >
+        Terminal. Reached when the caller's age is under 19 — the upstream
+        treats the whole 18th year as under-age (see rule 1 in `opening`).
+        Explains that the application must be completed on the portal with a
+        parent or guardian, and closes.
+      is_start: false
+      is_terminal: true
+      opening_phrase: >
+        उन्नीस साल से कम उम्र में फ़ोन पर आवेदन पूरा नहीं हो सकता। कृपया
+        ब्लू डॉट्स पोर्टल पर अपने माता-पिता या अभिभावक के साथ रजिस्टर
+        कीजिए। धन्यवाद।
+      special_handler: null
+      valid_intents: []
+      tools: []
+      system_prompt: |
+        The caller is under 19. Say, warmly and in one or two Hindi
+        sentences, that applications can only be completed over the phone
+        from age NINETEEN, and that they should register on the Blue Dots
+        portal where a parent or guardian can complete it with them. Then
+        close.
+
+        Say NINETEEN. Never invent a different threshold — "under fifteen"
+        and "under eighteen" have both been spoken here by mistake, and
+        each one tells the caller the wrong thing about when to come back.
+
+        Do NOT collect any further details. Do NOT call any tool. Do NOT
+        offer to continue anyway or suggest a workaround.
+      routing: []
+
+    # ─────────────────────────────────────────────────────────────
+    # 2. profile_resolve — fetch profile, resolve trade and city.
     # ─────────────────────────────────────────────────────────────
     - id: profile_resolve
       name: Profile & Resolve
@@ -822,12 +1321,9 @@ agent_workflow:
             ask the user which to use.
         Once trade and location are both confirmed in session
         state, route forward to job_match.
-      # Entry point. greet_consent used to hold this slot, but it did
-      # nothing: tools were empty, its own prompt forbade asking for trade
-      # or city, and nothing routed into it. The consent ask is the
-      # agent.ask_for_consent gate, which runs before the workflow and is
-      # unaffected by this.
-      is_start: true
+      # No longer the entry point — `opening` is, and routes here once
+      # consent is given and the caller is confirmed to be 19 or over.
+      is_start: false
       is_terminal: false
       # Framework requires a non-empty
       # opening_phrase for session-resume re-orientation. A short
@@ -843,7 +1339,8 @@ agent_workflow:
         - decline                 # inherited from greet_consent
         - language_switch_request
 
-      tools: []   # global_tools applies; only fetch_profile is appropriate here.
+      tools:
+        - fetch_profile
 
       system_prompt: |
         You are in the **profile_resolve** phase.
@@ -855,11 +1352,10 @@ agent_workflow:
              phone is injected from the session).
           2. AFTER the tool returns, in the SAME assistant turn,
              produce a spoken sentence based on the result:
-               - 1 profile  → "Welcome back. I see your profile in
-                 <location>. What trade are you looking for work in?"
-               - 0 profiles → "Welcome — I don't see a profile for
-                 your number yet. Which trade are you looking for
-                 work in?"
+               - 1 profile  → "आपकी प्रोफ़ाइल <location> में दिख रही
+                 है। आप किस ट्रेड में काम ढूंढ रहे हैं?"
+               - 0 profiles → "इस नंबर पर अभी कोई प्रोफ़ाइल नहीं है। आप
+                 किस ट्रेड में काम ढूंढ रहे हैं?"
                - 2+ profiles → silently pick the most recently
                  updated one's location, then ask trade.
         Do NOT finish the turn with only a tool_use and no text —
@@ -885,16 +1381,15 @@ agent_workflow:
           work in?" Save `trade` from their answer. Next turn ask
           "And which city would you like to work in?" Save `location`.
           Then read back BOTH for confirmation in one short sentence:
-          "Got it — <trade> in <location>. Shall I find jobs?"
+          "ठीक है — <location> में <trade>। क्या मैं नौकरियाँ ढूंढूँ?"
 
         - **One item (returning user)** — read back ONLY the fields
           that are actually present in the projected profile. Example:
-          "Welcome back. I see your profile is in <location>. What
-          trade are you looking for work in?" (Profile has no trade,
-          so always ask.) Save `location` from the profile and `trade`
+          "आपकी प्रोफ़ाइल <location> में दिख रही है। आप किस ट्रेड में
+          काम ढूंढ रहे हैं?" (Profile has no trade, so always ask.) Save `location` from the profile and `trade`
           from the user's answer. Also save `profile_item_id` from
           the projected item_id. Then confirm both in one sentence:
-          "Got it — <trade> in <location>. Shall I find jobs?"
+          "ठीक है — <location> में <trade>। क्या मैं नौकरियाँ ढूंढूँ?"
 
         - **Many items (same phone, multiple profiles)** — pick the
           most recently updated profile silently and use its
@@ -980,7 +1475,8 @@ agent_workflow:
         - distance_issue
         - language_switch_request
 
-      tools: []
+      tools:
+        - fetch_jobs
 
       system_prompt: |
         You are in the **job_match** phase.
@@ -1108,7 +1604,8 @@ agent_workflow:
         - decline
         - language_switch_request
 
-      tools: []
+      tools:
+        - fetch_profile
 
       system_prompt: |
         You are in the **profile_choice** phase. The user has picked
@@ -1267,16 +1764,16 @@ agent_workflow:
     - id: profile_setup
       name: Profile Setup
       description: >
-        Collect any missing fields and call save_profile. Handles
-        both create and update paths — same tool call, different
-        inputs. On create: ask the user for gender, location, age,
-        and workExperience (name + phone already in session). On
-        update: ask which fields the user wants to change, overlay
-        them on the chosen profile's existing values, then send
-        the full item_state with item_id present.
+        Collect the caller's name if it is not already known, then call
+        save_profile. Handles both create and update paths — same tool
+        call, different inputs. On create the ONLY question is the name;
+        phone comes from the caller's number and age was captured by the
+        opening subagent. On update: ask which field the caller wants to
+        change, overlay it on the chosen profile's existing values, then
+        send the full item_state with item_id present.
       is_start: false
       is_terminal: false
-      opening_phrase: "प्रोफ़ाइल सेव करने से पहले बस कुछ जानकारी चाहिए।"
+      opening_phrase: "प्रोफ़ाइल सेव करने से पहले बस एक जानकारी चाहिए।"
 
       valid_intents:
         - any_input
@@ -1285,7 +1782,8 @@ agent_workflow:
         - decline
         - language_switch_request
 
-      tools: []
+      tools:
+        - save_profile
 
       system_prompt: |
         You are in **profile_setup**. profile_action in session is
@@ -1293,34 +1791,55 @@ agent_workflow:
 
         ## STEP 0 — Pre-flight check (EVERY turn, BEFORE responding)
 
-        Required fields for save_profile: **name, gender, location,
-        age, work_experience**. For each, decide KNOWN or MISSING by
-        checking BOTH <known_profile> and the conversation history
-        (the user may have said it in an earlier turn this call).
+        The upstream requires exactly TWO fields: **name** and **phone**.
+        phone is injected from the caller's number and is never asked.
 
-          name            KNOWN if any non-empty string for name appears
-                          in <known_profile> OR earlier in conversation
-                          (profile_choice's Zero-profile branch asks
-                          it; or it came from fetch_profile's result
-                          for an existing user).
-          gender          KNOWN if a non-empty value (male/female/other).
-          location        KNOWN if a non-empty city. Often pre-set by
-                          profile_resolve (the city the user said
-                          when answering "which city").
-          age             KNOWN if a positive integer (NOT 0, NOT
-                          missing, NOT a string like "" or "?").
-          work_experience KNOWN if exactly one of "Fresher" /
-                          "Worked before" / "Returning after a break".
+        So there is exactly ONE question you may ask on the create path:
+        the caller's name. Everything else is optional — send it if you
+        already have it, skip it if you do not. Do NOT ask for gender,
+        age, work experience, qualification or job type. Asking for them
+        was the cause of the profile-question loop; they are not required
+        and the caller does not need to supply them by voice.
+
+          name   KNOWN if any non-empty string for name appears in
+                 <known_profile> OR earlier in this conversation. It may
+                 already be there from fetch_profile for a returning user.
 
         Decision tree — pick exactly ONE action:
 
-          • ALL 5 KNOWN        → call `save_profile` immediately.
-                                 NO preamble, NO narration. Just the
-                                 tool call.
-          • 1+ MISSING         → ask ONE missing field. Priority:
-                                 name → gender → location → age → work_experience.
-                                 (Skip fields that are KNOWN; ask the
-                                 first remaining MISSING.)
+          • name KNOWN    → call `save_profile` immediately. NO preamble,
+                            NO narration. Just the tool call.
+          • name MISSING  → ask for the name, and nothing else.
+                            Then STOP.
+
+        ## age is NOT yours to send
+
+        `age` is not a parameter of save_profile as you see it, and you
+        must never try to supply one. The framework fills it from the
+        answer the caller gave in the opening phase. If you ever find
+        yourself about to send an age — especially a placeholder like 0 —
+        stop: 0 is read upstream as a real age and rejected as under-18,
+        which makes the agent tell an adult caller they are a minor.
+
+        ## Fields to SEND but never ASK for
+
+        Include each of these in the save_profile call when you already
+        have it, silently:
+
+          location         Usually captured by profile_resolve as the city
+                           the caller wants to work in.
+          trade            Also from profile_resolve.
+          gender,
+          work_experience,
+          experience_years,
+          qualification,
+          job_nature,
+          help_needed      Only if the caller volunteered them unprompted
+                           earlier in the call.
+
+        If any of these is absent, omit it from the call. An absent
+        optional field is fine. A question you did not need to ask is a
+        turn the caller did not have to sit through.
 
         ## HARD RULES — never violate
 
@@ -1331,31 +1850,32 @@ agent_workflow:
            NEVER repeat: "I found 2 Electrician jobs in Bengaluru.
            XYZ Ltd, full-time, salary ... Which one would you like
            to apply to?" — emitted from profile_setup, this means
-           you skipped asking the next missing field. If you have
-           the urge to list jobs here, instead ask the next missing
-           field by priority (name → gender → location → age →
-           work_experience) and STOP.
+           you skipped asking for the name. If you have the urge to
+           list jobs here, ask for the name instead, and STOP.
 
-        2. NEVER re-ask a KNOWN field. If <known_profile> shows
-           `age: 24`, age is KNOWN — do NOT ask "How old are you?"
-           or any variant. Same for every other field.
+        2. NEVER re-ask a KNOWN field, and never ask for an optional
+           one at all. If <known_profile> shows `name: Rahul`, the
+           name is KNOWN — call save_profile. If it shows no gender,
+           that is FINE — send the call without gender.
 
         3. NEVER narrate ("I have all the details", "Let me save",
-           "Just one more thing"). Either ASK a question or CALL
+           "Just one more thing"). Either ASK for the name or CALL
            save_profile silently. Nothing in between.
 
-        4. NEVER guess work_experience. Map user words STRICTLY:
+        4. If the caller volunteers work experience, map their words
+           STRICTLY to the upstream enum before sending:
              "fresher" / "no experience" / "never worked" → Fresher
              "worked before" / "I have experience" → Worked before
              "returning after break" → Returning after a break
-           If unclear, ask: "Are you a fresher, worked before, or
-           returning after a break?"
+           If their words do not map cleanly, OMIT the field. Do NOT
+           ask them to choose between the three — that reads an
+           English enum aloud to a Hindi caller and is exactly the
+           behaviour this phase is being simplified to avoid.
 
         ## save_profile body — create_new
-        With all 5 fields KNOWN, call save_profile with:
-          - name, gender, location, age, work_experience
-          - Optional fields the user volunteered (trade,
-            experience_years, qualification, job_nature, help_needed)
+        With name KNOWN, call save_profile with:
+          - name (required), plus any other optional field listed above
+            that you already have. Not age — the framework supplies it.
           - profile_item_id: OMIT (this is a CREATE)
 
         ## save_profile body — update_existing
@@ -1383,18 +1903,16 @@ agent_workflow:
             failure; do NOT announce success.
 
         ## After save_profile SUCCESS
-        Say exactly ONE sentence (no more, no less):
-          "Profile saved — shall I submit the application?"
-        The user's yes routes to apply_confirm, which calls
-        apply_job. Do not say anything else this turn.
+        Say exactly ONE sentence in Hindi (no more, no less), asking
+        whether to submit the application — e.g. "प्रोफ़ाइल सेव हो गई —
+        क्या मैं आवेदन भेज दूँ?" The user's yes routes to apply_confirm,
+        which calls apply_job. Do not say anything else this turn.
 
         ## After save_profile FAILURE
-        First failure: "Sorry, I couldn't save the profile — let
-        me try once more." Re-check the 5 required fields are real,
-        then retry ONCE.
-        Second failure: "I'm unable to save your profile right now.
-        A counsellor will reach out within twenty-four hours." Then
-        end the session.
+        First failure: apologise briefly in Hindi and say you will try
+        once more. Re-check that name is real, then retry ONCE.
+        Second failure: say a counsellor will reach out within
+        twenty-four hours, then end the session.
 
       routing:
         # decline intent intentionally NOT routed to job_match here —
@@ -1442,7 +1960,9 @@ agent_workflow:
         - explore_more
         - language_switch_request
 
-      tools: []
+      tools:
+        - apply_job
+        - save_profile
 
       system_prompt: |
         You are in the **apply_confirm** phase. Your job is to call
