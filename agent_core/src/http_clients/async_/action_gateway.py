@@ -83,6 +83,7 @@ class AsyncActionGatewayHttpClient(AsyncActionGatewayBase):
         tool_call: ToolCall,
         session_id: str,
         user_id: str = "",
+        session_values: dict | None = None,
     ) -> ToolResult:
         """Execute a single tool call via the Action Gateway.
 
@@ -104,6 +105,7 @@ class AsyncActionGatewayHttpClient(AsyncActionGatewayBase):
             "input_params": tool_call.input_params,
             "session_id": session_id,
             "user_id": user_id,
+            "session_values": session_values or {},
         }
 
         try:
