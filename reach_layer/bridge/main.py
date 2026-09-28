@@ -115,6 +115,7 @@ def main() -> None:
         "agent_core_url": bridge.get("agent_core_url", "http://agent_core:8000"),
         "channel": "bridge",
         "terminal_word": bridge.get("terminal_word", ""),
+        "hangup_tool_name": bridge.get("hangup_tool_name", ""),
         "timeout_s": float(bridge.get("timeout_s", 60.0)),
     }
 

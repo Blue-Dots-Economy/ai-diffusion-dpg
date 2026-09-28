@@ -400,6 +400,10 @@ class BridgeChannelConfig(BaseModel):
     server: BridgeServerConfig = Field(default_factory=BridgeServerConfig)
     agent_core_url: str = "http://agent_core:8000"
     terminal_word: str = ""
+    # Client-offered tool the bridge calls (as a ``tool_calls`` response) when
+    # Agent Core ends the session, so the client hangs up. Only called when the
+    # request's ``tools`` declares it. Empty disables hanging up.
+    hangup_tool_name: str = ""
     timeout_s: float = Field(default=60.0, gt=0)
 
 
