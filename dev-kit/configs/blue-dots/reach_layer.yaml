@@ -68,7 +68,7 @@ reach_layer:
       # the turn). One line per turn at most, never once the reply has started.
       # Hindi, emitted verbatim. end_session is deliberately unmapped.
       tool_status_phrases:
-        fetch_profile: "आपकी प्रोफ़ाइल देख रहा हूँ, बस एक पल।"
+        fetch_profile: "एक पल, मैं देख रहा हूँ।"
         fetch_jobs: "आपके लिए नौकरियाँ देख रहा हूँ, बस एक पल।"
         save_profile: "आपकी जानकारी सेव कर रहा हूँ, बस एक पल।"
         apply_job: "आपका आवेदन भेज रहा हूँ, बस एक पल।"
