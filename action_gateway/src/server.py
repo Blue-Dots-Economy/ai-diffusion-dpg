@@ -142,6 +142,7 @@ def create_app(registry: AdapterRegistry) -> FastAPI:
                 request.input_params,
                 request.session_id,
                 request.user_id,
+                request.session_values,
             )
 
             if not result.success:

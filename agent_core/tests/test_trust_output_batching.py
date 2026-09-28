@@ -354,3 +354,88 @@ class TestStreamTurnBatching:
         assert [e.text for e in sentence_events] == ["Only one.", "And two."]
         # Single batched call drains both at turn end.
         assert agent._async_trust.check_output.await_count == 1
+
+
+class TestStreamEmptyCompletionRetry:
+    """stream_turn retries once when the model returns nothing at all.
+
+    A completion with no text and no tool call leaves the caller listening to
+    silence, which on a phone line is indistinguishable from a dropped call.
+    Retrying is only safe while nothing has reached the caller — a partial
+    response must never be re-requested, or the first half is spoken twice.
+    """
+
+    @pytest.mark.asyncio
+    async def test_empty_completion_is_retried_once(self):
+        agent = _make_agent_core()
+        _enable_batching(agent, max_sentences=5, max_interval_ms=10_000)
+        _wire_basic_nlu(agent)
+
+        calls = {"n": 0}
+
+        async def mock_stream(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return          # empty completion: no text, no tool call
+            yield "दूसरी बार जवाब आया। "
+
+        agent._llm.stream = mock_stream
+        agent._async_trust.check_output = AsyncMock(
+            return_value=TrustCheckResult(passed=True, action="allow")
+        )
+
+        events = await _collect_events(agent, _make_turn_input())
+        texts = [e.text for e in events if isinstance(e, SentenceEvent)]
+        assert calls["n"] == 2, "an empty completion should be retried exactly once"
+        assert texts == ["दूसरी बार जवाब आया।"], texts
+
+    @pytest.mark.asyncio
+    async def test_retry_is_not_repeated_forever(self):
+        """Two empty completions end the turn — no third attempt."""
+        agent = _make_agent_core()
+        _enable_batching(agent, max_sentences=5, max_interval_ms=10_000)
+        _wire_basic_nlu(agent)
+
+        calls = {"n": 0}
+
+        async def mock_stream(*args, **kwargs):
+            calls["n"] += 1
+            return
+            yield  # pragma: no cover — makes this an async generator
+
+        agent._llm.stream = mock_stream
+        agent._async_trust.check_output = AsyncMock(
+            return_value=TrustCheckResult(passed=True, action="allow")
+        )
+
+        await _collect_events(agent, _make_turn_input())
+        assert calls["n"] == 2
+
+    @pytest.mark.asyncio
+    async def test_a_normal_response_is_never_re_requested(self):
+        """The regression this guard exists to prevent: speaking twice.
+
+        With batching on, a short turn's sentences sit in the trust batcher
+        until the turn-end flush, so `sentence_index` is still 0 when the
+        stream ends. The guard has to count buffered sentences as output, or
+        every short turn would be re-requested and duplicated.
+        """
+        agent = _make_agent_core()
+        _enable_batching(agent, max_sentences=5, max_interval_ms=10_000)
+        _wire_basic_nlu(agent)
+
+        calls = {"n": 0}
+
+        async def mock_stream(*args, **kwargs):
+            calls["n"] += 1
+            yield "पहला वाक्य। "
+
+        agent._llm.stream = mock_stream
+        agent._async_trust.check_output = AsyncMock(
+            return_value=TrustCheckResult(passed=True, action="allow")
+        )
+
+        events = await _collect_events(agent, _make_turn_input())
+        texts = [e.text for e in events if isinstance(e, SentenceEvent)]
+        assert calls["n"] == 1, "a turn that produced text must not be retried"
+        assert len(texts) == 1, f"response spoken more than once: {texts}"

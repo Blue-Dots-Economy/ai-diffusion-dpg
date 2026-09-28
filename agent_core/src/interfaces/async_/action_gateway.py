@@ -18,6 +18,7 @@ class AsyncActionGatewayBase(ABC):
         tool_call: ToolCall,
         session_id: str,
         user_id: str = "",
+        session_values: dict | None = None,
     ) -> ToolResult:
         """Async version of ActionGatewayBase.execute(). See sync interface for full docs."""
 

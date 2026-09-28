@@ -924,3 +924,40 @@ class TestIsCollected:
         )
         text = prompt.text if hasattr(prompt, "text") else str(prompt)
         assert "age: 25" in text
+
+
+class TestToolSessionValues:
+    """_tool_session_values must not pass a seeded default off as an answer.
+
+    Session state pre-seeds every profile field — strings as "" and the one
+    integer field, age, as 0. Sending that 0 as a real age had the
+    participant API reject it as under-18, which the agent then relayed to
+    adult callers.
+    """
+
+    @staticmethod
+    def _bundle(session, profile):
+        from types import SimpleNamespace
+        return SimpleNamespace(session=session, profile=profile)
+
+    def test_seeded_zero_age_is_not_forwarded(self):
+        from src.orchestrator import AgentCore
+        v = AgentCore._tool_session_values(self._bundle({"age": 0, "name": ""}, {}))
+        assert "age" not in v and "name" not in v
+
+    def test_real_profile_value_beats_the_seeded_session_default(self):
+        from src.orchestrator import AgentCore
+        v = AgentCore._tool_session_values(self._bundle({"age": 0}, {"age": "27"}))
+        assert v["age"] == "27"
+
+    def test_attributes_blob_is_excluded(self):
+        from src.orchestrator import AgentCore
+        v = AgentCore._tool_session_values(
+            self._bundle({}, {"attributes": [{"key": "k", "value": "x"}], "age": "31"})
+        )
+        assert "attributes" not in v and v["age"] == "31"
+
+    def test_missing_bundle_fields_are_safe(self):
+        from src.orchestrator import AgentCore
+        from types import SimpleNamespace
+        assert AgentCore._tool_session_values(SimpleNamespace()) == {}

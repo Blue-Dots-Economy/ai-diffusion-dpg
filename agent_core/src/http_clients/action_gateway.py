@@ -88,6 +88,7 @@ class ActionGatewayHttpClient(ActionGatewayBase):
         tool_call: ToolCall,
         session_id: str,
         user_id: str = "",
+        session_values: dict | None = None,
     ) -> ToolResult:
         """Execute a single tool call via POST /execute.
 
@@ -115,6 +116,7 @@ class ActionGatewayHttpClient(ActionGatewayBase):
                     "input_params": tool_call.input_params,
                     "session_id": session_id,
                     "user_id": user_id,
+                    "session_values": session_values or {},
                 },
                 timeout=self._timeout_s,
             )

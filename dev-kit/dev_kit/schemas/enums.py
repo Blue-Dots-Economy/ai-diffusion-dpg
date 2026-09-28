@@ -150,6 +150,9 @@ class HttpMethod(str, Enum):
 class ParamSource(str, Enum):
     agent = "agent"
     static = "static"
+    # Agent Core supplies the value from turn state; the LLM never sees
+    # the parameter. Mirrors action_gateway/src/schema/config.py.
+    session = "session"
 
 
 class ParamType(str, Enum):
