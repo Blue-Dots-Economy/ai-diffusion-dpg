@@ -188,6 +188,11 @@ reach_layer:
         port: 8008
       agent_core_url: "http://agent_core:8000"
       timeout_s: 60.0
-      # terminal_word is per-domain (spoken/written closing signal — the shim
-      # does not end the call itself) → dev-kit/configs/<domain>/
+      # terminal_word is per-domain (spoken/written closing signal)
+      # → dev-kit/configs/<domain>/
       terminal_word: ""
+      # Per-domain: the client-offered tool the bridge calls on session end
+      # so the client hangs up (VoicERA: end_conversation). Empty = never.
+      hangup_tool_name: ""
+      # Per-domain, language-specific: tool name → line spoken while it runs.
+      tool_status_phrases: {}

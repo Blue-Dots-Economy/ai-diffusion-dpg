@@ -365,6 +365,50 @@ class TestStreamTurnToolUse:
         assert len(tool_end) == 1
         assert done_events[0].was_tool_used is True
 
+    @pytest.mark.asyncio
+    async def test_tool_start_names_the_tools_being_run(self):
+        """Channels turn tool_start into caller-facing status ("looking up
+        jobs"), so the signal must say which tool — not just that one runs."""
+        agent = _make_agent_core()
+        call_count = 0
+
+        async def mock_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ChatToolUseRequested([
+                    ToolUseBlock(tool_name="fetch_jobs", tool_use_id="tu_1", input={}),
+                ])
+            if call_count == 2:
+                raise ChatToolUseRequested([
+                    ToolUseBlock(tool_name="apply_job", tool_use_id="tu_2", input={}),
+                ])
+            yield "Done. "
+
+        agent._llm.stream = mock_stream
+        agent._async_gateway.execute.return_value = ToolResult(
+            tool_use_id="tu_1", tool_name="fetch_jobs",
+            result={}, success=True, result_text="ok"
+        )
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("msg", "english")
+        agent._nlu_processor = MagicMock()
+        agent._nlu_processor.process.return_value = NLUResult(
+            intent="search", entities={}, sentiment="neutral", confidence=0.9
+        )
+
+        events = await _collect_events(agent, _make_turn_input())
+
+        tool_start = [e for e in events
+                      if isinstance(e, SignalEvent) and e.stage == "tool_start"]
+        assert [e.tools for e in tool_start] == [["fetch_jobs"], ["apply_job"]]
+        assert '"tools": ["fetch_jobs"]' in tool_start[0].to_sse()
+
+    def test_signal_event_tools_default_empty(self):
+        """Every other stage leaves tools empty, so existing consumers that
+        ignore the field see no change."""
+        assert SignalEvent(stage="nlu", status="start").tools == []
+
 
 class TestStreamTurnTrustOutput:
 

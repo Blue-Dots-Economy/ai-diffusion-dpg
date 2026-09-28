@@ -63,6 +63,15 @@ reach_layer:
       # it after the goodbye, and VoicERA hangs up. Without it the line
       # stayed open until the platform's max-duration timeout.
       hangup_tool_name: "end_conversation"
+      # Spoken while a tool runs, so a 5-7 s turn is not silence the caller
+      # fills with "hello?" (which the client treats as barge-in and cancels
+      # the turn). One line per turn at most, never once the reply has started.
+      # Hindi, emitted verbatim. end_session is deliberately unmapped.
+      tool_status_phrases:
+        fetch_profile: "आपकी प्रोफ़ाइल देख रहा हूँ, बस एक पल।"
+        fetch_jobs: "आपके लिए नौकरियाँ देख रहा हूँ, बस एक पल।"
+        save_profile: "आपकी जानकारी सेव कर रहा हूँ, बस एक पल।"
+        apply_job: "आपका आवेदन भेज रहा हूँ, बस एक पल।"
 
     voice:
       # English / Hindi / Gujarati. VAD tuned for English (shorter

@@ -3744,7 +3744,8 @@ class AgentCore(AgentCoreBase):
                 logger.info("  [STEP 9] Tool-Use Loop  →  executing tools=%s", tool_names)
                 t9 = time.time()
 
-                yield _stamp(SignalEvent(stage="tool_start", status="start"))
+                yield _stamp(SignalEvent(stage="tool_start", status="start",
+                                         tools=tool_names))
                 tool_results_for_llm = []
                 _stream_tool_results = []  # Collect ToolResult objects for post-tool hook
                 # Build ke_context for knowledge_retrieval tool (same as sync path)
@@ -3925,7 +3926,8 @@ class AgentCore(AgentCoreBase):
                             "  [STEP 9] Tool-Use Loop (round %d)  →  executing tools=%s",
                             _tool_round, _nested_tool_names,
                         )
-                        yield _stamp(SignalEvent(stage="tool_start", status="start"))
+                        yield _stamp(SignalEvent(stage="tool_start", status="start",
+                                                 tools=_nested_tool_names))
                         _nested_results = []
                         for tc in _nested_tool_calls:
                             # GH-191: intercept end_session in nested rounds too.

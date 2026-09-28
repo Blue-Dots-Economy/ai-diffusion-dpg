@@ -1302,6 +1302,8 @@ class BridgeChannelConfig(BaseModel):
     server: BridgeServerConfig = Field(default_factory=BridgeServerConfig, description="Uvicorn bind settings")
     agent_core_url: str = Field(default="http://agent_core:8000", description="Agent Core base URL")
     terminal_word: str = Field(default="", description="Sentinel word appended to signal turn completion")
+    hangup_tool_name: str = Field(default="", description="Client-offered tool called on session end so the client hangs up; empty disables")
+    tool_status_phrases: dict[str, str] = Field(default_factory=dict, description="Tool name -> line spoken while that tool runs (one per turn, before the reply)")
     timeout_s: float = Field(default=60.0, description="Upstream Agent Core request timeout in seconds")
 
 
