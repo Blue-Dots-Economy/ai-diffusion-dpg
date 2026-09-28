@@ -2879,14 +2879,23 @@ class AgentCore(AgentCoreBase):
         # sentence after it is spoken while they are already listening.
         #
         # Two marks, because the gap between them is ours to control:
-        #   first_token_ms     the model began producing
+        #   llm_ttft_ms        the MODEL's own time to first token, measured
+        #                      from the moment the request is issued. This is
+        #                      the number to compare against another model or
+        #                      provider — it excludes everything we do first.
+        #   first_token_ms     the same first token, but measured from TURN
+        #                      start. The difference between this and
+        #                      llm_ttft_ms is our own pre-LLM cost: memory
+        #                      read, NLU, trust input, routing, prompt build.
         #   first_sentence_ms  a whole sentence was assembled, trust-checked
         #                      and handed to the channel — the caller hears
         #                      audio at roughly this point
         # Their difference is the cost of buffering to sentence boundaries;
         # first_sentence_ms against total latency is the cost of everything
         # said after the caller already had an answer.
-        _timings: dict[str, int | None] = {"first_token_ms": None, "first_sentence_ms": None}
+        _timings: dict[str, int | None] = {
+            "llm_ttft_ms": None, "first_token_ms": None, "first_sentence_ms": None,
+        }
 
         def _mark(key: str) -> None:
             """Record the first occurrence of a turn milestone, in ms."""
@@ -3119,7 +3128,7 @@ class AgentCore(AgentCoreBase):
                         "\n═══════════════════════════════════════════════════════════════\n"
                         "  STREAM TURN COMPLETE  session=%s  intent=%s  tool_used=%s\n"
                         "  model=%s  total_latency=%dms  next_subagent=%s  sentences=%d\n"
-                        "  first_token=Nonems  first_sentence=%dms\n"
+                        "  llm_ttft=Nonems  first_token=Nonems  first_sentence=%dms\n"
                         "  response: %r\n"
                         "═══════════════════════════════════════════════════════════════",
                         session_id, "consent_prompt", False,
@@ -3655,6 +3664,8 @@ class AgentCore(AgentCoreBase):
                     async for token in self._llm.stream(request, abort_event=abort_event):
                         if _aborted():
                             return
+                        if _timings["llm_ttft_ms"] is None:
+                            _timings["llm_ttft_ms"] = int((time.time() - t8) * 1000)
                         _mark("first_token_ms")
                         token_buffer += token
                         sentences, token_buffer = _split_sentences(token_buffer)
@@ -3862,6 +3873,8 @@ class AgentCore(AgentCoreBase):
                         async for token in self._llm.stream(request, abort_event=abort_event):
                             if _aborted():
                                 return
+                            if _timings["llm_ttft_ms"] is None:
+                                _timings["llm_ttft_ms"] = int((time.time() - t8b) * 1000)
                             _mark("first_token_ms")
                             token_buffer += token
                             sentences, token_buffer = _split_sentences(token_buffer)
@@ -4082,6 +4095,7 @@ class AgentCore(AgentCoreBase):
                     # GH-403: what the caller actually waits for. latency_ms is
                     # time to the LAST sentence; these two are time to the model
                     # starting and to the first sentence reaching the channel.
+                    "llm_ttft_ms": _timings["llm_ttft_ms"],
                     "first_token_ms": _timings["first_token_ms"],
                     "first_sentence_ms": _timings["first_sentence_ms"],
                     "model": model_used,
@@ -4095,12 +4109,13 @@ class AgentCore(AgentCoreBase):
                 "\n═══════════════════════════════════════════════════════════════\n"
                 "  STREAM TURN COMPLETE  session=%s  intent=%s  tool_used=%s\n"
                 "  model=%s  total_latency=%dms  next_subagent=%s  sentences=%d\n"
-                "  first_token=%sms  first_sentence=%sms\n"
+                "  llm_ttft=%sms  first_token=%sms  first_sentence=%sms\n"
                 "  response: %r\n"
                 "═══════════════════════════════════════════════════════════════",
                 session_id, nlu_result.intent, was_tool_used,
                 model_used, latency_ms, next_subagent_id, sentence_index,
-                _timings["first_token_ms"], _timings["first_sentence_ms"],
+                _timings["llm_ttft_ms"], _timings["first_token_ms"],
+                _timings["first_sentence_ms"],
                 full_response_text.strip()[:200],
             )
 
