@@ -58,6 +58,11 @@ reach_layer:
       # PoC calls it was the English "Thank you", spoken to Hindi callers at
       # the end of every terminated turn.
       terminal_word: "धन्यवाद"
+      # VoicERA offers this tool when the agent has automatic_call_ending
+      # and graceful_llm_call_ending enabled. On session end the bridge calls
+      # it after the goodbye, and VoicERA hangs up. Without it the line
+      # stayed open until the platform's max-duration timeout.
+      hangup_tool_name: "end_conversation"
 
     voice:
       # English / Hindi / Gujarati. VAD tuned for English (shorter

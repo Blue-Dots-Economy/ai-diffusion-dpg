@@ -591,6 +591,19 @@ so ending the stream after the last real sentence was rejected.
 
 #### Hanging up — the client's
 
+> **Amended 2026-09-28 — superseded.** On the PoC calls the line stayed open after
+> every goodbye until the telephony platform's max-duration timeout (VoicERA does
+> not enforce its own `call_timeout_seconds`). VoicERA's hangup path is its
+> `end_conversation` tool, offered in `tools` when the agent has
+> `automatic_call_ending.enabled` + `graceful_llm_call_ending`. The bridge now
+> calls it: on `DoneEvent.session_ended`, after the goodbye and `terminal_word`, it
+> emits a `tool_calls` delta for the tool named by `channels.bridge.hangup_tool_name`
+> and `finish_reason: "tool_calls"` — only if the request offered that tool. The
+> client's follow-up request carrying the tool result (last message `role: tool`)
+> is answered with an empty completion and never forwarded to Agent Core. The
+> `tools` decision below is amended accordingly: client tools are still never
+> forwarded, and the hangup tool is the only one ever called.
+
 **The shim does not end calls, and does not try to.** It has no access to the caller's
 line; the client owns the call and its own call-ending behaviour — idle timeout, silence
 detection, whatever it already does — is what terminates it. This is the same division as

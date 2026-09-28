@@ -20,11 +20,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.agent_core_client import AgentCoreClient, AgentCoreError
-from src.openai_models import build_error
+from src.openai_models import build_completion, build_error, new_completion_id
 from src.translate import (
     SSE_DONE,
     RequestError,
     StreamTranslator,
+    is_tool_result_followup,
+    offered_hangup_tool,
     sse,
     to_completion,
     to_turn_request,
@@ -64,7 +66,8 @@ def create_app(config: dict) -> FastAPI:
     Args:
         config: Requires ``agent_core_url``. Optional ``channel`` (default
             ``"bridge"``), ``terminal_word`` (default ``""``), ``timeout_s``
-            (default ``60.0``).
+            (default ``60.0``), ``hangup_tool_name`` (default ``""``, which
+            disables hanging up).
 
     Returns:
         A configured FastAPI app serving ``POST /v1/chat/completions`` and
@@ -74,6 +77,7 @@ def create_app(config: dict) -> FastAPI:
 
     channel = config.get("channel", "bridge")
     terminal_word = config.get("terminal_word", "")
+    hangup_tool_name = config.get("hangup_tool_name", "")
     client = AgentCoreClient(
         config["agent_core_url"], timeout_s=config.get("timeout_s", 60.0)
     )
@@ -150,6 +154,24 @@ def create_app(config: dict) -> FastAPI:
             return _error_response(400, "Request body must be a JSON object.",
                                     "invalid_request_error")
 
+        if is_tool_result_followup(body):
+            # The client is handing back the result of the hangup call. The
+            # conversation is over; answer with nothing rather than replay
+            # the caller's goodbye to Agent Core as a new turn.
+            logger.info(
+                "bridge.tool_result_followup",
+                extra={"operation": "server.chat_completions", "status": "skipped"},
+            )
+            model = str(body.get("model") or "")
+            if body.get("stream"):
+                return StreamingResponse(
+                    _empty_stream(model),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                )
+            return JSONResponse(content=build_completion(
+                new_completion_id(), int(time.time()), model, ""))
+
         try:
             turn = to_turn_request(body, channel=channel)
         except RequestError as exc:
@@ -167,8 +189,10 @@ def create_app(config: dict) -> FastAPI:
             include_usage = bool(
                 (body.get("stream_options") or {}).get("include_usage")
             )
+            hangup_tool = offered_hangup_tool(body, hangup_tool_name)
             return StreamingResponse(
-                _stream(client, turn, model, terminal_word, include_usage, session_id),
+                _stream(client, turn, model, terminal_word, include_usage,
+                        session_id, hangup_tool),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
@@ -202,6 +226,22 @@ def create_app(config: dict) -> FastAPI:
         return JSONResponse(content=to_completion(data, model))
 
     return app
+
+
+async def _empty_stream(model: str) -> AsyncIterator[str]:
+    """Render a well-formed stream that says nothing.
+
+    Args:
+        model: The client's requested model, echoed on every chunk.
+
+    Yields:
+        The role chunk, a ``stop`` chunk, and the ``[DONE]`` sentinel.
+    """
+    translator = StreamTranslator(model)
+    yield sse(translator.opening())
+    for chunk in translator.finish({"session_ended": False}, include_usage=False):
+        yield sse(chunk)
+    yield SSE_DONE
 
 
 def _schedule_cancel(client: AgentCoreClient, session_id: str) -> None:
@@ -239,7 +279,8 @@ def _schedule_cancel(client: AgentCoreClient, session_id: str) -> None:
 
 async def _stream(client: AgentCoreClient, turn: dict, model: str,
                    terminal_word: str, include_usage: bool,
-                   session_id: str) -> AsyncIterator[str]:
+                   session_id: str,
+                   hangup_tool: str | None = None) -> AsyncIterator[str]:
     """Render one Agent Core event stream as OpenAI SSE chunks.
 
     On client disconnect the Agent Core turn is cancelled (spec section 8):
@@ -297,12 +338,14 @@ async def _stream(client: AgentCoreClient, turn: dict, model: str,
             chunk via ``stream_options.include_usage``.
         session_id: The caller's phone number — used only to address the
             cancel call, never logged.
+        hangup_tool: Client-offered tool to call when the turn ends the
+            session, or None to just stop.
 
     Yields:
         SSE-framed ``chat.completion.chunk`` payloads, ending in the
         ``data: [DONE]`` sentinel on a normal finish.
     """
-    translator = StreamTranslator(model, terminal_word)
+    translator = StreamTranslator(model, terminal_word, hangup_tool)
     finished = False
     start = time.time()
     try:

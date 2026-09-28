@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from typing import Any, Optional
 
 from src.identity import IdentityError, extract_caller_phone
@@ -126,6 +127,53 @@ def to_turn_request(body: dict, *, channel: str) -> dict[str, Any]:
     }
 
 
+def offered_hangup_tool(body: dict, name: str) -> Optional[str]:
+    """Return ``name`` if the client offered a function tool by that name.
+
+    The hangup call is only ever emitted against a tool the client declared in
+    ``tools``: a call to a function the client does not know is a protocol
+    error on its side, not a hangup.
+
+    Args:
+        body: Parsed chat-completions request body.
+        name: Configured hangup tool name. Empty disables hanging up.
+
+    Returns:
+        ``name`` when offered, otherwise None.
+    """
+    if not name:
+        return None
+    for tool in body.get("tools") or []:
+        if not isinstance(tool, dict) or tool.get("type") != "function":
+            continue
+        function = tool.get("function")
+        if isinstance(function, dict) and function.get("name") == name:
+            return name
+    return None
+
+
+def is_tool_result_followup(body: dict) -> bool:
+    """True when the request only carries a tool result back to the model.
+
+    After a ``tool_calls`` response the client runs the tool and re-invokes the
+    model with the result as the newest message. The only tool this shim ever
+    calls is the hangup, so there is nothing left to say — and forwarding the
+    request would replay the caller's last utterance (the goodbye) to Agent
+    Core as a fresh turn.
+
+    Args:
+        body: Parsed chat-completions request body.
+
+    Returns:
+        True if the newest message has role ``tool``.
+    """
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return False
+    last = messages[-1]
+    return isinstance(last, dict) and last.get("role") == "tool"
+
+
 # ---------------------------------------------------------------------------
 # Response translation (spec sections 8 and 9)
 # ---------------------------------------------------------------------------
@@ -161,7 +209,8 @@ class StreamTranslator:
     exactly one request. Never share an instance across requests.
     """
 
-    def __init__(self, model: str, terminal_word: str = "") -> None:
+    def __init__(self, model: str, terminal_word: str = "",
+                 hangup_tool: Optional[str] = None) -> None:
         """Initialise a translator for a single response.
 
         Args:
@@ -170,9 +219,13 @@ class StreamTranslator:
                 value is the only meaningful one to report.
             terminal_word: Closing word spoken when the turn ends the session.
                 Empty disables it.
+            hangup_tool: Name of the client-offered tool to call when the
+                turn ends the session (see :func:`offered_hangup_tool`). None
+                when the client offered none — the stream then just stops.
         """
         self._model = model
         self._terminal_word = terminal_word
+        self._hangup_tool = hangup_tool
         self._id = new_completion_id()
         self._created = int(time.time())
         self._emitted_content = False
@@ -218,16 +271,26 @@ class StreamTranslator:
 
         Returns:
             The closing chunks in emission order. The caller appends
-            ``SSE_DONE`` after these. ``finish_reason`` is always the literal
-            ``"stop"`` — the only value this method ever emits, out of the
-            five the contract permits, since the DoneEvent carries no field
-            that maps to ``length``, ``tool_calls``, ``content_filter`` or
-            ``function_call``.
+            ``SSE_DONE`` after these. ``finish_reason`` is ``"tool_calls"``
+            when the session ended and the client offered a hangup tool —
+            the call to it follows the terminal word, so the client speaks
+            the goodbye before acting on the hangup — and ``"stop"``
+            otherwise.
         """
         out: list[dict] = []
-        if done.get("session_ended") and self._terminal_word:
+        ended = bool(done.get("session_ended"))
+        if ended and self._terminal_word:
             out.append(self.sentence(self._terminal_word))
-        out.append(self._chunk(delta={}, finish_reason="stop"))
+        if ended and self._hangup_tool:
+            out.append(self._chunk(delta={"tool_calls": [{
+                "index": 0,
+                "id": "call_" + uuid.uuid4().hex[:24],
+                "type": "function",
+                "function": {"name": self._hangup_tool, "arguments": "{}"},
+            }]}))
+            out.append(self._chunk(delta={}, finish_reason="tool_calls"))
+        else:
+            out.append(self._chunk(delta={}, finish_reason="stop"))
         if include_usage:
             out.append(self._chunk(usage=ZERO_USAGE, empty_choices=True))
         return out
