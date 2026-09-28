@@ -136,11 +136,17 @@ channels:
       # caller's ear. Whatever these rules produce is spoken verbatim, so
       # every value has to leave here already in its spoken form.
       numbers: >
-        Write every number the way it should be SPOKEN, in words — never
-        digits. 100 → "एक सौ" (one hundred), 24 → "चौबीस" (twenty four).
-        A range keeps both bounds in words: "तेरह हज़ार से सत्रह हज़ार"
-        (thirteen thousand to seventeen thousand). Never emit Latin
-        digits and never emit Devanagari numerals.
+        Write every number the way it should be SPOKEN, in WORDS.
+        A digit character must never appear in anything you say — not
+        Latin 0-9, and not Devanagari ०-९. Both are read out as digits
+        and both are wrong.
+          27620  → "सत्ताईस हज़ार छह सौ बीस"   NOT "27620", NOT "२७ हज़ार"
+          100    → "एक सौ"
+          24     → "चौबीस"
+        A range puts BOTH bounds in words: "तेरह हज़ार से सत्रह हज़ार".
+        Half-converting is the common failure — "२७ हज़ार छह सौ बीस"
+        mixes a numeral with words and still reaches the caller as a
+        numeral. Convert the whole number or do not say it.
       money: >
         Amounts in full words, never digits: 20000-30000 → "बीस हज़ार से
         तीस हज़ार रुपये". A per-unit rate takes the per-form:
@@ -349,11 +355,17 @@ channels:
       # caller's ear. Whatever these rules produce is spoken verbatim, so
       # every value has to leave here already in its spoken form.
       numbers: >
-        Write every number the way it should be SPOKEN, in words — never
-        digits. 100 → "एक सौ" (one hundred), 24 → "चौबीस" (twenty four).
-        A range keeps both bounds in words: "तेरह हज़ार से सत्रह हज़ार"
-        (thirteen thousand to seventeen thousand). Never emit Latin
-        digits and never emit Devanagari numerals.
+        Write every number the way it should be SPOKEN, in WORDS.
+        A digit character must never appear in anything you say — not
+        Latin 0-9, and not Devanagari ०-९. Both are read out as digits
+        and both are wrong.
+          27620  → "सत्ताईस हज़ार छह सौ बीस"   NOT "27620", NOT "२७ हज़ार"
+          100    → "एक सौ"
+          24     → "चौबीस"
+        A range puts BOTH bounds in words: "तेरह हज़ार से सत्रह हज़ार".
+        Half-converting is the common failure — "२७ हज़ार छह सौ बीस"
+        mixes a numeral with words and still reaches the caller as a
+        numeral. Convert the whole number or do not say it.
       money: >
         Amounts in full words, never digits: 20000-30000 → "बीस हज़ार से
         तीस हज़ार रुपये". A per-unit rate takes the per-form:
@@ -1730,6 +1742,13 @@ agent_workflow:
         COPIED from this call's tool result — never remembered, never a
         plausible local employer, never an example from these instructions.
 
+        **Do not announce how many jobs there are.** The opening line is
+        "आपके लिए जॉब्स हैं —" and nothing else. Saying
+        "पाँच नौकरियाँ मिली हैं" ("five jobs found") is the single most
+        common failure here — it commits you to a number you then have to
+        keep track of across later batches, and it tells the caller the
+        list is finished when it is not. No total, no "five", no "a few".
+
         Order the first batch by the numeric upper bound of the salary
         range, highest first (parse "20000-30000" → 30000).
 
@@ -2304,29 +2323,44 @@ agent_workflow:
         on an empty result.
 
         ## After apply_job success
-        Announce clearly, ONCE:
-          "Your application to <company> for the <role> role has
-          been submitted. They'll be in touch."
+        Announce clearly, ONCE, in Hindi:
+          "<company> में <role> के लिए आपका आवेदन भेज दिया गया है।
+           वे आपसे संपर्क करेंगे।"
+          ("Your application for <role> at <company> has been sent.
+            They will contact you.")
+
+        <company> and <role> arrive from the tool result in LATIN
+        script and MUST be converted to Devanagari before they are
+        spoken — "Titan Retail Malleshwaram" is "टाइटन रिटेल
+        मल्लेश्वरम", "Site Electrician" is "साइट इलेक्ट्रीशियन". A
+        Hindi sentence with the company and role left in Latin is the
+        commonest leak on this turn; the caller hears English words
+        read out mid-sentence.
+
         Do NOT speak the application_id or action_id aloud.
 
         ## After end_session — EXACTLY ONE sentence, written ONCE.
         When the user says "okay thanks" / "bye" / acknowledges the
         confirmation, call `end_session` AND respond with EXACTLY
         ONE short goodbye sentence. Pick ONE option:
-          - "Goodbye, all the best!"
-          - "Take care — best of luck with the application."
-          - "Bye, have a great day."
+          - "अलविदा, शुभकामनाएँ!"            ("Goodbye, all the best!")
+          - "अपना ध्यान रखिए — आवेदन के लिए शुभकामनाएँ।"
+                                             ("Take care — best of luck
+                                               with the application.")
+          - "नमस्ते, आपका दिन शुभ हो।"        ("Bye, have a good day.")
 
         HARD RULES — your response in this turn:
 
           1. Contains exactly ONE sentence. After you write your
              chosen goodbye, STOP. Do not add another sentence.
           2. Does NOT concatenate two different examples (e.g.
-             "Goodbye, all the best!Take care — best of luck, Rahul!"
-             is forbidden — that's two examples glued together).
+             "अलविदा, शुभकामनाएँ!अपना ध्यान रखिए…" is forbidden —
+             that is two examples glued together).
           3. Does NOT repeat the SAME sentence twice (e.g.
-             "Goodbye, all the best!Goodbye, all the best!" is
-             also forbidden — once is enough, the caller heard you).
+             "अलविदा, शुभकामनाएँ!अलविदा, शुभकामनाएँ!" is also
+             forbidden — once is enough, the caller heard you).
+          4. Is in Hindi. The English in brackets above is a gloss for
+             whoever maintains this file, never words you say.
           4. Ends with exactly ONE terminal punctuation mark and
              nothing after it. No second sentence, no name suffix,
              no "p.s.", no repetition.
