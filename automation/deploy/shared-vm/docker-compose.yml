@@ -156,7 +156,15 @@ services:
   memgraph:
     image: memgraph/memgraph:2.17.0
     container_name: dpg_memgraph
-    volumes: [memgraph_data:/var/lib/memgraph]
+    # The image declares VOLUME on /var/log/memgraph and /etc/memgraph as well.
+    # Left unnamed, Docker creates a fresh anonymous volume for each on every
+    # recreate and orphans the previous pair — they accumulate silently and are
+    # only reclaimed by a manual `docker volume prune`. Naming them also keeps
+    # Memgraph's own logs and config across a redeploy.
+    volumes:
+      - memgraph_data:/var/lib/memgraph
+      - memgraph_log:/var/log/memgraph
+      - memgraph_etc:/etc/memgraph
     networks: [dpg_net]
     logging: *logging
     healthcheck:
@@ -530,3 +538,5 @@ volumes:
   grafana_data:
   prometheus_data:
   loki_data:
+  memgraph_log:
+  memgraph_etc:
