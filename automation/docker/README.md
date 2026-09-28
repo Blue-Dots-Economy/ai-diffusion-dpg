@@ -3,6 +3,8 @@
 ## Prerequisites
 - Docker Desktop installed and running
 - `ANTHROPIC_API_KEY` (get one from [console.anthropic.com](https://console.anthropic.com))
+- To **build** the DPG images locally (`--build`, or no pre-built image available): `docker login dhi.io` with a Docker Hub account. Every Dockerfile is based on [Docker Hardened Images](https://hub.docker.com/hardened-images/catalog), and dhi.io refuses anonymous pulls. Pulling the pre-built images from GHCR does not need it.
+- The runtime images have **no shell** — `docker compose exec <service> sh` does not work. Use exec form with the venv's python instead, e.g. `docker compose exec agent_core python -c "..."`.
 
 ---
 

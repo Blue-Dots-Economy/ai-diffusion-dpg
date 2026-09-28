@@ -16,7 +16,10 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "observability-layer",
     "opentelemetry-instrumentation-httpx>=0.61b0",
-    "mcp>=1.0",
+    # <2: mcp 2.x removed mcp.server.lowlevel.server.RequestContext, which
+    # src/server.py imports. There is no uv.lock, so an open range resolves
+    # the newest major at image build time.
+    "mcp>=1.0,<2",
 ]
 
 [project.optional-dependencies]

@@ -4,6 +4,9 @@
 # Runs the CLI channel adapter as an interactive REPL against Agent Core.
 # Intended for development and demos; production CLI use is rare.
 #
+# Both stages are Docker Hardened Images from dhi.io, which refuses anonymous
+# pulls — building needs `docker login dhi.io`.
+#
 # Must be built from the repo root so ../base and observability_layer are in
 # the build context. Use automation/docker/docker-compose.dev.yml which sets
 # the correct context automatically.
@@ -11,14 +14,18 @@
 #   docker compose -f docker-compose.dev.yml run --rm reach_layer_cli
 # =============================================================================
 
-FROM python:3.14-slim AS builder
+# The DHI *dev* variant is the only one that carries a shell and a package
+# manager. Its python lives under /usr/bin — the same path as in the runtime
+# variant — so the venv's interpreter symlink resolves in both stages.
+FROM dhi.io/python:3.14-debian13-dev AS builder
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=dhi.io/uv:0 /usr/local/bin/uv /usr/local/bin/uv
 
 WORKDIR /app
 
 ENV UV_COMPILE_BYTECODE=0 \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never
 
 # Copy the shared reach_layer_base package and observability_layer so uv can
 # resolve the local-path dependencies declared in pyproject.toml.
@@ -36,30 +43,29 @@ RUN uv sync --no-dev --no-cache --no-install-project
 # -----------------------------------------------------------------------------
 # Stage 2: runtime
 # -----------------------------------------------------------------------------
-FROM python:3.14-slim AS runtime
+# Hardened runtime: no shell, no package manager, runs as the unprivileged
+# `nonroot` user (uid 65532). No RUN instruction is possible past this line —
+# everything arrives via COPY, and uv is not needed because the venv's python
+# is on PATH.
+FROM dhi.io/python:3.14-debian13 AS runtime
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-
-RUN addgroup --system reachlayer && adduser --system --ingroup reachlayer reachlayer
-
+# USER before WORKDIR: BuildKit creates the WORKDIR owned by the current user,
+# so /app itself is writable by nonroot (the old `RUN chown -R` did this, and
+# a RUN is not possible here).
+USER nonroot
 WORKDIR /app
 
-COPY --from=builder /app/.venv /app/.venv
-COPY --from=builder /reach_layer_base /reach_layer_base
-COPY --from=builder /observability_layer /observability_layer
+COPY --chown=nonroot:nonroot --from=builder /app/.venv /app/.venv
+COPY --chown=nonroot:nonroot --from=builder /reach_layer_base /reach_layer_base
+COPY --chown=nonroot:nonroot --from=builder /observability_layer /observability_layer
 
-COPY reach_layer/cli/main.py ./
-COPY reach_layer/cli/src/ ./src/
+COPY --chown=nonroot:nonroot reach_layer/cli/main.py ./
+COPY --chown=nonroot:nonroot reach_layer/cli/src/ ./src/
 # Unified Reach Layer config lives one level up, shared across cli/web/voice.
-COPY reach_layer/config/ ./config/
-
-RUN chown -R reachlayer:reachlayer /app
-
-USER reachlayer
+COPY --chown=nonroot:nonroot reach_layer/config/ ./config/
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    UV_NO_CACHE=1 \
     PATH="/app/.venv/bin:$PATH" \
     VIRTUAL_ENV=/app/.venv
 

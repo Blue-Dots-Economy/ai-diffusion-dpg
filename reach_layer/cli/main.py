@@ -40,8 +40,11 @@ except ImportError:  # pragma: no cover — dev fallback
     from src.cli_reach import CLIReachLayer
 
 # Load .env.local first (developer overrides), then .env (shared defaults).
-_env_local = Path(__file__).resolve().parents[2] / ".env.local"
-if _env_local.exists():
+# The repo root is two levels up in a checkout; in the container main.py sits
+# at /app, which has no grandparent, so indexing parents[2] would raise.
+_parents = Path(__file__).resolve().parents
+_env_local = _parents[2] / ".env.local" if len(_parents) > 2 else None
+if _env_local is not None and _env_local.exists():
     load_dotenv(_env_local)
 load_dotenv()
 
