@@ -1237,12 +1237,17 @@ class AgentCore(AgentCoreBase):
         # Layer client by design), so the write lands here, where the sync path
         # already owns state. Mirrors the inline handling in stream_turn.
         for _tc in tool_calls or []:
-            if self._tool_registry.get_route(_tc.tool_name) == "session_memory":
+            _scope = self._FACT_ROUTE_SCOPES.get(
+                self._tool_registry.get_route(_tc.tool_name) or ""
+            )
+            if _scope:
                 for _k, _v in (_tc.input_params or {}).items():
                     if _v in (None, "", [], {}):
                         continue
-                    self._write_memory_sync(session_id, user_id, "session", _k, _v)
+                    self._write_memory_sync(session_id, user_id, _scope, _k, _v)
                     bundle.session[_k] = _v
+                    if _scope == "persistent":
+                        bundle.profile[_k] = _v
 
         # #193: persist this turn's tool exchanges so the next turn can
         # replay them. run_turn returns ToolResult objects; _capture_tool_exchange
@@ -1464,21 +1469,34 @@ class AgentCore(AgentCoreBase):
         # Pass 3: fallback
         return self._workflow.default_fallback_subagent_id, None
 
+    # Internal-connector routes that write an LLM-reported fact into memory,
+    # mapped to the Memory Layer scope each one writes at. Two scopes because
+    # the facts differ in lifetime: how far through THIS call the caller has
+    # got is meaningless on the next one, while their age and trade are the
+    # profile. This mirrors the scopes NLU entity persistence used, so a
+    # domain that switches NLU off keeps the same cross-call behaviour.
+    _FACT_ROUTE_SCOPES = {
+        "session_memory": "session",
+        "profile_memory": "persistent",
+    }
+
     async def _write_session_facts(
         self, session_id: str, user_id: str, params: dict, bundle,
+        scope: str = "session",
     ) -> list[str]:
-        """Persist an LLM-reported fact tool's arguments into session state.
+        """Persist an LLM-reported fact tool's arguments into memory.
 
-        Replaces NLU entity extraction for routing-relevant facts. Only
-        non-empty values are written, so a tool call that omits a field (or
-        sends null because the caller did not say it) never clobbers a value
-        already on record.
+        Replaces NLU entity extraction. Only non-empty values are written, so a
+        tool call that omits a field (or sends null because the caller did not
+        say it) never clobbers a value already on record.
 
         Args:
             session_id: Session whose state receives the write.
             user_id: Owning user, for the Memory Layer write.
             params: The tool call's input parameters.
             bundle: Live context bundle; updated so the same turn sees the value.
+            scope: Memory Layer scope — "session" for per-call routing state,
+                "persistent" for durable caller facts.
 
         Returns:
             The field names actually written, for the tool result payload.
@@ -1487,8 +1505,13 @@ class AgentCore(AgentCoreBase):
         for key, val in (params or {}).items():
             if val in (None, "", [], {}):
                 continue
-            await self._async_memory.write(session_id, user_id, "session", key, val)
+            await self._async_memory.write(session_id, user_id, scope, key, val)
             bundle.session[key] = val
+            # Same-turn overlay: prompt assembly reads bundle.profile, which was
+            # snapshotted before the LLM ran. Without this the model asks again
+            # for what the caller just answered.
+            if scope == "persistent":
+                bundle.profile[key] = val
             written.append(key)
         logger.info(
             "orchestrator.session_facts_written",
@@ -3844,9 +3867,12 @@ class AgentCore(AgentCoreBase):
                     # Routing for THIS turn has already been decided, so the value
                     # only takes effect on the next turn. That one-turn lag is
                     # inherent — the subagent is chosen before the LLM runs.
-                    elif self._tool_registry.get_route(tc.tool_name) == "session_memory":
+                    elif self._tool_registry.get_route(tc.tool_name) in self._FACT_ROUTE_SCOPES:
                         written = await self._write_session_facts(
                             session_id, user_id, tc.input_params or {}, bundle,
+                            scope=self._FACT_ROUTE_SCOPES[
+                                self._tool_registry.get_route(tc.tool_name)
+                            ],
                         )
                         tool_result = ToolResult(
                             tool_use_id=tc.tool_use_id,

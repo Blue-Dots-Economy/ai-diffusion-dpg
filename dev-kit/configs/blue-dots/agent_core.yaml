@@ -688,10 +688,6 @@ connectors:
             description: >
               opening phase. "granted" if the caller agreed to their details
               being saved, "declined" if they refused.
-          age:
-            type: integer
-            description: >
-              opening phase. The caller's age in years. Omit if not stated.
           selected_job_item_id:
             type: string
             description: >
@@ -716,6 +712,54 @@ connectors:
             description: >
               apply_confirm phase. Send "explore_more" if the caller wants to
               see other jobs instead of finishing here.
+        additionalProperties: false
+
+    # Durable caller facts. Separate tool because these write at PERSISTENT
+    # scope — they are the caller's profile and must come back on the next
+    # call, exactly as NLU entity persistence used to store them. The
+    # per-call routing state above must NOT outlive the session, which is why
+    # the two are not merged into one tool.
+    - name: record_profile_facts
+      route: profile_memory
+      description: >
+        Record a detail the caller told you about themselves. Call this on the
+        SAME turn you hear it, in addition to replying normally. Send only what
+        they actually said — omit anything they did not. Never guess, and never
+        re-send a value that is already on file unless they corrected it.
+      input_schema:
+        type: object
+        properties:
+          age:
+            type: integer
+            description: The caller's age in years.
+          name:
+            type: string
+            description: The caller's full name, as they said it.
+          trade:
+            type: string
+            description: >
+              The trade or kind of work they are looking for, e.g. welder,
+              electrician, driver.
+          location:
+            type: string
+            description: The city or town they want to work in.
+          gender:
+            type: string
+          qualification:
+            type: string
+            description: Their highest qualification, if stated.
+          work_experience:
+            type: string
+            description: Free-text description of their experience.
+          experience_years:
+            type: integer
+            description: Years of experience, if they gave a number.
+          job_nature:
+            type: string
+            description: Full-time, part-time, contract, etc., if stated.
+          monthly_in_hand:
+            type: string
+            description: Expected monthly in-hand pay, if stated.
         additionalProperties: false
 
 preprocessing:
@@ -1305,7 +1349,7 @@ agent_workflow:
 
       # Nothing is fetched or written before consent and age are settled.
       # (The orchestrator still appends end_session to every subagent.)
-      tools: [record_facts]
+      tools: [record_facts, record_profile_facts]
 
       system_prompt: |
         You are in the **opening** phase. It has exactly two questions,
@@ -1322,8 +1366,9 @@ agent_workflow:
         this phase. If a reply tells you either of these, call
         `record_facts` on that same turn:
 
-          - they agreed or refused  -> consent_response: "granted" | "declined"
-          - they gave their age     -> age: <number>
+          - they agreed or refused  -> `record_facts` with
+            consent_response: "granted" | "declined"
+          - they gave their age     -> `record_profile_facts` with age: <number>
 
         Send only what they actually said. If they answered consent but not
         age, send consent_response alone. If they said "मैं चौबीस साल का हूँ"
@@ -1652,9 +1697,22 @@ agent_workflow:
 
       tools:
         - fetch_profile
+        - record_profile_facts
 
       system_prompt: |
         You are in the **profile_resolve** phase.
+
+        ## You must record every detail you hear
+        Nothing else remembers the caller's answers for you. Each time they
+        tell you one of these, call `record_profile_facts` on that same turn:
+
+          name, age, trade, location, gender, qualification,
+          work_experience, experience_years, job_nature, monthly_in_hand
+
+        If you do not, the answer is lost and you will ask the same question
+        again on the next turn — which is exactly what the caller experiences
+        as the bot not listening. Send only what they actually said. Reply in
+        the same turn as well; the tool call is not a substitute for speaking.
 
         ## On entry — call fetch_profile AND respond in the SAME turn
         If `fetch_profile` has NOT been called yet this session, your
@@ -2168,10 +2226,17 @@ agent_workflow:
       tools:
         - save_profile
         - record_facts
+        - record_profile_facts
 
       system_prompt: |
         You are in **profile_setup**. profile_action in session is
         either "create_new" or "update_existing".
+
+        ## Record each field as you collect it
+        Every detail the caller gives you here — name, trade, location,
+        gender, qualification, experience — must go to `record_profile_facts`
+        on the turn you hear it, before save_profile is called. save_profile
+        reads what has been recorded; anything you did not record is not there.
 
         ## You must record completion
         After `save_profile` returns successfully, call `record_facts` with

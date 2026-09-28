@@ -241,7 +241,7 @@ class ManagerAgent:
 
                 if self._registry.get_route(tool_call.tool_name) == "knowledge_engine":
                     tool_result = self._execute_knowledge_retrieval(tool_call, ke_context)
-                elif self._registry.get_route(tool_call.tool_name) == "session_memory":
+                elif self._registry.get_route(tool_call.tool_name) in ("session_memory", "profile_memory"):
                     # Acknowledged here, persisted by the orchestrator after the
                     # loop — Manager Agent holds no Memory Layer client, and
                     # giving it one would cross a block boundary it deliberately
