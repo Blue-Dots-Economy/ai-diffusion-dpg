@@ -290,6 +290,10 @@ class LanguageNormalisationConfig(BaseModel):
 
 
 class NLUProcessorConfig(BaseModel):
+    enabled: bool = Field(
+        default=True,
+        description="When false, NLU is skipped entirely: no LLM call, intent becomes the catch-all \"*\", entities empty. Only safe when no routing rule reads an NLU entity.",
+    )
     provider: Literal["anthropic", "openai", "ollama", "google"] | None = Field(
         default=None,
         description="Per-helper provider override. Lets a deployment run primary chat on one provider while keeping NLU on another. None → inherit agent.provider.",

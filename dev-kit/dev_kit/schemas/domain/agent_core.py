@@ -194,6 +194,15 @@ class LanguageNormalisationSection(BaseModel):
 
 class NLUProcessorSection(BaseModel):
     """NLU classifier helper config. provider=None inherits agent.provider; intents must be non-empty."""
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "When false the NLU step is skipped entirely — no LLM call, intent "
+            "becomes the catch-all \"*\", entities empty. Only safe when no routing "
+            "rule reads an NLU entity and no subagent routes on a named intent."
+        ),
+    )
     model_config = ConfigDict(extra="forbid")
     provider: Optional[ProviderField] = None   # None → inherit agent.provider at runtime
     model: str = ""   # empty allowed — helper inherits agent.primary_model at runtime

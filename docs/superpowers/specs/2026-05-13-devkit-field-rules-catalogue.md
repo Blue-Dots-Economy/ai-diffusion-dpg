@@ -114,6 +114,7 @@ Phase = `language` unless otherwise noted.
 | `preprocessing.language_normalisation.enabled` | Default `true`; advanced. KKB sets `false` (GH-313 perf). |
 | `preprocessing.language_normalisation.provider` | Optional per-helper override of `agent.provider`. |
 | `preprocessing.language_normalisation.model` | Optional per-helper override. |
+| `preprocessing.nlu_processor.enabled` | Run the NLU step at all. `false` skips the LLM call; intent becomes the catch-all `*` and no entities are extracted. Only safe when routing uses catch-all rules exclusively. |
 | `preprocessing.nlu_processor.provider` | Optional per-helper override. |
 | `preprocessing.nlu_processor.model` | Optional per-helper override. |
 | `preprocessing.nlu_processor.domain_instruction` | Domain-specific NLU classifier instructions. Invalidated by `domain_description`, `default_language`. |

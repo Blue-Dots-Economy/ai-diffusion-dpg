@@ -241,6 +241,19 @@ class ManagerAgent:
 
                 if self._registry.get_route(tool_call.tool_name) == "knowledge_engine":
                     tool_result = self._execute_knowledge_retrieval(tool_call, ke_context)
+                elif self._registry.get_route(tool_call.tool_name) == "session_memory":
+                    # Acknowledged here, persisted by the orchestrator after the
+                    # loop — Manager Agent holds no Memory Layer client, and
+                    # giving it one would cross a block boundary it deliberately
+                    # does not cross. The call is recorded in all_tool_calls
+                    # below, which is what the orchestrator reads.
+                    tool_result = ToolResult(
+                        tool_use_id=tool_call.tool_use_id,
+                        tool_name=tool_call.tool_name,
+                        result={"recorded": sorted((tool_call.input_params or {}).keys())},
+                        success=True,
+                        result_text="Noted.",
+                    )
                 else:
                     tool_result = self._execute_tool(tool_call, session_id, user_id)
                 all_tool_calls.append(tool_call)

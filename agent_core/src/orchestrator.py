@@ -1232,6 +1232,18 @@ class AgentCore(AgentCoreBase):
             session_values=self._tool_session_values(bundle),
         )
 
+        # Persist any facts the LLM reported via a "session_memory" tool. The
+        # Manager Agent acknowledged these but cannot write them (no Memory
+        # Layer client by design), so the write lands here, where the sync path
+        # already owns state. Mirrors the inline handling in stream_turn.
+        for _tc in tool_calls or []:
+            if self._tool_registry.get_route(_tc.tool_name) == "session_memory":
+                for _k, _v in (_tc.input_params or {}).items():
+                    if _v in (None, "", [], {}):
+                        continue
+                    self._write_memory_sync(session_id, user_id, "session", _k, _v)
+                    bundle.session[_k] = _v
+
         # #193: persist this turn's tool exchanges so the next turn can
         # replay them. run_turn returns ToolResult objects; _capture_tool_exchange
         # expects the tool_result content dicts that go into messages, so
@@ -1451,6 +1463,43 @@ class AgentCore(AgentCoreBase):
 
         # Pass 3: fallback
         return self._workflow.default_fallback_subagent_id, None
+
+    async def _write_session_facts(
+        self, session_id: str, user_id: str, params: dict, bundle,
+    ) -> list[str]:
+        """Persist an LLM-reported fact tool's arguments into session state.
+
+        Replaces NLU entity extraction for routing-relevant facts. Only
+        non-empty values are written, so a tool call that omits a field (or
+        sends null because the caller did not say it) never clobbers a value
+        already on record.
+
+        Args:
+            session_id: Session whose state receives the write.
+            user_id: Owning user, for the Memory Layer write.
+            params: The tool call's input parameters.
+            bundle: Live context bundle; updated so the same turn sees the value.
+
+        Returns:
+            The field names actually written, for the tool result payload.
+        """
+        written: list[str] = []
+        for key, val in (params or {}).items():
+            if val in (None, "", [], {}):
+                continue
+            await self._async_memory.write(session_id, user_id, "session", key, val)
+            bundle.session[key] = val
+            written.append(key)
+        logger.info(
+            "orchestrator.session_facts_written",
+            extra={
+                "operation": "orchestrator._write_session_facts",
+                "status": "success",
+                "session_id": session_id,
+                "fields": written,
+            },
+        )
+        return written
 
     @staticmethod
     def _tool_session_values(bundle) -> dict:
@@ -3785,6 +3834,26 @@ class AgentCore(AgentCoreBase):
                             result={"acknowledged": True},
                             success=True,
                             result_text="Session end acknowledged.",
+                        )
+                    # Internal tools routed to "session_memory" write their own
+                    # arguments straight into session state. This is the
+                    # LLM-driven replacement for NLU entity extraction: the model
+                    # already knows the caller said "24", so it reports the fact
+                    # instead of a second LLM re-reading the utterance to find it.
+                    #
+                    # Routing for THIS turn has already been decided, so the value
+                    # only takes effect on the next turn. That one-turn lag is
+                    # inherent — the subagent is chosen before the LLM runs.
+                    elif self._tool_registry.get_route(tc.tool_name) == "session_memory":
+                        written = await self._write_session_facts(
+                            session_id, user_id, tc.input_params or {}, bundle,
+                        )
+                        tool_result = ToolResult(
+                            tool_use_id=tc.tool_use_id,
+                            tool_name=tc.tool_name,
+                            result={"recorded": written},
+                            success=True,
+                            result_text="Noted.",
                         )
                     # Route internal tools (e.g. knowledge_retrieval) to KE,
                     # not through Action Gateway.

@@ -998,3 +998,53 @@ def test_triage_log_truncates_to_max_chars(caplog):
     triage = next(r.__dict__ for r in caplog.records if r.message == "nlu_processor.triage")
     assert len(triage["parsed_response"]) <= 50
     assert len(triage["user_message"]) <= 50
+
+
+# ---------------------------------------------------------------------------
+# preprocessing.nlu_processor.enabled: false — the step is skipped entirely
+# ---------------------------------------------------------------------------
+
+
+def _disabled_config() -> dict:
+    """CONFIG with the NLU step switched off."""
+    cfg = json.loads(json.dumps(CONFIG))
+    cfg.setdefault("preprocessing", {}).setdefault("nlu_processor", {})["enabled"] = False
+    return cfg
+
+
+def test_disabled_nlu_never_calls_the_llm():
+    """The whole point of the flag: no LLM call, so no latency."""
+    provider = make_provider_returning(intent="market_truth_query")
+    proc = NLUProcessor(_disabled_config(), chat_provider=provider)
+
+    proc.process("kaam chahiye Hubli mein", "", "")
+
+    provider.call.assert_not_called()
+
+
+def test_disabled_nlu_returns_the_routing_wildcard():
+    """Intent "*" matches every catch-all rule and no named-intent rule."""
+    proc = NLUProcessor(_disabled_config(), chat_provider=make_provider_returning(intent="x"))
+
+    result = proc.process("mera naam Ramesh hai", "", "")
+
+    assert result.intent == "*"
+    assert result.entities == {}
+    assert result.sentiment == "neutral"
+
+
+def test_disabled_nlu_confidence_stays_below_the_termination_threshold():
+    """Confidence 0.0 keeps the termination short-circuit from firing on an
+    unclassified turn — that path requires confidence >= its own threshold."""
+    proc = NLUProcessor(_disabled_config(), chat_provider=make_provider_returning(intent="x"))
+
+    assert proc.process("theek hai", "", "").confidence == 0.0
+
+
+def test_enabled_by_default_when_the_flag_is_absent():
+    """Existing domains with no `enabled` key must keep calling the LLM."""
+    provider = make_provider_returning(intent="scheme_query")
+    proc = NLUProcessor(CONFIG, chat_provider=provider)
+
+    assert proc.process("PMKVY ke baare mein batao", "", "").intent == "scheme_query"
+    provider.call.assert_called()

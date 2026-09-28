@@ -378,6 +378,17 @@ FIELD_RULES: dict[str, FieldRule] = {
 
     # ── Always-asked chat: preprocessing.nlu_processor.* ─────────────────────
 
+    "preprocessing.nlu_processor.enabled": FieldRule(
+        category="chat",
+        phase="language",
+        default=True,
+        description=(
+            "Run the NLU classification step? Turning it off removes an LLM call "
+            "from every turn, but also removes intent routing and entity extraction "
+            "— only choose false if routing uses catch-all rules exclusively."
+        ),
+        pydantic_class="PreprocessingSection",
+    ),
     "preprocessing.nlu_processor.provider": FieldRule(
         category="chat",
         phase="language",

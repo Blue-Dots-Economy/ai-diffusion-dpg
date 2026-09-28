@@ -422,6 +422,13 @@ class NLUProcessorConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    # GH-NLU-OFF: when false, NLUProcessor.process() returns a neutral result
+    # without calling the LLM. Intent becomes the catch-all "*", entities are
+    # empty, confidence is 0.0. Only safe when no routing rule reads an NLU
+    # entity and no subagent depends on a named intent — see the
+    # `record_opening_facts` internal tool, which replaces entity extraction.
+    enabled: bool = True
+
     # Per-helper provider override — see LanguageNormalisationConfig.provider.
     provider: Literal["anthropic", "openai", "ollama", "google"] | None = None
     model: str = ""

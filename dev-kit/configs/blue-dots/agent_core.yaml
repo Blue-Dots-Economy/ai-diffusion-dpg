@@ -655,7 +655,68 @@ connectors:
           माफ़ कीजिए, आवेदन जमा नहीं हो पाया। मैं दोबारा कोशिश करता हूँ।
         bridge_line: "मैं आपका आवेदन भेज रहा हूँ।"
 
-  internal: []   # No knowledge_retrieval — KE not used in this domain.
+  internal:
+    # No knowledge_retrieval — KE is not used in this domain.
+    #
+    # record_facts replaces NLU entity extraction for every fact the routing
+    # rules read. With preprocessing.nlu_processor.enabled: false
+    # there is no NLU pass to pull `age` and `consent_response` out of the
+    # caller's reply, so the model that already read the reply reports them
+    # directly. route: session_memory makes Agent Core write the arguments into
+    # session state rather than sending them to the Action Gateway.
+    #
+    # ONE-TURN LAG, deliberate and accepted. The subagent for a turn is chosen
+    # before the LLM runs, so a fact reported on turn N is only visible to
+    # routing on turn N+1. The U18 hard gate therefore catches a minor one turn
+    # after they state their age. The system prompt carries the same rule, so
+    # the model should refuse to proceed on its own; the routing gate is the
+    # backstop, not the only control.
+    - name: record_facts
+      route: session_memory
+      description: >
+        Record a fact the caller just told you. Call this on the SAME turn you
+        learn it, in addition to replying normally. Send only the fields you
+        actually heard — omit a field rather than guessing. The phase you are
+        in tells you which field applies; never send a field for a different
+        phase.
+      input_schema:
+        type: object
+        properties:
+          consent_response:
+            type: string
+            enum: ["granted", "declined"]
+            description: >
+              opening phase. "granted" if the caller agreed to their details
+              being saved, "declined" if they refused.
+          age:
+            type: integer
+            description: >
+              opening phase. The caller's age in years. Omit if not stated.
+          selected_job_item_id:
+            type: string
+            description: >
+              job_match phase. The item_id of the job the caller chose, copied
+              exactly from the search results you presented. Only when they
+              clearly picked one.
+          profile_action:
+            type: string
+            enum: ["use_existing", "create_new", "update_existing"]
+            description: >
+              profile_choice phase. Which of the three the caller chose.
+          profile_setup_done:
+            type: string
+            enum: ["true"]
+            description: >
+              profile_setup phase. Send "true" only after save_profile has
+              returned successfully — it is the completion signal that moves
+              the caller to apply_confirm.
+          next_step:
+            type: string
+            enum: ["explore_more"]
+            description: >
+              apply_confirm phase. Send "explore_more" if the caller wants to
+              see other jobs instead of finishing here.
+        additionalProperties: false
 
 preprocessing:
   language_normalisation:
@@ -683,6 +744,21 @@ preprocessing:
     code_switching: true
 
   nlu_processor:
+    # OFF. Measured at ~868ms p50 — roughly a third of a turn — while 80-93%
+    # of turns matched only the catch-all "*" rule, so the classification was
+    # discarded. With it off, NLUProcessor.process() returns intent "*" and no
+    # entities without calling an LLM.
+    #
+    # What this gave up, and where each went instead:
+    #   entity extraction (routing-relevant fields) -> record_facts tool
+    #   entity extraction (name, trade, location)  -> already collected by the
+    #       profile subagents through save_profile; nothing routed on them
+    #   named-intent routing (decline, etc.)       -> the one `intent: decline`
+    #       rule in `opening` is redundant with the consent_response rule above it
+    #   termination short-circuit                  -> session_end_eval in the
+    #       system prompt, which already owns hangup detection
+    #   signal_intents                             -> unused in this domain
+    enabled: false
     # NLU runs on the same OpenAI model as the rest of the stack, which is
     # the configuration the journey was validated on.
     #
@@ -1229,7 +1305,7 @@ agent_workflow:
 
       # Nothing is fetched or written before consent and age are settled.
       # (The orchestrator still appends end_session to every subagent.)
-      tools: []
+      tools: [record_facts]
 
       system_prompt: |
         You are in the **opening** phase. It has exactly two questions,
@@ -1240,6 +1316,22 @@ agent_workflow:
         sentence. There is no turn here where staying silent is correct —
         the caller is on a phone line and hears silence as a dropped call.
         If you are ever unsure what to say, ask the consent question.
+
+        ## You must record what you hear
+        Nothing else in the system reads the caller's answers for you in
+        this phase. If a reply tells you either of these, call
+        `record_facts` on that same turn:
+
+          - they agreed or refused  -> consent_response: "granted" | "declined"
+          - they gave their age     -> age: <number>
+
+        Send only what they actually said. If they answered consent but not
+        age, send consent_response alone. If they said "मैं चौबीस साल का हूँ"
+        ("I am twenty-four years old"), send age: 24. Never guess a value,
+        and never send a field the caller has not answered.
+
+        Call the tool AND reply in the same turn — the tool call is not a
+        substitute for speaking. The caller must still hear your sentence.
 
         ## Question 1 — consent
         If session has no `consent_response` yet, say this, every time,
@@ -1697,9 +1789,17 @@ agent_workflow:
 
       tools:
         - fetch_jobs
+        - record_facts
 
       system_prompt: |
         You are in the **job_match** phase.
+
+        ## You must record the pick
+        Nothing else reads the caller's choice for you. The moment they pick
+        a job, call `record_facts` with `selected_job_item_id` set to that
+        job's item_id, copied exactly from the search results. Without it the
+        caller cannot move on to applying. Reply in the same turn as well —
+        the tool call is not a substitute for speaking.
 
         ## TWO-STEP FLOW — read this FIRST, follow it every time
 
@@ -1882,10 +1982,17 @@ agent_workflow:
 
       tools:
         - fetch_profile
+        - record_facts
 
       system_prompt: |
         You are in the **profile_choice** phase. The user has picked
         a job and confirmed they want to apply.
+
+        ## You must record the choice
+        When the caller picks one of the three options, call `record_facts`
+        with `profile_action` set to "use_existing", "create_new" or
+        "update_existing". Nothing else records it, and the caller cannot
+        move on without it. Reply in the same turn too.
 
         ## TWO-STEP FLOW on entry — call fetch_profile, then speak
         list_user_profiles does NOT exist in this domain. The right
@@ -2060,10 +2167,17 @@ agent_workflow:
 
       tools:
         - save_profile
+        - record_facts
 
       system_prompt: |
         You are in **profile_setup**. profile_action in session is
         either "create_new" or "update_existing".
+
+        ## You must record completion
+        After `save_profile` returns successfully, call `record_facts` with
+        `profile_setup_done: "true"`. That is the only signal that moves the
+        caller to the apply step — without it they stay here. Never send it
+        before save_profile has actually succeeded.
 
         ## STEP 0 — Pre-flight check (EVERY turn, BEFORE responding)
 
@@ -2239,8 +2353,15 @@ agent_workflow:
       tools:
         - apply_job
         - save_profile
+        - record_facts
 
       system_prompt: |
+        ## If they would rather see other jobs
+        If the caller does not want to finish here and asks to look at other
+        jobs, call `record_facts` with `next_step: "explore_more"`. That is
+        the only way back to the listings — without it they stay on this
+        screen. Reply in the same turn as well.
+
         You are in the **apply_confirm** phase. Your job is to call
         apply_job with the correct identifiers and announce the result.
 
@@ -2403,6 +2524,16 @@ agent_workflow:
         Route back to job_match. Don't apply.
 
       routing:
+        # With NLU off there is no `explore_more` / `decline` intent to route
+        # on, so the caller's wish to go back to the listings arrives as a
+        # `record_facts` call instead. Without this rule apply_confirm has no
+        # exit at all and the caller loops here until the line drops.
+        - intent: "*"
+          conditions:
+            - field: next_step
+              operator: eq
+              value: "explore_more"
+          next_subagent_id: job_match
         - intent: explore_more
           next_subagent_id: job_match
         - intent: decline

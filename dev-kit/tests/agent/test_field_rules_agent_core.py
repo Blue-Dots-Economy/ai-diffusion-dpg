@@ -21,6 +21,7 @@ EXPECTED_PATHS = {
     "preprocessing.language_normalisation.enabled",
     "preprocessing.language_normalisation.provider",
     "preprocessing.language_normalisation.model",
+    "preprocessing.nlu_processor.enabled",
     "preprocessing.nlu_processor.provider",
     "preprocessing.nlu_processor.model",
     "preprocessing.nlu_processor.domain_instruction",

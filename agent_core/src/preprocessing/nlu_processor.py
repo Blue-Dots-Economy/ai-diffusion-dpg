@@ -117,6 +117,7 @@ class NLUProcessor:
         # Retained for telemetry/logging only — the actual model used is
         # determined by the injected chat_provider (which is pre-configured
         # by build_chat_provider with the matching model id).
+        self._enabled: bool = bool(nlu_config.get("enabled", True))
         self._model: str = nlu_config.get("model", "")
         self._chat_provider = chat_provider
 
@@ -241,6 +242,9 @@ class NLUProcessor:
             Never raises.
         """
         start = time.time()
+
+        if not self._enabled:
+            return _disabled_nlu_result()
 
         if not normalised_input:
             return _fallback_nlu_result()
@@ -516,6 +520,17 @@ class NLUProcessor:
             },
         )
         return {}
+
+
+def _disabled_nlu_result() -> NLUResult:
+    """Neutral NLUResult used when the NLU step is switched off in config.
+
+    The intent is the routing wildcard ``"*"`` so that every catch-all rule
+    still matches and no named-intent rule ever does. Confidence stays 0.0,
+    which keeps the termination short-circuit (which requires a confidence at
+    or above its own threshold) from firing on an unclassified turn.
+    """
+    return NLUResult(intent="*", entities={}, sentiment="neutral", confidence=0.0)
 
 
 def _fallback_nlu_result() -> NLUResult:
