@@ -174,6 +174,8 @@ class BridgeChannelSection(BaseModel):
     port: Optional[int] = None
     agent_core_url: Optional[str] = None
     terminal_word: Optional[str] = None
+    hangup_tool_name: Optional[str] = None
+    tool_status_phrases: Optional[dict[str, str]] = None
     timeout_s: Optional[float] = Field(default=None, gt=0)
 
 

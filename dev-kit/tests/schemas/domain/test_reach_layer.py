@@ -229,3 +229,29 @@ def test_reach_layer_section_full():
 def test_reach_layer_section_extra_forbidden():
     with pytest.raises(ValidationError):
         ReachLayerSection(unknown="x")
+
+
+# -- BridgeChannelSection ----------------------------------------------------
+
+def test_bridge_channel_accepts_hangup_tool_and_status_phrases():
+    from dev_kit.schemas.domain.reach_layer import BridgeChannelSection
+    s = BridgeChannelSection(
+        terminal_word="धन्यवाद",
+        hangup_tool_name="end_conversation",
+        tool_status_phrases={"fetch_jobs": "नौकरियाँ देख रहा हूँ।"},
+    )
+    assert s.hangup_tool_name == "end_conversation"
+    assert s.tool_status_phrases == {"fetch_jobs": "नौकरियाँ देख रहा हूँ।"}
+
+
+def test_bridge_channel_new_fields_default_none():
+    from dev_kit.schemas.domain.reach_layer import BridgeChannelSection
+    s = BridgeChannelSection()
+    assert s.hangup_tool_name is None
+    assert s.tool_status_phrases is None
+
+
+def test_bridge_channel_rejects_non_string_status_phrase():
+    from dev_kit.schemas.domain.reach_layer import BridgeChannelSection
+    with pytest.raises(ValidationError):
+        BridgeChannelSection(tool_status_phrases={"fetch_jobs": ["not", "a", "string"]})

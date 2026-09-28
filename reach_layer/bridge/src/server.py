@@ -67,7 +67,7 @@ def create_app(config: dict) -> FastAPI:
         config: Requires ``agent_core_url``. Optional ``channel`` (default
             ``"bridge"``), ``terminal_word`` (default ``""``), ``timeout_s``
             (default ``60.0``), ``hangup_tool_name`` (default ``""``, which
-            disables hanging up).
+            disables hanging up), ``tool_status_phrases`` (default ``{}``).
 
     Returns:
         A configured FastAPI app serving ``POST /v1/chat/completions`` and
@@ -78,6 +78,7 @@ def create_app(config: dict) -> FastAPI:
     channel = config.get("channel", "bridge")
     terminal_word = config.get("terminal_word", "")
     hangup_tool_name = config.get("hangup_tool_name", "")
+    tool_status_phrases = dict(config.get("tool_status_phrases") or {})
     client = AgentCoreClient(
         config["agent_core_url"], timeout_s=config.get("timeout_s", 60.0)
     )
@@ -192,7 +193,7 @@ def create_app(config: dict) -> FastAPI:
             hangup_tool = offered_hangup_tool(body, hangup_tool_name)
             return StreamingResponse(
                 _stream(client, turn, model, terminal_word, include_usage,
-                        session_id, hangup_tool),
+                        session_id, hangup_tool, tool_status_phrases),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
@@ -280,7 +281,9 @@ def _schedule_cancel(client: AgentCoreClient, session_id: str) -> None:
 async def _stream(client: AgentCoreClient, turn: dict, model: str,
                    terminal_word: str, include_usage: bool,
                    session_id: str,
-                   hangup_tool: str | None = None) -> AsyncIterator[str]:
+                   hangup_tool: str | None = None,
+                   tool_status_phrases: dict[str, str] | None = None,
+                   ) -> AsyncIterator[str]:
     """Render one Agent Core event stream as OpenAI SSE chunks.
 
     On client disconnect the Agent Core turn is cancelled (spec section 8):
@@ -340,12 +343,14 @@ async def _stream(client: AgentCoreClient, turn: dict, model: str,
             cancel call, never logged.
         hangup_tool: Client-offered tool to call when the turn ends the
             session, or None to just stop.
+        tool_status_phrases: Tool name to the line spoken while it runs.
 
     Yields:
         SSE-framed ``chat.completion.chunk`` payloads, ending in the
         ``data: [DONE]`` sentinel on a normal finish.
     """
-    translator = StreamTranslator(model, terminal_word, hangup_tool)
+    translator = StreamTranslator(model, terminal_word, hangup_tool,
+                                  tool_status_phrases)
     finished = False
     start = time.time()
     try:
@@ -374,8 +379,13 @@ async def _stream(client: AgentCoreClient, turn: dict, model: str,
                            "latency_ms": int((time.time() - start) * 1000)},
                 )
                 return
-            # signal events (pipeline progress) are dropped — not part of
-            # the OpenAI contract.
+            elif kind == "signal" and event.get("stage") == "tool_start":
+                # The one signal worth voicing: the caller is otherwise silent
+                # through the tool round trip. Every other signal is pipeline
+                # progress with no place in the OpenAI contract, and dropped.
+                status = translator.tool_status(event.get("tools"))
+                if status is not None:
+                    yield sse(status)
 
         # The event stream ended without a terminal `done` event — Agent
         # Core closed the SSE body cleanly with no AgentCoreError raised.

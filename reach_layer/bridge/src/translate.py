@@ -210,7 +210,8 @@ class StreamTranslator:
     """
 
     def __init__(self, model: str, terminal_word: str = "",
-                 hangup_tool: Optional[str] = None) -> None:
+                 hangup_tool: Optional[str] = None,
+                 tool_status_phrases: Optional[dict[str, str]] = None) -> None:
         """Initialise a translator for a single response.
 
         Args:
@@ -222,10 +223,14 @@ class StreamTranslator:
             hangup_tool: Name of the client-offered tool to call when the
                 turn ends the session (see :func:`offered_hangup_tool`). None
                 when the client offered none — the stream then just stops.
+            tool_status_phrases: Tool name to the line spoken while that tool
+                runs (see :meth:`tool_status`). None or empty disables it.
         """
         self._model = model
         self._terminal_word = terminal_word
         self._hangup_tool = hangup_tool
+        self._tool_status_phrases = tool_status_phrases or {}
+        self._status_spoken = False
         self._id = new_completion_id()
         self._created = int(time.time())
         self._emitted_content = False
@@ -260,6 +265,30 @@ class StreamTranslator:
         if text:
             self._emitted_content = True
         return self._chunk(delta={"content": text})
+
+    def tool_status(self, tools: Any) -> Optional[dict]:
+        """Translate a ``tool_start`` signal into a spoken status line.
+
+        Rationed so status chatter cannot back up the client's TTS queue
+        behind the real reply: at most one line per response, never once the
+        reply has started, and only for tools the domain mapped (the first
+        mapped one, in call order).
+
+        Args:
+            tools: The signal's ``tools`` list — absent on an Agent Core that
+                predates the field.
+
+        Returns:
+            A content chunk, or None when nothing should be said.
+        """
+        if self._status_spoken or self._emitted_content or not isinstance(tools, list):
+            return None
+        for name in tools:
+            phrase = self._tool_status_phrases.get(name) if isinstance(name, str) else None
+            if phrase:
+                self._status_spoken = True
+                return self.sentence(phrase)
+        return None
 
     def finish(self, done: dict, *, include_usage: bool) -> list[dict]:
         """Build the chunks that close the stream from Agent Core's DoneEvent.

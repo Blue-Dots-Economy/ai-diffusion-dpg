@@ -258,6 +258,10 @@ class SignalEvent:
     status: str = ""    # "start" | "complete" | "skipped"
     detail: str = ""    # optional human-readable info
     turn_id: str = ""
+    # tool_start only: names of the tools about to run, in call order. Lets a
+    # channel tell the caller what is happening ("looking up jobs") during the
+    # tool round trip. Empty on every other stage.
+    tools: list[str] = field(default_factory=list)
 
     def to_sse(self) -> str:
         """Serialise to SSE data line."""
