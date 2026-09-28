@@ -2873,8 +2873,37 @@ class AgentCore(AgentCoreBase):
         def _aborted() -> bool:
             return abort_event is not None and abort_event.is_set()
 
+        # GH-403: time to first audio. ``latency_ms`` on the completion banner
+        # measures turn start to the LAST sentence, which is not what a caller
+        # reacts to on a phone line — they react to the first one, and every
+        # sentence after it is spoken while they are already listening.
+        #
+        # Two marks, because the gap between them is ours to control:
+        #   first_token_ms     the model began producing
+        #   first_sentence_ms  a whole sentence was assembled, trust-checked
+        #                      and handed to the channel — the caller hears
+        #                      audio at roughly this point
+        # Their difference is the cost of buffering to sentence boundaries;
+        # first_sentence_ms against total latency is the cost of everything
+        # said after the caller already had an answer.
+        _timings: dict[str, int | None] = {"first_token_ms": None, "first_sentence_ms": None}
+
+        def _mark(key: str) -> None:
+            """Record the first occurrence of a turn milestone, in ms."""
+            if _timings[key] is None:
+                _timings[key] = int((time.time() - start) * 1000)
+
         def _stamp(ev):
-            """Set turn_id on the event in place and return it."""
+            """Set turn_id on the event in place and return it.
+
+            Also marks first-sentence time. Every SentenceEvent in this method
+            is yielded through here — the canned paths (consent, blocked,
+            escalation, HiTL, fallback) as well as the streamed ones — so
+            hooking it is what keeps the measurement honest across all of
+            them rather than only the happy path.
+            """
+            if _timings["first_sentence_ms"] is None and isinstance(ev, SentenceEvent):
+                _mark("first_sentence_ms")
             if hasattr(ev, "turn_id"):
                 ev.turn_id = turn_id
             return ev
@@ -3090,11 +3119,16 @@ class AgentCore(AgentCoreBase):
                         "\n═══════════════════════════════════════════════════════════════\n"
                         "  STREAM TURN COMPLETE  session=%s  intent=%s  tool_used=%s\n"
                         "  model=%s  total_latency=%dms  next_subagent=%s  sentences=%d\n"
+                        "  first_token=Nonems  first_sentence=%dms\n"
                         "  response: %r\n"
                         "═══════════════════════════════════════════════════════════════",
                         session_id, "consent_prompt", False,
                         "none", consent_latency_ms, "consent_gate",
                         1 if consent_response_text else 0,
+                        # This path skips the LLM entirely — the canned consent
+                        # prompt is the only sentence, so first-sentence time is
+                        # the whole turn and there is no first token to report.
+                        consent_latency_ms,
                         consent_response_text.strip()[:200],
                     )
                     yield _stamp(SentenceEvent(
@@ -3621,6 +3655,7 @@ class AgentCore(AgentCoreBase):
                     async for token in self._llm.stream(request, abort_event=abort_event):
                         if _aborted():
                             return
+                        _mark("first_token_ms")
                         token_buffer += token
                         sentences, token_buffer = _split_sentences(token_buffer)
                         # Stop accepting new sentences once a batch was blocked —
@@ -3827,6 +3862,7 @@ class AgentCore(AgentCoreBase):
                         async for token in self._llm.stream(request, abort_event=abort_event):
                             if _aborted():
                                 return
+                            _mark("first_token_ms")
                             token_buffer += token
                             sentences, token_buffer = _split_sentences(token_buffer)
                             if _trust_batcher.was_escalated:
@@ -4043,6 +4079,11 @@ class AgentCore(AgentCoreBase):
                     "status": "success",
                     "session_id": session_id,
                     "latency_ms": latency_ms,
+                    # GH-403: what the caller actually waits for. latency_ms is
+                    # time to the LAST sentence; these two are time to the model
+                    # starting and to the first sentence reaching the channel.
+                    "first_token_ms": _timings["first_token_ms"],
+                    "first_sentence_ms": _timings["first_sentence_ms"],
                     "model": model_used,
                     "tool_used": was_tool_used,
                     "intent": nlu_result.intent,
@@ -4054,10 +4095,12 @@ class AgentCore(AgentCoreBase):
                 "\n═══════════════════════════════════════════════════════════════\n"
                 "  STREAM TURN COMPLETE  session=%s  intent=%s  tool_used=%s\n"
                 "  model=%s  total_latency=%dms  next_subagent=%s  sentences=%d\n"
+                "  first_token=%sms  first_sentence=%sms\n"
                 "  response: %r\n"
                 "═══════════════════════════════════════════════════════════════",
                 session_id, nlu_result.intent, was_tool_used,
                 model_used, latency_ms, next_subagent_id, sentence_index,
+                _timings["first_token_ms"], _timings["first_sentence_ms"],
                 full_response_text.strip()[:200],
             )
 
