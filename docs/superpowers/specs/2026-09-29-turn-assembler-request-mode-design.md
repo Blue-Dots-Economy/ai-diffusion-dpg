@@ -141,7 +141,7 @@ Added:
   `max_items`, `segments`, `fold_ran`, `last_stage`, `write_carryover` and `persist_task`.
   `stream_turn` creates its own when called without one.
 - **`Turn`** gains `record: TurnRecord` and `predecessor: Optional[Turn]`.
-- **`Session`** gains `last_activity_ms` and `subscribers: int`. Carry-over is **not**
+- **`Session`** gains `last_activity` (assembler clock, monotonic seconds) and `subscribers: int`. Carry-over is **not**
   held on the Session.
 - `TurnStatus` is unchanged. One active turn per session remains enforced by
   `Session._lock` and `replace_turn`'s precondition.
