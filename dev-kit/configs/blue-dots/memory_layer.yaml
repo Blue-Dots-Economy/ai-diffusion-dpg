@@ -75,6 +75,19 @@ state:
             - gender
             - location
             - language_preference
+            # Routing reads `consent_response` in two `opening` rules. It is
+            # an NLU entity, and NLU entities are written at PERSISTENT scope
+            # (orchestrator entity_scope defaults to "persistent"), so an
+            # undeclared name falls through to UserAttribute ad-hoc storage —
+            # where context_bundle nests it under profile.attributes instead
+            # of flattening it onto profile. A routing condition on the field
+            # `consent_response` then never matches.
+            #
+            # Measured: 201 consent_response values were sitting in
+            # UserAttribute nodes while both rules that read them were dead,
+            # so the opening gate could only clear via the slower
+            # consent_given path — 3.8 turns instead of 1.9.
+            - consent_response
             # Capability layer (profile_1.0 optional fields)
             - trade                  # nameOfJobRolesInterestedIn
             - work_experience        # workExperience

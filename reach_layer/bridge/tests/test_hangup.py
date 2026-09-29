@@ -14,6 +14,7 @@ spoken and the line stayed open until the platform's max-duration timeout.
 from __future__ import annotations
 
 import json
+import logging
 from unittest.mock import AsyncMock, patch
 
 import httpx2 as httpx
@@ -244,3 +245,47 @@ def test_sdk_accumulates_the_hangup_call_from_the_stream():
              for tc in (c.choices[0].delta.tool_calls or [])]
     assert names == [HANGUP]
     assert chunks[-1].choices[0].finish_reason == "tool_calls"
+
+
+# ---------------------------------------------------------------------------
+# A session that ends with no hangup tool must not fail silently
+# ---------------------------------------------------------------------------
+
+
+def test_session_end_without_hangup_tool_warns(caplog):
+    """The call stays open in this case; an operator needs a trace of why.
+
+    Either the domain configured no hangup tool or the client did not offer
+    the configured one. Both look identical from the caller's side — the bot
+    says goodbye and the line never drops — and both were previously silent.
+    """
+    translator = StreamTranslator("kkb", hangup_tool=None)
+
+    with caplog.at_level(logging.WARNING):
+        chunks = translator.finish({"session_ended": True}, include_usage=False)
+
+    assert any(r.message == "bridge.session_ended_without_hangup"
+               for r in caplog.records)
+    assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
+
+
+def test_session_end_with_hangup_tool_does_not_warn(caplog):
+    translator = StreamTranslator("kkb", hangup_tool="end_conversation")
+
+    with caplog.at_level(logging.WARNING):
+        chunks = translator.finish({"session_ended": True}, include_usage=False)
+
+    assert not any(r.message == "bridge.session_ended_without_hangup"
+                   for r in caplog.records)
+    assert chunks[-1]["choices"][0]["finish_reason"] == "tool_calls"
+
+
+def test_unfinished_session_never_warns(caplog):
+    """A normal turn ends with session_ended False and must stay quiet."""
+    translator = StreamTranslator("kkb", hangup_tool=None)
+
+    with caplog.at_level(logging.WARNING):
+        translator.finish({"session_ended": False}, include_usage=False)
+
+    assert not any(r.message == "bridge.session_ended_without_hangup"
+                   for r in caplog.records)

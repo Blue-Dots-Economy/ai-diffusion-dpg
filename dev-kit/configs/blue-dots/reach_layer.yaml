@@ -67,11 +67,22 @@ reach_layer:
       # fills with "hello?" (which the client treats as barge-in and cancels
       # the turn). One line per turn at most, never once the reply has started.
       # Hindi, emitted verbatim. end_session is deliberately unmapped.
+      # KKB-Slim: "Call them silently... No waiting message and no status
+      # narration before, during or immediately after any of them." A hold is
+      # permitted, but it is a NEUTRAL hold and "must never reveal what is
+      # happening" — so every phrase here is the same two words.
+      #
+      # What the previous phrases broke:
+      #   fetch_profile "मैं देख रहा हूँ"  — on the spec's explicit banned list
+      #   fetch_jobs    "नौकरियाँ देख रहा हूँ" — reveals the lookup
+      #   save_profile  "सेव कर रहा हूँ"   — status narration
+      #   apply_job     "आवेदन भेज रहा हूँ" — hard law 4: claims the apply
+      #                 BEFORE a result exists. apply_job is not in the
+      #                 spec's permitted-hold list at all, so it gets none.
       tool_status_phrases:
-        fetch_profile: "एक पल, मैं देख रहा हूँ।"
-        fetch_jobs: "आपके लिए नौकरियाँ देख रहा हूँ, बस एक पल।"
-        save_profile: "आपकी जानकारी सेव कर रहा हूँ, बस एक पल।"
-        apply_job: "आपका आवेदन भेज रहा हूँ, बस एक पल।"
+        fetch_profile: "एक मिनट।"
+        fetch_jobs: "एक मिनट।"
+        save_profile: "एक मिनट।"
 
     voice:
       # English / Hindi / Gujarati. VAD tuned for English (shorter

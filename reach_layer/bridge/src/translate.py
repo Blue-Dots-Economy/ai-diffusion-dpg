@@ -8,6 +8,7 @@ rule is testable without a server.
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid
 from typing import Any, Optional
@@ -19,6 +20,8 @@ from src.openai_models import (
     build_completion,
     new_completion_id,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class RequestError(ValueError):
@@ -310,6 +313,22 @@ class StreamTranslator:
         ended = bool(done.get("session_ended"))
         if ended and self._terminal_word:
             out.append(self.sentence(self._terminal_word))
+        if ended and not self._hangup_tool:
+            # Agent Core ended the session but nothing will hang the call
+            # up: either the domain configured no hangup tool, or the
+            # client did not offer the one it configured. Both look
+            # identical from the caller's side — the bot says goodbye and
+            # the line stays open — and both were previously silent, so a
+            # call that never ends gave an operator nothing to go on.
+            logger.warning(
+                "bridge.session_ended_without_hangup",
+                extra={
+                    "operation": "StreamTranslator.finish",
+                    "status": "skipped",
+                    "reason": "no hangup tool offered by the client or "
+                              "configured for the domain",
+                },
+            )
         if ended and self._hangup_tool:
             out.append(self._chunk(delta={"tool_calls": [{
                 "index": 0,
