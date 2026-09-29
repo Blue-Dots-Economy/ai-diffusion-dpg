@@ -221,6 +221,10 @@ def create_orchestration_app(
 
         Returns text/event-stream with SignalEvent, SentenceEvent, and DoneEvent.
         Connection closes after DoneEvent is sent.
+
+        With a TurnAssembler (production), the turn runs through the assembler:
+        a new request interrupts one in flight, and a client closing the stream
+        stops its turn at a safe point. Without one, the turn runs directly.
         """
         session_id = request.session_id
         start = time.time()
@@ -234,6 +238,53 @@ def create_orchestration_app(
                 "channel": request.channel,
             },
         )
+
+        if turn_assembler is not None:
+            if not request.user_message or not request.user_message.strip():
+                return JSONResponse(status_code=422,
+                                    content={"detail": "user_message must not be empty"})
+            segment = SegmentInput(
+                text=request.user_message,
+                user_id=request.user_id,
+                channel=request.channel,
+                timestamp_ms=request.timestamp_ms or int(time.time() * 1000),
+                caller_agent_id=request.caller_agent_id,
+                locale=request.locale,
+                metadata=request.metadata,
+                fresh=request.fresh,
+            )
+            turn = await turn_assembler.submit(session_id, segment)
+
+            async def assembled_generator():
+                # Spec §4.2: the turn belongs to the assembler. Closing this body
+                # only detaches; the finally must not await (GeneratorExit).
+                done_read = False
+                event_count = 0
+                try:
+                    async for event in turn_assembler.attach(turn):
+                        if isinstance(event, DoneEvent):
+                            done_read = True
+                        event_count += 1
+                        yield event.to_sse()
+                finally:
+                    if not done_read:
+                        turn_assembler.detach(turn, "disconnect")
+                    logger.info(
+                        "orchestration_server.stream_turn_complete",
+                        extra={
+                            "operation": "orchestration_server.stream_turn",
+                            "status": "success" if done_read else "skipped",
+                            "session_id": session_id,
+                            "event_count": event_count,
+                            "latency_ms": int((time.time() - start) * 1000),
+                        },
+                    )
+
+            return StreamingResponse(
+                assembled_generator(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
 
         turn_input = TurnInput(
             session_id=session_id,
