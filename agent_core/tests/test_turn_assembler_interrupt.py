@@ -160,3 +160,114 @@ class TestCooperativeInterrupt:
         turn = ta._sessions["s1"].current_turn
         await _wait_status(turn, TurnStatus.COMPLETED)
         assert seen["record"] is turn.record
+
+
+class _PersistingAgent(_SlowAgent):
+    """_SlowAgent whose aborted turns leave a slow ``record.persist_task``.
+
+    Mimics ``stream_turn``'s ``finally`` scheduling the interrupted-turn
+    persist. Records the loop time each call starts and each persist ends.
+    """
+
+    def __init__(self, tool_s=0.05, persist_s=0.3):
+        super().__init__(tool_s=tool_s)
+        self.persist_s = persist_s
+        self.started_at = []
+        self.persisted_at = []
+
+    async def stream_turn(self, turn_input, *, abort_event=None, turn_id="", record=None):
+        loop = asyncio.get_running_loop()
+        self.started_at.append(loop.time())
+        try:
+            async for event in super().stream_turn(
+                turn_input, abort_event=abort_event, turn_id=turn_id, record=record,
+            ):
+                yield event
+        finally:
+            if abort_event is not None and abort_event.is_set() and record is not None:
+                async def _persist():
+                    await asyncio.sleep(self.persist_s)
+                    self.persisted_at.append(loop.time())
+                record.persist_task = loop.create_task(_persist())
+
+
+class TestDrainingPredecessor:
+
+    async def test_submit_waits_for_a_predecessor_still_persisting(self):
+        """Final review 2: an interrupted turn whose invocation is done but whose
+        persist task is not is still draining; the successor waits for it."""
+        agent = _PersistingAgent(tool_s=0.05, persist_s=0.3)
+        ta = TurnAssembler(agent_core=agent, config=_cfg())
+        seg = SegmentInput(text="first", channel="bridge", user_id="u1")
+        first = await ta.submit("s1", seg)
+        await asyncio.sleep(0.01)
+        ta.detach(first, "disconnect")
+        await asyncio.wait_for(first.invocation_task, 1)
+        assert first.record.persist_task is not None and not first.record.persist_task.done()
+        second = await ta.submit("s1", SegmentInput(text="second", channel="bridge", user_id="u1"))
+        await asyncio.wait_for(second.invocation_task, 2)
+        assert len(agent.persisted_at) == 1
+        assert agent.started_at[1] >= agent.persisted_at[0]
+
+    async def test_add_segment_after_cancel_waits_for_the_draining_turn(self):
+        """Final review 3: after cancel (DELETE active_turn), a new segment must
+        still wait for the interrupted turn that has not drained yet."""
+        agent = _SlowAgent(tool_s=0.2)
+        ta = TurnAssembler(agent_core=agent, config=_cfg())
+        await ta.add_segment("s1", _seg("first"))
+        first = ta._sessions["s1"].current_turn
+        await _wait_status(first, TurnStatus.INVOKED)
+        await ta.cancel("s1")
+        assert first.status == TurnStatus.INTERRUPTED
+        assert not first.invocation_task.done()
+        await ta.add_segment("s1", _seg("second"))
+        second = ta._sessions["s1"].current_turn
+        assert second is not first
+        await _wait_status(second, TurnStatus.COMPLETED, timeout=3)
+        assert agent.calls == ["first", "second"]
+        assert agent.active_at_start == [0, 0]      # no overlap with the draining turn
+
+    async def test_add_segment_after_cancel_waits_for_the_persist_task(self):
+        """Final review 3: the persist leg counts as draining on the session path."""
+        agent = _PersistingAgent(tool_s=0.05, persist_s=0.3)
+        ta = TurnAssembler(agent_core=agent, config=_cfg())
+        await ta.add_segment("s1", _seg("first"))
+        first = ta._sessions["s1"].current_turn
+        await _wait_status(first, TurnStatus.INVOKED)
+        await ta.cancel("s1")
+        await asyncio.wait_for(first.invocation_task, 1)
+        assert not first.record.persist_task.done()
+        await ta.add_segment("s1", _seg("second"))
+        second = ta._sessions["s1"].current_turn
+        await _wait_status(second, TurnStatus.COMPLETED, timeout=3)
+        assert agent.started_at[1] >= agent.persisted_at[0]
+
+    async def test_one_drain_budget_covers_invocation_and_persist(self, caplog):
+        """Final review 2: _await_predecessor spends a single drain_max_ms budget
+        across both waits, then gives up without cancelling either task."""
+        from types import SimpleNamespace
+
+        from src.models import TurnRecord
+
+        record = TurnRecord()
+        persist_started = asyncio.Event()
+
+        async def _invocation():
+            await asyncio.sleep(0.15)
+            record.persist_task = asyncio.get_running_loop().create_task(asyncio.sleep(0.6))
+            persist_started.set()
+
+        pred = SimpleNamespace(
+            invocation_task=asyncio.get_running_loop().create_task(_invocation()),
+            record=record, session_id="s1", turn_id="t1",
+        )
+        ta = TurnAssembler(agent_core=_SlowAgent(), config=_cfg())
+        loop = asyncio.get_running_loop()
+        t0 = loop.time()
+        await ta._await_predecessor(pred, 300)
+        elapsed = loop.time() - t0
+        assert persist_started.is_set()             # the persist leg was reached
+        assert 0.28 <= elapsed < 0.45               # one 300 ms budget, not 300 + 300
+        assert not record.persist_task.done() and not record.persist_task.cancelled()
+        assert any("turn_assembler.drain_timeout" in r.message for r in caplog.records)
+        await asyncio.wait_for(record.persist_task, 2)

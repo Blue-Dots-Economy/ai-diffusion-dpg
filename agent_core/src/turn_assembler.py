@@ -414,6 +414,26 @@ class TurnAssembler(TurnAssemblerBase):
                    "turn_status": turn.status.value},
         )
 
+    @staticmethod
+    def _draining(turn: Turn) -> bool:
+        """Return True while a stopped turn has not finished draining.
+
+        A turn is draining until both its invocation task (reaching a safe
+        point) and the ``record.persist_task`` that task's exit created have
+        finished. A new turn installed meanwhile must take it as predecessor
+        so it waits for, and folds, what the old turn persists (spec §4.4).
+
+        Args:
+            turn: The session's current turn, already out of WAITING/INVOKED.
+
+        Returns:
+            True if either task exists and is not done.
+        """
+        return any(
+            task is not None and not task.done()
+            for task in (turn.invocation_task, turn.record.persist_task)
+        )
+
     async def _await_predecessor(self, pred: Turn, drain_max_ms: int) -> None:
         """Wait for an interrupted predecessor to stop and persist, within budget.
 
@@ -526,9 +546,14 @@ class TurnAssembler(TurnAssemblerBase):
                 TurnStatus.INTERRUPTED,
                 TurnStatus.ABANDONED,
             ):
-                # First segment or post-terminal: install a fresh Turn.
+                # First segment or post-terminal: install a fresh Turn. A turn
+                # interrupted earlier (cancel, disconnect) that is still
+                # draining is its predecessor, exactly as in submit().
+                prev = turn
                 turn = await session.replace_turn(seed_segments=[])
                 turn.segments.append(segment)
+                if prev is not None and self._draining(prev):
+                    turn.predecessor = prev
             else:
                 # Still WAITING — just append.
                 turn.segments.append(segment)
@@ -835,8 +860,7 @@ class TurnAssembler(TurnAssemblerBase):
                 was_invoked = prev.status == TurnStatus.INVOKED
                 self._interrupt(prev, "new_input")
                 predecessor = prev if was_invoked else None
-            elif prev is not None and prev.invocation_task is not None \
-                    and not prev.invocation_task.done():
+            elif prev is not None and self._draining(prev):
                 predecessor = prev  # interrupted earlier, still draining
             turn = await session.replace_turn(seed_segments=[segment])
             turn.predecessor = predecessor
