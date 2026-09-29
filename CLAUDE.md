@@ -36,7 +36,7 @@ uv run pytest --cov=src --cov-report=term-missing     # with coverage
 cd knowledge_engine && uv run python scripts/ingest.py --config config/domain.yaml
 ```
 
-**Docker images:** every Dockerfile builds on Docker Hardened Images (`dhi.io/python:<ver>-debian13-dev` → `dhi.io/python:<ver>-debian13`). The runtime stage has no shell or package manager and runs as `nonroot` (uid 65532): no `RUN` after the final `FROM`, healthchecks and compose `command:` must use exec form, never `sh -c` / `CMD-SHELL`.
+**Docker images:** every Dockerfile except `knowledge_engine/` builds on Docker Hardened Images (`dhi.io/python:<ver>-debian13-dev` → `dhi.io/python:<ver>-debian13`). The runtime stage has no shell or package manager and runs as `nonroot` (uid 65532): no `RUN` after the final `FROM`, healthchecks and compose `command:` must use exec form, never `sh -c` / `CMD-SHELL`. `knowledge_engine/Dockerfile` stays on `python:3.14-slim` (has a shell; compose runs its ingest-if-empty `sh -c` startup).
 
 **Config loading:** Each module deep-merges two YAML files at startup — `dev-kit/dpg/<module>.yaml` (framework defaults) overridden by `dev-kit/configs/<domain>/<module>.yaml` (domain values). Reference domain: `dev-kit/configs/kkb/`.
 

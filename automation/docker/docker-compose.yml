@@ -23,7 +23,7 @@
 # Both config files are mandatory — service will not start if either is missing.
 #
 # Ingestion flow (Knowledge Engine):
-#   On startup, KE runs: python -m scripts.serve (ingest only if ChromaDB is empty, then main.py)
+#   On startup, KE runs: python scripts/ingest.py && python main.py
 #   Ingest reads docs from knowledge_engine/data/ (bind-mounted as /app/data),
 #   writes embeddings into chroma_data volume at /app/data/chroma_db (writable named
 #   volume that overrides the read-only bind mount for that subdirectory).
@@ -244,11 +244,8 @@ services:
       - AZURE_STORAGE_ACCOUNT=${AZURE_STORAGE_ACCOUNT:-}
       - AZURE_STORAGE_KEY=${AZURE_STORAGE_KEY:-}
       - AZURE_CONTAINER_NAME=${AZURE_CONTAINER_NAME:-}
-    # Numeric, not `root`: the hardened image ships no passwd entry for root.
-    user: "0:0"                              # needed to write to root-owned chroma_data named volume
-    # Ingest-if-empty, then start the server. A Python entrypoint rather than
-    # `sh -c`: the image is a Docker Hardened Image and ships no shell.
-    command: ["python", "-m", "scripts.serve", "--config", "config/knowledge_engine.yaml"]
+    user: root                               # needed to write to root-owned chroma_data named volume
+    command: ["sh", "-c", "if [ ! -f /app/chroma_db/chroma.sqlite3 ]; then echo 'ChromaDB empty — running ingest...' && python -m scripts.ingest --config config/knowledge_engine.yaml; else echo 'ChromaDB exists — skipping ingest.'; fi && python main.py"]
     volumes:
       - ../../dev-kit/dpg/knowledge_engine.yaml:/app/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-kkb}/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro

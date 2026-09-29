@@ -117,12 +117,12 @@ jobs:
       # type=gha cache used below.
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
-      # Every Dockerfile's base layers (python, node, uv, docker CLI) are Docker
-      # Hardened Images from dhi.io, which refuses anonymous pulls even for the
-      # free Apache-2.0 catalog — without this the build fails at the first
-      # FROM. Credentials are a Docker Hub account: DOCKERHUB_USERNAME is a
-      # repository variable, DOCKERHUB_TOKEN a repository secret (same setup
-      # as signals-dpg and aggregator-dpg).
+      # Every Dockerfile's base layers except knowledge-engine's (python, node,
+      # uv, docker CLI) are Docker Hardened Images from dhi.io, which refuses
+      # anonymous pulls even for the free Apache-2.0 catalog — without this the
+      # build fails at the first FROM. Credentials are a Docker Hub account:
+      # DOCKERHUB_USERNAME is a repository variable, DOCKERHUB_TOKEN a
+      # repository secret (same setup as signals-dpg and aggregator-dpg).
       - name: Log in to dhi.io
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:

@@ -23,10 +23,11 @@
 # Both config files are mandatory — service will not start if either is missing.
 #
 # Ingestion flow (Knowledge Engine):
-#   KE does not ingest on startup; ingest is user-triggered via the dev-kit upload flow.
+#   On startup, KE runs: python scripts/ingest.py && python main.py
 #   Ingest reads docs from knowledge-engine/data/ (bind-mounted as /app/data),
 #   writes embeddings into chroma_data volume at /app/data/chroma_db (writable named
 #   volume that overrides the read-only bind mount for that subdirectory).
+#   Server starts only after ingest completes successfully.
 #
 # Prerequisites:
 #   1. export ANTHROPIC_API_KEY=sk-ant-...
@@ -194,8 +195,7 @@ services:
       - AZURE_STORAGE_ACCOUNT=${AZURE_STORAGE_ACCOUNT:-}
       - AZURE_STORAGE_KEY=${AZURE_STORAGE_KEY:-}
       - AZURE_CONTAINER_NAME=${AZURE_CONTAINER_NAME:-}
-    # Numeric, not `root`: the hardened image ships no passwd entry for root.
-    user: "0:0"                              # needed to write to root-owned chroma_data named volume
+    user: root                               # needed to write to root-owned chroma_data named volume
     # Ingest is user-triggered via the dev-kit upload flow (step 8), not on startup.
     # The KE server starts immediately; documents are ingested when the user uploads via /upload.
     volumes:
