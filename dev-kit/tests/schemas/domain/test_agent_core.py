@@ -632,3 +632,27 @@ def test_entity_to_profile_field_open_map():
     e = EntityToProfileFieldSection(user_name="name", user_location="location", anything_goes="here")
     # extra="allow" — values are just stored
     assert hasattr(e, "user_name") or e.model_extra
+
+
+
+class TestTurnAssemblerLifecycleMirror:
+    """Mirror of runtime InterruptionConfig / FoldConfig / CarryoverConfig."""
+
+    def test_accepts_valid(self):
+        ta = TurnAssemblerConfig.model_validate({
+            "interruption": {"on_new_input": "replace", "on_disconnect": "continue",
+                             "drain_max_ms": 100},
+            "fold": {"max_segments": 2},
+            "carryover": {"max_age_ms": 10, "undelivered_note": "n"},
+            "session_idle_ttl_ms": 1000,
+        })
+        assert ta.fold.max_segments == 2
+
+    @pytest.mark.parametrize("payload", [
+        {"interruption": {"on_new_input": "explode"}},
+        {"fold": {"max_segments": -1}},
+        {"carryover": {"enabled": True}},
+    ])
+    def test_rejects_invalid(self, payload):
+        with pytest.raises(ValidationError):
+            TurnAssemblerConfig.model_validate(payload)
