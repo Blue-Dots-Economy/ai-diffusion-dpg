@@ -336,7 +336,7 @@ class InvocationRules(BaseModel):
     call_when: str = ""
     required_before_calling: list[str] = Field(default_factory=list)
     must_not_substitute: str = ""
-    grounded_params: list[str] = Field(default_factory=list)
+    grounded_params: list[str] | dict[str, list[str]] = Field(default_factory=list)
     """Params whose value must have appeared in an earlier tool result.
 
     ``must_not_substitute`` states the same requirement in prose for the LLM to

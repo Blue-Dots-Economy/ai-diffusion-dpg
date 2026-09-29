@@ -79,10 +79,13 @@ class ManagerAgent:
         trust_layer:      Used to verify consent before write/identity tool execution.
         max_tool_rounds:  Maximum tool → LLM cycles per turn. Default 1 for PoC.
                           Configurable so extending to multi-step chains needs only a config change.
-        grounded_params:  Map of tool name to parameter names whose value must
-                          appear verbatim in an earlier tool result. Blocks
-                          execution when the model supplies an identifier it
-                          invented rather than one an upstream actually returned.
+        grounded_params:  Map of tool name to the params whose value must have
+                          come from an earlier tool result. Either
+                          ``{"apply_job": ["job_item_id"]}`` (any tool result)
+                          or ``{"apply_job": {"job_item_id": ["fetch_jobs"]}}``
+                          (only those tools' results). Blocks execution when the
+                          model supplies an identifier it invented, or one it
+                          copied out of a different tool's response.
     """
 
     def __init__(
@@ -115,10 +118,18 @@ class ManagerAgent:
         # tool name -> params whose value must have appeared in an earlier tool
         # result this conversation. Guards against the model inventing an
         # identifier that is well-formed but refers to nothing.
-        self._grounded_params: dict[str, list[str]] = {
-            str(k): [str(p) for p in (v or [])]
-            for k, v in (grounded_params or {}).items()
-        }
+        # Normalise both accepted shapes to {tool: {param: [source tools]}}.
+        # A list means "any earlier tool result"; a mapping names the tools
+        # whose results may supply that param, which is what stops one
+        # identifier being copied into another's slot.
+        self._grounded_params: dict[str, dict[str, list[str]]] = {}
+        for _tool, _spec in (grounded_params or {}).items():
+            if isinstance(_spec, dict):
+                self._grounded_params[str(_tool)] = {
+                    str(k): [str(t) for t in (v or [])] for k, v in _spec.items()
+                }
+            else:
+                self._grounded_params[str(_tool)] = {str(p): [] for p in (_spec or [])}
         # GH-137: Per-turn flag set when the LLM invokes the end_session internal tool.
         self._session_ended_flag: bool = False
 
@@ -147,30 +158,54 @@ class ManagerAgent:
             Empty when the tool has no configured params, when a param was not
             supplied, or when every supplied value is grounded.
         """
-        names = self._grounded_params.get(tool_call.tool_name) or []
-        if not names:
+        spec = self._grounded_params.get(tool_call.tool_name) or {}
+        if not spec:
             return set()
 
-        seen: list[str] = []
+        # tool_use_id -> tool name, so each result can be attributed to the
+        # tool that produced it.
+        origin: dict[str, str] = {}
         for msg in messages or []:
             for block in getattr(msg, "content", None) or []:
-                if getattr(block, "type", "") == "tool_result":
-                    content = getattr(block, "content", "")
-                    if isinstance(content, str) and content:
-                        seen.append(content)
-        if not seen:
+                if getattr(block, "type", "") == "tool_use":
+                    origin[str(getattr(block, "tool_use_id", ""))] = str(
+                        getattr(block, "tool_name", "")
+                    )
+
+        by_tool: dict[str, list[str]] = {}
+        seen_any: list[str] = []
+        for msg in messages or []:
+            for block in getattr(msg, "content", None) or []:
+                if getattr(block, "type", "") != "tool_result":
+                    continue
+                content = getattr(block, "content", "")
+                if not isinstance(content, str) or not content:
+                    continue
+                seen_any.append(content)
+                src = origin.get(str(getattr(block, "tool_use_id", "")), "")
+                by_tool.setdefault(src, []).append(content)
+
+        if not seen_any:
             # Nothing has been fetched yet, so nothing can be grounded. Let the
             # call through rather than blocking a legitimate first call whose
             # value came from session state seeded outside this conversation.
             return set()
-        haystack = "\n".join(seen)
 
         missing: set[str] = set()
-        for name in names:
+        for name, sources in spec.items():
             value = (tool_call.input_params or {}).get(name)
             if value in (None, ""):
                 continue
-            if str(value) not in haystack:
+            if sources:
+                pool = [c for src in sources for c in by_tool.get(src, [])]
+                if not pool:
+                    # None of the naming tools has run yet — the value cannot
+                    # have come from one, so it was carried or invented.
+                    missing.add(name)
+                    continue
+            else:
+                pool = seen_any
+            if str(value) not in "\n".join(pool):
                 missing.add(name)
         return missing
 

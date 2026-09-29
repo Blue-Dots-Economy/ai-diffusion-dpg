@@ -186,7 +186,11 @@ def _build_app():
             if not isinstance(_conn, dict):
                 continue
             _names = ((_conn.get("invocation_rules") or {}).get("grounded_params")) or []
-            if _names:
+            if isinstance(_names, dict):
+                grounded_params[str(_conn.get("name"))] = {
+                    str(k): [str(t) for t in (v or [])] for k, v in _names.items()
+                }
+            elif _names:
                 grounded_params[str(_conn.get("name"))] = [str(n) for n in _names]
     if grounded_params:
         logger.info("startup.grounded_params %s", grounded_params)

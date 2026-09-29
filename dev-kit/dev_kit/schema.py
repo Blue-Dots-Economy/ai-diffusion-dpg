@@ -19,7 +19,7 @@ One top-level model per service:
 
 from __future__ import annotations
 
-from typing import Annotated, Any, List, Literal
+from typing import Annotated, Any, Dict, List, Literal, Union
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -54,7 +54,7 @@ class InvocationRulesConfig(BaseModel):
         default="",
         description="What the LLM must never treat as a substitute for this tool",
     )
-    grounded_params: List[str] = Field(
+    grounded_params: Union[List[str], Dict[str, List[str]]] = Field(
         default_factory=list,
         description=(
             "Params whose value must appear verbatim in an earlier tool result. "

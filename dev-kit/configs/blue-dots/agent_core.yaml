@@ -845,7 +845,17 @@ connectors:
         # TARGET_ITEM_NOT_FOUND, and the agent relayed that to the caller as
         # "आपकी एप्लीकेशन पहले से लगी हुई है" — you have already applied.
         # The caller had not applied to anything.
-        grounded_params: [job_item_id, profile_item_id, acting_as_user_id]
+        # Each param names the tools whose results may supply it. A bare list
+        # ("came from ANY tool result") is not enough here: every identifier in
+        # play is a UUID that appeared in some response, so the model can copy
+        # one into another's slot and pass the check. Measured on a live
+        # streaming call — apply_job went out with job_item_id ==
+        # profile_item_id (both 343954ce-…), which the plain check allowed
+        # because save_profile really had returned that value.
+        grounded_params:
+          job_item_id: [fetch_jobs, fetch_recommended_jobs]
+          profile_item_id: [fetch_profile, save_profile]
+          acting_as_user_id: [fetch_profile, save_profile]
         must_not_substitute: >
           Never submit without an explicit yes/confirm in the most
           recent user turn.

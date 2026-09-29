@@ -1057,3 +1057,67 @@ def test_no_grounded_params_configured_is_a_no_op():
     messages = [_tool_result_msg("{}")]
     call = _call("apply_job", {"job_item_id": "invented"})
     assert agent._ungrounded_params(call, messages) == set()
+
+
+# --- source-aware grounding -------------------------------------------------
+# A provenance check alone is not enough: every identifier in play is a UUID
+# that appeared in SOME tool result, so the model can copy one into another's
+# slot and pass. Measured on a live streaming call — apply_job was sent with
+# job_item_id == profile_item_id (both 343954ce-…), which the plain check
+# allowed because save_profile had indeed returned that value.
+
+
+def _use(tool_use_id: str, tool_name: str):
+    return Message(
+        role="assistant",
+        content=[ToolUseBlock(tool_use_id=tool_use_id, tool_name=tool_name, input={})],
+    )
+
+
+def _result(tool_use_id: str, text: str):
+    return Message(role="user", content=[ToolResultBlock(tool_use_id=tool_use_id, content=text)])
+
+
+PROFILE_ID = "343954ce-a21f-43b3-8fa1-e5ecf6c5a2a7"
+JOB_ID = "038a09fa-6497-4672-b06c-e1cc580e17ff"
+
+
+def _two_tool_history():
+    return [
+        _use("u1", "fetch_jobs"), _result("u1", '{"item_id": "%s"}' % JOB_ID),
+        _use("u2", "save_profile"), _result("u2", '{"item_id": "%s"}' % PROFILE_ID),
+    ]
+
+
+def test_param_copied_from_the_wrong_tool_is_rejected():
+    agent = _grounding_agent({"apply_job": {"job_item_id": ["fetch_jobs"]}})
+    call = _call("apply_job", {"job_item_id": PROFILE_ID})
+    assert agent._ungrounded_params(call, _two_tool_history()) == {"job_item_id"}
+
+
+def test_param_from_its_declared_source_is_accepted():
+    agent = _grounding_agent({"apply_job": {"job_item_id": ["fetch_jobs"]}})
+    call = _call("apply_job", {"job_item_id": JOB_ID})
+    assert agent._ungrounded_params(call, _two_tool_history()) == set()
+
+
+def test_any_of_several_declared_sources_grounds_the_value():
+    agent = _grounding_agent(
+        {"apply_job": {"job_item_id": ["fetch_recommended_jobs", "fetch_jobs"]}}
+    )
+    call = _call("apply_job", {"job_item_id": JOB_ID})
+    assert agent._ungrounded_params(call, _two_tool_history()) == set()
+
+
+def test_declared_source_that_never_ran_rejects_the_value():
+    """The value cannot have come from a tool that produced no result."""
+    agent = _grounding_agent({"apply_job": {"job_item_id": ["fetch_recommended_jobs"]}})
+    call = _call("apply_job", {"job_item_id": JOB_ID})
+    assert agent._ungrounded_params(call, _two_tool_history()) == {"job_item_id"}
+
+
+def test_list_form_still_means_any_tool_result():
+    """Backwards compatibility: a bare list keeps the original semantics."""
+    agent = _grounding_agent({"apply_job": ["job_item_id"]})
+    call = _call("apply_job", {"job_item_id": PROFILE_ID})
+    assert agent._ungrounded_params(call, _two_tool_history()) == set()
