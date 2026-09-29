@@ -33,7 +33,7 @@ interrupted streaming turn:
    (`turn_assembler.py:338-340`, `:664`), and Starlette cancels the direct-mode generator
    on disconnect. `CancelledError` can therefore land inside an Action Gateway await.
 4. **Leaves the orchestrator suspended.** `_invoke` returns as soon as it sees the abort
-   flag (`turn_assembler.py:1011-1014`) without closing the `stream_turn` generator. The
+   flag (`turn_assembler.py:1019-1022`) without closing the `stream_turn` generator. The
    orchestrator stays parked at a `yield`; nothing after it, including any `finally`,
    runs until garbage collection.
 5. **Is not cancellable at all on the bridge path.** `/stream_turn` never registers with
