@@ -71,6 +71,22 @@ jobs:
       ref_slug: ${{ steps.resolve.outputs.slug }}
       short_sha: ${{ steps.plan.outputs.short_sha }}
     steps:
+      # Fail once, with the fix in the message, rather than letting every
+      # matrix build fail on its own with docker/login-action's bare
+      # "Password required".
+      - name: Check dhi.io credentials are configured
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          missing=""
+          [ -n "$DOCKER_USERNAME" ] || missing="$missing DOCKER_USERNAME"
+          [ -n "$DOCKERHUB_TOKEN" ] || missing="$missing DOCKERHUB_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "::error::dhi.io login needs a Docker Hub account. Repository secrets not set:$missing. Add them under Settings → Secrets and variables → Actions → Secrets."
+            exit 1
+          fi
+
       - name: Resolve ref
         id: resolve
         env:
@@ -116,6 +132,25 @@ jobs:
       # docker-container driver — the default driver cannot export the
       # type=gha cache used below.
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      # Every Dockerfile's base layers except knowledge-engine's (python, node,
+      # uv, docker CLI) are Docker Hardened Images from dhi.io, which refuses
+      # anonymous pulls even for the free Apache-2.0 catalog — without this the
+      # build fails at the first FROM. Credentials are a Docker Hub account,
+      # both held as repository secrets: DOCKER_USERNAME and DOCKERHUB_TOKEN.
+      # `prepare` checks both exist before any build starts.
+      #
+      # No fork-PR guard is needed: this workflow runs only on push to main and
+      # workflow_dispatch, and both always get the repository's secrets. If a
+      # `pull_request` trigger is ever added, gate this job on
+      # `github.event.pull_request.head.repo.fork == false` (as aggregator-dpg
+      # does): fork PRs get no secrets, so this login would fail for them.
+      - name: Log in to dhi.io
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
