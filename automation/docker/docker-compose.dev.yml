@@ -602,10 +602,12 @@ services:
   #   restart: unless-stopped
 
   memgraph:
-    image: memgraph/memgraph
+    # Pinned: the image ENTRYPOINT is the memgraph binary, so `command` carries
+    # flags only. Repeating the binary path here makes memgraph exit with
+    # "Unexpected positional argument(s)".
+    image: memgraph/memgraph:3.13.1
     container_name: memgraph
     command: [
-      "/usr/lib/memgraph/memgraph",
       "--storage-wal-enabled=true",
       "--storage-snapshot-interval-sec=300"
     ]
