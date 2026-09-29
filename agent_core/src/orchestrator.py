@@ -54,7 +54,7 @@ from src.interfaces.reach_layer import ReachLayerBase
 from src.interfaces.trust_layer import TrustLayerBase
 from src.http_clients.trust_layer import TrustLayerConstraintError
 from src.preprocessing.language_normalisation import LanguageNormaliser
-from src.manager_agent import ManagerAgent
+from src.manager_agent import ManagerAgent, ungrounded_params
 from src.models import (
     DoneEvent,
     NLUResult,
@@ -3882,13 +3882,42 @@ class AgentCore(AgentCoreBase):
                             tc, _ke_context,
                         )
                     elif self._async_gateway:
-                        tool_result = await self._async_gateway.execute(
-                            tc, session_id, user_id,
-                            session_values=self._tool_session_values(bundle),
+                        # Same provenance guard the sync path gets inside
+                        # ManagerAgent.run_turn. stream_turn has its own tool
+                        # loop and never calls run_turn, so without this the
+                        # guard is dead on the path voice clients actually use.
+                        _ung = ungrounded_params(
+                            (getattr(self._manager_agent, "_grounded_params", {}) or {})
+                            .get(tc.tool_name) or {},
+                            tc, messages,
                         )
-                        await self._write_mapped_session_values(
-                            session_id, user_id, tool_result, bundle,
-                        )
+                        if _ung:
+                            logger.warning(
+                                "orchestrator.stream_ungrounded_param tool=%s params=%s",
+                                tc.tool_name, sorted(_ung),
+                            )
+                            tool_result = ToolResult(
+                                tool_use_id=tc.tool_use_id,
+                                tool_name=tc.tool_name,
+                                result={},
+                                success=False,
+                                error="UNGROUNDED_PARAMETER",
+                                result_text=(
+                                    f"Refused: {', '.join(sorted(_ung))} did not come from "
+                                    f"any tool result in this conversation, so the value was "
+                                    f"invented. Do not guess an identifier. Re-read the most "
+                                    f"recent tool result, copy the exact value for the item the "
+                                    f"user chose, and call this tool again."
+                                ),
+                            )
+                        else:
+                            tool_result = await self._async_gateway.execute(
+                                tc, session_id, user_id,
+                                session_values=self._tool_session_values(bundle),
+                            )
+                            await self._write_mapped_session_values(
+                                session_id, user_id, tool_result, bundle,
+                            )
                     else:
                         # Fallback: no async gateway — cannot execute tools in streaming mode
                         logger.error(
@@ -4048,13 +4077,41 @@ class AgentCore(AgentCoreBase):
                                     tc, _ke_context,
                                 )
                             elif self._async_gateway:
-                                tool_result = await self._async_gateway.execute(
-                                    tc, session_id, user_id,
-                                    session_values=self._tool_session_values(bundle),
+                                # Second streaming execution site (nested tool
+                                # rounds) — same guard as the first.
+                                _ung2 = ungrounded_params(
+                                    (getattr(self._manager_agent, "_grounded_params", {}) or {})
+                                    .get(tc.tool_name) or {},
+                                    tc, messages,
                                 )
-                                await self._write_mapped_session_values(
-                                    session_id, user_id, tool_result, bundle,
-                                )
+                                if _ung2:
+                                    logger.warning(
+                                        "orchestrator.stream_ungrounded_param tool=%s params=%s",
+                                        tc.tool_name, sorted(_ung2),
+                                    )
+                                    tool_result = ToolResult(
+                                        tool_use_id=tc.tool_use_id,
+                                        tool_name=tc.tool_name,
+                                        result={},
+                                        success=False,
+                                        error="UNGROUNDED_PARAMETER",
+                                        result_text=(
+                                            f"Refused: {', '.join(sorted(_ung2))} did not come "
+                                            f"from any tool result in this conversation, so the "
+                                            f"value was invented. Do not guess an identifier. "
+                                            f"Re-read the most recent tool result, copy the exact "
+                                            f"value for the item the user chose, and call this "
+                                            f"tool again."
+                                        ),
+                                    )
+                                else:
+                                    tool_result = await self._async_gateway.execute(
+                                        tc, session_id, user_id,
+                                        session_values=self._tool_session_values(bundle),
+                                    )
+                                    await self._write_mapped_session_values(
+                                        session_id, user_id, tool_result, bundle,
+                                    )
                             else:
                                 break
                             _nested_results.append({

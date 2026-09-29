@@ -2109,3 +2109,21 @@ def test_stream_turn_latches_opening_phrase_emitted_after_routing():
     assert src.rindex(flag) > src.index("routing_writes.append"), (
         "the latch must also appear in the routing block, after routing resolves"
     )
+
+
+def test_both_streaming_tool_sites_apply_the_grounding_guard():
+    """stream_turn has its own tool loop and never calls ManagerAgent.run_turn.
+
+    The guard lived only inside run_turn, so it was dead on the streaming path
+    — the one a voice client uses. Measured: apply_job went out on streaming
+    with a fabricated job_item_id and the guard never evaluated.
+    """
+    import inspect
+    src = inspect.getsource(AgentCore.stream_turn)
+    executes = src.count("self._async_gateway.execute(")
+    guards = src.count("ungrounded_params(")
+    assert executes >= 1, "expected gateway execution sites in stream_turn"
+    assert guards >= executes, (
+        f"{executes} streaming execution site(s) but only {guards} guard call(s) — "
+        "every site that dispatches a tool must check provenance first"
+    )

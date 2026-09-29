@@ -1001,6 +1001,32 @@ preprocessing:
       different trade, broader search). The orchestrator routes back to
       job_match for explore_more, forward to onboard_prep for apply_now.
 
+      ## termination_intent — the caller wants the call to END
+      This is the ONLY signal that can hang up the call, so it has to be
+      recognised when it is really given. It routes globally to `ended`,
+      which is the only phase allowed to end a call.
+
+      Classify as `termination_intent` when the caller says they are
+      done or going, in any phrasing:
+        "मैं फोन रखता हूँ" / "फोन रखती हूँ"  — I'm hanging up
+        "बस इतना ही" / "बस, और कुछ नहीं"      — that's all
+        "बाद में बात करते हैं"                — let's talk later
+        "अभी नहीं चाहिए" / "रहने दीजिए"        — not now / leave it
+        "अलविदा", "नमस्ते" as a PARTING word
+        "bye", "cut the call", "that's all"
+
+      Do NOT classify as `termination_intent`:
+        - "धन्यवाद" / "शुक्रिया" / "ठीक है" on their own. These are
+          ordinary Hindi politeness used constantly MID-call, after an
+          answer or a job being read out. They mean "got it", not
+          "goodbye", and treating them as an ending drops live calls.
+        - any request to DO something — "अप्लाई कर दो", "भेज दो",
+          "दिखाओ", "ढूंढो". Those are the opposite of a goodbye.
+        - "नहीं" answering a question you asked. That is `decline`.
+
+      The distinction is whether the caller is leaving, not whether
+      they sound satisfied.
+
       ## language_switch_request
       When the user asks to switch language ("speak in hindi", "in
       gujarati", "english me"), classify as `language_switch_request`
@@ -2844,6 +2870,28 @@ agent_workflow:
             - field: profile_setup_done
               operator: eq
               value: "true"
+          next_subagent_id: apply_confirm
+        # The profile now EXISTS. save_profile's session_mapping writes
+        # profile_item_id the moment the upstream returns it, so this is the
+        # real completion signal the dead `profile_setup_done` rule above was
+        # reaching for. Guarded to create_new so the update_existing path
+        # still gets its turn to collect the change — on that path
+        # profile_item_id is already set before the phase is entered.
+        #
+        # Leaving as soon as the profile exists is the point: profile_setup
+        # has NO apply tool, so every extra turn spent here is a turn where
+        # the caller can say "हाँ, भेज दीजिए" and the only thing the model can
+        # do is talk. Measured — it answered "आपका आवेदन भेज दिया गया है"
+        # from this phase, which its own prompt forbids in as many words, and
+        # no application existed.
+        - intent: "*"
+          conditions:
+            - field: profile_action
+              operator: eq
+              value: "create_new"
+            - field: profile_item_id
+              operator: not_eq
+              value: ""
           next_subagent_id: apply_confirm
         - intent: apply_now
           next_subagent_id: apply_confirm

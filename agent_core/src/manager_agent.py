@@ -67,6 +67,84 @@ def _is_collected(value: object) -> bool:
     return bool(value)
 
 
+def ungrounded_params(
+spec: dict[str, list[str]],
+tool_call,
+messages: list,
+) -> set[str]:
+    """Return the configured params whose value no tool result contains.
+
+    A model asked for a 36-character identifier many turns after it was
+    shown will sometimes emit a well-formed one it invented. The upstream
+    cannot tell that apart from a stale id and answers with a generic
+    "not found", which is then relayed to the user as if their request had
+    simply been unnecessary. Checking the value against what upstreams
+    actually returned catches it before the call is made.
+
+    Args:
+        spec: Map of param name to the tool names whose results may supply
+            it. An empty source list means any tool result.
+        tool_call: The pending call, carrying ``tool_name`` and
+            ``input_params``.
+        messages: Conversation so far; tool results are read from the
+            ``ToolResultBlock`` entries inside it.
+
+    Returns:
+        Names of params that were supplied but appear in no tool result.
+        Empty when the tool has no configured params, when a param was not
+        supplied, or when every supplied value is grounded.
+    """
+    if not spec:
+        return set()
+
+    # tool_use_id -> tool name, so each result can be attributed to the
+    # tool that produced it.
+    origin: dict[str, str] = {}
+    for msg in messages or []:
+        for block in getattr(msg, "content", None) or []:
+            if getattr(block, "type", "") == "tool_use":
+                origin[str(getattr(block, "tool_use_id", ""))] = str(
+                    getattr(block, "tool_name", "")
+                )
+
+    by_tool: dict[str, list[str]] = {}
+    seen_any: list[str] = []
+    for msg in messages or []:
+        for block in getattr(msg, "content", None) or []:
+            if getattr(block, "type", "") != "tool_result":
+                continue
+            content = getattr(block, "content", "")
+            if not isinstance(content, str) or not content:
+                continue
+            seen_any.append(content)
+            src = origin.get(str(getattr(block, "tool_use_id", "")), "")
+            by_tool.setdefault(src, []).append(content)
+
+    if not seen_any:
+        # Nothing has been fetched yet, so nothing can be grounded. Let the
+        # call through rather than blocking a legitimate first call whose
+        # value came from session state seeded outside this conversation.
+        return set()
+
+    missing: set[str] = set()
+    for name, sources in spec.items():
+        value = (tool_call.input_params or {}).get(name)
+        if value in (None, ""):
+            continue
+        if sources:
+            pool = [c for src in sources for c in by_tool.get(src, [])]
+            if not pool:
+                # None of the naming tools has run yet — the value cannot
+                # have come from one, so it was carried or invented.
+                missing.add(name)
+                continue
+        else:
+            pool = seen_any
+        if str(value) not in "\n".join(pool):
+            missing.add(name)
+    return missing
+
+
 class ManagerAgent:
     """
     Drives the tool-use loop for one conversation turn.
@@ -138,76 +216,10 @@ class ManagerAgent:
     # ------------------------------------------------------------------
 
     def _ungrounded_params(self, tool_call, messages: list) -> set[str]:
-        """Return the configured params whose value no tool result contains.
-
-        A model asked for a 36-character identifier many turns after it was
-        shown will sometimes emit a well-formed one it invented. The upstream
-        cannot tell that apart from a stale id and answers with a generic
-        "not found", which is then relayed to the user as if their request had
-        simply been unnecessary. Checking the value against what upstreams
-        actually returned catches it before the call is made.
-
-        Args:
-            tool_call: The pending call, carrying ``tool_name`` and
-                ``input_params``.
-            messages: Conversation so far; tool results are read from the
-                ``ToolResultBlock`` entries inside it.
-
-        Returns:
-            Names of params that were supplied but appear in no tool result.
-            Empty when the tool has no configured params, when a param was not
-            supplied, or when every supplied value is grounded.
-        """
-        spec = self._grounded_params.get(tool_call.tool_name) or {}
-        if not spec:
-            return set()
-
-        # tool_use_id -> tool name, so each result can be attributed to the
-        # tool that produced it.
-        origin: dict[str, str] = {}
-        for msg in messages or []:
-            for block in getattr(msg, "content", None) or []:
-                if getattr(block, "type", "") == "tool_use":
-                    origin[str(getattr(block, "tool_use_id", ""))] = str(
-                        getattr(block, "tool_name", "")
-                    )
-
-        by_tool: dict[str, list[str]] = {}
-        seen_any: list[str] = []
-        for msg in messages or []:
-            for block in getattr(msg, "content", None) or []:
-                if getattr(block, "type", "") != "tool_result":
-                    continue
-                content = getattr(block, "content", "")
-                if not isinstance(content, str) or not content:
-                    continue
-                seen_any.append(content)
-                src = origin.get(str(getattr(block, "tool_use_id", "")), "")
-                by_tool.setdefault(src, []).append(content)
-
-        if not seen_any:
-            # Nothing has been fetched yet, so nothing can be grounded. Let the
-            # call through rather than blocking a legitimate first call whose
-            # value came from session state seeded outside this conversation.
-            return set()
-
-        missing: set[str] = set()
-        for name, sources in spec.items():
-            value = (tool_call.input_params or {}).get(name)
-            if value in (None, ""):
-                continue
-            if sources:
-                pool = [c for src in sources for c in by_tool.get(src, [])]
-                if not pool:
-                    # None of the naming tools has run yet — the value cannot
-                    # have come from one, so it was carried or invented.
-                    missing.add(name)
-                    continue
-            else:
-                pool = seen_any
-            if str(value) not in "\n".join(pool):
-                missing.add(name)
-        return missing
+        """Instance wrapper around :func:`ungrounded_params` for this agent's config."""
+        return ungrounded_params(
+            self._grounded_params.get(tool_call.tool_name) or {}, tool_call, messages
+        )
 
     # ------------------------------------------------------------------
     # Public interface

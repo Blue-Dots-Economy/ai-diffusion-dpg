@@ -578,6 +578,24 @@ tools:
               "Travel", "Other".
     response:
       max_size_chars: 4000
+      # Lift the new profile's identity into session the moment it exists, so
+      # ROUTING can see that the profile is created — not only the LLM.
+      #
+      # Without this, nothing in session changes when a save succeeds.
+      # profile_setup's "profile_setup_done" rule was documented dead for
+      # exactly this reason, so a caller who had just been saved stayed in
+      # profile_setup — a phase with NO apply tool — and when they said
+      # "हाँ, भेज दीजिए" the model answered "आपका आवेदन भेज दिया गया है".
+      # Its own prompt forbids that sentence in that phase; it said it anyway.
+      # The profile was live upstream and no application existed.
+      #
+      # Same selectors as fetch_profile: the two endpoints return the same
+      # participant shape.
+      session_mapping:
+        - source: "items[lifecycle_status=live].item_id"
+          target: profile_item_id
+        - source: "user_id"
+          target: acting_as_user_id
       # Expose user_id (= acting_as_user_id for apply_job) and the items
       # array. For UPDATE the array has one element (the updated profile);
       # for CREATE it contains all the user's profiles and the new one
