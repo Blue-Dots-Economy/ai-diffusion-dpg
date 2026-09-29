@@ -50,6 +50,9 @@ writes the next turn knew nothing about.
 - G4. Entirely domain-agnostic and config-driven. No tool names, no use-case logic —
   tools are whatever the domain schema declares.
 - G5. #224's guarantee holds: no sentence from an interrupted turn is delivered.
+- G6. Agent Core stays stateless between turns (CLAUDE.md guideline 5). Only the *live*
+  turn (its task, queue and abort signal) is in-process; everything a successor needs is
+  in Memory Layer.
 
 **Non-goals**
 
@@ -57,8 +60,9 @@ writes the next turn knew nothing about.
 - Handling of request `metadata` (deferred).
 - `/process_turn` (blocking, manager_agent path) — unchanged.
 - Idempotency of upstream tools — a domain/Action Gateway concern, tracked separately.
-- Multi-replica Agent Core. Session state stays in-process; scaling out needs sticky
-  routing by `session_id` (unchanged constraint).
+- Cross-replica *interruption*. Aborting a running turn needs the request to reach the
+  replica running it (sticky routing by `session_id`); without it the old turn simply runs
+  to completion on its replica (§4.8). Carry-over itself is replica-independent.
 
 ## 3. Design overview
 
@@ -114,7 +118,7 @@ Added:
 
 ### 4.3 Session and Turn
 
-- `Session` gains `carryover: Optional[Carryover]` and `last_activity_ms`.
+- `Session` gains `last_activity_ms`. Carry-over is not held on the Session (§4.6).
 - `Turn` gains `stopped_at_stage: Optional[str]` and `captured_exchanges: list[dict]`
   (the orchestrator appends to it as rounds complete, so the assembler can read what a
   turn did without waiting for step 11).
@@ -174,9 +178,14 @@ Carryover
   from_turn_id      str
 ```
 
-- Held on `Session.carryover` and consumed by the next turn only. It is dropped on
-  eviction or `session_end`. The exchanges are durable independently, through
-  `recent_tool_exchanges`.
+- Written to Memory Layer at session scope under `turn_carryover` when the interrupted
+  turn returns, read and cleared by the next turn's context read. Memory Layer's session
+  TTL bounds its life. The exchanges are additionally merged into
+  `recent_tool_exchanges` (§4.5), so they outlive the carry-over. Because it lives in
+  Memory Layer, any replica can serve the successor.
+- Segment text in `turn_carryover` is conversation content. It is written to Memory
+  Layer like any other session state and never logged (logging rule: no message
+  content outside the audit path).
 - **Fold:** the successor's segments are `carryover.segments + [new]`, keeping the newest
   `fold.max_segments`. `_invoke` already joins segments with a space. This also covers
   #200's split-sentence case, where the carried segment is the first half of the same
@@ -195,11 +204,26 @@ are idle (`now - last_activity_ms > session_idle_ttl_ms`) with no INVOKED turn, 
 `session_end`. Segment-stream sessions keep their existing explicit lifecycle and are also
 covered by the sweep as a backstop.
 
+### 4.8 Multiple replicas
+
+- Same replica (sticky routing, or a single replica as on the VM today): full behaviour.
+- Different replica: the new request finds no live turn locally, so there is nothing to
+  abort or drain. It reads whatever `turn_carryover` exists. The old turn keeps running
+  on its replica and persists through step 11 as a normal turn. Its sentences go
+  nowhere, because its connection is closed. Result: no lost segments once the old turn
+  has written its carry-over, but no guarantee that the successor waits for it. This is
+  documented as a degraded mode, not solved here.
+
 ## 5. Configuration
 
 Under `channels.<name>.turn_assembler`, falling back to `reach_layer.turn_assembler`.
-Both `agent_core/src/schema/config.py` and `dev-kit` (`dev_kit/schemas/domain/agent_core.py`,
-`dev_kit/schemas/dpg/agent_core.py`) are `extra="forbid"` and are updated together.
+Per `.claude/rules/runtime-devkit-sync.md`, the same PR updates:
+`agent_core/src/schema/config.py` (runtime, `extra="forbid"`), the per-block mirror
+`dev-kit/dev_kit/schemas/domain/agent_core.py`, the flat-file copy `dev-kit/dev_kit/schema.py`,
+`FIELD_RULES` in `dev-kit/dev_kit/agent/field_rules/agent_core.py`, framework defaults in
+`dev-kit/dpg/agent_core.yaml`, and accept/reject tests in
+`dev-kit/tests/schemas/domain/test_agent_core.py`. The dev-kit image is rebuilt before
+merge.
 
 ```yaml
 turn_assembler:
@@ -264,13 +288,17 @@ interrupted-turn sentence reaches a client.
 | Repeated check-ins while turns keep being interrupted | Fold capped at `max_segments` newest; the substantive utterance survives while it is within the cap. |
 | Drain timeout while a tool is in flight | Successor proceeds; the shielded round's result lands later and is merged into `recent_tool_exchanges`. |
 | `carryover.enabled: false` | Behaves as `on_new_input: replace`, except that tool rounds are still shielded, captured first and persisted on abort (without the `delivered: false` marking). |
-| Agent Core restart | In-memory carry-over lost; persisted exchanges survive. |
+| Agent Core restart mid-turn | The live turn is lost. Tool rounds captured before the restart are persisted only if the abort path ran; carry-over already written survives in Memory Layer. |
+| Successor lands on another replica | See §4.8 (degraded mode). |
 
 ## 10. Testing
 
 **Unit**
 
-- Session/Turn: carry-over set and consumed once; `replace_turn` precondition; eviction.
+- Session/Turn: `replace_turn` precondition; eviction.
+- Carry-over: written to Memory Layer on abort; read and cleared exactly once by the
+  successor; absent key is handled; Memory Layer write failure is logged and does not
+  fail the successor.
 - Interruption: `on_new_input` × `on_disconnect` combinations; no `task.cancel()` before
   drain timeout; drain timeout hard-cancels.
 - Fold: carried + new segments; `max_segments` cap; #200 split-sentence case.
