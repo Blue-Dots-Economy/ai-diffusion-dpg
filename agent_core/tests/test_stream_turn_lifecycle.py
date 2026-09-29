@@ -185,3 +185,117 @@ class TestInterruptedPersist:
         assert events[-1].turn_status == "abandoned"
         await record.persist_task
         assert _writes(agent, "turn_carryover")[-1]["segments"] == ["Hello"]
+
+
+import time as _time
+
+from src.chat_provider.types import ToolResultBlock
+
+
+def _carry(segments, age_ms=0):
+    return {"segments": segments, "stopped_at_stage": "nlu", "turn_id": "t0",
+            "written_at_ms": int(_time.time() * 1000) - age_ms}
+
+
+class TestFold:
+
+    async def test_carryover_folded_into_user_message_and_cleared(self):
+        agent = _tool_agent(rounds=0)
+        agent._async_memory.context_bundle.return_value.session["turn_carryover"] = \
+            _carry(["I want work in Ghaziabad"])
+        record = TurnRecord()
+        events = [e async for e in agent.stream_turn(
+            _make_turn_input(user_message="hello, anyone there?"), record=record)]
+        assert isinstance(events[-1], DoneEvent)
+        assert record.fold_ran is True
+        assert record.segments == ["I want work in Ghaziabad", "hello, anyone there?"]
+        # cleared (None written) before anything else
+        assert _writes(agent, "turn_carryover")[0] is None
+        # the model's user turn contains both utterances
+        built = agent._manager_agent.build_messages.call_args
+        assert "I want work in Ghaziabad" in str(built) and "hello, anyone there?" in str(built)
+
+    async def test_no_carryover_leaves_message_unchanged(self):
+        agent = _tool_agent(rounds=0)
+        record = TurnRecord()
+        [e async for e in agent.stream_turn(_make_turn_input(user_message="hi"), record=record)]
+        assert record.segments == ["hi"] and record.fold_ran is True
+        assert _writes(agent, "turn_carryover") == []
+
+    async def test_stale_carryover_is_discarded_and_cleared(self):
+        """Review focus 2: a callback must not fold the previous call's goodbye."""
+        agent = _tool_agent(rounds=0)
+        agent._async_memory.context_bundle.return_value.session["turn_carryover"] = \
+            _carry(["thank you, bye"], age_ms=10 * 60 * 1000)
+        record = TurnRecord()
+        [e async for e in agent.stream_turn(_make_turn_input(user_message="hi"), record=record)]
+        assert record.segments == ["hi"]
+        assert _writes(agent, "turn_carryover")[0] is None
+
+    @pytest.mark.parametrize("raw", ["oops", ["a"], {"segments": "a"},
+                                     {"segments": [1, None, " "], "written_at_ms": 0}])
+    async def test_malformed_carryover_is_ignored(self, raw):
+        """Review focus 4."""
+        agent = _tool_agent(rounds=0)
+        agent._async_memory.context_bundle.return_value.session["turn_carryover"] = raw
+        record = TurnRecord()
+        events = [e async for e in agent.stream_turn(_make_turn_input(user_message="hi"),
+                                                     record=record)]
+        assert isinstance(events[-1], DoneEvent) and events[-1].turn_status == "completed"
+        assert record.segments == ["hi"]
+
+    async def test_fold_cap(self):
+        agent = _tool_agent(rounds=0)
+        agent._config.setdefault("reach_layer", {})["turn_assembler"] = {"fold": {"max_segments": 2}}
+        agent._turn_policies.clear()
+        agent._async_memory.context_bundle.return_value.session["turn_carryover"] = \
+            _carry(["a", "b", "c"])
+        record = TurnRecord()
+        [e async for e in agent.stream_turn(_make_turn_input(user_message="d"), record=record)]
+        assert record.segments == ["c", "d"]
+
+    async def test_max_segments_zero_disables_fold(self):
+        agent = _tool_agent(rounds=0)
+        agent._config.setdefault("reach_layer", {})["turn_assembler"] = {"fold": {"max_segments": 0}}
+        agent._turn_policies.clear()
+        agent._async_memory.context_bundle.return_value.session["turn_carryover"] = _carry(["a"])
+        record = TurnRecord()
+        [e async for e in agent.stream_turn(_make_turn_input(user_message="d"), record=record)]
+        assert record.segments == ["d"]
+
+
+class TestUndeliveredReplay:
+
+    def test_note_appended_only_to_undelivered(self):
+        agent = _make_agent_core()
+        ex = lambda i, d: {"tool_uses": [{"type": "tool_use", "id": i, "name": "t", "input": {}}],
+                           "tool_results": [{"type": "tool_result", "tool_use_id": i,
+                                             "content": "R"}], **d}
+        msgs = agent._build_tool_exchange_messages(
+            [ex("a", {}), ex("b", {"delivered": False})], undelivered_note="NOTE")
+        results = [b for m in msgs if m.role == "user" for b in m.content
+                   if isinstance(b, ToolResultBlock)]
+        assert results[0].content == "R"
+        assert results[1].content == "R\nNOTE"
+
+    def test_no_note_leaves_content(self):
+        agent = _make_agent_core()
+        msgs = agent._build_tool_exchange_messages([{
+            "tool_uses": [{"type": "tool_use", "id": "a", "name": "t", "input": {}}],
+            "tool_results": [{"type": "tool_result", "tool_use_id": "a", "content": "R"}],
+            "delivered": False}])
+        results = [b for m in msgs if m.role == "user" for b in m.content
+                   if isinstance(b, ToolResultBlock)]
+        assert results[0].content == "R"
+
+    async def test_completed_turn_clears_delivered_flags_without_new_rounds(self):
+        agent = _tool_agent(rounds=0)
+        prior = [{"tool_uses": [{"type": "tool_use", "id": "p", "name": "t", "input": {}}],
+                  "tool_results": [{"type": "tool_result", "tool_use_id": "p", "content": "c"}],
+                  "delivered": False}]
+        agent._async_memory.context_bundle.return_value.session["recent_tool_exchanges"] = prior
+        [e async for e in agent.stream_turn(_make_turn_input())]
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        stored = _writes(agent, "recent_tool_exchanges")[-1]
+        assert "delivered" not in stored[0]
