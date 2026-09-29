@@ -2159,10 +2159,19 @@ agent_workflow:
         - A [role] containing "/" is spoken with "या" in its place:
           "Computer Operator / Data Entry" is "कंप्यूटर ऑपरेटर या डेटा
           एंट्री". Never voice the slash.
-        - [salary] and [positions] arrive as DIGITS and are spoken as
-          WORDS. Not Devanagari digits — words. A range is "X से Y".
-          Convert the number you were actually given; never copy a
-          number from any example.
+        - [positions] arrives as a DIGIT and is spoken as a WORD —
+          "चार पोज़िशन", never "4" and never "४".
+        - [salary] is a RANGE and is spoken in ROUNDED THOUSANDS. Round
+          each bound down to its thousand and say the pair:
+            25755-31121 -> "पच्चीस से इकतीस हज़ार"
+            24951-32435 -> "चौबीस से बत्तीस हज़ार"
+          Do NOT read the exact rupee figure. Exact five-digit
+          conversion is where this keeps failing — on live calls 24951
+          became "उनचास हज़ार" (forty-nine thousand), 31121 became
+          "तैंतीस हज़ार" (thirty-three), and one range ran downwards.
+          Never say "साढ़े" (half); a salary is not a fraction.
+          Convert the number you were actually given; never copy one
+          from an example.
 
         ## The turn ends on the question
         Ask "इस जॉब के बारे में कुछ पूछना है?" and STOP. Do not ask
@@ -2416,6 +2425,18 @@ agent_workflow:
         You are in **profile_setup**. profile_action in session is
         either "create_new" or "update_existing".
 
+        ## You cannot send an application from this phase
+        Your only tool here is `save_profile`. There is no apply tool in
+        this phase, so an application CANNOT have been sent while you
+        are in it. Never say "आवेदन भेज दिया गया है" or anything meaning
+        the application is in — it is a lie the caller acts on, and it
+        was said on a live call where apply_job was never invoked at
+        all.
+
+        Saving their details is not applying. After save_profile
+        returns, say their information is saved and ask whether to send
+        the application — the sending happens in the next phase.
+
         ## STEP 0 — Pre-flight check (EVERY turn, BEFORE responding)
 
         The upstream requires exactly TWO fields: **name** and **phone**.
@@ -2556,6 +2577,26 @@ agent_workflow:
               value: "true"
           next_subagent_id: apply_confirm
         - intent: apply_now
+          next_subagent_id: apply_confirm
+        # BACKSTOP. Nothing in this domain ever sets profile_setup_done:
+        # it is declared in memory_layer's session schema and written by
+        # no rule, no tool response and no NLU entity that survives —
+        # so the rule above can never match, and a caller whose intent
+        # is not classified as apply_now stays here forever. Measured on
+        # a live local call: entry_count reached 4, apply_job was never
+        # called, and the model announced an application anyway.
+        #
+        # Two turns is the real cost of this phase — one to ask for the
+        # missing field, one to answer it. An earlier 5-turn force-
+        # advance was removed for dumping callers into apply_confirm
+        # before save_profile ran; two is tight enough that save_profile
+        # has normally happened, and being early is recoverable (that
+        # phase re-asks) where being stuck is not.
+        - intent: "*"
+          conditions:
+            - field: subagent_entry_count.profile_setup
+              operator: gt
+              value: 1
           next_subagent_id: apply_confirm
         # Removed the 5-turn force-advance — create_new naturally takes
         # 5 entries (one per field), which used to dump the user into
@@ -2718,6 +2759,19 @@ agent_workflow:
         application — treat as FAILURE. NEVER announce "submitted"
         on an empty result.
 
+        ## Do NOT end the session on the apply turn
+        Never call `end_session` in the same turn as apply_job, and
+        never in the turn that announces the result. The call is not
+        over: one service offer is still owed, in its own turn, and it
+        is owed whether the apply succeeded, was already in, or failed.
+
+        Measured on a live local call: end_session fired alongside
+        apply_job, the session ended, and the services turn never
+        happened — the caller was simply hung up on after the
+        confirmation.
+
+        The goodbye belongs after the services offer, not here.
+
         ## After apply_job success
         Announce clearly, ONCE, in Hindi:
           "<company> में <role> के लिए आपका आवेदन भेज दिया गया है।
@@ -2859,7 +2913,10 @@ agent_workflow:
 
         ### Rules that bind all three rows
         - The SUCCESS line may ONLY appear in a turn that contains a
-          fresh successful apply_job result. Never in a later turn,
+          fresh successful apply_job result. Saying it again in the NEXT
+          turn is the same error — the caller already heard it, and a
+          repeat reads as a second application. Observed on a live call:
+          the confirmation was spoken twice, turns 10 and 11. Never in a later turn,
           never after a row 2 or row 3 turn. A failure followed later by
           a success line is a flat contradiction.
         - Never blame the caller, their phone or the network. Never say
