@@ -71,6 +71,22 @@ jobs:
       ref_slug: ${{ steps.resolve.outputs.slug }}
       short_sha: ${{ steps.plan.outputs.short_sha }}
     steps:
+      # Fail once, with the fix in the message, rather than letting every
+      # matrix build fail on its own with docker/login-action's bare
+      # "Password required".
+      - name: Check dhi.io credentials are configured
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          missing=""
+          [ -n "$DOCKERHUB_USERNAME" ] || missing="$missing DOCKERHUB_USERNAME (repository variable)"
+          [ -n "$DOCKERHUB_TOKEN" ] || missing="$missing DOCKERHUB_TOKEN (repository secret)"
+          if [ -n "$missing" ]; then
+            echo "::error::dhi.io login needs a Docker Hub account. Not set:$missing. Add them under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+
       - name: Resolve ref
         id: resolve
         env:
@@ -121,8 +137,14 @@ jobs:
       # uv, docker CLI) are Docker Hardened Images from dhi.io, which refuses
       # anonymous pulls even for the free Apache-2.0 catalog — without this the
       # build fails at the first FROM. Credentials are a Docker Hub account:
-      # DOCKERHUB_USERNAME is a repository variable, DOCKERHUB_TOKEN a
-      # repository secret (same setup as signals-dpg and aggregator-dpg).
+      # the DOCKERHUB_USERNAME repository variable and the DOCKERHUB_TOKEN
+      # repository secret. `prepare` checks both exist before any build starts.
+      #
+      # No fork-PR guard is needed: this workflow runs only on push to main and
+      # workflow_dispatch, and both always get the repository's secrets. If a
+      # `pull_request` trigger is ever added, gate this job on
+      # `github.event.pull_request.head.repo.fork == false` (as aggregator-dpg
+      # does): fork PRs get no secrets, so this login would fail for them.
       - name: Log in to dhi.io
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
