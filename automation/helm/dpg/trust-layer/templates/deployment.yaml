@@ -12,6 +12,10 @@ spec:
       app: {{ .Release.Name }}
   template:
     metadata:
+      # Roll pods when rendered config changes; services read it only at startup.
+      annotations:
+        checksum/configmap-dpg: {{ include (print $.Template.BasePath "/configmap-dpg.yaml") . | sha256sum }}
+        checksum/configmap-domain: {{ include (print $.Template.BasePath "/configmap-domain.yaml") . | sha256sum }}
       labels:
         app: {{ .Release.Name }}
     spec:
