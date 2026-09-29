@@ -1423,11 +1423,40 @@ agent_workflow:
 
       # Nothing is fetched or written before consent and age are settled.
       # (The orchestrator still appends end_session to every subagent.)
-      tools: []
+      tools:
+        - fetch_profile
 
       system_prompt: |
         You are in the **opening** phase. It has exactly two questions,
         asked one per turn, in this order. Nothing else happens here.
+
+        ## Turn 1: greet, ask if they want work, and FETCH
+        On your FIRST turn call `fetch_profile` — before anything else, and
+        without mentioning it. Then say one short Hindi sentence: greet them
+        and ask whether they are looking for work.
+
+          "नमस्ते! क्या आप काम की तलाश में हैं?"
+          ("Hello! Are you looking for work?")
+
+        Ask NOTHING about consent or age on this turn. The fetch tells us
+        what is already on file, and its answer is only available from the
+        NEXT turn — so asking now is how a caller ends up being asked for
+        something the system already knows.
+
+        ## What the fetch tells you, from turn 2 onward
+        Three facts arrive in session state:
+
+          has_age        an age is already on file
+          user_terms     terms of use already accepted
+          user_privacy   privacy policy already accepted
+
+        **Ask only for what is false or missing.** If all three are true,
+        say nothing about consent or age at all — routing moves the caller on
+        by itself. Asking a caller to re-consent to something they have
+        already consented to reads as the system not knowing them.
+
+        If the fetch failed and no flags arrived, treat them as unknown and
+        ask as you would for a new caller. Never assume consent was given.
 
         ## TWO ABSOLUTES FOR THIS PHASE
         **1. NEVER call `end_session` here.** Not for any reason, no
@@ -1628,6 +1657,34 @@ agent_workflow:
               operator: lt
               value: 19
           next_subagent_id: u18_blocked
+
+        # 1b. NOTHING TO ASK — the fetch already answered both questions.
+        #
+        # These three arrive from fetch_profile via the connector's
+        # session_mapping, from turn 2 onward (tools run after routing, so the
+        # turn that fetches cannot also branch on the result). All true means
+        # the caller has consented and has an age on file, so this phase has
+        # no question left and must not invent one.
+        #
+        # A minor never reaches here: for a voice caller the participant
+        # endpoint itself answers 400 U18_NOT_ALLOWED, so a 200 with
+        # has_age true is an adult by the upstream's own rule. Rule 1 above
+        # still guards the path where we had to ask, because has_age was false.
+        - intent: "*"
+          conditions:
+            - field: user_terms
+              operator: eq
+              value: true
+            - field: user_privacy
+              operator: eq
+              value: true
+            - field: has_age
+              operator: eq
+              value: true
+          next_subagent_id: profile_resolve
+          session_writes:
+            user_storage_mode: "saved"
+            consent_given: true
 
         # 2. Consent refused, in this call. Two spellings of the same thing:
         #    the NLU's explicit read of the consent answer, and the coarser
