@@ -1406,10 +1406,13 @@ agent_workflow:
       # canned opening phrases — GH-239 — so on voice the LLM produces the
       # equivalent from the system prompt below). Hindi, because it is
       # spoken as written.
+      # Emitted verbatim on turn 1, BEFORE any LLM call — so no tool has run
+      # and nothing is known about the caller yet. It must therefore not ask
+      # for consent: a caller whose consent is already on file would be asked
+      # anyway, which is the exact behaviour this phase was reworked to stop.
+      # It greets and asks the one thing that is useful for everyone.
       opening_phrase: >
-        नमस्ते। नौकरी के आवेदन आपकी ओर से भेजने के लिए मुझे आपकी जानकारी
-        सेव करनी होगी। यह बातचीत रिकॉर्ड की जा सकती है। क्या मैं ऐसा कर
-        सकता हूँ?
+        नमस्ते! ब्लू डॉट्स में आपका स्वागत है। क्या आप काम की तलाश में हैं?
 
       valid_intents:
         # termination_intent is deliberately absent — it is a global intent
@@ -1443,7 +1446,21 @@ agent_workflow:
         NEXT turn — so asking now is how a caller ends up being asked for
         something the system already knows.
 
-        ## What the fetch tells you, from turn 2 onward
+        ## The turn you fetch on: ask for the TRADE, never for consent
+        On the turn where you call `fetch_profile` the flags have not arrived
+        yet — tools run after routing, so the result reaches you on the turn
+        AFTER. Asking for consent now is guessing, and for most callers the
+        guess is wrong: they have already consented.
+
+        Ask instead for the one thing needed either way:
+
+          "आप किस काम या ट्रेड में नौकरी ढूंढ रहे हैं?"
+          ("What work or trade are you looking for?")
+
+        That is useful for every caller, so no turn is wasted while the fetch
+        comes back.
+
+        ## What the fetch tells you, from the next turn onward
         Three facts arrive in session state:
 
           has_age        an age is already on file

@@ -1232,6 +1232,17 @@ class AgentCore(AgentCoreBase):
             session_values=self._tool_session_values(bundle),
         )
 
+        # Persist anything a connector's session_mapping lifted out of a
+        # response. The sync path runs its tools inside Manager Agent, which
+        # holds no Memory Layer client, so the write lands here — the same
+        # split the streaming path makes for its own tool loop. Without this
+        # the mechanism silently does nothing on /process_turn, which is the
+        # path the bridge actually uses.
+        for _tr in tool_results or []:
+            for _k, _v in (getattr(_tr, "session_values", None) or {}).items():
+                self._write_memory_sync(session_id, user_id, "session", _k, _v)
+                bundle.session[_k] = _v
+
         # #193: persist this turn's tool exchanges so the next turn can
         # replay them. run_turn returns ToolResult objects; _capture_tool_exchange
         # expects the tool_result content dicts that go into messages, so
