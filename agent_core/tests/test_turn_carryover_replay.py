@@ -135,13 +135,16 @@ async def test_checkin_cascade_keeps_newest_segments():
             await asyncio.sleep(0.05)
         events = [e async for e in ta.attach(turn)]
         assert isinstance(events[-1], DoneEvent)
-        return turn.record.segments
+        return turn.record.segments, _user_text(agent)
 
     job = "मुझे डिलीवरी बॉय का जॉब चाहिए"
     hello = "हेलो कोई है"
-    assert await run([job, hello, hello]) == [job, hello, hello]
-    long = await run([job] + [hello] * 6)
+    short, short_text = await run([job, hello, hello])
+    assert short == [job, hello, hello]
+    assert job in short_text                          # the model heard the job
+    long, long_text = await run([job] + [hello] * 6)
     assert len(long) == 3 and long == [hello] * 3
+    assert job not in long_text and hello in long_text
 
 
 def _slow_tool_agent(memory, tool_s=0.5, drain_max_ms=None, silence_ms=None):
