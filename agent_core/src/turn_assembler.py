@@ -1180,8 +1180,10 @@ class TurnAssembler(TurnAssemblerBase):
         pred, turn.predecessor = turn.predecessor, None
         if pred is not None:
             await self._await_predecessor(pred, self._policy(turn.channel).drain_max_ms)
-        if turn.abort_event.is_set():
-            return
+        # No early return when this turn was itself interrupted while waiting:
+        # stream_turn stops at its first abort check and its ``finally``
+        # persists this turn's utterance, appended to the carry-over the
+        # predecessor just wrote, so the successor still folds it (spec §4.5).
 
         assembled_text = " ".join(s.text.strip() for s in turn.segments)
         first_segment = turn.segments[0] if turn.segments else None

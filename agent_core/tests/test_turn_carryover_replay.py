@@ -142,3 +142,80 @@ async def test_checkin_cascade_keeps_newest_segments():
     assert await run([job, hello, hello]) == [job, hello, hello]
     long = await run([job] + [hello] * 6)
     assert len(long) == 3 and long == [hello] * 3
+
+
+def _slow_tool_agent(memory, tool_s=0.5, drain_max_ms=None, silence_ms=None):
+    """Agent whose first LLM call runs one slow tool, then answers.
+
+    Returns ``(agent, tool_started)``; ``tool_started`` is set once the tool
+    is in flight.
+    """
+    calls = {"n": 0}
+
+    async def llm(*args, abort_event=None, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            yield ""
+            raise ChatToolUseRequested([ToolUseBlock(tool_name="t1", tool_use_id="tu1", input={})])
+        yield "ok "
+
+    agent = _agent(memory, llm)
+    ta_cfg = agent._config.setdefault("reach_layer", {}).setdefault("turn_assembler", {})
+    if drain_max_ms is not None:
+        ta_cfg["interruption"] = {"drain_max_ms": drain_max_ms}
+    if silence_ms is not None:
+        ta_cfg["silence_trigger"] = {"silence_ms": silence_ms}
+    tool_started = asyncio.Event()
+
+    async def slow_exec(tc, *a, **k):
+        tool_started.set()
+        await asyncio.sleep(tool_s)
+        return ToolResult(tool_use_id=tc.tool_use_id, tool_name=tc.tool_name, result={},
+                          success=True, result_text="ok")
+
+    agent._async_gateway.execute.side_effect = slow_exec
+    return agent, tool_started
+
+
+async def test_turn_interrupted_while_awaiting_predecessor_keeps_its_utterance():
+    """Final review 1: A in a slow tool, B waits on A, C arrives before A drains.
+    B's utterance must reach C, between A's and C's."""
+    memory = FakeMemory()
+    agent, tool_started = _slow_tool_agent(memory)
+    ta = TurnAssembler(agent_core=agent, config=agent._config)
+    await ta.submit("s", SegmentInput(text="AAA substantive", channel="bridge", user_id="s"))
+    await asyncio.wait_for(tool_started.wait(), 2)
+    await ta.submit("s", SegmentInput(text="BBB second", channel="bridge", user_id="s"))
+    await asyncio.sleep(0.05)                        # B is waiting on A
+    c = await ta.submit("s", SegmentInput(text="CCC third", channel="bridge", user_id="s"))
+    events = [e async for e in ta.attach(c)]
+    assert isinstance(events[-1], DoneEvent) and events[-1].turn_status == "completed"
+    assert c.record.segments == ["AAA substantive", "BBB second", "CCC third"]
+    text = _user_text(agent)
+    assert "AAA substantive" in text and "BBB second" in text and "CCC third" in text
+
+
+async def test_session_barge_in_onto_waiting_successor_keeps_its_utterance():
+    """Final review 1, session path: add_segment barges in on a successor that is
+    INVOKED but still waiting for its own predecessor."""
+    memory = FakeMemory()
+    agent, tool_started = _slow_tool_agent(memory, silence_ms=10)
+    ta = TurnAssembler(agent_core=agent, config=agent._config)
+    await ta.add_segment("s", SegmentInput(text="AAA substantive", channel="bridge", user_id="s"))
+    await asyncio.wait_for(tool_started.wait(), 2)
+    await ta.add_segment("s", SegmentInput(text="BBB second", channel="bridge", user_id="s"))
+    b = ta._sessions["s"].current_turn
+    for _ in range(200):
+        if b.status == TurnStatus.INVOKED:
+            break
+        await asyncio.sleep(0.01)
+    assert b.status == TurnStatus.INVOKED            # waiting on A inside _invoke
+    await ta.add_segment("s", SegmentInput(text="CCC third", channel="bridge", user_id="s"))
+    c = ta._sessions["s"].current_turn
+    assert c is not b
+    for _ in range(300):
+        if c.status == TurnStatus.COMPLETED:
+            break
+        await asyncio.sleep(0.01)
+    assert c.status == TurnStatus.COMPLETED
+    assert c.record.segments == ["AAA substantive", "BBB second", "CCC third"]
