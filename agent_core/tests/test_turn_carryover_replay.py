@@ -219,3 +219,134 @@ async def test_session_barge_in_onto_waiting_successor_keeps_its_utterance():
         await asyncio.sleep(0.01)
     assert c.status == TurnStatus.COMPLETED
     assert c.record.segments == ["AAA substantive", "BBB second", "CCC third"]
+
+
+def _exchange(name, tool_use_id, **extra):
+    """One persisted #193 exchange."""
+    return dict({
+        "tool_uses": [{"type": "tool_use", "id": tool_use_id, "name": name, "input": {}}],
+        "tool_results": [{"type": "tool_result", "tool_use_id": tool_use_id, "content": "ok"}],
+    }, **extra)
+
+
+def _names(memory):
+    return [ex["tool_uses"][0]["name"] for ex in memory.session.get("recent_tool_exchanges", [])]
+
+
+async def test_late_persist_does_not_clobber_successor_exchanges():
+    """Final review 4: A persists after its drain timed out and B completed.
+    A's write must merge into what B stored, not overwrite it with A's
+    start-of-turn snapshot."""
+    memory = FakeMemory()
+    calls = {"n": 0}
+
+    async def llm(*args, abort_event=None, **kwargs):
+        calls["n"] += 1
+        n = calls["n"]
+        if n in (1, 2):
+            yield ""
+            raise ChatToolUseRequested([ToolUseBlock(tool_name=f"t{n}", tool_use_id=f"tu{n}", input={})])
+        yield "ok "
+
+    agent = _agent(memory, llm)
+    agent._config.setdefault("reach_layer", {})["turn_assembler"] = {"interruption": {"drain_max_ms": 50}}
+    started = asyncio.Event()
+
+    async def exec_(tc, *a, **k):
+        if tc.tool_name == "t1":
+            started.set()
+            await asyncio.sleep(0.6)
+        return ToolResult(tool_use_id=tc.tool_use_id, tool_name=tc.tool_name, result={},
+                          success=True, result_text="ok")
+
+    agent._async_gateway.execute.side_effect = exec_
+    ta = TurnAssembler(agent_core=agent, config=agent._config)
+    a = await ta.submit("s", SegmentInput(text="AAA", channel="bridge", user_id="s"))
+    await asyncio.wait_for(started.wait(), 2)
+    b = await ta.submit("s", SegmentInput(text="BBB", channel="bridge", user_id="s"))
+    events = [e async for e in ta.attach(b)]
+    assert events[-1].turn_status == "completed"
+    await asyncio.sleep(0.05)
+    assert _names(memory) == ["t2"]
+    await asyncio.wait_for(a.invocation_task, 2)
+    await asyncio.wait_for(a.record.persist_task, 2)
+    assert _names(memory) == ["t2", "t1"]
+    stored = memory.session["recent_tool_exchanges"]
+    assert stored[0].get("delivered") is not False and stored[1]["delivered"] is False
+
+
+async def test_persist_interrupted_caps_to_max_items():
+    """Final review 4: current + captured is capped to record.max_items, newest kept."""
+    from src.models import TurnRecord
+
+    memory = FakeMemory()
+    memory.session["recent_tool_exchanges"] = [_exchange("p1", "p1"), _exchange("p2", "p2")]
+    agent = _agent(memory, None)
+    record = TurnRecord(max_items=3, prior_exchanges=[])
+    captured = [_exchange("c1", "c1", delivered=False), _exchange("c2", "c2", delivered=False)]
+    await agent._persist_interrupted("s", "s", record, captured, None, "bridge")
+    assert _names(memory) == ["p2", "c1", "c2"]
+
+
+async def test_persist_interrupted_dedupes_by_tool_use_id():
+    """Final review 4: a captured round already stored (same tool_use id) is not
+    duplicated; the stored copy is kept."""
+    from src.models import TurnRecord
+
+    memory = FakeMemory()
+    memory.session["recent_tool_exchanges"] = [_exchange("t1", "tu1")]
+    agent = _agent(memory, None)
+    record = TurnRecord(max_items=5)
+    captured = [_exchange("t1", "tu1", delivered=False), _exchange("t2", "tu2", delivered=False)]
+    await agent._persist_interrupted("s", "s", record, captured, None, "bridge")
+    stored = memory.session["recent_tool_exchanges"]
+    assert _names(memory) == ["t1", "t2"]
+    assert "delivered" not in stored[0] and stored[1]["delivered"] is False
+
+
+async def test_persist_interrupted_reads_memory_once_for_exchanges_and_carryover():
+    """Final review 4: one context_bundle read serves both the exchange merge and
+    the not-fold_ran carry-over append."""
+    import time as _time
+
+    from src.models import TurnRecord
+
+    memory = FakeMemory()
+    memory.session["recent_tool_exchanges"] = [_exchange("p1", "p1")]
+    memory.session["turn_carryover"] = {"segments": ["earlier"], "stopped_at_stage": "",
+                                        "turn_id": "x", "written_at_ms": int(_time.time() * 1000)}
+    reads = {"n": 0}
+    real = memory.context_bundle
+
+    async def counting(*a, **k):
+        reads["n"] += 1
+        return await real(*a, **k)
+
+    memory.context_bundle = counting
+    agent = _agent(memory, None)
+    record = TurnRecord(max_items=3, fold_ran=False)
+    carry = {"segments": ["now"], "stopped_at_stage": "", "turn_id": "y",
+             "written_at_ms": int(_time.time() * 1000)}
+    await agent._persist_interrupted("s", "s", record,
+                                     [_exchange("c1", "c1", delivered=False)], carry, "bridge")
+    assert reads["n"] == 1
+    assert _names(memory) == ["p1", "c1"]
+    assert memory.session["turn_carryover"]["segments"] == ["earlier", "now"]
+
+
+async def test_persist_interrupted_read_failure_falls_back_to_snapshot():
+    """Final review 4: a failed re-read neither raises nor drops the rounds; it
+    merges onto the start-of-turn snapshot."""
+    from src.models import TurnRecord
+
+    memory = FakeMemory()
+
+    async def boom(*a, **k):
+        raise TimeoutError("memory down")
+
+    memory.context_bundle = boom
+    agent = _agent(memory, None)
+    record = TurnRecord(max_items=3, prior_exchanges=[_exchange("p1", "p1")])
+    await agent._persist_interrupted("s", "s", record,
+                                     [_exchange("c1", "c1", delivered=False)], None, "bridge")
+    assert _names(memory) == ["p1", "c1"]

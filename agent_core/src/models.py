@@ -327,7 +327,8 @@ class TurnRecord:
 
     Attributes:
         captured_exchanges: Tool rounds completed this turn (#193 shape).
-        prior_exchanges: ``recent_tool_exchanges`` as read at turn start.
+        prior_exchanges: ``recent_tool_exchanges`` as read at turn start; the
+            interrupted-turn persist falls back to it only if its re-read fails.
         max_items: The ``recent_tool_exchanges`` cap in force.
         segments: User utterances this turn answers, after folding.
         fold_ran: True once the carry-over fold has run for this turn.

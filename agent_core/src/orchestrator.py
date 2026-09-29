@@ -3022,10 +3022,14 @@ class AgentCore(AgentCoreBase):
     ) -> None:
         """Write an interrupted turn's tool rounds and utterances to Memory Layer.
 
-        Tool rounds are merged into ``recent_tool_exchanges`` marked
-        ``delivered: false``. Utterances go to ``turn_carryover``. If the turn
-        was interrupted before its own fold ran, any existing carry-over is read
-        and appended to rather than overwritten. Never raises.
+        Tool rounds are merged into the **current** ``recent_tool_exchanges``
+        (re-read now, not the start-of-turn snapshot, so a late persist cannot
+        overwrite what a successor stored meanwhile), marked
+        ``delivered: false``, deduplicated by tool_use id and capped to
+        ``record.max_items``. Utterances go to ``turn_carryover``. If the turn
+        was interrupted before its own fold ran, any existing carry-over is
+        appended to rather than overwritten. One Memory Layer read serves both.
+        Never raises.
 
         Args:
             session_id: Session identifier.
@@ -3037,17 +3041,36 @@ class AgentCore(AgentCoreBase):
         """
         start = time.time()
         try:
-            if exchanges and record.max_items > 0:
-                merged = (list(record.prior_exchanges) + exchanges)[-record.max_items:]
+            write_exchanges = bool(exchanges) and record.max_items > 0
+            append_carry = carry is not None and not record.fold_ran
+            session_state: dict = {}
+            if write_exchanges or append_carry:
+                try:
+                    bundle = await self._async_memory.context_bundle(session_id, user_id)
+                    session_state = bundle.session if isinstance(
+                        getattr(bundle, "session", None), dict) else {}
+                except Exception as e:  # noqa: BLE001 — fall back, still persist
+                    # Without the current state, merge onto the start-of-turn
+                    # snapshot: losing the rounds would let the model re-run
+                    # tools it has already run.
+                    logger.warning(
+                        "orchestrator.interrupted_persist_read",
+                        extra={"operation": "orchestrator.persist_interrupted",
+                               "status": "failure", "session_id": session_id,
+                               "error": f"{type(e).__name__}: {e}"},
+                    )
+                    session_state = {"recent_tool_exchanges": list(record.prior_exchanges)}
+            if write_exchanges:
+                merged = self._merge_undelivered_exchanges(
+                    session_state.get("recent_tool_exchanges"), exchanges, record.max_items,
+                )
                 await self._async_memory.write(
                     session_id, user_id, "session", "recent_tool_exchanges", merged,
                 )
             if carry is not None:
-                if not record.fold_ran:
-                    bundle = await self._async_memory.context_bundle(session_id, user_id)
+                if append_carry:
                     earlier = self._valid_carryover_segments(
-                        (bundle.session or {}).get("turn_carryover"),
-                        self._turn_policy(channel),
+                        session_state.get("turn_carryover"), self._turn_policy(channel),
                     )
                     carry = dict(carry, segments=earlier + carry["segments"])
                 cap = self._turn_policy(channel).fold_max_segments
@@ -3071,6 +3094,44 @@ class AgentCore(AgentCoreBase):
                        "session_id": session_id, "error": f"{type(e).__name__}: {e}",
                        "latency_ms": int((time.time() - start) * 1000)},
             )
+
+    @staticmethod
+    def _merge_undelivered_exchanges(
+        current: Any, captured: list[dict], max_items: int,
+    ) -> list[dict]:
+        """Append an interrupted turn's rounds to the stored exchanges.
+
+        A captured round whose tool_use ids are already stored is skipped, and
+        the stored copy kept: it may already have been replayed to (and had
+        its ``delivered`` flag cleared by) a turn that completed meanwhile.
+
+        Args:
+            current: ``recent_tool_exchanges`` as stored now (untrusted type).
+            captured: The interrupted turn's rounds, marked undelivered.
+            max_items: Cap from ``agent.recent_tool_exchanges.max_items``.
+
+        Returns:
+            The merged list, newest last, capped to ``max_items``.
+        """
+        stored = [ex for ex in current if isinstance(ex, dict)] if isinstance(current, list) else []
+
+        def _ids(ex: dict) -> set:
+            uses = ex.get("tool_uses")
+            if not isinstance(uses, list):
+                return set()
+            return {u.get("id") for u in uses if isinstance(u, dict) and u.get("id")}
+
+        seen: set = set()
+        for ex in stored:
+            seen |= _ids(ex)
+        merged = list(stored)
+        for ex in captured:
+            ids = _ids(ex)
+            if ids and ids & seen:
+                continue
+            merged.append(ex)
+            seen |= ids
+        return merged[-max_items:]
 
     def _valid_carryover_segments(self, raw: Any, policy: TurnPolicy) -> list[str]:
         """Return the usable segments of a stored ``turn_carryover`` value.
