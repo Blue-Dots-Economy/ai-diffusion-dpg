@@ -44,7 +44,7 @@ import asyncio
 import logging
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from typing import Any, Optional
 
 from src.models import (
@@ -55,7 +55,13 @@ from src.models import (
     StreamEvent,
     TurnInput,
 )
-from src.turn_policy import ON_NEW_INPUT_ABORT_AND_FOLD, TurnPolicy, resolve_turn_policy
+from src.turn_policy import (
+    ON_DISCONNECT_ABORT,
+    ON_NEW_INPUT_ABORT_AND_FOLD,
+    TurnPolicy,
+    resolve_session_idle_ttl_ms,
+    resolve_turn_policy,
+)
 from .turn import Turn, TurnStatus
 from .session import Session
 
@@ -125,6 +131,49 @@ class TurnAssemblerBase(ABC):
             session_id: Unique session identifier.
         """
 
+    @abstractmethod
+    async def submit(self, session_id: str, segment: SegmentInput) -> "Turn":
+        """Start a complete-utterance turn now, interrupting any turn in flight.
+
+        Request-scoped adapter entry (``/stream_turn``). The client has already
+        decided the turn is complete, so no trigger policy runs.
+
+        Args:
+            session_id: Unique session identifier.
+            segment: The complete utterance with its metadata.
+
+        Returns:
+            The new, already-invoked Turn. Stream it with :meth:`attach`.
+
+        Raises:
+            ValueError: If session_id or the segment text is empty.
+        """
+
+    @abstractmethod
+    async def attach(self, turn: "Turn") -> AsyncGenerator[StreamEvent, None]:
+        """Yield ``turn``'s events until its terminal DoneEvent.
+
+        Args:
+            turn: A Turn returned by :meth:`submit`.
+
+        Yields:
+            StreamEvent instances in order.
+        """
+        yield  # pragma: no cover
+
+    @abstractmethod
+    def detach(self, turn: "Turn", reason: str) -> None:
+        """Tell the assembler a request-scoped consumer went away.
+
+        Synchronous so it can be called from a generator ``finally`` during
+        ``GeneratorExit``. Applies the channel's ``on_disconnect`` policy to a
+        turn that is still current and in flight; otherwise a no-op.
+
+        Args:
+            turn: The Turn whose consumer closed.
+            reason: Why (logged), normally ``disconnect``.
+        """
+
 
 # ---------------------------------------------------------------------------
 # TurnAssembler concrete implementation
@@ -153,6 +202,7 @@ class TurnAssembler(TurnAssemblerBase):
         nlu_processor: Any = None,
         workflow: Any = None,
         async_memory: Any = None,
+        clock: Optional[Callable[[], float]] = None,
     ) -> None:
         """Initialise TurnAssembler with injected dependencies.
 
@@ -166,6 +216,7 @@ class TurnAssembler(TurnAssemblerBase):
                            chat_provider — turn_assembler does not pass an LLM in.
             workflow: AgentWorkflow instance for intent scoping.
             async_memory: AsyncMemoryLayerBase for fetching context_bundle on first segment.
+            clock: Monotonic seconds source; injectable for tests.
 
         Raises:
             ValueError: If agent_core or config is None.
@@ -211,6 +262,10 @@ class TurnAssembler(TurnAssemblerBase):
 
         self._sessions: dict[str, Session] = {}
         self._policies: dict[str, TurnPolicy] = {}
+        self._clock: Callable[[], float] = clock or time.monotonic
+        self._idle_ttl_s: float = resolve_session_idle_ttl_ms(config) / 1000.0
+        self._sweep_interval_s: float = min(self._idle_ttl_s, 60.0)
+        self._last_sweep: float = self._clock()
 
     # ------------------------------------------------------------------
     # Config resolution
@@ -265,6 +320,7 @@ class TurnAssembler(TurnAssemblerBase):
         Returns:
             The Session — existing or newly created.
         """
+        self._evict_idle()
         session = self._sessions.get(session_id)
         if session is None:
             session = Session(
@@ -274,7 +330,36 @@ class TurnAssembler(TurnAssemblerBase):
                 caller_agent_id=caller_agent_id,
             )
             self._sessions[session_id] = session
+        session.last_activity = self._clock()
         return session
+
+    def _evict_idle(self) -> None:
+        """Evict idle in-process sessions, at most once per sweep interval.
+
+        A session is evicted only if it has no WAITING/INVOKED turn and no
+        subscriber, and was last touched more than ``session_idle_ttl_ms`` ago.
+        Memory Layer state is untouched: this is in-process housekeeping for
+        request-mode sessions, which never receive ``session_end`` (spec 4.7).
+        """
+        now = self._clock()
+        if now - self._last_sweep < self._sweep_interval_s:
+            return
+        self._last_sweep = now
+        for sid, session in list(self._sessions.items()):
+            turn = session.current_turn
+            busy = turn is not None and turn.status in (TurnStatus.WAITING, TurnStatus.INVOKED)
+            if busy or session.subscribers > 0:
+                continue
+            if now - session.last_activity <= self._idle_ttl_s:
+                continue
+            session.ended = True
+            session.turn_changed.set()
+            self._sessions.pop(sid, None)
+            logger.info(
+                "turn_assembler.session_evicted",
+                extra={"operation": "turn_assembler.evict_idle", "status": "success",
+                       "session_id": sid},
+            )
 
     def _policy(self, channel: str | None) -> TurnPolicy:
         """Return the cached streaming-turn policy for ``channel``.
@@ -506,16 +591,20 @@ class TurnAssembler(TurnAssemblerBase):
         # GH-149: proactively emit the entry subagent's opening_phrase.
         await self._emit_opening_phrase_if_first(session_id, user_id, session)
 
-        seen: Optional[Turn] = None
-        while not session.ended:
-            session.turn_changed.clear()
-            turn = session.current_turn
-            if turn is None or turn is seen:
-                await session.turn_changed.wait()
-                continue
-            async for event in turn.iter_events():
-                yield event
-            seen = turn
+        session.subscribers += 1
+        try:
+            seen: Optional[Turn] = None
+            while not session.ended:
+                session.turn_changed.clear()
+                turn = session.current_turn
+                if turn is None or turn is seen:
+                    await session.turn_changed.wait()
+                    continue
+                async for event in turn.iter_events():
+                    yield event
+                seen = turn
+        finally:
+            session.subscribers -= 1
 
     async def _emit_opening_phrase_if_first(
         self,
@@ -723,6 +812,54 @@ class TurnAssembler(TurnAssemblerBase):
                 "subagent_id": current_subagent_id,
             },
         )
+
+    async def submit(self, session_id: str, segment: SegmentInput) -> Turn:
+        """Start a complete-utterance turn now, interrupting any turn in flight.
+
+        See :meth:`TurnAssemblerBase.submit`.
+        """
+        if not session_id:
+            raise ValueError("session_id must not be empty")
+        if segment is None or not segment.text or not segment.text.strip():
+            raise ValueError("segment text must not be empty")
+        session = self._get_or_create_session(
+            session_id,
+            user_id=segment.user_id,
+            channel=segment.channel,
+            caller_agent_id=segment.caller_agent_id,
+        )
+        async with session._lock:
+            prev = session.current_turn
+            predecessor = None
+            if prev is not None and prev.status in (TurnStatus.WAITING, TurnStatus.INVOKED):
+                was_invoked = prev.status == TurnStatus.INVOKED
+                self._interrupt(prev, "new_input")
+                predecessor = prev if was_invoked else None
+            elif prev is not None and prev.invocation_task is not None \
+                    and not prev.invocation_task.done():
+                predecessor = prev  # interrupted earlier, still draining
+            turn = await session.replace_turn(seed_segments=[segment])
+            turn.predecessor = predecessor
+            turn.status = TurnStatus.INVOKED
+            turn.invocation_task = asyncio.create_task(self._invoke(turn))
+        return turn
+
+    async def attach(self, turn: Turn) -> AsyncGenerator[StreamEvent, None]:
+        """Yield ``turn``'s events until its DoneEvent. See :meth:`TurnAssemblerBase.attach`."""
+        async for event in turn.iter_events():
+            yield event
+
+    def detach(self, turn: Turn, reason: str) -> None:
+        """Apply ``on_disconnect`` to a still-current, in-flight turn. See base."""
+        if turn is None:
+            return
+        session = self._sessions.get(turn.session_id)
+        if session is None or session.current_turn is not turn:
+            return
+        if turn.status != TurnStatus.INVOKED:
+            return
+        if self._policy(turn.channel).on_disconnect == ON_DISCONNECT_ABORT:
+            self._interrupt(turn, reason or "disconnect")
 
     async def cancel(self, session_id: str) -> None:
         """Interrupt the active or waiting turn for this session.
