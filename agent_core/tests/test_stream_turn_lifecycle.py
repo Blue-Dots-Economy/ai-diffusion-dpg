@@ -244,6 +244,43 @@ class TestFold:
         assert isinstance(events[-1], DoneEvent) and events[-1].turn_status == "completed"
         assert record.segments == ["hi"]
 
+    @pytest.mark.parametrize("written", [None, "123", 1.5, True])
+    def test_missing_or_non_int_timestamp_is_malformed_not_stale(self, written, caplog):
+        """Final review 5: a bad ``written_at_ms`` is reported as malformed."""
+        agent = _tool_agent(rounds=0)
+        raw = {"segments": ["a"]}
+        if written is not None:
+            raw["written_at_ms"] = written
+        caplog.set_level("INFO")
+        assert agent._valid_carryover_segments(raw, agent._turn_policy("bridge")) == []
+        reasons = [getattr(r, "reason", None) for r in caplog.records
+                   if r.getMessage() == "orchestrator.carryover_discarded"]
+        assert reasons == ["malformed"]
+
+    def test_future_timestamp_within_skew_tolerance_is_accepted(self):
+        """Final review 5: a slightly-future timestamp (clock skew) counts as age 0."""
+        agent = _tool_agent(rounds=0)
+        raw = _carry(["a"], age_ms=-4000)
+        assert agent._valid_carryover_segments(raw, agent._turn_policy("bridge")) == ["a"]
+
+    def test_future_timestamp_beyond_skew_tolerance_is_discarded(self, caplog):
+        agent = _tool_agent(rounds=0)
+        caplog.set_level("INFO")
+        raw = _carry(["a"], age_ms=-60_000)
+        assert agent._valid_carryover_segments(raw, agent._turn_policy("bridge")) == []
+        reasons = [getattr(r, "reason", None) for r in caplog.records
+                   if r.getMessage() == "orchestrator.carryover_discarded"]
+        assert reasons == ["malformed"]
+
+    def test_old_timestamp_is_stale(self, caplog):
+        agent = _tool_agent(rounds=0)
+        caplog.set_level("INFO")
+        raw = _carry(["a"], age_ms=10 * 60 * 1000)
+        assert agent._valid_carryover_segments(raw, agent._turn_policy("bridge")) == []
+        reasons = [getattr(r, "reason", None) for r in caplog.records
+                   if r.getMessage() == "orchestrator.carryover_discarded"]
+        assert reasons == ["stale"]
+
     async def test_fold_cap(self):
         agent = _tool_agent(rounds=0)
         agent._config.setdefault("reach_layer", {})["turn_assembler"] = {"fold": {"max_segments": 2}}

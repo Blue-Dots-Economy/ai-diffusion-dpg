@@ -84,6 +84,12 @@ from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
 logger = logging.getLogger(__name__)
 
+# A ``turn_carryover`` is written by whichever replica ran the interrupted
+# turn and read by whichever runs the next one, so their clocks can disagree.
+# A ``written_at_ms`` up to this far in the future counts as age 0; beyond it
+# the value is treated as malformed. A fixed tolerance, not a tunable.
+_CARRYOVER_CLOCK_SKEW_MS = 5000
+
 # Module-level guard to prevent double-instrumentation in test environments.
 _HTTPX_INSTRUMENTED = False
 
@@ -3142,7 +3148,8 @@ class AgentCore(AgentCoreBase):
 
         Returns:
             Non-empty string segments, or [] when the value is absent,
-            malformed, or older than the policy allows.
+            malformed (including a missing, non-int, or far-future
+            ``written_at_ms``), or older than the policy allows.
         """
         if raw is None:
             return []
@@ -3154,8 +3161,18 @@ class AgentCore(AgentCoreBase):
             )
             return []
         written = raw.get("written_at_ms")
-        age_ms = int(time.time() * 1000) - written if isinstance(written, int) else -1
-        if age_ms < 0 or age_ms > policy.carryover_max_age_ms:
+        age_ms = (int(time.time() * 1000) - written
+                  if isinstance(written, int) and not isinstance(written, bool) else None)
+        if age_ms is not None and -_CARRYOVER_CLOCK_SKEW_MS <= age_ms < 0:
+            age_ms = 0
+        if age_ms is None or age_ms < 0:
+            logger.warning(
+                "orchestrator.carryover_discarded",
+                extra={"operation": "orchestrator.fold_carryover", "status": "skipped",
+                       "reason": "malformed"},
+            )
+            return []
+        if age_ms > policy.carryover_max_age_ms:
             logger.info(
                 "orchestrator.carryover_discarded",
                 extra={"operation": "orchestrator.fold_carryover", "status": "skipped",
