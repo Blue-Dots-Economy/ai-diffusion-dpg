@@ -28,22 +28,29 @@ class _SlowAgent:
         self.tool_s = tool_s
         self.calls = []
         self.stopped = []
+        self._active = 0              # stream_turn generators not yet exited
+        self.active_at_start = []     # _active seen as each call began
 
     async def stream_turn(self, turn_input, *, abort_event=None, turn_id="", record=None):
         # The real stream_turn wrapper tracks record.last_stage; mimic it.
         self.calls.append(turn_input.user_message)
-        if record is not None:
-            record.last_stage = "tool_start"
-        yield SignalEvent(stage="tool_start", status="start")
-        await asyncio.sleep(self.tool_s)             # a dispatched tool call
-        if record is not None:
-            record.last_stage = "tool_end"
-        yield SignalEvent(stage="tool_end", status="complete")
-        if abort_event is not None and abort_event.is_set():
-            self.stopped.append(turn_input.user_message)
-            return
-        yield SentenceEvent(text="answer", sentence_index=0)
-        yield DoneEvent(turn_id=turn_id, turn_status="completed")
+        self.active_at_start.append(self._active)
+        self._active += 1
+        try:
+            if record is not None:
+                record.last_stage = "tool_start"
+            yield SignalEvent(stage="tool_start", status="start")
+            await asyncio.sleep(self.tool_s)             # a dispatched tool call
+            if record is not None:
+                record.last_stage = "tool_end"
+            yield SignalEvent(stage="tool_end", status="complete")
+            if abort_event is not None and abort_event.is_set():
+                self.stopped.append(turn_input.user_message)
+                return
+            yield SentenceEvent(text="answer", sentence_index=0)
+            yield DoneEvent(turn_id=turn_id, turn_status="completed")
+        finally:
+            self._active -= 1
 
 
 def _seg(text):
@@ -98,8 +105,11 @@ class TestCooperativeInterrupt:
         await ta.add_segment("s1", _seg("second"))
         second = ta._sessions["s1"].current_turn
         await _wait_status(second, TurnStatus.COMPLETED, timeout=3)
-        # the successor's stream_turn started only after the predecessor stopped
+        # the successor's stream_turn started only after the predecessor's
+        # generator had exited (no overlap), not merely after it was aborted
         assert agent.calls == ["first", "second"]
+        assert agent.active_at_start == [0, 0]
+        assert agent.stopped == ["first"]
         assert first.invocation_task.done()
 
     async def test_drain_timeout_proceeds_without_cancelling(self, caplog):
