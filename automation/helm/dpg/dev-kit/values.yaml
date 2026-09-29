@@ -3,8 +3,10 @@ configFolder: /app/config
 replicaCount: 1
 
 image:
-  repository: sanketikahub/dpg-dev-kit
-  tag: "latest"
+  # Published by .github/workflows/build-images.yaml; same default tag as
+  # automation/docker/docker-compose.dev.yml (DPG_IMAGE_TAG).
+  repository: ghcr.io/blue-dots-economy/ai-diffusion-dpg/dev-kit
+  tag: "sha-646216d"
   pullPolicy: IfNotPresent
 
 service:
