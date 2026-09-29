@@ -136,6 +136,56 @@ Two supported options:
 - **Loopback.** The telephony platform reaches `127.0.0.1:8008` on the host, via host
   networking or `extra_hosts: ["host.docker.internal:host-gateway"]`.
 
+## Observability
+
+`otelcol` receives traces, metrics and logs from every DPG service and forwards
+them to Jaeger, Prometheus and Loki; Grafana reads all three.
+
+Nothing here is authenticated beyond Grafana's admin password, so all of it is
+bound to `127.0.0.1`. Reach it over an SSH tunnel:
+
+```bash
+ssh -L 3001:127.0.0.1:3001 \
+    -L 16686:127.0.0.1:16686 \
+    -L 9090:127.0.0.1:9090 <user>@<vm>
+```
+
+| UI | URL through the tunnel | What it shows |
+| --- | --- | --- |
+| Grafana | <http://localhost:3001> | everything; `admin` / `$GF_SECURITY_ADMIN_PASSWORD` (default `admin`) |
+| Jaeger | <http://localhost:16686> | per-turn traces, span by span |
+| Prometheus | <http://localhost:9090> | raw metric series |
+
+Grafana is on **3001**, not the usual 3000 — the telephony platform's frontend
+uses 3000 on this host.
+
+Loki is deliberately not published: Grafana queries it inside `dpg_net` and
+nothing needs it from the host.
+
+Set a real Grafana password in `.env` before deploying:
+
+```
+GF_SECURITY_ADMIN_PASSWORD=<something other than admin>
+```
+
+### Checking it works
+
+```bash
+# Prometheus is scraping the collector
+curl -s 'http://127.0.0.1:9090/api/v1/targets?state=active' | grep -o '"health":"[a-z]*"'
+
+# Jaeger has traces from the DPG services
+curl -s http://127.0.0.1:16686/api/services
+```
+
+Expect `"health":"up"` and a service list including `agent_core`,
+`action_gateway`, `trust_layer`, `memory_layer` and `knowledge_engine`.
+
+Metrics and traces appear within a few seconds of the first turn. Loki's
+`/ready` returns 503 for the first minute or so after start while the ingester
+ring settles — that is normal and does not mean logs are being dropped; query
+`/loki/api/v1/labels` through Grafana instead.
+
 ## Pinning by digest
 
 GHCR tags are mutable. For a reproducible deployment, resolve the digest once
@@ -151,5 +201,6 @@ then replace the tag with `@sha256:<digest>` in `docker-compose.yml`.
 ## Notes
 
 - All images are `linux/amd64`, published public — no `docker login` needed.
-- No service except the bridge publishes a port, and that one is loopback-only.
+- The only published ports are the bridge, the web UI and the three
+  observability UIs, and every one of them is bound to `127.0.0.1`.
 - Logs are capped at 10 MB × 3 per container so a shared box cannot fill up.

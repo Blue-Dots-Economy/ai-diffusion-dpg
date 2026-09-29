@@ -4,7 +4,11 @@ datasources:
   - name: Prometheus
     type: prometheus
     access: proxy
-    url: http://otelcol:8889
+    # The Prometheus SERVER, not the collector. otelcol:8889 is the collector's
+    # scrape endpoint — a plain /metrics text page with no query API — so
+    # pointing a Prometheus datasource at it makes every panel fail. Prometheus
+    # scrapes otelcol:8889 itself (see prometheus/prometheus.yml).
+    url: http://prometheus:9090
     isDefault: true
     editable: true
 
