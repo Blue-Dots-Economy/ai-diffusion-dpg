@@ -34,10 +34,12 @@ The GHCR images are public, so no `docker login` is needed. `docker-compose.dev.
 
 ```bash
 cp automation/docker/env.example automation/docker/.env
+cp dev-kit/configs/kkb/secrets.env.example dev-kit/configs/kkb/secrets.env
 mkdir -p knowledge_engine/data
 ```
 
-- `automation/docker/.env` is gitignored and loaded by Compose automatically. Never commit it.
+- `automation/docker/.env` is gitignored and loaded by Compose automatically. Never commit it. It holds deployment-wide settings: LLM keys, voice credentials, image tag, `DOMAIN`.
+- `dev-kit/configs/<DOMAIN>/secrets.env` holds the **domain's connector secrets**: one `KEY=value` per `auth.secret_env` declared in that domain's `action_gateway.yaml`. It is gitignored, and Compose loads it into Action Gateway only (`env_file`, optional). For kkb that is `ONEST_API_KEY`.
 - `knowledge_engine/data/` is bind-mounted read-only into Knowledge Engine as `/app/data`. It is gitignored (`**/data`) and does not exist in a fresh clone. Create it yourself, otherwise Docker creates it root-owned.
 
 ### Which keys you actually need
@@ -45,7 +47,7 @@ mkdir -p knowledge_engine/data
 | Variable | Needed for | What happens without it |
 |---|---|---|
 | `OPENAI_API_KEY` | Agent Core LLM calls (kkb sets `agent.provider: openai`) | Stack boots; every non-scripted chat turn returns `error_type: api_error` (OpenAI 401) |
-| `ONEST_API_KEY` | kkb `onest_market_lookup` connector in Action Gateway | **Action Gateway crash-loops** (`action_gateway.startup_missing_tools`), and Agent Core and every Reach channel never start |
+| `ONEST_API_KEY` (in `dev-kit/configs/kkb/secrets.env`) | kkb `onest_market_lookup` connector in Action Gateway | **Action Gateway crash-loops** (`action_gateway.startup_missing_tools`), and Agent Core and every Reach channel never start |
 | `VOBIZ_AUTH_ID` (+ `VOBIZ_AUTH_TOKEN`, `VOBIZ_FROM_NUMBER`, `RAYA_API_KEY`, `PUBLIC_URL`) | `reach_layer_voice` | Voice exits at startup: `reach_layer.channels.voice.vobiz.auth_id is required` |
 | `NGROK_AUTHTOKEN` | `ngrok` tunnel for voice | ngrok cannot authenticate; skip the service locally |
 | `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` | Only if the domain's `agent.provider` is `anthropic` / `google` | n/a for kkb |
@@ -53,7 +55,7 @@ mkdir -p knowledge_engine/data
 
 **Dummy values are fine for boot testing.** With `OPENAI_API_KEY=sk-dummy`, `ONEST_API_KEY=dummy` and dummy Vobiz values, every core service goes healthy; only the LLM call itself fails. Put a real key in `OPENAI_API_KEY` to get real answers.
 
-To run a different domain, set `DOMAIN=<folder>` (for example `blue-dots`); each block then loads `dev-kit/configs/<DOMAIN>/<block>.yaml`. Check that domain's `action_gateway.yaml` for other `secret_env` names that need values.
+To run a different domain, set `DOMAIN=<folder>` (for example `blue-dots`); each block then loads `dev-kit/configs/<DOMAIN>/<block>.yaml`, and Action Gateway loads `dev-kit/configs/<DOMAIN>/secrets.env`. List every `secret_env` from that domain's `action_gateway.yaml` in its `secrets.env`: `grep secret_env dev-kit/configs/<DOMAIN>/action_gateway.yaml` (blue-dots needs `BLUE_DOTS_API_KEY`, `BLUE_DOTS_ORG_ID`, `BLUE_DOTS_SEARCH_API_KEY`).
 
 ## 4. Start
 
@@ -140,7 +142,7 @@ You should see Memory context bundle (1) → Trust input check (3) → Language 
 | Symptom | Cause | Fix |
 |---|---|---|
 | `memgraph` restarting: `Unexpected positional argument(s): '/usr/lib/memgraph/memgraph'` | The unpinned `memgraph/memgraph` image now uses the binary as its ENTRYPOINT, and compose repeated the binary path in `command` | Fixed in compose: image pinned to `3.13.1`, `command` carries flags only |
-| `action_gateway` restarting, logs `adapter_factory_build_error` then `action_gateway.startup_missing_tools`; `agent_core` stuck in `Created` | `ONEST_API_KEY` unset, and it used to not be passed to the container at all | Set `ONEST_API_KEY` in `.env` (a dummy is fine locally). Compose now passes it through |
+| `action_gateway` restarting, logs `adapter_factory_build_error` then `action_gateway.startup_missing_tools`; `agent_core` stuck in `Created` | A connector `secret_env` is unset (kkb: `ONEST_API_KEY`) | Add it to `dev-kit/configs/<DOMAIN>/secrets.env` (a dummy is fine locally), then `$COMPOSE up -d action_gateway` |
 | Stray `knowledge-engine/` directory appears at the repo root | Compose bind-mounted `../../knowledge-engine/data` (hyphen) | Fixed in compose: path is now `knowledge_engine/data`. Delete the stray empty directory |
 | `reach_layer_voice` restarting: `vobiz.auth_id is required` | Voice requires Vobiz credentials at boot | Set the Vobiz variables (dummy values are OK) or leave voice out of the service list |
 | `reach_layer_bridge` restarting: `Config file not found: /app/reach_layer/bridge/config/dpg.yaml` | Code bug: `bridge/main.py` `_dpg_config_path()` ignores `CONFIG_FOLDER` and resolves `config/dpg.yaml` against `WORKDIR /app/reach_layer/bridge` | Open issue, needs a code fix. Leave it out of the service list |
