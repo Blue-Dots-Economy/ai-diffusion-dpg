@@ -116,7 +116,7 @@ def test_sdk_reports_a_missing_phone_as_a_bad_request(sdk):
 
 
 def test_multi_turn_uses_one_session(sdk):
-    """session_id is the phone, so consecutive turns share a conversation."""
+    """Turns of ONE call share a session; the phone alone no longer is it."""
     seen = []
 
     async def _capture(self, payload):
@@ -130,7 +130,11 @@ def test_multi_turn_uses_one_session(sdk):
                 messages=[{"role": "user", "content": text}],
                 metadata={"caller_phone": PHONE},
             )
-    assert seen == [PHONE, PHONE, PHONE]
+    # One call: all three turns land on the same session, and it is scoped to
+    # this caller without BEING the bare phone (which used to make a redial
+    # resume the previous call).
+    assert len(set(seen)) == 1
+    assert seen[0].startswith(f"{PHONE}:")
 
 
 def test_two_callers_never_share_a_session(sdk):
@@ -148,4 +152,9 @@ def test_two_callers_never_share_a_session(sdk):
                 messages=[{"role": "user", "content": "hello"}],
                 metadata={"caller_phone": phone},
             )
-    assert seen == ["919900112233", "919900445566", "919900112233"]
+    # Two callers, never crossed: each keeps its own session, and the caller
+    # who speaks twice stays on one.
+    assert seen[0].startswith("919900112233:")
+    assert seen[1].startswith("919900445566:")
+    assert seen[0] == seen[2]
+    assert seen[0] != seen[1]

@@ -11,6 +11,7 @@ import json
 import logging
 import time
 import uuid
+from collections import OrderedDict
 from typing import Any, Optional
 
 from src.identity import IdentityError, extract_caller_phone
@@ -58,6 +59,67 @@ def _content_to_text(content: Any) -> str:
         ]
         return "".join(parts)
     return ""
+
+
+# Phone -> (session id, last-seen epoch) for the call in progress, used only
+# when the client sends no call identifier of its own. Bounded because a
+# long-lived bridge would otherwise hold one entry per caller forever.
+_MINTED_SESSIONS: "OrderedDict[str, tuple[str, float]]" = OrderedDict()
+_MINTED_SESSIONS_MAX = 1000
+
+# A gap longer than this means the previous call ended and this is a new one.
+# Turns inside a call arrive seconds apart (2-5 s of processing plus the
+# caller's reply); a redial is minutes later. Chosen generously so an unusually
+# long pause mid-call does not split the session, while still being four orders
+# of magnitude tighter than the 2-day session TTL that caused the bug.
+_CALL_IDLE_GAP_S = 120.0
+
+
+def session_id_for(body: dict, phone: str, now: float | None = None) -> str:
+    """Session id for this turn: one per CALL, not one per caller.
+
+    The phone identifies the person and stays in ``user_id``, which is what
+    persistent profile state is keyed on. The session is the conversation, so
+    it must not outlive the call. Using the phone for both meant a caller who
+    rang back inside the session TTL resumed the previous call: observed on the
+    VM landing a caller mid-flow in `services_offer`, reading out a job no tool
+    had fetched, and announcing an application that was never attempted.
+
+    Preference order:
+      1. ``metadata.call_id`` from the client — genuinely unique per call,
+         stable across its turns, and unaffected by timing or restarts. This is
+         the intended source.
+      2. Idle-gap inference. The client sends only the newest utterance
+         (spec 11.1), so the request body cannot tell us whether a call is
+         starting — there is never any history in it. Time is the only signal
+         left: a turn arriving more than ``_CALL_IDLE_GAP_S`` after the last one
+         from this caller is treated as a new call.
+
+    Args:
+        body: Parsed chat-completions request body.
+        phone: The caller's phone number, already validated.
+        now: Epoch seconds; injectable for tests.
+
+    Returns:
+        A session id of the form ``<phone>:<call>``.
+    """
+    call_id = (body.get("metadata") or {}).get("call_id")
+    if isinstance(call_id, str) and call_id.strip():
+        return f"{phone}:{call_id.strip()}"
+
+    now = time.time() if now is None else now
+    remembered = _MINTED_SESSIONS.get(phone)
+    if remembered is not None and now - remembered[1] <= _CALL_IDLE_GAP_S:
+        _MINTED_SESSIONS[phone] = (remembered[0], now)
+        _MINTED_SESSIONS.move_to_end(phone)
+        return remembered[0]
+
+    minted = f"{phone}:{uuid.uuid4().hex[:12]}"
+    _MINTED_SESSIONS[phone] = (minted, now)
+    _MINTED_SESSIONS.move_to_end(phone)
+    while len(_MINTED_SESSIONS) > _MINTED_SESSIONS_MAX:
+        _MINTED_SESSIONS.popitem(last=False)
+    return minted
 
 
 def to_turn_request(body: dict, *, channel: str) -> dict[str, Any]:
@@ -122,7 +184,9 @@ def to_turn_request(body: dict, *, channel: str) -> dict[str, Any]:
         raise RequestError(str(exc), param=exc.param) from exc
 
     return {
-        "session_id": phone,
+        # One session per CALL; the phone stays as the identity in user_id,
+        # which is what persistent profile state is keyed on.
+        "session_id": session_id_for(body, phone),
         "user_id": phone,
         "user_message": user_text,
         "channel": channel,

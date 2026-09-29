@@ -382,7 +382,10 @@ def test_streaming_without_a_done_event_closes_cleanly_and_cancels(client):
         p["choices"] and p["choices"][0].get("finish_reason") == "stop"
         for p in payloads
     )
-    cancel.assert_awaited_once_with(PHONE)
+    # cancel_turn takes the SESSION id, which is now per-call rather than
+    # the bare phone.
+    cancel.assert_awaited_once()
+    assert cancel.await_args.args[0].startswith(PHONE)
 
 
 def test_streaming_error_path_respects_include_usage(client):
@@ -463,4 +466,7 @@ def test_agent_core_timeout_mid_stream_still_cancels(client):
     assert r.status_code == 200
     lines = [l for l in r.text.split("\n\n") if l.startswith("data: ")]
     assert lines[-1] == "data: [DONE]"
-    cancel.assert_awaited_once_with(PHONE)
+    # cancel_turn takes the SESSION id, which is now per-call rather than
+    # the bare phone.
+    cancel.assert_awaited_once()
+    assert cancel.await_args.args[0].startswith(PHONE)
