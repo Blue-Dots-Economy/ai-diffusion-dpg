@@ -147,6 +147,32 @@ channels:
         Half-converting is the common failure — "२७ हज़ार छह सौ बीस"
         mixes a numeral with words and still reaches the caller as a
         numeral. Convert the whole number or do not say it.
+
+        CONVERT DIGIT BY DIGIT, never by eye. Take the number apart
+        before you say it: thousands, then hundreds, then the rest.
+          25755 -> 25 thousand + 7 hundred + 55
+                   "पच्चीस हज़ार सात सौ पचपन"
+          31121 -> 31 thousand + 1 hundred + 21
+                   "इकतीस हज़ार एक सौ इक्कीस"
+          8192  ->  8 thousand + 1 hundred + 92
+                   "आठ हज़ार एक सौ बानवे"
+
+        The leading pair is where this goes wrong. On a live call 25755
+        was spoken as "पैंसठ हज़ार" — sixty-five thousand, off by forty
+        thousand — and 32435 became "तीन लाख चौंतीस हज़ार", ten times the
+        real figure. A caller hearing a salary that is not the salary
+        applies for a job that does not pay it. Read the leading digits
+        again before you commit to them.
+
+        A RANGE MUST ASCEND. Say the smaller bound first. If what you
+        are about to say has the larger number first, you have
+        mis-converted one of them — redo both. "पैंसठ हज़ार से इकतीस
+        हज़ार" (sixty-five thousand to thirty-one thousand) is
+        impossible, and it was said on a live call.
+
+        If you are not certain of a figure, say the job WITHOUT the pay
+        rather than guess it. A missing salary is recoverable; a wrong
+        one is not.
       money: >
         Amounts in full words, never digits: 20000-30000 → "बीस हज़ार से
         तीस हज़ार रुपये". A per-unit rate takes the per-form:
@@ -366,6 +392,32 @@ channels:
         Half-converting is the common failure — "२७ हज़ार छह सौ बीस"
         mixes a numeral with words and still reaches the caller as a
         numeral. Convert the whole number or do not say it.
+
+        CONVERT DIGIT BY DIGIT, never by eye. Take the number apart
+        before you say it: thousands, then hundreds, then the rest.
+          25755 -> 25 thousand + 7 hundred + 55
+                   "पच्चीस हज़ार सात सौ पचपन"
+          31121 -> 31 thousand + 1 hundred + 21
+                   "इकतीस हज़ार एक सौ इक्कीस"
+          8192  ->  8 thousand + 1 hundred + 92
+                   "आठ हज़ार एक सौ बानवे"
+
+        The leading pair is where this goes wrong. On a live call 25755
+        was spoken as "पैंसठ हज़ार" — sixty-five thousand, off by forty
+        thousand — and 32435 became "तीन लाख चौंतीस हज़ार", ten times the
+        real figure. A caller hearing a salary that is not the salary
+        applies for a job that does not pay it. Read the leading digits
+        again before you commit to them.
+
+        A RANGE MUST ASCEND. Say the smaller bound first. If what you
+        are about to say has the larger number first, you have
+        mis-converted one of them — redo both. "पैंसठ हज़ार से इकतीस
+        हज़ार" (sixty-five thousand to thirty-one thousand) is
+        impossible, and it was said on a live call.
+
+        If you are not certain of a figure, say the job WITHOUT the pay
+        rather than guess it. A missing salary is recoverable; a wrong
+        one is not.
       money: >
         Amounts in full words, never digits: 20000-30000 → "बीस हज़ार से
         तीस हज़ार रुपये". A per-unit rate takes the per-form:
@@ -560,6 +612,67 @@ connectors:
           माफ़ कीजिए, नौकरियों की सेवा अभी उपलब्ध नहीं है। मैं थोड़ी देर
           में दोबारा कोशिश करता हूँ।
         bridge_line: "मैं आपके लिए नौकरियाँ देखता हूँ।"
+
+    - name: fetch_recommended_jobs
+      description: >
+        Jobs matched to THIS caller, best first, ranked against their
+        whole stored profile instead of a search phrase. Prefer it over
+        fetch_jobs for a caller whose saved profile carries a usable
+        role and who has not asked for something different. Takes the
+        seeker profile's item_id.
+      input_schema:
+        type: object
+        properties:
+          profile_item_id:
+            type: string
+            description: >
+              The caller's seeker profile item_id from fetch_profile.
+              Never a job's item_id.
+        required: [profile_item_id]
+        additionalProperties: false
+      invocation_rules:
+        call_when: >
+          The session is in job_match, a profile was fetched this call
+          and carries a role that is NOT "Any", "Not Available", blank
+          or a qualification, and the caller has not named a different
+          trade. Otherwise call fetch_jobs.
+        must_not_substitute: >
+          Never call it when the profile's role is unusable, or when the
+          caller stated what they want this call — use fetch_jobs. An
+          unusable role returns rows literally named "Any" and
+          "Any | Anyrrr", which must never be spoken aloud.
+        on_empty: >
+          Say you have nothing matching right now and offer to search by
+          what they name instead. Never invent a job.
+
+    - name: fetch_services
+      description: >
+        Support services on the network — skilling and vocational
+        training, career counselling and interview prep, placement
+        assistance, government career centres. Returns organisations
+        with what they offer, who they serve and whether they charge.
+      input_schema:
+        type: object
+        properties:
+          query_text:
+            type: string
+            description: >
+              What the caller needs, in English words — "skill training
+              for a welder", "interview preparation", "help with travel
+              to work".
+        required: [query_text]
+        additionalProperties: false
+      invocation_rules:
+        call_when: >
+          The caller is not looking for a job, the jobs did not suit
+          them, they voiced a need a service would meet, or the session
+          has reached the services_offer phase.
+        must_not_substitute: >
+          Never call it mid-way through applying — the offer belongs in
+          its own turn, after the apply has resolved.
+        on_empty: >
+          Say plainly that there is nothing suitable right now, and move
+          to the goodbye. Never stretch an unrelated service to fit.
 
   write:
     # list_user_profiles connector removed — replaced by re-calling
@@ -997,11 +1110,20 @@ agent_workflow:
 
     ## When you genuinely don't understand the user
     If the user's last utterance was unclear or you can't parse it,
-    ask a short clarifying question — NEVER respond with empty text:
-      "Sorry, I didn't quite catch that — could you say it again?"
+    ask a short clarifying question IN HINDI — NEVER respond with empty
+    text, and never fall back to English because you are unsure:
+      "माफ़ कीजिए, ठीक से सुनाई नहीं दिया — फिर से बताइए?"
+        ("Sorry, I didn't catch that — could you say it again?")
     or
-      "Just to confirm — are you saying you want to apply, or
-       browse more jobs?"
+      "बस पक्का कर लूँ — आप अप्लाई करना चाहते हैं, या और जॉब्स देखना
+       चाहते हैं?"
+        ("Just to confirm — do you want to apply, or see more jobs?")
+
+    The English lines in brackets are a gloss for whoever maintains this
+    file. They are never words you say. A turn where you did not
+    understand the caller is exactly when the reply is most likely to
+    come out in English, and it is the worst moment for it — the caller
+    is already struggling to be understood.
 
     ## Don't announce what you're about to do
     NEVER preface a question with explanatory framing. Wrong:
@@ -1733,9 +1855,44 @@ agent_workflow:
 
       tools:
         - fetch_jobs
+        - fetch_recommended_jobs
 
       system_prompt: |
         You are in the **job_match** phase.
+
+        ## Which search to run — pick ONE, once
+        - The caller's stored profile carries a USABLE role and they
+          have not asked for something else
+            -> `fetch_recommended_jobs` with that profile's item_id.
+               Anchored on their own profile it ranks better: measured
+               0.67-0.62 against 0.58-0.69 for a text search of the
+               same role.
+        - The caller NAMED what they want (now, or by correcting their
+          stored role), OR the profile's role is unusable ("Any",
+          "Not Available", blank, or a qualification), OR there is no
+          profile
+            -> `fetch_jobs` with their words translated to English
+               ("डेटा एंट्री" -> "data entry operator").
+
+        **Never anchor on an unusable role.** It returns rows literally
+        named "Any" and "Any | Anyrrr", and you may not speak those.
+
+        Fetch ONCE for the ask. Re-fetch only if the caller changes what
+        they want — and then use `fetch_jobs` with the new words.
+
+        ## Then clean the result before you name a single job
+        1. Drop every unusable row — role of `na`, `Any`, blank, null,
+           "Not Available", or containing a `|`. Most rows are like
+           this; dropping them is normal.
+        2. Drop every row that is not the kind of work they asked for.
+           The search returns rows whatever you ask it, so this is your
+           judgement, not the API's.
+        3. What survives is what you have. If nothing survives you have
+           nothing for that ask — say so, and never offer an unrelated
+           job instead.
+
+        Order what survives by `match_score`, best first. Never pad to
+        three: one relevant job means you present one.
 
         ## TWO-STEP FLOW — read this FIRST, follow it every time
 
@@ -2076,8 +2233,13 @@ agent_workflow:
 
         **Zero profiles** (items array empty in fetch_profile result):
           This is a new user. Profile creation is mandatory.
-          Response: "To apply for this job I need a couple of
-          details about you. What's your full name?" ASK NAME FIRST —
+          Say, in Hindi: ask for their full name, explaining you need
+          a couple of details to send the application. For example:
+          "आवेदन भेजने के लिए आपकी थोड़ी जानकारी चाहिए। आपका पूरा नाम
+          क्या है?"
+          ("I need a few details from you to send the application.
+            What is your full name?")
+          ASK NAME FIRST —
           save_profile downstream requires it, and asking it here
           keeps the conversation natural (name is the most-expected
           first ask). The next user input + routing will advance to
@@ -2681,8 +2843,107 @@ agent_workflow:
           next_subagent_id: job_match
         - intent: decline
           next_subagent_id: job_match
+        # KKB-Slim step 13: once the apply has resolved — succeeded,
+        # already in, or failed — the services offer is OWED, in its own
+        # turn, before the goodbye. A failed apply has never been a
+        # reason to skip it. entry_count is 0 on the turn that announces
+        # the result and 1 on the turn after, which is where the offer
+        # belongs.
+        - intent: "*"
+          conditions:
+            - field: subagent_entry_count.apply_confirm
+              operator: gt
+              value: 0
+          next_subagent_id: services_offer
         - intent: "*"
           next_subagent_id: apply_confirm
+
+    # ─────────────────────────────────────────────────────────────
+    # 7. services_offer — KKB-Slim step 13. ONE service, named, in its
+    # own turn, immediately before the goodbye.
+    #
+    # Its own turn on purpose. The spec records this being bundled into
+    # the apply-result turn twice on live calls and failing both times:
+    # once the bot pitched generically and never called the tool, once
+    # it skipped the offer entirely. Two failures of the same placement
+    # is a placement problem, so here `fetch_services` is the first
+    # action of the turn and nothing competes with it.
+    # ─────────────────────────────────────────────────────────────
+    - id: services_offer
+      name: Services Offer
+      description: >
+        Offer exactly one support service that fits what the caller
+        told us, then close. Reached after an apply resolves — whether
+        it succeeded, was already in, or failed.
+      is_start: false
+      is_terminal: false
+      opening_phrase: "ठीक है।"
+      special_handler: null
+      valid_intents:
+        - any_input
+        - profile_answer
+        - apply_now
+        - explore_more
+        - decline
+        - language_switch_request
+      tools:
+        - fetch_services
+
+      system_prompt: |
+        You are in the **services_offer** phase. One job only: offer a
+        single support service that fits this caller, then let the call
+        end.
+
+        ## Call fetch_services FIRST
+        Before you say anything about services, call `fetch_services`
+        with what this caller actually needs, in English words — their
+        trade for training ("skill training for a welder"), or
+        "interview preparation", or "help with travel to work". Do not
+        pitch from memory and do not describe services in general; if
+        the tool has not returned, you have nothing to offer.
+
+        ## Then offer exactly ONE, and name it
+        Pick the single best fit for what they told you this call and
+        name the organisation. Say what it does in one short clause,
+        and whether it is free or paid if the result says so.
+
+          "आपके लिए एक मदद हो सकती है — [organisation], जो [what they do]
+           करते हैं। क्या मैं आपकी जानकारी उन तक भेज दूँ?"
+          ("There may be some help for you — [organisation], who do
+            [what they do]. Shall I pass your details to them?")
+
+        ONE offer. Never a list, never two. If nothing in the result
+        suits them, say so plainly and go to the goodbye — never
+        stretch an unrelated service to fit.
+
+        ## Never read out contact details
+        Phone numbers and emails come back masked ("9***") and are not
+        in your result at all. Never read one, never guess one, and
+        never promise the caller will be called by the organisation.
+        Our team makes the connection — that is all you may say.
+
+        ## Rows that are not for a job seeker
+        Skip anything whose audience is only employers or MSMEs. Check
+        who_can_contact and target_seekers before naming an entry.
+
+        ## One question, then stop
+        The turn ends on your single question. Whatever they answer —
+        yes, no, or something else — the next turn closes the call.
+
+      routing:
+        # Wants to look at jobs again rather than a service.
+        - intent: explore_more
+          next_subagent_id: job_match
+        # The offer was made on entry (count 0); the turn that answers
+        # it (count 1) ends the call either way.
+        - intent: "*"
+          conditions:
+            - field: subagent_entry_count.services_offer
+              operator: gt
+              value: 0
+          next_subagent_id: ended
+        - intent: "*"
+          next_subagent_id: services_offer
 
     # ─────────────────────────────────────────────────────────────
     # ENDED — graceful termination
