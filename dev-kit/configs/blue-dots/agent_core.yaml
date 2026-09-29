@@ -531,6 +531,22 @@ conversation:
 
   session_end_eval:
     enabled: true
+    # Only the CLOSING phases may hang up on a caller. Without this the tool is
+    # offered to every subagent, and its own description ("task completed")
+    # invites the model to fire it the moment a journey succeeds — the prompt
+    # rules below did not hold against that. Measured on a live local call:
+    #   16:05:25  9 ms after a 201 Created apply, same turn as the tool call
+    #   16:05:37  on "ठीक है, धन्यवाद" — routine thanks
+    #   16:11:06  while the agent's own reply was still asking
+    #             "क्या मैं आवेदन कर दूँ?" — hangs up mid-question
+    # Each of those drops a real call. A genuine goodbye still ends properly:
+    # `termination_intent` is a GLOBAL route to `ended` from any phase, and
+    # `ended` is on this list.
+    subagents:
+      - ended              # normal close, reached from anywhere on goodbye
+      - consent_declined   # refusal — speaks the close, then hangs up
+      - u18_blocked        # under 19, cannot be onboarded by voice
+      - escalation         # counsellor callback offered, then closes
     prompt: |
       ## Session-end evaluation
       `end_session` hangs up on the caller. Treat it as the last thing you
@@ -543,6 +559,18 @@ conversation:
            there is nothing left to offer; AND
         2. There is no question of yours still awaiting an answer.
 
+      NEVER call it while you are asking something. If your own reply
+      in this turn ends in a question mark, condition 2 is false and you
+      must not call it — the caller is mid-answer and the line would
+      drop on them.
+
+      NEVER call it because the caller asked you to DO something.
+      Measured on a live call: the caller said "अप्लाई कर दो" ("apply
+      it") and end_session fired in the same turn as a question asking
+      them to confirm the application. The line dropped mid-question.
+      "अप्लाई कर दो", "भेज दो", "दिखाओ", "ढूंढो" are requests to
+      continue — the opposite of a goodbye.
+
       NEVER call it because the caller said thank you.
       "धन्यवाद", "शुक्रिया", "thank you", "ठीक है धन्यवाद" and
       "आभार" are ordinary politeness in Hindi and are used constantly
@@ -554,9 +582,30 @@ conversation:
       15 calls, including 16 times from mid-profile-collection and 18
       from mid-job-browsing.
 
+      ONE exception, and only this one: the caller REFUSES consent.
+      A refusal is the single point in the call where there is genuinely
+      nothing left to offer — without permission to save their details
+      no application can ever be sent, so continuing only wastes their
+      time and re-asks a question they have already answered. Say the
+      refusal line and call `end_session` in the SAME turn.
+
+      This overrides the `opening`-phase ban immediately below, and it
+      is the only thing that does. It applies to a refusal of CONSENT,
+      not to a "नहीं" answering anything else — not the age question,
+      not "are you looking for work", not a job they do not want.
+
+      Why it is needed: routing sends a refusal to the terminal
+      `consent_declined` subagent, which flushes the session at the end
+      of that same turn — so `consent_declined`'s own prompt never runs
+      and cannot end anything. Without `end_session` here, nothing tells
+      the caller's phone to hang up. Measured locally: the caller
+      declined, heard the refusal line, and the next thing they heard
+      was the opening greeting again, as a brand-new caller.
+
       NEVER call it:
-        - in the `opening` phase — consent and age are not a conversation
-          the caller can conclude;
+        - in the `opening` phase for any reason OTHER than the consent
+          refusal above — age is not a conversation the caller can
+          conclude;
         - while any question of yours is unanswered;
         - mid-flow: picking a job, confirming a profile, waiting on an
           application result;
@@ -785,6 +834,28 @@ connectors:
           save_profile's user_id field (create_new / update_existing
           path).
         required_before_calling: [acting_as_user_id, profile_item_id, selected_job_item_id]
+        # ENFORCED, not just described. Each of these must appear verbatim in a
+        # tool result from this conversation or the call is refused before it
+        # leaves us. `must_not_substitute` below has always asked for this in
+        # prose and the model still broke it: on a live local call it sent
+        # job_item_id 835d12cf-4a66-4fab-9e42-873e2f4d8b65, which appears
+        # nowhere in any fetch_jobs response — the real Flipkart row was
+        # 038a09fa-6497-4672-b06c-e1cc580e17ff. The upstream cannot tell an
+        # invented UUID from a stale one, so it answered 422
+        # TARGET_ITEM_NOT_FOUND, and the agent relayed that to the caller as
+        # "आपकी एप्लीकेशन पहले से लगी हुई है" — you have already applied.
+        # The caller had not applied to anything.
+        # Each param names the tools whose results may supply it. A bare list
+        # ("came from ANY tool result") is not enough here: every identifier in
+        # play is a UUID that appeared in some response, so the model can copy
+        # one into another's slot and pass the check. Measured on a live
+        # streaming call — apply_job went out with job_item_id ==
+        # profile_item_id (both 343954ce-…), which the plain check allowed
+        # because save_profile really had returned that value.
+        grounded_params:
+          job_item_id: [fetch_jobs, fetch_recommended_jobs]
+          profile_item_id: [fetch_profile, save_profile]
+          acting_as_user_id: [fetch_profile, save_profile]
         must_not_substitute: >
           Never submit without an explicit yes/confirm in the most
           recent user turn.
@@ -929,6 +1000,32 @@ preprocessing:
       `explore_more` — user wants different jobs (different city,
       different trade, broader search). The orchestrator routes back to
       job_match for explore_more, forward to onboard_prep for apply_now.
+
+      ## termination_intent — the caller wants the call to END
+      This is the ONLY signal that can hang up the call, so it has to be
+      recognised when it is really given. It routes globally to `ended`,
+      which is the only phase allowed to end a call.
+
+      Classify as `termination_intent` when the caller says they are
+      done or going, in any phrasing:
+        "मैं फोन रखता हूँ" / "फोन रखती हूँ"  — I'm hanging up
+        "बस इतना ही" / "बस, और कुछ नहीं"      — that's all
+        "बाद में बात करते हैं"                — let's talk later
+        "अभी नहीं चाहिए" / "रहने दीजिए"        — not now / leave it
+        "अलविदा", "नमस्ते" as a PARTING word
+        "bye", "cut the call", "that's all"
+
+      Do NOT classify as `termination_intent`:
+        - "धन्यवाद" / "शुक्रिया" / "ठीक है" on their own. These are
+          ordinary Hindi politeness used constantly MID-call, after an
+          answer or a job being read out. They mean "got it", not
+          "goodbye", and treating them as an ending drops live calls.
+        - any request to DO something — "अप्लाई कर दो", "भेज दो",
+          "दिखाओ", "ढूंढो". Those are the opposite of a goodbye.
+        - "नहीं" answering a question you asked. That is `decline`.
+
+      The distinction is whether the caller is leaving, not whether
+      they sound satisfied.
 
       ## language_switch_request
       When the user asks to switch language ("speak in hindi", "in
@@ -1394,10 +1491,13 @@ agent_workflow:
       # canned opening phrases — GH-239 — so on voice the LLM produces the
       # equivalent from the system prompt below). Hindi, because it is
       # spoken as written.
+      # Emitted verbatim on turn 1, BEFORE any LLM call — so no tool has run
+      # and nothing is known about the caller yet. It must therefore not ask
+      # for consent: a caller whose consent is already on file would be asked
+      # anyway, which is the exact behaviour this phase was reworked to stop.
+      # It greets and asks the one thing that is useful for everyone.
       opening_phrase: >
-        नमस्ते। नौकरी के आवेदन आपकी ओर से भेजने के लिए मुझे आपकी जानकारी
-        सेव करनी होगी। यह बातचीत रिकॉर्ड की जा सकती है। क्या मैं ऐसा कर
-        सकता हूँ?
+        नमस्ते! ब्लू डॉट्स में आपका स्वागत है। क्या आप काम की तलाश में हैं?
 
       valid_intents:
         # termination_intent is deliberately absent — it is a global intent
@@ -1411,11 +1511,70 @@ agent_workflow:
 
       # Nothing is fetched or written before consent and age are settled.
       # (The orchestrator still appends end_session to every subagent.)
-      tools: []
+      tools:
+        - fetch_profile
 
       system_prompt: |
         You are in the **opening** phase. It has exactly two questions,
         asked one per turn, in this order. Nothing else happens here.
+
+        ## Turn 1: greet, ask if they want work, and FETCH
+        On your FIRST turn call `fetch_profile` — before anything else, and
+        without mentioning it. Then say one short Hindi sentence: greet them
+        and ask whether they are looking for work.
+
+          "नमस्ते! क्या आप काम की तलाश में हैं?"
+          ("Hello! Are you looking for work?")
+
+        Ask NOTHING about consent or age on this turn. The fetch tells us
+        what is already on file, and its answer is only available from the
+        NEXT turn — so asking now is how a caller ends up being asked for
+        something the system already knows.
+
+        ## The turn you fetch on: ask for the TRADE, never for consent
+        On the turn where you call `fetch_profile` the flags have not arrived
+        yet — tools run after routing, so the result reaches you on the turn
+        AFTER. Asking for consent now is guessing, and for most callers the
+        guess is wrong: they have already consented.
+
+        Ask instead for the one thing needed either way:
+
+          "आप किस काम या ट्रेड में नौकरी ढूंढ रहे हैं?"
+          ("What work or trade are you looking for?")
+
+        That is useful for every caller, so no turn is wasted while the fetch
+        comes back.
+
+        ## What the fetch tells you, from the next turn onward
+        Three facts arrive in session state:
+
+          has_age        an age is already on file
+          user_terms     terms of use already accepted
+          user_privacy   privacy policy already accepted
+
+        **Ask only for what is false or missing.** If all three are true,
+        say nothing about consent or age at all — routing moves the caller on
+        by itself. Asking a caller to re-consent to something they have
+        already consented to reads as the system not knowing them.
+
+        If the fetch failed and no flags arrived, treat them as unknown and
+        ask as you would for a new caller. Never assume consent was given.
+
+        ## TWO ABSOLUTES FOR THIS PHASE
+        **1. NEVER call `end_session` here.** Not for any reason, no
+        matter what the caller says. They have just arrived — nobody
+        calls a job line and wants to hang up thirty seconds later. The
+        tool is offered to you on every turn because the framework adds
+        it everywhere; in this phase it is always the wrong answer.
+        Measured on a live call: the caller said the single word
+        "इलेक्ट्रिशियन", end_session fired, and the line dropped while
+        the bot was still asking them a question.
+
+        **2. The ONLY question you ask after consent is the age.** Not
+        the trade, not the city, not the name — even if the caller has
+        just told you one of those, even if it feels natural to follow
+        up. Asking anything else strands the call here, because nothing
+        but the age lets it move on.
 
         ## You must always say something
         Every turn in this phase produces exactly one spoken Hindi
@@ -1444,6 +1603,24 @@ agent_workflow:
         If the caller's answer is unclear, ask once more, more plainly.
         Never assume consent from silence or from an ambiguous reply.
 
+        ## If the caller REFUSES consent — say so and hang up, same turn
+        A refusal ends the call. In ONE turn, both:
+          1. Say, warmly, in one or two Hindi sentences: that is
+             completely fine, nothing has been saved, and without that
+             permission applications cannot be sent on their behalf.
+             Thank them for calling.
+          2. Call `end_session`.
+
+        Do NOT ask their age, do NOT ask whether they would still like
+        to look for work, do NOT re-ask for consent in any form, and do
+        NOT offer a way around it. There is no question left to ask: a
+        refusal is a complete answer.
+
+        This is the ONLY place in this phase where `end_session` is
+        allowed. Ending here is correct precisely because your reply
+        contains no question — which is the condition the global rule
+        cares about.
+
         ## Question 2 — age
         Once `consent_response` is `granted`, your entire turn is to ask
         the caller's age. One short question in Hindi, nothing else.
@@ -1452,12 +1629,66 @@ agent_workflow:
         need it unless the caller asks; if they do, say it is needed to
         confirm they are eligible to apply.
 
+        ## Keep asking until they actually answer it (HARD RULE)
+        Callers often answer a different question than the one asked —
+        they say their trade, or their city, or ask about jobs. That is
+        normal. Acknowledge what they said in a few words, then ask the
+        age AGAIN. Nothing else in the call can happen until you have
+        it.
+
+          caller: "मैं इलेक्ट्रीशियन का काम ढूंढ रहा हूँ"
+          you:    "ठीक है, इलेक्ट्रिशियन। आपकी उम्र क्या है?"
+                  ("Right, electrician. What is your age?")
+
+        Measured on a live call: the age was asked once, the caller
+        replied with their trade, and it was never asked again — so the
+        call spent all seven turns in this phase and reached nothing.
+        Asking again is not nagging; it is the only way out of here.
+
+        Never guess an age, never assume they are an adult, and never
+        move on without it.
+
+        Do not switch to asking a DIFFERENT question when they do not
+        answer. Measured on the same live call: after two unanswered age
+        questions the bot began asking "आप किस ट्रेड में काम ढूंढ रहे
+        हैं?" instead — a question this phase must never ask — and the
+        age was never obtained. If they have dodged it twice, ask a
+        third time, more simply: "सिर्फ़ उम्र बता दीजिए — कितने साल?"
+        ("Just tell me your age — how many years?")
+
+        ## You have NO job data here — anything you say about a
+        ## specific job is invented (HARD RULE)
+        This phase has no job tool. None. So there is no job list, no
+        company, no salary and no vacancy count available to you, and
+        any you produce you have made up.
+
+        NEVER name a company. NEVER state a salary. NEVER say
+        "मुझे नौकरियाँ मिली हैं" ("I found jobs") or read out options.
+
+        Measured on a live call: a caller stuck in this phase kept
+        asking for jobs, and the bot answered "बेंगलुरु में
+        इलेक्ट्रिशियन की नौकरियाँ मिली हैं — हिमालय वेलनेस, दस हज़ार
+        रुपये; स्टार्क टेक, बारह हज़ार रुपये." No tool had run. Himalaya
+        Wellness posts no electrician role and Stark Tech does not
+        exist. Both salaries were invented. A caller can chase a job
+        that was never posted — inventing one is worse than saying
+        nothing.
+
+        ## When the caller pushes for jobs before you have their age
+        They are not being difficult; they called about work. Do not
+        refuse, do not stall, and do not invent. Say you will look
+        right after one detail, and ask the age in the same breath:
+
+          "बिल्कुल, अभी देखता हूँ — बस एक बात बताइए, आपकी उम्र क्या है?"
+          ("Of course, I'll look right away — just tell me one thing,
+            what is your age?")
+
+        That is the ONLY thing you may say about jobs in this phase.
+
         ## What you must NOT do in this phase
         - Do NOT ask for name, trade, city, gender or work experience.
           Later phases handle those.
         - Do NOT call any tool. There are none available to you here.
-        - Do NOT mention jobs, listings or applications beyond the one
-          sentence explaining why consent is needed.
         - Do NOT say "I am transferring you" or narrate the phase change.
           When both answers are in, routing moves on silently and the
           next phase asks its own question.
@@ -1488,6 +1719,16 @@ agent_workflow:
         details. Do not continue the journey.
 
       routing:
+          # A goodbye ends the call, from ANY phase. This must be the FIRST
+          # rule here and repeated in every phase: routing is 3-pass and
+          # pass 1 (these subagent rules) always beats pass 2 (workflow
+          # global_routing). Almost every phase ends in an `intent: "*"`
+          # catch-all, so the global termination_intent rule is unreachable
+          # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
+          # termination_intent at 0.95 and still routed to services_offer,
+          # so the call never ended.
+        - intent: termination_intent
+          next_subagent_id: ended
         # Order matters — first match wins.
         #
         # Two different kinds of state are read here, and the difference
@@ -1506,13 +1747,32 @@ agent_workflow:
         # first evaluation of a new call — silently skipping the consent
         # question for a returning caller, or permanently locking out anyone
         # who once said no. So every rule that reads consent_response is
-        # guarded by `subagent_entry_count.opening gt 0`.
+        # guarded by `opening_phrase_emitted eq true`.
         #
-        # The counter is incremented for the DESTINATION after routing
-        # resolves, so at evaluation time it equals (turns spent in this
-        # phase so far): 0 on the turn that asks the consent question, 1 on
-        # the turn that answers it. `gt 0` therefore means exactly "the
-        # caller has actually answered something in this phase, this call".
+        # The marker is `opening_phrase_emitted`, NOT a phase entry count.
+        # `subagent_entry_count.opening gt 0` was the obvious guard and it is
+        # WRONG: the framework's opening_phrase gate (orchestrator.py:663-687)
+        # returns the greeting BEFORE Step 2, so that turn never routes and
+        # never increments the counter. The count is therefore still 0 on the
+        # turn the caller ANSWERS the consent question, and every rule below
+        # was dead on exactly the turn it existed to handle — measured on a
+        # local call: "नहीं, मुझे जानकारी सेव नहीं करवानी" routed to `opening`,
+        # and only a SECOND refusal reached consent_declined.
+        #
+        # `opening_phrase_emitted` is written synchronously by that same gate,
+        # so it is true from the greeting onward. It is session-scoped, so a
+        # fresh call resets it — which is the whole point of the guard.
+        #
+        # Deliberately NOT declared in memory_layer's session schema, unlike
+        # has_age/user_terms/user_privacy. The orchestrator writes it with an
+        # explicit scope="session", and memory_layer.py:327 trusts a valid
+        # explicit scope ahead of the scope map, so it persists undeclared.
+        # Declaring it is actively harmful: _build_initial_session stringifies
+        # every schema default, so a default of "false" seeds the literal
+        # string "false" — which is TRUTHY in Python. The gate tests
+        # `if not bundle.session.get("opening_phrase_emitted", False)`, so the
+        # greeting would be skipped on turn 1 and fire on turn 2 instead.
+        # Measured: declaring it inverted the first two turns of a live call.
         #
         # age is deliberately NOT guarded. A known age is authoritative
         # however we learned it — the upstream treats an age already on file
@@ -1547,14 +1807,42 @@ agent_workflow:
               value: 19
           next_subagent_id: u18_blocked
 
+        # 1b. NOTHING TO ASK — the fetch already answered both questions.
+        #
+        # These three arrive from fetch_profile via the connector's
+        # session_mapping, from turn 2 onward (tools run after routing, so the
+        # turn that fetches cannot also branch on the result). All true means
+        # the caller has consented and has an age on file, so this phase has
+        # no question left and must not invent one.
+        #
+        # A minor never reaches here: for a voice caller the participant
+        # endpoint itself answers 400 U18_NOT_ALLOWED, so a 200 with
+        # has_age true is an adult by the upstream's own rule. Rule 1 above
+        # still guards the path where we had to ask, because has_age was false.
+        - intent: "*"
+          conditions:
+            - field: user_terms
+              operator: eq
+              value: true
+            - field: user_privacy
+              operator: eq
+              value: true
+            - field: has_age
+              operator: eq
+              value: true
+          next_subagent_id: profile_resolve
+          session_writes:
+            user_storage_mode: "saved"
+            consent_given: true
+
         # 2. Consent refused, in this call. Two spellings of the same thing:
         #    the NLU's explicit read of the consent answer, and the coarser
         #    `decline` intent as a fallback for when it does not emit one.
         - intent: "*"
           conditions:
-            - field: subagent_entry_count.opening
-              operator: gt
-              value: 0
+            - field: opening_phrase_emitted
+              operator: eq
+              value: true
             - field: consent_response
               operator: eq
               value: "declined"
@@ -1564,9 +1852,9 @@ agent_workflow:
             consent_given: false
         - intent: decline
           conditions:
-            - field: subagent_entry_count.opening
-              operator: gt
-              value: 0
+            - field: opening_phrase_emitted
+              operator: eq
+              value: true
             - field: consent_given
               operator: not_eq
               value: true
@@ -1603,9 +1891,9 @@ agent_workflow:
         #    or carried over from a previous call. Skips the age question.
         - intent: "*"
           conditions:
-            - field: subagent_entry_count.opening
-              operator: gt
-              value: 0
+            - field: opening_phrase_emitted
+              operator: eq
+              value: true
             - field: consent_response
               operator: eq
               value: "granted"
@@ -1620,9 +1908,9 @@ agent_workflow:
         # 5. Consent granted, age still outstanding → stay and ask for it.
         - intent: "*"
           conditions:
-            - field: subagent_entry_count.opening
-              operator: gt
-              value: 0
+            - field: opening_phrase_emitted
+              operator: eq
+              value: true
             - field: consent_response
               operator: eq
               value: "granted"
@@ -1825,6 +2113,16 @@ agent_workflow:
         Wait for the user's yes/no reply before fetch_jobs fires.
 
       routing:
+          # A goodbye ends the call, from ANY phase. This must be the FIRST
+          # rule here and repeated in every phase: routing is 3-pass and
+          # pass 1 (these subagent rules) always beats pass 2 (workflow
+          # global_routing). Almost every phase ends in an `intent: "*"`
+          # catch-all, so the global termination_intent rule is unreachable
+          # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
+          # termination_intent at 0.95 and still routed to services_offer,
+          # so the call never ended.
+        - intent: termination_intent
+          next_subagent_id: ended
         # Intent-driven advancement. The orchestrator's session-field
         # writes for entity values (trade, location) come through
         # unreliably even with Sonnet NLU — entity NAMES detect but
@@ -1990,6 +2288,16 @@ agent_workflow:
         keep track of across later batches, and it tells the caller the
         list is finished when it is not. No total, no "five", no "a few".
 
+        ## [salary] is spoken in ROUNDED THOUSANDS
+        Round each bound down to its thousand and say the pair:
+          25755-31121 -> "पच्चीस से इकतीस हज़ार"
+          24951-32435 -> "चौबीस से बत्तीस हज़ार"
+        Never read the exact rupee figure here. Exact five-digit
+        conversion is where this fails — a listing said "तिरिसठ हजार
+        आठ सौ इक्कीस" for a job paying far less. If only one bound
+        exists, say "करीब [X] हज़ार" ("around X thousand"). If neither
+        is populated, say the job without any pay.
+
         Order the first batch by the numeric upper bound of the salary
         range, highest first (parse "20000-30000" → 30000).
 
@@ -2059,6 +2367,16 @@ agent_workflow:
         old results.
 
       routing:
+          # A goodbye ends the call, from ANY phase. This must be the FIRST
+          # rule here and repeated in every phase: routing is 3-pass and
+          # pass 1 (these subagent rules) always beats pass 2 (workflow
+          # global_routing). Almost every phase ends in an `intent: "*"`
+          # catch-all, so the global termination_intent rule is unreachable
+          # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
+          # termination_intent at 0.95 and still routed to services_offer,
+          # so the call never ended.
+        - intent: termination_intent
+          next_subagent_id: ended
         - intent: explore_more
           next_subagent_id: job_match
         # KKB-Slim step 7: a pick is followed by the deep dive on that one
@@ -2199,6 +2517,16 @@ agent_workflow:
         argue, do not re-pitch this job.
 
       routing:
+          # A goodbye ends the call, from ANY phase. This must be the FIRST
+          # rule here and repeated in every phase: routing is 3-pass and
+          # pass 1 (these subagent rules) always beats pass 2 (workflow
+          # global_routing). Almost every phase ends in an `intent: "*"`
+          # catch-all, so the global termination_intent rule is unreachable
+          # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
+          # termination_intent at 0.95 and still routed to services_offer,
+          # so the call never ended.
+        - intent: termination_intent
+          next_subagent_id: ended
         # Wants to see other jobs instead → back to the list.
         - intent: explore_more
           next_subagent_id: job_match
@@ -2340,6 +2668,16 @@ agent_workflow:
         conversation history.
 
       routing:
+          # A goodbye ends the call, from ANY phase. This must be the FIRST
+          # rule here and repeated in every phase: routing is 3-pass and
+          # pass 1 (these subagent rules) always beats pass 2 (workflow
+          # global_routing). Almost every phase ends in an `intent: "*"`
+          # catch-all, so the global termination_intent rule is unreachable
+          # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
+          # termination_intent at 0.95 and still routed to services_offer,
+          # so the call never ended.
+        - intent: termination_intent
+          next_subagent_id: ended
         # Decline → user gave up; back to job_match for a different job.
         - intent: decline
           next_subagent_id: job_match
@@ -2510,6 +2848,13 @@ agent_workflow:
            "Just one more thing"). Either ASK for the name or CALL
            save_profile silently. Nothing in between.
 
+        3b. NEVER substitute a placeholder for the name. If the name is
+           MISSING, the decision tree above has exactly one answer: ASK.
+           It never says "send something". `Unknown`, `N/A`, `-`, the
+           empty string, the caller's trade or city — all placeholders,
+           all forbidden. A live call saved `Unknown` upstream this way;
+           the row is permanent and the person on it is unidentifiable.
+
         4. If the caller volunteers work experience, map their words
            STRICTLY to the upstream enum before sending:
              "fresher" / "no experience" / "never worked" → Fresher
@@ -2563,6 +2908,16 @@ agent_workflow:
         twenty-four hours, then end the session.
 
       routing:
+          # A goodbye ends the call, from ANY phase. This must be the FIRST
+          # rule here and repeated in every phase: routing is 3-pass and
+          # pass 1 (these subagent rules) always beats pass 2 (workflow
+          # global_routing). Almost every phase ends in an `intent: "*"`
+          # catch-all, so the global termination_intent rule is unreachable
+          # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
+          # termination_intent at 0.95 and still routed to services_offer,
+          # so the call never ended.
+        - intent: termination_intent
+          next_subagent_id: ended
         # decline intent intentionally NOT routed to job_match here —
         # mid-profile-collection a "No" is overwhelmingly an STT
         # misrecognition of a one-word answer (e.g. "Mo" → "No"),
@@ -2575,6 +2930,28 @@ agent_workflow:
             - field: profile_setup_done
               operator: eq
               value: "true"
+          next_subagent_id: apply_confirm
+        # The profile now EXISTS. save_profile's session_mapping writes
+        # profile_item_id the moment the upstream returns it, so this is the
+        # real completion signal the dead `profile_setup_done` rule above was
+        # reaching for. Guarded to create_new so the update_existing path
+        # still gets its turn to collect the change — on that path
+        # profile_item_id is already set before the phase is entered.
+        #
+        # Leaving as soon as the profile exists is the point: profile_setup
+        # has NO apply tool, so every extra turn spent here is a turn where
+        # the caller can say "हाँ, भेज दीजिए" and the only thing the model can
+        # do is talk. Measured — it answered "आपका आवेदन भेज दिया गया है"
+        # from this phase, which its own prompt forbids in as many words, and
+        # no application existed.
+        - intent: "*"
+          conditions:
+            - field: profile_action
+              operator: eq
+              value: "create_new"
+            - field: profile_item_id
+              operator: not_eq
+              value: ""
           next_subagent_id: apply_confirm
         - intent: apply_now
           next_subagent_id: apply_confirm
@@ -2655,6 +3032,33 @@ agent_workflow:
         | role               | selected job's `role` from fetch_jobs    | (same)                                |
         | age                | profile.age from fetch_profile           | save_profile's response               |
         | work_experience    | profile.work_experience                  | save_profile's response               |
+
+        ## NEVER invent a name — no placeholders, ever
+        You hold `save_profile`, and its `name` is required. That pressure
+        is exactly what makes a placeholder tempting. Do not yield to it.
+
+        Measured on a live local call: the caller was never asked their
+        name, and this phase saved the literal string `Unknown` onto a
+        real, live profile upstream. That row is now permanent bad data
+        with a person attached to it, and no employer reading it knows
+        who applied.
+
+        `Unknown`, `N/A`, `-`, `caller`, `user`, the empty string, the
+        trade, the city, the word for "seeker" in any language: every one
+        of these is a placeholder. A name comes from ONE place — the
+        caller said it, in this call or a previous one, and it is in
+        <known_profile> or in your conversation history.
+
+        Before any save_profile call, check: do I have a name a human
+        actually gave me?
+          • YES → send it verbatim.
+          • NO  → do NOT call save_profile. Ask, in Hindi and nothing
+                  else this turn: "आवेदन भेजने से पहले आपका नाम जान लूँ?"
+                  ("Before I send the application, may I have your name?")
+                  Then STOP and wait for the answer.
+
+        An extra turn asking is cheap. A profile that says `Unknown`
+        cannot be undone from here.
 
         ## session.selected_job_item_id is NOT the job id — never send it
         The session field `selected_job_item_id` is written by the NLU
@@ -2929,6 +3333,16 @@ agent_workflow:
         Route back to job_match. Don't apply.
 
       routing:
+          # A goodbye ends the call, from ANY phase. This must be the FIRST
+          # rule here and repeated in every phase: routing is 3-pass and
+          # pass 1 (these subagent rules) always beats pass 2 (workflow
+          # global_routing). Almost every phase ends in an `intent: "*"`
+          # catch-all, so the global termination_intent rule is unreachable
+          # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
+          # termination_intent at 0.95 and still routed to services_offer,
+          # so the call never ended.
+        - intent: termination_intent
+          next_subagent_id: ended
         - intent: explore_more
           next_subagent_id: job_match
         - intent: decline
@@ -3035,16 +3449,42 @@ agent_workflow:
         yes, no, or something else — the next turn closes the call.
 
       routing:
+          # A goodbye ends the call, from ANY phase. This must be the FIRST
+          # rule here and repeated in every phase: routing is 3-pass and
+          # pass 1 (these subagent rules) always beats pass 2 (workflow
+          # global_routing). Almost every phase ends in an `intent: "*"`
+          # catch-all, so the global termination_intent rule is unreachable
+          # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
+          # termination_intent at 0.95 and still routed to services_offer,
+          # so the call never ended.
+        - intent: termination_intent
+          next_subagent_id: ended
         # Wants to look at jobs again rather than a service.
         - intent: explore_more
           next_subagent_id: job_match
-        # The offer was made on entry (count 0); the turn that answers
-        # it (count 1) ends the call either way.
+        # Said no to the service — that is a real goodbye.
+        - intent: decline
+          next_subagent_id: ended
+        # BACKSTOP ONLY, and it must not fire on the offer turn itself.
+        #
+        # This was `gt 0` and it hung up on callers. The counter is
+        # incremented for the DESTINATION when routing resolves, so it is
+        # already 1 the moment apply_confirm routes in here — meaning the
+        # rule fired on the very first reply, whatever the reply was.
+        # Measured on a live VM call: "हाँ भेज दीजिए", "हा नहीं" and
+        # "हाँ चाहता हूँ" ("yes I want it") all routed to `ended`, which is
+        # terminal, so the line dropped on a caller who had just accepted
+        # the offer. A callback died the same way, because the session
+        # survives and lands straight back on this rule.
+        #
+        # `gt 1` leaves room for the offer turn and the answer turn. What
+        # ends the call normally is the caller declining, above — not the
+        # counter.
         - intent: "*"
           conditions:
             - field: subagent_entry_count.services_offer
               operator: gt
-              value: 0
+              value: 1
           next_subagent_id: ended
         - intent: "*"
           next_subagent_id: services_offer
@@ -3108,6 +3548,16 @@ agent_workflow:
         gently. Do not say "I don't understand." Reflect what you
         know and ask one open question.
       routing:
+          # A goodbye ends the call, from ANY phase. This must be the FIRST
+          # rule here and repeated in every phase: routing is 3-pass and
+          # pass 1 (these subagent rules) always beats pass 2 (workflow
+          # global_routing). Almost every phase ends in an `intent: "*"`
+          # catch-all, so the global termination_intent rule is unreachable
+          # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
+          # termination_intent at 0.95 and still routed to services_offer,
+          # so the call never ended.
+        - intent: termination_intent
+          next_subagent_id: ended
         - intent: "*"
           next_subagent_id: clarification
 

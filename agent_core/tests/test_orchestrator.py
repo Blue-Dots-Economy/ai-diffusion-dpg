@@ -1457,11 +1457,16 @@ def test_agentcore_init_user_state_disabled_empty_cache():
 # ---------------------------------------------------------------------------
 
 
-def _config_with_session_end_eval(enabled: bool, prompt: str = "") -> dict:
+def _config_with_session_end_eval(
+    enabled: bool, prompt: str = "", subagents: list | None = None
+) -> dict:
     """Clone VALID_CONFIG and inject conversation.session_end_eval."""
     cfg = {k: (v.copy() if isinstance(v, dict) else v) for k, v in VALID_CONFIG.items()}
     conv = dict(cfg.get("conversation", {}))
-    conv["session_end_eval"] = {"enabled": enabled, "prompt": prompt}
+    block = {"enabled": enabled, "prompt": prompt}
+    if subagents is not None:
+        block["subagents"] = subagents
+    conv["session_end_eval"] = block
     cfg["conversation"] = conv
     return cfg
 
@@ -2016,3 +2021,109 @@ class TestProcessTurnToolReplay:
         assert "recent_tool_exchanges" in src, (
             "process_turn must persist exchanges for the next turn"
         )
+
+
+# ---------------------------------------------------------------------------
+# session_end_eval.subagents — scope the hang-up tool to closing phases.
+#
+# Without a scope, end_session is offered to EVERY subagent and its own
+# description ("task completed") invites the model to fire it the instant a
+# journey succeeds. Measured on a live local call: it fired 9 ms after a 201
+# Created apply, again on routine thanks, and once while the agent's own reply
+# was still asking a question — each of which hangs up on a real caller.
+# ---------------------------------------------------------------------------
+
+
+def test_end_session_scoped_to_allowlisted_subagents_only():
+    """With an allowlist, only the named subagents are offered end_session."""
+    cfg = _config_with_session_end_eval(enabled=True, prompt="p", subagents=["ended"])
+    wf = _make_workflow()
+    wf.tool_defs = {
+        "ended": [{"name": "existing_tool"}],
+        "apply_confirm": [{"name": "apply_job"}],
+    }
+    _ = _make_agent_with_config(cfg, workflow=wf)
+    assert "end_session" in {t["name"] for t in wf.tool_defs["ended"]}
+    # The phase that submits the application must NOT be able to hang up.
+    assert "end_session" not in {t["name"] for t in wf.tool_defs["apply_confirm"]}
+
+
+def test_end_session_allowlist_leaves_global_tool_defs_alone():
+    """An allowlist must not leak the tool via the shared global list.
+
+    global_tool_defs is visible to every subagent, so appending there would
+    silently defeat the allowlist.
+    """
+    cfg = _config_with_session_end_eval(enabled=True, prompt="p", subagents=["ended"])
+    wf = _make_workflow()
+    wf.global_tool_defs = [{"name": "shared_tool"}]
+    _ = _make_agent_with_config(cfg, workflow=wf)
+    assert "end_session" not in {t["name"] for t in wf.global_tool_defs}
+
+
+def test_end_session_empty_allowlist_keeps_original_behaviour():
+    """No allowlist configured — every subagent still gets the tool."""
+    cfg = _config_with_session_end_eval(enabled=True, prompt="p", subagents=[])
+    wf = _make_workflow()
+    wf.tool_defs = {"market_truth": [], "other": []}
+    _ = _make_agent_with_config(cfg, workflow=wf)
+    assert "end_session" in {t["name"] for t in wf.tool_defs["market_truth"]}
+    assert "end_session" in {t["name"] for t in wf.tool_defs["other"]}
+
+
+def test_end_session_allowlist_ignores_unknown_subagent_ids():
+    """An id that matches no subagent is inert, not an error."""
+    cfg = _config_with_session_end_eval(enabled=True, prompt="p", subagents=["nope"])
+    wf = _make_workflow()
+    wf.tool_defs = {"market_truth": [{"name": "existing_tool"}]}
+    _ = _make_agent_with_config(cfg, workflow=wf)
+    assert "end_session" not in {t["name"] for t in wf.tool_defs["market_truth"]}
+
+
+# ---------------------------------------------------------------------------
+# opening_phrase_emitted must mean the same thing on both execution paths.
+#
+# process_turn latches it in its opening_phrase gate, which returns before
+# routing. stream_turn has no such gate, and its only other latch sits on the
+# post-consent branch — so for a domain that never takes that branch the flag
+# stayed unset forever and every routing rule guarded by it was dead. Measured:
+# a streaming call answered consent, age, trade and city and never left the
+# opening phase, because all three consent rules were guarded by this flag.
+# ---------------------------------------------------------------------------
+
+
+def test_stream_turn_latches_opening_phrase_emitted_after_routing():
+    """The streaming routing block writes the flag when it is not already set."""
+    import inspect
+    src = inspect.getsource(AgentCore.stream_turn)
+    assert 'session", "opening_phrase_emitted", True' in src, (
+        "stream_turn must latch opening_phrase_emitted, or routing rules "
+        "guarded by it can never fire on the streaming path"
+    )
+    # It must be latched WITH the routing writes, not only on the older
+    # post-consent branch (which appears earlier in the source and is the one
+    # that never ran). "After routing resolves" also matters on its own: on
+    # turn 1 the rules must not yet see the flag, or a consent answer persisted
+    # from an earlier call would fire before this caller was asked anything.
+    flag = 'session", "opening_phrase_emitted", True'
+    assert src.rindex(flag) > src.index("routing_writes.append"), (
+        "the latch must also appear in the routing block, after routing resolves"
+    )
+
+
+def test_both_streaming_tool_sites_apply_the_grounding_guard():
+    """stream_turn has its own tool loop and never calls ManagerAgent.run_turn.
+
+    The guard lived only inside run_turn, so it was dead on the streaming path
+    — the one a voice client uses. Measured: apply_job went out on streaming
+    with a fabricated job_item_id and the guard never evaluated.
+    """
+    import inspect
+    src = inspect.getsource(AgentCore.stream_turn)
+    executes = src.count("self._async_gateway.execute(")
+    guards = src.count("ungrounded_params(")
+    assert executes >= 1, "expected gateway execution sites in stream_turn"
+    assert guards >= executes, (
+        f"{executes} streaming execution site(s) but only {guards} guard call(s) — "
+        "every site that dispatches a tool must check provenance first"
+    )

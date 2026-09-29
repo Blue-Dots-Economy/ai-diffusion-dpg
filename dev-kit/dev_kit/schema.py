@@ -19,7 +19,7 @@ One top-level model per service:
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Dict, List, Literal, Union
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -53,6 +53,13 @@ class InvocationRulesConfig(BaseModel):
     must_not_substitute: str = Field(
         default="",
         description="What the LLM must never treat as a substitute for this tool",
+    )
+    grounded_params: Union[List[str], Dict[str, List[str]]] = Field(
+        default_factory=list,
+        description=(
+            "Params whose value must appear verbatim in an earlier tool result. "
+            "Enforces what must_not_substitute describes in prose."
+        ),
     )
     on_empty: str = Field(
         default="",
@@ -225,6 +232,14 @@ class SessionEndEvalConfig(BaseModel):
     enabled: bool = Field(
         default=False,
         description="Set true for agents that should detect call-end via end_session tool",
+    )
+    subagents: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Subagent ids allowed to call end_session. Empty = every subagent "
+            "(original behaviour). Scoping this to closing phases is the only "
+            "reliable way to stop a mid-conversation hang-up."
+        ),
     )
     prompt: str = Field(
         default="",

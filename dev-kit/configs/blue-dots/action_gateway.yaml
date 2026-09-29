@@ -75,6 +75,28 @@ tools:
       # UUID only at the root as `user_id`; its items carry no `created_by`
       # (unlike fetch_local items), so a list_key projection could never
       # surface the owner that apply_job needs as acting_as_user_id.
+      # Lifted into session state so ROUTING can branch on them — routing
+      # reads session ∪ profile, and a tool response otherwise reaches only
+      # the LLM. These are the three facts the opening gate needs and used to
+      # ask the caller for even when they were already on file.
+      #
+      # `compliance` is a [{key, value}] array and `items` is newest-first
+      # (ITEMS_NEWEST_FIRST in signals-dpg), so the first `live` row is the
+      # current profile. items[0] is NOT safe — it can be `retired`.
+      #
+      # has_age reads the PARTICIPANT-level age. The profile's item_state.age
+      # is a different field and is deliberately not used here.
+      session_mapping:
+        - source: "compliance[key=has_age].value"
+          target: has_age
+        - source: "compliance[key=user_terms].value"
+          target: user_terms
+        - source: "compliance[key=user_privacy].value"
+          target: user_privacy
+        - source: "items[lifecycle_status=live].item_id"
+          target: profile_item_id
+        - source: "user_id"
+          target: acting_as_user_id
       projection:
         fields:
           # Both names map to the same root value. The existing prompts refer
@@ -556,6 +578,24 @@ tools:
               "Travel", "Other".
     response:
       max_size_chars: 4000
+      # Lift the new profile's identity into session the moment it exists, so
+      # ROUTING can see that the profile is created — not only the LLM.
+      #
+      # Without this, nothing in session changes when a save succeeds.
+      # profile_setup's "profile_setup_done" rule was documented dead for
+      # exactly this reason, so a caller who had just been saved stayed in
+      # profile_setup — a phase with NO apply tool — and when they said
+      # "हाँ, भेज दीजिए" the model answered "आपका आवेदन भेज दिया गया है".
+      # Its own prompt forbids that sentence in that phase; it said it anyway.
+      # The profile was live upstream and no application existed.
+      #
+      # Same selectors as fetch_profile: the two endpoints return the same
+      # participant shape.
+      session_mapping:
+        - source: "items[lifecycle_status=live].item_id"
+          target: profile_item_id
+        - source: "user_id"
+          target: acting_as_user_id
       # Expose user_id (= acting_as_user_id for apply_job) and the items
       # array. For UPDATE the array has one element (the updated profile);
       # for CREATE it contains all the user's profiles and the new one
@@ -652,8 +692,17 @@ tools:
             source: agent
             type: string
             required: true
+            # Shape-checked before the call. Measured on the VM: the model
+            # sometimes sends what the CALLER said — "पहला वाला", "तीसरा" —
+            # instead of the id, and the upstream answers a bare
+            # 400 FST_ERR_VALIDATION "Invalid UUID" that gives it nothing to
+            # correct. Roughly one apply in four failed this way. Failing at
+            # the gateway returns a message naming the parameter instead.
+            format: uuid
             description: >
-              The chosen job's item_id from the prior fetch_jobs result.
+              The chosen job's item_id from the prior fetch_jobs result,
+              copied verbatim — the full hyphenated UUID, never the
+              caller's words for which job they picked.
     response:
       max_size_chars: 1000
       # Bulk envelope (Signals-DPG PR #55): { results: [ ... ], summary }.

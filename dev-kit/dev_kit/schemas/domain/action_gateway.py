@@ -8,7 +8,7 @@ Notable runtime constraints baked into enums:
 - McpTransport excludes 'stdio' — _SUPPORTED_TRANSPORTS in mcp.py is {sse, streamable_http}.
 """
 from __future__ import annotations
-from typing import Any, Optional
+from typing import Literal, Any, Optional
 from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 
 from dev_kit.schemas.enums import (
@@ -49,6 +49,10 @@ class ParamDefinition(BaseModel):
     description: str = ""
     value: Optional[Any] = None
     default: Optional[Any] = None
+    # Value shape enforced by the adapter before the call. "uuid" rejects
+    # anything that is not 8-4-4-4-12 hex. Generic: the adapter knows the
+    # shape, the domain says which param has it.
+    format: Optional[Literal["uuid"]] = None
     items: Optional[dict] = None   # JSON schema for array elements when type=array (OpenAI requires)
 
 

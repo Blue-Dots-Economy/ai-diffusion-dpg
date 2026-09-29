@@ -67,6 +67,84 @@ def _is_collected(value: object) -> bool:
     return bool(value)
 
 
+def ungrounded_params(
+spec: dict[str, list[str]],
+tool_call,
+messages: list,
+) -> set[str]:
+    """Return the configured params whose value no tool result contains.
+
+    A model asked for a 36-character identifier many turns after it was
+    shown will sometimes emit a well-formed one it invented. The upstream
+    cannot tell that apart from a stale id and answers with a generic
+    "not found", which is then relayed to the user as if their request had
+    simply been unnecessary. Checking the value against what upstreams
+    actually returned catches it before the call is made.
+
+    Args:
+        spec: Map of param name to the tool names whose results may supply
+            it. An empty source list means any tool result.
+        tool_call: The pending call, carrying ``tool_name`` and
+            ``input_params``.
+        messages: Conversation so far; tool results are read from the
+            ``ToolResultBlock`` entries inside it.
+
+    Returns:
+        Names of params that were supplied but appear in no tool result.
+        Empty when the tool has no configured params, when a param was not
+        supplied, or when every supplied value is grounded.
+    """
+    if not spec:
+        return set()
+
+    # tool_use_id -> tool name, so each result can be attributed to the
+    # tool that produced it.
+    origin: dict[str, str] = {}
+    for msg in messages or []:
+        for block in getattr(msg, "content", None) or []:
+            if getattr(block, "type", "") == "tool_use":
+                origin[str(getattr(block, "tool_use_id", ""))] = str(
+                    getattr(block, "tool_name", "")
+                )
+
+    by_tool: dict[str, list[str]] = {}
+    seen_any: list[str] = []
+    for msg in messages or []:
+        for block in getattr(msg, "content", None) or []:
+            if getattr(block, "type", "") != "tool_result":
+                continue
+            content = getattr(block, "content", "")
+            if not isinstance(content, str) or not content:
+                continue
+            seen_any.append(content)
+            src = origin.get(str(getattr(block, "tool_use_id", "")), "")
+            by_tool.setdefault(src, []).append(content)
+
+    if not seen_any:
+        # Nothing has been fetched yet, so nothing can be grounded. Let the
+        # call through rather than blocking a legitimate first call whose
+        # value came from session state seeded outside this conversation.
+        return set()
+
+    missing: set[str] = set()
+    for name, sources in spec.items():
+        value = (tool_call.input_params or {}).get(name)
+        if value in (None, ""):
+            continue
+        if sources:
+            pool = [c for src in sources for c in by_tool.get(src, [])]
+            if not pool:
+                # None of the naming tools has run yet — the value cannot
+                # have come from one, so it was carried or invented.
+                missing.add(name)
+                continue
+        else:
+            pool = seen_any
+        if str(value) not in "\n".join(pool):
+            missing.add(name)
+    return missing
+
+
 class ManagerAgent:
     """
     Drives the tool-use loop for one conversation turn.
@@ -79,6 +157,13 @@ class ManagerAgent:
         trust_layer:      Used to verify consent before write/identity tool execution.
         max_tool_rounds:  Maximum tool → LLM cycles per turn. Default 1 for PoC.
                           Configurable so extending to multi-step chains needs only a config change.
+        grounded_params:  Map of tool name to the params whose value must have
+                          come from an earlier tool result. Either
+                          ``{"apply_job": ["job_item_id"]}`` (any tool result)
+                          or ``{"apply_job": {"job_item_id": ["fetch_jobs"]}}``
+                          (only those tools' results). Blocks execution when the
+                          model supplies an identifier it invented, or one it
+                          copied out of a different tool's response.
     """
 
     def __init__(
@@ -89,6 +174,7 @@ class ManagerAgent:
         knowledge_engine: KnowledgeEngineBase,
         trust_layer: TrustLayerBase,
         max_tool_rounds: int = 1,
+        grounded_params: dict[str, list[str]] | None = None,
     ) -> None:
         if chat_provider is None:
             raise ValueError("chat_provider must not be None")
@@ -107,8 +193,33 @@ class ManagerAgent:
         self._ke = knowledge_engine
         self._trust = trust_layer
         self._max_tool_rounds = max(1, max_tool_rounds)
+        # tool name -> params whose value must have appeared in an earlier tool
+        # result this conversation. Guards against the model inventing an
+        # identifier that is well-formed but refers to nothing.
+        # Normalise both accepted shapes to {tool: {param: [source tools]}}.
+        # A list means "any earlier tool result"; a mapping names the tools
+        # whose results may supply that param, which is what stops one
+        # identifier being copied into another's slot.
+        self._grounded_params: dict[str, dict[str, list[str]]] = {}
+        for _tool, _spec in (grounded_params or {}).items():
+            if isinstance(_spec, dict):
+                self._grounded_params[str(_tool)] = {
+                    str(k): [str(t) for t in (v or [])] for k, v in _spec.items()
+                }
+            else:
+                self._grounded_params[str(_tool)] = {str(p): [] for p in (_spec or [])}
         # GH-137: Per-turn flag set when the LLM invokes the end_session internal tool.
         self._session_ended_flag: bool = False
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _ungrounded_params(self, tool_call, messages: list) -> set[str]:
+        """Instance wrapper around :func:`ungrounded_params` for this agent's config."""
+        return ungrounded_params(
+            self._grounded_params.get(tool_call.tool_name) or {}, tool_call, messages
+        )
 
     # ------------------------------------------------------------------
     # Public interface
@@ -239,7 +350,31 @@ class ManagerAgent:
                     ))
                     continue
 
-                if self._registry.get_route(tool_call.tool_name) == "knowledge_engine":
+                _ungrounded = self._ungrounded_params(tool_call, messages)
+                if _ungrounded:
+                    # The model supplied an identifier no upstream ever returned.
+                    # Refuse to execute and tell it so — a fabricated id reaches
+                    # the upstream as a well-formed value and comes back as a
+                    # generic "not found", which the model then reports to the
+                    # caller as though the request had merely been redundant.
+                    logger.warning(
+                        "manager_agent.ungrounded_param tool=%s params=%s",
+                        tool_call.tool_name, sorted(_ungrounded),
+                    )
+                    tool_result = ToolResult(
+                        tool_name=tool_call.tool_name,
+                        success=False,
+                        result={},
+                        error="UNGROUNDED_PARAMETER",
+                        result_text=(
+                            f"Refused: {', '.join(sorted(_ungrounded))} did not come from "
+                            f"any tool result in this conversation, so the value was "
+                            f"invented. Do not guess an identifier. Re-read the most "
+                            f"recent tool result, copy the exact value for the item the "
+                            f"user chose, and call this tool again."
+                        ),
+                    )
+                elif self._registry.get_route(tool_call.tool_name) == "knowledge_engine":
                     tool_result = self._execute_knowledge_retrieval(tool_call, ke_context)
                 else:
                     tool_result = self._execute_tool(tool_call, session_id, user_id)

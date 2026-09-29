@@ -18,6 +18,21 @@ state:
       # Consent / safety. Memory Layer's session schema enum is
       # {enum, string, int, list} — no bool. Modelled as a 2-value enum.
       consent_given:           { type: enum,   values: ["true", "false"], default: "false" }
+      # Lifted from the participant fetch by the connector's session_mapping
+      # and read by the `opening` gate. Session scope on purpose: consent is
+      # reported VERSION-SCOPED by Signals, so a cached true can be wrong by
+      # the next call — these must come from this call's fetch, every call.
+      #
+      # Declaring them is not optional. Memory Layer persists only declared
+      # session fields; an undeclared write is silently dropped, which is how
+      # consent_response sat dead in 201 UserAttribute rows while both rules
+      # that read it never matched.
+      # enum of "true"/"false" like consent_given above — the schema has no
+      # bool type, and Memory Layer JSON-decodes on read, so routing compares
+      # against the YAML boolean `true` and matches.
+      has_age:                 { type: enum,   values: ["true", "false"], default: "false" }
+      user_terms:              { type: enum,   values: ["true", "false"], default: "false" }
+      user_privacy:            { type: enum,   values: ["true", "false"], default: "false" }
       # Profile data — populated when the user verbalises these and NLU
       # picks them up. Mirrors the profile_1.0 schema returned by
       # fetch_profile so subsequent tool calls (update_profile, apply_job)

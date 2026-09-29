@@ -54,7 +54,7 @@ from src.interfaces.reach_layer import ReachLayerBase
 from src.interfaces.trust_layer import TrustLayerBase
 from src.http_clients.trust_layer import TrustLayerConstraintError
 from src.preprocessing.language_normalisation import LanguageNormaliser
-from src.manager_agent import ManagerAgent
+from src.manager_agent import ManagerAgent, ungrounded_params
 from src.models import (
     DoneEvent,
     NLUResult,
@@ -201,6 +201,12 @@ class AgentCore(AgentCoreBase):
         session_end_cfg = (self._config or {}).get("conversation", {}).get("session_end_eval", {}) or {}
         self._session_end_eval_enabled: bool = bool(session_end_cfg.get("enabled", False))
         self._session_end_eval_prompt: str = str(session_end_cfg.get("prompt", "") or "")
+        # Optional allowlist of subagent ids permitted to call end_session.
+        # Empty keeps the original behaviour (every subagent gets the tool).
+        _raw_allow = session_end_cfg.get("subagents") or []
+        self._session_end_subagents: set[str] = {
+            str(x) for x in _raw_allow if isinstance(_raw_allow, list)
+        }
 
         if self._session_end_eval_enabled:
             # Register end_session as an internal tool routed to the orchestrator
@@ -242,17 +248,26 @@ class AgentCore(AgentCoreBase):
             # Ensure every subagent's scoped tool list includes end_session,
             # plus the shared global_tool_defs list if the domain uses it.
             try:
+                _allow = self._session_end_subagents
                 tool_defs = getattr(self._workflow, "tool_defs", None)
                 if isinstance(tool_defs, dict):
                     for _sa_id, _tools in list(tool_defs.items()):
                         if not isinstance(_tools, list):
                             continue
+                        if _allow and _sa_id not in _allow:
+                            continue
                         if not any(t.get("name") == "end_session" for t in _tools):
                             _tools.append(end_session_def)
+                # The shared global list is visible to EVERY subagent, so it can
+                # only carry end_session when no allowlist is in force.
                 global_defs = getattr(self._workflow, "global_tool_defs", None)
-                if isinstance(global_defs, list) and global_defs:
+                if not _allow and isinstance(global_defs, list) and global_defs:
                     if not any(t.get("name") == "end_session" for t in global_defs):
                         global_defs.append(end_session_def)
+                logger.info(
+                    "orchestrator.end_session_scoped subagents=%s",
+                    sorted(_allow) if _allow else "ALL",
+                )
             except Exception as _err:  # defensive — never break init
                 logger.warning(
                     "orchestrator.end_session_tool_defs_extension_failed",
@@ -1232,6 +1247,17 @@ class AgentCore(AgentCoreBase):
             session_values=self._tool_session_values(bundle),
         )
 
+        # Persist anything a connector's session_mapping lifted out of a
+        # response. The sync path runs its tools inside Manager Agent, which
+        # holds no Memory Layer client, so the write lands here — the same
+        # split the streaming path makes for its own tool loop. Without this
+        # the mechanism silently does nothing on /process_turn, which is the
+        # path the bridge actually uses.
+        for _tr in tool_results or []:
+            for _k, _v in (getattr(_tr, "session_values", None) or {}).items():
+                self._write_memory_sync(session_id, user_id, "session", _k, _v)
+                bundle.session[_k] = _v
+
         # #193: persist this turn's tool exchanges so the next turn can
         # replay them. run_turn returns ToolResult objects; _capture_tool_exchange
         # expects the tool_result content dicts that go into messages, so
@@ -1451,6 +1477,44 @@ class AgentCore(AgentCoreBase):
 
         # Pass 3: fallback
         return self._workflow.default_fallback_subagent_id, None
+
+    async def _write_mapped_session_values(
+        self, session_id: str, user_id: str, tool_result, bundle,
+    ) -> None:
+        """Persist values a connector's ``session_mapping`` lifted from a response.
+
+        Routing reads session ∪ profile, and a tool response otherwise reaches
+        only the LLM — so this is the only path by which a workflow can gate on
+        something a tool returned. The same gap produced three separate bugs
+        before it was closed generically: ``consent_response``,
+        ``profile_setup_done``, and every flag on the participant fetch.
+
+        Tools run AFTER routing, so these land in time for the NEXT turn. That
+        lag is inherent to the turn shape rather than a defect: a workflow
+        needing a fetched fact must fetch on one turn and branch on the next.
+
+        Args:
+            session_id: Session receiving the write.
+            user_id: Owning user, for the Memory Layer write.
+            tool_result: Result whose ``session_values`` to persist.
+            bundle: Live context bundle, updated so the same turn sees them.
+        """
+        values = getattr(tool_result, "session_values", None) or {}
+        if not values:
+            return
+        for key, val in values.items():
+            await self._async_memory.write(session_id, user_id, "session", key, val)
+            bundle.session[key] = val
+        logger.info(
+            "orchestrator.mapped_session_values",
+            extra={
+                "operation": "orchestrator.stream_turn",
+                "status": "success",
+                "session_id": session_id,
+                "tool_name": getattr(tool_result, "tool_name", ""),
+                "fields": sorted(values),
+            },
+        )
 
     @staticmethod
     def _tool_session_values(bundle) -> dict:
@@ -3519,6 +3583,30 @@ class AgentCore(AgentCoreBase):
                         session_id, user_id, "session", "current_subagent_id", next_subagent_id
                     )
                 )
+            # Latch ``opening_phrase_emitted`` AFTER routing, so it means the
+            # same thing on both execution paths: "the opening question has
+            # been put to the caller in this call, so an answer read from
+            # session state belongs to this call and not a previous one."
+            #
+            # process_turn gets this free — its opening_phrase gate returns the
+            # greeting before routing, so the flag is already set by turn 2.
+            # stream_turn has no such gate (GH-239 suppresses the canned phrase
+            # because the LLM's own first reply greets), and the existing latch
+            # below it only runs on the post-consent branch — which a domain
+            # without the consent gate never reaches. The flag then stayed
+            # unset forever and every routing rule guarded by it was dead.
+            #
+            # After routing, not before: on turn 1 the rules must NOT yet see
+            # it, or a consent answer persisted from an earlier call would fire
+            # before this caller has been asked anything.
+            if not bundle.session.get("opening_phrase_emitted", False):
+                routing_writes.append(
+                    self._async_memory.write(
+                        session_id, user_id, "session", "opening_phrase_emitted", True
+                    )
+                )
+                bundle.session["opening_phrase_emitted"] = True
+
             if routing_writes:
                 await asyncio.gather(*routing_writes, return_exceptions=True)
             yield _stamp(SignalEvent(stage="routing", status="complete"))
@@ -3794,10 +3882,42 @@ class AgentCore(AgentCoreBase):
                             tc, _ke_context,
                         )
                     elif self._async_gateway:
-                        tool_result = await self._async_gateway.execute(
-                            tc, session_id, user_id,
-                            session_values=self._tool_session_values(bundle),
+                        # Same provenance guard the sync path gets inside
+                        # ManagerAgent.run_turn. stream_turn has its own tool
+                        # loop and never calls run_turn, so without this the
+                        # guard is dead on the path voice clients actually use.
+                        _ung = ungrounded_params(
+                            (getattr(self._manager_agent, "_grounded_params", {}) or {})
+                            .get(tc.tool_name) or {},
+                            tc, messages,
                         )
+                        if _ung:
+                            logger.warning(
+                                "orchestrator.stream_ungrounded_param tool=%s params=%s",
+                                tc.tool_name, sorted(_ung),
+                            )
+                            tool_result = ToolResult(
+                                tool_use_id=tc.tool_use_id,
+                                tool_name=tc.tool_name,
+                                result={},
+                                success=False,
+                                error="UNGROUNDED_PARAMETER",
+                                result_text=(
+                                    f"Refused: {', '.join(sorted(_ung))} did not come from "
+                                    f"any tool result in this conversation, so the value was "
+                                    f"invented. Do not guess an identifier. Re-read the most "
+                                    f"recent tool result, copy the exact value for the item the "
+                                    f"user chose, and call this tool again."
+                                ),
+                            )
+                        else:
+                            tool_result = await self._async_gateway.execute(
+                                tc, session_id, user_id,
+                                session_values=self._tool_session_values(bundle),
+                            )
+                            await self._write_mapped_session_values(
+                                session_id, user_id, tool_result, bundle,
+                            )
                     else:
                         # Fallback: no async gateway — cannot execute tools in streaming mode
                         logger.error(
@@ -3957,10 +4077,41 @@ class AgentCore(AgentCoreBase):
                                     tc, _ke_context,
                                 )
                             elif self._async_gateway:
-                                tool_result = await self._async_gateway.execute(
-                            tc, session_id, user_id,
-                            session_values=self._tool_session_values(bundle),
-                        )
+                                # Second streaming execution site (nested tool
+                                # rounds) — same guard as the first.
+                                _ung2 = ungrounded_params(
+                                    (getattr(self._manager_agent, "_grounded_params", {}) or {})
+                                    .get(tc.tool_name) or {},
+                                    tc, messages,
+                                )
+                                if _ung2:
+                                    logger.warning(
+                                        "orchestrator.stream_ungrounded_param tool=%s params=%s",
+                                        tc.tool_name, sorted(_ung2),
+                                    )
+                                    tool_result = ToolResult(
+                                        tool_use_id=tc.tool_use_id,
+                                        tool_name=tc.tool_name,
+                                        result={},
+                                        success=False,
+                                        error="UNGROUNDED_PARAMETER",
+                                        result_text=(
+                                            f"Refused: {', '.join(sorted(_ung2))} did not come "
+                                            f"from any tool result in this conversation, so the "
+                                            f"value was invented. Do not guess an identifier. "
+                                            f"Re-read the most recent tool result, copy the exact "
+                                            f"value for the item the user chose, and call this "
+                                            f"tool again."
+                                        ),
+                                    )
+                                else:
+                                    tool_result = await self._async_gateway.execute(
+                                        tc, session_id, user_id,
+                                        session_values=self._tool_session_values(bundle),
+                                    )
+                                    await self._write_mapped_session_values(
+                                        session_id, user_id, tool_result, bundle,
+                                    )
                             else:
                                 break
                             _nested_results.append({

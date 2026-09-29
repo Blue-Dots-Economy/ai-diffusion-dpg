@@ -185,6 +185,11 @@ class ToolResult:
     success: bool
     result_text: str = ""
     error: Optional[str] = None
+    # Values the connector's `session_mapping` lifted out of the response, to
+    # be written to session state. Routing reads session ∪ profile, so without
+    # this a workflow cannot gate on anything a tool returned — the gap behind
+    # consent_response, profile_setup_done and the participant fetch alike.
+    session_values: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

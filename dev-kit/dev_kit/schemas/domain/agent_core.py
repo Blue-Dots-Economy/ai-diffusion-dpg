@@ -5,7 +5,7 @@ Each class corresponds to a top-level section the LLM writes via update_config.
 Phase prompts inject the relevant subset (see phase→section mapping in design doc).
 """
 from __future__ import annotations
-from typing import Optional, Any
+from typing import Optional, Any, List, Dict, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from dev_kit.schemas.enums import (
@@ -286,6 +286,7 @@ class SessionEndEvalConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool = False
     prompt: str = ""
+    subagents: List[str] = Field(default_factory=list)
     fail_action: str = "none"
 
 
@@ -407,6 +408,7 @@ class InvocationRules(BaseModel):
     call_when: str = ""
     required_before_calling: list[str] = Field(default_factory=list)
     must_not_substitute: str = ""
+    grounded_params: Union[List[str], Dict[str, List[str]]] = Field(default_factory=list)
     on_empty: str = ""
     on_failure: str = ""
     bridge_line: str = ""

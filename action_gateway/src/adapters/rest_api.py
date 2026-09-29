@@ -21,9 +21,16 @@ from opentelemetry import metrics as otel_metrics
 from opentelemetry import trace as otel_trace
 
 from src.adapters.base import ToolAdapter
+from src.adapters.response_path import resolve
 from src.models import ToolDefinition, ToolResult
 
 logger = logging.getLogger(__name__)
+
+# 8-4-4-4-12 hex. Used only to decide which arguments are safe to log: an id
+# identifies a row, a name or phone identifies a person.
+_UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
 
 
 # Sentinel returned by _render_body_template when a value resolves to nothing.
@@ -539,6 +546,45 @@ class RestApiAdapter(ToolAdapter):
         # the model did fill.
         state: dict = dict(session_values or {})
         all_params: dict = dict(input_params)
+
+        # Shape check before the call, for params that declare a `format`.
+        # Generic: the adapter knows what a uuid looks like, never which
+        # parameter carries one — that is the domain's config. Failing here
+        # returns a message naming the parameter, where the upstream would
+        # answer a bare 400 the model cannot act on.
+        for p in endpoint.get("params", []):
+            fmt = p.get("format")
+            if not fmt:
+                continue
+            val = all_params.get(p["name"])
+            if val is None or not isinstance(val, str):
+                continue
+            if fmt == "uuid" and not _UUID_RE.fullmatch(val.strip()):
+                msg = (
+                    f"{p['name']} must be a uuid copied verbatim from a prior "
+                    f"tool result; got {val.strip()!r}. Re-read the result and "
+                    f"send the id, not a description of it."
+                )
+                logger.warning(
+                    f"rest_api_param_format tool={tool_name} param={p['name']} "
+                    f"expected={fmt}",
+                    extra={
+                        "operation": "RestApiAdapter.execute",
+                        "status": "failure",
+                        "error": "param_format",
+                        "tool_name": tool_name,
+                        "session_id": session_id,
+                    },
+                )
+                return ToolResult(
+                    tool_use_id="",
+                    tool_name=tool_name,
+                    result={},
+                    success=False,
+                    error="param_format",
+                    result_text=msg,
+                )
+
         for p in endpoint.get("params", []):
             src = p.get("source")
             if src == "static":
@@ -745,8 +791,16 @@ class RestApiAdapter(ToolAdapter):
             # still flows upward via ``result_text`` for the LLM and the
             # Observability Layer's audit path; operator-visible logs must
             # only carry the status code + error tag.
+            # Ids in the MESSAGE, not in `extra`: the deployed formatter
+            # renders only the message, so an id passed as an extra field is
+            # invisible — which is exactly how an apply failure stayed
+            # unattributable through a whole afternoon of testing.
+            _ids = {
+                k: v for k, v in (all_params or {}).items()
+                if isinstance(v, str) and _UUID_RE.fullmatch(v)
+            }
             logger.warning(
-                "rest_api_http_error",
+                f"rest_api_http_error tool={tool_name} status={response.status_code} ids={_ids}",
                 extra={
                     "operation": "RestApiAdapter.execute",
                     "status": "failure",
@@ -755,6 +809,15 @@ class RestApiAdapter(ToolAdapter):
                     "session_id": session_id,
                     "latency_ms": latency_ms,
                     "body_chars": len(body_excerpt),
+                    # The UUID-shaped arguments, so a rejected call names the
+                    # id it was rejected for. Without these a 422
+                    # TARGET_ITEM_NOT_FOUND is unattributable: the id sent is a
+                    # well-formed UUID that is simply not an item here, and the
+                    # profile id, a service provider's id and an invented one
+                    # all produce exactly the same error. Ids only — never the
+                    # name, phone or any other argument, which are PII and are
+                    # deliberately kept out of operator-visible logs.
+                    "id_params": _ids,
                 },
             )
             return ToolResult(
@@ -773,6 +836,27 @@ class RestApiAdapter(ToolAdapter):
 
         projected = _apply_projection(result_dict, self.config.get("response", {}).get("projection"))
         payload = projected if projected is not None else result_dict
+
+        # Lift declared values out of the RAW response — not the projection,
+        # which is shaped for the LLM and may well drop what routing needs.
+        # A path that no longer matches resolves to None and is skipped, so a
+        # drifted connector degrades to "absent" rather than breaking the call.
+        session_values: dict = {}
+        for m in (self.config.get("response", {}).get("session_mapping") or []):
+            value = resolve(result_dict, m.get("source", ""))
+            if value is not None:
+                session_values[m["target"]] = value
+        if session_values:
+            logger.info(
+                f"rest_api_session_values tool={tool_name} "
+                f"keys={sorted(session_values)}",
+                extra={
+                    "operation": "RestApiAdapter.execute",
+                    "status": "success",
+                    "tool_name": tool_name,
+                    "session_id": session_id,
+                },
+            )
         full_text = json.dumps(payload)
 
         # When the payload is a list (projected with list_key), drop items from
@@ -806,6 +890,7 @@ class RestApiAdapter(ToolAdapter):
             result=result_dict,
             success=True,
             result_text=result_text,
+            session_values=session_values,
         )
 
     def health_check(self) -> bool:
