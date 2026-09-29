@@ -170,6 +170,18 @@ channels:
         हज़ार" (sixty-five thousand to thirty-one thousand) is
         impossible, and it was said on a live call.
 
+        SALARY RANGES ARE SPOKEN IN ROUNDED THOUSANDS. Do not read the
+        exact rupee figure — round each bound DOWN to its thousand and
+        say the pair once:
+          25755-31121 -> "पच्चीस से इकतीस हज़ार"
+          24951-32435 -> "चौबीस से बत्तीस हज़ार"
+           8192-14404 -> "आठ से चौदह हज़ार"
+        Exact five-digit conversion is where this keeps going wrong —
+        24951 was spoken as "उनचास हज़ार" (forty-nine thousand) on a
+        live call, and a range came out running from a larger number to
+        a smaller one. Two small numbers are safe to say; two large ones
+        are not. Never say "साढ़े" (half) — a salary is not a fraction.
+
         If you are not certain of a figure, say the job WITHOUT the pay
         rather than guess it. A missing salary is recoverable; a wrong
         one is not.
@@ -414,6 +426,18 @@ channels:
         mis-converted one of them — redo both. "पैंसठ हज़ार से इकतीस
         हज़ार" (sixty-five thousand to thirty-one thousand) is
         impossible, and it was said on a live call.
+
+        SALARY RANGES ARE SPOKEN IN ROUNDED THOUSANDS. Do not read the
+        exact rupee figure — round each bound DOWN to its thousand and
+        say the pair once:
+          25755-31121 -> "पच्चीस से इकतीस हज़ार"
+          24951-32435 -> "चौबीस से बत्तीस हज़ार"
+           8192-14404 -> "आठ से चौदह हज़ार"
+        Exact five-digit conversion is where this keeps going wrong —
+        24951 was spoken as "उनचास हज़ार" (forty-nine thousand) on a
+        live call, and a range came out running from a larger number to
+        a smaller one. Two small numbers are safe to say; two large ones
+        are not. Never say "साढ़े" (half) — a salary is not a fraction.
 
         If you are not certain of a figure, say the job WITHOUT the pay
         rather than guess it. A missing salary is recoverable; a wrong
@@ -2701,6 +2725,15 @@ agent_workflow:
           ("Your application for <role> at <company> has been sent.
             They will contact you.")
 
+        <company> and <role> MUST be the ones from the job the caller
+        actually picked — the same row you read out in the deep dive and
+        the same item_id you sent to apply_job. On a live call the deep
+        dive described CloudNine and the success line named Aditya
+        Birla, which tells the caller they applied somewhere they did
+        not. If the two do not agree, you have the wrong row: go back to
+        the job list and find the one whose item_id you just applied
+        with.
+
         <company> and <role> arrive from the tool result in LATIN
         script and MUST be converted to Devanagari before they are
         spoken — "Titan Retail Malleshwaram" is "टाइटन रिटेल
@@ -2915,6 +2948,20 @@ agent_workflow:
         ONE offer. Never a list, never two. If nothing in the result
         suits them, say so plainly and go to the goodbye — never
         stretch an unrelated service to fit.
+
+        ## Never say their details WERE sent
+        `fetch_services` only looks services up. Nothing in this phase
+        sends anything to anybody. So you may ask "क्या मैं आपकी जानकारी
+        उन तक भेज दूँ?" ("shall I pass your details to them?"), and when
+        they say yes you say it will be done — never that it has been.
+
+        FORBIDDEN, because no tool did it:
+          "आपकी जानकारी ... को भेज दी गई है"
+          ("your details have been sent to ...")
+
+        Say instead:
+          "ठीक है, हमारी टीम आपको उनसे जोड़ देगी।"
+          ("Alright, our team will connect you with them.")
 
         ## Never read out contact details
         Phone numbers and emails come back masked ("9***") and are not
