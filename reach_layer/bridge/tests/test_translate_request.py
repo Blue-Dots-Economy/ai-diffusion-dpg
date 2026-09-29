@@ -183,8 +183,10 @@ def test_none_text_part_is_skipped_not_coerced():
 # ---------------------------------------------------------------------------
 
 
-def _call_body(call_id=None):
-    meta = {"caller_phone": "919900112233"}
+def _call_body(call_id=None, phone="919900112233"):
+    # Distinct numbers per test: the minted-session cache is module state, so
+    # sharing one number lets an earlier test decide a later test's is_new.
+    meta = {"caller_phone": phone}
     if call_id is not None:
         meta["call_id"] = call_id
     return {"model": "kkb",
@@ -212,19 +214,21 @@ def test_different_call_ids_get_different_sessions():
 
 def test_without_a_call_id_turns_close_together_share_a_session():
     """The client sends only the newest utterance, so time is the only signal."""
-    t = 1_000_000.0
-    a = session_id_for(_call_body(), "919900112233", now=t)
-    b = session_id_for(_call_body(), "919900112233", now=t + 5)
-    c = session_id_for(_call_body(), "919900112233", now=t + 40)
+    t, ph = 1_000_000.0, "919900777001"
+    a, a_new = session_id_for(_call_body(phone=ph), ph, now=t)
+    b, b_new = session_id_for(_call_body(phone=ph), ph, now=t + 5)
+    c, c_new = session_id_for(_call_body(phone=ph), ph, now=t + 40)
     assert a == b == c
+    assert a_new is True and b_new is False and c_new is False
 
 
 def test_a_long_gap_starts_a_new_session():
     """The bug this fixes: ringing back must not resume the previous call."""
-    t = 2_000_000.0
-    first = session_id_for(_call_body(), "919900445566", now=t)
-    later = session_id_for(_call_body(), "919900445566", now=t + 600)
+    t, ph = 2_000_000.0, "919900777002"
+    first, first_new = session_id_for(_call_body(phone=ph), ph, now=t)
+    later, later_new = session_id_for(_call_body(phone=ph), ph, now=t + 600)
     assert first != later
+    assert first_new is True and later_new is True
 
 
 def test_user_id_never_carries_the_call_id():
@@ -232,3 +236,17 @@ def test_user_id_never_carries_the_call_id():
     out = to_turn_request(_call_body(call_id="c9"), channel="bridge")
     assert out["user_id"] == "919900112233"
     assert ":" not in out["user_id"]
+
+
+def test_a_new_call_asks_agent_core_for_a_clean_start():
+    """A new session id alone is not enough — Memory Layer adopts the previous
+    session's state, including current_subagent_id, unless `fresh` is set."""
+    out = to_turn_request(_call_body(call_id="brand-new", phone="919900777003"), channel="bridge")
+    assert out["fresh"] is True
+
+
+def test_a_continuing_turn_does_not_ask_for_a_clean_start():
+    body = _call_body(call_id="same-call", phone="919900777004")
+    to_turn_request(body, channel="bridge")          # turn 1 of the call
+    out = to_turn_request(body, channel="bridge")    # turn 2
+    assert out["fresh"] is False
