@@ -76,7 +76,7 @@ response:
       target: user_terms
     - source: "compliance[key=user_privacy].value"
       target: user_privacy
-    - source: "items[?lifecycle_status=live][0].item_id"
+    - source: "items[lifecycle_status=live].item_id"
       target: profile_item_id
     - source: "user_id"
       target: acting_as_user_id

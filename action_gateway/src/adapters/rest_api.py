@@ -21,6 +21,7 @@ from opentelemetry import metrics as otel_metrics
 from opentelemetry import trace as otel_trace
 
 from src.adapters.base import ToolAdapter
+from src.adapters.response_path import resolve
 from src.models import ToolDefinition, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -835,6 +836,27 @@ class RestApiAdapter(ToolAdapter):
 
         projected = _apply_projection(result_dict, self.config.get("response", {}).get("projection"))
         payload = projected if projected is not None else result_dict
+
+        # Lift declared values out of the RAW response — not the projection,
+        # which is shaped for the LLM and may well drop what routing needs.
+        # A path that no longer matches resolves to None and is skipped, so a
+        # drifted connector degrades to "absent" rather than breaking the call.
+        session_values: dict = {}
+        for m in (self.config.get("response", {}).get("session_mapping") or []):
+            value = resolve(result_dict, m.get("source", ""))
+            if value is not None:
+                session_values[m["target"]] = value
+        if session_values:
+            logger.info(
+                f"rest_api_session_values tool={tool_name} "
+                f"keys={sorted(session_values)}",
+                extra={
+                    "operation": "RestApiAdapter.execute",
+                    "status": "success",
+                    "tool_name": tool_name,
+                    "session_id": session_id,
+                },
+            )
         full_text = json.dumps(payload)
 
         # When the payload is a list (projected with list_key), drop items from
@@ -868,6 +890,7 @@ class RestApiAdapter(ToolAdapter):
             result=result_dict,
             success=True,
             result_text=result_text,
+            session_values=session_values,
         )
 
     def health_check(self) -> bool:

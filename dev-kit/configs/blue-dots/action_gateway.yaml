@@ -75,6 +75,28 @@ tools:
       # UUID only at the root as `user_id`; its items carry no `created_by`
       # (unlike fetch_local items), so a list_key projection could never
       # surface the owner that apply_job needs as acting_as_user_id.
+      # Lifted into session state so ROUTING can branch on them — routing
+      # reads session ∪ profile, and a tool response otherwise reaches only
+      # the LLM. These are the three facts the opening gate needs and used to
+      # ask the caller for even when they were already on file.
+      #
+      # `compliance` is a [{key, value}] array and `items` is newest-first
+      # (ITEMS_NEWEST_FIRST in signals-dpg), so the first `live` row is the
+      # current profile. items[0] is NOT safe — it can be `retired`.
+      #
+      # has_age reads the PARTICIPANT-level age. The profile's item_state.age
+      # is a different field and is deliberately not used here.
+      session_mapping:
+        - source: "compliance[key=has_age].value"
+          target: has_age
+        - source: "compliance[key=user_terms].value"
+          target: user_terms
+        - source: "compliance[key=user_privacy].value"
+          target: user_privacy
+        - source: "items[lifecycle_status=live].item_id"
+          target: profile_item_id
+        - source: "user_id"
+          target: acting_as_user_id
       projection:
         fields:
           # Both names map to the same root value. The existing prompts refer

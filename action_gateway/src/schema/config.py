@@ -241,6 +241,26 @@ class ProjectionConfig(BaseModel):
     fields: dict[str, str] = Field(default_factory=dict)
 
 
+class SessionMapping(BaseModel):
+    """One response value copied into session state for ROUTING to read.
+
+    Distinct from :class:`FieldMapping`, which is reserved for slimming what
+    the LLM sees. This one is about what the workflow can branch on: routing
+    reads session state, and a tool response otherwise reaches only the model.
+
+    Attributes:
+        source: Path into the decoded response — see
+            ``src.adapters.response_path`` for the grammar. Domain-specific by
+            nature and therefore config, never code.
+        target: Session key to write. Routing conditions test this name.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    source: str
+    target: str
+
+
 class ResponseConfig(BaseModel):
     """How a tool's response is shaped before it reaches the LLM.
 
@@ -248,6 +268,10 @@ class ResponseConfig(BaseModel):
         max_size_chars: Truncation threshold; responses larger than this
             are cut with a ``...[truncated]`` suffix.
         field_mapping: Reserved — see GH-93.
+        session_mapping: Values lifted out of the response into session state
+            so routing can branch on them. Routing reads session ∪ profile; a
+            tool response reaches only the LLM, so without this a workflow
+            cannot gate on anything a tool returned.
         projection: Optional slim projection applied to build result_text.
     """
 
@@ -255,6 +279,7 @@ class ResponseConfig(BaseModel):
 
     max_size_chars: int = Field(default=4000, gt=0)
     field_mapping: Optional[list[FieldMapping]] = None
+    session_mapping: Optional[list[SessionMapping]] = None
     projection: Optional[ProjectionConfig] = None
 
 

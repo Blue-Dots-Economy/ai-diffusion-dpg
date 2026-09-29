@@ -74,6 +74,11 @@ class ToolResult(BaseModel):
         success: True if the tool executed without error.
         result_text: Human-readable summary of the result; defaults to empty string.
         error: Error message if success is False; None otherwise.
+        session_values: Values lifted from the response by the connector's
+            ``session_mapping``, for Agent Core to write to session state.
+            Empty unless the connector declares one. Routing reads session
+            state, so this is the only path by which a workflow can branch on
+            something a tool returned.
     """
 
     tool_use_id: str
@@ -82,6 +87,7 @@ class ToolResult(BaseModel):
     success: bool
     result_text: str = ""
     error: Optional[str] = None
+    session_values: dict = Field(default_factory=dict)
 
 
 class ExecuteRequest(BaseModel):
@@ -119,6 +125,8 @@ class ExecuteResponse(BaseModel):
         result: Structured result payload.
         result_text: Human-readable summary; defaults to empty string.
         error: Error message on failure; None on success.
+        session_values: Values the connector's ``session_mapping`` lifted out
+            of the response, for Agent Core to write to session state.
     """
 
     tool_use_id: str
@@ -127,6 +135,7 @@ class ExecuteResponse(BaseModel):
     result: dict
     result_text: str = ""
     error: Optional[str] = None
+    session_values: dict = Field(default_factory=dict)
 
 
 class ToolsResponse(BaseModel):

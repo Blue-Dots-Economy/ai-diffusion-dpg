@@ -1452,6 +1452,44 @@ class AgentCore(AgentCoreBase):
         # Pass 3: fallback
         return self._workflow.default_fallback_subagent_id, None
 
+    async def _write_mapped_session_values(
+        self, session_id: str, user_id: str, tool_result, bundle,
+    ) -> None:
+        """Persist values a connector's ``session_mapping`` lifted from a response.
+
+        Routing reads session ∪ profile, and a tool response otherwise reaches
+        only the LLM — so this is the only path by which a workflow can gate on
+        something a tool returned. The same gap produced three separate bugs
+        before it was closed generically: ``consent_response``,
+        ``profile_setup_done``, and every flag on the participant fetch.
+
+        Tools run AFTER routing, so these land in time for the NEXT turn. That
+        lag is inherent to the turn shape rather than a defect: a workflow
+        needing a fetched fact must fetch on one turn and branch on the next.
+
+        Args:
+            session_id: Session receiving the write.
+            user_id: Owning user, for the Memory Layer write.
+            tool_result: Result whose ``session_values`` to persist.
+            bundle: Live context bundle, updated so the same turn sees them.
+        """
+        values = getattr(tool_result, "session_values", None) or {}
+        if not values:
+            return
+        for key, val in values.items():
+            await self._async_memory.write(session_id, user_id, "session", key, val)
+            bundle.session[key] = val
+        logger.info(
+            "orchestrator.mapped_session_values",
+            extra={
+                "operation": "orchestrator.stream_turn",
+                "status": "success",
+                "session_id": session_id,
+                "tool_name": getattr(tool_result, "tool_name", ""),
+                "fields": sorted(values),
+            },
+        )
+
     @staticmethod
     def _tool_session_values(bundle) -> dict:
         """Build the state lookup handed to the Action Gateway for a tool call.
@@ -3798,6 +3836,9 @@ class AgentCore(AgentCoreBase):
                             tc, session_id, user_id,
                             session_values=self._tool_session_values(bundle),
                         )
+                        await self._write_mapped_session_values(
+                            session_id, user_id, tool_result, bundle,
+                        )
                     else:
                         # Fallback: no async gateway — cannot execute tools in streaming mode
                         logger.error(
@@ -3958,9 +3999,12 @@ class AgentCore(AgentCoreBase):
                                 )
                             elif self._async_gateway:
                                 tool_result = await self._async_gateway.execute(
-                            tc, session_id, user_id,
-                            session_values=self._tool_session_values(bundle),
-                        )
+                                    tc, session_id, user_id,
+                                    session_values=self._tool_session_values(bundle),
+                                )
+                                await self._write_mapped_session_values(
+                                    session_id, user_id, tool_result, bundle,
+                                )
                             else:
                                 break
                             _nested_results.append({
