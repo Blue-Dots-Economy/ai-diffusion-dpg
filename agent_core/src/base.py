@@ -10,7 +10,7 @@ import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 
-from src.models import StreamEvent, TurnInput, TurnResult
+from src.models import StreamEvent, TurnInput, TurnRecord, TurnResult
 
 
 class AgentCoreBase(ABC):
@@ -46,6 +46,7 @@ class AgentCoreBase(ABC):
         *,
         abort_event: "asyncio.Event | None" = None,
         turn_id: str = "",
+        record: "TurnRecord | None" = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Execute one conversation turn with streaming SSE output.
 
@@ -61,6 +62,11 @@ class AgentCoreBase(ABC):
             turn_id: Optional caller-supplied identifier for this turn. When
                 non-empty, it is stamped on every emitted StreamEvent. When
                 empty (the default), an internal uuid4 is generated and used.
+            record: Optional per-turn ledger. When supplied (the TurnAssembler
+                does), stream_turn records the stage reached, the tool rounds
+                completed and the folded utterances in it, and sets
+                ``record.persist_task`` when the turn ends without completing.
+                When None, a private record is used.
 
         Yields:
             SignalEvent, SentenceEvent, or DoneEvent. DoneEvent is the
