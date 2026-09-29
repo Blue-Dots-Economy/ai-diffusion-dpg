@@ -7,4 +7,4 @@ metadata:
     app: {{ .Release.Name }}
 data:
   dpg.yaml: |
-{{ .Values.dpgConfig | indent 4 }}
+{{ include "dpg.renderConfig" (dict "config" .Values.dpgConfig "hosts" .Values.serviceHosts) | indent 4 }}
