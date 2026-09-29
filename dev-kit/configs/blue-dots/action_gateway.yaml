@@ -652,8 +652,17 @@ tools:
             source: agent
             type: string
             required: true
+            # Shape-checked before the call. Measured on the VM: the model
+            # sometimes sends what the CALLER said — "पहला वाला", "तीसरा" —
+            # instead of the id, and the upstream answers a bare
+            # 400 FST_ERR_VALIDATION "Invalid UUID" that gives it nothing to
+            # correct. Roughly one apply in four failed this way. Failing at
+            # the gateway returns a message naming the parameter instead.
+            format: uuid
             description: >
-              The chosen job's item_id from the prior fetch_jobs result.
+              The chosen job's item_id from the prior fetch_jobs result,
+              copied verbatim — the full hyphenated UUID, never the
+              caller's words for which job they picked.
     response:
       max_size_chars: 1000
       # Bulk envelope (Signals-DPG PR #55): { results: [ ... ], summary }.

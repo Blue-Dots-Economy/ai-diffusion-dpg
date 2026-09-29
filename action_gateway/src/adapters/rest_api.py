@@ -545,6 +545,45 @@ class RestApiAdapter(ToolAdapter):
         # the model did fill.
         state: dict = dict(session_values or {})
         all_params: dict = dict(input_params)
+
+        # Shape check before the call, for params that declare a `format`.
+        # Generic: the adapter knows what a uuid looks like, never which
+        # parameter carries one — that is the domain's config. Failing here
+        # returns a message naming the parameter, where the upstream would
+        # answer a bare 400 the model cannot act on.
+        for p in endpoint.get("params", []):
+            fmt = p.get("format")
+            if not fmt:
+                continue
+            val = all_params.get(p["name"])
+            if val is None or not isinstance(val, str):
+                continue
+            if fmt == "uuid" and not _UUID_RE.fullmatch(val.strip()):
+                msg = (
+                    f"{p['name']} must be a uuid copied verbatim from a prior "
+                    f"tool result; got {val.strip()!r}. Re-read the result and "
+                    f"send the id, not a description of it."
+                )
+                logger.warning(
+                    f"rest_api_param_format tool={tool_name} param={p['name']} "
+                    f"expected={fmt}",
+                    extra={
+                        "operation": "RestApiAdapter.execute",
+                        "status": "failure",
+                        "error": "param_format",
+                        "tool_name": tool_name,
+                        "session_id": session_id,
+                    },
+                )
+                return ToolResult(
+                    tool_use_id="",
+                    tool_name=tool_name,
+                    result={},
+                    success=False,
+                    error="param_format",
+                    result_text=msg,
+                )
+
         for p in endpoint.get("params", []):
             src = p.get("source")
             if src == "static":
@@ -751,8 +790,16 @@ class RestApiAdapter(ToolAdapter):
             # still flows upward via ``result_text`` for the LLM and the
             # Observability Layer's audit path; operator-visible logs must
             # only carry the status code + error tag.
+            # Ids in the MESSAGE, not in `extra`: the deployed formatter
+            # renders only the message, so an id passed as an extra field is
+            # invisible — which is exactly how an apply failure stayed
+            # unattributable through a whole afternoon of testing.
+            _ids = {
+                k: v for k, v in (all_params or {}).items()
+                if isinstance(v, str) and _UUID_RE.fullmatch(v)
+            }
             logger.warning(
-                "rest_api_http_error",
+                f"rest_api_http_error tool={tool_name} status={response.status_code} ids={_ids}",
                 extra={
                     "operation": "RestApiAdapter.execute",
                     "status": "failure",
@@ -769,10 +816,7 @@ class RestApiAdapter(ToolAdapter):
                     # all produce exactly the same error. Ids only — never the
                     # name, phone or any other argument, which are PII and are
                     # deliberately kept out of operator-visible logs.
-                    "id_params": {
-                        k: v for k, v in (all_params or {}).items()
-                        if isinstance(v, str) and _UUID_RE.fullmatch(v)
-                    },
+                    "id_params": _ids,
                 },
             )
             return ToolResult(

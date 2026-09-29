@@ -13,7 +13,7 @@ Belongs to the Action Gateway DPG block.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -146,6 +146,13 @@ class ParamDefinition(BaseModel):
         description: Free-form description shown to the LLM for routing.
         value: The static value used when ``source=static``; ignored
             otherwise.
+        format: Optional value shape the adapter enforces BEFORE the call.
+            ``uuid`` rejects anything that is not 8-4-4-4-12 hex. Declared
+            per-param because a model that is told to copy an id sometimes
+            sends what the caller said instead — an ordinal like
+            ``"तीसरा"`` ("the third one") — and the upstream answers a bare
+            400 that the model cannot act on. Failing here instead returns
+            a message naming the parameter and what was wrong with it.
         items: JSON-schema for array element type when ``type=array``.
             Required by OpenAI's function-calling validation; Anthropic
             tolerates its absence. When omitted on an ``array`` param the
@@ -165,6 +172,7 @@ class ParamDefinition(BaseModel):
     description: str = ""
     value: Optional[object] = None
     default: Optional[object] = None
+    format: Optional[Literal["uuid"]] = None
     items: Optional[dict] = None
 
 

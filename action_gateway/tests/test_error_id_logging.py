@@ -48,29 +48,31 @@ async def _run(caplog, params):
          patch("httpx.Client.request", return_value=resp), \
          caplog.at_level(logging.WARNING):
         await adapter.execute("apply_job", params, "s1", "u1")
-    return [r for r in caplog.records if r.message == "rest_api_http_error"]
+    return [r for r in caplog.records
+            if r.getMessage().startswith("rest_api_http_error")]
 
 
 @pytest.mark.asyncio
 async def test_uuid_arguments_are_logged_on_a_rejected_call(caplog):
     rec = await _run(caplog, {"profile_item_id": PROFILE, "job_item_id": JOB})
     assert rec, "the failure should have been logged"
-    ids = getattr(rec[0], "id_params", {})
-    assert ids.get("job_item_id") == JOB
-    assert ids.get("profile_item_id") == PROFILE
+    msg = rec[0].getMessage()
+    # The rendered message is what an operator sees; `extra` is dropped by the
+    # deployed formatter, so asserting on it would pass while the log is blank.
+    assert JOB in msg and PROFILE in msg
 
 
 @pytest.mark.asyncio
 async def test_non_uuid_arguments_are_never_logged(caplog):
     """Names and phones identify a person; ids identify a row."""
     rec = await _run(caplog, {"job_item_id": JOB, "name": "सुनील राव"})
-    ids = getattr(rec[0], "id_params", {})
-    assert "name" not in ids
-    assert ids == {"job_item_id": JOB}
+    msg = rec[0].getMessage()
+    assert JOB in msg
+    assert "सुनील" not in msg
 
 
 @pytest.mark.asyncio
 async def test_an_ordinal_sent_as_a_job_id_is_not_mistaken_for_one(caplog):
     """The 400 case: 'तीसरा' is not a UUID and must not appear as an id."""
     rec = await _run(caplog, {"job_item_id": "तीसरा"})
-    assert getattr(rec[0], "id_params", {}) == {}
+    assert "तीसरा" not in rec[0].getMessage()
