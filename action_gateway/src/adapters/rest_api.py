@@ -25,6 +25,12 @@ from src.models import ToolDefinition, ToolResult
 
 logger = logging.getLogger(__name__)
 
+# 8-4-4-4-12 hex. Used only to decide which arguments are safe to log: an id
+# identifies a row, a name or phone identifies a person.
+_UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+
 
 # Sentinel returned by _render_body_template when a value resolves to nothing.
 # Surfaced upward so the enclosing dict/list can drop the field entirely
@@ -755,6 +761,18 @@ class RestApiAdapter(ToolAdapter):
                     "session_id": session_id,
                     "latency_ms": latency_ms,
                     "body_chars": len(body_excerpt),
+                    # The UUID-shaped arguments, so a rejected call names the
+                    # id it was rejected for. Without these a 422
+                    # TARGET_ITEM_NOT_FOUND is unattributable: the id sent is a
+                    # well-formed UUID that is simply not an item here, and the
+                    # profile id, a service provider's id and an invented one
+                    # all produce exactly the same error. Ids only — never the
+                    # name, phone or any other argument, which are PII and are
+                    # deliberately kept out of operator-visible logs.
+                    "id_params": {
+                        k: v for k, v in (all_params or {}).items()
+                        if isinstance(v, str) and _UUID_RE.fullmatch(v)
+                    },
                 },
             )
             return ToolResult(
