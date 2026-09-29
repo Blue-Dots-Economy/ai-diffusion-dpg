@@ -6,6 +6,10 @@ metadata:
   labels:
     app: {{ .Release.Name }}
 spec:
+  # Recreate: ChromaDB/SQLite on ReadWriteOnce PVCs; a rolling update would start a
+  # second pod against the same ReadWriteOnce volume.
+  strategy:
+    type: Recreate
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
