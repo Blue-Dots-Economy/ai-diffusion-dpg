@@ -71,6 +71,7 @@ from src.models import (
     TrustCheckResult,
     TurnEvent,
     TurnInput,
+    TurnRecord,
     TurnResult,
 )
 from src.preprocessing.nlu_processor import NLUProcessor
@@ -2906,8 +2907,55 @@ class AgentCore(AgentCoreBase):
         *,
         abort_event: "asyncio.Event | None" = None,
         turn_id: str = "",
+        record: "TurnRecord | None" = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Execute one conversation turn with streaming SSE output.
+
+        Wraps the pipeline body to keep the turn's ledger: the last stage
+        reached, and whether the turn completed. A turn that ends without a
+        completed DoneEvent (aborted, errored, or closed early) has its state
+        persisted for the successor turn (spec §4.5) from ``finally``, via a
+        background task, never awaited here.
+
+        Args:
+            turn_input: Normalised inbound message from the Reach Layer.
+            abort_event: When set, the turn stops at its next safe point.
+            turn_id: Identifier stamped on every event; uuid4 when empty.
+            record: Per-turn ledger; a private one is used when None.
+
+        Yields:
+            SignalEvent, SentenceEvent, or DoneEvent.
+        """
+        record = record if record is not None else TurnRecord()
+        completed = False
+        try:
+            async for event in self._stream_turn_impl(
+                turn_input, abort_event=abort_event, turn_id=turn_id, record=record,
+            ):
+                if isinstance(event, SignalEvent) and event.stage:
+                    record.last_stage = event.stage
+                elif isinstance(event, DoneEvent) and event.turn_status == "completed":
+                    completed = True
+                yield event
+        finally:
+            if not completed:
+                self._on_turn_not_completed(turn_input, record, turn_id)
+
+    def _on_turn_not_completed(
+        self, turn_input: TurnInput, record: TurnRecord, turn_id: str = "",
+    ) -> None:
+        """Hook for a turn that ended without completing; filled in by Task 4."""
+        return None
+
+    async def _stream_turn_impl(
+        self,
+        turn_input: TurnInput,
+        *,
+        abort_event: "asyncio.Event | None" = None,
+        turn_id: str = "",
+        record: TurnRecord,
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """Run the streaming pipeline body; see :meth:`stream_turn` for the contract.
 
         Runs the same 13-step pipeline as process_turn() but uses async
         HTTP clients and yields StreamEvents as the pipeline progresses.
@@ -3693,8 +3741,11 @@ class AgentCore(AgentCoreBase):
             )
 
             # Tool exchanges captured during *this* turn's tool rounds; persisted
-            # at the end of the turn so the next turn can replay them.
-            _captured_exchanges_this_turn: list[dict] = []
+            # at the end of the turn so the next turn can replay them. The list
+            # lives on the record so an interrupted turn's rounds survive it.
+            record.prior_exchanges = list(_prior_exchanges)
+            record.max_items = _max_items
+            _captured_exchanges_this_turn: list[dict] = record.captured_exchanges
 
             if not messages:
                 yield _stamp(DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000)))
@@ -3960,6 +4011,13 @@ class AgentCore(AgentCoreBase):
                         "tool_use_id": tc.tool_use_id,
                         "content": tool_result.result_text or str(tool_result.result),
                     })
+                # Capture before yielding tool_end: a turn stopped at this yield
+                # must still record the round it just completed (spec §4.5).
+                _ex = self._capture_tool_exchange(
+                    all_tool_calls, tool_results_for_llm, _max_chars,
+                )
+                if _ex is not None:
+                    _captured_exchanges_this_turn.append(_ex)
                 yield _stamp(SignalEvent(stage="tool_end", status="complete"))
                 if _aborted():
                     return
@@ -4003,13 +4061,6 @@ class AgentCore(AgentCoreBase):
                             for tr in _current_tool_results
                         ],
                     ))
-
-                    # #193: snapshot this round so it can be replayed next turn.
-                    _ex = self._capture_tool_exchange(
-                        _current_tool_calls, _current_tool_results, _max_chars,
-                    )
-                    if _ex is not None:
-                        _captured_exchanges_this_turn.append(_ex)
 
                     if _aborted():
                         return
@@ -4168,6 +4219,11 @@ class AgentCore(AgentCoreBase):
                                 "content": tool_result.result_text or str(tool_result.result),
                             })
                             _stream_tool_results.append(tool_result)
+                        _ex = self._capture_tool_exchange(
+                            _nested_tool_calls, _nested_results, _max_chars,
+                        )
+                        if _ex is not None:
+                            _captured_exchanges_this_turn.append(_ex)
                         yield _stamp(SignalEvent(stage="tool_end", status="complete"))
                         if _aborted():
                             return
