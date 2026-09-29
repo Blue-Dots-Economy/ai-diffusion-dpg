@@ -1719,6 +1719,16 @@ agent_workflow:
         details. Do not continue the journey.
 
       routing:
+          # A goodbye ends the call, from ANY phase. This must be the FIRST
+          # rule here and repeated in every phase: routing is 3-pass and
+          # pass 1 (these subagent rules) always beats pass 2 (workflow
+          # global_routing). Almost every phase ends in an `intent: "*"`
+          # catch-all, so the global termination_intent rule is unreachable
+          # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
+          # termination_intent at 0.95 and still routed to services_offer,
+          # so the call never ended.
+        - intent: termination_intent
+          next_subagent_id: ended
         # Order matters — first match wins.
         #
         # Two different kinds of state are read here, and the difference
@@ -2103,6 +2113,16 @@ agent_workflow:
         Wait for the user's yes/no reply before fetch_jobs fires.
 
       routing:
+          # A goodbye ends the call, from ANY phase. This must be the FIRST
+          # rule here and repeated in every phase: routing is 3-pass and
+          # pass 1 (these subagent rules) always beats pass 2 (workflow
+          # global_routing). Almost every phase ends in an `intent: "*"`
+          # catch-all, so the global termination_intent rule is unreachable
+          # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
+          # termination_intent at 0.95 and still routed to services_offer,
+          # so the call never ended.
+        - intent: termination_intent
+          next_subagent_id: ended
         # Intent-driven advancement. The orchestrator's session-field
         # writes for entity values (trade, location) come through
         # unreliably even with Sonnet NLU — entity NAMES detect but
@@ -2347,6 +2367,16 @@ agent_workflow:
         old results.
 
       routing:
+          # A goodbye ends the call, from ANY phase. This must be the FIRST
+          # rule here and repeated in every phase: routing is 3-pass and
+          # pass 1 (these subagent rules) always beats pass 2 (workflow
+          # global_routing). Almost every phase ends in an `intent: "*"`
+          # catch-all, so the global termination_intent rule is unreachable
+          # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
+          # termination_intent at 0.95 and still routed to services_offer,
+          # so the call never ended.
+        - intent: termination_intent
+          next_subagent_id: ended
         - intent: explore_more
           next_subagent_id: job_match
         # KKB-Slim step 7: a pick is followed by the deep dive on that one
@@ -2487,6 +2517,16 @@ agent_workflow:
         argue, do not re-pitch this job.
 
       routing:
+          # A goodbye ends the call, from ANY phase. This must be the FIRST
+          # rule here and repeated in every phase: routing is 3-pass and
+          # pass 1 (these subagent rules) always beats pass 2 (workflow
+          # global_routing). Almost every phase ends in an `intent: "*"`
+          # catch-all, so the global termination_intent rule is unreachable
+          # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
+          # termination_intent at 0.95 and still routed to services_offer,
+          # so the call never ended.
+        - intent: termination_intent
+          next_subagent_id: ended
         # Wants to see other jobs instead → back to the list.
         - intent: explore_more
           next_subagent_id: job_match
@@ -2628,6 +2668,16 @@ agent_workflow:
         conversation history.
 
       routing:
+          # A goodbye ends the call, from ANY phase. This must be the FIRST
+          # rule here and repeated in every phase: routing is 3-pass and
+          # pass 1 (these subagent rules) always beats pass 2 (workflow
+          # global_routing). Almost every phase ends in an `intent: "*"`
+          # catch-all, so the global termination_intent rule is unreachable
+          # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
+          # termination_intent at 0.95 and still routed to services_offer,
+          # so the call never ended.
+        - intent: termination_intent
+          next_subagent_id: ended
         # Decline → user gave up; back to job_match for a different job.
         - intent: decline
           next_subagent_id: job_match
@@ -2858,6 +2908,16 @@ agent_workflow:
         twenty-four hours, then end the session.
 
       routing:
+          # A goodbye ends the call, from ANY phase. This must be the FIRST
+          # rule here and repeated in every phase: routing is 3-pass and
+          # pass 1 (these subagent rules) always beats pass 2 (workflow
+          # global_routing). Almost every phase ends in an `intent: "*"`
+          # catch-all, so the global termination_intent rule is unreachable
+          # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
+          # termination_intent at 0.95 and still routed to services_offer,
+          # so the call never ended.
+        - intent: termination_intent
+          next_subagent_id: ended
         # decline intent intentionally NOT routed to job_match here —
         # mid-profile-collection a "No" is overwhelmingly an STT
         # misrecognition of a one-word answer (e.g. "Mo" → "No"),
@@ -3273,6 +3333,16 @@ agent_workflow:
         Route back to job_match. Don't apply.
 
       routing:
+          # A goodbye ends the call, from ANY phase. This must be the FIRST
+          # rule here and repeated in every phase: routing is 3-pass and
+          # pass 1 (these subagent rules) always beats pass 2 (workflow
+          # global_routing). Almost every phase ends in an `intent: "*"`
+          # catch-all, so the global termination_intent rule is unreachable
+          # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
+          # termination_intent at 0.95 and still routed to services_offer,
+          # so the call never ended.
+        - intent: termination_intent
+          next_subagent_id: ended
         - intent: explore_more
           next_subagent_id: job_match
         - intent: decline
@@ -3379,6 +3449,16 @@ agent_workflow:
         yes, no, or something else — the next turn closes the call.
 
       routing:
+          # A goodbye ends the call, from ANY phase. This must be the FIRST
+          # rule here and repeated in every phase: routing is 3-pass and
+          # pass 1 (these subagent rules) always beats pass 2 (workflow
+          # global_routing). Almost every phase ends in an `intent: "*"`
+          # catch-all, so the global termination_intent rule is unreachable
+          # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
+          # termination_intent at 0.95 and still routed to services_offer,
+          # so the call never ended.
+        - intent: termination_intent
+          next_subagent_id: ended
         # Wants to look at jobs again rather than a service.
         - intent: explore_more
           next_subagent_id: job_match
@@ -3468,6 +3548,16 @@ agent_workflow:
         gently. Do not say "I don't understand." Reflect what you
         know and ask one open question.
       routing:
+          # A goodbye ends the call, from ANY phase. This must be the FIRST
+          # rule here and repeated in every phase: routing is 3-pass and
+          # pass 1 (these subagent rules) always beats pass 2 (workflow
+          # global_routing). Almost every phase ends in an `intent: "*"`
+          # catch-all, so the global termination_intent rule is unreachable
+          # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
+          # termination_intent at 0.95 and still routed to services_offer,
+          # so the call never ended.
+        - intent: termination_intent
+          next_subagent_id: ended
         - intent: "*"
           next_subagent_id: clarification
 
