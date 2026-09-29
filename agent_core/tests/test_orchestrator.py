@@ -1457,11 +1457,16 @@ def test_agentcore_init_user_state_disabled_empty_cache():
 # ---------------------------------------------------------------------------
 
 
-def _config_with_session_end_eval(enabled: bool, prompt: str = "") -> dict:
+def _config_with_session_end_eval(
+    enabled: bool, prompt: str = "", subagents: list | None = None
+) -> dict:
     """Clone VALID_CONFIG and inject conversation.session_end_eval."""
     cfg = {k: (v.copy() if isinstance(v, dict) else v) for k, v in VALID_CONFIG.items()}
     conv = dict(cfg.get("conversation", {}))
-    conv["session_end_eval"] = {"enabled": enabled, "prompt": prompt}
+    block = {"enabled": enabled, "prompt": prompt}
+    if subagents is not None:
+        block["subagents"] = subagents
+    conv["session_end_eval"] = block
     cfg["conversation"] = conv
     return cfg
 
@@ -2016,3 +2021,60 @@ class TestProcessTurnToolReplay:
         assert "recent_tool_exchanges" in src, (
             "process_turn must persist exchanges for the next turn"
         )
+
+
+# ---------------------------------------------------------------------------
+# session_end_eval.subagents — scope the hang-up tool to closing phases.
+#
+# Without a scope, end_session is offered to EVERY subagent and its own
+# description ("task completed") invites the model to fire it the instant a
+# journey succeeds. Measured on a live local call: it fired 9 ms after a 201
+# Created apply, again on routine thanks, and once while the agent's own reply
+# was still asking a question — each of which hangs up on a real caller.
+# ---------------------------------------------------------------------------
+
+
+def test_end_session_scoped_to_allowlisted_subagents_only():
+    """With an allowlist, only the named subagents are offered end_session."""
+    cfg = _config_with_session_end_eval(enabled=True, prompt="p", subagents=["ended"])
+    wf = _make_workflow()
+    wf.tool_defs = {
+        "ended": [{"name": "existing_tool"}],
+        "apply_confirm": [{"name": "apply_job"}],
+    }
+    _ = _make_agent_with_config(cfg, workflow=wf)
+    assert "end_session" in {t["name"] for t in wf.tool_defs["ended"]}
+    # The phase that submits the application must NOT be able to hang up.
+    assert "end_session" not in {t["name"] for t in wf.tool_defs["apply_confirm"]}
+
+
+def test_end_session_allowlist_leaves_global_tool_defs_alone():
+    """An allowlist must not leak the tool via the shared global list.
+
+    global_tool_defs is visible to every subagent, so appending there would
+    silently defeat the allowlist.
+    """
+    cfg = _config_with_session_end_eval(enabled=True, prompt="p", subagents=["ended"])
+    wf = _make_workflow()
+    wf.global_tool_defs = [{"name": "shared_tool"}]
+    _ = _make_agent_with_config(cfg, workflow=wf)
+    assert "end_session" not in {t["name"] for t in wf.global_tool_defs}
+
+
+def test_end_session_empty_allowlist_keeps_original_behaviour():
+    """No allowlist configured — every subagent still gets the tool."""
+    cfg = _config_with_session_end_eval(enabled=True, prompt="p", subagents=[])
+    wf = _make_workflow()
+    wf.tool_defs = {"market_truth": [], "other": []}
+    _ = _make_agent_with_config(cfg, workflow=wf)
+    assert "end_session" in {t["name"] for t in wf.tool_defs["market_truth"]}
+    assert "end_session" in {t["name"] for t in wf.tool_defs["other"]}
+
+
+def test_end_session_allowlist_ignores_unknown_subagent_ids():
+    """An id that matches no subagent is inert, not an error."""
+    cfg = _config_with_session_end_eval(enabled=True, prompt="p", subagents=["nope"])
+    wf = _make_workflow()
+    wf.tool_defs = {"market_truth": [{"name": "existing_tool"}]}
+    _ = _make_agent_with_config(cfg, workflow=wf)
+    assert "end_session" not in {t["name"] for t in wf.tool_defs["market_truth"]}

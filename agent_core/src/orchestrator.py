@@ -201,6 +201,12 @@ class AgentCore(AgentCoreBase):
         session_end_cfg = (self._config or {}).get("conversation", {}).get("session_end_eval", {}) or {}
         self._session_end_eval_enabled: bool = bool(session_end_cfg.get("enabled", False))
         self._session_end_eval_prompt: str = str(session_end_cfg.get("prompt", "") or "")
+        # Optional allowlist of subagent ids permitted to call end_session.
+        # Empty keeps the original behaviour (every subagent gets the tool).
+        _raw_allow = session_end_cfg.get("subagents") or []
+        self._session_end_subagents: set[str] = {
+            str(x) for x in _raw_allow if isinstance(_raw_allow, list)
+        }
 
         if self._session_end_eval_enabled:
             # Register end_session as an internal tool routed to the orchestrator
@@ -242,17 +248,26 @@ class AgentCore(AgentCoreBase):
             # Ensure every subagent's scoped tool list includes end_session,
             # plus the shared global_tool_defs list if the domain uses it.
             try:
+                _allow = self._session_end_subagents
                 tool_defs = getattr(self._workflow, "tool_defs", None)
                 if isinstance(tool_defs, dict):
                     for _sa_id, _tools in list(tool_defs.items()):
                         if not isinstance(_tools, list):
                             continue
+                        if _allow and _sa_id not in _allow:
+                            continue
                         if not any(t.get("name") == "end_session" for t in _tools):
                             _tools.append(end_session_def)
+                # The shared global list is visible to EVERY subagent, so it can
+                # only carry end_session when no allowlist is in force.
                 global_defs = getattr(self._workflow, "global_tool_defs", None)
-                if isinstance(global_defs, list) and global_defs:
+                if not _allow and isinstance(global_defs, list) and global_defs:
                     if not any(t.get("name") == "end_session" for t in global_defs):
                         global_defs.append(end_session_def)
+                logger.info(
+                    "orchestrator.end_session_scoped subagents=%s",
+                    sorted(_allow) if _allow else "ALL",
+                )
             except Exception as _err:  # defensive — never break init
                 logger.warning(
                     "orchestrator.end_session_tool_defs_extension_failed",

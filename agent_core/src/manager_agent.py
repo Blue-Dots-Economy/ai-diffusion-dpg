@@ -79,6 +79,10 @@ class ManagerAgent:
         trust_layer:      Used to verify consent before write/identity tool execution.
         max_tool_rounds:  Maximum tool → LLM cycles per turn. Default 1 for PoC.
                           Configurable so extending to multi-step chains needs only a config change.
+        grounded_params:  Map of tool name to parameter names whose value must
+                          appear verbatim in an earlier tool result. Blocks
+                          execution when the model supplies an identifier it
+                          invented rather than one an upstream actually returned.
     """
 
     def __init__(
@@ -89,6 +93,7 @@ class ManagerAgent:
         knowledge_engine: KnowledgeEngineBase,
         trust_layer: TrustLayerBase,
         max_tool_rounds: int = 1,
+        grounded_params: dict[str, list[str]] | None = None,
     ) -> None:
         if chat_provider is None:
             raise ValueError("chat_provider must not be None")
@@ -107,8 +112,67 @@ class ManagerAgent:
         self._ke = knowledge_engine
         self._trust = trust_layer
         self._max_tool_rounds = max(1, max_tool_rounds)
+        # tool name -> params whose value must have appeared in an earlier tool
+        # result this conversation. Guards against the model inventing an
+        # identifier that is well-formed but refers to nothing.
+        self._grounded_params: dict[str, list[str]] = {
+            str(k): [str(p) for p in (v or [])]
+            for k, v in (grounded_params or {}).items()
+        }
         # GH-137: Per-turn flag set when the LLM invokes the end_session internal tool.
         self._session_ended_flag: bool = False
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _ungrounded_params(self, tool_call, messages: list) -> set[str]:
+        """Return the configured params whose value no tool result contains.
+
+        A model asked for a 36-character identifier many turns after it was
+        shown will sometimes emit a well-formed one it invented. The upstream
+        cannot tell that apart from a stale id and answers with a generic
+        "not found", which is then relayed to the user as if their request had
+        simply been unnecessary. Checking the value against what upstreams
+        actually returned catches it before the call is made.
+
+        Args:
+            tool_call: The pending call, carrying ``tool_name`` and
+                ``input_params``.
+            messages: Conversation so far; tool results are read from the
+                ``ToolResultBlock`` entries inside it.
+
+        Returns:
+            Names of params that were supplied but appear in no tool result.
+            Empty when the tool has no configured params, when a param was not
+            supplied, or when every supplied value is grounded.
+        """
+        names = self._grounded_params.get(tool_call.tool_name) or []
+        if not names:
+            return set()
+
+        seen: list[str] = []
+        for msg in messages or []:
+            for block in getattr(msg, "content", None) or []:
+                if getattr(block, "type", "") == "tool_result":
+                    content = getattr(block, "content", "")
+                    if isinstance(content, str) and content:
+                        seen.append(content)
+        if not seen:
+            # Nothing has been fetched yet, so nothing can be grounded. Let the
+            # call through rather than blocking a legitimate first call whose
+            # value came from session state seeded outside this conversation.
+            return set()
+        haystack = "\n".join(seen)
+
+        missing: set[str] = set()
+        for name in names:
+            value = (tool_call.input_params or {}).get(name)
+            if value in (None, ""):
+                continue
+            if str(value) not in haystack:
+                missing.add(name)
+        return missing
 
     # ------------------------------------------------------------------
     # Public interface
@@ -239,7 +303,31 @@ class ManagerAgent:
                     ))
                     continue
 
-                if self._registry.get_route(tool_call.tool_name) == "knowledge_engine":
+                _ungrounded = self._ungrounded_params(tool_call, messages)
+                if _ungrounded:
+                    # The model supplied an identifier no upstream ever returned.
+                    # Refuse to execute and tell it so — a fabricated id reaches
+                    # the upstream as a well-formed value and comes back as a
+                    # generic "not found", which the model then reports to the
+                    # caller as though the request had merely been redundant.
+                    logger.warning(
+                        "manager_agent.ungrounded_param tool=%s params=%s",
+                        tool_call.tool_name, sorted(_ungrounded),
+                    )
+                    tool_result = ToolResult(
+                        tool_name=tool_call.tool_name,
+                        success=False,
+                        result={},
+                        error="UNGROUNDED_PARAMETER",
+                        result_text=(
+                            f"Refused: {', '.join(sorted(_ungrounded))} did not come from "
+                            f"any tool result in this conversation, so the value was "
+                            f"invented. Do not guess an identifier. Re-read the most "
+                            f"recent tool result, copy the exact value for the item the "
+                            f"user chose, and call this tool again."
+                        ),
+                    )
+                elif self._registry.get_route(tool_call.tool_name) == "knowledge_engine":
                     tool_result = self._execute_knowledge_retrieval(tool_call, ke_context)
                 else:
                     tool_result = self._execute_tool(tool_call, session_id, user_id)

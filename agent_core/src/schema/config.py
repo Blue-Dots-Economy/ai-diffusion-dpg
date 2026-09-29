@@ -19,7 +19,7 @@ Belongs to the Agent Core DPG block.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Literal, Optional
+from typing import Any, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -279,6 +279,15 @@ class SessionEndEvalConfig(BaseModel):
     enabled: bool = False
     prompt: str = ""
     fail_action: str = "none"
+    subagents: List[str] = Field(default_factory=list)
+    """Subagent ids allowed to call ``end_session``.
+
+    Empty (the default) keeps the original behaviour: every subagent gets the
+    tool. Naming ids restricts it to those, which is the only reliable way to
+    stop a mid-conversation hang-up — prompt rules alone do not hold, because
+    the tool's own description ("task completed") invites the model to fire it
+    the moment a journey succeeds.
+    """
 
 
 class ConversationConfig(BaseModel):
@@ -327,6 +336,14 @@ class InvocationRules(BaseModel):
     call_when: str = ""
     required_before_calling: list[str] = Field(default_factory=list)
     must_not_substitute: str = ""
+    grounded_params: list[str] = Field(default_factory=list)
+    """Params whose value must have appeared in an earlier tool result.
+
+    ``must_not_substitute`` states the same requirement in prose for the LLM to
+    read; this enforces it. Identifiers the model reproduces from far back in
+    context are the case that needs it — a fabricated one is well-formed, so
+    only checking it against what upstreams actually returned catches it.
+    """
     on_empty: str = ""
     on_failure: str = ""
     bridge_line: str = ""

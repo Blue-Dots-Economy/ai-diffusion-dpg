@@ -179,6 +179,18 @@ def _build_app():
     # Workflow Loader -- parse and validate agent_workflow block at startup
     workflow = AgentWorkflowLoader().load(config=config, tool_registry=tool_registry)
 
+    # connectors.<category>[].invocation_rules.grounded_params -> {tool: [param]}
+    grounded_params: dict[str, list[str]] = {}
+    for _conns in (config.get("connectors") or {}).values():
+        for _conn in _conns or []:
+            if not isinstance(_conn, dict):
+                continue
+            _names = ((_conn.get("invocation_rules") or {}).get("grounded_params")) or []
+            if _names:
+                grounded_params[str(_conn.get("name"))] = [str(n) for n in _names]
+    if grounded_params:
+        logger.info("startup.grounded_params %s", grounded_params)
+
     manager = ManagerAgent(
         chat_provider=llm,
         tool_registry=tool_registry,
@@ -186,6 +198,7 @@ def _build_app():
         knowledge_engine=ke,
         trust_layer=trust,
         max_tool_rounds=agent_cfg.get("max_tool_rounds", 1),
+        grounded_params=grounded_params,
     )
 
     # Async clients — required for stream_turn() / session mode

@@ -531,6 +531,22 @@ conversation:
 
   session_end_eval:
     enabled: true
+    # Only the CLOSING phases may hang up on a caller. Without this the tool is
+    # offered to every subagent, and its own description ("task completed")
+    # invites the model to fire it the moment a journey succeeds — the prompt
+    # rules below did not hold against that. Measured on a live local call:
+    #   16:05:25  9 ms after a 201 Created apply, same turn as the tool call
+    #   16:05:37  on "ठीक है, धन्यवाद" — routine thanks
+    #   16:11:06  while the agent's own reply was still asking
+    #             "क्या मैं आवेदन कर दूँ?" — hangs up mid-question
+    # Each of those drops a real call. A genuine goodbye still ends properly:
+    # `termination_intent` is a GLOBAL route to `ended` from any phase, and
+    # `ended` is on this list.
+    subagents:
+      - ended              # normal close, reached from anywhere on goodbye
+      - consent_declined   # refusal — speaks the close, then hangs up
+      - u18_blocked        # under 19, cannot be onboarded by voice
+      - escalation         # counsellor callback offered, then closes
     prompt: |
       ## Session-end evaluation
       `end_session` hangs up on the caller. Treat it as the last thing you
@@ -818,6 +834,18 @@ connectors:
           save_profile's user_id field (create_new / update_existing
           path).
         required_before_calling: [acting_as_user_id, profile_item_id, selected_job_item_id]
+        # ENFORCED, not just described. Each of these must appear verbatim in a
+        # tool result from this conversation or the call is refused before it
+        # leaves us. `must_not_substitute` below has always asked for this in
+        # prose and the model still broke it: on a live local call it sent
+        # job_item_id 835d12cf-4a66-4fab-9e42-873e2f4d8b65, which appears
+        # nowhere in any fetch_jobs response — the real Flipkart row was
+        # 038a09fa-6497-4672-b06c-e1cc580e17ff. The upstream cannot tell an
+        # invented UUID from a stale one, so it answered 422
+        # TARGET_ITEM_NOT_FOUND, and the agent relayed that to the caller as
+        # "आपकी एप्लीकेशन पहले से लगी हुई है" — you have already applied.
+        # The caller had not applied to anything.
+        grounded_params: [job_item_id, profile_item_id, acting_as_user_id]
         must_not_substitute: >
           Never submit without an explicit yes/confirm in the most
           recent user turn.
