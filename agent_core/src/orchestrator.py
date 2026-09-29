@@ -3583,6 +3583,30 @@ class AgentCore(AgentCoreBase):
                         session_id, user_id, "session", "current_subagent_id", next_subagent_id
                     )
                 )
+            # Latch ``opening_phrase_emitted`` AFTER routing, so it means the
+            # same thing on both execution paths: "the opening question has
+            # been put to the caller in this call, so an answer read from
+            # session state belongs to this call and not a previous one."
+            #
+            # process_turn gets this free — its opening_phrase gate returns the
+            # greeting before routing, so the flag is already set by turn 2.
+            # stream_turn has no such gate (GH-239 suppresses the canned phrase
+            # because the LLM's own first reply greets), and the existing latch
+            # below it only runs on the post-consent branch — which a domain
+            # without the consent gate never reaches. The flag then stayed
+            # unset forever and every routing rule guarded by it was dead.
+            #
+            # After routing, not before: on turn 1 the rules must NOT yet see
+            # it, or a consent answer persisted from an earlier call would fire
+            # before this caller has been asked anything.
+            if not bundle.session.get("opening_phrase_emitted", False):
+                routing_writes.append(
+                    self._async_memory.write(
+                        session_id, user_id, "session", "opening_phrase_emitted", True
+                    )
+                )
+                bundle.session["opening_phrase_emitted"] = True
+
             if routing_writes:
                 await asyncio.gather(*routing_writes, return_exceptions=True)
             yield _stamp(SignalEvent(stage="routing", status="complete"))

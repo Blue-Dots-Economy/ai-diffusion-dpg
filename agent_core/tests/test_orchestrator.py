@@ -2078,3 +2078,34 @@ def test_end_session_allowlist_ignores_unknown_subagent_ids():
     wf.tool_defs = {"market_truth": [{"name": "existing_tool"}]}
     _ = _make_agent_with_config(cfg, workflow=wf)
     assert "end_session" not in {t["name"] for t in wf.tool_defs["market_truth"]}
+
+
+# ---------------------------------------------------------------------------
+# opening_phrase_emitted must mean the same thing on both execution paths.
+#
+# process_turn latches it in its opening_phrase gate, which returns before
+# routing. stream_turn has no such gate, and its only other latch sits on the
+# post-consent branch — so for a domain that never takes that branch the flag
+# stayed unset forever and every routing rule guarded by it was dead. Measured:
+# a streaming call answered consent, age, trade and city and never left the
+# opening phase, because all three consent rules were guarded by this flag.
+# ---------------------------------------------------------------------------
+
+
+def test_stream_turn_latches_opening_phrase_emitted_after_routing():
+    """The streaming routing block writes the flag when it is not already set."""
+    import inspect
+    src = inspect.getsource(AgentCore.stream_turn)
+    assert 'session", "opening_phrase_emitted", True' in src, (
+        "stream_turn must latch opening_phrase_emitted, or routing rules "
+        "guarded by it can never fire on the streaming path"
+    )
+    # It must be latched WITH the routing writes, not only on the older
+    # post-consent branch (which appears earlier in the source and is the one
+    # that never ran). "After routing resolves" also matters on its own: on
+    # turn 1 the rules must not yet see the flag, or a consent answer persisted
+    # from an earlier call would fire before this caller was asked anything.
+    flag = 'session", "opening_phrase_emitted", True'
+    assert src.rindex(flag) > src.index("routing_writes.append"), (
+        "the latch must also appear in the routing block, after routing resolves"
+    )
