@@ -566,9 +566,30 @@ conversation:
       15 calls, including 16 times from mid-profile-collection and 18
       from mid-job-browsing.
 
+      ONE exception, and only this one: the caller REFUSES consent.
+      A refusal is the single point in the call where there is genuinely
+      nothing left to offer — without permission to save their details
+      no application can ever be sent, so continuing only wastes their
+      time and re-asks a question they have already answered. Say the
+      refusal line and call `end_session` in the SAME turn.
+
+      This overrides the `opening`-phase ban immediately below, and it
+      is the only thing that does. It applies to a refusal of CONSENT,
+      not to a "नहीं" answering anything else — not the age question,
+      not "are you looking for work", not a job they do not want.
+
+      Why it is needed: routing sends a refusal to the terminal
+      `consent_declined` subagent, which flushes the session at the end
+      of that same turn — so `consent_declined`'s own prompt never runs
+      and cannot end anything. Without `end_session` here, nothing tells
+      the caller's phone to hang up. Measured locally: the caller
+      declined, heard the refusal line, and the next thing they heard
+      was the opening greeting again, as a brand-new caller.
+
       NEVER call it:
-        - in the `opening` phase — consent and age are not a conversation
-          the caller can conclude;
+        - in the `opening` phase for any reason OTHER than the consent
+          refusal above — age is not a conversation the caller can
+          conclude;
         - while any question of yours is unanswered;
         - mid-flow: picking a job, confirming a profile, waiting on an
           application result;
@@ -1518,6 +1539,24 @@ agent_workflow:
         If the caller's answer is unclear, ask once more, more plainly.
         Never assume consent from silence or from an ambiguous reply.
 
+        ## If the caller REFUSES consent — say so and hang up, same turn
+        A refusal ends the call. In ONE turn, both:
+          1. Say, warmly, in one or two Hindi sentences: that is
+             completely fine, nothing has been saved, and without that
+             permission applications cannot be sent on their behalf.
+             Thank them for calling.
+          2. Call `end_session`.
+
+        Do NOT ask their age, do NOT ask whether they would still like
+        to look for work, do NOT re-ask for consent in any form, and do
+        NOT offer a way around it. There is no question left to ask: a
+        refusal is a complete answer.
+
+        This is the ONLY place in this phase where `end_session` is
+        allowed. Ending here is correct precisely because your reply
+        contains no question — which is the condition the global rule
+        cares about.
+
         ## Question 2 — age
         Once `consent_response` is `granted`, your entire turn is to ask
         the caller's age. One short question in Hindi, nothing else.
@@ -1634,13 +1673,32 @@ agent_workflow:
         # first evaluation of a new call — silently skipping the consent
         # question for a returning caller, or permanently locking out anyone
         # who once said no. So every rule that reads consent_response is
-        # guarded by `subagent_entry_count.opening gt 0`.
+        # guarded by `opening_phrase_emitted eq true`.
         #
-        # The counter is incremented for the DESTINATION after routing
-        # resolves, so at evaluation time it equals (turns spent in this
-        # phase so far): 0 on the turn that asks the consent question, 1 on
-        # the turn that answers it. `gt 0` therefore means exactly "the
-        # caller has actually answered something in this phase, this call".
+        # The marker is `opening_phrase_emitted`, NOT a phase entry count.
+        # `subagent_entry_count.opening gt 0` was the obvious guard and it is
+        # WRONG: the framework's opening_phrase gate (orchestrator.py:663-687)
+        # returns the greeting BEFORE Step 2, so that turn never routes and
+        # never increments the counter. The count is therefore still 0 on the
+        # turn the caller ANSWERS the consent question, and every rule below
+        # was dead on exactly the turn it existed to handle — measured on a
+        # local call: "नहीं, मुझे जानकारी सेव नहीं करवानी" routed to `opening`,
+        # and only a SECOND refusal reached consent_declined.
+        #
+        # `opening_phrase_emitted` is written synchronously by that same gate,
+        # so it is true from the greeting onward. It is session-scoped, so a
+        # fresh call resets it — which is the whole point of the guard.
+        #
+        # Deliberately NOT declared in memory_layer's session schema, unlike
+        # has_age/user_terms/user_privacy. The orchestrator writes it with an
+        # explicit scope="session", and memory_layer.py:327 trusts a valid
+        # explicit scope ahead of the scope map, so it persists undeclared.
+        # Declaring it is actively harmful: _build_initial_session stringifies
+        # every schema default, so a default of "false" seeds the literal
+        # string "false" — which is TRUTHY in Python. The gate tests
+        # `if not bundle.session.get("opening_phrase_emitted", False)`, so the
+        # greeting would be skipped on turn 1 and fire on turn 2 instead.
+        # Measured: declaring it inverted the first two turns of a live call.
         #
         # age is deliberately NOT guarded. A known age is authoritative
         # however we learned it — the upstream treats an age already on file
@@ -1708,9 +1766,9 @@ agent_workflow:
         #    `decline` intent as a fallback for when it does not emit one.
         - intent: "*"
           conditions:
-            - field: subagent_entry_count.opening
-              operator: gt
-              value: 0
+            - field: opening_phrase_emitted
+              operator: eq
+              value: true
             - field: consent_response
               operator: eq
               value: "declined"
@@ -1720,9 +1778,9 @@ agent_workflow:
             consent_given: false
         - intent: decline
           conditions:
-            - field: subagent_entry_count.opening
-              operator: gt
-              value: 0
+            - field: opening_phrase_emitted
+              operator: eq
+              value: true
             - field: consent_given
               operator: not_eq
               value: true
@@ -1759,9 +1817,9 @@ agent_workflow:
         #    or carried over from a previous call. Skips the age question.
         - intent: "*"
           conditions:
-            - field: subagent_entry_count.opening
-              operator: gt
-              value: 0
+            - field: opening_phrase_emitted
+              operator: eq
+              value: true
             - field: consent_response
               operator: eq
               value: "granted"
@@ -1776,9 +1834,9 @@ agent_workflow:
         # 5. Consent granted, age still outstanding → stay and ask for it.
         - intent: "*"
           conditions:
-            - field: subagent_entry_count.opening
-              operator: gt
-              value: 0
+            - field: opening_phrase_emitted
+              operator: eq
+              value: true
             - field: consent_response
               operator: eq
               value: "granted"
@@ -2676,6 +2734,13 @@ agent_workflow:
            "Just one more thing"). Either ASK for the name or CALL
            save_profile silently. Nothing in between.
 
+        3b. NEVER substitute a placeholder for the name. If the name is
+           MISSING, the decision tree above has exactly one answer: ASK.
+           It never says "send something". `Unknown`, `N/A`, `-`, the
+           empty string, the caller's trade or city — all placeholders,
+           all forbidden. A live call saved `Unknown` upstream this way;
+           the row is permanent and the person on it is unidentifiable.
+
         4. If the caller volunteers work experience, map their words
            STRICTLY to the upstream enum before sending:
              "fresher" / "no experience" / "never worked" → Fresher
@@ -2821,6 +2886,33 @@ agent_workflow:
         | role               | selected job's `role` from fetch_jobs    | (same)                                |
         | age                | profile.age from fetch_profile           | save_profile's response               |
         | work_experience    | profile.work_experience                  | save_profile's response               |
+
+        ## NEVER invent a name — no placeholders, ever
+        You hold `save_profile`, and its `name` is required. That pressure
+        is exactly what makes a placeholder tempting. Do not yield to it.
+
+        Measured on a live local call: the caller was never asked their
+        name, and this phase saved the literal string `Unknown` onto a
+        real, live profile upstream. That row is now permanent bad data
+        with a person attached to it, and no employer reading it knows
+        who applied.
+
+        `Unknown`, `N/A`, `-`, `caller`, `user`, the empty string, the
+        trade, the city, the word for "seeker" in any language: every one
+        of these is a placeholder. A name comes from ONE place — the
+        caller said it, in this call or a previous one, and it is in
+        <known_profile> or in your conversation history.
+
+        Before any save_profile call, check: do I have a name a human
+        actually gave me?
+          • YES → send it verbatim.
+          • NO  → do NOT call save_profile. Ask, in Hindi and nothing
+                  else this turn: "आवेदन भेजने से पहले आपका नाम जान लूँ?"
+                  ("Before I send the application, may I have your name?")
+                  Then STOP and wait for the answer.
+
+        An extra turn asking is cheap. A profile that says `Unknown`
+        cannot be undone from here.
 
         ## session.selected_job_item_id is NOT the job id — never send it
         The session field `selected_job_item_id` is written by the NLU
