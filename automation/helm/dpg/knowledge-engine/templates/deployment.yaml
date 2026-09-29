@@ -15,6 +15,10 @@ spec:
       labels:
         app: {{ .Release.Name }}
     spec:
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: knowledge-engine
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -39,6 +43,10 @@ spec:
               value: {{ .Values.uploadAuth.devkitCallbackUrl | quote }}
             - name: KB_DATA_DIR
               value: {{ .Values.storage.kbData.mountPath | quote }}
+            # ChromaDB lives on the chroma-data PVC mounted below; without this the
+            # engine falls back to ./data/chroma_db inside the container.
+            - name: CHROMA_PERSIST_DIR
+              value: /app/chroma_db
             # Azure Blob Storage — required only when the domain uses Azure for KB ingestion.
             - name: AZURE_STORAGE_ACCOUNT
               value: {{ .Values.azure.storageAccount | quote }}
