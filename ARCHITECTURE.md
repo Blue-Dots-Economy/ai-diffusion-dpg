@@ -175,7 +175,7 @@ not declare the block are unaffected.
 - `agent_core/src/interfaces/` — sync ABCs; `interfaces/async_/` — async ABCs used by `stream_turn()`
 - `agent_core/src/servers/orchestration_server.py` — FastAPI: `POST /process_turn`, `POST /stream_turn`, session endpoints, `/health`, `POST /internal/llm/call`
 
-**Tests:** 1007 tests across 42 files, ≥70% line coverage (currently ~75%). `turn_assembler.py` at 96%.
+**Tests:** 1025 tests across 42 files, ≥70% line coverage (currently ~75%). `turn_assembler.py` at 96%.
 
 **Known gaps:**
 - HiTL escalation for output path not wired: `orchestrator.py` — when Trust output returns `action: "escalate"`, the escalation call is deferred.
@@ -682,7 +682,7 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 
 | Block | Status | Notes |
 |---|---|---|
-| Agent Core | ✅ | Orchestrator, multi-provider chat_provider (Anthropic + OpenAI), preprocessing, tool-use loop, async SSE streaming, TurnAssembler, 10-subagent workflow. 1007 tests, 42 files, ≥70% coverage. |
+| Agent Core | ✅ | Orchestrator, multi-provider chat_provider (Anthropic + OpenAI), preprocessing, tool-use loop, async SSE streaming, TurnAssembler, 10-subagent workflow. 1025 tests, 42 files, ≥70% coverage. |
 | Knowledge Engine | ✅ | Glossary, ChromaDB RAG, HTTP server (`POST /retrieve`). 192 tests, 13 files, ≥70% coverage. |
 | Memory Layer | ✅ | Redis (session) + Memgraph (user/journey/context graph) + SQLite (audit). 10 HTTP endpoints. 226 tests. |
 | Trust Layer | 🟡 | All 4 sub-blocks implemented. Fail-closed. HiTL: log backend only. Consent: in-process SQLite. 138 tests. |
