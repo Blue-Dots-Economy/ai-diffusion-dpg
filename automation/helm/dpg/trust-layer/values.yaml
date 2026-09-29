@@ -31,3 +31,16 @@ healthCheck:
 # Injected at deploy time — do not set here
 dpgConfig: ""
 domainConfig: ""
+
+# docker-compose hostnames used in the DPG/domain YAML -> Kubernetes Service
+# names (the dev-kit installs each chart with release name = chart name, all in
+# one namespace). Applied to both rendered ConfigMaps. Use FQDNs such as
+# memory-layer.<ns>.svc.cluster.local if releases live in different namespaces.
+serviceHosts:
+  agent_core: agent-core
+  knowledge_engine: knowledge-engine
+  memory_layer: memory-layer
+  trust_layer: trust-layer
+  observability_layer: observability-layer
+  action_gateway: action-gateway
+  otelcol: otel-collector

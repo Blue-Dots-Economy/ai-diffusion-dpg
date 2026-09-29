@@ -7,4 +7,4 @@ metadata:
     app: {{ .Release.Name }}
 data:
   observability_layer.yaml: |
-{{ .Values.domainConfig | indent 4 }}
+{{ include "dpg.renderConfig" (dict "config" .Values.domainConfig "hosts" .Values.serviceHosts) | indent 4 }}
