@@ -96,3 +96,92 @@ class TestRecordAndCapture:
         agent = _tool_agent(rounds=1)
         events = [e async for e in agent.stream_turn(_make_turn_input())]
         assert isinstance(events[-1], DoneEvent)
+
+
+def _writes(agent, key):
+    return [c.args[4] for c in agent._async_memory.write.await_args_list if c.args[3] == key]
+
+
+class TestInterruptedPersist:
+
+    async def test_interrupt_persists_exchanges_undelivered_and_carryover(self):
+        agent = _tool_agent(rounds=2)
+        record = TurnRecord()
+        await _run(agent, record, abort_after_tool_end=1)
+        assert record.persist_task is not None
+        await record.persist_task
+
+        rte = _writes(agent, "recent_tool_exchanges")[-1]
+        assert [ex["tool_uses"][0]["name"] for ex in rte] == ["tool_1"]
+        assert rte[0]["delivered"] is False
+
+        carry = _writes(agent, "turn_carryover")[-1]
+        assert carry["segments"] == ["Hello"]
+        assert carry["stopped_at_stage"] == "tool_end"
+        assert isinstance(carry["written_at_ms"], int)
+        # the question the turn never delivered is not recorded
+        assert _writes(agent, "current_question") == []
+
+    async def test_completed_turn_schedules_no_persist(self):
+        agent = _tool_agent(rounds=1)
+        record = TurnRecord()
+        await _run(agent, record)
+        assert record.persist_task is None
+        assert _writes(agent, "turn_carryover") in ([], [None])
+
+    async def test_write_carryover_false_persists_exchanges_only(self):
+        agent = _tool_agent(rounds=2)
+        record = TurnRecord(write_carryover=False)
+        await _run(agent, record, abort_after_tool_end=1)
+        await record.persist_task
+        assert _writes(agent, "recent_tool_exchanges")
+        assert [v for v in _writes(agent, "turn_carryover") if v is not None] == []
+
+    async def test_interrupt_before_any_tool_writes_carryover_only(self):
+        agent = _tool_agent(rounds=0)
+        record = TurnRecord()
+        abort = asyncio.Event()
+        async for ev in agent.stream_turn(_make_turn_input(), abort_event=abort, record=record):
+            if isinstance(ev, SignalEvent) and ev.stage == "nlu":
+                abort.set()
+        await record.persist_task
+        assert _writes(agent, "recent_tool_exchanges") == []
+        assert _writes(agent, "turn_carryover")[-1]["segments"] == ["Hello"]
+
+    async def test_interrupt_before_fold_appends_to_existing_carryover(self):
+        """Review focus 3: an abort during step 1 must not overwrite older carry-over."""
+        agent = _tool_agent(rounds=0)
+        import time as _t
+        existing = {"segments": ["I want work in Ghaziabad"], "stopped_at_stage": "nlu",
+                    "turn_id": "old", "written_at_ms": int(_t.time() * 1000)}
+        agent._async_memory.context_bundle.return_value.session["turn_carryover"] = existing
+        record = TurnRecord()
+        abort = asyncio.Event()
+        abort.set()                              # aborted before step 1 completes
+        async for _ in agent.stream_turn(_make_turn_input(user_message="hello?"),
+                                         abort_event=abort, record=record):
+            pass
+        assert record.fold_ran is False
+        await record.persist_task
+        carry = _writes(agent, "turn_carryover")[-1]
+        assert carry["segments"] == ["I want work in Ghaziabad", "hello?"]
+
+    async def test_persist_failure_is_logged_not_raised(self, caplog):
+        agent = _tool_agent(rounds=2)
+        agent._async_memory.write.side_effect = RuntimeError("down")
+        record = TurnRecord()
+        await _run(agent, record, abort_after_tool_end=1)
+        await record.persist_task                 # must not raise
+        assert any("orchestrator.interrupted_persist" in r.message for r in caplog.records)
+
+    async def test_error_turn_is_treated_as_not_completed(self):
+        agent = _tool_agent(rounds=0)
+        async def boom(*a, **k):
+            raise RuntimeError("llm down")
+            yield  # pragma: no cover
+        agent._llm.stream = boom
+        record = TurnRecord()
+        events = [e async for e in agent.stream_turn(_make_turn_input(), record=record)]
+        assert events[-1].turn_status == "abandoned"
+        await record.persist_task
+        assert _writes(agent, "turn_carryover")[-1]["segments"] == ["Hello"]
