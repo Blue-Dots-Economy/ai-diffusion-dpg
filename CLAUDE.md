@@ -177,7 +177,7 @@ When changing a runtime block's `<block>/src/schema/config.py`, also update the 
 
 ### PoC scope
 
-Full implementations: **Agent Core** (818 tests — sync + async streaming + TurnAssembler + multi-provider chat_provider), **Knowledge Engine** (192 tests), **Memory Layer** (226 tests, Redis + Memgraph + SQLite), **Action Gateway** (173 tests — RestApiAdapter + McpAdapter), **Domain Configuration Kit** (365 tests).
+Full implementations: **Agent Core** (1007 tests — sync + async streaming + TurnAssembler + multi-provider chat_provider), **Knowledge Engine** (192 tests), **Memory Layer** (226 tests, Redis + Memgraph + SQLite), **Action Gateway** (173 tests — RestApiAdapter + McpAdapter), **Domain Configuration Kit** (365 tests).
 
 Partial implementations (correct interface, some gaps): **Trust Layer** (138 tests — all 4 sub-blocks; HiTL log backend only, consent store in-process), **Reach Layer** (308 Python + 143 UI tests — CLI ✅, Web/React SPA ✅ (with `routing_only` mode for voice-only deployments), Voice/pipecat ✅, MCP server ✅), **Observability Layer** (101 tests — OTel functional; Grafana dashboards pending).
 
