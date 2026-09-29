@@ -3130,13 +3130,29 @@ agent_workflow:
         # Wants to look at jobs again rather than a service.
         - intent: explore_more
           next_subagent_id: job_match
-        # The offer was made on entry (count 0); the turn that answers
-        # it (count 1) ends the call either way.
+        # Said no to the service — that is a real goodbye.
+        - intent: decline
+          next_subagent_id: ended
+        # BACKSTOP ONLY, and it must not fire on the offer turn itself.
+        #
+        # This was `gt 0` and it hung up on callers. The counter is
+        # incremented for the DESTINATION when routing resolves, so it is
+        # already 1 the moment apply_confirm routes in here — meaning the
+        # rule fired on the very first reply, whatever the reply was.
+        # Measured on a live VM call: "हाँ भेज दीजिए", "हा नहीं" and
+        # "हाँ चाहता हूँ" ("yes I want it") all routed to `ended`, which is
+        # terminal, so the line dropped on a caller who had just accepted
+        # the offer. A callback died the same way, because the session
+        # survives and lands straight back on this rule.
+        #
+        # `gt 1` leaves room for the offer turn and the answer turn. What
+        # ends the call normally is the caller declining, above — not the
+        # counter.
         - intent: "*"
           conditions:
             - field: subagent_entry_count.services_offer
               operator: gt
-              value: 0
+              value: 1
           next_subagent_id: ended
         - intent: "*"
           next_subagent_id: services_offer
