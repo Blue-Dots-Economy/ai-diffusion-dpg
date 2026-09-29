@@ -55,6 +55,7 @@ from src.models import (
     StreamEvent,
     TurnInput,
 )
+from src.turn_policy import ON_NEW_INPUT_ABORT_AND_FOLD, TurnPolicy, resolve_turn_policy
 from .turn import Turn, TurnStatus
 from .session import Session
 
@@ -209,6 +210,7 @@ class TurnAssembler(TurnAssemblerBase):
         self._channels_config: dict = (config or {}).get("channels", {})
 
         self._sessions: dict[str, Session] = {}
+        self._policies: dict[str, TurnPolicy] = {}
 
     # ------------------------------------------------------------------
     # Config resolution
@@ -274,6 +276,101 @@ class TurnAssembler(TurnAssemblerBase):
             self._sessions[session_id] = session
         return session
 
+    def _policy(self, channel: str | None) -> TurnPolicy:
+        """Return the cached streaming-turn policy for ``channel``.
+
+        Args:
+            channel: Channel name.
+
+        Returns:
+            The resolved TurnPolicy.
+        """
+        key = channel or ""
+        policy = self._policies.get(key)
+        if policy is None:
+            policy = resolve_turn_policy(self._config, channel)
+            self._policies[key] = policy
+        return policy
+
+    def _interrupt(self, turn: Turn, reason: str) -> None:
+        """Stop ``turn`` cooperatively. Synchronous: safe from a generator ``finally``.
+
+        Marks the turn INTERRUPTED (ABANDONED if it never invoked), sets its
+        abort signal, cancels only its timer tasks, and seals its queue with a
+        terminal DoneEvent carrying the last stage reached. The invocation task
+        is never cancelled: it runs on to the orchestrator's next safe point,
+        which records what the turn did (spec §4.4-4.5).
+
+        Args:
+            turn: The turn to stop. No-op unless WAITING or INVOKED.
+            reason: ``new_input`` | ``disconnect`` | ``cancel`` — logged, and
+                ``new_input`` applies the channel's ``on_new_input`` policy.
+        """
+        if turn.status not in (TurnStatus.WAITING, TurnStatus.INVOKED):
+            return
+        invoked = turn.status == TurnStatus.INVOKED
+        turn.status = TurnStatus.INTERRUPTED if invoked else TurnStatus.ABANDONED
+        if reason == "new_input":
+            turn.record.write_carryover = (
+                self._policy(turn.channel).on_new_input == ON_NEW_INPUT_ABORT_AND_FOLD
+            )
+        turn.abort_event.set()
+        self._cancel_timer_tasks(turn)
+        turn.event_queue.put_nowait(DoneEvent(
+            turn_status=turn.status.value,
+            turn_id=turn.turn_id,
+            interrupted_at_stage=turn.record.last_stage or None,
+        ))
+        logger.info(
+            "turn_assembler.interrupt_requested",
+            extra={"operation": "turn_assembler.interrupt", "status": "success",
+                   "session_id": turn.session_id, "turn_id": turn.turn_id,
+                   "reason": reason, "stage": turn.record.last_stage,
+                   "turn_status": turn.status.value},
+        )
+
+    async def _await_predecessor(self, pred: Turn, drain_max_ms: int) -> None:
+        """Wait for an interrupted predecessor to stop and persist, within budget.
+
+        Waits first for its invocation task (reaching a safe point), then for
+        the persist task that task's exit created. Never cancels anything: on
+        timeout the caller proceeds, and the predecessor still stops at its next
+        safe point and persists late (spec §4.4).
+
+        Args:
+            pred: The interrupted turn.
+            drain_max_ms: Total budget for both waits.
+        """
+        start = time.monotonic()
+        deadline = start + drain_max_ms / 1000.0
+
+        async def _within(task: "asyncio.Task | None") -> bool:
+            if task is None or task.done():
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                await asyncio.wait({task}, timeout=remaining)
+            return task.done()
+
+        # The persist task only exists once the invocation task has exited,
+        # so it must be read after the first wait, not before.
+        reached = await _within(pred.invocation_task) and await _within(pred.record.persist_task)
+        drain_ms = int((time.monotonic() - start) * 1000)
+        if not reached:
+            logger.warning(
+                "turn_assembler.drain_timeout",
+                extra={"operation": "turn_assembler.await_predecessor",
+                       "status": "failure", "session_id": pred.session_id,
+                       "turn_id": pred.turn_id, "drain_ms": drain_ms},
+            )
+            return
+        logger.info(
+            "turn_assembler.safe_point_reached",
+            extra={"operation": "turn_assembler.await_predecessor", "status": "success",
+                   "session_id": pred.session_id, "turn_id": pred.turn_id,
+                   "stage": pred.record.last_stage, "drain_ms": drain_ms},
+        )
+
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
@@ -319,7 +416,9 @@ class TurnAssembler(TurnAssemblerBase):
         async with session._lock:
             turn = session.current_turn
 
-            # Barge-in: new segment arrived while a turn is in flight.
+            # Barge-in: new segment arrived while a turn is in flight. Stop it
+            # cooperatively; the successor waits for it (spec §4.4) and folds
+            # its utterances from Memory Layer (spec §4.6).
             if turn is not None and turn.status == TurnStatus.INVOKED:
                 logger.info(
                     "turn_assembler.cancel_and_fold",
@@ -329,20 +428,12 @@ class TurnAssembler(TurnAssemblerBase):
                         "session_id": session_id,
                         "cancelled_turn_id": turn.turn_id,
                         "folded_segment_count": 1,
-                        "reason": "new segment arrived while INVOKED — aborting current turn",
+                        "reason": "new segment arrived while INVOKED — interrupting current turn",
                     },
                 )
-                # Signal the producer and mark INTERRUPTED before installing new turn.
-                turn.status = TurnStatus.INTERRUPTED
-                turn.abort_event.set()
-                for task in (turn.invocation_task, turn.silence_task, turn.ceiling_task):
-                    if task is not None and not task.done():
-                        task.cancel()
-                await turn.event_queue.put(
-                    DoneEvent(turn_status="interrupted", turn_id=turn.turn_id)
-                )
-                # Install a fresh turn with the barge-in segment pre-loaded.
+                self._interrupt(turn, "new_input")
                 new_turn = await session.replace_turn(seed_segments=[segment])
+                new_turn.predecessor = turn
                 turn = new_turn
 
             elif turn is None or turn.status in (
@@ -637,10 +728,8 @@ class TurnAssembler(TurnAssemblerBase):
         """Interrupt the active or waiting turn for this session.
 
         Idempotent: if the current turn is already terminal, no-op.
-        Sets abort_event, cancels the invocation/timer tasks, and seals the
-        turn's queue with a terminal DoneEvent. The producer (_invoke /
-        stream_turn / claude_wrapper) sees abort_event before every
-        yield/put and exits without enqueuing further events.
+        Sets abort_event, cancels timer tasks only, and seals the queue. The
+        invocation task is not cancelled: it stops at its next safe point.
 
         Args:
             session_id: Unique session identifier.
@@ -650,35 +739,9 @@ class TurnAssembler(TurnAssemblerBase):
             return
         async with session._lock:
             turn = session.current_turn
-            if turn is None or turn.status not in (TurnStatus.WAITING, TurnStatus.INVOKED):
+            if turn is None:
                 return
-            new_status = (
-                TurnStatus.INTERRUPTED
-                if turn.status == TurnStatus.INVOKED
-                else TurnStatus.ABANDONED
-            )
-            turn.status = new_status
-            turn.abort_event.set()
-            for task in (turn.invocation_task, turn.silence_task, turn.ceiling_task):
-                if task is not None and not task.done():
-                    task.cancel()
-            await turn.event_queue.put(
-                DoneEvent(
-                    turn_status=new_status.value,
-                    turn_id=turn.turn_id,
-                )
-            )
-            logger.info(
-                "turn_assembler.cancel",
-                extra={
-                    "operation": "turn_assembler.cancel",
-                    "status": "success",
-                    "session_id": session_id,
-                    "turn_id": turn.turn_id,
-                    "epoch": turn.epoch,
-                    "turn_status": new_status.value,
-                },
-            )
+            self._interrupt(turn, "cancel")
 
     async def session_end(self, session_id: str) -> None:
         """Clean up all resources for a completed session.
@@ -967,24 +1030,24 @@ class TurnAssembler(TurnAssemblerBase):
     # ------------------------------------------------------------------
 
     async def _invoke(self, turn: Turn) -> None:
-        """Assemble segments and call agent_core.stream_turn() with abort signal.
+        """Wait for any interrupted predecessor, then run stream_turn for this turn.
 
-        Per spec: TurnAssembler calls stream_turn() as a Python method — in-process,
-        no HTTP, no serialisation. StreamEvents are pushed into the Turn's event_queue.
-        The open GET /sessions/{id}/events connection drains the queue via subscribe().
-
-        On abort, cancel() has already enqueued the terminal DoneEvent — this method
-        simply exits without enqueuing further events once abort_event is set.
+        Events go to the Turn's queue while the turn is live. Once it is
+        interrupted, the remaining events are drained and discarded, so the
+        orchestrator reaches its next abort check and persists (spec §4.4-4.5),
+        and nothing stale is delivered (#224).
 
         Args:
             turn: The Turn whose invocation this manages.
         """
+        pred, turn.predecessor = turn.predecessor, None
+        if pred is not None:
+            await self._await_predecessor(pred, self._policy(turn.channel).drain_max_ms)
+        if turn.abort_event.is_set():
+            return
+
         assembled_text = " ".join(s.text.strip() for s in turn.segments)
-
         first_segment = turn.segments[0] if turn.segments else None
-        locale = getattr(first_segment, "locale", None) if first_segment else None
-        metadata = getattr(first_segment, "metadata", None) if first_segment else None
-
         turn_input = TurnInput(
             session_id=turn.session_id,
             user_message=assembled_text,
@@ -992,8 +1055,9 @@ class TurnAssembler(TurnAssemblerBase):
             timestamp_ms=turn.started_at_ms,
             user_id=turn.user_id,
             caller_agent_id=turn.caller_agent_id,
-            locale=locale,
-            metadata=metadata,
+            fresh=bool(getattr(first_segment, "fresh", False)) if first_segment else False,
+            locale=getattr(first_segment, "locale", None) if first_segment else None,
+            metadata=getattr(first_segment, "metadata", None) if first_segment else None,
         )
 
         logger.info(
@@ -1010,20 +1074,19 @@ class TurnAssembler(TurnAssemblerBase):
         )
 
         start = time.time()
+        gen = self._agent_core.stream_turn(
+            turn_input,
+            abort_event=turn.abort_event,
+            turn_id=turn.turn_id,
+            record=turn.record,
+        )
         try:
-            async for event in self._agent_core.stream_turn(
-                turn_input,
-                abort_event=turn.abort_event,
-                turn_id=turn.turn_id,
-            ):
-                if turn.abort_event.is_set():
-                    return
-                if turn.status != TurnStatus.INVOKED:
-                    return
+            async for event in gen:
+                if turn.abort_event.is_set() or turn.status != TurnStatus.INVOKED:
+                    continue  # sealed: drain to the next safe point, deliver nothing
                 await turn.event_queue.put(event)
                 if isinstance(event, DoneEvent):
                     turn.status = TurnStatus.COMPLETED
-                    return
         except asyncio.CancelledError:
             logger.info(
                 "turn_assembler.invoke_cancelled",
@@ -1048,15 +1111,17 @@ class TurnAssembler(TurnAssemblerBase):
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
-            # Push a DoneEvent so the subscriber doesn't hang
-            turn.status = TurnStatus.COMPLETED
-            await turn.event_queue.put(
-                DoneEvent(
-                    turn_status="abandoned",
-                    turn_id=turn.turn_id,
-                    latency_ms=int((time.time() - start) * 1000),
+            if turn.status == TurnStatus.INVOKED:
+                turn.status = TurnStatus.COMPLETED
+                await turn.event_queue.put(
+                    DoneEvent(
+                        turn_status="abandoned",
+                        turn_id=turn.turn_id,
+                        latency_ms=int((time.time() - start) * 1000),
+                    )
                 )
-            )
+        finally:
+            await gen.aclose()
 
     # ------------------------------------------------------------------
     # Context fetching
