@@ -92,7 +92,7 @@ Reach Layer (input)
   → [async] emit events → Observability Layer
 ```
 
-Two execution paths: `POST /process_turn` (sync JSON, used by web direct mode) and `POST /stream_turn` (SSE, used by CLI/voice session mode via TurnAssembler). Both run the same sequence.
+Two execution paths: `POST /process_turn` (sync JSON, fire-and-wait; web/CLI/MCP/voice in direct mode) and `POST /stream_turn` (SSE). Every streaming turn — `/stream_turn` and the session endpoints — runs through the TurnAssembler, which interrupts cooperatively and carries an interrupted turn's utterances and tool rounds to the next turn via Memory Layer. Both paths run the same sequence.
 
 ### Module interaction rules
 
