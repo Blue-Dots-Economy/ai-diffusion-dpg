@@ -29,6 +29,8 @@ healthCheck:
     initialDelaySeconds: 20
     periodSeconds: 20
 
-# Anthropic API key for the Configuration Agent's LLM calls.
-# Injected via --set or from a Kubernetes Secret.
+# LLM provider keys for the Configuration Agent. At least one is required or
+# the dev-kit exits at startup. Set with --set at deploy time.
 anthropicApiKey: ""
+openaiApiKey: ""
+googleApiKey: ""
