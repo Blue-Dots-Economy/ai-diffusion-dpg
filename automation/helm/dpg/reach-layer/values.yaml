@@ -36,7 +36,10 @@ healthCheck:
 uploadAuth:
   devkitToReachApiKey: ""
   reachToKeApiKey: ""
-  keInternalUrl: ""
+  keInternalUrl: "http://knowledge-engine:8001"
+
+# REACH_LAYER_WEB_MODE: full (SPA + chat) or routing_only (health + ingest proxy).
+webMode: full
 
 # Injected at deploy time — do not set here
 dpgConfig: ""

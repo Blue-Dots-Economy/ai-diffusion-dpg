@@ -19,11 +19,14 @@ spec:
         - name: reach-layer
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          stdin: true
-          tty: true
+          ports:
+            - containerPort: {{ .Values.service.port }}
           env:
             - name: CONFIG_FOLDER
               value: {{ .Values.configFolder | quote }}
+            # full = SPA + chat; routing_only = health + ingest proxy only.
+            - name: REACH_LAYER_WEB_MODE
+              value: {{ .Values.webMode | quote }}
             {{- if .Values.auth.enabled }}
             - name: GOOGLE_CLIENT_ID
               value: {{ .Values.auth.googleClientId | required "auth.googleClientId is required when auth.enabled is true" | quote }}
@@ -54,6 +57,18 @@ spec:
             limits:
               cpu: {{ .Values.resources.limits.cpu }}
               memory: {{ .Values.resources.limits.memory }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.service.port }}
+            initialDelaySeconds: {{ .Values.healthCheck.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.readiness.periodSeconds }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.service.port }}
+            initialDelaySeconds: {{ .Values.healthCheck.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.liveness.periodSeconds }}
       volumes:
         - name: dpg-config
           configMap:
