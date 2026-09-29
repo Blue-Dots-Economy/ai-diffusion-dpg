@@ -2586,6 +2586,40 @@ agent_workflow:
         Read the result, decide which row it is, then say that row's
         sentence. You are not picking the line you prefer.
 
+        ### First: is it an error at all?
+        Before anything else, look at the tool result TEXT. If it begins
+        "upstream returned HTTP" then the apply FAILED, whatever else the
+        text contains. There is no success line for it. This is not a
+        judgement call — the string is there or it is not.
+
+        These are the three real payloads, measured against the live
+        upstream on 29 Sep. Match what you got against them:
+
+        SUCCESS — HTTP 201:
+          {"results":[{"index":0,"status":"success",
+           "action_id":"44b68bc7-…","action_status":"created"}],
+           "summary":{"total":1,"succeeded":1,"failed":0}}
+
+        ALREADY APPLIED — HTTP 422:
+          upstream returned HTTP 422. response body:
+          {"results":[{"index":0,"status":"error",
+           "error":"ACTION_LIMIT_REACHED",
+           "message":"An active request already exists between these
+           two profiles."}],"summary":{"succeeded":0,"failed":1}}
+
+        BAD REQUEST — HTTP 400:
+          upstream returned HTTP 400. response body:
+          {"statusCode":400,"code":"FST_ERR_VALIDATION",
+           "message":"body/target_item/item_id Invalid UUID"}
+
+        A result carrying "succeeded":0 or "failed":1 or "status":"error"
+        is NOT a success, no matter what else it says.
+
+        On a live local call the upstream returned the 422 above and the
+        bot said "आपका आवेदन भेज दिया गया है" — telling the caller their
+        application was sent when the upstream had refused it. That is
+        the single worst thing this phase can do. Read the text.
+
         ### Row 1 — SUCCESS
         The result carries a non-empty `action_id` (or `application_id`)
         and `status` is "success". Say the success line above, and
