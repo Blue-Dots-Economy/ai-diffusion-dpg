@@ -29,11 +29,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# session_id is the caller's phone number, and AgentCoreClient.cancel_turn
-# puts it directly in the DELETE /sessions/{session_id}/active_turn URL
-# path. httpx (and httpx2, which this repo's stack also uses) logs the full
+# httpx (and httpx2, which this repo's stack also uses) logs the full
 # request URL at INFO, so leaving those loggers at the root INFO level
-# leaks the caller's phone number into the logs on every barge-in cancel.
+# would leak anything carried in a URL (e.g. the caller's phone number).
 # Neither package is imported directly here — silencing both by name is
 # enough regardless of which one httpcore/the installed client resolves to.
 logging.getLogger("httpx").setLevel(logging.WARNING)

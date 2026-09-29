@@ -2,11 +2,10 @@
 
 HTTP client for Agent Core's turn API.
 
-Three calls are used:
+Two calls are used:
 
 - ``POST /process_turn``  blocking, for ``stream: false``
 - ``POST /stream_turn``   SSE, for ``stream: true``
-- ``DELETE /sessions/{id}/active_turn``  barge-in cancel (spec section 8)
 
 Agent Core signals turn failures with HTTP 200 and an error ``DoneEvent``
 rather than an HTTP status, so callers must inspect the terminal event. This
@@ -171,45 +170,3 @@ class AgentCoreClient:
                 "latency_ms": int((time.time() - start) * 1000),
             },
         )
-
-    async def cancel_turn(self, session_id: str) -> None:
-        """Interrupt the active turn for a session (barge-in, spec section 8).
-
-        This is the caller-hung-up path: Agent Core runs a turn to
-        completion whether or not anyone is still listening, so for a turn
-        that calls a write tool (e.g. ``save_profile``, ``apply_job``),
-        skipping this means committing a side effect for a sentence the
-        caller never finished. The protection is deliberately partial —
-        Agent Core aborts at the next stage boundary but lets any
-        already-in-flight tool call or trust check run to completion to
-        preserve external-side-effect safety, so this cannot undo a write
-        already issued.
-
-        Best-effort and never raises: this runs when the client has already
-        disconnected, and a failure here must not mask that original
-        disconnect.
-
-        Args:
-            session_id: The session whose active turn should be cancelled.
-                Never logged — it is the caller's phone number.
-        """
-        try:
-            await self._http.delete(
-                f"{self._base_url}/sessions/{session_id}/active_turn"
-            )
-            logger.info(
-                "bridge.turn_cancelled",
-                extra={
-                    "operation": "agent_core_client.cancel_turn",
-                    "status": "success",
-                },
-            )
-        except Exception as exc:  # noqa: BLE001 — best effort by design
-            logger.warning(
-                "bridge.turn_cancel_failed",
-                extra={
-                    "operation": "agent_core_client.cancel_turn",
-                    "status": "failure",
-                    "error": str(exc),
-                },
-            )
