@@ -38,16 +38,39 @@ def test_stream_turn_goes_through_assembler():
     assert agent.calls == ["hello"]
 
 
-def test_disconnect_after_done_is_not_an_interrupt():
-    """Review focus 1: reading DoneEvent then closing must not interrupt."""
+async def test_disconnect_after_done_is_not_an_interrupt():
+    """Review focus 1: reading DoneEvent then closing must not interrupt.
+
+    Drives the SSE body directly (TestClient would read it to the end) and
+    closes it right after the done chunk, as a client hanging up would.
+    """
     agent = _SlowAgent(tool_s=0.01)
     app, assembler = _app(agent)
-    with TestClient(app) as client:
-        client.post("/stream_turn", json={
-            "session_id": "s1", "user_message": "hello", "channel": "bridge", "user_id": "u1"})
+    detached = []
+    real_detach = assembler.detach
+
+    def spy_detach(turn, reason):
+        detached.append(reason)
+        real_detach(turn, reason)
+
+    assembler.detach = spy_detach
+    route = next(r for r in app.routes if getattr(r, "path", "") == "/stream_turn")
+    from src.servers.orchestration_server import ProcessTurnRequest
+    resp = await route.endpoint(ProcessTurnRequest(
+        session_id="s1", user_message="hello", channel="bridge", user_id="u1"))
+    body = resp.body_iterator
+    chunk = ""
+    while '"type": "done"' not in chunk and '"type":"done"' not in chunk:
+        chunk = await asyncio.wait_for(body.__anext__(), 2)
+        chunk = chunk.decode() if isinstance(chunk, bytes) else chunk
+    await body.aclose()                          # client went away after done
     turn = assembler._sessions["s1"].current_turn
+    await asyncio.wait_for(turn.invocation_task, 2)
+    assert json.loads(chunk[len("data: "):].strip())["turn_status"] == "completed"
     assert turn.status == TurnStatus.COMPLETED
-    assert turn.record.write_carryover is True and not turn.abort_event.is_set()
+    assert not turn.abort_event.is_set()
+    assert detached == []
+    assert turn.record.persist_task is None
 
 
 async def test_generator_close_before_done_detaches():
