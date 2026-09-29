@@ -317,7 +317,7 @@ class TestAddSegment:
     async def test_cancel_and_fold_log_has_required_structured_fields(self, caplog):
         """When a new segment arrives during INVOKED, the cancel-and-fold log
         entry uses operation=turn_assembler.cancel_and_fold and carries
-        cancelled_turn_id + folded_segment_count fields per #200."""
+        cancelled_turn_id + seeded_segment_count fields per #200."""
         ta = _make_assembler(config=_make_config(silence_ms=5000, max_wait_ms=5000))
         await ta.add_segment("s1", _make_segment("first"))
         session = ta._sessions["s1"]
@@ -345,8 +345,10 @@ class TestAddSegment:
         assert rec.status == "success"
         assert rec.session_id == "s1"
         assert rec.cancelled_turn_id == cancelled_turn_id
-        # Folded segment count: only the triggering segment seeds today.
-        assert rec.folded_segment_count == 1
+        # The successor is seeded with the triggering segment only; what it
+        # folds from Memory Layer is logged by orchestrator.carryover_folded.
+        assert rec.seeded_segment_count == 1
+        assert not hasattr(rec, "folded_segment_count")
 
     @pytest.mark.asyncio
     async def test_segment_ignored_when_completed(self):

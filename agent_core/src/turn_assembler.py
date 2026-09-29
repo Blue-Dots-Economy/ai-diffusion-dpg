@@ -532,7 +532,7 @@ class TurnAssembler(TurnAssemblerBase):
                         "status": "success",
                         "session_id": session_id,
                         "cancelled_turn_id": turn.turn_id,
-                        "folded_segment_count": 1,
+                        "seeded_segment_count": 1,
                         "reason": "new segment arrived while INVOKED — interrupting current turn",
                     },
                 )
