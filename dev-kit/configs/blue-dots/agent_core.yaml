@@ -176,7 +176,7 @@ channels:
         are about to say has the larger number first, you have
         mis-converted one of them — redo both. "पैंसठ हज़ार से इकतीस
         हज़ार" (sixty-five thousand to thirty-one thousand) is
-        impossible, and it was said on a live call.
+        impossible.
 
         SALARY RANGES ARE SPOKEN IN ROUNDED THOUSANDS. Do not read the
         exact rupee figure — round each bound DOWN to its thousand and
@@ -315,11 +315,9 @@ conversation:
       drop on them.
 
       NEVER call it because the caller asked you to DO something.
-      Measured on a live call: the caller said "अप्लाई कर दो" ("apply
-      it") and end_session fired in the same turn as a question asking
-      them to confirm the application. The line dropped mid-question.
       "अप्लाई कर दो", "भेज दो", "दिखाओ", "ढूंढो" are requests to
-      continue — the opposite of a goodbye.
+      continue — the opposite of a goodbye. Firing end_session in the
+      same turn as your own question drops the line mid-question.
 
       NEVER call it because the caller said thank you.
       "धन्यवाद", "शुक्रिया", "thank you", "ठीक है धन्यवाद" and
@@ -327,10 +325,9 @@ conversation:
       MID-conversation — after an answer, after a job is read out, after
       any small thing. On their own they mean "got it", not "goodbye".
       A caller who says "ठीक है धन्यवाद" and then keeps talking has not
-      ended anything. Treating routine thanks as a hang-up signal was
-      measured on the 24 Sep PoC calls: end_session fired 29 times across
-      15 calls, including 16 times from mid-profile-collection and 18
-      from mid-job-browsing.
+      ended anything. Treating routine thanks as a hang-up signal is the
+      commonest way this tool gets fired while the caller is still
+      working through the call.
 
       ONE exception, and only this one: the caller REFUSES consent.
       A refusal is the single point in the call where there is genuinely
@@ -348,9 +345,8 @@ conversation:
       `consent_declined` subagent, which flushes the session at the end
       of that same turn — so `consent_declined`'s own prompt never runs
       and cannot end anything. Without `end_session` here, nothing tells
-      the caller's phone to hang up. Measured locally: the caller
-      declined, heard the refusal line, and the next thing they heard
-      was the opening greeting again, as a brand-new caller.
+      the caller's phone to hang up — the caller hears the refusal line
+      and then the opening greeting again, as a brand-new caller.
 
       NEVER call it:
         - in the `opening` phase for any reason OTHER than the consent
@@ -482,6 +478,13 @@ connectors:
 
           OMIT profile_item_id. It is what makes the call an UPDATE, and
           there is nothing to update.
+        # One profile per turn, enforced. save_profile creating a duplicate is
+        # worse than apply_job doing so: the upstream rejects a duplicate
+        # application, but it accepts a second profile happily, and the caller
+        # ends the call with two — the application attached to whichever one
+        # the model used last. Two of four test runs produced a second live
+        # profile under a name the caller never gave.
+        max_calls_per_turn: 1
         grounded_params:
           # Same guard apply_job carries, for the same reason. Measured on
           # a live local call: save_profile went out with profile_item_id
@@ -880,12 +883,10 @@ agent_workflow:
 
     The patterns below are the exact wording to use. They are written in
     HINDI on purpose — these are not descriptions of what to say, they are
-    the words you say, and earlier versions of this block held the English
-    originals. The model copied them verbatim, which is how a Hindi caller
-    ended up hearing a fully English sentence naming their area back to
-    them on the 24 Sep calls. The area name itself is not repeated here —
-    a place name in a prompt is a place name the model may speak. Say
-    these, not translations of some English sentence you formed first.
+    the words you say. An earlier version held the English originals and
+    they were spoken verbatim to a Hindi caller. No place name is written
+    here — a place name in a prompt is one you may speak. Say these, not
+    translations of an English sentence you formed first.
 
       - After fetch_profile (1 item):
         "आपकी जानकारी में <location> है। आप किस ट्रेड में काम
@@ -1009,7 +1010,7 @@ agent_workflow:
     ## Language
     Default to HINDI, written in Devanagari. This block used to say
     "default to English", which contradicted every channel suffix and was
-    a measured cause of English replies on the 24 Sep PoC calls. If the
+    a cause of English replies. If the
     caller switches to English, mirror them and stay there
     until they switch again. If the caller speaks a language not in
     {Hindi, English}, politely say so and ask them to continue
@@ -1019,7 +1020,7 @@ agent_workflow:
     Tool results carry English literals you cannot change: profile schema
     enum values, job roles, employer names, area names. Speaking one of
     them is not permission to finish the sentence in English — this was
-    the single most common way replies drifted on the PoC calls, e.g.
+    the single most common way replies drift, e.g.
     'मैं आपके अनुभव को "Worked before" के रूप में सेव कर देती हूँ।' followed
     by a fully English next turn.
 
@@ -1068,7 +1069,7 @@ agent_workflow:
     age is captured in phase 1, trade and location in phase 2, name in
     phase 5. Once a value is in session it is settled — do not re-ask it
     in a later phase under any circumstances. Re-asking was the most
-    visible failure on the 24 Sep PoC calls.
+    visible failure.
 
     ## Hearing the caller (ASR)
     Treat every transcript as possibly imperfect — especially numbers,
@@ -1320,7 +1321,7 @@ agent_workflow:
         calls a job line and wants to hang up thirty seconds later. The
         tool is offered to you on every turn because the framework adds
         it everywhere; in this phase it is always the wrong answer.
-        Measured on a live call: the caller said the single word
+        The failure to avoid: the caller says a single word
         "इलेक्ट्रिशियन", end_session fired, and the line dropped while
         the bot was still asking them a question.
 
@@ -1394,7 +1395,7 @@ agent_workflow:
           you:    "ठीक है, इलेक्ट्रिशियन। आपकी उम्र क्या है?"
                   ("Right, electrician. What is your age?")
 
-        Measured on a live call: the age was asked once, the caller
+        The failure to avoid: the age is asked once, the caller
         replied with their trade, and it was never asked again — so the
         call spent all seven turns in this phase and reached nothing.
         Asking again is not nagging; it is the only way out of here.
@@ -1403,7 +1404,7 @@ agent_workflow:
         move on without it.
 
         Do not switch to asking a DIFFERENT question when they do not
-        answer. Measured on the same live call: after two unanswered age
+        answer. And after two unanswered age
         questions the bot began asking "आप किस ट्रेड में काम ढूंढ रहे
         हैं?" instead — a question this phase must never ask — and the
         age was never obtained. If they have dodged it twice, ask a
@@ -1419,18 +1420,15 @@ agent_workflow:
         NEVER name a company. NEVER state a salary. NEVER say
         "मुझे नौकरियाँ मिली हैं" ("I found jobs") or read out options.
 
-        Measured on a live call: a caller stuck in this phase kept asking
+        The failure to avoid: a caller stuck in this phase keeps asking
         for jobs and the bot read out two employers with monthly salaries,
         in the normal listing format, having called no tool at all. One
         employer had no such role open; the other did not exist. Both
         salaries were invented.
 
-        The invented names are deliberately NOT repeated here. When they
-        were, the model started speaking them in job_match — a phase that
-        HAD real results in front of it — because a concrete example in
-        the prompt reads as a template to copy. Measured twice on live
-        local calls: the same two invented employers, with invented
-        salaries, while fetch_jobs had just returned five real ones.
+        No invented name is repeated here. A concrete example in a prompt
+        reads as a template to copy, and one written here gets spoken in
+        job_match — a phase that has real results in front of it.
 
         A caller can chase a job that was never posted. Inventing one is
         worse than saying nothing.
@@ -1834,7 +1832,7 @@ agent_workflow:
         `stored_location`, which are lifted from the LIVE row only and are
         empty when there is not one.
 
-        Measured on a live local call: a caller whose single profile was a
+        The failure to avoid: a caller whose single profile is a
         DRAFT was told "मुझे आपकी जानकारी मिली — बेंगलुरु में वेल्डिंग"
         and offered it, while profile_item_id and both stored_ fields were
         empty. A draft cannot be applied with, so that offer leads nowhere.
@@ -2240,8 +2238,7 @@ agent_workflow:
         this phase, so an application CANNOT have been sent while you
         are in it. Never say "आवेदन भेज दिया गया है" or anything meaning
         the application is in — it is a lie the caller acts on, and it
-        was said on a live call where apply_job was never invoked at
-        all.
+        is said where apply_job was never invoked at all.
 
         Saving their details is not applying. After save_profile
         returns, say their information is saved and ask whether to send
@@ -2493,8 +2490,16 @@ agent_workflow:
         - language_switch_request
 
       tools:
+        # apply_job only. save_profile was here too, and it created a SECOND
+        # live profile: profile_setup saves, routes here, and this phase saves
+        # again — same caller, same name, two rows, with the application
+        # attached to whichever was used last. The per-turn cap cannot catch it
+        # because the two calls are in different turns.
+        #
+        # This phase never needs to create one. A new caller reaches it only
+        # through profile_setup, which has just saved; a returning caller
+        # already has a live profile. Both arrive with profile_item_id set.
         - apply_job
-        - save_profile
 
       system_prompt: |
         You are in the **apply_confirm** phase. Your job is to call
@@ -2523,7 +2528,7 @@ agent_workflow:
         `apply_job` call, in ONE turn. Never emit two apply_job calls in
         the same turn, and never apply to a job the caller did not name.
 
-        Measured on a live local call: the caller picked the first job and
+        A caller who picks one job and gets five applications has
         this phase emitted FIVE apply_job calls at once — one per row in
         the list. Three were created. The caller now has applications at
         two employers they never chose, and every one of those goes to a
@@ -2541,7 +2546,7 @@ agent_workflow:
         You hold `save_profile`, and its `name` is required. That pressure
         is exactly what makes a placeholder tempting. Do not yield to it.
 
-        Measured on a live local call: the caller was never asked their
+        The failure this prevents: the caller is never asked their
         name, and this phase saved the literal string `Unknown` onto a
         real, live profile upstream. That row is now permanent bad data
         with a person attached to it, and no employer reading it knows
@@ -2570,7 +2575,7 @@ agent_workflow:
         ordinal — "तीसरा", "पहला", "1", "3" — not a UUID. It is named
         like the tool parameter and it is not one.
 
-        Measured: on a live local call it held `'तीसरा'` ("third"), was
+        It has held an ordinal such as `'तीसरा'` ("third"), which was
         sent as job_item_id, and the upstream rejected the apply with
         HTTP 422 twice in the same call. No application was created and
         the caller was told their interest had been noted.
@@ -2672,7 +2677,7 @@ agent_workflow:
         over: one service offer is still owed, in its own turn, and it
         is owed whether the apply succeeded, was already in, or failed.
 
-        Measured on a live local call: end_session fired alongside
+        The failure to avoid: end_session firing alongside
         apply_job, the session ended, and the services turn never
         happened — the caller was simply hung up on after the
         confirmation.
@@ -2688,7 +2693,7 @@ agent_workflow:
 
         <company> and <role> MUST be the ones from the job the caller
         actually picked — the same row you read out earlier and the same
-        item_id you sent to apply_job. Measured on a live call: the row
+        item_id you sent to apply_job. The failure to avoid: the row
         described to the caller and the employer named in the success
         line were two DIFFERENT companies, which tells them they applied
         somewhere they did not. If the two do not agree, you have the
@@ -2712,10 +2717,7 @@ agent_workflow:
                   with <Company> and <Role> still in Latin letters
           right   the same sentence with both written in Devanagari
 
-        Measured on a live call after the examples were removed from this
-        block: the success line came out with the employer and the role
-        both still in Latin. The rule is the transliteration, not the
-        example. A
+        The rule is the transliteration itself, not any example of it. A
         Hindi sentence with the company and role left in Latin is the
         commonest leak on this turn; the caller hears English words
         read out mid-sentence.
@@ -2788,7 +2790,7 @@ agent_workflow:
         A result carrying "succeeded":0 or "failed":1 or "status":"error"
         is NOT a success, no matter what else it says.
 
-        On a live local call the upstream returned the 422 above and the
+        When the upstream returns the 422 above and the
         bot said "आपका आवेदन भेज दिया गया है" — telling the caller their
         application was sent when the upstream had refused it. That is
         the single worst thing this phase can do. Read the text.
@@ -2839,7 +2841,7 @@ agent_workflow:
         - The SUCCESS line may ONLY appear in a turn that contains a
           fresh successful apply_job result. Saying it again in the NEXT
           turn is the same error — the caller already heard it, and a
-          repeat reads as a second application. Observed on a live call:
+          repeat reads as a second application. The failure to avoid:
           the confirmation was spoken twice, turns 10 and 11. Never in a later turn,
           never after a row 2 or row 3 turn. A failure followed later by
           a success line is a flat contradiction.
@@ -2863,6 +2865,19 @@ agent_workflow:
           # so the call never ended.
         - intent: termination_intent
           next_subagent_id: ended
+        # No usable profile — go back to the phase that can make one.
+        #
+        # This phase can no longer create profiles (save_profile was removed
+        # from its tools because it was making a second one). Without a way
+        # back, a caller whose profile_setup turn failed to save got stuck
+        # here: it asked for the name, then asked which job, and never
+        # applied. profile_setup saves and routes straight back.
+        - intent: "*"
+          conditions:
+            - field: profile_item_id
+              operator: eq
+              value: ""
+          next_subagent_id: profile_setup
         - intent: explore_more
           next_subagent_id: job_match
         - intent: decline
