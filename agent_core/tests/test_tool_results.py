@@ -151,3 +151,81 @@ def test_augment_adds_force_refresh_and_remember_only_when_tools_present():
     assert out[-1]["name"] == "remember"
     assert augment_tool_definitions([], POL, rem) == []
     assert augment_tool_definitions(None, POL, rem) is None
+
+
+def test_malformed_entries_are_ignored_and_methods_do_not_raise():
+    """Entries missing data, fetched_at, with non-numeric fetched_at, or non-string tool are skipped."""
+    h = args_hash({})
+    bad_entries = [
+        entry("fetch_profile", {"items": [1]}, h),  # good entry
+        {"tool": "fetch_profile", "args_hash": h, "fetched_at": NOW - 180, "expires_at": NOW + 1800},  # missing data
+        {"tool": "fetch_profile", "args_hash": h, "data": {}, "expires_at": NOW + 1800},  # missing fetched_at
+        {"tool": "fetch_profile", "args_hash": h, "data": {}, "fetched_at": "not a number", "expires_at": NOW + 1800},  # non-numeric fetched_at
+        {"tool": ["fetch_profile"], "args_hash": h, "data": {}, "fetched_at": NOW - 180, "expires_at": NOW + 1800},  # tool is list
+        "not a dict",  # not a dict
+    ]
+    cache = TurnToolCache(POL, bad_entries, {}, clock())
+    # Malformed entries are skipped; only the good one is loaded.
+    assert cache.fresh_tools() == {"fetch_profile"}
+    # Methods don't raise on the remaining good entry.
+    r = cache.lookup(tc("fetch_profile"))
+    assert r is not None
+    facts = cache.render_known_facts()
+    assert "fetch_profile" in facts
+    stored = cache.stored_results_by_tool()
+    assert "fetch_profile" in stored
+
+
+def test_stored_expiry_capped_by_policy_ttl():
+    """Entry with stored expiry > fetched_at + policy TTL is treated as expired at policy bound."""
+    h = args_hash({})
+    # Entry claims it expires in 9000s from fetched, but policy is 1800s.
+    # It should expire 1800s after fetched_at, not 9000s.
+    stored_expiry = NOW - 180 + 9000  # way in the future
+    policy_expiry = NOW - 180 + 1800  # 1800s = policy TTL
+    bad_entry = {"tool": "fetch_profile", "args_hash": h, "data": {"items": []},
+                 "fetched_at": NOW - 180, "expires_at": stored_expiry, "origin": "turn", "scope": "user"}
+    cache = TurnToolCache(POL, [bad_entry], {}, clock())
+    # The entry should be present but with capped expiry.
+    assert cache.fresh_tools() == {"fetch_profile"}
+    # Verify effective expiry is capped.
+    entry_data = cache._entries.get(("fetch_profile", h))
+    assert entry_data is not None
+    assert entry_data["expires_at"] == policy_expiry
+
+
+def test_force_refresh_true_string_bypasses_cache():
+    """force_refresh as string 'true' (case-insensitive) also bypasses cache."""
+    h = args_hash({})
+    cache = TurnToolCache(POL, [entry("fetch_profile", {}, h)], {}, clock())
+    # force_refresh=True still bypasses.
+    assert cache.lookup(tc("fetch_profile", {FORCE_REFRESH: True})) is None
+    # force_refresh="true" also bypasses.
+    assert cache.lookup(tc("fetch_profile", {FORCE_REFRESH: "true"})) is None
+    # force_refresh="True" (mixed case) also bypasses.
+    assert cache.lookup(tc("fetch_profile", {FORCE_REFRESH: "True"})) is None
+    # force_refresh="TRUE" also bypasses.
+    assert cache.lookup(tc("fetch_profile", {FORCE_REFRESH: "TRUE"})) is None
+    # force_refresh="false" does NOT bypass.
+    r = cache.lookup(tc("fetch_profile", {FORCE_REFRESH: "false"}))
+    assert r is not None
+    # force_refresh without bool/true value does not bypass.
+    r = cache.lookup(tc("fetch_profile", {FORCE_REFRESH: ""}))
+    assert r is not None
+
+
+def test_duplicate_keys_keep_latest_fetched_at():
+    """When two entries share a key, keep the one with latest fetched_at."""
+    h = args_hash({})
+    older_entry = entry("fetch_profile", {"items": [1]}, h, fetched=NOW - 200)
+    newer_entry = entry("fetch_profile", {"items": [2]}, h, fetched=NOW - 100)
+    cache = TurnToolCache(POL, [older_entry, newer_entry], {}, clock())
+    # The newer entry should be kept.
+    r = cache.lookup(tc("fetch_profile"))
+    assert r is not None
+    assert "[2]" in r.result_text  # newer data
+    # If we reverse the order, the newer one still wins.
+    cache2 = TurnToolCache(POL, [newer_entry, older_entry], {}, clock())
+    r2 = cache2.lookup(tc("fetch_profile"))
+    assert r2 is not None
+    assert "[2]" in r2.result_text

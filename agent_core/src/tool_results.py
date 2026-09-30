@@ -129,14 +129,45 @@ class TurnToolCache:
         self._entries: dict[tuple[str, str], dict] = {}
         t = now()
         for e in entries or []:
-            if not isinstance(e, dict) or e.get("tool") not in policies.cache:
+            # Normalise and validate each entry; skip if malformed.
+            if not isinstance(e, dict):
                 continue
             try:
-                if float(e.get("expires_at", 0)) <= t:
+                # Require tool as string in cache.
+                tool = e.get("tool")
+                if not isinstance(tool, str) or tool not in policies.cache:
                     continue
-            except (TypeError, ValueError):
+                # Require data key present.
+                if "data" not in e:
+                    continue
+                # Coerce fetched_at and expires_at to float.
+                fetched_at = float(e.get("fetched_at", 0))
+                stored_expires_at = float(e.get("expires_at", 0))
+                # Cap effective expiry by policy TTL.
+                pol = policies.cache[tool]
+                effective_expires_at = min(stored_expires_at, fetched_at + pol.ttl_seconds)
+                # Skip if already expired.
+                if effective_expires_at <= t:
+                    continue
+                # Build normalised entry with float timestamps.
+                args_hash = str(e.get("args_hash", ""))
+                normalised = {
+                    "tool": tool,
+                    "args_hash": args_hash,
+                    "data": e["data"],
+                    "fetched_at": fetched_at,
+                    "expires_at": effective_expires_at,  # Use capped expiry
+                    "origin": str(e.get("origin", "turn")),
+                    "scope": str(e.get("scope", "user")),
+                }
+                key = (tool, args_hash)
+                # If two entries share a key, keep the one with latest fetched_at.
+                if key in self._entries and self._entries[key]["fetched_at"] >= fetched_at:
+                    continue
+                self._entries[key] = normalised
+            except (TypeError, ValueError, KeyError):
+                # Skip entry that fails to normalise.
                 continue
-            self._entries[(str(e["tool"]), str(e.get("args_hash", "")))] = e
         self._puts: list[dict] = []
         self._invalidated: list[str] = []
 
@@ -153,7 +184,8 @@ class TurnToolCache:
         pol = self._p.cache.get(tool_call.tool_name)
         if pol is None:
             return None
-        if (tool_call.input_params or {}).get(FORCE_REFRESH) is True:
+        force_refresh_val = (tool_call.input_params or {}).get(FORCE_REFRESH)
+        if force_refresh_val is True or (isinstance(force_refresh_val, str) and force_refresh_val.lower() == "true"):
             _log("refresh", tool_call.tool_name, pol.scope)
             return None
         e = self._fresh().get((tool_call.tool_name, self._hash(tool_call)))
