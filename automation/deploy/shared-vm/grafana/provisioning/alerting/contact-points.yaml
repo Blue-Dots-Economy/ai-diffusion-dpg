@@ -1,0 +1,46 @@
+# One Discord contact point per severity.
+#
+# The webhook URLs are secrets and are never committed: init_secrets writes
+# each one to the in-memory /secrets directory (from .env locally, from SSM on
+# the VM), and $__file{} reads it at provisioning time. When a webhook is not
+# configured, init_secrets writes an unroutable placeholder instead: Grafana
+# refuses to start on an empty Discord URL, and a missing webhook must never
+# take the dashboards down with it.
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: discord-critical
+    receivers:
+      - uid: discord-critical
+        type: discord
+        disableResolveMessage: false
+        settings:
+          url: $__file{/secrets/discord_webhook_critical}
+          title: '{{ template "dpg.discord.title" . }}'
+          message: '{{ template "dpg.discord.message" . }}'
+          use_discord_username: false
+
+  - orgId: 1
+    name: discord-warning
+    receivers:
+      - uid: discord-warning
+        type: discord
+        disableResolveMessage: false
+        settings:
+          url: $__file{/secrets/discord_webhook_warning}
+          title: '{{ template "dpg.discord.title" . }}'
+          message: '{{ template "dpg.discord.message" . }}'
+          use_discord_username: false
+
+  - orgId: 1
+    name: discord-info
+    receivers:
+      - uid: discord-info
+        type: discord
+        disableResolveMessage: false
+        settings:
+          url: $__file{/secrets/discord_webhook_info}
+          title: '{{ template "dpg.discord.title" . }}'
+          message: '{{ template "dpg.discord.message" . }}'
+          use_discord_username: false

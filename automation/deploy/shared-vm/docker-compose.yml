@@ -62,6 +62,10 @@ services:
       - SSM_PREFIX=${SSM_PREFIX:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - BLUE_DOTS_API_KEY=${BLUE_DOTS_API_KEY:-}
+      # Discord alert webhooks for Grafana, one per severity. Optional.
+      - DISCORD_WEBHOOK_CRITICAL=${DISCORD_WEBHOOK_CRITICAL:-}
+      - DISCORD_WEBHOOK_WARNING=${DISCORD_WEBHOOK_WARNING:-}
+      - DISCORD_WEBHOOK_INFO=${DISCORD_WEBHOOK_INFO:-}
     command:
       - |
         set -eu
@@ -105,6 +109,31 @@ services:
         chmod 444 /secrets/env
         # Never print the values.
         echo "init_secrets: wrote /secrets/env from $$SOURCE (openai=$${#OPENAI} signals=$${#SIGNALS})"
+        # Discord alert webhooks, one file per severity, read by Grafana's
+        # alerting provisioning via $$__file{}. Optional, unlike the keys
+        # above: env first, then SSM (<prefix>/discord_webhook_<severity>).
+        # When neither is set, write an unroutable placeholder instead of
+        # failing: Grafana refuses to start on an empty Discord URL, and a
+        # missing webhook must not take the dashboards down with it. Alerts
+        # still show in Grafana; only delivery fails, visibly, in its log.
+        PLACEHOLDER="http://127.0.0.1:9/discord-webhook-not-configured"
+        write_hook() {
+          HOOK="$$2"; FROM=env
+          if [ -z "$$HOOK" ] && [ -n "$${SSM_PREFIX:-}" ]; then
+            HOOK=$$(aws ssm get-parameter --name "$$SSM_PREFIX/discord_webhook_$$1" \
+                      --with-decryption --query Parameter.Value --output text 2>/dev/null || true)
+            FROM=ssm
+          fi
+          if [ -z "$$HOOK" ] || [ "$$HOOK" = "None" ]; then
+            HOOK="$$PLACEHOLDER"; FROM="placeholder - NOT CONFIGURED, $$1 alerts will not reach Discord"
+          fi
+          printf '%s' "$$HOOK" > "/secrets/discord_webhook_$$1"
+          chmod 444 "/secrets/discord_webhook_$$1"
+          echo "init_secrets: wrote discord_webhook_$$1 from $$FROM (len=$${#HOOK})"
+        }
+        write_hook critical "$${DISCORD_WEBHOOK_CRITICAL:-}"
+        write_hook warning  "$${DISCORD_WEBHOOK_WARNING:-}"
+        write_hook info     "$${DISCORD_WEBHOOK_INFO:-}"
     volumes:
       - ${SECRETS_DIR:-/dev/shm/dpg-secrets}:/secrets
     networks: [dpg_net]
@@ -346,22 +375,30 @@ services:
       # panel. Migrate such panels to their React equivalents on load, so the
       # dashboard keeps working once Angular support is removed.
       - GF_FEATURE_TOGGLES_ENABLE=autoMigrateOldPanels
+      # Base for every link Grafana generates, including the dashboard links
+      # in Discord alerts. Grafana is published on host port 3001 (reached over
+      # the SSH tunnel on the VM), not the 3000 it listens on in the container.
+      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-http://localhost:3001}
     volumes:
-      # Datasources are shared with local dev; the dashboards provider and the
-      # dashboards themselves belong to this deployment only.
-      - ../../docker/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      # This deployment's own datasources (fixed UIDs, which the provisioned
+      # alert rules reference), dashboards provider, dashboards and alerting.
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
       - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/provisioning/alerting:/etc/grafana/provisioning/alerting:ro
       - ./grafana/dashboards:/etc/grafana/dashboards:ro
+      # Discord webhook files written by init_secrets (read via __file{}).
+      - ${SECRETS_DIR:-/dev/shm/dpg-secrets}:/secrets:ro
       - grafana_data:/var/lib/grafana
     ports:
       - "127.0.0.1:3001:3000"
     depends_on:
-      - prometheus
-      - blackbox_exporter
-      - cadvisor
-      - redis_exporter
-      - loki
-      - jaeger
+      init_secrets: { condition: service_completed_successfully }
+      prometheus: { condition: service_started }
+      blackbox_exporter: { condition: service_started }
+      cadvisor: { condition: service_started }
+      redis_exporter: { condition: service_started }
+      loki: { condition: service_started }
+      jaeger: { condition: service_started }
     networks: [dpg_net]
     logging: *logging
     deploy:
