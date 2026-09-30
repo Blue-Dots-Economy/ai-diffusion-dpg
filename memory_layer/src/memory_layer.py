@@ -24,6 +24,7 @@ from typing import Any
 from neo4j import GraphDatabase
 
 from session_store import RedisSessionStore
+from tool_result_store import ToolResultStore
 from graph_user_store import GraphUserStore
 from graph_journey_store import GraphJourneyStore
 from graph_context_store import GraphContextStore
@@ -108,6 +109,12 @@ class MemoryLayer:
 
         # Initialise Redis store
         self._redis = RedisSessionStore(config, self._ttl_seconds)
+        self._tool_results = ToolResultStore(
+            self._redis.client,
+            os.environ.get("TOOL_RESULT_KEY_SECRET", ""),
+            session_ttl_seconds=self._ttl_seconds,
+            max_user_ttl_seconds=int(os.environ.get("TOOL_RESULT_MAX_USER_TTL_SECONDS", "86400")),
+        )
 
         # Initialise Memgraph driver + stores (neo4j driver connects via Bolt — Apache 2.0)
         memgraph_cfg = config.get("memgraph", {})
@@ -277,6 +284,8 @@ class MemoryLayer:
                     "journey": journey,
                 }
 
+            bundle["tool_results"] = self._tool_results.read(session_id, user_id)
+
             logger.info(
                 "memory_layer.context_bundle",
                 extra={
@@ -300,7 +309,69 @@ class MemoryLayer:
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
-            return {"session": {}, "profile": {}, "journey": None}
+            return {"session": {}, "profile": {}, "journey": None, "tool_results": []}
+
+    def apply_tool_results(self, session_id: str, user_id: str,
+                           invalidate: list[str], puts: list[dict]) -> None:
+        """Apply one turn's tool-result changes: invalidations first, then new entries.
+
+        Args:
+            session_id: Owner for session-scope entries.
+            user_id: Owner for user-scope entries.
+            invalidate: Tool names whose entries are deleted in both scopes.
+            puts: Entries ``{scope, tool, args_hash, data, ttl_seconds, origin}``.
+        """
+        start = time.time()
+        try:
+            for tool in invalidate or []:
+                self._tool_results.invalidate("session", session_id, tool)
+                self._tool_results.invalidate("user", user_id, tool)
+            for p in puts or []:
+                owner = session_id if p.get("scope") == "session" else user_id
+                self._tool_results.put(
+                    p.get("scope", ""), owner, p.get("tool", ""), p.get("args_hash", ""),
+                    p.get("data"), int(p.get("ttl_seconds", 0)), origin=p.get("origin", "turn"),
+                )
+            logger.info("memory_layer.apply_tool_results", extra={
+                "operation": "memory_layer.apply_tool_results", "status": "success",
+                "invalidated": len(invalidate or []), "stored": len(puts or []),
+                "latency_ms": int((time.time() - start) * 1000)})
+        except Exception as e:
+            logger.error("memory_layer.apply_tool_results_error", extra={
+                "operation": "memory_layer.apply_tool_results", "status": "failure",
+                "error": f"{type(e).__name__}: {e}",
+                "latency_ms": int((time.time() - start) * 1000)})
+
+    def write_strict(self, session_id: str, user_id: str, scope: str, key: str,
+                     value: Any) -> tuple[bool, str]:
+        """Write only a declared field whose value matches its declared type/enum.
+
+        Unlike :meth:`write`, never falls back to ad-hoc storage.
+
+        Returns:
+            ``(True, "")`` when written, else ``(False, reason)``.
+        """
+        if scope == "session":
+            fdef = self._schema.get(key)
+            if not isinstance(fdef, dict):
+                return False, f"{key} is not a declared session field"
+            ftype = fdef.get("type")
+            if ftype == "enum" and str(value) not in (fdef.get("values") or []):
+                return False, f"{value!r} is not one of {fdef.get('values')}"
+            if ftype == "int":
+                try:
+                    value = int(value)
+                except (TypeError, ValueError):
+                    return False, "expected an integer"
+            if ftype == "list" and not isinstance(value, list):
+                return False, "expected a list"
+        elif scope == "persistent":
+            if key not in self._declared_fields:
+                return False, f"{key} is not a declared profile field"
+        else:
+            return False, f"unsupported scope {scope}"
+        self.write(session_id, user_id, scope, key, value)
+        return True, ""
 
     def write(self, session_id: str, user_id: str, scope: str, key: str, value: Any) -> None:
         """
@@ -410,6 +481,7 @@ class MemoryLayer:
           5. Delete Redis session key
           6. Remove session from user index
           7. Delete user index if no sessions remain
+          Also deletes the session-scope tool-result entries.
         """
         start = time.time()
         try:
@@ -443,6 +515,7 @@ class MemoryLayer:
 
             # 5. Delete session key
             self._redis.delete_session(session_id)
+            self._tool_results.delete_owner("session", session_id)
 
             # 6 + 7. Remove from user index (deletes user key if empty)
             self._redis.remove_session_from_user_index(user_id, session_id)
@@ -539,13 +612,14 @@ class MemoryLayer:
             return []
 
     def delete_user(self, user_id: str) -> None:
-        """DPDP right-to-erasure: delete all Neo4j graph data + Redis user index."""
+        """DPDP right-to-erasure: delete Neo4j graph data, Redis user index and user-scope tool results."""
         start = time.time()
         try:
             if not user_id:
                 raise ValueError("user_id must not be empty")
             self._user_store.delete_user(user_id)
             self._redis.delete_user_index(user_id)
+            self._tool_results.delete_owner("user", user_id)
             logger.info(
                 "memory_layer.delete_user",
                 extra={
