@@ -248,7 +248,10 @@ services:
       # Bounded retention: this is a shared host and nobody is watching disk.
       - "--storage.tsdb.retention.time=15d"
     volumes:
-      - ../../docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # This deployment's own copy: the one under automation/docker/ is also
+      # mounted by the local dev compose files, and the service-status probe
+      # jobs added here would only show as down targets there.
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     ports:
       - "127.0.0.1:9090:9090"
@@ -261,6 +264,72 @@ services:
           memory: 512M
     restart: unless-stopped
 
+  # Probes every long-running service's health endpoint (or TCP port, for
+  # redis and memgraph) on Prometheus's behalf. Most DPG blocks only PUSH
+  # metrics through otelcol, so without this Prometheus has one target and no
+  # way to tell whether a given container is up. Results feed the
+  # "DPG - Service Status" Grafana dashboard. No published port.
+  blackbox_exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: dpg_blackbox_exporter
+    command: ["--config.file=/etc/blackbox/blackbox.yml"]
+    volumes:
+      - ./blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    networks: [dpg_net]
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 64M
+    restart: unless-stopped
+
+  # Per-container CPU / memory / network / disk for the "Docker monitoring"
+  # dashboard. Needs the host's cgroup and Docker state read-only; privileged
+  # is cAdvisor's documented requirement for reading every container's
+  # cgroup. Prometheus drops everything that is not a dpg_* container.
+  # Published on ghcr.io since v0.53 — gcr.io/cadvisor stops at older tags.
+  cadvisor:
+    image: ghcr.io/google/cadvisor:v0.60.6
+    container_name: dpg_cadvisor
+    privileged: true
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=30s
+      - --store_container_labels=false
+      - --whitelisted_container_labels=com.docker.compose.service,com.docker.compose.project
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks: [dpg_net]
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.3'
+          memory: 256M
+    restart: unless-stopped
+
+  # Redis INFO as Prometheus metrics, for the Redis dashboard.
+  redis_exporter:
+    image: oliver006/redis_exporter:v1.92.1
+    container_name: dpg_redis_exporter
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+    depends_on:
+      redis: { condition: service_healthy }
+    networks: [dpg_net]
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 64M
+    restart: unless-stopped
+
   grafana:
     image: grafana/grafana:10.3.3
     container_name: dpg_grafana
@@ -270,13 +339,27 @@ services:
       # but a default-open Grafana behind a tunnel is still a bad habit.
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_AUTH_ANONYMOUS_ENABLED=false
+      # Land on the service-status overview after login instead of an empty
+      # home page; every DPG dashboard links to the rest from its header.
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/dashboards/service-status.json
+      # "Logs / App" (grafana.com 13639) still uses the legacy Angular graph
+      # panel. Migrate such panels to their React equivalents on load, so the
+      # dashboard keeps working once Angular support is removed.
+      - GF_FEATURE_TOGGLES_ENABLE=autoMigrateOldPanels
     volumes:
-      - ../../docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      # Datasources are shared with local dev; the dashboards provider and the
+      # dashboards themselves belong to this deployment only.
+      - ../../docker/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
       - grafana_data:/var/lib/grafana
     ports:
       - "127.0.0.1:3001:3000"
     depends_on:
       - prometheus
+      - blackbox_exporter
+      - cadvisor
+      - redis_exporter
       - loki
       - jaeger
     networks: [dpg_net]
