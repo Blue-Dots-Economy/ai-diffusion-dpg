@@ -728,6 +728,22 @@ connectors:
           profile, so this is always a create. Send every other field
           you already have — trade, location and age are known by then —
           and do not ask for or wait for any of them.
+
+          OMIT profile_item_id. It is what makes the call an UPDATE, and
+          there is nothing to update.
+        grounded_params:
+          # Same guard apply_job carries, for the same reason. Measured on
+          # a live local call: save_profile went out with profile_item_id
+          # 8d3bc85b-1785-4658-9459-c5e72964ab25 — the Aditya Birla JOB id
+          # from the fetch_jobs list — which made it an update of a profile
+          # that does not exist. The upstream answered 400 and the agent
+          # told the caller their details were saved AND their application
+          # sent. Neither had happened.
+          #
+          # Naming the source tools is what catches it: the value is a
+          # well-formed UUID that really did appear in a tool result, just
+          # the wrong tool's.
+          profile_item_id: [fetch_profile, save_profile]
         required_before_calling: [name, phone]
         must_not_substitute: >
           Never invent profile fields. Each must come from the user
@@ -2621,6 +2637,25 @@ agent_workflow:
         | age                | profile.age from fetch_profile           | save_profile's response               |
         | work_experience    | profile.work_experience                  | save_profile's response               |
 
+        ## ONE application. ONE apply_job call. Ever.
+        The caller chose ONE job. You send ONE application, with ONE
+        `apply_job` call, in ONE turn. Never emit two apply_job calls in
+        the same turn, and never apply to a job the caller did not name.
+
+        Measured on a live local call: the caller picked the first job and
+        this phase emitted FIVE apply_job calls at once — one per row in
+        the list. Three were created. The caller now has applications at
+        two employers they never chose, and every one of those goes to a
+        real hiring manager with their name and number on it.
+
+        If you are unsure which job they meant, ASK — "कौन सी वाली?
+        पहली या दूसरी?" — and send nothing this turn. An extra question
+        costs a turn. A wrong application cannot be withdrawn.
+
+        After the call returns, you are DONE applying. A second attempt is
+        only ever correct when the first came back a FAILURE and the
+        caller then named a different job.
+
         ## NEVER invent a name — no placeholders, ever
         You hold `save_profile`, and its `name` is required. That pressure
         is exactly what makes a placeholder tempting. Do not yield to it.
@@ -2934,15 +2969,29 @@ agent_workflow:
           next_subagent_id: job_match
         - intent: decline
           next_subagent_id: job_match
-        # Once the apply has resolved the journey is over. The services
-        # offer that used to sit here was removed: it cost a 19-second turn
-        # on a live call (9.5 s to first token), and it closed the call by
-        # phase exhaustion rather than because the caller was done.
+        # End the call once an application ACTUALLY EXISTS — not once a turn
+        # has been spent here. applications_submitted is written by
+        # apply_job's session_mapping from summary.succeeded, so it is 1 only
+        # after the upstream created something.
+        #
+        # The turn-count version of this rule dropped a caller whose apply had
+        # just been refused for an ungrounded id: the tool never ran, the
+        # exhaustion rule matched anyway, and the call ended with no
+        # application and a goodbye.
+        - intent: "*"
+          conditions:
+            - field: applications_submitted
+              operator: gt
+              value: 0
+          next_subagent_id: ended
+        # Backstop: three turns here without a created application means it is
+        # not going to happen. Ending is kinder than looping, and the phase
+        # prompt already requires it to say plainly that it did not go through.
         - intent: "*"
           conditions:
             - field: subagent_entry_count.apply_confirm
               operator: gt
-              value: 0
+              value: 3
           next_subagent_id: ended
         - intent: "*"
           next_subagent_id: apply_confirm

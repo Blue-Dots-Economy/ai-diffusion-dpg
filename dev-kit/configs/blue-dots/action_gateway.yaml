@@ -520,6 +520,20 @@ tools:
               caller's words for which job they picked.
     response:
       max_size_chars: 1000
+      # Record the outcome where ROUTING can see it, not only the LLM. Without
+      # this, apply_confirm could only end the call on a turn count, so a turn
+      # whose apply was refused or failed still counted as "done" and the
+      # caller was dropped with no application. Measured locally: apply_job
+      # was refused for an ungrounded id, the very next routing pass matched
+      # the exhaustion rule, and the call ended.
+      #
+      # `summary.succeeded` is 1 on a created application and 0 on any
+      # failure, so it is the honest test for "did an application happen".
+      session_mapping:
+        - source: "summary.succeeded"
+          target: applications_submitted
+        - source: "results[status=success].action_id"
+          target: last_application_id
       # Bulk envelope (Signals-DPG PR #55): { results: [ ... ], summary }.
       # apply_job sends one element, so `results` has one item; list_key
       # projects it into a single-element list the LLM reads.
