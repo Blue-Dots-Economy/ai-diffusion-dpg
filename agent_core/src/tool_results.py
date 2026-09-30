@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Optional
@@ -67,6 +68,8 @@ class CachePolicy:
     tool: str
     scope: str
     ttl_seconds: int
+    # Top-level keys to store. Applies only to dict payloads; a list or scalar
+    # result is stored whole.
     keep: tuple[str, ...] = ()
     vary_on: tuple[str, ...] = ()
 
@@ -143,6 +146,9 @@ class TurnToolCache:
                 # Coerce fetched_at and expires_at to float.
                 fetched_at = float(e.get("fetched_at", 0))
                 stored_expires_at = float(e.get("expires_at", 0))
+                # NaN never compares as expired and inf never expires: reject both.
+                if not (math.isfinite(fetched_at) and math.isfinite(stored_expires_at)):
+                    continue
                 # Cap effective expiry by policy TTL.
                 pol = policies.cache[tool]
                 effective_expires_at = min(stored_expires_at, fetched_at + pol.ttl_seconds)
@@ -170,6 +176,10 @@ class TurnToolCache:
                 continue
         self._puts: list[dict] = []
         self._invalidated: list[str] = []
+        # Serialised data of entries invalidated this turn. Never served or
+        # rendered again, but the model has already seen it, so it still
+        # grounds values (e.g. ``remember``) for the rest of the turn.
+        self._invalidated_data: dict[str, list[str]] = {}
 
     def _hash(self, tool_call: ToolCall) -> str:
         pol = self._p.cache[tool_call.tool_name]
@@ -223,6 +233,7 @@ class TurnToolCache:
         except (TypeError, ValueError):
             _log("reject_invalid", tool_call.tool_name, pol.scope)
             return
+        # keep applies only to dict payloads; other JSON shapes are stored whole.
         if pol.keep and isinstance(data, dict):
             data = {k: data[k] for k in pol.keep if k in data}
         h, t = self._hash(tool_call), self._now()
@@ -234,6 +245,10 @@ class TurnToolCache:
         _log("store", tool_call.tool_name, pol.scope, ttl_s=pol.ttl_seconds)
 
     def _invalidate(self, tool: str) -> None:
+        for (t, _), e in self._entries.items():
+            if t == tool:
+                self._invalidated_data.setdefault(tool, []).append(
+                    json.dumps(e["data"], ensure_ascii=False))
         self._entries = {k: v for k, v in self._entries.items() if k[0] != tool}
         self._puts = [p for p in self._puts if p["tool"] != tool]
         if tool not in self._invalidated:
@@ -245,8 +260,12 @@ class TurnToolCache:
         return {tool for tool, _ in self._fresh()}
 
     def stored_results_by_tool(self) -> dict[str, list[str]]:
-        """Serialised unexpired data per tool, for grounding checks."""
-        out: dict[str, list[str]] = {}
+        """Serialised data per tool, for grounding checks.
+
+        Includes unexpired entries and the data of entries invalidated earlier
+        in this turn: those are no longer served, but the model has seen them.
+        """
+        out: dict[str, list[str]] = {t: list(v) for t, v in self._invalidated_data.items()}
         for (tool, _), e in self._fresh().items():
             out.setdefault(tool, []).append(json.dumps(e["data"], ensure_ascii=False))
         return out

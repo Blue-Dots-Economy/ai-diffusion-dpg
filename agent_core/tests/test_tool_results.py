@@ -229,3 +229,35 @@ def test_duplicate_keys_keep_latest_fetched_at():
     r2 = cache2.lookup(tc("fetch_profile"))
     assert r2 is not None
     assert "[2]" in r2.result_text
+
+
+def test_non_finite_timestamps_are_rejected():
+    """Entries whose fetched_at or expires_at is NaN or infinite are skipped."""
+    h = args_hash({})
+    nan, inf = float("nan"), float("inf")
+    bad = [
+        {**entry("fetch_profile", {"items": [1]}, h), "fetched_at": nan},
+        {**entry("fetch_profile", {"items": [1]}, h), "expires_at": nan},
+        {**entry("fetch_profile", {"items": [1]}, h), "fetched_at": inf},
+        {**entry("fetch_profile", {"items": [1]}, h), "expires_at": inf},
+        {**entry("fetch_profile", {"items": [1]}, h), "fetched_at": "-inf"},
+        {**entry("fetch_profile", {"items": [1]}, h), "expires_at": "nan"},
+    ]
+    for e in bad:
+        cache = TurnToolCache(POL, [e], {}, clock())
+        assert cache.fresh_tools() == set(), e
+        assert cache.lookup(tc("fetch_profile")) is None
+
+
+def test_invalidated_data_stays_a_grounding_source_but_is_not_served():
+    """A mid-turn invalidation stops serving the entry, but its data still grounds values."""
+    h = args_hash({})
+    cache = TurnToolCache(POL, [entry("fetch_profile", {"items": ["id-1"]}, h)], {}, clock())
+    cache.after_call(tc("fetch_profile", {"x": 1}), live("fetch_profile", {"items": ["id-2"]}))
+    cache.after_call(tc("save_profile"), live("save_profile", {}))
+    assert cache.lookup(tc("fetch_profile")) is None
+    assert cache.lookup(tc("fetch_profile", {"x": 1})) is None
+    assert cache.fresh_tools() == set()
+    assert cache.render_known_facts() == ""
+    grounding = cache.stored_results_by_tool()["fetch_profile"]
+    assert any("id-1" in s for s in grounding) and any("id-2" in s for s in grounding)

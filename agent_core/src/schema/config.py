@@ -390,6 +390,8 @@ class ToolCacheConfig(BaseModel):
 
     scope: Literal["session", "user"]
     ttl_seconds: int = Field(gt=0)
+    # Top-level keys to store; applies only when the result is a JSON object
+    # (a list or scalar result is stored whole).
     keep: list[str] = Field(default_factory=list)
     vary_on: list[str] = Field(default_factory=list)
 
