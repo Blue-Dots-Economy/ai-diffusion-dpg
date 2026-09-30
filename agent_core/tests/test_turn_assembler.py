@@ -78,7 +78,7 @@ def _make_mock_agent_core():
     """Create a mock AgentCore whose stream_turn yields a simple event sequence."""
     agent = MagicMock()
 
-    async def _stream(turn_input, *, abort_event=None, turn_id=""):
+    async def _stream(turn_input, *, abort_event=None, turn_id="", **kwargs):
         yield SignalEvent(stage="memory_read", status="start")
         yield SentenceEvent(text="Hello!", sentence_index=0)
         yield DoneEvent(turn_id=turn_id or "t-1", turn_status="completed")
@@ -317,7 +317,7 @@ class TestAddSegment:
     async def test_cancel_and_fold_log_has_required_structured_fields(self, caplog):
         """When a new segment arrives during INVOKED, the cancel-and-fold log
         entry uses operation=turn_assembler.cancel_and_fold and carries
-        cancelled_turn_id + folded_segment_count fields per #200."""
+        cancelled_turn_id + seeded_segment_count fields per #200."""
         ta = _make_assembler(config=_make_config(silence_ms=5000, max_wait_ms=5000))
         await ta.add_segment("s1", _make_segment("first"))
         session = ta._sessions["s1"]
@@ -345,8 +345,10 @@ class TestAddSegment:
         assert rec.status == "success"
         assert rec.session_id == "s1"
         assert rec.cancelled_turn_id == cancelled_turn_id
-        # Folded segment count: only the triggering segment seeds today.
-        assert rec.folded_segment_count == 1
+        # The successor is seeded with the triggering segment only; what it
+        # folds from Memory Layer is logged by orchestrator.carryover_folded.
+        assert rec.seeded_segment_count == 1
+        assert not hasattr(rec, "folded_segment_count")
 
     @pytest.mark.asyncio
     async def test_segment_ignored_when_completed(self):
@@ -795,7 +797,7 @@ class TestSessionEnd:
         await ta.session_end("nonexistent")  # Should not raise
 
     @pytest.mark.asyncio
-    async def test_session_end_cancels_tasks(self):
+    async def test_session_end_cancels_timers_not_invocation(self):
         ta = _make_assembler()
         session = ta._get_or_create_session("s1")
         turn = await session.replace_turn(seed_segments=[])
@@ -805,15 +807,17 @@ class TestSessionEnd:
         turn.silence_task = silence
         turn.ceiling_task = ceiling
         turn.invocation_task = invocation
+        turn.status = TurnStatus.INVOKED
 
         await ta.session_end("s1")
-
-        # Allow event loop to process cancellations
         await asyncio.sleep(0)
 
         assert silence.cancelled()
         assert ceiling.cancelled()
-        assert invocation.cancelled()
+        # Spec §4.4: the invocation stops cooperatively at a safe point.
+        assert not invocation.cancelled()
+        assert turn.abort_event.is_set()
+        invocation.cancel()
 
 
 # ---------------------------------------------------------------------------
@@ -841,7 +845,7 @@ class TestInvocation:
         """Multiple segments are joined with spaces."""
         captured_inputs = []
 
-        async def capture_stream(turn_input, *, abort_event=None, turn_id=""):
+        async def capture_stream(turn_input, *, abort_event=None, turn_id="", **kwargs):
             captured_inputs.append(turn_input)
             yield DoneEvent(turn_status="completed", turn_id=turn_id)
 
@@ -861,7 +865,7 @@ class TestInvocation:
     @pytest.mark.asyncio
     async def test_invoke_pushes_done_event_on_error(self):
         """On stream_turn() error, a DoneEvent(abandoned) is pushed to queue."""
-        async def failing_stream(turn_input, *, abort_event=None, turn_id=""):
+        async def failing_stream(turn_input, *, abort_event=None, turn_id="", **kwargs):
             raise RuntimeError("boom")
             yield  # Make it a generator
 
@@ -885,7 +889,7 @@ class TestInvocation:
         """TurnInput is constructed with session channel/user_id and turn's started_at_ms."""
         captured = []
 
-        async def capture_stream(turn_input, *, abort_event=None, turn_id=""):
+        async def capture_stream(turn_input, *, abort_event=None, turn_id="", **kwargs):
             captured.append(turn_input)
             yield DoneEvent(turn_status="completed", turn_id=turn_id)
 
@@ -1093,7 +1097,7 @@ class TestEndToEnd:
 
         call_count = 0
 
-        async def slow_then_capture(turn_input, *, abort_event=None, turn_id=""):
+        async def slow_then_capture(turn_input, *, abort_event=None, turn_id="", **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -1484,7 +1488,7 @@ class TestSessionTurnRefactor:
         """_invoke() passes turn.abort_event and turn.turn_id to stream_turn."""
         captured = {}
 
-        async def fake_stream(turn_input, *, abort_event=None, turn_id=""):
+        async def fake_stream(turn_input, *, abort_event=None, turn_id="", **kwargs):
             captured["abort_event"] = abort_event
             captured["turn_id"] = turn_id
             yield DoneEvent(turn_status="completed", turn_id=turn_id)
@@ -1539,7 +1543,7 @@ class TestSessionTurnRefactor:
         """subscribe() delivers events from Turn 1 then Turn 2 in sequence."""
         call = {"n": 0}
 
-        async def stream(turn_input, *, abort_event=None, turn_id=""):
+        async def stream(turn_input, *, abort_event=None, turn_id="", **kwargs):
             call["n"] += 1
             yield SentenceEvent(text=f"reply{call['n']}", sentence_index=0, turn_id=turn_id)
             yield DoneEvent(turn_status="completed", turn_id=turn_id)
@@ -1681,7 +1685,7 @@ class TestSessionTurnRefactor:
         # (the pre-cancel snapshot). On second call it returns True.
         agent = MagicMock()
 
-        async def sync_done_stream(turn_input, *, abort_event=None, turn_id=""):
+        async def sync_done_stream(turn_input, *, abort_event=None, turn_id="", **kwargs):
             """Generator that yields Done(completed) without any internal await
             — simulating a fast, synchronous completion path where the task
             cancel has no await to land on between the abort check and the put.

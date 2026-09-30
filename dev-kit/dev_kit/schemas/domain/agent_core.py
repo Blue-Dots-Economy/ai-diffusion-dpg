@@ -5,7 +5,7 @@ Each class corresponds to a top-level section the LLM writes via update_config.
 Phase prompts inject the relevant subset (see phase→section mapping in design doc).
 """
 from __future__ import annotations
-from typing import Optional, Any, List, Dict, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from dev_kit.schemas.enums import (
@@ -350,6 +350,27 @@ class MaxWaitCeilingConfig(BaseModel):
     max_wait_ms: int = Field(default=0, ge=0)
 
 
+class InterruptionConfig(BaseModel):
+    """Mirrors runtime InterruptionConfig 1:1."""
+    model_config = ConfigDict(extra="forbid")
+    on_new_input: Literal["abort_and_fold", "replace"] = "abort_and_fold"
+    on_disconnect: Literal["abort", "continue"] = "abort"
+    drain_max_ms: int = Field(default=3000, ge=0)
+
+
+class FoldConfig(BaseModel):
+    """Mirrors runtime FoldConfig 1:1."""
+    model_config = ConfigDict(extra="forbid")
+    max_segments: int = Field(default=3, ge=0)
+
+
+class CarryoverConfig(BaseModel):
+    """Mirrors runtime CarryoverConfig 1:1."""
+    model_config = ConfigDict(extra="forbid")
+    max_age_ms: int = Field(default=60000, ge=0)
+    undelivered_note: str = ""
+
+
 class TurnAssemblerConfig(BaseModel):
     """TurnAssembler policy stack — semantic gate + silence trigger + max-wait ceiling.
 
@@ -361,6 +382,10 @@ class TurnAssemblerConfig(BaseModel):
     semantic_gate: SemanticGateConfig = Field(default_factory=SemanticGateConfig)
     silence_trigger: SilenceTriggerConfig = Field(default_factory=SilenceTriggerConfig)
     max_wait_ceiling: MaxWaitCeilingConfig = Field(default_factory=MaxWaitCeilingConfig)
+    interruption: InterruptionConfig = Field(default_factory=InterruptionConfig)
+    fold: FoldConfig = Field(default_factory=FoldConfig)
+    carryover: CarryoverConfig = Field(default_factory=CarryoverConfig)
+    session_idle_ttl_ms: int = Field(default=1_800_000, ge=0)
 
 
 class ChannelEntry(BaseModel):

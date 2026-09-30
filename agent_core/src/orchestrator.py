@@ -19,6 +19,7 @@ Design rules enforced here:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import re
 import threading
@@ -71,15 +72,23 @@ from src.models import (
     TrustCheckResult,
     TurnEvent,
     TurnInput,
+    TurnRecord,
     TurnResult,
 )
 from src.preprocessing.nlu_processor import NLUProcessor
 from src.tool_registry import ToolRegistry
+from src.turn_policy import TurnPolicy, resolve_turn_policy
 from src.workflow_loader import AgentWorkflow, RoutingCondition, RoutingRule, SubAgent
 from opentelemetry import trace as otel_trace
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
 logger = logging.getLogger(__name__)
+
+# A ``turn_carryover`` is written by whichever replica ran the interrupted
+# turn and read by whichever runs the next one, so their clocks can disagree.
+# A ``written_at_ms`` up to this far in the future counts as age 0; beyond it
+# the value is treated as malformed. A fixed tolerance, not a tunable.
+_CARRYOVER_CLOCK_SKEW_MS = 5000
 
 # Module-level guard to prevent double-instrumentation in test environments.
 _HTTPX_INSTRUMENTED = False
@@ -193,6 +202,8 @@ class AgentCore(AgentCoreBase):
             raise ValueError("workflow must not be None")
 
         self._config = config
+        # Resolved per channel on first use; config is immutable after startup.
+        self._turn_policies: dict[str, TurnPolicy] = {}
         self._llm = chat_provider
         self._memory = memory
         self._trust = trust
@@ -1981,6 +1992,7 @@ class AgentCore(AgentCoreBase):
     @staticmethod
     def _build_tool_exchange_messages(
         exchanges: list[dict],
+        undelivered_note: str = "",
     ) -> list[Message]:
         """Convert persisted tool exchange records into neutral Message objects.
 
@@ -1992,6 +2004,8 @@ class AgentCore(AgentCoreBase):
         Args:
             exchanges: Ordered list of exchange dicts as persisted by
                 ``_capture_tool_exchange``. Malformed entries are skipped.
+            undelivered_note: Appended on its own line to every tool result of
+                an exchange marked ``delivered: false``; empty disables.
 
         Returns:
             Flat list of ``Message`` objects ready to prepend to a turn's
@@ -2019,6 +2033,7 @@ class AgentCore(AgentCoreBase):
                     ))
                 except Exception:
                     continue
+            note = undelivered_note if (undelivered_note and ex.get("delivered") is False) else ""
             result_blocks: list[ToolResultBlock] = []
             for r in results:
                 if not isinstance(r, dict):
@@ -2026,7 +2041,7 @@ class AgentCore(AgentCoreBase):
                 try:
                     result_blocks.append(ToolResultBlock(
                         tool_use_id=r.get("tool_use_id", ""),
-                        content=r.get("content", ""),
+                        content=(r.get("content", "") + ("\n" + note if note else "")),
                     ))
                 except Exception:
                     continue
@@ -2060,6 +2075,7 @@ class AgentCore(AgentCoreBase):
         bundle,
         session_id: str,
         operation: str,
+        undelivered_note: str = "",
     ) -> tuple[list[dict], int, int]:
         """Prepend the previous turn's tool exchanges to this turn's messages.
 
@@ -2076,6 +2092,8 @@ class AgentCore(AgentCoreBase):
                 exchanges.
             session_id: For logging.
             operation: Caller name for the log entry.
+            undelivered_note: Note appended to replayed tool results of
+                exchanges marked ``delivered: false``; empty disables.
 
         Returns:
             ``(prior_exchanges, max_items, max_chars)`` for the caller to pass
@@ -2087,7 +2105,7 @@ class AgentCore(AgentCoreBase):
             raw = []
         prior: list[dict] = list(raw)
         if max_items > 0 and prior:
-            replay = self._build_tool_exchange_messages(prior[-max_items:])
+            replay = self._build_tool_exchange_messages(prior[-max_items:], undelivered_note)
             if replay:
                 messages[:0] = replay
                 logger.info(
@@ -2906,8 +2924,326 @@ class AgentCore(AgentCoreBase):
         *,
         abort_event: "asyncio.Event | None" = None,
         turn_id: str = "",
+        record: "TurnRecord | None" = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Execute one conversation turn with streaming SSE output.
+
+        Wraps the pipeline body to keep the turn's ledger: the last stage
+        reached, and whether the turn completed. A turn that ends without a
+        completed DoneEvent (aborted, errored, or closed early) has its state
+        persisted for the successor turn (spec §4.5) from ``finally``, via a
+        background task, never awaited here.
+
+        Args:
+            turn_input: Normalised inbound message from the Reach Layer.
+            abort_event: When set, the turn stops at its next safe point.
+            turn_id: Identifier stamped on every event; uuid4 when empty.
+            record: Per-turn ledger; a private one is used when None.
+
+        Yields:
+            SignalEvent, SentenceEvent, or DoneEvent.
+        """
+        record = record if record is not None else TurnRecord()
+        completed = False
+        try:
+            async for event in self._stream_turn_impl(
+                turn_input, abort_event=abort_event, turn_id=turn_id, record=record,
+            ):
+                if isinstance(event, SignalEvent) and event.stage:
+                    record.last_stage = event.stage
+                elif isinstance(event, DoneEvent) and event.turn_status == "completed":
+                    completed = True
+                yield event
+        finally:
+            if not completed:
+                self._on_turn_not_completed(turn_input, record, turn_id)
+
+    def _turn_policy(self, channel: "str | None") -> TurnPolicy:
+        """Return the cached turn-lifecycle policy for ``channel``.
+
+        Args:
+            channel: Channel name from the TurnInput.
+
+        Returns:
+            The resolved TurnPolicy.
+        """
+        key = channel or ""
+        policy = self._turn_policies.get(key)
+        if policy is None:
+            policy = resolve_turn_policy(self._config, channel)
+            self._turn_policies[key] = policy
+        return policy
+
+    def _on_turn_not_completed(
+        self, turn_input: TurnInput, record: TurnRecord, turn_id: str = "",
+    ) -> None:
+        """Schedule persistence of an interrupted or failed turn's state.
+
+        Runs from ``stream_turn``'s ``finally`` so it must not await: it only
+        builds the payloads and hands them to a background task, stored on
+        ``record.persist_task`` so the TurnAssembler can wait for it.
+
+        Args:
+            turn_input: The turn's input (identity + utterance).
+            record: The turn's ledger.
+            turn_id: The caller-supplied turn id (may be empty).
+        """
+        if turn_input is None or not turn_input.session_id or self._async_memory is None:
+            return
+        user_id = turn_input.user_id or turn_input.session_id
+        exchanges = [dict(ex, delivered=False) for ex in record.captured_exchanges]
+        carry = None
+        if record.write_carryover:
+            segments = list(record.segments) if record.fold_ran else [turn_input.user_message]
+            segments = [s for s in segments if isinstance(s, str) and s.strip()]
+            if segments:
+                carry = {
+                    "segments": segments,
+                    "stopped_at_stage": record.last_stage,
+                    "turn_id": turn_id,
+                    "written_at_ms": int(time.time() * 1000),
+                }
+        if not exchanges and carry is None:
+            return
+        try:
+            record.persist_task = asyncio.get_running_loop().create_task(
+                self._persist_interrupted(turn_input.session_id, user_id, record,
+                                          exchanges, carry, turn_input.channel)
+            )
+        except RuntimeError:
+            logger.warning(
+                "orchestrator.interrupted_persist",
+                extra={"operation": "orchestrator.persist_interrupted",
+                       "status": "skipped", "error": "no running event loop"},
+            )
+
+    async def _persist_interrupted(
+        self,
+        session_id: str,
+        user_id: str,
+        record: TurnRecord,
+        exchanges: list[dict],
+        carry: "dict | None",
+        channel: "str | None" = None,
+    ) -> None:
+        """Write an interrupted turn's tool rounds and utterances to Memory Layer.
+
+        Tool rounds are merged into the **current** ``recent_tool_exchanges``
+        (re-read now, not the start-of-turn snapshot, so a late persist cannot
+        overwrite what a successor stored meanwhile), marked
+        ``delivered: false``, deduplicated by tool_use id and capped to
+        ``record.max_items``. Utterances go to ``turn_carryover``. If the turn
+        was interrupted before its own fold ran, any existing carry-over is
+        appended to rather than overwritten. One Memory Layer read serves both.
+        Never raises.
+
+        Args:
+            session_id: Session identifier.
+            user_id: User identifier.
+            record: The interrupted turn's ledger.
+            exchanges: Captured rounds, already marked undelivered.
+            carry: The ``turn_carryover`` payload, or None.
+            channel: Channel, for the fold cap when appending.
+        """
+        start = time.time()
+        try:
+            write_exchanges = bool(exchanges) and record.max_items > 0
+            append_carry = carry is not None and not record.fold_ran
+            session_state: dict = {}
+            if write_exchanges or append_carry:
+                try:
+                    bundle = await self._async_memory.context_bundle(session_id, user_id)
+                    session_state = bundle.session if isinstance(
+                        getattr(bundle, "session", None), dict) else {}
+                except Exception as e:  # noqa: BLE001 — fall back, still persist
+                    # Without the current state, merge onto the start-of-turn
+                    # snapshot: losing the rounds would let the model re-run
+                    # tools it has already run.
+                    logger.warning(
+                        "orchestrator.interrupted_persist_read",
+                        extra={"operation": "orchestrator.persist_interrupted",
+                               "status": "failure", "session_id": session_id,
+                               "error": f"{type(e).__name__}: {e}"},
+                    )
+                    session_state = {"recent_tool_exchanges": list(record.prior_exchanges)}
+            if write_exchanges:
+                merged = self._merge_undelivered_exchanges(
+                    session_state.get("recent_tool_exchanges"), exchanges, record.max_items,
+                )
+                await self._async_memory.write(
+                    session_id, user_id, "session", "recent_tool_exchanges", merged,
+                )
+            if carry is not None:
+                if append_carry:
+                    earlier = self._valid_carryover_segments(
+                        session_state.get("turn_carryover"), self._turn_policy(channel),
+                    )
+                    carry = dict(carry, segments=earlier + carry["segments"])
+                cap = self._turn_policy(channel).fold_max_segments
+                if cap > 0:
+                    carry["segments"] = carry["segments"][-cap:]
+                await self._async_memory.write(
+                    session_id, user_id, "session", "turn_carryover", carry,
+                )
+            logger.info(
+                "orchestrator.interrupted_persist",
+                extra={"operation": "orchestrator.persist_interrupted", "status": "success",
+                       "session_id": session_id, "exchange_count": len(exchanges),
+                       "segment_count": len(carry["segments"]) if carry else 0,
+                       "stopped_at_stage": record.last_stage,
+                       "latency_ms": int((time.time() - start) * 1000)},
+            )
+        except Exception as e:  # noqa: BLE001 — background task, must not raise
+            logger.error(
+                "orchestrator.interrupted_persist",
+                extra={"operation": "orchestrator.persist_interrupted", "status": "failure",
+                       "session_id": session_id, "error": f"{type(e).__name__}: {e}",
+                       "latency_ms": int((time.time() - start) * 1000)},
+            )
+
+    @staticmethod
+    def _merge_undelivered_exchanges(
+        current: Any, captured: list[dict], max_items: int,
+    ) -> list[dict]:
+        """Append an interrupted turn's rounds to the stored exchanges.
+
+        A captured round whose tool_use ids are already stored is skipped, and
+        the stored copy kept: it may already have been replayed to (and had
+        its ``delivered`` flag cleared by) a turn that completed meanwhile.
+
+        Args:
+            current: ``recent_tool_exchanges`` as stored now (untrusted type).
+            captured: The interrupted turn's rounds, marked undelivered.
+            max_items: Cap from ``agent.recent_tool_exchanges.max_items``.
+
+        Returns:
+            The merged list, newest last, capped to ``max_items``.
+        """
+        stored = [ex for ex in current if isinstance(ex, dict)] if isinstance(current, list) else []
+
+        def _ids(ex: dict) -> set:
+            uses = ex.get("tool_uses")
+            if not isinstance(uses, list):
+                return set()
+            return {u.get("id") for u in uses if isinstance(u, dict) and u.get("id")}
+
+        seen: set = set()
+        for ex in stored:
+            seen |= _ids(ex)
+        merged = list(stored)
+        for ex in captured:
+            ids = _ids(ex)
+            if ids and ids & seen:
+                continue
+            merged.append(ex)
+            seen |= ids
+        return merged[-max_items:]
+
+    def _valid_carryover_segments(self, raw: Any, policy: TurnPolicy) -> list[str]:
+        """Return the usable segments of a stored ``turn_carryover`` value.
+
+        Args:
+            raw: The stored value (any type — upstream data is not trusted).
+            policy: Policy supplying ``carryover_max_age_ms``.
+
+        Returns:
+            Non-empty string segments, or [] when the value is absent,
+            malformed (including a missing, non-int, or far-future
+            ``written_at_ms``), or older than the policy allows.
+        """
+        if raw is None:
+            return []
+        if not isinstance(raw, dict) or not isinstance(raw.get("segments"), list):
+            logger.warning(
+                "orchestrator.carryover_discarded",
+                extra={"operation": "orchestrator.fold_carryover", "status": "skipped",
+                       "reason": "malformed"},
+            )
+            return []
+        written = raw.get("written_at_ms")
+        age_ms = (int(time.time() * 1000) - written
+                  if isinstance(written, int) and not isinstance(written, bool) else None)
+        if age_ms is not None and -_CARRYOVER_CLOCK_SKEW_MS <= age_ms < 0:
+            age_ms = 0
+        if age_ms is None or age_ms < 0:
+            logger.warning(
+                "orchestrator.carryover_discarded",
+                extra={"operation": "orchestrator.fold_carryover", "status": "skipped",
+                       "reason": "malformed"},
+            )
+            return []
+        if age_ms > policy.carryover_max_age_ms:
+            logger.info(
+                "orchestrator.carryover_discarded",
+                extra={"operation": "orchestrator.fold_carryover", "status": "skipped",
+                       "reason": "stale"},
+            )
+            return []
+        return [s for s in raw["segments"] if isinstance(s, str) and s.strip()]
+
+    async def _fold_carryover(
+        self,
+        turn_input: TurnInput,
+        bundle: Any,
+        record: TurnRecord,
+        user_id: str,
+    ) -> TurnInput:
+        """Fold an interrupted predecessor's utterances into this turn's input.
+
+        Reads ``turn_carryover`` from the context bundle, clears it in Memory
+        Layer (awaited, so a later write from this turn cannot land first), and
+        joins the usable carried segments with this turn's utterance, capped to
+        ``fold.max_segments``. Records the result in ``record.segments``.
+
+        Args:
+            turn_input: This turn's input.
+            bundle: The step-1 context bundle (``bundle.session`` is mutated).
+            record: This turn's ledger.
+            user_id: Resolved user identifier.
+
+        Returns:
+            ``turn_input`` itself when nothing was folded, else a copy with the
+            folded ``user_message``.
+        """
+        policy = self._turn_policy(turn_input.channel)
+        session = bundle.session if isinstance(getattr(bundle, "session", None), dict) else {}
+        raw = session.get("turn_carryover")
+        carried: list[str] = []
+        if raw is not None:
+            if policy.fold_max_segments > 0:
+                carried = self._valid_carryover_segments(raw, policy)
+            session["turn_carryover"] = None
+            await self._async_memory.write(
+                turn_input.session_id, user_id, "session", "turn_carryover", None,
+            )
+        segments = carried + [turn_input.user_message]
+        if policy.fold_max_segments > 0:
+            segments = segments[-policy.fold_max_segments:]
+        else:
+            segments = [turn_input.user_message]
+        record.segments = segments
+        record.fold_ran = True
+        if len(segments) == 1:
+            return turn_input
+        logger.info(
+            "orchestrator.carryover_folded",
+            extra={"operation": "orchestrator.fold_carryover", "status": "success",
+                   "session_id": turn_input.session_id,
+                   "folded_segment_count": len(segments) - 1},
+        )
+        return dataclasses.replace(
+            turn_input, user_message=" ".join(s.strip() for s in segments),
+        )
+
+    async def _stream_turn_impl(
+        self,
+        turn_input: TurnInput,
+        *,
+        abort_event: "asyncio.Event | None" = None,
+        turn_id: str = "",
+        record: TurnRecord,
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """Run the streaming pipeline body; see :meth:`stream_turn` for the contract.
 
         Runs the same 13-step pipeline as process_turn() but uses async
         HTTP clients and yields StreamEvents as the pipeline progresses.
@@ -3053,6 +3389,9 @@ class AgentCore(AgentCoreBase):
             yield _stamp(SignalEvent(stage="memory_read", status="complete"))
             if _aborted():
                 return
+            # Spec §4.6: fold an interrupted predecessor's utterances into this
+            # turn before NLU and the input trust check see the message.
+            turn_input = await self._fold_carryover(turn_input, bundle, record, user_id)
             logger.info(
                 "  [STEP 1] Memory context_bundle  ✓  current_subagent_id=%s"
                 "  is_returning=%s  latency=%dms",
@@ -3690,11 +4029,15 @@ class AgentCore(AgentCoreBase):
             # ── #193: prepend prior tool_use/tool_result exchanges ──────
             _prior_exchanges, _max_items, _max_chars = self._prepend_tool_replay(
                 messages, bundle, session_id, "orchestrator.stream_turn",
+                undelivered_note=self._turn_policy(turn_input.channel).undelivered_note,
             )
 
             # Tool exchanges captured during *this* turn's tool rounds; persisted
-            # at the end of the turn so the next turn can replay them.
-            _captured_exchanges_this_turn: list[dict] = []
+            # at the end of the turn so the next turn can replay them. The list
+            # lives on the record so an interrupted turn's rounds survive it.
+            record.prior_exchanges = list(_prior_exchanges)
+            record.max_items = _max_items
+            _captured_exchanges_this_turn: list[dict] = record.captured_exchanges
 
             if not messages:
                 yield _stamp(DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000)))
@@ -3960,6 +4303,13 @@ class AgentCore(AgentCoreBase):
                         "tool_use_id": tc.tool_use_id,
                         "content": tool_result.result_text or str(tool_result.result),
                     })
+                # Capture before yielding tool_end: a turn stopped at this yield
+                # must still record the round it just completed (spec §4.5).
+                _ex = self._capture_tool_exchange(
+                    all_tool_calls, tool_results_for_llm, _max_chars,
+                )
+                if _ex is not None:
+                    _captured_exchanges_this_turn.append(_ex)
                 yield _stamp(SignalEvent(stage="tool_end", status="complete"))
                 if _aborted():
                     return
@@ -4003,13 +4353,6 @@ class AgentCore(AgentCoreBase):
                             for tr in _current_tool_results
                         ],
                     ))
-
-                    # #193: snapshot this round so it can be replayed next turn.
-                    _ex = self._capture_tool_exchange(
-                        _current_tool_calls, _current_tool_results, _max_chars,
-                    )
-                    if _ex is not None:
-                        _captured_exchanges_this_turn.append(_ex)
 
                     if _aborted():
                         return
@@ -4168,6 +4511,11 @@ class AgentCore(AgentCoreBase):
                                 "content": tool_result.result_text or str(tool_result.result),
                             })
                             _stream_tool_results.append(tool_result)
+                        _ex = self._capture_tool_exchange(
+                            _nested_tool_calls, _nested_results, _max_chars,
+                        )
+                        if _ex is not None:
+                            _captured_exchanges_this_turn.append(_ex)
                         yield _stamp(SignalEvent(stage="tool_end", status="complete"))
                         if _aborted():
                             return
@@ -4257,6 +4605,17 @@ class AgentCore(AgentCoreBase):
             _capped = self._merge_tool_exchanges(
                 _prior_exchanges, _captured_exchanges_this_turn, _max_items,
             )
+            # Spec §4.6: this turn completed, so replayed undelivered results
+            # have now been spoken about — drop the flags, even with no new round.
+            if _capped is None and _max_items > 0 and any(
+                isinstance(ex, dict) and ex.get("delivered") is False for ex in _prior_exchanges
+            ):
+                _capped = list(_prior_exchanges)[-_max_items:]
+            if _capped is not None:
+                _capped = [
+                    {k: v for k, v in ex.items() if k != "delivered"} if isinstance(ex, dict) else ex
+                    for ex in _capped
+                ]
             if _capped is not None:
                 bundle.session["recent_tool_exchanges"] = _capped
                 asyncio.create_task(

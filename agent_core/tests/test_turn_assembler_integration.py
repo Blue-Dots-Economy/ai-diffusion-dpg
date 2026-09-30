@@ -50,7 +50,7 @@ def _make_slow_streaming_agent_core(per_chunk_delay_s=0.005):
     """
     agent = MagicMock()
 
-    async def stream(turn_input, *, abort_event=None, turn_id=""):
+    async def stream(turn_input, *, abort_event=None, turn_id="", **kwargs):
         yield SignalEvent(stage="memory_read", status="start", turn_id=turn_id)
         for i in range(5):
             await asyncio.sleep(per_chunk_delay_s)

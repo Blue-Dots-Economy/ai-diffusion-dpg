@@ -105,6 +105,11 @@ class TurnAssemblerDpg(BaseModel):
     semantic_gate: dict = Field(default_factory=lambda: {"enabled": False, "confidence_threshold": 0.75})
     silence_trigger: dict = Field(default_factory=lambda: {"silence_ms": 400})
     max_wait_ceiling: dict = Field(default_factory=lambda: {"max_wait_ms": 8000})
+    interruption: dict = Field(default_factory=lambda: {
+        "on_new_input": "abort_and_fold", "on_disconnect": "abort", "drain_max_ms": 3000})
+    fold: dict = Field(default_factory=lambda: {"max_segments": 3})
+    carryover: dict = Field(default_factory=lambda: {"max_age_ms": 60000, "undelivered_note": ""})
+    session_idle_ttl_ms: int = 1_800_000
 
 
 class ReachLayerDefaults(BaseModel):

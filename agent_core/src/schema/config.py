@@ -589,14 +589,49 @@ class MaxWaitCeilingConfig(BaseModel):
     max_wait_ms: int = Field(default=0, ge=0)
 
 
+class InterruptionConfig(BaseModel):
+    """What stops an in-flight streaming turn, and how long a successor waits."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    on_new_input: Literal["abort_and_fold", "replace"] = "abort_and_fold"
+    on_disconnect: Literal["abort", "continue"] = "abort"
+    drain_max_ms: int = Field(default=3000, ge=0)
+
+
+class FoldConfig(BaseModel):
+    """How many interrupted utterances a successor turn folds into its input."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    max_segments: int = Field(default=3, ge=0)
+
+
+class CarryoverConfig(BaseModel):
+    """Lifetime of carried state and the note marking unheard tool results."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    max_age_ms: int = Field(default=60000, ge=0)
+    undelivered_note: str = ""
+
+
 class TurnAssemblerConfig(BaseModel):
-    """Turn-assembler policy stack."""
+    """Turn-assembler policy stack and streaming-turn lifecycle.
+
+    ``session_idle_ttl_ms`` is read from ``reach_layer.turn_assembler`` only;
+    a per-channel value is accepted but has no effect.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     semantic_gate: SemanticGateConfig = Field(default_factory=SemanticGateConfig)
     silence_trigger: SilenceTriggerConfig = Field(default_factory=SilenceTriggerConfig)
     max_wait_ceiling: MaxWaitCeilingConfig = Field(default_factory=MaxWaitCeilingConfig)
+    interruption: InterruptionConfig = Field(default_factory=InterruptionConfig)
+    fold: FoldConfig = Field(default_factory=FoldConfig)
+    carryover: CarryoverConfig = Field(default_factory=CarryoverConfig)
+    session_idle_ttl_ms: int = Field(default=1_800_000, ge=0)
 
 
 class ChannelConfig(BaseModel):

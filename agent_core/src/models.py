@@ -8,6 +8,7 @@ No business logic. No imports from within agent_core/.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional, Union
@@ -67,6 +68,7 @@ class SegmentInput:
     caller_agent_id: Optional[str] = None  # unique identifier of calling agent (GH-338)
     locale: Optional[str] = None
     metadata: Optional[dict] = None
+    fresh: bool = False  # request adapter: caller wants a clean session (no adoption)
 
 
 # ---------------------------------------------------------------------------
@@ -308,10 +310,42 @@ class DoneEvent:
     session_ended: bool = False
     error_type: Optional[str] = None
     error_message: Optional[str] = None
+    interrupted_at_stage: Optional[str] = None  # last SignalEvent stage of an interrupted turn
 
     def to_sse(self) -> str:
         """Serialise to SSE data line."""
         return f"data: {json.dumps(asdict(self))}\n\n"
+
+
+@dataclass
+class TurnRecord:
+    """Mutable per-turn ledger shared by the TurnAssembler and ``stream_turn``.
+
+    The TurnAssembler creates one per Turn and reads it after an interruption.
+    ``stream_turn`` fills it as the turn runs, so what an interrupted turn did is
+    known without waiting for its end-of-turn memory write.
+
+    Attributes:
+        captured_exchanges: Tool rounds completed this turn (#193 shape).
+        prior_exchanges: ``recent_tool_exchanges`` as read at turn start; the
+            interrupted-turn persist falls back to it only if its re-read fails.
+        max_items: The ``recent_tool_exchanges`` cap in force.
+        segments: User utterances this turn answers, after folding.
+        fold_ran: True once the carry-over fold has run for this turn.
+        last_stage: Stage of the last SignalEvent emitted.
+        write_carryover: False when policy says an interruption must not carry
+            the utterances forward (``on_new_input: replace``).
+        persist_task: Background task persisting an interrupted turn, if any.
+    """
+
+    captured_exchanges: list[dict] = field(default_factory=list)
+    prior_exchanges: list[dict] = field(default_factory=list)
+    max_items: int = 0
+    segments: list[str] = field(default_factory=list)
+    fold_ran: bool = False
+    last_stage: str = ""
+    write_carryover: bool = True
+    persist_task: Optional["asyncio.Task"] = None
 
 
 StreamEvent = Union[SignalEvent, SentenceEvent, DoneEvent]

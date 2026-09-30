@@ -518,6 +518,22 @@ class ChannelTurnAssemblerConfig(BaseModel):
         default_factory=lambda: {"max_wait_ms": 0},
         description="Max wait ceiling configuration for this channel",
     )
+    interruption: dict[str, Any] = Field(
+        default_factory=lambda: {"on_new_input": "abort_and_fold",
+                                 "on_disconnect": "abort", "drain_max_ms": 3000},
+        description="What stops an in-flight streaming turn",
+    )
+    fold: dict[str, Any] = Field(
+        default_factory=lambda: {"max_segments": 3},
+        description="Interrupted utterances folded into the next turn",
+    )
+    carryover: dict[str, Any] = Field(
+        default_factory=lambda: {"max_age_ms": 60000, "undelivered_note": ""},
+        description="Carry-over lifetime and the unheard-result note",
+    )
+    session_idle_ttl_ms: int = Field(
+        default=1_800_000, description="Idle in-process session eviction (reach_layer level)",
+    )
 
 
 class ChannelConfig(BaseModel):

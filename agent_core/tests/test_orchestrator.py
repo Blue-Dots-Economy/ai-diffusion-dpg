@@ -2095,7 +2095,9 @@ def test_end_session_allowlist_ignores_unknown_subagent_ids():
 def test_stream_turn_latches_opening_phrase_emitted_after_routing():
     """The streaming routing block writes the flag when it is not already set."""
     import inspect
-    src = inspect.getsource(AgentCore.stream_turn)
+    # stream_turn is a thin ledger wrapper since the request-mode
+    # TurnAssembler change; the pipeline body lives in _stream_turn_impl.
+    src = inspect.getsource(AgentCore._stream_turn_impl)
     assert 'session", "opening_phrase_emitted", True' in src, (
         "stream_turn must latch opening_phrase_emitted, or routing rules "
         "guarded by it can never fire on the streaming path"
@@ -2119,7 +2121,9 @@ def test_both_streaming_tool_sites_apply_the_grounding_guard():
     with a fabricated job_item_id and the guard never evaluated.
     """
     import inspect
-    src = inspect.getsource(AgentCore.stream_turn)
+    # stream_turn is a thin ledger wrapper since the request-mode
+    # TurnAssembler change; the pipeline body lives in _stream_turn_impl.
+    src = inspect.getsource(AgentCore._stream_turn_impl)
     executes = src.count("self._async_gateway.execute(")
     guards = src.count("ungrounded_params(")
     assert executes >= 1, "expected gateway execution sites in stream_turn"

@@ -90,6 +90,18 @@ reach_layer:
       silence_ms: 400            # ms of silence before invoking (resets on each segment)
     max_wait_ceiling:
       max_wait_ms: 8000          # Absolute max wait ms — never resets
+    # Streaming-turn lifecycle (spec 2026-09-29). Applies to /stream_turn and the
+    # session endpoints; /process_turn is unaffected.
+    interruption:
+      on_new_input: abort_and_fold   # abort_and_fold | replace
+      on_disconnect: abort           # abort | continue
+      drain_max_ms: 3000             # successor waits this long for its predecessor
+    fold:
+      max_segments: 3                # newest interrupted utterances kept; 0 disables
+    carryover:
+      max_age_ms: 60000              # older carry-over is discarded, not folded
+      undelivered_note: "[The user has not yet heard the outcome of this action. Tell them the result before moving on.]"
+    session_idle_ttl_ms: 1800000     # idle in-process session eviction
 
 observability:
   otel:

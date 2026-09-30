@@ -156,7 +156,7 @@ not declare the block are unaffected.
 
 **Streaming path (`POST /stream_turn`):** Agent Core also exposes an async SSE endpoint. `stream_turn()` uses async HTTP clients (`interfaces/async_/`) for all external calls, yields `SignalEvent`s at each pipeline stage, streams LLM tokens split into sentences, runs a per-sentence Trust output check, and emits a final `DoneEvent`. Steps 12–13 (memory write + observability emit) fire via `asyncio.create_task` after `DoneEvent` — never in the response path.
 
-**TurnAssembler:** For channels that deliver multi-segment input (voice VAD, rapid corrections), `TurnAssembler` sits between the server and `stream_turn()`. Holds `Session` objects keyed by `session_id`; each `Session` owns the current `Turn` (per-turn segments, event queue, abort signal, state). The pipeline invokes via a three-policy stack: semantic completeness gate (NLU confidence), silence trigger (reset on every segment), and max-wait ceiling (absolute). Exposes `POST /sessions/{id}/input`, `GET /sessions/{id}/events` (SSE), and `DELETE /sessions/{id}/active_turn` (barge-in). Cancel is structural — a cancelled `Turn` is dead, its queue sealed, and a successor `Turn` gets a fresh queue (#224).
+**TurnAssembler:** Every streaming turn runs through `TurnAssembler`, both `POST /stream_turn` (request-scoped: one request = one complete utterance, invoked immediately) and the session endpoints `POST /sessions/{id}/input` + `GET /sessions/{id}/events` (segment stream: semantic gate · silence trigger · max-wait ceiling). It holds `Session` objects keyed by `session_id`; each owns one current `Turn` (segments, event queue, abort signal, `TurnRecord` ledger). A new input or a client disconnect interrupts the turn *cooperatively*: its queue is sealed (#224), it runs on to the orchestrator's next safe point (tool calls are never cut), and the successor waits for it (`interruption.drain_max_ms`). What the interrupted turn held survives in Memory Layer. `turn_carryover` holds its utterances, which the next turn folds into its input (`fold.max_segments`, `carryover.max_age_ms`). `recent_tool_exchanges` holds its completed tool rounds, marked `delivered: false` and replayed with `carryover.undelivered_note`. `POST /process_turn` does not use the assembler. Spec: `docs/superpowers/specs/2026-09-29-turn-assembler-request-mode-design.md`.
 
 **LLM access (`chat_provider/`).** `ChatProviderBase` is the single LLM interface every Agent Core component depends on. Concrete providers (`AnthropicChatProvider`, `OpenAIChatProvider`) are selected via `build_chat_provider(agent_config)` based on `agent.provider`. Each provider owns the wire-format translation, retry/timeout, and OTel telemetry for its SDK; nothing else in agent_core imports the underlying provider library. NLU and language-normalisation use dedicated provider instances (configured by their own `model` fields) so cheap classification calls can run on a smaller model. Multimodal *input* (image blocks) is supported day one; image generation, TTS, ASR, and realtime APIs are deliberately out of scope and would land as sibling abstractions rather than as additions to ChatProviderBase.
 
@@ -175,7 +175,7 @@ not declare the block are unaffected.
 - `agent_core/src/interfaces/` — sync ABCs; `interfaces/async_/` — async ABCs used by `stream_turn()`
 - `agent_core/src/servers/orchestration_server.py` — FastAPI: `POST /process_turn`, `POST /stream_turn`, session endpoints, `/health`, `POST /internal/llm/call`
 
-**Tests:** 818 tests across 32 files, ≥70% line coverage (currently ~75%). `turn_assembler.py` at 96%.
+**Tests:** 1025 tests across 42 files, ≥70% line coverage (currently ~75%). `turn_assembler.py` at 96%.
 
 **Known gaps:**
 - HiTL escalation for output path not wired: `orchestrator.py` — when Trust output returns `action: "escalate"`, the escalation call is deferred.
@@ -342,19 +342,19 @@ Normalises inbound channels and delivers responses. Ships as **three independent
 
 A channel and an assembly mode are orthogonal concepts. The mode is the wire protocol used to deliver a turn:
 
-- `direct` — one synchronous request → one `TurnResult`. Suitable for any channel that has a fully assembled user message before invoking Agent Core.
-- `session` — multi-segment input is buffered in Agent Core's `TurnAssembler`, which decides when to invoke `stream_turn()` (semantic gate · silence trigger · max-wait ceiling). Required only when input arrives as a stream of partial segments.
+- `direct` — one request carries one complete utterance (`POST /process_turn` → one `TurnResult`, or `POST /stream_turn` → SSE, run through the TurnAssembler as a request-scoped turn). Suitable for any channel that has a fully assembled user message before invoking Agent Core.
+- `session` — multi-segment input is buffered in Agent Core's `TurnAssembler` as a segment stream, which decides when to invoke `stream_turn()` (semantic gate · silence trigger · max-wait ceiling). Required only when input arrives as a stream of partial segments.
 
 | mode | submit endpoint | when to pick it |
 |---|---|---|
-| `direct` | `POST /process_turn` (sync) or `POST /stream_turn` (SSE) | Whole user message is known at submission time. |
+| `direct` | `POST /process_turn` (sync, no assembler) or `POST /stream_turn` (SSE, request-scoped TurnAssembler turn) | Whole user message is known at submission time. |
 | `session` | `POST /sessions/{id}/input` → 202; stream via `GET /sessions/{id}/events` | Input arrives as VAD/partial segments and the channel needs the assembler to decide turn boundaries. |
 
 **Default channel → mode mapping:**
 
 | Channel | Mode | Why |
 |---|---|---|
-| CLI | `direct` | A line-buffered prompt is a complete utterance; session mode would buy nothing. CLI does *not* need TurnAssembler. |
+| CLI | `direct` | A line-buffered prompt is a complete utterance; session mode would buy nothing. CLI direct mode uses `POST /process_turn`, which does not use the TurnAssembler. |
 | Web | `direct` (default) or `session` | Configurable per deployment. Defaults to `direct` because the SPA submits whole messages. |
 | Voice | `session` (only) | Voice is constrained to session mode — VAD emits partial segments and barge-in/turn-completion semantics are owned by the assembler. |
 
@@ -364,7 +364,7 @@ A channel is therefore *not* identified by its mode — Web can run in either mo
 
 | Channel | Status | Notes |
 |---------|--------|-------|
-| CLI (`reach_layer/cli/`) | ✅ | `CLIReach` — direct mode, readline loop, port-free. No TurnAssembler. |
+| CLI (`reach_layer/cli/`) | ✅ | `CLIReach` — direct mode, readline loop, port-free. Uses `/process_turn`, so no TurnAssembler. |
 | Web (`reach_layer/web/`) | ✅ | FastAPI + React 19 SPA, port 8005. `POST /chat`, `GET /user-history/{user_id}`, `GET /app-config`. Direct mode by default; session mode is supported. Google Sign-In optional. |
 | Voice (`reach_layer/voice/`) | ✅ | `VobizAdapter` on pipecat pipeline (VAD → Raya STT → AgentCoreLLM → Raya TTS → SIP), port 8006. Session mode (required by VAD-driven input). Barge-in supported. 166 tests. Call recording (audit) — ✅ behind `reach_layer.channels.voice.recording.source` config switch (default: disabled). Sources: vobiz native + Pipecat pipeline tap. Stores: local + S3. Sidecar JSON manifest + Observability signals + OTel `recording.lifecycle` span. |
 | MCP (`reach_layer/mcp/`) | ✅ | Model Context Protocol server exposing `dpg.send_message` tool over SSE transport, port 8007. Supports API-key auth, caller namespacing, and streaming progress updates (GH-338). |
@@ -498,10 +498,10 @@ Agent Core: deliver response → Reach Layer
 | Path | Endpoint | Response | Default channel |
 |---|---|---|---|
 | Sync | `POST /process_turn` | `TurnResult` JSON | Web, CLI |
-| Streaming (SSE) | `POST /stream_turn` | `SignalEvent` → `SentenceEvent`s → `DoneEvent` | Web (when SSE preferred), CLI |
+| Streaming (SSE), via TurnAssembler (request-scoped) | `POST /stream_turn` | `SignalEvent` → `SentenceEvent`s → `DoneEvent` | Web (when SSE preferred), CLI |
 | Session/TurnAssembler | `POST /sessions/{id}/input` + `GET /sessions/{id}/events` | SSE subscription | Voice (only — VAD multi-segment input) |
 
-All three paths run the same 13-step sequence. TurnAssembler buffers multi-segment input and calls `stream_turn()` in-process when a trigger fires (semantic gate, silence timer, or max-wait ceiling). Channels and modes are independent — see Reach Layer above for the channel ↔ mode default mapping.
+All three paths run the same 13-step sequence. Every streaming turn goes through TurnAssembler: `/stream_turn` as a request-scoped turn (one request = one complete utterance, invoked immediately, no trigger policy); the session endpoints as a segment stream that calls `stream_turn()` in-process when a trigger fires (semantic gate, silence timer, or max-wait ceiling). `/process_turn` does not use it. Channels and modes are independent — see Reach Layer above for the channel ↔ mode default mapping.
 
 ---
 
@@ -682,7 +682,7 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 
 | Block | Status | Notes |
 |---|---|---|
-| Agent Core | ✅ | Orchestrator, multi-provider chat_provider (Anthropic + OpenAI), preprocessing, tool-use loop, async SSE streaming, TurnAssembler, 10-subagent workflow. 818 tests, 32 files, ≥70% coverage. |
+| Agent Core | ✅ | Orchestrator, multi-provider chat_provider (Anthropic + OpenAI), preprocessing, tool-use loop, async SSE streaming, TurnAssembler, 10-subagent workflow. 1025 tests, 42 files, ≥70% coverage. |
 | Knowledge Engine | ✅ | Glossary, ChromaDB RAG, HTTP server (`POST /retrieve`). 192 tests, 13 files, ≥70% coverage. |
 | Memory Layer | ✅ | Redis (session) + Memgraph (user/journey/context graph) + SQLite (audit). 10 HTTP endpoints. 226 tests. |
 | Trust Layer | 🟡 | All 4 sub-blocks implemented. Fail-closed. HiTL: log backend only. Consent: in-process SQLite. 138 tests. |

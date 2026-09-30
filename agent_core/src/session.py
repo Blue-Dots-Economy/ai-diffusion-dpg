@@ -39,6 +39,8 @@ class Session:
     caller_agent_id: Optional[str] = None
     current_turn: Optional[Turn] = None
     ended: bool = False
+    last_activity: float = 0.0  # assembler clock (monotonic s) at last lookup
+    subscribers: int = 0        # open subscribe() loops; evicting under one would end it
     turn_changed: asyncio.Event = field(default_factory=asyncio.Event)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _epoch_counter: int = 0
