@@ -4317,11 +4317,42 @@ class AgentCore(AgentCoreBase):
                     "  [STEP 9] Tool-Use Loop  ✓  tools_called=%s  latency=%dms",
                     tool_names, int((time.time() - t9) * 1000),
                 )
-                logger.info(
-                    "  [STEP 8] LLM Stream Call #2  →  provider=%s  model=%s"
-                    "  message_count=%d",
-                    primary_provider, primary_model, len(messages) + 2,
+                # GH-204 fallback path: when NLU misses `termination_intent`,
+                # the model ends the call itself by calling `end_session`. That
+                # tool is internal — it resolves in ~0 ms and its result
+                # ("acknowledged") carries nothing the model needs to read back,
+                # while its own description already tells the model to speak the
+                # closing line alongside the call. So a second pass here just
+                # regenerates a goodbye the caller is about to hear anyway, at the
+                # cost of a full round trip (946–1206 ms measured on live calls)
+                # on the last turn of every call that ends this way.
+                #
+                # Guarded on text actually existing, by the same predicate the
+                # empty-completion retry above uses: when the model produced none,
+                # this loop is what writes the reply, and skipping it would end the
+                # call in silence. Any other tool in the round still needs its
+                # result read back, so the skip requires end_session to be alone.
+                _skip_final_pass = (
+                    bool(all_tool_calls)
+                    and all(tc.tool_name == "end_session" for tc in all_tool_calls)
+                    and bool(
+                        sentence_index
+                        or token_buffer.strip()
+                        or full_response_text.strip()
+                        or _trust_batcher.has_pending
+                    )
                 )
+                if _skip_final_pass:
+                    logger.info(
+                        "  [STEP 8] LLM Stream Call #2  ⏭  skipped — end_session was "
+                        "the only tool and the closing text is already written"
+                    )
+                else:
+                    logger.info(
+                        "  [STEP 8] LLM Stream Call #2  →  provider=%s  model=%s"
+                        "  message_count=%d",
+                        primary_provider, primary_model, len(messages) + 2,
+                    )
                 t8b = time.time()
 
                 # Resume streaming with tool results — loop handles multi-step tool chains
@@ -4331,6 +4362,8 @@ class AgentCore(AgentCoreBase):
                 _tool_round = 1
 
                 while True:
+                    if _skip_final_pass:
+                        break
                     messages.append(Message(
                         role="assistant",
                         content=[
