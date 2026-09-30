@@ -369,18 +369,29 @@ class AgentCore(AgentCoreBase):
         self._tool_policies = ToolResultPolicies.from_config(config)
         self._remember = RememberTool.from_config(config)
 
-    def _remember_on_saved(self, bundle):
+    def _remember_on_saved(self, bundle, turn_session_values: dict | None = None):
         """Build the callback that mirrors a remembered value into the bundle.
 
         Args:
             bundle: This turn's context bundle.
+            turn_session_values: The sync path's per-turn ``source: session``
+                lookup (``ManagerAgent._session_values``). run_turn copies it
+                once at the start of the turn, so without a refresh a value
+                remembered mid-turn would be invisible to later tool calls in
+                the same turn. The streaming path rebuilds its lookup from the
+                bundle per call and passes None.
 
         Returns:
             Callable ``(scope, key, value) -> None`` that writes into
-            ``bundle.session`` for session scope, else ``bundle.profile``.
+            ``bundle.session`` for session scope, else ``bundle.profile``,
+            and for session scope refreshes ``turn_session_values``.
         """
         def _on_saved(scope: str, key: str, value) -> None:
             (bundle.session if scope == "session" else bundle.profile)[key] = value
+            if scope == "session" and isinstance(turn_session_values, dict):
+                # Rebuild with the same precedence and filtering the turn
+                # started with (profile over session, seeded defaults dropped).
+                turn_session_values.update(self._tool_session_values(bundle))
         return _on_saved
 
     def _persist_tool_cache_sync(self, session_id: str, user_id: str, tool_cache) -> None:
@@ -1341,7 +1352,8 @@ class AgentCore(AgentCoreBase):
                     (lambda _tc, _msgs: self._remember.handle(
                         _tc, _msgs, tool_cache.stored_results_by_tool(),
                         lambda scope, key, value: self._memory.write_strict(session_id, user_id, scope, key, value),
-                        self._remember_on_saved(bundle),
+                        self._remember_on_saved(
+                            bundle, getattr(self._manager_agent, "_session_values", None)),
                     )) if self._remember else None
                 ),
             )

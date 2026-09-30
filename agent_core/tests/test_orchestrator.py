@@ -2252,3 +2252,28 @@ def test_process_turn_run_turn_error_survives_apply_failure():
     agent._memory.apply_tool_results.side_effect = ConnectionError("down")
     with pytest.raises(RuntimeError, match="follow-up LLM call failed"):
         agent.process_turn(_turn_input())
+
+
+def test_sync_remember_value_visible_to_later_session_params_in_same_turn():
+    """A session-scope remember must reach the ManagerAgent's per-turn session values."""
+    from src.remember import RememberTool
+    agent = _make_cached_agent()
+    agent._remember = RememberTool.from_config({"memory_tool": {"name": "remember", "fields": {
+        "profile_action": {"scope": "session"}}}})
+    agent._memory.write_strict.return_value = (True, "")
+    seen = {}
+
+    def _run_turn(*args, **kwargs):
+        # ManagerAgent._reset_turn_flags installs the per-turn dict first.
+        agent._manager_agent._session_values = dict(kwargs["session_values"])
+        r = kwargs["remember_handler"](ToolCall(
+            tool_name="remember", tool_use_id="tu_r",
+            input_params={"field": "profile_action", "value": "use_existing"}), [])
+        seen["ok"] = r.success
+        seen["values"] = dict(agent._manager_agent._session_values)
+        return ("ok", [], [])
+
+    agent._manager_agent.run_turn.side_effect = _run_turn
+    agent.process_turn(_turn_input())
+    assert seen["ok"] is True
+    assert seen["values"]["profile_action"] == "use_existing"
