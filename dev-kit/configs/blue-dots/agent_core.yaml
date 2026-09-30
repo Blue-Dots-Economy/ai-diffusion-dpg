@@ -117,9 +117,10 @@ channels:
       actual answer.
 
       ## Prior tool results
-      Prior tool results in this conversation are visible to you as real
-      tool_result messages earlier in the message history. Do not re-invoke
-      a tool unless the relevant parameters have changed; reuse the
+      Prior tool results in this conversation are in <known_facts> or, for
+      a tool with no entry there, visible to you as real tool_result
+      messages earlier in the message history. Do not re-invoke a tool
+      unless the relevant parameters have changed; reuse the
       already-returned data when answering follow-up questions.
 
       ## Phone numbers, IDs, and internal state
@@ -363,10 +364,13 @@ conversation:
     fail_action: "none"
 
 # Framework `remember` tool: lets the model record which profile the caller
-# chose so later turns and a redial find it in <known_facts>. profile_item_id
+# chose. Remembered values are written to session state (scope: session), NOT
+# to <known_facts>; a redial (new session) sees them only if Memory Layer
+# adopts the prior session's state. profile_item_id
 # must equal an item_id that really appeared in a fetch_profile/save_profile
-# result. apply_job's profile_item_id is NOT yet sourced from session; that
-# follows once a live run confirms `remember` is being called.
+# result. No prompt currently calls `remember`; the block stays declared so it
+# can be switched on without a schema change. apply_job's profile_item_id is
+# NOT sourced from session.
 memory_tool:
   name: remember
   fields:
@@ -389,8 +393,9 @@ connectors:
       description: >
         Look up the caller's seeker profile(s) by phone number. Returns
         zero, one, or many profiles. Call on the first turn; later, use the
-        fetch_profile entry in <known_facts> unless the caller says their
-        details changed. Takes no parameters — the caller's phone is
+        fetch_profile entry of <known_facts> or, if there is none, the
+        earlier fetch_profile result, unless the caller says their details
+        changed. Takes no parameters — the caller's phone is
         injected from the session user_id by the rest_api adapter.
       input_schema:
         type: object
@@ -398,8 +403,10 @@ connectors:
         additionalProperties: false
       invocation_rules:
         call_when: >
-          Use the fetch_profile entry in <known_facts> when present; call
-          only if it is absent or the caller says their details changed
+          Use the fetch_profile entry of <known_facts> or, if there is
+          none, the earlier fetch_profile result in this conversation. An
+          empty <known_facts> alone is no reason to call again. Call only
+          if neither exists, or the caller says their details changed
           (then pass force_refresh=true).
         required_before_calling: []
         must_not_substitute: >
@@ -1856,9 +1863,10 @@ agent_workflow:
         city, then hand over. You never search here.
 
         ## What you already know
-        `fetch_profile` ran in the opening phase and its result is in the
-        fetch_profile entry of <known_facts>. Read it — do not call it again unless it is
-        genuinely absent.
+        `fetch_profile` ran in the opening phase. Its result is the
+        fetch_profile entry of <known_facts> or, if there is none, the
+        earlier fetch_profile result. Read it — do not call it again unless
+        both are genuinely absent.
 
         ## The ONLY test for "do they have a usable profile"
         `profile_item_id` in <known_profile> is non-empty ONLY when the
@@ -1904,9 +1912,6 @@ agent_workflow:
           • They accept ("हाँ", "ठीक है", "इन्हीं से") → you are done.
             Say nothing further and let routing move on; the trade and
             city are already in session.
-            Before you finish, call `remember` with `profile_action` =
-            use_existing. Save only that field; profile_item_id is already
-            set by the system. Do not say anything about it.
           • They decline ("नहीं", "दूसरा काम", they name a different
             trade or city) → their words win over the stored values.
             Continue as Path B for whatever is now missing.
@@ -2390,8 +2395,8 @@ agent_workflow:
           - profile_item_id: OMIT (this is a CREATE)
 
         ## save_profile body — update_existing
-        The chosen profile's existing fields are in fetch_profile's
-        tool_result (in conversation history). Ask ONCE: "What would
+        The chosen profile's existing fields are in the fetch_profile
+        entry of <known_facts> (or the earlier fetch_profile result). Ask ONCE: "What would
         you like to change about your profile?" Capture the new
         value. Confirm ONCE: "Got it — <field> updated to <value>,
         everything else stays the same. Should I save?" On the user's
@@ -2554,7 +2559,7 @@ agent_workflow:
         | Field              | Caller HAD a live profile                | Profile was just created              |
         |--------------------|------------------------------------------|---------------------------------------|
         | profile_item_id    | the live item's `item_id` from the       | the new profile's `item_id`           |
-        |                    | fetch_profile tool_result — the SAME     | from save_profile's response          |
+        |                    | fetch_profile result — the SAME          | from save_profile's response          |
         |                    | value already in session as              | items[] array (the last one by        |
         |                    | profile_item_id                          | created_at = the one just created)    |
         | acting_as_user_id  | `source_item_owner` from the same        | save_profile's top-level `user_id`    |
@@ -2564,6 +2569,9 @@ agent_workflow:
         | role               | selected job's `role` from fetch_jobs    | (same)                                |
         | age                | profile.age from fetch_profile           | save_profile's response               |
         | work_experience    | profile.work_experience                  | save_profile's response               |
+
+        "fetch_profile" above means the fetch_profile entry of
+        <known_facts> (or the earlier fetch_profile result).
 
         ## ONE application. ONE apply_job call. Ever.
         The caller chose ONE job. You send ONE application, with ONE
@@ -2647,8 +2655,9 @@ agent_workflow:
         If the caller names a different job after a failure, do exactly the
         same thing for the new job — re-fetch, match, apply.
 
-        All these values are in your conversation history — the
-        respective tool_results are still in context. Read them.
+        The fetch_profile values are in <known_facts> (or the earlier
+        fetch_profile result); the others are in the respective
+        tool_results still in context. Read them.
 
         ## Confirmation policy
         The caller has ALREADY said they want this job — that is what
