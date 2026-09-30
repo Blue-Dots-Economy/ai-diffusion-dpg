@@ -574,6 +574,19 @@ class ChannelsTopLevelConfig(BaseModel):
     )
 
 
+class EntityPersistenceConfig(BaseModel):
+    """Where NLU-extracted entities are written: session or persistent."""
+
+    scope: Literal["session", "persistent"] = Field(
+        default="persistent",
+        description=(
+            "persistent = written to the caller's profile store and returned on "
+            "a later call; session = this call only. Session scope keeps routing "
+            "conditions off the profile store."
+        ),
+    )
+
+
 class AgentCoreConfig(BaseModel):
     server: ServerConfig
     agent: AgentConfig
@@ -589,6 +602,9 @@ class AgentCoreConfig(BaseModel):
     learning_client: ClientConfig
     action_gateway_client: ClientConfig
     preprocessing: PreprocessingConfig
+    entity_persistence: EntityPersistenceConfig = Field(
+        default_factory=EntityPersistenceConfig
+    )
     entity_to_profile_field: dict[str, str] = Field(
         default_factory=dict,
         description="Maps NLU entity names to UserProfile declared_fields in the Memory Layer. "

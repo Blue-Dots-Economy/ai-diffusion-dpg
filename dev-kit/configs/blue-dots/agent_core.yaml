@@ -989,6 +989,24 @@ preprocessing:
       distance_issue: constraint
       counsellor_request: escalation_signal
 
+# NLU entities are CALL-scoped working state, not durable identity.
+#
+# The default is "persistent", which writes every extracted entity to Memgraph
+# and reads it back on the next turn via bundle.profile. That makes ordinary
+# turn-to-turn flow control depend on a graph database being reachable: with
+# Memgraph down, a caller says "28 साल" and "वेल्डिंग", the NLU extracts both
+# (logged entities=['age'], entities=['trade']), and the next turn sees
+# age=0 and trade="" — so the phase asks again. Measured locally exactly that
+# way, and it is the shape of the repeated-question complaints from the VM.
+#
+# Session scope puts them in Redis instead: they survive the call, reset with
+# it, and need nothing but Redis to work. Durable identity is not lost — it
+# was never Memgraph's job here. fetch_profile reads it from Signals at the
+# start of every call, which is the system of record, and session_mapping
+# lifts the parts routing needs. Memgraph keeps its analytics role.
+entity_persistence:
+  scope: session
+
 entity_to_profile_field:
   # Written into session state the moment NLU extracts it, so the opening
   # subagent's routing rules can read it back on the same turn.
@@ -1928,7 +1946,13 @@ agent_workflow:
         time. Routes to job_match once both are known.
       is_start: false
       is_terminal: false
-      opening_phrase: ""
+      # Emitted only on an adopted-state callback that lands straight in this
+      # phase; the normal path enters from `opening`, which has already
+      # greeted. The trade question is the right default because it is what
+      # Path B asks first, and a caller who does have a stored profile is
+      # offered it by the prompt on the same turn.
+      opening_phrase: >
+        आप किस काम या ट्रेड में नौकरी ढूंढ रहे हैं?
 
       valid_intents:
         - any_input

@@ -641,3 +641,10 @@ class ObservabilitySection(BaseModel):
     """
     model_config = ConfigDict(extra="forbid")
     domain: str = Field(..., min_length=1, pattern=r"^[a-z][a-z0-9_-]*$")
+
+
+class EntityPersistenceConfig(BaseModel):
+    """Mirrors runtime EntityPersistenceConfig — where NLU entities are written."""
+
+    model_config = ConfigDict(extra="forbid")
+    scope: str = "persistent"
