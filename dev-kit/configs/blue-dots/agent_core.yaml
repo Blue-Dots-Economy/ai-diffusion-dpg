@@ -43,7 +43,7 @@ agent:
   # on. Not read while ask_for_consent is false; the live consent wording
   # is the `opening` subagent's opening_phrase and system prompt.
   consent_prompt: >
-    क्या मैं आपकी जानकारी सेव करके आपकी ओर से नौकरी के आवेदन भेज सकता हूँ?
+    क्या मैं आपकी जानकारी सेव करके आपकी ओर से नौकरी के आवेदन भेज सकती हूँ?
     जारी रखने के लिए हाँ कहिए।
 
   # Apply flow chains up to three tools (onboard → apply_job is the worst
@@ -508,19 +508,19 @@ conversation:
   # So these are written in Hindi, to match the rest of the domain. If
   # language detection is ever turned on, translation starts working and
   # these become the Hindi source text rather than the final output.
-  blocked_message: "माफ़ कीजिए, मैं इसमें मदद नहीं कर सकता।"
-  escalation_message: "मैं आपको एक काउंसलर से जोड़ता हूँ जो आगे मदद कर सकेंगे।"
+  blocked_message: "माफ़ कीजिए, मैं इसमें मदद नहीं कर सकती।"
+  escalation_message: "मैं आपको एक काउंसलर से जोड़ती हूँ जो आगे मदद कर सकेंगे।"
   output_blocked_message: "माफ़ कीजिए, जवाब देने में दिक्कत आ रही है। क्या आप दोबारा पूछ सकते हैं?"
-  unknown_intent_message: "माफ़ कीजिए, मैं ठीक से सुन नहीं पाया। क्या आप दोबारा कह सकते हैं?"
+  unknown_intent_message: "माफ़ कीजिए, मैं ठीक से सुन नहीं पाई। क्या आप दोबारा कह सकते हैं?"
   termination_message: "ब्लू डॉट्स इस्तेमाल करने के लिए धन्यवाद। आपका दिन शुभ हो।"
   unsupported_language_message: >
-    माफ़ कीजिए, मैं सिर्फ़ हिंदी, अंग्रेज़ी या गुजराती में मदद कर सकता हूँ।
+    माफ़ कीजिए, मैं सिर्फ़ हिंदी, अंग्रेज़ी या गुजराती में मदद कर सकती हूँ।
     क्या आप इनमें से किसी एक भाषा में बात कर सकते हैं?
   consent_decline_ack: >
     कोई बात नहीं — हम आपकी निजता का सम्मान करते हैं। आपकी जानकारी सेव
     नहीं की जाएगी।
-  profile_complete_message: "धन्यवाद — अब मैं आपके लिए नौकरियाँ देखता हूँ।"
-  returning_user_greeting: "आपका फिर से स्वागत है! देखता हूँ आज आपके लिए क्या उपलब्ध है।"
+  profile_complete_message: "धन्यवाद — अब मैं आपके लिए नौकरियाँ देखती हूँ।"
+  returning_user_greeting: "आपका फिर से स्वागत है! देखती हूँ आज आपके लिए क्या उपलब्ध है।"
 
   # GH-139 user mental-state model — disabled for blue-dots; the flow is
   # linear enough not to need state-conditioned prompts.
@@ -647,7 +647,7 @@ connectors:
           आप किस ट्रेड में काम ढूंढ रहे हैं?
         on_failure: >
           माफ़ कीजिए, अभी आपकी जानकारी नहीं मिल पा रही। मैं थोड़ी
-          देर में दोबारा कोशिश करता हूँ।
+          देर में दोबारा कोशिश करती हूँ।
         bridge_line: "एक पल —"
 
     - name: fetch_jobs
@@ -681,8 +681,8 @@ connectors:
           के शहरों में देखूँ, या किसी और ट्रेड में?
         on_failure: >
           माफ़ कीजिए, नौकरियों की सेवा अभी उपलब्ध नहीं है। मैं थोड़ी देर
-          में दोबारा कोशिश करता हूँ।
-        bridge_line: "मैं आपके लिए नौकरियाँ देखता हूँ।"
+          में दोबारा कोशिश करती हूँ।
+        bridge_line: "मैं आपके लिए नौकरियाँ देखती हूँ।"
     - name: save_profile
       description: >
         Create a new seeker profile or update an existing one. The
@@ -750,8 +750,8 @@ connectors:
           or from the chosen profile's existing state (for update
           paths).
         on_failure: >
-          माफ़ कीजिए, आपकी जानकारी सेव नहीं हो पाई। मैं एक बार और कोशिश करता हूँ।
-        bridge_line: "मैं आपकी जानकारी सेव कर रहा हूँ।"
+          माफ़ कीजिए, आपकी जानकारी सेव नहीं हो पाई। मैं एक बार और कोशिश करती हूँ।
+        bridge_line: "मैं आपकी जानकारी सेव कर रही हूँ।"
 
     - name: apply_job
       description: >
@@ -812,8 +812,8 @@ connectors:
           Never submit without an explicit yes/confirm in the most
           recent user turn.
         on_failure: >
-          माफ़ कीजिए, आवेदन जमा नहीं हो पाया। मैं दोबारा कोशिश करता हूँ।
-        bridge_line: "मैं आपका आवेदन भेज रहा हूँ।"
+          माफ़ कीजिए, आवेदन जमा नहीं हो पाया। मैं दोबारा कोशिश करती हूँ।
+        bridge_line: "मैं आपका आवेदन भेज रही हूँ।"
 
   internal: []   # No knowledge_retrieval — KE not used in this domain.
 
@@ -1213,6 +1213,45 @@ agent_workflow:
       "What's your full name?"
     The caller does not need to know your internal workflow.
 
+    ## You are female — speak in feminine Hindi forms (HARD RULE)
+    The configured voice is a woman's. Hindi verbs agree with the speaker's
+    gender, so every first-person form you utter about YOURSELF must be
+    feminine. A feminine voice saying masculine verbs is immediately wrong to
+    any Hindi speaker, and it is wrong on every generated sentence, not only
+    the fixed ones.
+
+      मैं देखती हूँ          not  मैं देखता हूँ
+      मैं भेज रही हूँ         not  मैं भेज रहा हूँ
+      मैं कर सकती हूँ        not  मैं कर सकता हूँ
+      मैं समझ नहीं पाई       not  मैं समझ नहीं पाया
+      मैं आपको जोड़ती हूँ     not  मैं आपको जोड़ता हूँ
+      मैं आवेदन नहीं भेज सकती  not  ... नहीं भेज सकता
+
+    ### This applies to YOUR OWN verbs and nothing else
+    It is the single most important limit on this rule, and the easy mistake
+    is to extend it to the caller.
+
+    **Verbs about the CALLER stay in the neutral polite form.** You do not know
+    their gender and must not guess it from your own:
+
+      आप क्या काम ढूंढ रहे हैं?        not  ... ढूंढ रही हैं?
+      आप किस नौकरी के लिए आवेदन       not  ... करना चाहेंगी?
+        करना चाहेंगे?
+      आपने जो बताया                   not  gendered variants of it
+
+    Measured: with only "speak as a woman" stated, the model started saying
+    "आप ... करना चाहेंगी?" to a male caller — it applied the rule to the
+    person it was talking to, not to itself.
+
+    Use a feminine form for the caller ONLY if they have told you they are a
+    woman, or the profile says so.
+
+    **Quoting the caller keeps their words.** A man saying "मैं वेल्डिंग का
+    काम करता हूँ" is correct and must never be rewritten.
+
+    **Verbs agreeing with a noun are unaffected**: "आवेदन भेज दिया गया है"
+    agrees with आवेदन, not with you, and stays as it is.
+
     ## Language
     Default to HINDI, written in Devanagari. This block used to say
     "default to English", which contradicted every channel suffix and was
@@ -1227,7 +1266,7 @@ agent_workflow:
     enum values, job roles, employer names, area names. Speaking one of
     them is not permission to finish the sentence in English — this was
     the single most common way replies drifted on the PoC calls, e.g.
-    'मैं आपके अनुभव को "Worked before" के रूप में सेव कर देता हूँ।' followed
+    'मैं आपके अनुभव को "Worked before" के रूप में सेव कर देती हूँ।' followed
     by a fully English next turn.
 
     Rules:
@@ -1381,7 +1420,7 @@ agent_workflow:
     सैलरी" ("the highest salary"). A job is described, not sold.
 
     **No waiting messages.** Never "कृपया प्रतीक्षा करें", "ज़रा इंतज़ार
-    करें", "थोड़ी देर", "मैं देख रहा हूँ" ("please wait", "wait a moment",
+    करें", "थोड़ी देर", "मैं देख रही हूँ" ("please wait", "wait a moment",
     "a little while", "I'm looking"). The channel emits a short neutral
     hold by itself; you never narrate a lookup.
 
@@ -1643,7 +1682,7 @@ agent_workflow:
         refuse, do not stall, and do not invent. Say you will look
         right after one detail, and ask the age in the same breath:
 
-          "बिल्कुल, अभी देखता हूँ — बस एक बात बताइए, आपकी उम्र क्या है?"
+          "बिल्कुल, अभी देखती हूँ — बस एक बात बताइए, आपकी उम्र क्या है?"
           ("Of course, I'll look right away — just tell me one thing,
             what is your age?")
 
@@ -1930,7 +1969,7 @@ agent_workflow:
       is_terminal: true
       opening_phrase: >
         कोई बात नहीं। आपकी कोई जानकारी सेव नहीं की गई है। आपकी सहमति के
-        बिना मैं आपकी ओर से नौकरी के आवेदन नहीं भेज सकता। फ़ोन करने के लिए
+        बिना मैं आपकी ओर से नौकरी के आवेदन नहीं भेज सकती। फ़ोन करने के लिए
         धन्यवाद।
       special_handler: null
       valid_intents: []
@@ -3091,7 +3130,7 @@ agent_workflow:
       is_start: false
       is_terminal: false
       opening_phrase: >
-        माफ़ कीजिए, मैं ठीक से समझ नहीं पाया। आप क्या ढूंढ रहे हैं,
+        माफ़ कीजिए, मैं ठीक से समझ नहीं पाई। आप क्या ढूंढ रहे हैं,
         थोड़ा और बता सकते हैं?
       special_handler: null
       valid_intents:

@@ -39,7 +39,7 @@ trust:
     # Caller-facing strings below are returned to Agent Core and spoken to
     # the caller VERBATIM — no LLM, no translation step. Hindi, like every
     # other verbatim string in this domain.
-    blocked_input_message: "माफ़ कीजिए, मैं इस विषय में मदद नहीं कर सकता।"
+    blocked_input_message: "माफ़ कीजिए, मैं इस विषय में मदद नहीं कर सकती।"
 
   output_rules:
     blocked_phrases:
@@ -62,7 +62,7 @@ trust:
             - "MUST frame all opportunities as possibilities, not certainties"
           required_disclosures:
             - "Hiring decisions rest with the employer"
-          refusal_template: "मैं किसी नौकरी के मिलने की गारंटी नहीं दे सकता।"
+          refusal_template: "मैं किसी नौकरी के मिलने की गारंटी नहीं दे सकती।"
 
         hallucinated_reality:
           severity: "blocker"
@@ -159,7 +159,7 @@ trust:
   hitl:
     queue_backend: "log"
     holding_message: >
-      मैं आपको एक सलाहकार से जोड़ रहा हूँ — कोई चौबीस घंटे के अंदर आपको
+      मैं आपको एक सलाहकार से जोड़ रही हूँ — कोई चौबीस घंटे के अंदर आपको
       वापस कॉल करेगा।
     # notification_webhook backend tracked in GH-36.
     notification_webhook: null

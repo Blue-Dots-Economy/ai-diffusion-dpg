@@ -73,10 +73,10 @@ reach_layer:
       # happening" — so every phrase here is the same two words.
       #
       # What the previous phrases broke:
-      #   fetch_profile "मैं देख रहा हूँ"  — on the spec's explicit banned list
-      #   fetch_jobs    "नौकरियाँ देख रहा हूँ" — reveals the lookup
-      #   save_profile  "सेव कर रहा हूँ"   — status narration
-      #   apply_job     "आवेदन भेज रहा हूँ" — hard law 4: claims the apply
+      #   fetch_profile "मैं देख रही हूँ"  — on the spec's explicit banned list
+      #   fetch_jobs    "नौकरियाँ देख रही हूँ" — reveals the lookup
+      #   save_profile  "सेव कर रही हूँ"   — status narration
+      #   apply_job     "आवेदन भेज रही हूँ" — hard law 4: claims the apply
       #                 BEFORE a result exists. apply_job is not in the
       #                 spec's permitted-hold list at all, so it gets none.
       tool_status_phrases:
