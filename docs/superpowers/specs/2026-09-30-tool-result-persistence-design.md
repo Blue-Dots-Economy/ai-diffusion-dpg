@@ -153,7 +153,7 @@ One shared helper, used by the sync tool loop and both stream-loop execute sites
 - **Otherwise** → live call. Outcome `miss`.
 
 ### 7.4 Grounding sees stored results
-`ungrounded_params()` gains an optional `stored_results: dict[str, list[str]]` argument (tool name → serialised `data` of unexpired entries). All three call sites pass it. A value found in a stored `fetch_profile` entry is grounded exactly as if the `fetch_profile` exchange were still in the message list. Without this, the replay filter (§7.2) would hide grounding sources.
+`ungrounded_params()` gains an optional `stored_results: dict[str, list[str]]` argument (tool name → serialised `data` of unexpired entries, plus entries invalidated earlier in the same turn — the model has already seen that data; invalidated data is never served or rendered). All three call sites pass it. A value found in a stored `fetch_profile` entry is grounded exactly as if the `fetch_profile` exchange were still in the message list. Without this, the replay filter (§7.2) would hide grounding sources.
 
 ### 7.5 After a live call
 - **Store:** only if the call succeeded, `ToolResult.projected` is `true`, and `result_text` parses as JSON. Otherwise nothing is stored: outcome `reject_unprojected` when the result wasn't projected, `reject_invalid` when its text isn't valid JSON. Errors are never stored.
@@ -206,7 +206,7 @@ The LLM decides values that depend on the caller's choice, for example which of 
 - `fetch_jobs`: evaluate `cache` (`scope: session`, `vary_on: [trade, location]`) during rollout.
 - Add `memory_tool` with `profile_item_id` (`grounded_in: [fetch_profile, save_profile]`) and `profile_action`.
 - `apply_job` / `save_profile`: move `profile_item_id` and `acting_as_user_id` to `source: session` once `remember` covers the multi-profile case. `grounded_params` stays as defence in depth.
-- Prompts: replace "call once / has not been called" wording and "save profile_item_id" with references to `<known_facts>` and `remember`.
+- Prompts: replace "call once / has not been called" wording with references to `<known_facts>` (falling back to the earlier fetch_profile result when it is empty). No prompt calls `remember` yet: nothing reads `profile_action`, and each call costs a voice round trip; enable it when a consumer exists or the follow-up-skip (§8) lands.
 - Set `TOOL_RESULT_KEY_SECRET` in deploy secrets.
 
 ## 13. Testing
