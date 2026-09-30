@@ -38,7 +38,6 @@ state:
       # fetch_profile so subsequent tool calls (update_profile, apply_job)
       # have somewhere to read from.
       profile_item_id:         { type: string, default: "" }
-      profile_instance_url:    { type: string, default: "" }
       source_item_owner:       { type: string, default: "" }   # user.id from onboard
       name:                    { type: string, default: "" }
       age:                     { type: int,    default: 0 }
@@ -57,15 +56,10 @@ state:
       stored_trade:            { type: string, default: "" }
       stored_location:         { type: string, default: "" }
       # Job search results + selection
-      last_jobs:               { type: list,   default: [] }   # compact dicts: item_id, role, company, city, salary_range
       selected_job_item_id:    { type: string, default: "" }
-      selected_job_instance_url: { type: string, default: "" }
-      selected_job_role:       { type: string, default: "" }
-      selected_job_company:    { type: string, default: "" }
       # Profile-choice state (written during profile_choice/profile_setup phases)
       profile_action:          { type: enum,   values: ["use_existing", "create_new", "update_existing", ""], default: "" }
       profile_setup_done:      { type: enum,   values: ["true", "false"], default: "false" }
-      profiles_from_onboard:   { type: list,   default: [] }   # snapshot of list_user_profiles result
       # Application outcome
       last_application_id:     { type: string, default: "" }
       applications_submitted:  { type: int,    default: 0 }
