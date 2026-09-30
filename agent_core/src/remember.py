@@ -10,11 +10,11 @@ Never sent to Action Gateway.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Union
 
-from src.manager_agent import ungrounded_params
 from src.models import ToolCall, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,117 @@ class RememberField:
     scope: str
     description: str = ""
     grounded_in: tuple[str, ...] = ()
+
+
+def _collect_leaf_values(obj: Any) -> set[str]:
+    """Recursively collect all scalar leaf values from a JSON-like object.
+
+    Traverses dicts and lists recursively, extracting every scalar value
+    (str, int, float, bool) at the leaves. Used to find all possible
+    grounding candidates in a parsed tool result.
+
+    Args:
+        obj: A parsed JSON object (dict, list, or scalar).
+
+    Returns:
+        A set of string representations of all scalar leaves.
+    """
+    leaves = set()
+    if isinstance(obj, dict):
+        for v in obj.values():
+            leaves.update(_collect_leaf_values(v))
+    elif isinstance(obj, (list, tuple)):
+        for item in obj:
+            leaves.update(_collect_leaf_values(item))
+    elif isinstance(obj, (str, int, float, bool)):
+        leaves.add(str(obj))
+    return leaves
+
+
+def _ground_check(value: str, grounded_in: tuple[str, ...], messages: list,
+                  stored_results: dict[str, list[str]]) -> bool:
+    """Check if a value is grounded in a tool result (exact match).
+
+    Builds a map of tool_use_id to tool_name from tool_use blocks, then
+    collects candidate texts from tool_result blocks (whose tool_use_id
+    maps to a tool in grounded_in) plus stored_results for those tools.
+    For each text, attempts json.loads; if that fails, tries from the
+    first "{" or "[" onward (for stored-result prefix). Skips the
+    stored-result prefix "(stored result, fetched N min ago) ".
+    Collects all scalar leaf values and accepts only if value is exactly
+    one of them.
+
+    Args:
+        value: The value to ground.
+        grounded_in: Tool names that may produce this value.
+        messages: Message history containing tool blocks.
+        stored_results: Cached tool results by tool name.
+
+    Returns:
+        True if value is grounded in one of the specified tools.
+    """
+    if not grounded_in:
+        return True
+
+    # Map tool_use_id -> tool_name
+    origin: dict[str, str] = {}
+    for msg in messages or []:
+        for block in getattr(msg, "content", None) or []:
+            if getattr(block, "type", "") == "tool_use":
+                origin[str(getattr(block, "tool_use_id", ""))] = str(
+                    getattr(block, "tool_name", "")
+                )
+
+    # Collect candidate texts from messages and stored_results
+    candidates: list[str] = []
+    grounded_set = set(grounded_in)
+
+    # From messages
+    for msg in messages or []:
+        for block in getattr(msg, "content", None) or []:
+            if getattr(block, "type", "") != "tool_result":
+                continue
+            tool_use_id = str(getattr(block, "tool_use_id", ""))
+            if origin.get(tool_use_id) in grounded_set:
+                content = getattr(block, "content", "")
+                if isinstance(content, str) and content:
+                    candidates.append(content)
+
+    # From stored_results
+    for tool in grounded_in:
+        for text in stored_results.get(tool, []):
+            if isinstance(text, str) and text:
+                candidates.append(text)
+
+    # Parse each candidate and collect leaf values
+    all_leaves: set[str] = set()
+    for text in candidates:
+        # Try to strip stored-result prefix
+        clean = text
+        if clean.startswith("(stored result, fetched"):
+            idx = clean.find(") ")
+            if idx >= 0:
+                clean = clean[idx + 2:]
+
+        # Try json.loads
+        obj = None
+        try:
+            obj = json.loads(clean)
+        except (json.JSONDecodeError, ValueError):
+            # Try from first { or [
+            for start_char in ["{", "["]:
+                idx = clean.find(start_char)
+                if idx >= 0:
+                    try:
+                        obj = json.loads(clean[idx:])
+                        break
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+
+        if obj is not None:
+            all_leaves.update(_collect_leaf_values(obj))
+
+    return value in all_leaves
 
 
 def _reject(tool_call: ToolCall, name: str, message: str) -> ToolResult:
@@ -128,7 +239,8 @@ class RememberTool:
 
         Checks that:
         - The field name is defined.
-        - The value is not empty.
+        - The value is a string.
+        - The value is not empty after stripping.
         - If the field is grounded, the value appears in a specified tool's results.
 
         Args:
@@ -145,13 +257,13 @@ class RememberTool:
             return _reject(tool_call, self.name,
                            f"You can only save these fields: {', '.join(sorted(self._fields))}.")
         value = params.get("value")
-        if value in (None, ""):
+        if not isinstance(value, str):
+            return _reject(tool_call, self.name, "value must be text.")
+        value = value.strip()
+        if not value:
             return _reject(tool_call, self.name, f"No value given for {f.name}.")
         if f.grounded_in:
-            probe = ToolCall(tool_name=self.name, tool_use_id=tool_call.tool_use_id,
-                             input_params={"value": value})
-            if ungrounded_params({"value": list(f.grounded_in)}, probe, messages,
-                                 stored_results=stored_results, strict=True):
+            if not _ground_check(value, f.grounded_in, messages, stored_results or {}):
                 return _reject(tool_call, self.name,
                                f"{f.name} must be copied exactly from a "
                                f"{' or '.join(f.grounded_in)} result. Re-read it and try again.")
@@ -161,8 +273,9 @@ class RememberTool:
               on_saved: Callable[[str, str, Any], None]) -> ToolResult:
         """Finalize the save and return the result.
 
-        If the Memory Layer accepted the write, call on_saved and return success.
-        Otherwise, return a rejection.
+        If the Memory Layer accepted the write, calls on_saved and returns success.
+        If on_saved raises, logs a warning but still returns success (value is persisted).
+        Otherwise, returns a rejection.
 
         Args:
             tool_call: The remember tool call.
@@ -177,7 +290,12 @@ class RememberTool:
         """
         if not ok:
             return _reject(tool_call, self.name, f"Not saved: {reason}")
-        on_saved(f.scope, f.name, value)
+        try:
+            on_saved(f.scope, f.name, value)
+        except Exception as e:
+            logger.warning("tool_result", extra={"operation": "remember.on_saved",
+                                                  "status": "error",
+                                                  "exception_class": type(e).__name__})
         logger.info("tool_result", extra={"operation": "remember.handle", "status": "success",
                                           "tool": self.name, "outcome": "remember_write"})
         return ToolResult(tool_use_id=tool_call.tool_use_id, tool_name=self.name,
@@ -190,7 +308,8 @@ class RememberTool:
 
         Checks the tool call for grounding and field validity, then delegates
         to write_strict for type/enum validation. If both checks pass, calls
-        on_saved and returns success.
+        on_saved and returns success. Never raises; errors are surfaced as
+        REMEMBER_REJECTED ToolResults.
 
         Args:
             tool_call: The remember tool call.
@@ -206,7 +325,13 @@ class RememberTool:
         if isinstance(checked, ToolResult):
             return checked
         f, value = checked
-        ok, reason = write_strict(f.scope, f.name, value)
+        try:
+            ok, reason = write_strict(f.scope, f.name, value)
+        except Exception as e:
+            logger.warning("tool_result", extra={"operation": "remember.write_strict",
+                                                  "status": "error",
+                                                  "exception_class": type(e).__name__})
+            return _reject(tool_call, self.name, "Not saved: could not store the value.")
         return self._done(tool_call, f, value, ok, reason, on_saved)
 
     async def handle_async(self, tool_call: ToolCall, messages: list,
@@ -218,7 +343,8 @@ class RememberTool:
         The async variant of handle, used in stream contexts.
         Checks the tool call for grounding and field validity, then delegates
         to write_strict for type/enum validation. If both checks pass, calls
-        on_saved and returns success.
+        on_saved and returns success. Never raises; errors are surfaced as
+        REMEMBER_REJECTED ToolResults.
 
         Args:
             tool_call: The remember tool call.
@@ -234,5 +360,11 @@ class RememberTool:
         if isinstance(checked, ToolResult):
             return checked
         f, value = checked
-        ok, reason = await write_strict(f.scope, f.name, value)
+        try:
+            ok, reason = await write_strict(f.scope, f.name, value)
+        except Exception as e:
+            logger.warning("tool_result", extra={"operation": "remember.write_strict",
+                                                  "status": "error",
+                                                  "exception_class": type(e).__name__})
+            return _reject(tool_call, self.name, "Not saved: could not store the value.")
         return self._done(tool_call, f, value, ok, reason, on_saved)
