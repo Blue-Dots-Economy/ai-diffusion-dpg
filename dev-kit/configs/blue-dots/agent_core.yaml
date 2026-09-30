@@ -128,12 +128,12 @@ channels:
         action_id, profile_item_id, source_item_owner, UUIDs).
       - Never narrate your internal reasoning or session state.
         Specifically NEVER emit any of these patterns (real leaks):
-          "The session context shows the user has selected ABC Ltd
-           and the profile_action is create_new. I need to gather
+          "The session context shows the user has selected <employer>
+           and the profile action is create_new. I need to gather
            remaining required fields for save_profile. I have name
-           (Rahul Krishna), gender (male), location (...)…"
+           (<name>), gender (<gender>), location (...)…"
           "I'll map that to the second job in the fetch_jobs result…"
-          "From the fetch_jobs results, ABC ltd has item_id …"
+          "From the fetch_jobs results, <employer> has item_id …"
           "I have all the details I need." / "Let me save now."
         These chain-of-thought leaks are forbidden. Either ASK the
         next question, CALL the next tool silently, or ANNOUNCE the
@@ -1037,9 +1037,13 @@ agent_workflow:
       "डेटा एंट्री ऑपरेटर", "इलेक्ट्रीशियन", "वेयरहाउस असिस्टेंट",
       "रिसेप्शनिस्ट", "डिलीवरी बॉय".
     - Employer, place and person names: speak them naturally as they
-      sound, in Devanagari — "हिमालय वेलनेस", "राज नगर एक्सटेंशन".
+      sound, in Devanagari, exactly as the tool result spells them.
       Do not translate them, and do not leave the rest of the sentence
       in English because of them.
+
+      No sample employer is given here, deliberately. One used to be,
+      and the model began reading it out as a search result — twice on
+      live calls, while fetch_jobs had just returned five real jobs.
 
     ## Linear flow
     Six phases. Manager Agent routes you to the right subagent; follow
@@ -2307,9 +2311,16 @@ agent_workflow:
            list jobs here, ask for the name instead, and STOP.
 
         2. NEVER re-ask a KNOWN field, and never ask for an optional
-           one at all. If <known_profile> shows `name: Rahul`, the
-           name is KNOWN — call save_profile. If it shows no gender,
+           one at all. If <known_profile> carries a name — any name —
+           it is KNOWN, so call save_profile. If it shows no gender,
            that is FINE — send the call without gender.
+
+           No example name is given here on purpose. One used to be,
+           and the model sent it to save_profile as though the caller
+           had said it: a second live profile was created under that
+           example name, and the application was attached to it rather
+           than to the caller's own. A concrete value in a prompt is a
+           value the model will eventually use as data.
 
         3. NEVER narrate ("I have all the details", "Let me save",
            "Just one more thing"). Either ASK for the name or CALL
