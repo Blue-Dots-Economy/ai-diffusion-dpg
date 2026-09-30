@@ -231,6 +231,41 @@ another, edit the pinned list in `grafana/import_community_dashboards.py` and
 run it (Python 3.10+, standard library only); Grafana picks the files up
 within 10 s. The script records every adaptation it makes and why.
 
+### Alerts to Discord
+
+Grafana alerting is provisioned from `grafana/provisioning/alerting/`: 17
+rules, one Discord contact point per severity, and a policy that routes on the
+rule's `severity` label. Resolved messages are sent when an alert clears.
+
+| Severity | Alerts | Re-sent while firing |
+| --- | --- | --- |
+| critical | Service down · Crash-looping (3+ restarts in 10 min) · Out of memory · LLM calls failing | hourly |
+| warning | High memory · Host memory high · CPU overload · Latency overload · 5xx rate · Slow health checks · Error log spike · Telemetry dropping · Redis memory high · Monitoring target down | every 4 h |
+| info | Container restarted · Heartbeat (daily) | daily |
+
+The **Heartbeat** always fires and is posted once a day. If it stops arriving,
+Grafana or the host is down, and no other alert can be sent either.
+
+**Webhooks are secrets.** Store them in SSM as
+`<SSM_PREFIX>/discord_webhook_critical`, `…_warning` and `…_info`; on a host
+without SSM, set `DISCORD_WEBHOOK_CRITICAL` / `_WARNING` / `_INFO` in `.env`.
+`init_secrets` writes each to `/secrets/discord_webhook_<severity>`, which the
+contact points read with `$__file{}`. An unset webhook gets an unroutable
+placeholder instead (the log says which): Grafana will not start with an empty
+Discord URL, so a missing webhook degrades to "alerts visible in Grafana only"
+rather than taking the dashboards down. Changing a webhook needs
+`docker compose up -d init_secrets grafana`.
+
+Rules reference the datasources by fixed UID, so this deployment provisions
+its own `grafana/provisioning/datasources/` (it deletes and re-creates any
+same-named datasource an existing `grafana_data` volume holds).
+`GRAFANA_ROOT_URL` (default `http://localhost:3001`) is the base of the
+dashboard links in each message.
+
+To check delivery, send a test from **Alerting → Contact points** in Grafana,
+or look for `Notify for alerts failed` in `docker compose logs grafana`.
+Disk space is not covered: nothing in this stack measures host disk.
+
 ## Pinning by digest
 
 GHCR tags are mutable. For a reproducible deployment, resolve the digest once

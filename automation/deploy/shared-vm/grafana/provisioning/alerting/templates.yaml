@@ -1,0 +1,30 @@
+# Discord message templates for the DPG alert contact points.
+#
+# Replaces Grafana's default body (raw label and annotation dumps plus a
+# silence link) with one short block per alert: what, where, since when, and
+# the dashboard to open. Discord caps a message at 2000 characters, so this
+# stays compact even when several alerts are grouped into one message.
+apiVersion: 1
+
+templates:
+  - orgId: 1
+    name: dpg-discord
+    template: |
+      {{ define "dpg.discord.title" -}}
+      {{- if eq .Status "firing" -}}
+        {{- if eq .CommonLabels.severity "critical" }}🔴 CRITICAL{{ else if eq .CommonLabels.severity "warning" }}🟠 WARNING{{ else }}🔵 INFO{{ end -}}
+      {{- else }}✅ RESOLVED{{ end }} - {{ .CommonLabels.alertname }}
+      {{- if .CommonLabels.service }} ({{ .CommonLabels.service }}){{ end }}
+      {{- if gt (len .Alerts) 1 }} x{{ len .Alerts }}{{ end }}
+      {{- end }}
+
+      {{ define "dpg.discord.message" -}}
+      {{ range .Alerts -}}
+      {{ if eq .Status "firing" }}**{{ .Annotations.summary }}**{{ else }}**Recovered:** {{ .Annotations.summary }}{{ end }}
+      {{ if .Annotations.description }}{{ .Annotations.description }}
+      {{ end -}}
+      {{ if .Labels.service }}Service: `{{ .Labels.service }}` · {{ end }}Since: {{ .StartsAt.Format "2006-01-02 15:04 MST" }}{{ if eq .Status "resolved" }} · Ended: {{ .EndsAt.Format "15:04 MST" }}{{ end }}
+      {{ if .Annotations.dashboard_url }}Dashboard: {{ .Annotations.dashboard_url }}
+      {{ end }}
+      {{ end -}}
+      {{- end }}
