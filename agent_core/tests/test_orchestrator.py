@@ -2210,3 +2210,45 @@ def test_process_turn_apply_failure_logs_exception_class_only(caplog):
     agent.process_turn(_turn_input())
     errs = [r for r in caplog.records if r.message == "orchestrator.apply_tool_results_error"]
     assert errs and errs[0].error == "RuntimeError"
+
+
+def test_process_turn_persists_invalidation_when_run_turn_raises():
+    """A write that completed before the turn failed must still invalidate the cache."""
+    agent = _make_cached_agent()
+    agent._tool_policies = ToolResultPolicies.from_config({"connectors": {
+        "read": [{"name": "get_balance", "cache": {"scope": "session", "ttl_seconds": 600}}],
+        "write": [{"name": "transfer", "invalidates": ["get_balance"]}]}})
+    tc = ToolCall(tool_name="transfer", tool_use_id="tu_w", input_params={})
+    done = ToolResult(tool_use_id="tu_w", tool_name="transfer", result={}, success=True,
+                      result_text="{}")
+
+    def _run_turn(*args, **kwargs):
+        kwargs["tool_cache"].after_call(tc, done)
+        raise RuntimeError("follow-up LLM call failed")
+
+    agent._manager_agent.run_turn.side_effect = _run_turn
+    with pytest.raises(RuntimeError, match="follow-up LLM call failed"):
+        agent.process_turn(_turn_input())
+    agent._memory.apply_tool_results.assert_called_once()
+    sid, _uid, batch = agent._memory.apply_tool_results.call_args.args
+    assert sid == SESSION_ID and batch["invalidate"] == ["get_balance"]
+
+
+def test_process_turn_run_turn_error_survives_apply_failure():
+    """If persisting fails too, the original run_turn exception still propagates."""
+    agent = _make_cached_agent()
+    agent._tool_policies = ToolResultPolicies.from_config({"connectors": {
+        "read": [{"name": "get_balance", "cache": {"scope": "session", "ttl_seconds": 600}}],
+        "write": [{"name": "transfer", "invalidates": ["get_balance"]}]}})
+    tc = ToolCall(tool_name="transfer", tool_use_id="tu_w", input_params={})
+    done = ToolResult(tool_use_id="tu_w", tool_name="transfer", result={}, success=True,
+                      result_text="{}")
+
+    def _run_turn(*args, **kwargs):
+        kwargs["tool_cache"].after_call(tc, done)
+        raise RuntimeError("follow-up LLM call failed")
+
+    agent._manager_agent.run_turn.side_effect = _run_turn
+    agent._memory.apply_tool_results.side_effect = ConnectionError("down")
+    with pytest.raises(RuntimeError, match="follow-up LLM call failed"):
+        agent.process_turn(_turn_input())

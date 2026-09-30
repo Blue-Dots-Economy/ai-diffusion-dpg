@@ -383,6 +383,27 @@ class AgentCore(AgentCoreBase):
             (bundle.session if scope == "session" else bundle.profile)[key] = value
         return _on_saved
 
+    def _persist_tool_cache_sync(self, session_id: str, user_id: str, tool_cache) -> None:
+        """Send the sync turn's pending tool-result changes to Memory Layer.
+
+        Args:
+            session_id: Session the turn belongs to.
+            user_id: Caller identity, for user-scoped entries.
+            tool_cache: This turn's ``TurnToolCache``; drained when it has
+                pending puts or invalidations, otherwise left untouched.
+
+        Never raises: a Memory Layer failure is logged (exception class only)
+        so it cannot mask the turn's own outcome or exception.
+        """
+        if not tool_cache.has_pending():
+            return
+        try:
+            self._memory.apply_tool_results(session_id, user_id, tool_cache.drain_batch())
+        except Exception as e:
+            logger.error("orchestrator.apply_tool_results_error", extra={
+                "operation": "orchestrator.process_turn", "status": "failure",
+                "session_id": session_id, "error": type(e).__name__})
+
     async def _persist_tool_cache(self, session_id: str, user_id: str, tool_cache) -> None:
         """Send pending tool-result changes now; a streaming turn may be interrupted later.
 
@@ -1292,33 +1313,40 @@ class AgentCore(AgentCoreBase):
             "detected_language": detected_language,
         }
         t9 = time.time()
-        final_text, tool_calls, tool_results = self._manager_agent.run_turn(
-            messages=messages,
-            session_id=session_id,
-            initial_response=llm_response,
-            system=system,
-            active_tools=active_tools,
-            ke_context=ke_context,
-            # Without this the sync /process_turn path drops the caller's
-            # identity, so connectors that template {user_id} into a path or
-            # body (get_profile, update_profile) silently receive an empty
-            # string. stream_turn already forwarded it; this brings the two
-            # paths in line.
-            user_id=user_id,
-            # Same reasoning, for connector params declared ``source: session``:
-            # the framework supplies what it already knows rather than asking
-            # the model to reproduce it.
-            session_values=self._tool_session_values(bundle),
-            tool_cache=tool_cache,
-            remember_name=self._remember.name if self._remember else "",
-            remember_handler=(
-                (lambda _tc, _msgs: self._remember.handle(
-                    _tc, _msgs, tool_cache.stored_results_by_tool(),
-                    lambda scope, key, value: self._memory.write_strict(session_id, user_id, scope, key, value),
-                    self._remember_on_saved(bundle),
-                )) if self._remember else None
-            ),
-        )
+        # A write can complete before a later step of the turn raises (e.g.
+        # the follow-up LLM call). Its invalidation must still reach Memory
+        # Layer, or the next turn serves the pre-write result. The finally
+        # sends whatever is pending; the original exception propagates.
+        try:
+            final_text, tool_calls, tool_results = self._manager_agent.run_turn(
+                messages=messages,
+                session_id=session_id,
+                initial_response=llm_response,
+                system=system,
+                active_tools=active_tools,
+                ke_context=ke_context,
+                # Without this the sync /process_turn path drops the caller's
+                # identity, so connectors that template {user_id} into a path or
+                # body (get_profile, update_profile) silently receive an empty
+                # string. stream_turn already forwarded it; this brings the two
+                # paths in line.
+                user_id=user_id,
+                # Same reasoning, for connector params declared ``source: session``:
+                # the framework supplies what it already knows rather than asking
+                # the model to reproduce it.
+                session_values=self._tool_session_values(bundle),
+                tool_cache=tool_cache,
+                remember_name=self._remember.name if self._remember else "",
+                remember_handler=(
+                    (lambda _tc, _msgs: self._remember.handle(
+                        _tc, _msgs, tool_cache.stored_results_by_tool(),
+                        lambda scope, key, value: self._memory.write_strict(session_id, user_id, scope, key, value),
+                        self._remember_on_saved(bundle),
+                    )) if self._remember else None
+                ),
+            )
+        finally:
+            self._persist_tool_cache_sync(session_id, user_id, tool_cache)
 
         # Persist anything a connector's session_mapping lifted out of a
         # response. The sync path runs its tools inside Manager Agent, which
@@ -1330,14 +1358,6 @@ class AgentCore(AgentCoreBase):
             for _k, _v in (getattr(_tr, "session_values", None) or {}).items():
                 self._write_memory_sync(session_id, user_id, "session", _k, _v)
                 bundle.session[_k] = _v
-
-        if tool_cache.has_pending():
-            try:
-                self._memory.apply_tool_results(session_id, user_id, tool_cache.drain_batch())
-            except Exception as e:
-                logger.error("orchestrator.apply_tool_results_error", extra={
-                    "operation": "orchestrator.process_turn", "status": "failure",
-                    "session_id": session_id, "error": type(e).__name__})
 
         # #193: persist this turn's tool exchanges so the next turn can
         # replay them. run_turn returns ToolResult objects; _capture_tool_exchange
