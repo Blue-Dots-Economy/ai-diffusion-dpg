@@ -525,3 +525,38 @@ class TestActionGatewayExecute:
         client = ActionGatewayHttpClient(_BASE_CONFIG)
         with pytest.raises(ValueError):
             client.execute(None, "s1")
+
+
+class TestActionGatewayProjectedFlag:
+    def _call(self, response):
+        with patch("httpx.get", return_value=_mock_get_tools()):
+            client = ActionGatewayHttpClient(_BASE_CONFIG)
+        tc = ToolCall(tool_name="onest_market_lookup", tool_use_id="tu_1", input_params={})
+        with patch("httpx.post", return_value=_mock_response(response)):
+            return client.execute(tc, "s1")
+
+    def test_projected_true_is_carried(self):
+        result = self._call({"tool_use_id": "tu_1", "result": {}, "success": True, "projected": True})
+        assert result.projected is True
+
+    def test_projected_defaults_false(self):
+        result = self._call({"tool_use_id": "tu_1", "result": {}, "success": True})
+        assert result.projected is False
+
+
+class TestAsyncActionGatewayProjectedFlag:
+    async def _call(self, response):
+        from unittest.mock import AsyncMock
+        from src.http_clients.async_.action_gateway import AsyncActionGatewayHttpClient
+        client = AsyncActionGatewayHttpClient(_BASE_CONFIG)
+        client._client.post = AsyncMock(return_value=_mock_response(response))
+        tc = ToolCall(tool_name="onest_market_lookup", tool_use_id="tu_1", input_params={})
+        return await client.execute(tc, "s1")
+
+    async def test_projected_true_is_carried(self):
+        result = await self._call({"tool_use_id": "tu_1", "result": {}, "success": True, "projected": True})
+        assert result.projected is True
+
+    async def test_projected_defaults_false(self):
+        result = await self._call({"tool_use_id": "tu_1", "result": {}, "success": True})
+        assert result.projected is False
