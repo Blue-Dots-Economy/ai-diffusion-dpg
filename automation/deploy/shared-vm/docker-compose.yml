@@ -466,18 +466,21 @@ services:
   action_gateway:
     image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/action-gateway:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
     container_name: dpg_action_gateway
-    # Sources the secrets file written by init_secrets, then execs the image's
-    # own command. Done here rather than baked into the image so no rebuild is
-    # needed and no other deployment is affected. Keep `command` in step with
-    # the image CMD (currently `uv run python main.py`).
-    entrypoint: ["/bin/sh", "-c"]
-    command: ['. /secrets/env && exec uv run python main.py']
+    # Loads the secrets file written by init_secrets, then execs the image's
+    # own command. The image is a Docker Hardened Image with no shell, so the
+    # file cannot be `source`-d: bin/exec_with_secrets.py does it with the
+    # image's Python instead (#413). Done here rather than baked into the
+    # image so no rebuild is needed and no other deployment is affected. Keep
+    # `command` in step with the image CMD (currently `python main.py`).
+    entrypoint: ["python", "/opt/dpg/exec_with_secrets.py"]
+    command: ["python", "main.py"]
     environment:
       - CONFIG_FOLDER=/app/config
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - BLUE_DOTS_ORG_ID=${BLUE_DOTS_ORG_ID:?set BLUE_DOTS_ORG_ID in .env}
     volumes:
       - ${SECRETS_DIR:-/dev/shm/dpg-secrets}:/secrets:ro
+      - ./bin/exec_with_secrets.py:/opt/dpg/exec_with_secrets.py:ro
       - ../../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
       - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
     networks: [dpg_net]
@@ -497,13 +500,14 @@ services:
   agent_core:
     image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/agent-core:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
     container_name: dpg_agent_core
-    # See the note on action_gateway: secrets are sourced at runtime, no image
+    # See the note on action_gateway: secrets are loaded at runtime, no image
     # change required. Keep in step with the image CMD.
-    entrypoint: ["/bin/sh", "-c"]
-    command: ['. /secrets/env && exec uv run python main.py']
+    entrypoint: ["python", "/opt/dpg/exec_with_secrets.py"]
+    command: ["python", "main.py"]
     environment: [CONFIG_FOLDER=/app/config, "LOG_LEVEL=${LOG_LEVEL:-INFO}"]
     volumes:
       - ${SECRETS_DIR:-/dev/shm/dpg-secrets}:/secrets:ro
+      - ./bin/exec_with_secrets.py:/opt/dpg/exec_with_secrets.py:ro
       - ../../../dev-kit/dpg/agent_core.yaml:/app/config/dpg.yaml:ro
       - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/agent_core.yaml:/app/config/agent_core.yaml:ro
     networks: [dpg_net]

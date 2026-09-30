@@ -49,14 +49,20 @@ into another container — in Compose or in Kubernetes — so the handoff is
 file-based, and this compose file overrides the entrypoint at runtime:
 
 ```yaml
-entrypoint: ["/bin/sh", "-c"]
-command: ['. /secrets/env && exec uv run python main.py']
+entrypoint: ["python", "/opt/dpg/exec_with_secrets.py"]
+command: ["python", "main.py"]
 ```
 
-That sources the file and then execs the image's own command. Nothing is baked
-in, nothing is rebuilt, and no other deployment is affected. The one cost is
-that the startup command now appears here as well as in the image's `CMD`, so
-keep the two in step if the image's command ever changes.
+The images are Docker Hardened Images with no shell, so the file cannot be
+`source`-d. `bin/exec_with_secrets.py`, mounted read-only and run by the
+image's own Python, reads it, exports the variables and `exec`s the image's
+command, so the service stays PID 1 and gets signals directly (#413). Nothing
+is baked in, nothing is rebuilt, and no other deployment is affected. The one
+cost is that the startup command now appears here as well as in the image's
+`CMD`, so keep the two in step if the image's command ever changes.
+
+Longer term the services should read secrets from files natively, which would
+remove this override altogether; see #413.
 
 Two notes:
 
