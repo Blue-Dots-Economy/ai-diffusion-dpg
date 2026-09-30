@@ -77,6 +77,8 @@ from src.models import (
 )
 from src.preprocessing.nlu_processor import NLUProcessor
 from src.tool_registry import ToolRegistry
+from src.tool_results import ToolResultPolicies, TurnToolCache, augment_tool_definitions
+from src.remember import RememberTool
 from src.turn_policy import TurnPolicy, resolve_turn_policy
 from src.workflow_loader import AgentWorkflow, RoutingCondition, RoutingRule, SubAgent
 from opentelemetry import trace as otel_trace
@@ -361,6 +363,25 @@ class AgentCore(AgentCoreBase):
                         "error": f"{type(e).__name__}: {e}",
                     },
                 )
+
+        # Tool-result persistence: per-tool cache/invalidate policies and the
+        # optional framework ``remember`` tool, both derived from config.
+        self._tool_policies = ToolResultPolicies.from_config(config)
+        self._remember = RememberTool.from_config(config)
+
+    def _remember_on_saved(self, bundle):
+        """Build the callback that mirrors a remembered value into the bundle.
+
+        Args:
+            bundle: This turn's context bundle.
+
+        Returns:
+            Callable ``(scope, key, value) -> None`` that writes into
+            ``bundle.session`` for session scope, else ``bundle.profile``.
+        """
+        def _on_saved(scope: str, key: str, value) -> None:
+            (bundle.session if scope == "session" else bundle.profile)[key] = value
+        return _on_saved
 
     # ------------------------------------------------------------------
     # Public interface — single entry point
@@ -1107,6 +1128,7 @@ class AgentCore(AgentCoreBase):
                     user_message=turn_input.user_message,
                 )
 
+        tool_cache = TurnToolCache(self._tool_policies, bundle.tool_results, bundle.session)
         system = self._manager_agent.build_system_prompt(
             agent_system_prompt=self._workflow.agent_system_prompt,
             subagent_system_prompt=next_subagent.system_prompt,
@@ -1120,6 +1142,7 @@ class AgentCore(AgentCoreBase):
             session_end_eval_prompt=(
                 self._session_end_eval_prompt if self._session_end_eval_enabled else None
             ),
+            known_facts=tool_cache.render_known_facts(),
         )
 
         # Clear resumption flag in session so it only affects the first turn
@@ -1136,6 +1159,7 @@ class AgentCore(AgentCoreBase):
         # blind to results it has already fetched.
         _prior_exchanges, _max_items, _max_chars = self._prepend_tool_replay(
             messages, bundle, session_id, "orchestrator.process_turn",
+            skip_tools=tool_cache.fresh_tools(),
         )
 
         if not messages:
@@ -1166,6 +1190,10 @@ class AgentCore(AgentCoreBase):
 
         # ── Step 8: LLM call #1 with scoped tools ────────────────────
         active_tools = self._workflow.resolve_tools_for(next_subagent_id)
+        active_tools = augment_tool_definitions(
+            active_tools, self._tool_policies,
+            self._remember.definition() if self._remember else None,
+        )
         output_format = next_subagent.output_format
         primary_model = self._llm.get_active_model()
         primary_provider = self._config.get("agent", {}).get("provider", "anthropic")
@@ -1261,6 +1289,15 @@ class AgentCore(AgentCoreBase):
             # the framework supplies what it already knows rather than asking
             # the model to reproduce it.
             session_values=self._tool_session_values(bundle),
+            tool_cache=tool_cache,
+            remember_name=self._remember.name if self._remember else "",
+            remember_handler=(
+                (lambda _tc, _msgs: self._remember.handle(
+                    _tc, _msgs, tool_cache.stored_results_by_tool(),
+                    lambda scope, key, value: self._memory.write_strict(session_id, user_id, scope, key, value),
+                    self._remember_on_saved(bundle),
+                )) if self._remember else None
+            ),
         )
 
         # Persist anything a connector's session_mapping lifted out of a
@@ -1273,6 +1310,14 @@ class AgentCore(AgentCoreBase):
             for _k, _v in (getattr(_tr, "session_values", None) or {}).items():
                 self._write_memory_sync(session_id, user_id, "session", _k, _v)
                 bundle.session[_k] = _v
+
+        if tool_cache.has_pending():
+            try:
+                self._memory.apply_tool_results(session_id, user_id, tool_cache.drain_batch())
+            except Exception as e:
+                logger.error("orchestrator.apply_tool_results_error", extra={
+                    "operation": "orchestrator.process_turn", "status": "failure",
+                    "session_id": session_id, "error": f"{type(e).__name__}: {e}"})
 
         # #193: persist this turn's tool exchanges so the next turn can
         # replay them. run_turn returns ToolResult objects; _capture_tool_exchange
@@ -1993,6 +2038,7 @@ class AgentCore(AgentCoreBase):
     def _build_tool_exchange_messages(
         exchanges: list[dict],
         undelivered_note: str = "",
+        skip_tools: frozenset | set = frozenset(),
     ) -> list[Message]:
         """Convert persisted tool exchange records into neutral Message objects.
 
@@ -2006,6 +2052,9 @@ class AgentCore(AgentCoreBase):
                 ``_capture_tool_exchange``. Malformed entries are skipped.
             undelivered_note: Appended on its own line to every tool result of
                 an exchange marked ``delivered: false``; empty disables.
+            skip_tools: Tool names whose uses and results are dropped pairwise
+                (a fresh stored result supersedes the replayed one). An
+                exchange left with no uses or no results is dropped entirely.
 
         Returns:
             Flat list of ``Message`` objects ready to prepend to a turn's
@@ -2019,6 +2068,13 @@ class AgentCore(AgentCoreBase):
                 continue
             uses = ex.get("tool_uses") or []
             results = ex.get("tool_results") or []
+            if skip_tools:
+                names = {u.get("id", ""): u.get("name", "") for u in uses if isinstance(u, dict)}
+                uses = [u for u in uses if not (isinstance(u, dict) and u.get("name") in skip_tools)]
+                results = [
+                    r for r in results
+                    if not (isinstance(r, dict) and names.get(r.get("tool_use_id", "")) in skip_tools)
+                ]
             if not uses or not results:
                 continue
             use_blocks: list[ToolUseBlock] = []
@@ -2076,6 +2132,7 @@ class AgentCore(AgentCoreBase):
         session_id: str,
         operation: str,
         undelivered_note: str = "",
+        skip_tools: frozenset | set = frozenset(),
     ) -> tuple[list[dict], int, int]:
         """Prepend the previous turn's tool exchanges to this turn's messages.
 
@@ -2094,6 +2151,8 @@ class AgentCore(AgentCoreBase):
             operation: Caller name for the log entry.
             undelivered_note: Note appended to replayed tool results of
                 exchanges marked ``delivered: false``; empty disables.
+            skip_tools: Tool names to omit from the replay because a fresh
+                stored result already covers them.
 
         Returns:
             ``(prior_exchanges, max_items, max_chars)`` for the caller to pass
@@ -2105,7 +2164,9 @@ class AgentCore(AgentCoreBase):
             raw = []
         prior: list[dict] = list(raw)
         if max_items > 0 and prior:
-            replay = self._build_tool_exchange_messages(prior[-max_items:], undelivered_note)
+            replay = self._build_tool_exchange_messages(
+                prior[-max_items:], undelivered_note, skip_tools,
+            )
             if replay:
                 messages[:0] = replay
                 logger.info(
@@ -2115,6 +2176,7 @@ class AgentCore(AgentCoreBase):
                         "status": "success",
                         "session_id": session_id,
                         "replayed_exchanges": len(replay) // 2,
+                        "skipped_tools": sorted(skip_tools),
                     },
                 )
         return prior, max_items, max_chars

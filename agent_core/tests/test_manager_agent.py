@@ -15,6 +15,8 @@ Coverage:
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -31,6 +33,7 @@ from src.chat_provider.types import (
 )
 from src.manager_agent import ManagerAgent
 from src.models import ToolCall, ToolResult
+from src.tool_results import ToolResultPolicies, TurnToolCache, args_hash
 
 
 def _flat(prompt) -> str:
@@ -1206,3 +1209,60 @@ def test_run_turn_ungrounded_refusal_does_not_crash():
     gateway.execute.assert_not_called()
     assert results[0].tool_use_id == "tu_apply"
     assert results[0].error == "UNGROUNDED_PARAMETER"
+
+
+# ---------------------------------------------------------------------------
+# Tool-result persistence (sync path)
+# ---------------------------------------------------------------------------
+
+_POL = ToolResultPolicies.from_config({"connectors": {"read": [
+    {"name": "get_balance", "cache": {"scope": "session", "ttl_seconds": 600}}]}})
+
+
+def _entry():
+    return {"tool": "get_balance", "args_hash": args_hash({"account": "12345"}),
+            "data": {"balance": 100}, "fetched_at": time.time(), "expires_at": 9e12,
+            "origin": "turn", "scope": "session"}
+
+
+def test_run_turn_serves_cache_hit_without_gateway():
+    tc = _tool_call()
+    agent, llm, _, gateway, _ = _make_manager([_tool_response(tc), _text_response("100.")])
+    cache = TurnToolCache(_POL, [_entry()], {})
+    _, _, results = agent.run_turn(list(MESSAGES), SESSION_ID, _tool_response(tc), tool_cache=cache)
+    gateway.execute.assert_not_called()
+    assert results[0].result_text.startswith("(stored result")
+
+
+def test_run_turn_miss_executes_and_records():
+    tc = _tool_call()
+    live = ToolResult(tool_use_id="tu_abc", tool_name="get_balance", result={}, success=True,
+                      result_text='{"balance": 5}', projected=True)
+    agent, _, _, gateway, _ = _make_manager([_tool_response(tc), _text_response()], tool_result=live)
+    cache = TurnToolCache(_POL, [], {})
+    agent.run_turn(list(MESSAGES), SESSION_ID, _tool_response(tc), tool_cache=cache)
+    gateway.execute.assert_called_once()
+    assert cache.drain_batch()["puts"][0]["data"] == {"balance": 5}
+
+
+def test_run_turn_routes_remember_to_handler():
+    tc = ToolCall(tool_name="remember", tool_use_id="tu_r", input_params={"field": "f", "value": "v"})
+    agent, _, _, gateway, _ = _make_manager([_tool_response(tc), _text_response()])
+    seen = []
+
+    def handler(call, messages):
+        seen.append(call.tool_use_id)
+        return ToolResult(tool_use_id=call.tool_use_id, tool_name="remember", result={}, success=True,
+                          result_text="Saved f.")
+
+    agent.run_turn(list(MESSAGES), SESSION_ID, _tool_response(tc),
+                   remember_name="remember", remember_handler=handler)
+    assert seen == ["tu_r"]
+    gateway.execute.assert_not_called()
+
+
+def test_build_system_prompt_renders_known_facts():
+    agent = _make_manager_for_prompt()
+    prompt = agent.build_system_prompt("persona", "", "english", "web", {}, known_facts="- t — x")
+    assert "<known_facts>" in _flat(prompt) and "- t — x" in _flat(prompt)
+    assert "<known_facts>" not in _flat(agent.build_system_prompt("persona", "", "english", "web", {}))

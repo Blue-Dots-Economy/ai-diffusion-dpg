@@ -884,6 +884,18 @@ class TestRecentToolExchangesHelpers:
         assert msgs[0].role == "assistant"
         assert msgs[1].role == "user"
 
+    def test_build_messages_skips_listed_tools_pairwise(self):
+        agent = _make_agent_core()
+        ex = [{"tool_uses": [{"type": "tool_use", "id": "a", "name": "fetch_profile", "input": {}},
+                             {"type": "tool_use", "id": "b", "name": "fetch_jobs", "input": {}}],
+               "tool_results": [{"type": "tool_result", "tool_use_id": "a", "content": "P"},
+                                {"type": "tool_result", "tool_use_id": "b", "content": "J"}]},
+              {"tool_uses": [{"type": "tool_use", "id": "c", "name": "fetch_profile", "input": {}}],
+               "tool_results": [{"type": "tool_result", "tool_use_id": "c", "content": "P2"}]}]
+        msgs = agent._build_tool_exchange_messages(ex, skip_tools={"fetch_profile"})
+        assert len(msgs) == 2                                  # second exchange dropped entirely
+        assert [b.tool_use_id for b in msgs[1].content] == ["b"]
+
     def test_truncate_tool_result_content(self):
         agent = _make_agent_core()
         assert agent._truncate_tool_result_content("hello", 0) == "hello"
