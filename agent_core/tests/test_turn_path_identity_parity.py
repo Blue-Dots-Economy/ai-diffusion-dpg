@@ -189,10 +189,29 @@ async def test_both_paths_forward_identical_identity():
 from src.models import ToolCall  # noqa: E402
 from src.remember import RememberTool  # noqa: E402
 from src.tool_results import ToolResultPolicies, TurnToolCache  # noqa: E402
+from src.chat_provider.types import ChatResponse, TokenUsage  # noqa: E402
 from tests.test_stream_turn import _TR_CONFIG, _tr_agent, _tr_entry  # noqa: E402
 
 _GROUNDED = {"apply_job": {"job_id": ["fetch_jobs"]}}
 _GATEWAY_TEXT = '{"balance": 5}'
+_PARITY_CONFIG = {
+    **_TR_CONFIG,
+    "connectors": {
+        **_TR_CONFIG["connectors"],
+        "read": [*_TR_CONFIG["connectors"]["read"],
+                 {"name": "fetch_jobs", "cache": {"scope": "session", "ttl_seconds": 600}}],
+    },
+}
+
+
+def _jobs_entry():
+    """A fresh stored fetch_jobs result listing job J-1."""
+    from src.tool_results import args_hash
+    import time as _time
+    return {"tool": "fetch_jobs", "args_hash": args_hash({}),
+            "data": {"jobs": [{"job_id": "J-1"}]}, "fetched_at": _time.time(),
+            "expires_at": 9e12, "origin": "turn", "scope": "session"}
+
 
 # (id, tool_name, input, seeded entries?, expect gateway call, expect batch)
 _OUTCOMES = [
@@ -206,18 +225,25 @@ _OUTCOMES = [
 ]
 
 
-def _sync_outcome(tool, params, seeded):
-    tc = ToolCall(tool_name=tool, tool_use_id="tu_1", input_params=dict(params))
-    initial = _tool_response(tc)
+def _sync_run(calls, entries, caps=None):
+    """Run one sync tool round of ``calls`` [(tool, params), ...] via run_turn."""
+    tcs = [ToolCall(tool_name=t, tool_use_id=f"tu_{i}", input_params=dict(p))
+           for i, (t, p) in enumerate(calls, 1)]
+    initial = ChatResponse(
+        content=[ToolUseBlock(tool_use_id=tc.tool_use_id, tool_name=tc.tool_name,
+                              input=tc.input_params) for tc in tcs],
+        stop_reason="tool_use", model_used="claude-primary",
+        usage=TokenUsage(input_tokens=1, output_tokens=1),
+    )
     agent, _llm, _reg, gateway, _trust = _make_manager(
         llm_responses=[initial, _text_response()],
-        tool_result=ToolResult(tool_use_id="tu_1", tool_name=tool, result={}, success=True,
-                               result_text=_GATEWAY_TEXT, projected=True),
+        tool_result=ToolResult(tool_use_id="tu_1", tool_name=tcs[0].tool_name, result={},
+                               success=True, result_text=_GATEWAY_TEXT, projected=True),
     )
     agent._grounded_params = _GROUNDED
-    cache = TurnToolCache(ToolResultPolicies.from_config(_TR_CONFIG),
-                          [_tr_entry()] if seeded else [], {})
-    remember = RememberTool.from_config(_TR_CONFIG)
+    agent._tool_call_caps = dict(caps or {})
+    cache = TurnToolCache(ToolResultPolicies.from_config(_PARITY_CONFIG), list(entries), {})
+    remember = RememberTool.from_config(_PARITY_CONFIG)
     memory = MagicMock()
     memory.write_strict.return_value = (True, "")
     _text, _calls, results = agent.run_turn(
@@ -231,21 +257,38 @@ def _sync_outcome(tool, params, seeded):
     )
     batches = [cache.drain_batch()] if cache.has_pending() else []
     writes = [c.args[2:] for c in memory.write_strict.call_args_list]
-    return [r.result_text for r in results], batches, gateway.execute.call_count, writes
+    sent = [c.args[0].input_params for c in gateway.execute.call_args_list]
+    return [r.result_text for r in results], batches, sent, writes
 
 
-async def _stream_outcome(tool, params, seeded):
+async def _stream_run(calls, entries, caps=None):
+    """Run the same single tool round through the real stream_turn."""
     agent, _order, requests = _tr_agent(
-        [[ToolUseBlock(tool_name=tool, tool_use_id="tu_1", input=dict(params))]],
-        entries=[_tr_entry()] if seeded else [], gateway_text=_GATEWAY_TEXT, remember=True,
+        [[ToolUseBlock(tool_name=t, tool_use_id=f"tu_{i}", input=dict(p))
+          for i, (t, p) in enumerate(calls, 1)]],
+        entries=list(entries), gateway_text=_GATEWAY_TEXT, remember=True,
     )
+    agent._tool_policies = ToolResultPolicies.from_config(_PARITY_CONFIG)
+    agent._remember = RememberTool.from_config(_PARITY_CONFIG)
     agent._manager_agent._grounded_params = _GROUNDED
-    agent._manager_agent._tool_call_caps = {}
+    agent._manager_agent._tool_call_caps = dict(caps or {})
     await _collect_events(agent, _make_turn_input())
     texts = [b.content for b in requests[1].messages[-1].content if b.type == "tool_result"]
     batches = [c.args[2] for c in agent._async_memory.apply_tool_results.await_args_list]
     writes = [c.args[2:] for c in agent._async_memory.write_strict.await_args_list]
-    return texts, batches, agent._async_gateway.execute.await_count, writes
+    sent = [c.args[0].input_params for c in agent._async_gateway.execute.await_args_list]
+    return texts, batches, sent, writes
+
+
+def _sync_outcome(tool, params, seeded):
+    texts, batches, sent, writes = _sync_run([(tool, params)], [_tr_entry()] if seeded else [])
+    return texts, batches, len(sent), writes
+
+
+async def _stream_outcome(tool, params, seeded):
+    texts, batches, sent, writes = await _stream_run(
+        [(tool, params)], [_tr_entry()] if seeded else [])
+    return texts, batches, len(sent), writes
 
 
 @pytest.mark.parametrize(
@@ -285,3 +328,48 @@ async def test_both_paths_serve_and_record_tool_results_identically(
     assert outcome_text[case](a_texts[0]), a_texts
     if case == "remember_write":
         assert a_writes == [("session", "account", "12345")]
+
+
+# ── per-turn caps: counted only for live gateway calls, never for remember ──
+
+_CAPPED = [
+    # (id, calls, caps, expected result-text checks, expected gateway inputs)
+    ("cached_tool_hit_twice",
+     [("get_balance", {"account": "12345"}), ("get_balance", {"account": "12345"})],
+     {"get_balance": 1},
+     [lambda t: t.startswith("(stored result"), lambda t: t.startswith("(stored result")],
+     []),
+    ("refused_write_retried_with_valid_id",
+     [("apply_job", {"job_id": "J-invented"}), ("apply_job", {"job_id": "J-1"})],
+     {"apply_job": 1},
+     [lambda t: t.startswith("Refused: job_id"), lambda t: t == _GATEWAY_TEXT],
+     [{"job_id": "J-1"}]),
+    ("remember_with_cap_configured",
+     [("remember", {"field": "account", "value": "12345"}),
+      ("remember", {"field": "account", "value": "12345"})],
+     {"remember": 1},
+     [lambda t: t == "Saved account.", lambda t: t == "Saved account."],
+     []),
+]
+
+
+@pytest.mark.parametrize("calls,caps,checks,expect_sent",
+                         [c[1:] for c in _CAPPED], ids=[c[0] for c in _CAPPED])
+async def test_both_paths_apply_per_turn_caps_identically(calls, caps, checks, expect_sent):
+    """Parity: a cap counts live Action Gateway calls only, on both paths.
+
+    Stored-result hits and grounding refusals do not use up a capped tool's
+    budget, and ``remember`` is never capped even when a cap names it.
+    """
+    entries = [_tr_entry(), _jobs_entry()]
+    s_texts, s_batches, s_sent, s_writes = _sync_run(calls, entries, caps)
+    a_texts, a_batches, a_sent, a_writes = await _stream_run(calls, entries, caps)
+
+    assert s_texts == a_texts
+    assert s_batches == a_batches
+    assert s_sent == a_sent == expect_sent
+    assert s_writes == a_writes
+    assert len(a_texts) == len(checks)
+    for check, text in zip(checks, a_texts):
+        assert check(text), a_texts
+    assert not any("has already run this turn" in t for t in a_texts)

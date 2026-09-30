@@ -401,7 +401,7 @@ class AgentCore(AgentCoreBase):
         except Exception as e:
             logger.error("orchestrator.apply_tool_results_error", extra={
                 "operation": "orchestrator.stream_turn", "status": "failure",
-                "session_id": session_id, "error": f"{type(e).__name__}: {e}"})
+                "session_id": session_id, "error": type(e).__name__})
 
     # ------------------------------------------------------------------
     # Public interface — single entry point
@@ -1337,7 +1337,7 @@ class AgentCore(AgentCoreBase):
             except Exception as e:
                 logger.error("orchestrator.apply_tool_results_error", extra={
                     "operation": "orchestrator.process_turn", "status": "failure",
-                    "session_id": session_id, "error": f"{type(e).__name__}: {e}"})
+                    "session_id": session_id, "error": type(e).__name__})
 
         # #193: persist this turn's tool exchanges so the next turn can
         # replay them. run_turn returns ToolResult objects; _capture_tool_exchange
@@ -4336,8 +4336,11 @@ class AgentCore(AgentCoreBase):
                         _caps = getattr(self._manager_agent, "_tool_call_caps", None)
                         _caps = _caps if isinstance(_caps, dict) else {}
                         _used = _turn_tool_counts.get(tc.tool_name, 0)
+                        # remember is never capped nor grounding-checked.
+                        _is_remember = (self._remember is not None
+                                        and tc.tool_name == self._remember.name)
                         _refusal = ""
-                        if over_call_cap(_caps.get(tc.tool_name), _used):
+                        if not _is_remember and over_call_cap(_caps.get(tc.tool_name), _used):
                             logger.warning(
                                 "orchestrator.stream_tool_call_cap tool=%s used=%s",
                                 tc.tool_name, _used,
@@ -4347,7 +4350,7 @@ class AgentCore(AgentCoreBase):
                                 f"effect cannot be undone. One per turn. If the caller meant "
                                 f"a different one, ask which, and call it on the next turn."
                             )
-                        else:
+                        elif not _is_remember:
                             _ung = ungrounded_params(
                                 (getattr(self._manager_agent, "_grounded_params", {}) or {})
                                 .get(tc.tool_name) or {},
@@ -4367,7 +4370,7 @@ class AgentCore(AgentCoreBase):
                                     f"the user chose, and call this tool again."
                                 )
 
-                        if self._remember is not None and tc.tool_name == self._remember.name:
+                        if _is_remember:
                             # Framework tool: validated state write, never
                             # capped, grounding-refused or sent to the gateway.
                             tool_result = await self._remember.handle_async(
@@ -4563,8 +4566,12 @@ class AgentCore(AgentCoreBase):
                                 _caps2 = getattr(self._manager_agent, "_tool_call_caps", None)
                                 _caps2 = _caps2 if isinstance(_caps2, dict) else {}
                                 _used2 = _turn_tool_counts.get(tc.tool_name, 0)
+                                _is_remember2 = (self._remember is not None
+                                                 and tc.tool_name == self._remember.name)
                                 _refusal2 = ""
-                                if over_call_cap(_caps2.get(tc.tool_name), _used2):
+                                if not _is_remember2 and over_call_cap(
+                                    _caps2.get(tc.tool_name), _used2,
+                                ):
                                     logger.warning(
                                         "orchestrator.stream_tool_call_cap tool=%s used=%s",
                                         tc.tool_name, _used2,
@@ -4575,7 +4582,7 @@ class AgentCore(AgentCoreBase):
                                         f"caller meant a different one, ask which, and call it "
                                         f"on the next turn."
                                     )
-                                else:
+                                elif not _is_remember2:
                                     _ung2 = ungrounded_params(
                                         (getattr(self._manager_agent, "_grounded_params", {}) or {})
                                         .get(tc.tool_name) or {},
@@ -4596,8 +4603,7 @@ class AgentCore(AgentCoreBase):
                                             f"tool again."
                                         )
 
-                                if (self._remember is not None
-                                        and tc.tool_name == self._remember.name):
+                                if _is_remember2:
                                     tool_result = await self._remember.handle_async(
                                         tc, messages, tool_cache.stored_results_by_tool(),
                                         lambda scope, key, value: self._async_memory.write_strict(

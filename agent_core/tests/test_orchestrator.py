@@ -2193,3 +2193,20 @@ def test_process_turn_skips_apply_when_nothing_pending():
     agent = _make_cached_agent()
     agent.process_turn(_turn_input())
     agent._memory.apply_tool_results.assert_not_called()
+
+
+def test_process_turn_apply_failure_logs_exception_class_only(caplog):
+    agent = _make_cached_agent()
+    live = ToolResult(tool_use_id="tu_1", tool_name="get_balance", result={}, success=True,
+                      result_text='{"balance": 5}', projected=True)
+    tc = ToolCall(tool_name="get_balance", tool_use_id="tu_1", input_params={"account": "999"})
+
+    def _run_turn(*args, **kwargs):
+        kwargs["tool_cache"].after_call(tc, live)
+        return ("ok", [tc], [live])
+
+    agent._manager_agent.run_turn.side_effect = _run_turn
+    agent._memory.apply_tool_results.side_effect = RuntimeError("secret detail")
+    agent.process_turn(_turn_input())
+    errs = [r for r in caplog.records if r.message == "orchestrator.apply_tool_results_error"]
+    assert errs and errs[0].error == "RuntimeError"

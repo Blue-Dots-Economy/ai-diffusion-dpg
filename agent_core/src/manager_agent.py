@@ -296,6 +296,14 @@ class ManagerAgent:
         via _execute_knowledge_retrieval. All other tool calls go through the
         Action Gateway's consent gate and execution path.
 
+        Per-turn call caps (``tool_call_caps``) are checked for every tool
+        except ``remember``, which is handled first and is never capped nor
+        counted. Only live Action Gateway calls increment a tool's count:
+        stored-result hits, grounding refusals and knowledge retrieval do
+        not, so a refused call can be retried with a valid value and a
+        cached read can be served more than once. The streaming path
+        (``AgentCore.stream_turn``) applies the same rules.
+
         Args:
             messages:         The messages list (neutral chat_provider types) that produced
                               initial_response. Extended in-place with tool_use and
@@ -415,8 +423,13 @@ class ManagerAgent:
                     ))
                     continue
 
+                # The framework ``remember`` tool is a validated state write,
+                # not an upstream effect: it is never capped nor counted.
+                _is_remember = remember_handler is not None and tool_call.tool_name == remember_name
                 _used = _turn_tool_counts.get(tool_call.tool_name, 0)
-                if over_call_cap(self._tool_call_caps.get(tool_call.tool_name), _used):
+                if not _is_remember and over_call_cap(
+                    self._tool_call_caps.get(tool_call.tool_name), _used,
+                ):
                     logger.warning(
                         "manager_agent.tool_call_cap tool=%s used=%s",
                         tool_call.tool_name, _used,
@@ -439,9 +452,8 @@ class ManagerAgent:
                         content=tool_result.result_text,
                     ))
                     continue
-                _turn_tool_counts[tool_call.tool_name] = _used + 1
 
-                if remember_handler is not None and tool_call.tool_name == remember_name:
+                if _is_remember:
                     tool_result = remember_handler(tool_call, messages)
                 else:
                     _stored = tool_cache.stored_results_by_tool() if tool_cache else None
@@ -477,6 +489,10 @@ class ManagerAgent:
                         if _hit is not None:
                             tool_result = _hit
                         else:
+                            # Only a live Action Gateway call counts toward the
+                            # per-turn cap: stored results, refusals and
+                            # knowledge retrieval have no upstream effect.
+                            _turn_tool_counts[tool_call.tool_name] = _used + 1
                             _call = tool_cache.prepare(tool_call) if tool_cache else tool_call
                             tool_result = self._execute_tool(_call, session_id, user_id)
                             if tool_cache:

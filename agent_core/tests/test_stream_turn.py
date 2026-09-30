@@ -1097,4 +1097,5 @@ class TestStreamTurnToolResultPersistence:
         agent._async_memory.apply_tool_results = AsyncMock(side_effect=RuntimeError("down"))
         events = await _collect_events(agent, _make_turn_input())
         assert isinstance(events[-1], DoneEvent) and events[-1].turn_status == "completed"
-        assert any(r.message == "orchestrator.apply_tool_results_error" for r in caplog.records)
+        errs = [r for r in caplog.records if r.message == "orchestrator.apply_tool_results_error"]
+        assert errs and errs[0].error == "RuntimeError"      # class only, never the message
