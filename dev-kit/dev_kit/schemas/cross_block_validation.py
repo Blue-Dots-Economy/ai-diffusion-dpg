@@ -88,6 +88,64 @@ def _validate_recording(reach_layer_block: dict) -> list[str]:
     return errors
 
 
+def _as_int(value: object, default: int, label: str, errors: list[str]) -> Optional[int]:
+    """Coerce a config value to int, recording an error instead of raising.
+
+    Args:
+        value: Raw config value (``None``/falsy falls back to ``default``).
+        default: Value used when ``value`` is missing or falsy.
+        label: Config path used in the error message.
+        errors: Error list appended to when ``value`` is not numeric.
+
+    Returns:
+        The integer, or ``None`` if ``value`` was not numeric.
+    """
+    if not value:
+        return default
+    try:
+        return int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        errors.append(f"{label}: '{value}' is not a number")
+        return None
+
+
+def _tool_result_agent_rules(ac: dict) -> list[str]:
+    """Agent_core-only tool-result rules (mirror runtime ``MergedConfig._check_tool_result_rules``).
+
+    Args:
+        ac: The agent_core block.
+
+    Returns:
+        Error strings for user-scope TTLs above ``tool_results.max_user_ttl_seconds``,
+        a ``memory_tool.name`` colliding with a connector, and ``grounded_in``
+        entries that are not connector names.
+    """
+    errors: list[str] = []
+    connectors = ac.get("connectors") or {}
+    names = {c["name"] for g in ("read", "write", "identity", "internal")
+             for c in (connectors.get(g) or []) if isinstance(c, dict) and c.get("name")}
+    cap = _as_int((ac.get("tool_results") or {}).get("max_user_ttl_seconds"), 86400,
+                  "tool_results.max_user_ttl_seconds", errors)
+    for c in connectors.get("read") or []:
+        cache = c.get("cache") if isinstance(c, dict) else None
+        if not isinstance(cache, dict) or cache.get("scope") != "user" or cap is None:
+            continue
+        ttl = _as_int(cache.get("ttl_seconds"), 0, f"connectors.{c.get('name', '?')}.cache.ttl_seconds", errors)
+        if ttl is not None and ttl > cap:
+            errors.append(f"connector '{c.get('name', '?')}': user-scope ttl_seconds {ttl} "
+                          f"exceeds tool_results.max_user_ttl_seconds {cap}")
+    mt = ac.get("memory_tool")
+    if isinstance(mt, dict):
+        mt_name = mt.get("name") or "remember"
+        if mt_name in names:
+            errors.append(f"memory_tool.name '{mt_name}' collides with a connector")
+        for fname, f in (mt.get("fields") or {}).items():
+            for src in (f or {}).get("grounded_in") or []:
+                if src not in names:
+                    errors.append(f"memory_tool.fields.{fname}.grounded_in: unknown connector '{src}'")
+    return errors
+
+
 def _tool_result_memory_rules(ac: dict, ml: dict) -> list[str]:
     """Cross-block rules for tool-result caching and the memory tool (agent_core ↔ memory_layer).
 
@@ -103,7 +161,8 @@ def _tool_result_memory_rules(ac: dict, ml: dict) -> list[str]:
     errors: list[str] = []
     session = ((ml.get("state") or {}).get("session") or {})
     schema = session.get("schema") or {}
-    session_ttl = int(session.get("ttl_minutes") or 60) * 60
+    minutes = _as_int(session.get("ttl_minutes"), 60, "memory_layer.state.session.ttl_minutes", errors)
+    session_ttl = (minutes if minutes is not None else 60) * 60
     declared = (((((ml.get("state") or {}).get("persistent") or {}).get("graph") or {})
                  .get("subnodes") or {}).get("UserProfile") or {}).get("declared_fields") or []
     for group in (ac.get("connectors") or {}).values():
@@ -112,7 +171,8 @@ def _tool_result_memory_rules(ac: dict, ml: dict) -> list[str]:
             if not isinstance(cache, dict):
                 continue
             name = c.get("name", "?")
-            if cache.get("scope") == "session" and int(cache.get("ttl_seconds") or 0) > session_ttl:
+            ttl = _as_int(cache.get("ttl_seconds"), 0, f"connectors.{name}.cache.ttl_seconds", errors)
+            if cache.get("scope") == "session" and ttl is not None and ttl > session_ttl:
                 errors.append(f"connectors.{name}.cache.ttl_seconds exceeds the session lifetime "
                               f"({session_ttl}s from memory_layer.state.session.ttl_minutes)")
             for f in cache.get("vary_on") or []:
@@ -384,6 +444,7 @@ def validate_cross_block(
     # 13b. Tool-result cache / memory tool vs memory_layer session + profile.
     if applicable_after("tools"):
         errors.extend(_tool_result_memory_rules(ac, blocks.get("memory_layer") or {}))
+        errors.extend(_tool_result_agent_rules(ac))
 
     # 14. Connector input_schema property names MUST match the action_gateway
     # tool's agent-source param names. The REST adapter passes the LLM's

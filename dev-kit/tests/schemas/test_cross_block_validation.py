@@ -393,3 +393,38 @@ def test_undeclared_vary_on_and_memory_fields():
     errs = _tr_errs(ac)
     assert any("vary_on" in e for e in errs)
     assert sum("memory_tool" in e for e in errs) == 2
+
+
+def _tr_agent_errs(ac):
+    return [e for e in validate_cross_block({"agent_core": ac, "memory_layer": _TR_ML}, [])
+            if "user-scope" in e or "collides" in e or "grounded_in" in e or "not a number" in e]
+
+
+def test_user_ttl_over_cap_default_and_configured():
+    read = [{"name": "r", "cache": {"scope": "user", "ttl_seconds": 90000}}]
+    assert any("user-scope ttl_seconds 90000 exceeds tool_results.max_user_ttl_seconds 86400" in e
+               for e in _tr_agent_errs(_tr_ac(read)))
+    ac = _tr_ac(read)
+    ac["tool_results"] = {"max_user_ttl_seconds": 100000}
+    assert _tr_agent_errs(ac) == []
+
+
+def test_memory_tool_name_collides_with_connector():
+    ac = _tr_ac([{"name": "remember"}], {"fields": {"name": {"scope": "persistent"}}})
+    assert any("memory_tool.name 'remember' collides with a connector" in e for e in _tr_agent_errs(ac))
+    ac = _tr_ac([{"name": "r"}], {"name": "remember", "fields": {"name": {"scope": "persistent"}}})
+    assert _tr_agent_errs(ac) == []
+
+
+def test_grounded_in_must_name_a_connector():
+    mt = {"fields": {"name": {"scope": "persistent", "grounded_in": ["ghost", "r"]}}}
+    errs = _tr_agent_errs(_tr_ac([{"name": "r"}], mt))
+    assert errs == ["memory_tool.fields.name.grounded_in: unknown connector 'ghost'"]
+
+
+def test_non_numeric_ttl_yields_error_not_exception():
+    ac = _tr_ac([{"name": "r", "cache": {"scope": "user", "ttl_seconds": "abc"}}])
+    assert any("not a number" in e for e in _tr_agent_errs(ac))
+    ml = {"state": {"session": {"ttl_minutes": "x"}}}
+    errs = validate_cross_block({"agent_core": _tr_ac(), "memory_layer": ml}, [])
+    assert any("ttl_minutes" in e and "not a number" in e for e in errs)
