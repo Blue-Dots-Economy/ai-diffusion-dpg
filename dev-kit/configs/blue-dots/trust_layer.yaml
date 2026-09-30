@@ -2,7 +2,7 @@
 # Blue Dots — Trust Layer domain config.
 # Mirrors KKB's job-domain policy pack. Differences from KKB:
 #   - Caller-facing refusal / blocked / holding messages in Hindi (see below).
-#   - Gujarati consent + decline phrases added on top of KKB's
+#   - Hindi consent + decline phrases added on top of KKB's
 #     Hindi / Romanised sets.
 #   - Output-blocked phrases keep the English subset and drop the
 #     Hindi promotional phrases.
@@ -102,7 +102,7 @@ trust:
           refusal_template: null
 
   consent:
-    # English-first set with Hindi/Gujarati/Romanised coverage. Naive
+    # English-first set with Hindi/Romanised coverage. Naive
     # substring match; ordering doesn't matter, coverage does.
     consent_phrases:
       # English
@@ -129,12 +129,6 @@ trust:
       - "ठीक"
       - "सही है"
       - "मंज़ूर"
-      # Gujarati
-      - "હા"
-      - "જી હા"
-      - "બરાબર"
-      - "ઓકે"
-      - "ઠીક છે"
     decline_phrases:
       # English
       - "no"
@@ -151,10 +145,6 @@ trust:
       - "नही"
       - "नहीं चाहिए"
       - "मना"
-      # Gujarati
-      - "ના"
-      - "નહિ"
-      - "મારે નથી"
 
   hitl:
     queue_backend: "log"

@@ -3,7 +3,7 @@
 # Merged with dev-kit/dpg/agent_core.yaml by loader.py before deployment.
 #
 # Voice-first job-seeker agent. Hindi default; mirrors caller into English
-# or Gujarati when they switch. Five linear subagents map to the 5 phases
+# when they switch. Five linear subagents map to the 5 phases
 # of the apply flow.
 
 agent:
@@ -76,7 +76,7 @@ channels:
 
       ## Style
       Warm, natural, conversational. Calm pace, one idea at a time. Speak
-      Hindi by default. Switch to English or Gujarati only if the caller
+      Hindi by default. Switch to English only if the caller
       does, and then stay in that language until they switch again.
 
       Your instructions, tool descriptions and any example wording in them
@@ -265,7 +265,7 @@ conversation:
   unknown_intent_message: "माफ़ कीजिए, मैं ठीक से सुन नहीं पाई। क्या आप दोबारा कह सकते हैं?"
   termination_message: "ब्लू डॉट्स इस्तेमाल करने के लिए धन्यवाद। आपका दिन शुभ हो।"
   unsupported_language_message: >
-    माफ़ कीजिए, मैं सिर्फ़ हिंदी, अंग्रेज़ी या गुजराती में मदद कर सकती हूँ।
+    माफ़ कीजिए, मैं सिर्फ़ हिंदी या अंग्रेज़ी में मदद कर सकती हूँ।
     क्या आप इनमें से किसी एक भाषा में बात कर सकते हैं?
   consent_decline_ack: >
     कोई बात नहीं — हम आपकी निजता का सम्मान करते हैं। आपकी जानकारी सेव
@@ -589,7 +589,7 @@ preprocessing:
     provider: openai
     model: gpt-4.1-mini-2025-04-14
     default_language: hindi
-    supported_languages: [english, hindi, gujarati]
+    supported_languages: [english, hindi]
     transliteration: true
     code_switching: true
 
@@ -722,8 +722,8 @@ preprocessing:
 
       ## language_switch_request
       When the user asks to switch language ("speak in hindi", "in
-      gujarati", "english me"), classify as `language_switch_request`
-      and emit `language_preference` ∈ {english, hindi, gujarati}.
+      "english me"), classify as `language_switch_request` and emit
+      `language_preference` ∈ {english, hindi}.
       For unsupported languages, emit the raw lowercase name; the
       orchestrator will reject with unsupported-language message.
     intents:
@@ -1009,9 +1009,9 @@ agent_workflow:
     Default to HINDI, written in Devanagari. This block used to say
     "default to English", which contradicted every channel suffix and was
     a measured cause of English replies on the 24 Sep PoC calls. If the
-    caller switches to English or Gujarati, mirror them and stay there
+    caller switches to English, mirror them and stay there
     until they switch again. If the caller speaks a language not in
-    {Hindi, English, Gujarati}, politely say so and ask them to continue
+    {Hindi, English}, politely say so and ask them to continue
     in one of those.
 
     ### English text arriving from tools does NOT switch the language
