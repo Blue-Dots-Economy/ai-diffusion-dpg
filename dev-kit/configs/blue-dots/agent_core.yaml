@@ -370,6 +370,8 @@ conversation:
 memory_tool:
   name: remember
   fields:
+    # Declared but not used by any prompt for now: profile_item_id is set
+    # from the live item by fetch_profile's session_mapping.
     profile_item_id:
       scope: session
       description: "item_id of the profile the caller chose to use or update"
@@ -386,8 +388,9 @@ connectors:
     - name: fetch_profile
       description: >
         Look up the caller's seeker profile(s) by phone number. Returns
-        zero, one, or many profiles. Call once on the first turn after
-        consent is granted. Takes no parameters — the caller's phone is
+        zero, one, or many profiles. Call on the first turn; later, use the
+        fetch_profile entry in <known_facts> unless the caller says their
+        details changed. Takes no parameters — the caller's phone is
         injected from the session user_id by the rest_api adapter.
       input_schema:
         type: object
@@ -409,17 +412,22 @@ connectors:
           माफ़ कीजिए, अभी आपकी जानकारी नहीं मिल पा रही। मैं थोड़ी
           देर में दोबारा कोशिश करती हूँ।
         bridge_line: "एक पल —"
-      # Stored per caller for 30 minutes so later turns and a redial read the
-      # result from <known_facts> instead of re-fetching. save_profile
-      # invalidates it (below). `keep` lists projected fields of
+      # Stored for 30 minutes so later turns of the call read the result from
+      # <known_facts> instead of re-fetching. save_profile invalidates it
+      # (below). Session scope, NOT user: a cache hit does not replay
+      # session_mapping, so on a redial (new session) has_age, user_terms,
+      # user_privacy, profile_item_id, acting_as_user_id, stored_trade and
+      # stored_location would never be written, re-asking consent/age and
+      # sending returning callers down the new-user path. User scope needs a
+      # framework follow-up first. `keep` lists projected fields of
       # fetch_profile's response.projection (action_gateway.yaml). The
       # projection is deliberately NOT narrowed: profile_setup (update path)
       # and apply_confirm read item_state fields (age, work_experience, ...)
       # from items[], so the whole items array must stay.
       cache:
-        scope: user
+        scope: session
         ttl_seconds: 1800
-        keep: [acting_as_user_id, items]
+        keep: [source_item_owner, acting_as_user_id, items]
 
     - name: fetch_jobs
       description: >
@@ -1848,8 +1856,8 @@ agent_workflow:
         city, then hand over. You never search here.
 
         ## What you already know
-        `fetch_profile` ran in the opening phase and its result is in your
-        conversation history. Read it — do not call it again unless it is
+        `fetch_profile` ran in the opening phase and its result is in the
+        fetch_profile entry of <known_facts>. Read it — do not call it again unless it is
         genuinely absent.
 
         ## The ONLY test for "do they have a usable profile"
@@ -1896,10 +1904,9 @@ agent_workflow:
           • They accept ("हाँ", "ठीक है", "इन्हीं से") → you are done.
             Say nothing further and let routing move on; the trade and
             city are already in session.
-            Before you finish, call `remember` with `profile_item_id`
-            copied exactly from the fetch_profile entry in <known_facts>
-            and `profile_action` = use_existing. Do not say anything
-            about it.
+            Before you finish, call `remember` with `profile_action` =
+            use_existing. Save only that field; profile_item_id is already
+            set by the system. Do not say anything about it.
           • They decline ("नहीं", "दूसरा काम", they name a different
             trade or city) → their words win over the stored values.
             Continue as Path B for whatever is now missing.
