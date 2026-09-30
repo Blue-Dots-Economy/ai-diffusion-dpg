@@ -97,7 +97,13 @@ memory_tool:
       scope: session                 # value set comes from the enum in memory_layer.yaml
 ```
 
-**Config validation** (at domain config load, in the dev-kit loader that already sees both `agent_core.yaml` and `memory_layer.yaml`; startup fails on error):
+**Schemas.** Every config schema forbids unknown keys, so all new keys are added explicitly to:
+- Agent Core's runtime schema (`agent_core/src/schema/config.py`: `ConnectorDef.cache`, `ConnectorDef.invalidates`, top-level `tool_results` and `memory_tool`);
+- the dev-kit domain schema (`dev_kit/schemas/domain/agent_core.py`) and the dev-kit loader model (`dev_kit/schema.py`).
+
+Agent Core never loads `memory_layer.yaml` at runtime. So rules that need both files run in dev-kit's cross-block validation (`cross_block_validation.py`, a new rule that reads the `memory_layer` block). Agent Core's startup validation covers the single-file rules.
+
+**Config validation** (startup fails on error):
 - `cache` is only allowed on `read` connectors. Write connectors can never be cached.
 - A session-scope `ttl_seconds` must be ≤ the session TTL (`memory_layer.state.session.ttl_minutes`). A user-scope `ttl_seconds` must be ≤ `tool_results.max_user_ttl_seconds`.
 - `invalidates` entries must name existing read connectors.
@@ -118,7 +124,7 @@ ml:tr:idx:s:{owner} / ml:tr:idx:u:{owner}   SET of entry keys for that owner
 ```
 
 - **Entry value (JSON):** `{tool, data, fetched_at, expires_at, origin}`, where `data` is the kept projected fields and `origin` is `turn | bootstrap`.
-- **Write:** `SET <key> <json> EX ttl_seconds`, then `SADD <idx> <key>` and `EXPIRE <idx> ttl_seconds GT`. `GT` only extends, so the index outlives its longest-lived entry. It needs Redis ≥ 7.0 / Valkey. Nothing here depends on 7.4-only features such as `HEXPIRE`.
+- **Write:** `SET <key> <json> EX ttl_seconds`, then `SADD <idx> <key>`, `EXPIRE <idx> ttl_seconds NX` and `EXPIRE <idx> ttl_seconds GT`. `NX` sets the first expiry; `GT` only ever extends it, so the index outlives its longest-lived entry. `GT` alone would never set an expiry on a new key, because Redis treats a key with no expiry as having an infinite TTL. This needs Redis ≥ 7.0 / Valkey, and redis-py ≥ 4.2. Nothing here depends on 7.4-only features such as `HEXPIRE`.
 - **Read:** `SMEMBERS` both indexes, then `MGET`, pipelined with the existing per-turn context read. Entries with `expires_at ≤ now` are dropped in code as well, in case Redis and app clocks disagree. Index members whose entry has already expired are removed with `SREM`.
 - **`args_hash`:** a hash of the canonical JSON (sorted keys) of the LLM-supplied arguments, plus the current values of the `vary_on` session fields. A job search is only reusable while the session-sourced trade and location are unchanged.
 - **`pseudonym(x)`:** `HMAC-SHA256(TOOL_RESULT_KEY_SECRET, x)`, truncated. A plain hash of a phone number can be reversed by brute force, so it is not enough. Every key is built by one helper, so the future `user_id` refactor touches one function.
@@ -150,12 +156,12 @@ One shared helper, used by the sync tool loop and both stream-loop execute sites
 `ungrounded_params()` gains an optional `stored_results: dict[str, list[str]]` argument (tool name → serialised `data` of unexpired entries). All three call sites pass it. A value found in a stored `fetch_profile` entry is grounded exactly as if the `fetch_profile` exchange were still in the message list. Without this, the replay filter (§7.2) would hide grounding sources.
 
 ### 7.5 After a live call
-- **Store:** only if the call succeeded, `ToolResult.projected` is `true`, and `result_text` parses as JSON. Otherwise nothing is stored (outcome `reject_unprojected` when the result wasn't projected). Errors are never stored.
+- **Store:** only if the call succeeded, `ToolResult.projected` is `true`, and `result_text` parses as JSON. Otherwise nothing is stored: outcome `reject_unprojected` when the result wasn't projected, `reject_invalid` when its text isn't valid JSON. Errors are never stored.
 - **`invalidates`:** applied when a write connector is **called**, whatever its outcome, because a timeout may still have written upstream.
 - **`session_mapping`:** unchanged; runs as today.
 
 ### 7.6 Within the turn, and persisting
-A turn-local overlay applies stored entries and invalidations immediately, so a repeat call in the same turn sees them. Queued entries and invalidations are sent to Memory Layer in one batch call at the end of the turn, alongside the existing post-turn writes.
+A turn-local overlay applies stored entries and invalidations immediately, so a repeat call in the same turn sees them. Queued entries and invalidations are sent to Memory Layer in one batch call (`POST /tool_results/apply`). The sync path sends it once, at the end of the turn. A streaming turn can be interrupted (#411), so the stream path sends it after each live tool call instead; otherwise an invalidation caused by a completed `save_profile` could be lost, and a stale `fetch_profile` served next turn.
 
 **Action Gateway change:** `ToolResult` / `ExecuteResponse` gain `projected: bool` (true when a `response.projection` was applied). This is Agent Core's guard against ever storing a raw payload.
 
@@ -165,7 +171,7 @@ The LLM decides values that depend on the caller's choice, for example which of 
 
 - Only `memory_tool.fields` are writable. The tool's input schema lists them as an enum, with their descriptions.
 - **Validation:**
-  - the declared type/enum from `memory_layer.yaml`;
+  - the declared type/enum from `memory_layer.yaml`. This check runs in **Memory Layer**, which owns that schema: a strict write returns `rejected` with a reason instead of storing the value;
   - when `grounded_in` is set, the value must be grounded in those tools' results. This is the same `ungrounded_params()` check, over the turn's messages plus stored results.
   - A rejected value returns a tool error the LLM can correct (outcome `remember_reject`), and nothing is written.
 - Accepted values go through the same `memory_layer.write(scope=…)` path as NLU entities and `session_mapping`. Connectors then consume them through `source: session`.
@@ -183,7 +189,7 @@ The LLM decides values that depend on the caller's choice, for example which of 
 
 ## 10. Observability
 
-- A structured log event `tool_result` with `{tool, scope, outcome, age_s, ttl_s, owner: pseudonym}`. `outcome` is one of `hit | miss | refresh | store | invalidate | reject_unprojected | remember_write | remember_reject | store_unavailable`.
+- A structured log event `tool_result` with `{tool, scope, outcome, age_s, ttl_s, owner: pseudonym}`. `outcome` is one of `hit | miss | refresh | store | invalidate | reject_unprojected | reject_invalid | remember_write | remember_reject | store_unavailable`.
 - An OTel counter `tool_result_outcomes{tool, outcome}`, giving the cache hit rate per tool.
 
 ## 11. Failure modes and known limitations
