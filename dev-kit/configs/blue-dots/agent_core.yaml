@@ -362,6 +362,22 @@ conversation:
       them the whole journey and they have to redial.
     fail_action: "none"
 
+# Framework `remember` tool: lets the model record which profile the caller
+# chose so later turns and a redial find it in <known_facts>. profile_item_id
+# must equal an item_id that really appeared in a fetch_profile/save_profile
+# result. apply_job's profile_item_id is NOT yet sourced from session; that
+# follows once a live run confirms `remember` is being called.
+memory_tool:
+  name: remember
+  fields:
+    profile_item_id:
+      scope: session
+      description: "item_id of the profile the caller chose to use or update"
+      grounded_in: [fetch_profile, save_profile]
+    profile_action:
+      scope: session
+      description: "use_existing | create_new | update_existing, as the caller chose"
+
 # Connector descriptions seen by the LLM when picking a tool. The full
 # adapter + path config lives in action_gateway.yaml; this block adds the
 # invocation_rules that gate when the LLM may call each tool.
@@ -379,12 +395,9 @@ connectors:
         additionalProperties: false
       invocation_rules:
         call_when: >
-          Once, on the first turn of the call, in the `opening` phase. It
-          answers three questions at once — has this caller consented, is
-          their age on file, and do they have a live profile — so nothing
-          downstream needs to ask what it already returned. It is
-          read-only and idempotent, so a repeat call is harmless, but a
-          repeat is normally a sign the earlier result was not read.
+          Use the fetch_profile entry in <known_facts> when present; call
+          only if it is absent or the caller says their details changed
+          (then pass force_refresh=true).
         required_before_calling: []
         must_not_substitute: >
           Never invent profile content. If fetch_profile returned zero
@@ -396,6 +409,17 @@ connectors:
           माफ़ कीजिए, अभी आपकी जानकारी नहीं मिल पा रही। मैं थोड़ी
           देर में दोबारा कोशिश करती हूँ।
         bridge_line: "एक पल —"
+      # Stored per caller for 30 minutes so later turns and a redial read the
+      # result from <known_facts> instead of re-fetching. save_profile
+      # invalidates it (below). `keep` lists projected fields of
+      # fetch_profile's response.projection (action_gateway.yaml). The
+      # projection is deliberately NOT narrowed: profile_setup (update path)
+      # and apply_confirm read item_state fields (age, work_experience, ...)
+      # from items[], so the whole items array must stay.
+      cache:
+        scope: user
+        ttl_seconds: 1800
+        keep: [acting_as_user_id, items]
 
     - name: fetch_jobs
       description: >
@@ -430,6 +454,11 @@ connectors:
           माफ़ कीजिए, नौकरियों की सेवा अभी उपलब्ध नहीं है। मैं थोड़ी देर
           में दोबारा कोशिश करती हूँ।
         bridge_line: "मैं आपके लिए नौकरियाँ देखती हूँ।"
+  # save_profile and apply_job were listed under `read:` though both are
+  # write tools (category: write in action_gateway.yaml). `invalidates` is only
+  # valid on `write`, so they moved here; tool order and consent handling are
+  # unchanged (the gateway category decides consent, not this grouping).
+  write:
     - name: save_profile
       description: >
         Create a new seeker profile or update an existing one. The
@@ -506,6 +535,8 @@ connectors:
         on_failure: >
           माफ़ कीजिए, आपकी जानकारी सेव नहीं हो पाई। मैं एक बार और कोशिश करती हूँ।
         bridge_line: "मैं आपकी जानकारी सेव कर रही हूँ।"
+      # A save changes what fetch_profile returns, so drop its stored result.
+      invalidates: [fetch_profile]
 
     - name: apply_job
       description: >
@@ -1865,6 +1896,10 @@ agent_workflow:
           • They accept ("हाँ", "ठीक है", "इन्हीं से") → you are done.
             Say nothing further and let routing move on; the trade and
             city are already in session.
+            Before you finish, call `remember` with `profile_item_id`
+            copied exactly from the fetch_profile entry in <known_facts>
+            and `profile_action` = use_existing. Do not say anything
+            about it.
           • They decline ("नहीं", "दूसरा काम", they name a different
             trade or city) → their words win over the stored values.
             Continue as Path B for whatever is now missing.

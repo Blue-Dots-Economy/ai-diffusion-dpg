@@ -40,6 +40,37 @@ agent:
     # streaming: true      # Both providers support streaming natively.
     # image_input: true    # Both providers support image input.
 
+# Tool-result persistence (spec: tool-result persistence, 2026-09-30).
+# Off by default: a tool with none of these keys behaves as before. Enable in
+# the domain config; storage also needs TOOL_RESULT_KEY_SECRET on Memory Layer.
+#
+# Per-connector, in domain `connectors:` (cache on read, invalidates on write):
+#   connectors:
+#     read:
+#       - name: fetch_profile
+#         cache:                  # store the result and show it in <known_facts>
+#           scope: user           # session | user (user outlives the call)
+#           ttl_seconds: 1800     # counted from the write, never extended by a read
+#           keep: [items]         # projected fields to store (default: all)
+#           vary_on: []           # argument names that make a separate entry
+#     write:
+#       - name: save_profile
+#         invalidates: [fetch_profile]   # read connectors whose stored result to drop
+#
+# Upper bound for scope: user ttl_seconds.
+# tool_results:
+#   max_user_ttl_seconds: 86400
+#
+# Framework `remember` tool: lets the model store a value from a tool result.
+# The value must exactly equal one in the `grounded_in` tools' results.
+# memory_tool:
+#   name: remember
+#   fields:
+#     profile_item_id:
+#       scope: session            # session | persistent
+#       description: "item_id of the profile the caller chose"
+#       grounded_in: [fetch_profile, save_profile]
+
 # conversation.* is domain-specific (blocked_message, escalation_message,
 # output_blocked_message, persona text). All fields must be set in domain.yaml.
 # The block intentionally lives only in domain configs.
