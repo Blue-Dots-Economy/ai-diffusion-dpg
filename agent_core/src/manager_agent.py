@@ -67,6 +67,31 @@ def _is_collected(value: object) -> bool:
     return bool(value)
 
 
+def over_call_cap(cap: int | None, used: int) -> bool:
+    """True when a tool has already run its allowed number of times this turn.
+
+    Split out so the sync loop and both streaming loops apply one rule. A cap
+    only exists for tools whose effect cannot be taken back.
+    """
+    # Only an int is a cap. A mocked or misconfigured registry can hand back
+    # anything here, and a guard that raises is worse than no guard.
+    if not isinstance(cap, int) or isinstance(cap, bool) or cap <= 0:
+        return False
+    return used >= cap
+
+
+def refusal_result(tool_name: str, tool_use_id: str, reason: str):
+    """Build the ToolResult handed back when a guard refuses execution."""
+    return ToolResult(
+        tool_use_id=tool_use_id,
+        tool_name=tool_name,
+        result={},
+        success=False,
+        error="REFUSED",
+        result_text=reason,
+    )
+
+
 def ungrounded_params(
 spec: dict[str, list[str]],
 tool_call,
@@ -175,6 +200,7 @@ class ManagerAgent:
         trust_layer: TrustLayerBase,
         max_tool_rounds: int = 1,
         grounded_params: dict[str, list[str]] | None = None,
+        tool_call_caps: dict[str, int] | None = None,
     ) -> None:
         if chat_provider is None:
             raise ValueError("chat_provider must not be None")
@@ -200,6 +226,11 @@ class ManagerAgent:
         # A list means "any earlier tool result"; a mapping names the tools
         # whose results may supply that param, which is what stops one
         # identifier being copied into another's slot.
+        # tool name -> max executions per turn. Guards irreversible writes
+        # against a model that acts on every row of a list it was shown.
+        self._tool_call_caps: dict[str, int] = {
+            str(k): int(v) for k, v in (tool_call_caps or {}).items()
+        }
         self._grounded_params: dict[str, dict[str, list[str]]] = {}
         for _tool, _spec in (grounded_params or {}).items():
             if isinstance(_spec, dict):
@@ -283,6 +314,9 @@ class ManagerAgent:
         all_tool_calls: list[ToolCall] = []
         all_tool_results: list[ToolResult] = []
         rounds = 0
+        # Per-TURN, not per-round: a capped tool must not slip through by
+        # being requested again in a later tool round of the same turn.
+        _turn_tool_counts: dict[str, int] = {}
 
         while current_response.stop_reason == "tool_use" and rounds < self._max_tool_rounds:
             response_tool_calls = [
@@ -349,6 +383,32 @@ class ManagerAgent:
                         content="Session end acknowledged.",
                     ))
                     continue
+
+                _used = _turn_tool_counts.get(tool_call.tool_name, 0)
+                if over_call_cap(self._tool_call_caps.get(tool_call.tool_name), _used):
+                    logger.warning(
+                        "manager_agent.tool_call_cap tool=%s used=%s",
+                        tool_call.tool_name, _used,
+                    )
+                    tool_result = refusal_result(
+                        tool_call.tool_name, tool_call.tool_use_id,
+                        f"Refused: {tool_call.tool_name} has already run this turn and its "
+                        f"effect cannot be undone. One per turn. If the caller meant a "
+                        f"different one, ask which, and call it on the next turn.",
+                    )
+                    all_tool_calls.append(tool_call)
+                    all_tool_results.append(tool_result)
+                    assistant_content.append(ToolUseBlock(
+                        tool_use_id=tool_call.tool_use_id,
+                        tool_name=tool_call.tool_name,
+                        input=tool_call.input_params or {},
+                    ))
+                    tool_results_content.append(ToolResultBlock(
+                        tool_use_id=tool_call.tool_use_id,
+                        content=tool_result.result_text,
+                    ))
+                    continue
+                _turn_tool_counts[tool_call.tool_name] = _used + 1
 
                 _ungrounded = self._ungrounded_params(tool_call, messages)
                 if _ungrounded:

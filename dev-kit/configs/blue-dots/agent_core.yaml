@@ -546,7 +546,6 @@ conversation:
       - ended              # normal close, reached from anywhere on goodbye
       - consent_declined   # refusal — speaks the close, then hangs up
       - u18_blocked        # under 19, cannot be onboarded by voice
-      - escalation         # counsellor callback offered, then closes
     prompt: |
       ## Session-end evaluation
       `end_session` hangs up on the caller. Treat it as the last thing you
@@ -633,14 +632,13 @@ connectors:
         additionalProperties: false
       invocation_rules:
         call_when: >
-          Either: (a) the session is in profile_resolve AND fetch_profile
-          has not been called yet this session, OR (b) the session is in
-          profile_choice on entry AND the LLM needs the freshest list of
-          the caller's profiles to present the use/create/update choice.
-          fetch_profile is read-only and idempotent — a second call in
-          profile_choice has no side effects upstream. The consent_given
-          flag must be true.
-        required_before_calling: [consent_given]
+          Once, on the first turn of the call, in the `opening` phase. It
+          answers three questions at once — has this caller consented, is
+          their age on file, and do they have a live profile — so nothing
+          downstream needs to ask what it already returned. It is
+          read-only and idempotent, so a repeat call is harmless, but a
+          repeat is normally a sign the earlier result was not read.
+        required_before_calling: []
         must_not_substitute: >
           Never invent profile content. If fetch_profile returned zero
           profiles, the user is new and trade + city must be asked
@@ -685,75 +683,6 @@ connectors:
           माफ़ कीजिए, नौकरियों की सेवा अभी उपलब्ध नहीं है। मैं थोड़ी देर
           में दोबारा कोशिश करता हूँ।
         bridge_line: "मैं आपके लिए नौकरियाँ देखता हूँ।"
-
-    - name: fetch_recommended_jobs
-      description: >
-        Jobs matched to THIS caller, best first, ranked against their
-        whole stored profile instead of a search phrase. Prefer it over
-        fetch_jobs for a caller whose saved profile carries a usable
-        role and who has not asked for something different. Takes the
-        seeker profile's item_id.
-      input_schema:
-        type: object
-        properties:
-          profile_item_id:
-            type: string
-            description: >
-              The caller's seeker profile item_id from fetch_profile.
-              Never a job's item_id.
-        required: [profile_item_id]
-        additionalProperties: false
-      invocation_rules:
-        call_when: >
-          The session is in job_match, a profile was fetched this call
-          and carries a role that is NOT "Any", "Not Available", blank
-          or a qualification, and the caller has not named a different
-          trade. Otherwise call fetch_jobs.
-        must_not_substitute: >
-          Never call it when the profile's role is unusable, or when the
-          caller stated what they want this call — use fetch_jobs. An
-          unusable role returns rows literally named "Any" and
-          "Any | Anyrrr", which must never be spoken aloud.
-        on_empty: >
-          Say you have nothing matching right now and offer to search by
-          what they name instead. Never invent a job.
-
-    - name: fetch_services
-      description: >
-        Support services on the network — skilling and vocational
-        training, career counselling and interview prep, placement
-        assistance, government career centres. Returns organisations
-        with what they offer, who they serve and whether they charge.
-      input_schema:
-        type: object
-        properties:
-          query_text:
-            type: string
-            description: >
-              What the caller needs, in English words — "skill training
-              for a welder", "interview preparation", "help with travel
-              to work".
-        required: [query_text]
-        additionalProperties: false
-      invocation_rules:
-        call_when: >
-          The caller is not looking for a job, the jobs did not suit
-          them, they voiced a need a service would meet, or the session
-          has reached the services_offer phase.
-        must_not_substitute: >
-          Never call it mid-way through applying — the offer belongs in
-          its own turn, after the apply has resolved.
-        on_empty: >
-          Say plainly that there is nothing suitable right now, and move
-          to the goodbye. Never stretch an unrelated service to fit.
-
-  write:
-    # list_user_profiles connector removed — replaced by re-calling
-    # fetch_profile inside profile_choice. fetch_profile is the same
-    # Signals /fetch_local endpoint and already returns the user's
-    # existing profiles plus the owner UUID (as source_item_owner
-    # via projection of created_by).
-
     - name: save_profile
       description: >
         Create a new seeker profile or update an existing one. The
@@ -794,10 +723,27 @@ connectors:
         additionalProperties: false
       invocation_rules:
         call_when: >
-          User is in the profile_setup subagent AND profile_action
-          in session is "create_new" or "update_existing" AND name is
-          known. Send every other field you already have — do not ask
-          for them, and do not wait for them.
+          User is in the profile_setup subagent AND the name is known.
+          Reaching that phase already means the caller has no live
+          profile, so this is always a create. Send every other field
+          you already have — trade, location and age are known by then —
+          and do not ask for or wait for any of them.
+
+          OMIT profile_item_id. It is what makes the call an UPDATE, and
+          there is nothing to update.
+        grounded_params:
+          # Same guard apply_job carries, for the same reason. Measured on
+          # a live local call: save_profile went out with profile_item_id
+          # 8d3bc85b-1785-4658-9459-c5e72964ab25 — the Aditya Birla JOB id
+          # from the fetch_jobs list — which made it an update of a profile
+          # that does not exist. The upstream answered 400 and the agent
+          # told the caller their details were saved AND their application
+          # sent. Neither had happened.
+          #
+          # Naming the source tools is what catches it: the value is a
+          # well-formed UUID that really did appear in a tool result, just
+          # the wrong tool's.
+          profile_item_id: [fetch_profile, save_profile]
         required_before_calling: [name, phone]
         must_not_substitute: >
           Never invent profile fields. Each must come from the user
@@ -834,6 +780,12 @@ connectors:
           save_profile's user_id field (create_new / update_existing
           path).
         required_before_calling: [acting_as_user_id, profile_item_id, selected_job_item_id]
+        # One application per turn, ENFORCED. The prompt says the same and the
+        # model broke it twice: five apply_job calls from a single job pick
+        # (three created), then two in another turn (both created). Each one is
+        # an application at an employer the caller never chose, sent to a real
+        # hiring manager with their name and number on it.
+        max_calls_per_turn: 1
         # ENFORCED, not just described. Each of these must appear verbatim in a
         # tool result from this conversation or the call is refused before it
         # leaves us. `must_not_substitute` below has always asked for this in
@@ -853,7 +805,7 @@ connectors:
         # profile_item_id (both 343954ce-…), which the plain check allowed
         # because save_profile really had returned that value.
         grounded_params:
-          job_item_id: [fetch_jobs, fetch_recommended_jobs]
+          job_item_id: [fetch_jobs]
           profile_item_id: [fetch_profile, save_profile]
           acting_as_user_id: [fetch_profile, save_profile]
         must_not_substitute: >
@@ -968,26 +920,16 @@ preprocessing:
         "मैं सोलह का हूँ" → age="16", "twenty five" → age="25".
       Emit the digits only — no units, no words.
 
-      ## profile_action — choice between existing / new / update
-      When the user is RESPONDING to a "Should I apply using this
-      profile, create a new one, or update this one?" question (or
-      similar wording), classify as `profile_answer` and emit
-      `profile_action` with EXACTLY ONE of these three values:
-        - use_existing — wants to apply with the existing profile
-          ("use this one", "use the same profile", "apply with this",
-          "go with this profile", "yes use the existing")
-        - create_new — wants a fresh profile
-          ("create new", "make a new one", "a new profile",
-          "fresh profile", "new profile please")
-        - update_existing — wants to change the existing profile
-          ("update this", "change my profile", "modify it",
-          "update the existing one")
+      ## Answering "shall I use your details?"
+      profile_resolve offers the caller their stored trade and city and
+      asks whether to search with them. That is a plain yes/no:
+        - accepting ("हाँ", "ठीक है", "इन्हीं से") -> `profile_answer`
+        - declining, or naming a different trade or city -> also
+          `profile_answer`, and emit whichever of `trade` / `location`
+          their words carry. Their words override what is stored.
 
-      Do NOT classify these as `decline` — the user is making a
-      profile choice, not refusing the application. `decline` is
-      ONLY for "no don't apply" / "cancel" / "stop".
-
-      profile_action lowercase with underscore, exactly one value.
+      Do NOT classify either as `decline`. `decline` is ONLY for
+      refusing outright — "no don't apply", "cancel", "stop".
 
       ## job_pick
       When the user clearly picks one of the jobs just presented (by
@@ -1062,13 +1004,30 @@ preprocessing:
       - language_preference
       - selected_job_item_id
       - monthly_in_hand
-      - profile_action             # use_existing / create_new / update_existing
     sentiment_classes: [neutral, positive, distressed, frustrated]
 
     signal_intents:
       pay_disappointment: objection
       distance_issue: constraint
       counsellor_request: escalation_signal
+
+# NLU entities are CALL-scoped working state, not durable identity.
+#
+# The default is "persistent", which writes every extracted entity to Memgraph
+# and reads it back on the next turn via bundle.profile. That makes ordinary
+# turn-to-turn flow control depend on a graph database being reachable: with
+# Memgraph down, a caller says "28 साल" and "वेल्डिंग", the NLU extracts both
+# (logged entities=['age'], entities=['trade']), and the next turn sees
+# age=0 and trade="" — so the phase asks again. Measured locally exactly that
+# way, and it is the shape of the repeated-question complaints from the VM.
+#
+# Session scope puts them in Redis instead: they survive the call, reset with
+# it, and need nothing but Redis to work. Durable identity is not lost — it
+# was never Memgraph's job here. fetch_profile reads it from Signals at the
+# start of every call, which is the system of record, and session_mapping
+# lifts the parts routing needs. Memgraph keeps its analytics role.
+entity_persistence:
+  scope: session
 
 entity_to_profile_field:
   # Written into session state the moment NLU extracts it, so the opening
@@ -1088,7 +1047,6 @@ entity_to_profile_field:
   language_preference: language_preference
   monthly_in_hand: monthly_in_hand
   selected_job_item_id: selected_job_item_id
-  profile_action: profile_action
 
 hitl:
   # Spoken verbatim, like the conversation block above — Hindi for the same reason.
@@ -1126,7 +1084,7 @@ agent_workflow:
   #
   # list_user_profiles stays removed — fetch_profile already returns the
   # user's existing profiles + source_item_owner (via created_by), and
-  # profile_choice reads that earlier tool_result.
+  # every later phase reads that one tool_result.
 
   agent_system_prompt: |
     You are the Blue Dots voice assistant — a warm, calm, conversational voice guide for
@@ -1302,12 +1260,11 @@ agent_workflow:
          for trade (and location if profiles disagree on city).
       3. job_match — fetch jobs by location, present results matching
          the user's trade, user picks one.
-      4. profile_choice — after user confirms apply: call
-         list_user_profiles, ask the user whether to USE an existing
-         profile, CREATE a new one, or UPDATE one of theirs.
-      5. profile_setup — when create or update is needed, ask for the
-         caller's NAME (the only required field the caller can supply)
-         and call save_profile with everything else you already hold.
+      4. profile_setup — reached only when the caller has NO live
+         profile. Ask for the caller's NAME — the one required field
+         they alone can supply — and call save_profile with everything
+         else already held. A caller who already has a live profile
+         skips this phase entirely and applies with it.
       6. apply_confirm — confirm with the caller, then call apply_job.
 
     ## Never ask twice for something you already have
@@ -1665,14 +1622,21 @@ agent_workflow:
         NEVER name a company. NEVER state a salary. NEVER say
         "मुझे नौकरियाँ मिली हैं" ("I found jobs") or read out options.
 
-        Measured on a live call: a caller stuck in this phase kept
-        asking for jobs, and the bot answered "बेंगलुरु में
-        इलेक्ट्रिशियन की नौकरियाँ मिली हैं — हिमालय वेलनेस, दस हज़ार
-        रुपये; स्टार्क टेक, बारह हज़ार रुपये." No tool had run. Himalaya
-        Wellness posts no electrician role and Stark Tech does not
-        exist. Both salaries were invented. A caller can chase a job
-        that was never posted — inventing one is worse than saying
-        nothing.
+        Measured on a live call: a caller stuck in this phase kept asking
+        for jobs and the bot read out two employers with monthly salaries,
+        in the normal listing format, having called no tool at all. One
+        employer had no such role open; the other did not exist. Both
+        salaries were invented.
+
+        The invented names are deliberately NOT repeated here. When they
+        were, the model started speaking them in job_match — a phase that
+        HAD real results in front of it — because a concrete example in
+        the prompt reads as a template to copy. Measured twice on live
+        local calls: the same two invented employers, with invented
+        salaries, while fetch_jobs had just returned five real ones.
+
+        A caller can chase a job that was never posted. Inventing one is
+        worse than saying nothing.
 
         ## When the caller pushes for jobs before you have their age
         They are not being difficult; they called about work. Do not
@@ -1905,6 +1869,31 @@ agent_workflow:
             user_storage_mode: "saved"
             consent_given: true
 
+        # 4b. Consent granted on this turn AND the upstream already holds an
+        # age. `has_age` comes from the participant fetch, so it is true even
+        # when session `age` is 0 — the caller never said it aloud in THIS
+        # call, but it is on file and the upstream is the authority.
+        #
+        # Without this, a caller whose only profile is a DRAFT (age on file,
+        # consent not recorded) consented and was then asked their age anyway.
+        # Measured locally: they answered the trade instead, the turn came
+        # back empty, and the next one re-asked for consent.
+        - intent: "*"
+          conditions:
+            - field: opening_phrase_emitted
+              operator: eq
+              value: true
+            - field: consent_response
+              operator: eq
+              value: "granted"
+            - field: has_age
+              operator: eq
+              value: true
+          next_subagent_id: profile_resolve
+          session_writes:
+            user_storage_mode: "saved"
+            consent_given: true
+
         # 5. Consent granted, age still outstanding → stay and ask for it.
         - intent: "*"
           conditions:
@@ -2003,158 +1992,168 @@ agent_workflow:
     - id: profile_resolve
       name: Profile & Resolve
       description: >
-        Call fetch_profile once. Then, depending on result:
-          - zero profiles → ask user for trade and city (one at a time).
-          - one profile  → confirm the trade and city in it.
-          - many profiles → consolidate distinct trades and cities and
-            ask the user which to use.
-        Once trade and location are both confirmed in session
-        state, route forward to job_match.
-      # No longer the entry point — `opening` is, and routes here once
-      # consent is given and the caller is confirmed to be 19 or over.
+        Decide what to search on. A caller with a live profile is offered
+        it ("I found your details — Welding in Bengaluru, shall I use
+        these?"); accepting carries its trade and city straight into the
+        search. Everyone else — no profile, a retired-only profile, or a
+        caller who declines theirs — is asked for trade and city, one at a
+        time. Routes to job_match once both are known.
       is_start: false
       is_terminal: false
-      # Framework requires a non-empty
-      # opening_phrase for session-resume re-orientation. A short
-      # acknowledgement avoids promising a specific action (the
-      # earlier "Let me check your profile" was misleading when
-      # the LLM occasionally went silent right after).
+      # Emitted only on an adopted-state callback that lands straight in this
+      # phase; the normal path enters from `opening`, which has already
+      # greeted. The trade question is the right default because it is what
+      # Path B asks first, and a caller who does have a stored profile is
+      # offered it by the prompt on the same turn.
       opening_phrase: >
         आप किस काम या ट्रेड में नौकरी ढूंढ रहे हैं?
 
       valid_intents:
         - any_input
         - profile_answer
-        - decline                 # inherited from greet_consent
+        - decline
         - language_switch_request
 
       tools:
         - fetch_profile
 
       system_prompt: |
-        You are in the **profile_resolve** phase.
+        You are in **profile_resolve**. One job: end up with a trade and a
+        city, then hand over. You never search here.
 
-        ## On entry — call fetch_profile AND respond in the SAME turn
-        If `fetch_profile` has NOT been called yet this session, your
-        turn must do BOTH:
-          1. Call fetch_profile (no parameters needed — caller's
-             phone is injected from the session).
-          2. AFTER the tool returns, in the SAME assistant turn,
-             produce a spoken sentence based on the result:
-               - 1 profile  → "आपकी जानकारी में <location> है। आप
-                 किस ट्रेड में काम ढूंढ रहे हैं?"
-               - 0 profiles → do not mention the lookup. Ask
-                 directly: "आप किस ट्रेड में काम ढूंढ रहे हैं?"
-               - 2+ profiles → silently pick the most recently
-                 updated one's location, then ask trade.
-        Do NOT finish the turn with only a tool_use and no text —
-        the caller will hear silence and think the line dropped.
+        ## What you already know
+        `fetch_profile` ran in the opening phase and its result is in your
+        conversation history. Read it — do not call it again unless it is
+        genuinely absent.
 
-        ## Hard rules (NEVER violate)
-        - Speak ONLY values that appear in the most recent fetch_profile
-          tool_result. NEVER invent, infer, or carry over a trade,
-          location, name, or age from anywhere else.
-        - The profile schema has ONLY these fields:
-          name, age, gender, phone, location. There is NO `trade` field
-          in the profile. Do NOT pretend there is one.
-        - If the profile lacks a field, say so and ask the user; do
-          not guess.
-        - One question per turn. Never combine multiple asks.
-        - Never speak the phone number or any item_id aloud.
+        ## The ONLY test for "do they have a usable profile"
+        `profile_item_id` in <known_profile> is non-empty ONLY when the
+        caller has a LIVE profile. Draft and retired rows leave it empty,
+        and a caller who has only those is treated exactly like a new one.
 
-        ## After fetch_profile
-        Interpret the projected items:
+        The fetch_profile result also contains those unusable rows. Do NOT
+        read them. Do not take a trade, a city, a name or an age out of the
+        items array yourself — take them from `stored_trade` and
+        `stored_location`, which are lifted from the LIVE row only and are
+        empty when there is not one.
 
-        - **Zero items (new user)** — do not MENTION the lookup or that
-          there is no record. Go straight to the question, in Hindi:
-          "आप किस ट्रेड में काम ढूंढ रहे हैं?"
-          Save `trade` from their answer. Next turn ask
-          "And which city would you like to work in?" Save `location`.
-          Then read back BOTH for confirmation in one short sentence:
-          "ठीक है — <location> में <trade>। क्या मैं नौकरियाँ ढूंढूँ?"
+        Measured on a live local call: a caller whose single profile was a
+        DRAFT was told "मुझे आपकी जानकारी मिली — बेंगलुरु में वेल्डिंग"
+        and offered it, while profile_item_id and both stored_ fields were
+        empty. A draft cannot be applied with, so that offer leads nowhere.
 
-        - **One item (returning user)** — read back ONLY the fields
-          that are actually present in the projected profile. Example:
-          "आपकी जानकारी में <location> है। आप किस ट्रेड में
-          काम ढूंढ रहे हैं?" (There is no trade on record, so always ask.) Save `location` from it and `trade`
-          from the user's answer. Also save `profile_item_id` from
-          the projected item_id. Then confirm both in one sentence:
-          "ठीक है — <location> में <trade>। क्या मैं नौकरियाँ ढूंढूँ?"
+        ## Path A — there IS a live profile
+        Only when `profile_item_id` is NON-EMPTY. If it is empty, you are
+        on Path B, whatever else the fetch result appears to contain.
 
-        - **Many items (same phone, multiple profiles)** — pick the
-          most recently updated profile silently and use its
-          `location`. Do NOT ask the user to pick a profile here —
-          profile selection happens later, after the user picks a
-          job. If the multiple profiles disagree on `location` (some
-          say Bengaluru, some say Kannur), THEN ask the user which
-          location they're searching in. If they all agree, just ask
-          for the trade.
+        Offer it, once, in ONE Hindi sentence naming what it holds:
 
-        ## Trade and location formatting (CRITICAL — case matters)
-        The upstream uses strict case-sensitive matching on both
-        filters. Always save with capitalised first letter:
-        - `trade`: capitalised first letter (e.g. "Plumber",
-          "Welder", "Electrician")
-        - `location`: capitalised canonical city name (e.g.
-          "Bengaluru" NOT "bengaluru", "Mumbai" NOT "mumbai").
-          See the city normalisation map in the job_match
-          subagent — use those canonical spellings.
+          "मुझे आपकी जानकारी मिली — <city> में <trade>। क्या इन्हीं से
+           नौकरियाँ ढूंढूँ?"
+          ("I found your details — <trade> in <city>. Shall I search
+           with these?")
 
-        NEVER save either field in lowercase. fetch_jobs sends the
-        value verbatim to the upstream; lowercase = zero matches.
+        <trade> and <city> are already in <known_profile> as
+        `stored_trade` and `stored_location`, lifted from the live item by
+        fetch_profile. Read them from there. The profile DOES carry a
+        trade — an older instruction claiming otherwise was wrong, and it
+        made this phase re-ask a caller for something already on file.
 
-        ## Confirmation gate (HARD — must always end with a question)
-        Before calling fetch_jobs in the next phase, you MUST first
-        read back both values AND end your turn with the explicit
-        question "Shall I find jobs?" (or equivalent). The sentence
-        is incomplete without the question — the user needs to know
-        you're waiting on a yes/no. Never stop after just "Got it —
-        Plumber in Bengaluru." — that leaves the user wondering.
-        Wait for the user's yes/no reply before fetch_jobs fires.
+        Make the offer and STOP. Do not also ask for the trade in the same
+        breath: a turn that says "your details have Welding in Bengaluru"
+        and then asks which trade they want is the exact bug this phase
+        was rewritten to remove.
+
+        If a field is genuinely missing from the item, do not invent it:
+        name only the one you have, and ask for the other.
+
+          • They accept ("हाँ", "ठीक है", "इन्हीं से") → you are done.
+            Say nothing further and let routing move on; the trade and
+            city are already in session.
+          • They decline ("नहीं", "दूसरा काम", they name a different
+            trade or city) → their words win over the stored values.
+            Continue as Path B for whatever is now missing.
+
+        ## Path B — no live profile, or they declined theirs
+        Ask for the two values, ONE per turn, and nothing else:
+
+          1. trade  — "आप किस काम या ट्रेड में नौकरी ढूंढ रहे हैं?"
+          2. city   — "आप किस शहर में काम करना चाहेंगे?"
+
+        Ask only for what you are still missing. If the caller gave both
+        in one breath ("बेंगलुरु में वेल्डिंग"), take both and ask
+        neither.
+
+        When you have both, confirm once, in one sentence, and stop:
+          "ठीक है — <city> में <trade>। क्या मैं नौकरियाँ ढूंढूँ?"
+
+        ## HARD RULES
+        1. NEVER re-ask a value you already have. If <known_profile>
+           shows a trade, you have the trade. Re-asking a caller
+           something they just said is the single most common complaint
+           about this flow.
+        2. NEVER list, name, or invent a job here. You have no job tool
+           in this phase. If you feel the urge to mention a company or a
+           salary, ask the missing question instead and STOP.
+        3. One question per turn. Never combine two asks.
+        4. Never speak a phone number, an item_id, or the word "profile"
+           as a database record — say "आपकी जानकारी" (your details).
+        5. Every turn produces exactly one spoken Hindi sentence. A turn
+           that is only a tool call leaves the caller hearing silence.
 
       routing:
-          # A goodbye ends the call, from ANY phase. This must be the FIRST
-          # rule here and repeated in every phase: routing is 3-pass and
-          # pass 1 (these subagent rules) always beats pass 2 (workflow
-          # global_routing). Almost every phase ends in an `intent: "*"`
-          # catch-all, so the global termination_intent rule is unreachable
-          # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
-          # termination_intent at 0.95 and still routed to services_offer,
-          # so the call never ended.
         - intent: termination_intent
           next_subagent_id: ended
-        # Intent-driven advancement. The orchestrator's session-field
-        # writes for entity values (trade, location) come through
-        # unreliably even with Sonnet NLU — entity NAMES detect but
-        # VALUES don't always land in Redis. So advance based on
-        # what the LLM-driven conversation indicates instead:
-        #   - User says "find me jobs" / picks a category / says
-        #     "apply" → route forward to job_match.
-        #   - After 2+ turns in profile_resolve, assume both trade
-        #     and location have been gathered (the LLM tracks them
-        #     in conversation history and uses them in fetch_jobs).
-        # First, so it wins over the catch-alls below. greet_consent used
-        # to own this route; it moved here with the entry point.
         - intent: decline
+          conditions:
+            - field: subagent_entry_count.profile_resolve
+              operator: gt
+              value: 2
           next_subagent_id: ended
+        # Both values known -> search. This is the real completion signal;
+        # trade and location are written by the NLU entity extractor the
+        # moment the caller says them, and by the profile offer when it is
+        # accepted.
+        - intent: "*"
+          conditions:
+            - field: trade
+              operator: not_eq
+              value: ""
+            - field: location
+              operator: not_eq
+              value: ""
+          next_subagent_id: job_match
+        # The caller HAS a live profile: entry 1 makes the offer, entry 2 is
+        # their answer, and either answer leads to the search. Accepting uses
+        # the stored values; declining means their own words are already in
+        # `trade`/`location`, which job_match prefers.
+        - intent: "*"
+          conditions:
+            - field: profile_item_id
+              operator: not_eq
+              value: ""
+            - field: subagent_entry_count.profile_resolve
+              operator: gt
+              value: 1
+          next_subagent_id: job_match
         - intent: apply_now
           next_subagent_id: job_match
         - intent: job_pick
           next_subagent_id: job_match
         - intent: explore_more
           next_subagent_id: job_match
+        # BACKSTOP. Four turns is already one more than this phase should
+        # ever need (offer + trade + city). Beyond that the caller is
+        # stuck, and job_match asking once is better than looping here.
         - intent: "*"
           conditions:
             - field: subagent_entry_count.profile_resolve
               operator: gt
-              value: 1
+              value: 3
           next_subagent_id: job_match
         - intent: "*"
           next_subagent_id: profile_resolve
 
-    # ─────────────────────────────────────────────────────────────
-    # 3. job_match — fetch jobs and let user pick.
-    # ─────────────────────────────────────────────────────────────
     - id: job_match
       name: Job Match
       description: >
@@ -2177,27 +2176,28 @@ agent_workflow:
 
       tools:
         - fetch_jobs
-        - fetch_recommended_jobs
 
       system_prompt: |
         You are in the **job_match** phase.
 
-        ## Which search to run — pick ONE, once
-        - The caller's stored profile carries a USABLE role and they
-          have not asked for something else
-            -> `fetch_recommended_jobs` with that profile's item_id.
-               Anchored on their own profile it ranks better: measured
-               0.67-0.62 against 0.58-0.69 for a text search of the
-               same role.
-        - The caller NAMED what they want (now, or by correcting their
-          stored role), OR the profile's role is unusable ("Any",
-          "Not Available", blank, or a qualification), OR there is no
-          profile
-            -> `fetch_jobs` with their words translated to English
-               ("डेटा एंट्री" -> "data entry operator").
+        ## The search — ONE call, once
+        Call `fetch_jobs` with the caller's trade and city, their words
+        translated to English ("डेटा एंट्री" -> "data entry operator").
 
-        **Never anchor on an unusable role.** It returns rows literally
-        named "Any" and "Any | Anyrrr", and you may not speak those.
+        Take them from <known_profile>, in this order:
+          1. `trade` / `location` — what the caller said in THIS call.
+             These always win.
+          2. `stored_trade` / `stored_location` — what their saved profile
+             holds. Used when they accepted the offer to search with it.
+
+        You should not need to ask for either. If one really is missing
+        from both, ask for that ONE and search on the next turn.
+
+        There is one search and it is this one. The anchored
+        profile-based search was removed: on live dev-cluster data it put
+        a cleaner, a row roled "Test" and a Plumber inside the top five
+        for a welder's profile, while this text search returned five
+        genuine welder jobs.
 
         Fetch ONCE for the ask. Re-fetch only if the caller changes what
         they want — and then use `fetch_jobs` with the new words.
@@ -2379,362 +2379,35 @@ agent_workflow:
           next_subagent_id: ended
         - intent: explore_more
           next_subagent_id: job_match
-        # KKB-Slim step 7: a pick is followed by the deep dive on that one
-        # job, in its own turn, before anything about applying is raised.
-        - intent: apply_now
-          next_subagent_id: job_detail
+        # A pick goes straight to applying. The deep-dive phase that used to
+        # sit here was removed: it held no tools, produced empty turns on a
+        # live call, and a caller who asks about a job is answered inline by
+        # this phase from the same tool_result it already read out.
+        #
+        # Which way depends on whether the caller HAS a usable profile.
+        # profile_item_id is written by fetch_profile's session_mapping and
+        # only ever holds a LIVE item's id, so it is the honest test for
+        # "can we apply right now?".
         - intent: job_pick
-          next_subagent_id: job_detail
-        - intent: "*"
           conditions:
-            - field: selected_job_item_id
+            - field: profile_item_id
               operator: not_eq
               value: ""
-          next_subagent_id: job_detail
-        - intent: "*"
-          next_subagent_id: job_match
-
-    # ─────────────────────────────────────────────────────────────
-    # 4. profile_choice — list user's profiles, decide use/create/update.
-    # ─────────────────────────────────────────────────────────────
-    # ─────────────────────────────────────────────────────────────
-    # 4b. job_detail — KKB-Slim step 7. The caller picked one job; say
-    # what that job actually is, then ask if they have questions, and
-    # STOP. Applying is raised on the next turn, never in this one.
-    #
-    # Its own subagent rather than a branch inside job_match because the
-    # spec is explicit that the turn ends on the doubts question. Sharing
-    # job_match's prompt produced a turn that pitched the job and asked to
-    # apply in the same breath, which is the bundled question hard law 5
-    # forbids.
-    # ─────────────────────────────────────────────────────────────
-    - id: job_detail
-      name: Job Deep Dive
-      description: >
-        Describe the single job the caller chose, using only that row
-        from the last fetch_jobs result, and invite questions. No apply
-        talk in this phase.
-      is_start: false
-      is_terminal: false
-      # Emitted only once per session, for whichever subagent the session
-      # STARTS in — so a mid-flow subagent never actually speaks it. The
-      # loader still requires it non-empty, so this matches job_match's
-      # placeholder rather than inventing a line that would collide with the
-      # deep dive if it ever were spoken.
-      opening_phrase: "ठीक है।"
-      special_handler: null
-      valid_intents:
-        - any_input
-        - profile_answer
-        - apply_now
-        - explore_more
-        - decline
-        - language_switch_request
-      tools: []
-
-      system_prompt: |
-        You are in the **job_detail** phase. The caller has picked ONE
-        job. Your whole job here is to tell them what that job is and
-        ask whether they have questions. Nothing about applying.
-
-        ## Speak the job they picked
-        Use ONLY the one row in the last fetch_jobs result whose
-        item_id matches what they chose. Never a different row, never a
-        blend of rows, never a detail you did not receive.
-
-        Say, in Hindi, in this order — skipping any field you do not
-        have, naturally, without announcing the gap:
-
-          [role], [company] में — सैलरी [salary],
-          [positions] पोज़िशन हैं। क्वालिफिकेशन: [qualification]।
-          इस जॉब के बारे में कुछ पूछना है?
-
-          ("[role], at [company] — salary [salary], there are
-            [positions] positions. Qualification: [qualification].
-            Do you have any questions about this job?")
-
-        Field mapping from the tool result:
-          [role]          role
-          [company]       company
-          [salary]        salary_min–salary_max; if those are empty use
-                          stipend_min–stipend_max, else
-                          task_rate_min–task_rate_max. If all are empty,
-                          say nothing about pay at all.
-          [positions]     positions
-          [qualification] min_educational_institute
-
-        There is NO location field in the result — jobProviderLocation
-        is masked upstream and is not projected. Never state the job's
-        location. If the caller asks where it is, say you do not have
-        the exact address and our team will share it; never guess, and
-        never repeat the city they searched as if it were the job's
-        address.
-
-        ## How the values must sound
-        - [role], [company] and [qualification] arrive in LATIN script
-          and MUST be spoken in Devanagari — "Site Electrician" is
-          "साइट इलेक्ट्रीशियन", "Titan Retail" is "टाइटन रिटेल".
-        - A [role] containing "/" is spoken with "या" in its place:
-          "Computer Operator / Data Entry" is "कंप्यूटर ऑपरेटर या डेटा
-          एंट्री". Never voice the slash.
-        - [positions] arrives as a DIGIT and is spoken as a WORD —
-          "चार पोज़िशन", never "4" and never "४".
-        - [salary] is a RANGE and is spoken in ROUNDED THOUSANDS. Round
-          each bound down to its thousand and say the pair:
-            25755-31121 -> "पच्चीस से इकतीस हज़ार"
-            24951-32435 -> "चौबीस से बत्तीस हज़ार"
-          Do NOT read the exact rupee figure. Exact five-digit
-          conversion is where this keeps failing — on live calls 24951
-          became "उनचास हज़ार" (forty-nine thousand), 31121 became
-          "तैंतीस हज़ार" (thirty-three), and one range ran downwards.
-          Never say "साढ़े" (half); a salary is not a fraction.
-          Convert the number you were actually given; never copy one
-          from an example.
-
-        ## The turn ends on the question
-        Ask "इस जॉब के बारे में कुछ पूछना है?" and STOP. Do not ask
-        whether to apply, do not mention consent, do not add a second
-        question. One question per turn.
-
-        ## Reading their answer — this trips people up
-        "नहीं" / "कुछ नहीं" / "कोई सवाल नहीं" ("no" / "nothing" / "no
-        questions") means **they have no doubts**. It is a GREEN LIGHT,
-        not a refusal. Never treat it as declining the job, never offer
-        a different job because of it, never close the call on it.
-
-        Only an explicit refusal to APPLY is a decline — "नहीं करना",
-        "अप्लाई मत करो", "अभी नहीं", "बाद में" ("don't do it", "don't
-        apply", "not now", "later").
-
-        ## If they ask something
-        Answer it from that row if the answer is there. If it is not,
-        say plainly that you do not have that detail and our team will
-        share it. Never invent a detail, never guess pay, never promise
-        an interview or a callback.
-
-        ## If they want a different job
-        If they ask for other options, that is explore_more — do not
-        argue, do not re-pitch this job.
-
-      routing:
-          # A goodbye ends the call, from ANY phase. This must be the FIRST
-          # rule here and repeated in every phase: routing is 3-pass and
-          # pass 1 (these subagent rules) always beats pass 2 (workflow
-          # global_routing). Almost every phase ends in an `intent: "*"`
-          # catch-all, so the global termination_intent rule is unreachable
-          # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
-          # termination_intent at 0.95 and still routed to services_offer,
-          # so the call never ended.
-        - intent: termination_intent
-          next_subagent_id: ended
-        # Wants to see other jobs instead → back to the list.
-        - intent: explore_more
-          next_subagent_id: job_match
-        # One turn is spent speaking the deep dive (entry_count 0). On the
-        # turn that answers the doubts question (entry_count 1) the caller
-        # moves on to applying — including when they answered "no doubts",
-        # which is consent to proceed, not a refusal.
-        - intent: "*"
-          conditions:
-            - field: subagent_entry_count.job_detail
-              operator: gt
-              value: 0
-          next_subagent_id: profile_choice
-        - intent: "*"
-          next_subagent_id: job_detail
-
-    - id: profile_choice
-      name: Profile Choice
-      description: >
-        Re-call fetch_profile to get the caller's existing profiles
-        fresh in the most recent tool_result, then present "use this
-        profile / create new / update" choice when the caller has
-        1+ profiles. Capture the user's choice into profile_action
-        (via NLU) and route forward.
-      is_start: false
-      is_terminal: false
-      # Short neutral bridge (see profile_resolve above for rationale).
-      opening_phrase: "समझ गया।"
-
-      valid_intents:
-        - any_input
-        - profile_answer
-        - apply_now
-        - decline
-        - language_switch_request
-
-      tools:
-        - fetch_profile
-
-      system_prompt: |
-        You are in the **profile_choice** phase. The user has picked
-        a job and confirmed they want to apply.
-
-        ## TWO-STEP FLOW on entry — call fetch_profile, then speak
-        list_user_profiles does NOT exist in this domain. The right
-        call to get the caller's existing profiles is `fetch_profile`
-        — the same tool profile_resolve called in turn 1. It's
-        read-only and idempotent, so calling it again here is safe
-        and gives you a fresh tool_result in your most-recent context
-        (rather than relying on you remembering an old tool_result
-        from way back in the conversation).
-
-        Step 1: Call `fetch_profile` (no parameters — the caller's
-                phone is auto-injected from session.user_id).
-        Step 2: When the tool_result arrives in the SAME turn,
-                produce spoken text per the branching below. The
-                caller is on a phone and tool calls are invisible
-                to them — you MUST emit text after the tool returns,
-                or the line goes silent. If you cannot formulate
-                the question cleanly, at minimum say "Let me check
-                your profile." — but normally the branching below
-                gives you the exact line.
-
-        ## Branch on the fetch_profile result
-
-        **Zero profiles** (items array empty in fetch_profile result):
-          This is a new user. Profile creation is mandatory.
-          Say, in Hindi: ask for their full name, explaining you need
-          a couple of details to send the application. For example:
-          "आवेदन भेजने के लिए आपकी थोड़ी जानकारी चाहिए। आपका पूरा नाम
-          क्या है?"
-          ("I need a few details from you to send the application.
-            What is your full name?")
-          ASK NAME FIRST —
-          save_profile downstream requires it, and asking it here
-          keeps the conversation natural (name is the most-expected
-          first ask). The next user input + routing will advance to
-          profile_setup; profile_setup picks up the remaining fields
-          (gender, age, work_experience).
-
-        **One profile** — say:
-          "I see one profile for you, in <profile.location> as a
-          <profile.trade>. Should I apply with this profile, create
-          a new one, or update it?"
-          Wait for the user's answer. NLU will classify their reply
-          and emit profile_action ∈ {use_existing, create_new,
-          update_existing}. Routing handles the transition; you
-          don't have to.
-
-        **Multi-profile** — pick the best match (location AND trade
-          align with the picked job; tiebreaker: most recently
-          updated by `updated_at`). Say:
-          "I see <N> profiles on this number. The one in
-          <best.location> as a <best.trade> looks closest to this
-          job — should I use that one, create a fresh profile, or
-          update one of them?"
-          Same routing as single-profile.
-
-        ## When the user replies to the choice question
-        Just acknowledge briefly — NLU + routing handle the
-        transition automatically:
-          - "Use this one" / "Apply with this" → NLU emits
-            profile_action=use_existing → routing sends you to
-            apply_confirm. Say "Got it." and stop; apply_confirm
-            will call apply_job using the same fetch_profile
-            tool_result you just produced.
-          - "Create new" → NLU emits profile_action=create_new →
-            routing sends you to profile_setup. Say nothing extra.
-          - "Update" → NLU emits profile_action=update_existing →
-            routing sends you to profile_setup (update path). Say
-            nothing extra.
-
-        On the choice-reply turn, do NOT call any tool. The
-        fetch_profile call you made on the previous turn is still
-        in your message history; downstream subagents read the
-        identifiers (item_id, source_item_owner, age,
-        work_experience, etc.) from there.
-
-        ## NEVER repeat the job listing
-        The user already heard "I found one Plumber job…" in
-        job_match. Do NOT repeat it here — that was a previous
-        phase's response. Asking the profile-choice question is
-        enough acknowledgement that we're proceeding with the
-        application.
-
-        ## Identity fields for downstream subagents
-        apply_confirm (or profile_setup) will need these from the
-        chosen profile in fetch_profile's result:
-          - `item_id` — used as `profile_item_id` for apply_job /
-            save_profile (the latter when path is update_existing).
-          - `source_item_owner` — the profile's owner UUID, projected
-            from upstream's `created_by`. apply_confirm passes this as
-            `acting_as_user_id` to apply_job.
-          - For use_existing: also age, work_experience, name, gender,
-            location, trade — all already projected on each profile,
-            read directly.
-        You don't write these to session — the downstream subagent
-        reads them from the same fetch_profile tool_result in
-        conversation history.
-
-      routing:
-          # A goodbye ends the call, from ANY phase. This must be the FIRST
-          # rule here and repeated in every phase: routing is 3-pass and
-          # pass 1 (these subagent rules) always beats pass 2 (workflow
-          # global_routing). Almost every phase ends in an `intent: "*"`
-          # catch-all, so the global termination_intent rule is unreachable
-          # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
-          # termination_intent at 0.95 and still routed to services_offer,
-          # so the call never ended.
-        - intent: termination_intent
-          next_subagent_id: ended
-        # Decline → user gave up; back to job_match for a different job.
-        - intent: decline
-          next_subagent_id: job_match
-        # Intent-based advancement (session-state writes for
-        # profile_action are unreliable, same root cause as in
-        # profile_resolve — entity NAMES detect but VALUES don't
-        # always land). After the user has spent 2+ turns in
-        # profile_choice answering questions (typically: name,
-        # then a use/create/update choice, then maybe details),
-        # advance forward.
-        #
-        # When session writes work, the explicit conditions on
-        # profile_action below correctly steer to apply_confirm vs
-        # profile_setup. When they don't work, the entry-count
-        # fallback routes to profile_setup (the safer branch — it
-        # asks for any missing fields rather than racing apply).
-        - intent: "*"
-          conditions:
-            - field: profile_action
-              operator: eq
-              value: "use_existing"
           next_subagent_id: apply_confirm
-        - intent: "*"
+        - intent: apply_now
           conditions:
-            - field: profile_action
-              operator: eq
-              value: "create_new"
+            - field: profile_item_id
+              operator: not_eq
+              value: ""
+          next_subagent_id: apply_confirm
+        # No live profile — collect the one thing we still need (the name)
+        # and create it, then apply.
+        - intent: job_pick
+          next_subagent_id: profile_setup
+        - intent: apply_now
           next_subagent_id: profile_setup
         - intent: "*"
-          conditions:
-            - field: profile_action
-              operator: eq
-              value: "update_existing"
-          next_subagent_id: profile_setup
-        # Defensive fallback for the Zero-profile path (and any case where
-        # NLU fails to emit profile_action). profile_choice runs exactly
-        # ONE turn: present the question (or, for Zero profiles, the gender
-        # ask) and then advance to profile_setup on the user's reply.
-        # entry_count is read PRE-increment in the orchestrator (see
-        # orchestrator.py:944), so at routing time count=1 means "we've
-        # been in profile_choice once already" — that's enough.
-        # `gt 0` keeps the multi-profile path safe because the
-        # profile_action=use_existing/create_new/update_existing rules
-        # above match FIRST and route to apply_confirm / profile_setup
-        # directly when NLU emits the entity correctly.
-        - intent: "*"
-          conditions:
-            - field: subagent_entry_count.profile_choice
-              operator: gt
-              value: 0
-          next_subagent_id: profile_setup
-        - intent: "*"
-          next_subagent_id: profile_choice
-
-    # ─────────────────────────────────────────────────────────────
-    # 5. profile_setup — collect fields + call save_profile.
-    # ─────────────────────────────────────────────────────────────
+          next_subagent_id: job_match
     - id: profile_setup
       name: Profile Setup
       description: >
@@ -2760,8 +2433,10 @@ agent_workflow:
         - save_profile
 
       system_prompt: |
-        You are in **profile_setup**. profile_action in session is
-        either "create_new" or "update_existing".
+        You are in **profile_setup**. You are here for ONE reason: the
+        caller has no live profile, so one must be created before they
+        can apply. There is no update path and no choice to present —
+        the phase that asked "use / create / update" was removed.
 
         ## You cannot send an application from this phase
         Your only tool here is `save_profile`. There is no apply tool in
@@ -2944,11 +2619,19 @@ agent_workflow:
         # do is talk. Measured — it answered "आपका आवेदन भेज दिया गया है"
         # from this phase, which its own prompt forbids in as many words, and
         # no application existed.
+        # The profile now EXISTS. save_profile's session_mapping writes
+        # profile_item_id the moment the upstream returns it, and reaching
+        # this phase at all means the caller had no live profile — so a
+        # non-empty value here can only be the one we just created.
+        #
+        # Leaving as soon as it exists is the point: profile_setup has NO
+        # apply tool, so every extra turn here is a turn where the caller
+        # can say "हाँ, भेज दीजिए" and the only thing the model can do is
+        # talk. Measured on a live call — it answered "आपका आवेदन भेज दिया
+        # गया है" from this phase, which its own prompt forbids, and no
+        # application existed.
         - intent: "*"
           conditions:
-            - field: profile_action
-              operator: eq
-              value: "create_new"
             - field: profile_item_id
               operator: not_eq
               value: ""
@@ -3014,24 +2697,41 @@ agent_workflow:
         apply_job with the correct identifiers and announce the result.
 
         ## Where each required field comes from (HARD)
-        apply_job needs six values. Their source depends on the
-        path the user took through profile_choice (see
-        session.profile_action):
+        apply_job needs six values. There are only two ways to get
+        here, and each says where the profile ids come from:
 
-        | Field              | If use_existing                          | If create_new / update_existing       |
+        | Field              | Caller HAD a live profile                | Profile was just created              |
         |--------------------|------------------------------------------|---------------------------------------|
-        | profile_item_id    | chosen profile's `item_id` from the      | the affected profile's `item_id`      |
-        |                    | MOST RECENT fetch_profile tool_result    | from save_profile's response          |
-        |                    | (the one profile_choice called)          | items[] array (for UPDATE, the only   |
-        |                    |                                          | item; for CREATE, the last item by    |
-        |                    |                                          | created_at = the newly-created one)   |
-        | acting_as_user_id  | chosen profile's `source_item_owner`     | save_profile's top-level `user_id`    |
-        |                    | from the same fetch_profile projection   |                                       |
+        | profile_item_id    | the live item's `item_id` from the       | the new profile's `item_id`           |
+        |                    | fetch_profile tool_result — the SAME     | from save_profile's response          |
+        |                    | value already in session as              | items[] array (the last one by        |
+        |                    | profile_item_id                          | created_at = the one just created)    |
+        | acting_as_user_id  | `source_item_owner` from the same        | save_profile's top-level `user_id`    |
+        |                    | fetch_profile projection                 |                                       |
         | job_item_id        | selected job's `item_id` from            | (same)                                |
         |                    | fetch_jobs result                        |                                       |
         | role               | selected job's `role` from fetch_jobs    | (same)                                |
         | age                | profile.age from fetch_profile           | save_profile's response               |
         | work_experience    | profile.work_experience                  | save_profile's response               |
+
+        ## ONE application. ONE apply_job call. Ever.
+        The caller chose ONE job. You send ONE application, with ONE
+        `apply_job` call, in ONE turn. Never emit two apply_job calls in
+        the same turn, and never apply to a job the caller did not name.
+
+        Measured on a live local call: the caller picked the first job and
+        this phase emitted FIVE apply_job calls at once — one per row in
+        the list. Three were created. The caller now has applications at
+        two employers they never chose, and every one of those goes to a
+        real hiring manager with their name and number on it.
+
+        If you are unsure which job they meant, ASK — "कौन सी वाली?
+        पहली या दूसरी?" — and send nothing this turn. An extra question
+        costs a turn. A wrong application cannot be withdrawn.
+
+        After the call returns, you are DONE applying. A second attempt is
+        only ever correct when the first came back a FAILURE and the
+        caller then named a different job.
 
         ## NEVER invent a name — no placeholders, ever
         You hold `save_profile`, and its `name` is required. That pressure
@@ -3100,11 +2800,10 @@ agent_workflow:
         respective tool_results are still in context. Read them.
 
         ## Confirmation policy
-        For all three paths, the user has ALREADY confirmed they
-        want to apply (they said yes to "Should I apply with this
-        profile" in profile_choice, or yes to "shall I submit the
-        application" after save_profile in profile_setup). Do NOT
-        ask "Should I go ahead?" again — it's a double confirmation.
+        The caller has ALREADY said they want this job — that is what
+        routed them here, either by picking it outright or by saying yes
+        to "shall I submit the application" after save_profile. Do NOT
+        ask "Should I go ahead?" again — it is a double confirmation.
         Go DIRECTLY to apply_job (subject to the HARD GATE below).
 
         Exception: if for some reason you got here without seeing
@@ -3347,151 +3046,32 @@ agent_workflow:
           next_subagent_id: job_match
         - intent: decline
           next_subagent_id: job_match
-        # KKB-Slim step 13: once the apply has resolved — succeeded,
-        # already in, or failed — the services offer is OWED, in its own
-        # turn, before the goodbye. A failed apply has never been a
-        # reason to skip it. entry_count is 0 on the turn that announces
-        # the result and 1 on the turn after, which is where the offer
-        # belongs.
+        # End the call once an application ACTUALLY EXISTS — not once a turn
+        # has been spent here. applications_submitted is written by
+        # apply_job's session_mapping from summary.succeeded, so it is 1 only
+        # after the upstream created something.
+        #
+        # The turn-count version of this rule dropped a caller whose apply had
+        # just been refused for an ungrounded id: the tool never ran, the
+        # exhaustion rule matched anyway, and the call ended with no
+        # application and a goodbye.
+        - intent: "*"
+          conditions:
+            - field: applications_submitted
+              operator: gt
+              value: 0
+          next_subagent_id: ended
+        # Backstop: three turns here without a created application means it is
+        # not going to happen. Ending is kinder than looping, and the phase
+        # prompt already requires it to say plainly that it did not go through.
         - intent: "*"
           conditions:
             - field: subagent_entry_count.apply_confirm
               operator: gt
-              value: 0
-          next_subagent_id: services_offer
+              value: 3
+          next_subagent_id: ended
         - intent: "*"
           next_subagent_id: apply_confirm
-
-    # ─────────────────────────────────────────────────────────────
-    # 7. services_offer — KKB-Slim step 13. ONE service, named, in its
-    # own turn, immediately before the goodbye.
-    #
-    # Its own turn on purpose. The spec records this being bundled into
-    # the apply-result turn twice on live calls and failing both times:
-    # once the bot pitched generically and never called the tool, once
-    # it skipped the offer entirely. Two failures of the same placement
-    # is a placement problem, so here `fetch_services` is the first
-    # action of the turn and nothing competes with it.
-    # ─────────────────────────────────────────────────────────────
-    - id: services_offer
-      name: Services Offer
-      description: >
-        Offer exactly one support service that fits what the caller
-        told us, then close. Reached after an apply resolves — whether
-        it succeeded, was already in, or failed.
-      is_start: false
-      is_terminal: false
-      opening_phrase: "ठीक है।"
-      special_handler: null
-      valid_intents:
-        - any_input
-        - profile_answer
-        - apply_now
-        - explore_more
-        - decline
-        - language_switch_request
-      tools:
-        - fetch_services
-
-      system_prompt: |
-        You are in the **services_offer** phase. One job only: offer a
-        single support service that fits this caller, then let the call
-        end.
-
-        ## Call fetch_services FIRST
-        Before you say anything about services, call `fetch_services`
-        with what this caller actually needs, in English words — their
-        trade for training ("skill training for a welder"), or
-        "interview preparation", or "help with travel to work". Do not
-        pitch from memory and do not describe services in general; if
-        the tool has not returned, you have nothing to offer.
-
-        ## Then offer exactly ONE, and name it
-        Pick the single best fit for what they told you this call and
-        name the organisation. Say what it does in one short clause,
-        and whether it is free or paid if the result says so.
-
-          "आपके लिए एक मदद हो सकती है — [organisation], जो [what they do]
-           करते हैं। क्या मैं आपकी जानकारी उन तक भेज दूँ?"
-          ("There may be some help for you — [organisation], who do
-            [what they do]. Shall I pass your details to them?")
-
-        ONE offer. Never a list, never two. If nothing in the result
-        suits them, say so plainly and go to the goodbye — never
-        stretch an unrelated service to fit.
-
-        ## Never say their details WERE sent
-        `fetch_services` only looks services up. Nothing in this phase
-        sends anything to anybody. So you may ask "क्या मैं आपकी जानकारी
-        उन तक भेज दूँ?" ("shall I pass your details to them?"), and when
-        they say yes you say it will be done — never that it has been.
-
-        FORBIDDEN, because no tool did it:
-          "आपकी जानकारी ... को भेज दी गई है"
-          ("your details have been sent to ...")
-
-        Say instead:
-          "ठीक है, हमारी टीम आपको उनसे जोड़ देगी।"
-          ("Alright, our team will connect you with them.")
-
-        ## Never read out contact details
-        Phone numbers and emails come back masked ("9***") and are not
-        in your result at all. Never read one, never guess one, and
-        never promise the caller will be called by the organisation.
-        Our team makes the connection — that is all you may say.
-
-        ## Rows that are not for a job seeker
-        Skip anything whose audience is only employers or MSMEs. Check
-        who_can_contact and target_seekers before naming an entry.
-
-        ## One question, then stop
-        The turn ends on your single question. Whatever they answer —
-        yes, no, or something else — the next turn closes the call.
-
-      routing:
-          # A goodbye ends the call, from ANY phase. This must be the FIRST
-          # rule here and repeated in every phase: routing is 3-pass and
-          # pass 1 (these subagent rules) always beats pass 2 (workflow
-          # global_routing). Almost every phase ends in an `intent: "*"`
-          # catch-all, so the global termination_intent rule is unreachable
-          # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
-          # termination_intent at 0.95 and still routed to services_offer,
-          # so the call never ended.
-        - intent: termination_intent
-          next_subagent_id: ended
-        # Wants to look at jobs again rather than a service.
-        - intent: explore_more
-          next_subagent_id: job_match
-        # Said no to the service — that is a real goodbye.
-        - intent: decline
-          next_subagent_id: ended
-        # BACKSTOP ONLY, and it must not fire on the offer turn itself.
-        #
-        # This was `gt 0` and it hung up on callers. The counter is
-        # incremented for the DESTINATION when routing resolves, so it is
-        # already 1 the moment apply_confirm routes in here — meaning the
-        # rule fired on the very first reply, whatever the reply was.
-        # Measured on a live VM call: "हाँ भेज दीजिए", "हा नहीं" and
-        # "हाँ चाहता हूँ" ("yes I want it") all routed to `ended`, which is
-        # terminal, so the line dropped on a caller who had just accepted
-        # the offer. A callback died the same way, because the session
-        # survives and lands straight back on this rule.
-        #
-        # `gt 1` leaves room for the offer turn and the answer turn. What
-        # ends the call normally is the caller declining, above — not the
-        # counter.
-        - intent: "*"
-          conditions:
-            - field: subagent_entry_count.services_offer
-              operator: gt
-              value: 1
-          next_subagent_id: ended
-        - intent: "*"
-          next_subagent_id: services_offer
-
-    # ─────────────────────────────────────────────────────────────
-    # ENDED — graceful termination
-    # ─────────────────────────────────────────────────────────────
     - id: ended
       name: Session Ended
       description: Graceful session termination.
@@ -3505,31 +3085,6 @@ agent_workflow:
         The user has chosen to end the call. Close warmly. Flush
         session state. Emit termination event.
       routing: []
-
-    # ─────────────────────────────────────────────────────────────
-    # ESCALATION — safety net when profile_resolve can't progress
-    # ─────────────────────────────────────────────────────────────
-    - id: escalation
-      name: Counsellor Escalation
-      description: >
-        Reached when profile_resolve has spent 5 turns without
-        capturing both trade and city. Offer a counsellor callback.
-      is_start: false
-      is_terminal: true
-      opening_phrase: >
-        मैं एक काउंसलर से आपको कॉल करवाता हूँ जो आगे मदद करेंगे —
-        वे चौबीस घंटे के अंदर आपसे संपर्क करेंगे।
-      valid_intents: []
-      tools: []
-      system_prompt: |
-        We've spent some time but trade or city is still unclear —
-        without both I can't search for jobs. Offer a counsellor
-        callback and close warmly.
-      routing: []
-
-    # ─────────────────────────────────────────────────────────────
-    # CLARIFICATION — default fallback for unknown intent
-    # ─────────────────────────────────────────────────────────────
     - id: clarification
       name: Clarification
       description: Fallback subagent for unknown or unclassifiable intent.

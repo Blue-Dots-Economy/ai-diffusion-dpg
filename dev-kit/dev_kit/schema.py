@@ -19,7 +19,7 @@ One top-level model per service:
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Dict, List, Literal, Union
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -53,6 +53,13 @@ class InvocationRulesConfig(BaseModel):
     must_not_substitute: str = Field(
         default="",
         description="What the LLM must never treat as a substitute for this tool",
+    )
+    max_calls_per_turn: Optional[int] = Field(
+        default=None,
+        description=(
+            "Hard cap on executions of this tool per turn. For irreversible "
+            "writes, a prompt rule is not enough."
+        ),
     )
     grounded_params: Union[List[str], Dict[str, List[str]]] = Field(
         default_factory=list,
@@ -574,6 +581,19 @@ class ChannelsTopLevelConfig(BaseModel):
     )
 
 
+class EntityPersistenceConfig(BaseModel):
+    """Where NLU-extracted entities are written: session or persistent."""
+
+    scope: Literal["session", "persistent"] = Field(
+        default="persistent",
+        description=(
+            "persistent = written to the caller's profile store and returned on "
+            "a later call; session = this call only. Session scope keeps routing "
+            "conditions off the profile store."
+        ),
+    )
+
+
 class AgentCoreConfig(BaseModel):
     server: ServerConfig
     agent: AgentConfig
@@ -589,6 +609,9 @@ class AgentCoreConfig(BaseModel):
     learning_client: ClientConfig
     action_gateway_client: ClientConfig
     preprocessing: PreprocessingConfig
+    entity_persistence: EntityPersistenceConfig = Field(
+        default_factory=EntityPersistenceConfig
+    )
     entity_to_profile_field: dict[str, str] = Field(
         default_factory=dict,
         description="Maps NLU entity names to UserProfile declared_fields in the Memory Layer. "

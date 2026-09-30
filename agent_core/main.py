@@ -195,6 +195,18 @@ def _build_app():
     if grounded_params:
         logger.info("startup.grounded_params %s", grounded_params)
 
+    # connectors.<category>[].invocation_rules.max_calls_per_turn -> {tool: n}
+    tool_call_caps: dict[str, int] = {}
+    for _conns in (config.get("connectors") or {}).values():
+        for _conn in _conns or []:
+            if not isinstance(_conn, dict):
+                continue
+            _cap = (_conn.get("invocation_rules") or {}).get("max_calls_per_turn")
+            if isinstance(_cap, int) and _cap > 0:
+                tool_call_caps[str(_conn.get("name"))] = _cap
+    if tool_call_caps:
+        logger.info("startup.tool_call_caps %s", tool_call_caps)
+
     manager = ManagerAgent(
         chat_provider=llm,
         tool_registry=tool_registry,
@@ -203,6 +215,7 @@ def _build_app():
         trust_layer=trust,
         max_tool_rounds=agent_cfg.get("max_tool_rounds", 1),
         grounded_params=grounded_params,
+        tool_call_caps=tool_call_caps,
     )
 
     # Async clients — required for stream_turn() / session mode

@@ -51,6 +51,11 @@ state:
       # Search criteria (confirmed in profile_resolve subagent)
       trade:                   { type: string, default: "" }
       location:                { type: string, default: "" }
+      # The live profile's stored values, lifted by fetch_profile's
+      # session_mapping. profile_resolve offers these back to the caller;
+      # `trade`/`location` above stay reserved for what they say in THIS call.
+      stored_trade:            { type: string, default: "" }
+      stored_location:         { type: string, default: "" }
       # Job search results + selection
       last_jobs:               { type: list,   default: [] }   # compact dicts: item_id, role, company, city, salary_range
       selected_job_item_id:    { type: string, default: "" }

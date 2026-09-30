@@ -436,3 +436,37 @@ class TestAgentProviderAndFeatures:
                 merged[k] = v
         # Should not raise.
         MergedConfig.validate_full(merged)
+
+
+# ---------------------------------------------------------------------------
+# entity_persistence — the orchestrator has always read this key, but it was
+# absent from the strict schema, so setting it made the service fail to boot
+# with "Extra inputs are not permitted". The knob was unreachable.
+# ---------------------------------------------------------------------------
+
+
+def test_entity_persistence_defaults_to_persistent():
+    """Historical behaviour is the default: entities go to the profile store."""
+    from src.schema.config import MergedConfig
+    assert MergedConfig().entity_persistence.scope == "persistent"
+
+
+def test_entity_persistence_accepts_session_scope():
+    """A domain can keep NLU entities in session, off the profile store."""
+    from src.schema.config import MergedConfig
+    cfg = MergedConfig(entity_persistence={"scope": "session"})
+    assert cfg.entity_persistence.scope == "session"
+
+
+def test_entity_persistence_rejects_an_unknown_scope():
+    from pydantic import ValidationError
+    from src.schema.config import MergedConfig
+    with pytest.raises(ValidationError):
+        MergedConfig(entity_persistence={"scope": "memgraph"})
+
+
+def test_entity_persistence_rejects_an_unknown_key():
+    from pydantic import ValidationError
+    from src.schema.config import MergedConfig
+    with pytest.raises(ValidationError):
+        MergedConfig(entity_persistence={"scope": "session", "ttl": 60})

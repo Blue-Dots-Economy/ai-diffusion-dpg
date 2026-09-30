@@ -1121,3 +1121,42 @@ def test_list_form_still_means_any_tool_result():
     agent = _grounding_agent({"apply_job": ["job_item_id"]})
     call = _call("apply_job", {"job_item_id": PROFILE_ID})
     assert agent._ungrounded_params(call, _two_tool_history()) == set()
+
+
+# --- max_calls_per_turn ----------------------------------------------------
+# A prompt rule cannot gate an irreversible write. Measured on live calls: a
+# caller picked ONE job and the agent emitted five apply_job calls in one turn
+# (three created), then two in another turn (both created) — applications at
+# employers the caller never chose, each going to a real hiring manager.
+
+
+def test_over_call_cap_allows_the_first_call():
+    from src.manager_agent import over_call_cap
+    assert over_call_cap(1, 0) is False
+
+
+def test_over_call_cap_blocks_the_second():
+    from src.manager_agent import over_call_cap
+    assert over_call_cap(1, 1) is True
+
+
+def test_no_cap_configured_never_blocks():
+    from src.manager_agent import over_call_cap
+    assert over_call_cap(None, 99) is False
+    assert over_call_cap(0, 99) is False
+
+
+def test_a_non_integer_cap_is_ignored_rather_than_raising():
+    """A guard that raises is worse than no guard."""
+    from src.manager_agent import over_call_cap
+    from unittest.mock import MagicMock
+    assert over_call_cap(MagicMock(), 3) is False
+    assert over_call_cap("1", 3) is False
+    assert over_call_cap(True, 3) is False
+
+
+def test_cap_of_two_allows_two_then_blocks():
+    from src.manager_agent import over_call_cap
+    assert over_call_cap(2, 0) is False
+    assert over_call_cap(2, 1) is False
+    assert over_call_cap(2, 2) is True

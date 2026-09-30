@@ -408,6 +408,7 @@ class InvocationRules(BaseModel):
     call_when: str = ""
     required_before_calling: list[str] = Field(default_factory=list)
     must_not_substitute: str = ""
+    max_calls_per_turn: Optional[int] = None
     grounded_params: Union[List[str], Dict[str, List[str]]] = Field(default_factory=list)
     on_empty: str = ""
     on_failure: str = ""
@@ -641,3 +642,10 @@ class ObservabilitySection(BaseModel):
     """
     model_config = ConfigDict(extra="forbid")
     domain: str = Field(..., min_length=1, pattern=r"^[a-z][a-z0-9_-]*$")
+
+
+class EntityPersistenceConfig(BaseModel):
+    """Mirrors runtime EntityPersistenceConfig — where NLU entities are written."""
+
+    model_config = ConfigDict(extra="forbid")
+    scope: str = "persistent"

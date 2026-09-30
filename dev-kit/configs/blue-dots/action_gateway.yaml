@@ -97,6 +97,15 @@ tools:
           target: profile_item_id
         - source: "user_id"
           target: acting_as_user_id
+        # What the caller told us LAST time. Kept under their own names, not
+        # `trade`/`location`, on purpose: those two hold what the caller says
+        # in THIS call and routing uses them to decide the search is ready.
+        # If the stored values landed there directly, profile_resolve would
+        # be skipped and the caller never offered the choice.
+        - source: "items[lifecycle_status=live].item_state.nameOfJobRolesInterestedIn"
+          target: stored_trade
+        - source: "items[lifecycle_status=live].item_state.location"
+          target: stored_location
       projection:
         fields:
           # Both names map to the same root value. The existing prompts refer
@@ -195,191 +204,6 @@ tools:
           last_role_held: item_state.lastRoleHeld
           status: lifecycle_status
           match_score: score
-          # NOT projected: jobProviderLocation (masked upstream), all
-          # hiringManager* fields (PII), item_locations (GPS).
-
-  # ────────────────────────────────────────────────────────────────────
-  # WRITE — Create or update the seeker profile via the Signals
-  # /api/v1/admin/participant endpoint. The same call covers both
-  # CREATE and UPDATE: omit ``item_id`` to insert a new profile;
-  # include ``item_id`` (the existing profile's UUID) to update that
-  # one. The upstream does NOT support partial updates — pass the
-  # full ``item_state`` every time. Response carries the upserting
-  # participant's ``user_id`` (= acting_as_user_id for apply_job) and
-  # an ``items`` array containing the affected profile (1 item for
-  # UPDATE, all of the user's profiles for CREATE).
-  # ────────────────────────────────────────────────────────────────────
-  # ────────────────────────────────────────────────────────────────────
-  # READ — Jobs anchored on the caller's OWN profile, best-fit first.
-  #
-  # Its own tool rather than a second endpoint on fetch_jobs: the REST
-  # adapter only ever uses ``endpoints[0]`` (rest_api.py:427), so a
-  # second endpoint on an existing tool is unreachable.
-  # ────────────────────────────────────────────────────────────────────
-  - id: fetch_recommended_jobs
-    type: rest_api
-    category: read
-    description: >
-      Jobs matched to THIS caller, best first, ranked by how well each
-      posting fits their whole stored profile rather than a search
-      phrase. Use it INSTEAD of fetch_jobs when the caller has a saved
-      profile carrying a usable role and has not asked for something
-      different.
-
-      Do NOT use it when the caller named what they want, when they
-      corrected their stored role, or when the profile's role is "Any",
-      "Not Available", blank, or a qualification — anchoring on an
-      unusable role returns rows literally named "Any" and
-      "Any | Anyrrr", which must never be spoken. Use fetch_jobs then.
-
-      Returns the same fields as fetch_jobs, plus match_score — order
-      what you present by that score, best first.
-    base_url: "https://dev-signals.serveirc.com/signals-search"
-    auth:
-      type: api_key
-      header: x-api-key
-      secret_env: BLUE_DOTS_SEARCH_API_KEY
-    timeout_ms: 8000
-    health_check:
-      enabled: false
-    endpoints:
-      # The anchor travels as `message.intent.item.id`. That exact path is
-      # load-bearing: `anchorItemId`, `anchor_item_id`, `anchor` and
-      # `profileId` are all ACCEPTED AND SILENTLY IGNORED, each returning
-      # the unranked full set — so a wrong name looks like a working call
-      # that merely ranks badly. Verified live 29 Sep: anchoring a
-      # welder's profile returned Welder 0.6748, Plumber 0.6398,
-      # cleaner 0.6224.
-      - name: recommended_fetch
-        method: POST
-        path: /v1/search
-        body_template:
-          context:
-            messageId: "{session_id}"
-            networkId: "blue_dot"
-            domain: "provider"
-            itemType: "job_posting_1.0"
-          message:
-            intent:
-              item:
-                id: "{profile_item_id}"
-            pagination:
-              limit: 5
-              offset: 0
-        params:
-          - name: profile_item_id
-            source: agent
-            type: string
-            required: true
-            description: >
-              The caller's seeker profile item_id, taken from the most
-              recent fetch_profile result. Never a job's item_id.
-    response:
-      max_size_chars: 4000
-      projection:
-        list_key: message.items
-        fields:
-          item_id: item_id
-          role: item_state.role
-          company: item_state.jobProviderName
-          positions: item_state.positions
-          nature_of_job: item_state.natureOfJob
-          salary_min: item_state.salaryMin
-          salary_max: item_state.salaryMax
-          stipend_min: item_state.stipendMin
-          stipend_max: item_state.stipendMax
-          task_rate_min: item_state.taskRateMin
-          task_rate_max: item_state.taskRateMax
-          candidate_experience_type: item_state.candidateExperienceType
-          work_experience_years: item_state.workExperienceYears
-          min_educational_institute: item_state.minEducationalInstitute
-          last_role_held: item_state.lastRoleHeld
-          status: lifecycle_status
-          match_score: score
-
-  # ────────────────────────────────────────────────────────────────────
-  # READ — Support services: training, counselling, placement help.
-  #
-  # Service providers are a THIRD blue_dot domain alongside seeker and
-  # provider: domain "service_provider", itemType "profile_1.0".
-  # Verified live 29 Sep — 110 items. The engine validates the DOMAIN (a
-  # wrong one returns UNSERVED_DOMAIN) but NOT the itemType, which just
-  # returns empty — so a wrong itemType reads as "no services exist".
-  # ────────────────────────────────────────────────────────────────────
-  - id: fetch_services
-    type: rest_api
-    category: read
-    description: >
-      Support services on the network — skilling and vocational
-      training, career counselling and interview preparation, job
-      placement assistance, government career centres. Call it when the
-      caller is not looking for a job, when the jobs did not suit them,
-      when they voice a need a service would meet, or once near the end
-      of the call before saying goodbye.
-
-      Each item carries organisation_name, service_description, cost
-      (costToBeneficiary), service_areas and the lists of what they
-      offer seekers and who they serve. Offer exactly ONE, and name it.
-
-      Contact details are deliberately NOT projected — the upstream
-      masks them ("9***", "b***@yopmail.com"), so there is nothing to
-      read out. Never offer to pass on a phone number or email; our
-      team makes the connection.
-    base_url: "https://dev-signals.serveirc.com/signals-search"
-    auth:
-      type: api_key
-      header: x-api-key
-      secret_env: BLUE_DOTS_SEARCH_API_KEY
-    timeout_ms: 8000
-    health_check:
-      enabled: false
-    endpoints:
-      - name: services_fetch
-        method: POST
-        path: /v1/search
-        body_template:
-          context:
-            messageId: "{session_id}"
-            networkId: "blue_dot"
-            domain: "service_provider"
-            itemType: "profile_1.0"
-          message:
-            intent:
-              textSearch: "{query_text}"
-            pagination:
-              limit: 5
-              offset: 0
-        params:
-          - name: query_text
-            source: agent
-            type: string
-            required: true
-            description: >
-              What the caller needs, in English words — "skill training
-              for a welder", "interview preparation", "help with travel
-              to work". The search is semantic, so a natural phrase
-              works better than a single keyword.
-    response:
-      max_size_chars: 3000
-      projection:
-        list_key: message.items
-        fields:
-          item_id: item_id
-          organisation_name: item_state.organisationName
-          service_description: item_state.serviceDescription
-          cost: item_state.costToBeneficiary
-          service_areas: item_state.serviceAreas
-          services_for_seekers: item_state.servicesEducationalForSeekers
-          services_non_educational: item_state.servicesNonEducationalForSeekers
-          target_seekers: item_state.targetSeekersEducational
-          who_can_contact: item_state.whoCanContact
-          ownership_type: item_state.ownershipType
-          match_score: score
-          # NOT projected: contactPhoneNumber, contactEmail,
-          # contactPersonName, officialAddress — all masked upstream and
-          # all PII. There is nothing to gain by exposing "9***" to the
-          # model except the chance it reads it aloud.
-
   - id: save_profile
     type: rest_api
     category: write
@@ -705,6 +529,20 @@ tools:
               caller's words for which job they picked.
     response:
       max_size_chars: 1000
+      # Record the outcome where ROUTING can see it, not only the LLM. Without
+      # this, apply_confirm could only end the call on a turn count, so a turn
+      # whose apply was refused or failed still counted as "done" and the
+      # caller was dropped with no application. Measured locally: apply_job
+      # was refused for an ungrounded id, the very next routing pass matched
+      # the exhaustion rule, and the call ended.
+      #
+      # `summary.succeeded` is 1 on a created application and 0 on any
+      # failure, so it is the honest test for "did an application happen".
+      session_mapping:
+        - source: "summary.succeeded"
+          target: applications_submitted
+        - source: "results[status=success].action_id"
+          target: last_application_id
       # Bulk envelope (Signals-DPG PR #55): { results: [ ... ], summary }.
       # apply_job sends one element, so `results` has one item; list_key
       # projects it into a single-element list the LLM reads.
