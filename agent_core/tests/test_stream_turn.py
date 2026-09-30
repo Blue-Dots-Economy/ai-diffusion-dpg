@@ -915,3 +915,186 @@ class TestRecentToolExchangesHelpers:
     def test_capture_tool_exchange_empty_returns_none(self):
         agent = _make_agent_core()
         assert agent._capture_tool_exchange([], [], 100) is None
+
+
+# ---------------------------------------------------------------------------
+# Tool-result persistence (stream path)
+# ---------------------------------------------------------------------------
+
+_TR_CONFIG = {
+    "connectors": {
+        "read": [
+            {"name": "get_balance", "cache": {"scope": "session", "ttl_seconds": 600}},
+            {"name": "fetch_profile", "cache": {"scope": "user", "ttl_seconds": 600}},
+        ],
+        "write": [{"name": "save_profile", "invalidates": ["fetch_profile"]}],
+    },
+    "memory_tool": {"name": "remember", "fields": {
+        "account": {"scope": "session", "grounded_in": ["get_balance"]}}},
+}
+
+
+def _tr_entry():
+    """A fresh stored get_balance result for account 12345."""
+    import time as _time
+    from src.tool_results import args_hash
+    return {"tool": "get_balance", "args_hash": args_hash({"account": "12345"}),
+            "data": {"account": "12345", "balance": 100}, "fetched_at": _time.time(),
+            "expires_at": 9e12, "origin": "turn", "scope": "session"}
+
+
+def _tr_agent(rounds, entries=None, gateway_text='{"balance": 5}', remember=False):
+    """AgentCore whose LLM requests each round in ``rounds`` in turn, then answers.
+
+    Returns ``(agent, order, requests)``: ``order`` records LLM calls
+    (``llm1``, ``llm2`` …) and ``apply`` persistence calls in the order they
+    happened; ``requests`` holds every stream request.
+    """
+    from src.remember import RememberTool
+    from src.tool_results import ToolResultPolicies
+
+    agent = _make_agent_core()
+    agent._tool_policies = ToolResultPolicies.from_config(_TR_CONFIG)
+    agent._remember = RememberTool.from_config(_TR_CONFIG) if remember else None
+    agent._async_memory.context_bundle.return_value = ContextBundle(
+        session={"current_subagent_id": "start"}, profile={},
+        tool_results=list(entries or []),
+    )
+    order: list[str] = []
+    requests: list = []
+    calls = {"n": 0}
+
+    async def mock_stream(request, *, abort_event=None):
+        calls["n"] += 1
+        requests.append(request)
+        order.append(f"llm{calls['n']}")
+        if calls["n"] <= len(rounds):
+            yield "Checking. "
+            raise ChatToolUseRequested(rounds[calls["n"] - 1])
+        yield "Done. "
+
+    async def _apply(*args, **kwargs):
+        order.append("apply")
+
+    agent._llm.stream = mock_stream
+    agent._async_memory.apply_tool_results = AsyncMock(side_effect=_apply)
+    agent._async_memory.write_strict = AsyncMock(return_value=(True, ""))
+    agent._async_gateway.execute = AsyncMock(side_effect=lambda tc, *a, **k: ToolResult(
+        tool_use_id=tc.tool_use_id, tool_name=tc.tool_name, result={}, success=True,
+        result_text=gateway_text, projected=True,
+    ))
+    agent._language_normaliser = MagicMock()
+    agent._language_normaliser.normalise.return_value = ("msg", "english")
+    agent._nlu_processor = MagicMock()
+    agent._nlu_processor.process.return_value = NLUResult(
+        intent="search", entities={}, sentiment="neutral", confidence=0.9
+    )
+    return agent, order, requests
+
+
+def _last_tool_result_texts(request) -> list[str]:
+    """Tool-result contents of the final user message of a stream request."""
+    return [b.content for b in request.messages[-1].content if b.type == "tool_result"]
+
+
+class TestStreamTurnToolResultPersistence:
+
+    async def test_stream_cache_hit_skips_gateway(self):
+        agent, _order, requests = _tr_agent(
+            [[ToolUseBlock(tool_name="get_balance", tool_use_id="tu_1",
+                           input={"account": "12345"})]],
+            entries=[_tr_entry()],
+        )
+        await _collect_events(agent, _make_turn_input())
+        agent._async_gateway.execute.assert_not_awaited()
+        assert _last_tool_result_texts(requests[1])[0].startswith("(stored result")
+        agent._async_memory.apply_tool_results.assert_not_awaited()
+
+    async def test_stream_live_call_persists_immediately(self):
+        agent, order, _requests = _tr_agent(
+            [[ToolUseBlock(tool_name="get_balance", tool_use_id="tu_1",
+                           input={"account": "999", "force_refresh": True})]],
+        )
+        await _collect_events(agent, _make_turn_input())
+        agent._async_memory.apply_tool_results.assert_awaited_once()
+        sid, uid, batch = agent._async_memory.apply_tool_results.await_args.args
+        assert (sid, uid) == ("sess-1", "user-1")
+        assert batch["invalidate"] == [] and len(batch["puts"]) == 1
+        assert batch["puts"][0]["data"] == {"balance": 5}
+        assert order.index("apply") < order.index("llm2")
+        # force_refresh is framework-only and never reaches the connector.
+        sent = agent._async_gateway.execute.await_args.args[0]
+        assert "force_refresh" not in sent.input_params
+
+    async def test_stream_write_invalidation_survives_interruption(self):
+        from src.models import TurnRecord
+        from tests.test_stream_turn_lifecycle import _run
+
+        agent, _order, _requests = _tr_agent([
+            [ToolUseBlock(tool_name="save_profile", tool_use_id="tu_1", input={"name": "A"})],
+            [ToolUseBlock(tool_name="search", tool_use_id="tu_2", input={})],
+        ])
+        record = TurnRecord()
+        events = await _run(agent, record, abort_after_tool_end=1)
+        assert not any(isinstance(e, DoneEvent) for e in events)   # really interrupted
+        agent._async_memory.apply_tool_results.assert_awaited_once_with(
+            "sess-1", "user-1", {"invalidate": ["fetch_profile"], "puts": []},
+        )
+
+    @pytest.mark.parametrize("nested", [False, True])
+    async def test_stream_remember_routed_locally(self, nested):
+        remember = [ToolUseBlock(tool_name="remember", tool_use_id="tu_r",
+                                 input={"field": "account", "value": "12345"})]
+        rounds = ([[ToolUseBlock(tool_name="search", tool_use_id="tu_s", input={})], remember]
+                  if nested else [remember])
+        agent, _order, requests = _tr_agent(rounds, entries=[_tr_entry()], remember=True)
+        await _collect_events(agent, _make_turn_input())
+        agent._async_memory.write_strict.assert_awaited_once_with(
+            "sess-1", "user-1", "session", "account", "12345",
+        )
+        called = [c.args[0].tool_name for c in agent._async_gateway.execute.await_args_list]
+        assert "remember" not in called
+        assert _last_tool_result_texts(requests[-1]) == ["Saved account."]
+
+    async def test_stream_nested_round_uses_cache(self):
+        agent, _order, requests = _tr_agent(
+            [[ToolUseBlock(tool_name="search", tool_use_id="tu_1", input={})],
+             [ToolUseBlock(tool_name="get_balance", tool_use_id="tu_2",
+                           input={"account": "12345"})]],
+            entries=[_tr_entry()],
+        )
+        await _collect_events(agent, _make_turn_input())
+        called = [c.args[0].tool_name for c in agent._async_gateway.execute.await_args_list]
+        assert called == ["search"]
+        assert _last_tool_result_texts(requests[2])[0].startswith("(stored result")
+
+    async def test_stream_prompt_gets_known_facts_and_augmented_tools(self):
+        agent, _order, requests = _tr_agent([], entries=[_tr_entry()], remember=True)
+        agent._workflow.resolve_tools_for.return_value = [
+            {"name": "get_balance", "input_schema": {"type": "object", "properties": {}}}]
+        await _collect_events(agent, _make_turn_input())
+        kwargs = agent._manager_agent.build_system_prompt.call_args.kwargs
+        assert "get_balance" in kwargs["known_facts"]
+        tools = {t.name: t for t in requests[0].tools}
+        assert set(tools) == {"get_balance", "remember"}
+        assert "force_refresh" in tools["get_balance"].input_schema["properties"]
+
+    async def test_stream_replay_skips_tools_with_fresh_stored_results(self):
+        prior = {"tool_uses": [{"type": "tool_use", "id": "tu_p", "name": "get_balance",
+                                "input": {"account": "12345"}}],
+                 "tool_results": [{"type": "tool_result", "tool_use_id": "tu_p",
+                                   "content": '{"balance": 1}'}]}
+        agent, _order, requests = _tr_agent([], entries=[_tr_entry()])
+        agent._async_memory.context_bundle.return_value.session["recent_tool_exchanges"] = [prior]
+        await _collect_events(agent, _make_turn_input())
+        assert all(b.type != "tool_use" for m in requests[0].messages for b in m.content)
+
+    async def test_stream_persist_failure_is_logged_and_turn_completes(self, caplog):
+        agent, _order, _requests = _tr_agent(
+            [[ToolUseBlock(tool_name="get_balance", tool_use_id="tu_1",
+                           input={"account": "999"})]],
+        )
+        agent._async_memory.apply_tool_results = AsyncMock(side_effect=RuntimeError("down"))
+        events = await _collect_events(agent, _make_turn_input())
+        assert isinstance(events[-1], DoneEvent) and events[-1].turn_status == "completed"
+        assert any(r.message == "orchestrator.apply_tool_results_error" for r in caplog.records)

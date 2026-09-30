@@ -383,6 +383,26 @@ class AgentCore(AgentCoreBase):
             (bundle.session if scope == "session" else bundle.profile)[key] = value
         return _on_saved
 
+    async def _persist_tool_cache(self, session_id: str, user_id: str, tool_cache) -> None:
+        """Send pending tool-result changes now; a streaming turn may be interrupted later.
+
+        Args:
+            session_id: Session the turn belongs to.
+            user_id: Caller identity, for user-scoped entries.
+            tool_cache: This turn's ``TurnToolCache``; drained when it has
+                pending puts or invalidations, otherwise left untouched.
+
+        Never raises: a Memory Layer failure is logged and the turn continues.
+        """
+        if not tool_cache.has_pending():
+            return
+        try:
+            await self._async_memory.apply_tool_results(session_id, user_id, tool_cache.drain_batch())
+        except Exception as e:
+            logger.error("orchestrator.apply_tool_results_error", extra={
+                "operation": "orchestrator.stream_turn", "status": "failure",
+                "session_id": session_id, "error": f"{type(e).__name__}: {e}"})
+
     # ------------------------------------------------------------------
     # Public interface — single entry point
     # ------------------------------------------------------------------
@@ -4064,6 +4084,7 @@ class AgentCore(AgentCoreBase):
                     yield _stamp(DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000)))
                     return
 
+            tool_cache = TurnToolCache(self._tool_policies, bundle.tool_results, bundle.session)
             system = self._manager_agent.build_system_prompt(
                 agent_system_prompt=self._workflow.agent_system_prompt,
                 subagent_system_prompt=next_subagent.system_prompt,
@@ -4077,6 +4098,7 @@ class AgentCore(AgentCoreBase):
                 session_end_eval_prompt=(
                     self._session_end_eval_prompt if self._session_end_eval_enabled else None
                 ),
+                known_facts=tool_cache.render_known_facts(),
             )
 
             if is_resumption:
@@ -4092,6 +4114,7 @@ class AgentCore(AgentCoreBase):
             _prior_exchanges, _max_items, _max_chars = self._prepend_tool_replay(
                 messages, bundle, session_id, "orchestrator.stream_turn",
                 undelivered_note=self._turn_policy(turn_input.channel).undelivered_note,
+                skip_tools=tool_cache.fresh_tools(),
             )
 
             # Tool exchanges captured during *this* turn's tool rounds; persisted
@@ -4110,6 +4133,10 @@ class AgentCore(AgentCoreBase):
 
             # ── Step 8: LLM streaming ──────────────────────────────────
             active_tools = self._workflow.resolve_tools_for(next_subagent_id)
+            active_tools = augment_tool_definitions(
+                active_tools, self._tool_policies,
+                self._remember.definition() if self._remember else None,
+            )
             sentence_index = 0
             token_buffer = ""
             primary_model = self._llm.get_active_model()
@@ -4325,6 +4352,7 @@ class AgentCore(AgentCoreBase):
                                 (getattr(self._manager_agent, "_grounded_params", {}) or {})
                                 .get(tc.tool_name) or {},
                                 tc, messages,
+                                stored_results=tool_cache.stored_results_by_tool(),
                             )
                             if _ung:
                                 logger.warning(
@@ -4339,19 +4367,34 @@ class AgentCore(AgentCoreBase):
                                     f"the user chose, and call this tool again."
                                 )
 
-                        if _refusal:
+                        if self._remember is not None and tc.tool_name == self._remember.name:
+                            # Framework tool: validated state write, never
+                            # capped, grounding-refused or sent to the gateway.
+                            tool_result = await self._remember.handle_async(
+                                tc, messages, tool_cache.stored_results_by_tool(),
+                                lambda scope, key, value: self._async_memory.write_strict(
+                                    session_id, user_id, scope, key, value),
+                                self._remember_on_saved(bundle),
+                            )
+                        elif _refusal:
                             tool_result = refusal_result(
                                 tc.tool_name, tc.tool_use_id, _refusal,
                             )
+                        elif (_hit := tool_cache.lookup(tc)) is not None:
+                            tool_result = _hit
                         else:
                             _turn_tool_counts[tc.tool_name] = _used + 1
                             tool_result = await self._async_gateway.execute(
-                                tc, session_id, user_id,
+                                tool_cache.prepare(tc), session_id, user_id,
                                 session_values=self._tool_session_values(bundle),
                             )
                             await self._write_mapped_session_values(
                                 session_id, user_id, tool_result, bundle,
                             )
+                            tool_cache.after_call(tc, tool_result)
+                            # Persist now: a streaming turn may be stopped
+                            # before it completes.
+                            await self._persist_tool_cache(session_id, user_id, tool_cache)
                     else:
                         # Fallback: no async gateway — cannot execute tools in streaming mode
                         logger.error(
@@ -4537,6 +4580,7 @@ class AgentCore(AgentCoreBase):
                                         (getattr(self._manager_agent, "_grounded_params", {}) or {})
                                         .get(tc.tool_name) or {},
                                         tc, messages,
+                                        stored_results=tool_cache.stored_results_by_tool(),
                                     )
                                     if _ung2:
                                         logger.warning(
@@ -4552,18 +4596,32 @@ class AgentCore(AgentCoreBase):
                                             f"tool again."
                                         )
 
-                                if _refusal2:
+                                if (self._remember is not None
+                                        and tc.tool_name == self._remember.name):
+                                    tool_result = await self._remember.handle_async(
+                                        tc, messages, tool_cache.stored_results_by_tool(),
+                                        lambda scope, key, value: self._async_memory.write_strict(
+                                            session_id, user_id, scope, key, value),
+                                        self._remember_on_saved(bundle),
+                                    )
+                                elif _refusal2:
                                     tool_result = refusal_result(
                                         tc.tool_name, tc.tool_use_id, _refusal2,
                                     )
+                                elif (_hit2 := tool_cache.lookup(tc)) is not None:
+                                    tool_result = _hit2
                                 else:
                                     _turn_tool_counts[tc.tool_name] = _used2 + 1
                                     tool_result = await self._async_gateway.execute(
-                                        tc, session_id, user_id,
+                                        tool_cache.prepare(tc), session_id, user_id,
                                         session_values=self._tool_session_values(bundle),
                                     )
                                     await self._write_mapped_session_values(
                                         session_id, user_id, tool_result, bundle,
+                                    )
+                                    tool_cache.after_call(tc, tool_result)
+                                    await self._persist_tool_cache(
+                                        session_id, user_id, tool_cache,
                                     )
                             else:
                                 break
