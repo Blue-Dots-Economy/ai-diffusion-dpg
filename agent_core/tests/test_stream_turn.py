@@ -580,6 +580,130 @@ class TestStreamTurnEndSession:
         assert done_events[0].was_tool_used is True
 
     @pytest.mark.asyncio
+    async def test_end_session_alone_skips_the_second_llm_call(self):
+        """GH-204: end_session resolves internally and its description asks the
+        model to speak the closing line alongside it, so a second pass would only
+        regenerate a goodbye that already exists. It must not be made."""
+        agent = self._make_end_session_agent()
+
+        call_count = 0
+
+        async def mock_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                yield "Goodbye, take care."
+                raise ChatToolUseRequested([
+                    ToolUseBlock(
+                        tool_name="end_session",
+                        tool_use_id="tu_end",
+                        input={"reason": "user_goodbye"},
+                    )
+                ])
+            raise AssertionError(
+                "LLM was called a second time for an end_session-only round"
+            )
+
+        agent._llm.stream = mock_stream
+        agent._async_gateway.execute = AsyncMock(
+            side_effect=AssertionError("end_session must not reach Action Gateway")
+        )
+
+        events = await _collect_events(agent, _make_turn_input())
+
+        assert call_count == 1, "the second LLM pass must be skipped"
+        # The call still ends, and the caller still hears the goodbye.
+        done = [e for e in events if isinstance(e, DoneEvent)]
+        assert len(done) == 1
+        assert done[0].session_ended is True
+        spoken = " ".join(
+            e.text for e in events if isinstance(e, SentenceEvent)
+        )
+        assert "Goodbye" in spoken, "the closing line must still reach the caller"
+
+    @pytest.mark.asyncio
+    async def test_end_session_without_text_still_makes_the_second_call(self):
+        """The skip is guarded on text existing. When the model called
+        end_session and said nothing, the second pass is what writes the reply —
+        skipping it would hang up on the caller in silence."""
+        agent = self._make_end_session_agent()
+
+        call_count = 0
+
+        async def mock_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ChatToolUseRequested([
+                    ToolUseBlock(
+                        tool_name="end_session",
+                        tool_use_id="tu_end",
+                        input={"reason": "user_goodbye"},
+                    )
+                ])
+                yield  # pragma: no cover - generator marker
+            else:
+                yield "Thank you for calling."
+
+        agent._llm.stream = mock_stream
+        agent._async_gateway.execute = AsyncMock(
+            side_effect=AssertionError("end_session must not reach Action Gateway")
+        )
+
+        events = await _collect_events(agent, _make_turn_input())
+
+        assert call_count == 2, "with no text produced, the second pass must run"
+        spoken = " ".join(
+            e.text for e in events if isinstance(e, SentenceEvent)
+        )
+        assert "Thank you" in spoken
+
+    @pytest.mark.asyncio
+    async def test_end_session_alongside_another_tool_still_makes_the_second_call(self):
+        """A real tool in the same round returns a result the model has not seen.
+        Only an end_session-ONLY round may skip the pass."""
+        agent = self._make_end_session_agent()
+
+        call_count = 0
+
+        async def mock_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                yield "Let me check."
+                raise ChatToolUseRequested([
+                    ToolUseBlock(
+                        tool_name="fetch_jobs",
+                        tool_use_id="tu_jobs",
+                        input={"query_text": "welder jobs"},
+                    ),
+                    ToolUseBlock(
+                        tool_name="end_session",
+                        tool_use_id="tu_end",
+                        input={"reason": "task_complete"},
+                    ),
+                ])
+            else:
+                yield "Here is what I found."
+
+        agent._llm.stream = mock_stream
+        agent._async_gateway.execute = AsyncMock(
+            return_value=ToolResult(
+                tool_use_id="tu_jobs",
+                tool_name="fetch_jobs",
+                result={"items": []},
+                success=True,
+                result_text="no jobs",
+            )
+        )
+
+        events = await _collect_events(agent, _make_turn_input())
+
+        assert call_count == 2, (
+            "a round carrying a real tool result must still run the second pass"
+        )
+
+    @pytest.mark.asyncio
     async def test_session_ended_flag_cleared_between_turns(self):
         """The end_session flag must not leak from one turn into the next."""
         agent = self._make_end_session_agent()
