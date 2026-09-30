@@ -2127,3 +2127,8 @@ def test_both_streaming_tool_sites_apply_the_grounding_guard():
         f"{executes} streaming execution site(s) but only {guards} guard call(s) — "
         "every site that dispatches a tool must check provenance first"
     )
+    caps = src.count("over_call_cap(")
+    assert caps >= executes, (
+        f"{executes} streaming execution site(s) but only {caps} cap check(s) — "
+        "a capped tool must not slip through a site that forgot to count it"
+    )

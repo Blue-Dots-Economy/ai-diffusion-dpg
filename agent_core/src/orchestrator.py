@@ -4107,33 +4107,52 @@ class AgentCore(AgentCoreBase):
                                 )
                             elif self._async_gateway:
                                 # Second streaming execution site (nested tool
-                                # rounds) — same guard as the first.
-                                _ung2 = ungrounded_params(
-                                    (getattr(self._manager_agent, "_grounded_params", {}) or {})
-                                    .get(tc.tool_name) or {},
-                                    tc, messages,
-                                )
-                                if _ung2:
+                                # rounds). Both guards, same as the first, and
+                                # the cap shares _turn_tool_counts with it —
+                                # counted per TURN precisely so a capped tool
+                                # cannot slip through by being requested again
+                                # in a later round of the same turn.
+                                _caps2 = getattr(self._manager_agent, "_tool_call_caps", None)
+                                _caps2 = _caps2 if isinstance(_caps2, dict) else {}
+                                _used2 = _turn_tool_counts.get(tc.tool_name, 0)
+                                _refusal2 = ""
+                                if over_call_cap(_caps2.get(tc.tool_name), _used2):
                                     logger.warning(
-                                        "orchestrator.stream_ungrounded_param tool=%s params=%s",
-                                        tc.tool_name, sorted(_ung2),
+                                        "orchestrator.stream_tool_call_cap tool=%s used=%s",
+                                        tc.tool_name, _used2,
                                     )
-                                    tool_result = ToolResult(
-                                        tool_use_id=tc.tool_use_id,
-                                        tool_name=tc.tool_name,
-                                        result={},
-                                        success=False,
-                                        error="UNGROUNDED_PARAMETER",
-                                        result_text=(
+                                    _refusal2 = (
+                                        f"Refused: {tc.tool_name} has already run this turn and "
+                                        f"its effect cannot be undone. One per turn. If the "
+                                        f"caller meant a different one, ask which, and call it "
+                                        f"on the next turn."
+                                    )
+                                else:
+                                    _ung2 = ungrounded_params(
+                                        (getattr(self._manager_agent, "_grounded_params", {}) or {})
+                                        .get(tc.tool_name) or {},
+                                        tc, messages,
+                                    )
+                                    if _ung2:
+                                        logger.warning(
+                                            "orchestrator.stream_ungrounded_param tool=%s params=%s",
+                                            tc.tool_name, sorted(_ung2),
+                                        )
+                                        _refusal2 = (
                                             f"Refused: {', '.join(sorted(_ung2))} did not come "
                                             f"from any tool result in this conversation, so the "
                                             f"value was invented. Do not guess an identifier. "
                                             f"Re-read the most recent tool result, copy the exact "
                                             f"value for the item the user chose, and call this "
                                             f"tool again."
-                                        ),
+                                        )
+
+                                if _refusal2:
+                                    tool_result = refusal_result(
+                                        tc.tool_name, tc.tool_use_id, _refusal2,
                                     )
                                 else:
+                                    _turn_tool_counts[tc.tool_name] = _used2 + 1
                                     tool_result = await self._async_gateway.execute(
                                         tc, session_id, user_id,
                                         session_values=self._tool_session_values(bundle),
