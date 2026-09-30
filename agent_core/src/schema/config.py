@@ -21,7 +21,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +383,17 @@ class InputSchema(BaseModel):
     additionalProperties: bool = False
 
 
+class ToolCacheConfig(BaseModel):
+    """Per-connector tool-result cache rule (tool-result persistence spec §5)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    scope: Literal["session", "user"]
+    ttl_seconds: int = Field(gt=0)
+    keep: list[str] = Field(default_factory=list)
+    vary_on: list[str] = Field(default_factory=list)
+
+
 class ConnectorDef(BaseModel):
     """External-facing connector (read / write / identity)."""
 
@@ -392,6 +403,8 @@ class ConnectorDef(BaseModel):
     description: str = ""
     input_schema: InputSchema = Field(default_factory=InputSchema)
     invocation_rules: InvocationRules = Field(default_factory=InvocationRules)
+    cache: Optional[ToolCacheConfig] = None
+    invalidates: list[str] = Field(default_factory=list)
 
 
 class InternalConnectorDef(BaseModel):
@@ -413,6 +426,32 @@ class ConnectorsConfig(BaseModel):
     write: list[ConnectorDef] = Field(default_factory=list)
     identity: list[ConnectorDef] = Field(default_factory=list)
     internal: list[InternalConnectorDef] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_cache_rules(self) -> "ConnectorsConfig":
+        """Reject cache on non-read and invalidates on non-write connectors.
+
+        Returns:
+            The validated config.
+
+        Raises:
+            ValueError: If cache/invalidates is misplaced or an invalidates
+                target is not a read connector.
+        """
+        read_names = {c.name for c in self.read}
+        for group_name in ("write", "identity"):
+            for c in getattr(self, group_name):
+                if c.cache is not None:
+                    raise ValueError(f"connector '{c.name}': cache is only allowed on read connectors")
+        for group_name in ("read", "identity"):
+            for c in getattr(self, group_name):
+                if c.invalidates:
+                    raise ValueError(f"connector '{c.name}': invalidates is only allowed on write connectors")
+        for c in self.write:
+            for target in c.invalidates:
+                if target not in read_names:
+                    raise ValueError(f"connector '{c.name}': invalidates unknown read connector '{target}'")
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -719,6 +758,33 @@ class EntityPersistenceConfig(BaseModel):
     scope: Literal["session", "persistent"] = "persistent"
 
 
+class ToolResultsConfig(BaseModel):
+    """Global limits for tool-result persistence."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    max_user_ttl_seconds: int = Field(default=86400, gt=0)
+
+
+class MemoryToolField(BaseModel):
+    """One field the framework ``remember`` tool may store."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    scope: Literal["session", "persistent"]
+    description: str = ""
+    grounded_in: list[str] = Field(default_factory=list)
+
+
+class MemoryToolConfig(BaseModel):
+    """The framework `remember` tool (tool-result persistence spec §8)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = "remember"
+    fields: dict[str, MemoryToolField] = Field(min_length=1)
+
+
 class MergedConfig(BaseModel):
     """Strict schema for the fully-merged agent_core config."""
 
@@ -759,6 +825,39 @@ class MergedConfig(BaseModel):
     )
 
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
+
+    tool_results: ToolResultsConfig = Field(default_factory=ToolResultsConfig)
+    memory_tool: Optional[MemoryToolConfig] = None
+
+    @model_validator(mode="after")
+    def _check_tool_result_rules(self) -> "MergedConfig":
+        """Cross-check user-scope TTLs and memory tool names against connectors.
+
+        Returns:
+            The validated config.
+
+        Raises:
+            ValueError: If a user-scope TTL exceeds the cap, the memory tool
+                name collides with a connector, or a ``grounded_in`` entry is
+                not a connector name.
+        """
+        c = self.connectors
+        names = {x.name for x in [*c.read, *c.write, *c.identity, *c.internal]}
+        cap = self.tool_results.max_user_ttl_seconds
+        for x in c.read:
+            if x.cache and x.cache.scope == "user" and x.cache.ttl_seconds > cap:
+                raise ValueError(
+                    f"connector '{x.name}': user-scope ttl_seconds {x.cache.ttl_seconds} "
+                    f"exceeds tool_results.max_user_ttl_seconds {cap}"
+                )
+        if self.memory_tool:
+            if self.memory_tool.name in names:
+                raise ValueError(f"memory_tool.name '{self.memory_tool.name}' collides with a connector")
+            for fname, f in self.memory_tool.fields.items():
+                for src in f.grounded_in:
+                    if src not in names:
+                        raise ValueError(f"memory_tool.fields.{fname}.grounded_in: unknown connector '{src}'")
+        return self
 
     @classmethod
     def validate_full(cls, config: dict) -> "MergedConfig":

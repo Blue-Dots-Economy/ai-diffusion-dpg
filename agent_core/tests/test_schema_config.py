@@ -470,3 +470,49 @@ def test_entity_persistence_rejects_an_unknown_key():
     from src.schema.config import MergedConfig
     with pytest.raises(ValidationError):
         MergedConfig(entity_persistence={"scope": "session", "ttl": 60})
+
+
+# ---------------------------------------------------------------------------
+# Tool-result persistence: cache / invalidates / tool_results / memory_tool
+# ---------------------------------------------------------------------------
+
+
+def _with(conn_read=None, conn_write=None, **top):
+    cfg = _minimal_valid_config()
+    cfg.setdefault("connectors", {})
+    cfg["connectors"]["read"] = conn_read or []
+    cfg["connectors"]["write"] = conn_write or []
+    cfg.update(top)
+    return cfg
+
+
+_READ = {"name": "fetch_profile", "cache": {"scope": "user", "ttl_seconds": 1800, "keep": ["items"]}}
+_WRITE = {"name": "save_profile", "invalidates": ["fetch_profile"]}
+_MT = {"name": "remember", "fields": {"profile_item_id": {
+    "scope": "session", "grounded_in": ["fetch_profile", "save_profile"]}}}
+
+
+def test_valid_cache_invalidates_memory_tool():
+    MergedConfig.validate_full(_with([_READ], [_WRITE], memory_tool=_MT))
+
+
+@pytest.mark.parametrize("cfg", [
+    _with([], [{"name": "save_profile", "cache": {"scope": "user", "ttl_seconds": 60}}]),
+    _with([{"name": "fetch_profile", "invalidates": ["x"]}], []),
+    _with([_READ], [{"name": "save_profile", "invalidates": ["nope"]}]),
+    _with([{"name": "fetch_profile", "cache": {"scope": "user", "ttl_seconds": 90000}}], []),
+    _with([{"name": "fetch_profile", "cache": {"scope": "agent", "ttl_seconds": 60}}], []),
+    _with([{"name": "fetch_profile", "cache": {"scope": "user", "ttl_seconds": 0}}], []),
+    _with([_READ], [_WRITE], memory_tool={"fields": {"f": {"scope": "session", "grounded_in": ["ghost"]}}}),
+    _with([_READ], [_WRITE], memory_tool={"name": "fetch_profile", "fields": {"f": {"scope": "session"}}}),
+    _with([_READ], [_WRITE], memory_tool={"fields": {}}),
+])
+def test_invalid_tool_result_configs_rejected(cfg):
+    with pytest.raises(ValidationError):
+        MergedConfig.validate_full(cfg)
+
+
+def test_user_ttl_cap_is_configurable():
+    cfg = _with([{"name": "fetch_profile", "cache": {"scope": "user", "ttl_seconds": 90000}}], [],
+                tool_results={"max_user_ttl_seconds": 100000})
+    MergedConfig.validate_full(cfg)
