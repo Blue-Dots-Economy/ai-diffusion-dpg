@@ -158,8 +158,6 @@ state:
         target: Journey.selected_job_item_id
       - session_field: last_application_id
         target: Journey.application_id
-      - session_field: last_jobs
-        target: JobOffered    # creates OFFERED edges from the compact dicts
 
 user_data_persistence:
   # "saved" — User + SeekerProfile data persists in Memgraph across
