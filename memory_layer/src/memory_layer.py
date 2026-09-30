@@ -349,8 +349,11 @@ class MemoryLayer:
         Unlike :meth:`write`, never falls back to ad-hoc storage.
 
         Returns:
-            ``(True, "")`` when written, else ``(False, reason)``.
+            ``(True, "")`` when written, else ``(False, reason)``; a store
+            failure yields ``(False, "write failed")``.
         """
+        if not session_id or not user_id:
+            return False, "session_id and user_id must not be empty"
         if scope == "session":
             fdef = self._schema.get(key)
             if not isinstance(fdef, dict):
@@ -370,8 +373,39 @@ class MemoryLayer:
                 return False, f"{key} is not a declared profile field"
         else:
             return False, f"unsupported scope {scope}"
-        self.write(session_id, user_id, scope, key, value)
+        try:
+            self._store_field(session_id, user_id, scope, key, value)
+        except Exception as e:
+            logger.error("memory_layer.write_strict_error", extra={
+                "operation": "memory_layer.write_strict", "status": "failure",
+                "scope": scope, "error": type(e).__name__})
+            return False, "write failed"
         return True, ""
+
+    def _store_field(self, session_id: str, user_id: str, scope: str, key: str,
+                     value: Any) -> None:
+        """Write a session or persistent field to its store; raises on failure.
+
+        Args:
+            session_id: Session owning the write (also the journey id).
+            user_id: User owning the write.
+            scope: ``"session"`` or ``"persistent"``.
+            key: Field name.
+            value: Field value.
+        """
+        if scope == "session":
+            self._redis.set_session_field(session_id, key, value)
+            self._redis.update_last_accessed(user_id, session_id)
+            # When the user's storage consent changes, persist it to SQLite immediately
+            # so the audit record is durable even if the session ends abruptly.
+            if key == "user_storage_mode" and value:
+                consent_given = "true" if str(value) == "saved" else "false"
+                self._audit.update_consent(session_id, consent_given)
+        else:
+            raw = value if isinstance(value, str) else ""
+            self._user_store.upsert_profile_field(
+                user_id, key, value, raw=raw, journey_id=session_id
+            )
 
     def write(self, session_id: str, user_id: str, scope: str, key: str, value: Any) -> None:
         """
@@ -397,21 +431,8 @@ class MemoryLayer:
             valid_scopes = {"session", "persistent", "signal", "journey_event"}
             resolved_scope = scope if scope in valid_scopes else self._scope_map.get(key, "persistent")
 
-            if resolved_scope == "session":
-                self._redis.set_session_field(session_id, key, value)
-                self._redis.update_last_accessed(user_id, session_id)
-                # When the user's storage consent changes, persist it to SQLite immediately
-                # so the audit record is durable even if the session ends abruptly.
-                if key == "user_storage_mode" and value:
-                    consent_given = "true" if str(value) == "saved" else "false"
-                    self._audit.update_consent(session_id, consent_given)
-
-            elif resolved_scope == "persistent":
-                journey_id = session_id  # journey_id == session_id
-                raw = value if isinstance(value, str) else ""
-                self._user_store.upsert_profile_field(
-                    user_id, key, value, raw=raw, journey_id=journey_id
-                )
+            if resolved_scope in ("session", "persistent"):
+                self._store_field(session_id, user_id, resolved_scope, key, value)
 
             elif resolved_scope == "signal":
                 # value must be a dict: {type, turn, raw, attributes?}
@@ -617,9 +638,10 @@ class MemoryLayer:
         try:
             if not user_id:
                 raise ValueError("user_id must not be empty")
+            # Erase tool results first so a graph-delete failure cannot leave them behind.
+            self._tool_results.delete_owner("user", user_id)
             self._user_store.delete_user(user_id)
             self._redis.delete_user_index(user_id)
-            self._tool_results.delete_owner("user", user_id)
             logger.info(
                 "memory_layer.delete_user",
                 extra={

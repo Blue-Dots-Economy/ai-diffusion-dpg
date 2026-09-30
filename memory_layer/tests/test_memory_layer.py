@@ -722,6 +722,35 @@ def test_write_strict(scope, key, value, ok):
     assert (reason == "") is ok
     if ok:
         assert stores["redis"].set_session_field.called or stores["user"].upsert_profile_field.called
+        if key == "count":
+            stores["redis"].set_session_field.assert_called_once_with("s1", "count", 7)
     else:
         stores["redis"].set_session_field.assert_not_called()
         stores["user"].upsert_profile_field.assert_not_called()
+
+
+def test_write_strict_reports_store_failure_session():
+    layer, stores = _make_layer()
+    stores["redis"].set_session_field.side_effect = RuntimeError("boom")
+    assert layer.write_strict("s1", "u1", "session", "status", "a") == (False, "write failed")
+
+
+def test_write_strict_reports_store_failure_persistent():
+    layer, stores = _make_layer()
+    stores["user"].upsert_profile_field.side_effect = RuntimeError("boom")
+    assert layer.write_strict("s1", "u1", "persistent", "name", "Asha") == (False, "write failed")
+
+
+@pytest.mark.parametrize("sid,uid", [("", "u1"), ("s1", "")])
+def test_write_strict_rejects_empty_ids(sid, uid):
+    layer, stores = _make_layer()
+    ok, reason = layer.write_strict(sid, uid, "session", "status", "a")
+    assert ok is False and reason
+    stores["redis"].set_session_field.assert_not_called()
+
+
+def test_delete_user_erases_tool_results_even_if_graph_delete_fails():
+    layer, stores = _make_layer()
+    stores["user"].delete_user.side_effect = RuntimeError("graph down")
+    layer.delete_user("u1")
+    stores["tool_results"].delete_owner.assert_called_once_with("user", "u1")
