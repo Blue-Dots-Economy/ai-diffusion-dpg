@@ -68,14 +68,19 @@ COMPOSE="docker compose -f docker-compose.dev.yml"
 
 $COMPOSE pull                     # ~11 GB on the first run
 
-# Core stack: 7 DPG blocks + web + voice channels + dev-kit + infra + observability
+# Core stack: 7 DPG blocks + web channel + dev-kit + infra + observability
 CORE="redis memgraph action_gateway knowledge_engine memory_layer trust_layer \
-      observability_layer agent_core reach_layer_web reach_layer_voice dev_kit \
+      observability_layer agent_core reach_layer_web dev_kit \
       otelcol jaeger loki prometheus grafana"
 $COMPOSE up -d --wait $CORE       # ~2.5 min on a cold start
 ```
 
-- Leave `reach_layer_voice` out of `CORE` if you have no Vobiz values at all, not even dummy ones.
+- On image tags built after #405 (Docker Hardened Images), `--wait` can stop on `observability_layer` even though it is running fine; see [Common issues](#6-common-issues-and-fixes).
+- The voice channel is not in `CORE` because it exits at startup without Vobiz values, and `env.example` leaves them empty. Once `VOBIZ_AUTH_ID`, `VOBIZ_AUTH_TOKEN`, `VOBIZ_FROM_NUMBER`, `RAYA_API_KEY` and `PUBLIC_URL` are set in `.env` (dummy values are enough to boot), start it separately:
+
+  ```bash
+  $COMPOSE up -d --wait reach_layer_voice
+  ```
 - `reach_layer_mcp` and `reach_layer_bridge` are left out on purpose: both crash at startup in the current images (see [Known issues](#6-common-issues-and-fixes)). Neither publishes a host port.
 - `ngrok` needs a real `NGROK_AUTHTOKEN`. Start it separately only when you are testing inbound calls: `$COMPOSE up -d ngrok`.
 - A plain `$COMPOSE up -d` starts everything, including the broken services, and stops at the first unhealthy dependency. Use the explicit list.
@@ -84,7 +89,7 @@ Startup order is driven by healthchecks: `redis` + `memgraph` → `memory_layer`
 
 ## 5. Verify
 
-**Containers.** All 16 should be `Up`, and every service that has a healthcheck should be `(healthy)`:
+**Containers.** All 15 should be `Up` (16 with voice), and every service that has a healthcheck should be `(healthy)`:
 
 ```bash
 $COMPOSE ps
@@ -108,7 +113,7 @@ Expected: `{"status":"ok"}` for each block. Action Gateway also lists its adapte
 |---|---|
 | http://localhost:8005/ | 200, KKB web chat UI |
 | http://localhost:8005/health | `{"status":"ok"}` |
-| http://localhost:8006/health | 200 (voice) |
+| http://localhost:8006/health | 200, only if you started voice |
 | http://localhost:8080/ | 200, dev-kit Configuration Agent |
 | http://localhost:16686/ | Jaeger UI; the service dropdown lists `agent_core`, `trust_layer`, `memory_layer`, ... after a chat turn |
 | http://localhost:3000/ | Grafana (admin / `GF_SECURITY_ADMIN_PASSWORD`, default `admin`) |
@@ -144,9 +149,10 @@ You should see Memory context bundle (1) → Trust input check (3) → Language 
 | `memgraph` restarting: `Unexpected positional argument(s): '/usr/lib/memgraph/memgraph'` | The unpinned `memgraph/memgraph` image now uses the binary as its ENTRYPOINT, and compose repeated the binary path in `command` | Fixed in compose: image pinned to `3.13.1`, `command` carries flags only |
 | `action_gateway` restarting, logs `adapter_factory_build_error` then `action_gateway.startup_missing_tools`; `agent_core` stuck in `Created` | A connector `secret_env` is unset (kkb: `ONEST_API_KEY`) | Add it to `dev-kit/configs/<DOMAIN>/secrets.env` (a dummy is fine locally), then `$COMPOSE up -d action_gateway` |
 | Stray `knowledge-engine/` directory appears at the repo root | Compose bind-mounted `../../knowledge-engine/data` (hyphen) | Fixed in compose: path is now `knowledge_engine/data`. Delete the stray empty directory |
-| `reach_layer_voice` restarting: `vobiz.auth_id is required` | Voice requires Vobiz credentials at boot | Set the Vobiz variables (dummy values are OK) or leave voice out of the service list |
+| `reach_layer_voice` restarting: `vobiz.auth_id is required`, or `up --wait` fails with `container reach_layer_voice is unhealthy` | Voice requires Vobiz credentials at boot, and `env.example` leaves them empty | Set the Vobiz variables in `.env` (dummy values are OK) before starting voice, or leave it stopped: `$COMPOSE stop reach_layer_voice` |
 | `reach_layer_bridge` restarting: `Config file not found: /app/reach_layer/bridge/config/dpg.yaml` | Code bug: `bridge/main.py` `_dpg_config_path()` ignores `CONFIG_FOLDER` and resolves `config/dpg.yaml` against `WORKDIR /app/reach_layer/bridge` | Open issue, needs a code fix. Leave it out of the service list |
 | `reach_layer_mcp` restarting: `ImportError: cannot import name 'RequestContext' from 'mcp.server.lowlevel.server'` | The default image (`sha-646216d`) was built with `mcp` unpinned and resolved `mcp 2.2.0`. `main` now pins `mcp>=1.0,<2` (#405), so images built from later commits fix the import. MCP still expects `CONFIG_FOLDER/reach_layer.yaml` while compose mounts `domain.yaml` | Open issue: needs a newer image tag plus a mount/code fix for the config name. Leave it out of the service list |
+| `observability_layer` stays `(health: starting)` and `up --wait` fails, although `curl` from another container gets `{"status":"ok"}` | Image tags built after #405 use Docker Hardened Images without precompiled stdlib bytecode, so every `python3 -c` healthcheck recompiles `urllib`. At compose's `cpus: '0.1'` limit that takes about 16 s, past the 15 s healthcheck timeout (measured on `sha-84a7139`). `trust_layer` at 0.25 CPU is close too (about 12 s) | The service works; nothing depends on its health, so ignore the `--wait` error or run `up -d` without `--wait`. The fix belongs in the images (precompile the stdlib at build time) or compose (a higher CPU limit or healthcheck timeout). The default tag `sha-646216d` is not affected |
 | `ngrok` restarting | No or invalid `NGROK_AUTHTOKEN` | Only start it with a real token |
 | `dependency failed to start: container X is unhealthy` from a plain `up -d` | One of the services above; Compose aborts the whole `up` at the first unhealthy dependency | `$COMPOSE ps -a`, then `docker logs <container>` for the one that is `Restarting` |
 | Chat returns `error_type: api_error` | LLM key missing or invalid; `docker logs agent_core` shows `401 Unauthorized ... invalid_api_key` | Set a real `OPENAI_API_KEY` (or the key for your domain's provider) and `$COMPOSE up -d agent_core` |
