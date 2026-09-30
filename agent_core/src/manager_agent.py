@@ -96,6 +96,8 @@ def ungrounded_params(
 spec: dict[str, list[str]],
 tool_call,
 messages: list,
+stored_results: dict[str, list[str]] | None = None,
+strict: bool = False,
 ) -> set[str]:
     """Return the configured params whose value no tool result contains.
 
@@ -113,6 +115,12 @@ messages: list,
             ``input_params``.
         messages: Conversation so far; tool results are read from the
             ``ToolResultBlock`` entries inside it.
+        stored_results: Tool name → serialised results that are no longer in
+            the message list. Counts exactly like tool_result blocks of that
+            tool.
+        strict: When True, reject if nothing has been fetched at all (used by
+            the ``remember`` tool). When False (default), allow any value on
+            the first call.
 
     Returns:
         Names of params that were supplied but appear in no tool result.
@@ -145,11 +153,19 @@ messages: list,
             src = origin.get(str(getattr(block, "tool_use_id", "")), "")
             by_tool.setdefault(src, []).append(content)
 
+    for src, texts in (stored_results or {}).items():
+        for text in texts or []:
+            if isinstance(text, str) and text:
+                seen_any.append(text)
+                by_tool.setdefault(str(src), []).append(text)
+
     if not seen_any:
         # Nothing has been fetched yet, so nothing can be grounded. Let the
         # call through rather than blocking a legitimate first call whose
         # value came from session state seeded outside this conversation.
-        return set()
+        if not strict:
+            return set()
+        return {n for n in spec if (tool_call.input_params or {}).get(n) not in (None, "")}
 
     missing: set[str] = set()
     for name, sources in spec.items():
@@ -246,10 +262,12 @@ class ManagerAgent:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _ungrounded_params(self, tool_call, messages: list) -> set[str]:
+    def _ungrounded_params(self, tool_call, messages: list,
+                           stored_results: dict[str, list[str]] | None = None) -> set[str]:
         """Instance wrapper around :func:`ungrounded_params` for this agent's config."""
         return ungrounded_params(
-            self._grounded_params.get(tool_call.tool_name) or {}, tool_call, messages
+            self._grounded_params.get(tool_call.tool_name) or {}, tool_call, messages,
+            stored_results=stored_results,
         )
 
     # ------------------------------------------------------------------

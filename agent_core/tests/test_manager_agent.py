@@ -1123,6 +1123,29 @@ def test_list_form_still_means_any_tool_result():
     assert agent._ungrounded_params(call, _two_tool_history()) == set()
 
 
+def test_stored_result_grounds_value_when_exchange_not_in_messages():
+    from src.manager_agent import ungrounded_params
+    spec = {"profile_item_id": ["fetch_profile"]}
+    tc = _call("apply_job", {"profile_item_id": "real-id"})
+    stored = {"fetch_profile": ['{"items":[{"item_id":"real-id"}]}']}
+    assert ungrounded_params(spec, tc, [], stored_results=stored) == set()
+
+
+def test_stored_result_from_other_tool_does_not_ground():
+    from src.manager_agent import ungrounded_params
+    spec = {"profile_item_id": ["fetch_profile"]}
+    tc = _call("apply_job", {"profile_item_id": "job-id"})
+    stored = {"fetch_jobs": ['[{"item_id":"job-id"}]']}
+    assert ungrounded_params(spec, tc, [], stored_results=stored) == {"profile_item_id"}
+
+
+def test_strict_rejects_when_nothing_seen():
+    from src.manager_agent import ungrounded_params
+    tc = _call("remember", {"value": "x"})
+    assert ungrounded_params({"value": ["fetch_profile"]}, tc, [], strict=True) == {"value"}
+    assert ungrounded_params({"value": ["fetch_profile"]}, tc, []) == set()   # lenient default unchanged
+
+
 # --- max_calls_per_turn ----------------------------------------------------
 # A prompt rule cannot gate an irreversible write. Measured on live calls: a
 # caller picked ONE job and the agent emitted five apply_job calls in one turn
