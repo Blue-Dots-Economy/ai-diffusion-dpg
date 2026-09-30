@@ -35,8 +35,6 @@ scrape_configs:
         labels: { service: action_gateway, group: dpg }
       - targets: ['http://reach_layer_bridge:8008/health']
         labels: { service: reach_layer_bridge, group: channel }
-      - targets: ['http://reach_layer_web:8005/health']
-        labels: { service: reach_layer_web, group: channel }
       - targets: ['http://otelcol:13133/']
         labels: { service: otelcol, group: observability }
       - targets: ['http://jaeger:14269/']
