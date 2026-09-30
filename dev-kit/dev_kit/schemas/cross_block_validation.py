@@ -88,6 +88,45 @@ def _validate_recording(reach_layer_block: dict) -> list[str]:
     return errors
 
 
+def _tool_result_memory_rules(ac: dict, ml: dict) -> list[str]:
+    """Cross-block rules for tool-result caching and the memory tool (agent_core ↔ memory_layer).
+
+    Args:
+        ac: The agent_core block.
+        ml: The memory_layer block.
+
+    Returns:
+        Error strings for session TTLs beyond the session lifetime, undeclared
+        ``vary_on`` fields, and ``memory_tool`` fields missing from the session
+        schema or ``UserProfile.declared_fields``.
+    """
+    errors: list[str] = []
+    session = ((ml.get("state") or {}).get("session") or {})
+    schema = session.get("schema") or {}
+    session_ttl = int(session.get("ttl_minutes") or 60) * 60
+    declared = (((((ml.get("state") or {}).get("persistent") or {}).get("graph") or {})
+                 .get("subnodes") or {}).get("UserProfile") or {}).get("declared_fields") or []
+    for group in (ac.get("connectors") or {}).values():
+        for c in group or []:
+            cache = (c or {}).get("cache") if isinstance(c, dict) else None
+            if not isinstance(cache, dict):
+                continue
+            name = c.get("name", "?")
+            if cache.get("scope") == "session" and int(cache.get("ttl_seconds") or 0) > session_ttl:
+                errors.append(f"connectors.{name}.cache.ttl_seconds exceeds the session lifetime "
+                              f"({session_ttl}s from memory_layer.state.session.ttl_minutes)")
+            for f in cache.get("vary_on") or []:
+                if f not in schema:
+                    errors.append(f"connectors.{name}.cache.vary_on: '{f}' is not a declared session field")
+    for fname, f in (((ac.get("memory_tool") or {}).get("fields")) or {}).items():
+        scope = (f or {}).get("scope")
+        if scope == "session" and fname not in schema:
+            errors.append(f"memory_tool.fields.{fname}: not declared in memory_layer session schema")
+        if scope == "persistent" and fname not in declared:
+            errors.append(f"memory_tool.fields.{fname}: not in UserProfile.declared_fields")
+    return errors
+
+
 def validate_cross_block(
     blocks: dict[str, dict],
     selected_channels: Iterable[str],
@@ -341,6 +380,10 @@ def validate_cross_block(
                 "'Does it push urgency?', 'Does it reduce their agency?', "
                 "'Does it sound like a script instead of a human call?']"
             )
+
+    # 13b. Tool-result cache / memory tool vs memory_layer session + profile.
+    if applicable_after("tools"):
+        errors.extend(_tool_result_memory_rules(ac, blocks.get("memory_layer") or {}))
 
     # 14. Connector input_schema property names MUST match the action_gateway
     # tool's agent-source param names. The REST adapter passes the LLM's

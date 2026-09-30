@@ -355,3 +355,41 @@ def test_recording_s3_backend_without_bucket_fails():
     })
     errors = validate_cross_block(blocks, selected_channels=[])
     assert any("bucket" in e for e in errors)
+
+
+# -- tool-result persistence (agent_core <-> memory_layer) --------------------
+
+_TR_ML = {"state": {"session": {"ttl_minutes": 60, "schema": {
+    "trade": {"type": "string"}, "profile_item_id": {"type": "string"}}},
+    "persistent": {"graph": {"subnodes": {"UserProfile": {"declared_fields": ["name"]}}}}}}
+
+
+def _tr_ac(read=None, memory_tool=None):
+    ac = {"connectors": {"read": read or [], "write": []}}
+    if memory_tool:
+        ac["memory_tool"] = memory_tool
+    return ac
+
+
+def _tr_errs(ac, ml=_TR_ML):
+    return [e for e in validate_cross_block({"agent_core": ac, "memory_layer": ml}, [])
+            if "tool" in e or "memory_tool" in e or "vary_on" in e or "ttl_seconds" in e]
+
+
+def test_valid_tool_result_config_has_no_errors():
+    ac = _tr_ac([{"name": "fetch_jobs", "cache": {"scope": "session", "ttl_seconds": 600, "vary_on": ["trade"]}}],
+                {"fields": {"profile_item_id": {"scope": "session"}, "name": {"scope": "persistent"}}})
+    assert _tr_errs(ac) == []
+
+
+def test_session_ttl_over_session_lifetime():
+    ac = _tr_ac([{"name": "fetch_jobs", "cache": {"scope": "session", "ttl_seconds": 7200}}])
+    assert any("ttl_seconds" in e for e in _tr_errs(ac))
+
+
+def test_undeclared_vary_on_and_memory_fields():
+    ac = _tr_ac([{"name": "fetch_jobs", "cache": {"scope": "session", "ttl_seconds": 60, "vary_on": ["ghost"]}}],
+                {"fields": {"nope": {"scope": "session"}, "nada": {"scope": "persistent"}}})
+    errs = _tr_errs(ac)
+    assert any("vary_on" in e for e in errs)
+    assert sum("memory_tool" in e for e in errs) == 2

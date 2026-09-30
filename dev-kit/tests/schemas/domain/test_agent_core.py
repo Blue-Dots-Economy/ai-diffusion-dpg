@@ -656,3 +656,47 @@ class TestTurnAssemblerLifecycleMirror:
     def test_rejects_invalid(self, payload):
         with pytest.raises(ValidationError):
             TurnAssemblerConfig.model_validate(payload)
+
+
+# -- tool-result persistence --------------------------------------------------
+
+def test_connectors_section_accepts_cache_and_invalidates():
+    s = ConnectorsSection.model_validate({
+        "read": [{"name": "fetch_jobs", "cache": {"scope": "session", "ttl_seconds": 60, "vary_on": ["trade"]}}],
+        "write": [{"name": "apply", "invalidates": ["fetch_jobs"]}],
+    })
+    assert s.read[0].cache.ttl_seconds == 60
+    assert s.write[0].invalidates == ["fetch_jobs"]
+
+
+@pytest.mark.parametrize("payload", [
+    {"write": [{"name": "w", "cache": {"scope": "user", "ttl_seconds": 5}}]},
+    {"read": [{"name": "r", "invalidates": ["r"]}]},
+    {"write": [{"name": "w", "invalidates": ["ghost"]}]},
+    {"internal": [{"name": "i", "cache": {"scope": "user", "ttl_seconds": 5}}]},
+    {"internal": [{"name": "i", "invalidates": ["r"]}], "read": [{"name": "r"}]},
+    {"read": [{"name": "r", "cache": {"scope": "user", "ttl_seconds": 0}}]},
+    {"read": [{"name": "r", "cache": {"scope": "global", "ttl_seconds": 5}}]},
+])
+def test_connectors_section_rejects_bad_cache_rules(payload):
+    with pytest.raises(ValidationError):
+        ConnectorsSection.model_validate(payload)
+
+
+def test_tool_results_and_memory_tool_sections():
+    from dev_kit.schemas.domain.agent_core import MemoryToolSection, ToolResultsSection
+    assert ToolResultsSection().max_user_ttl_seconds == 86400
+    m = MemoryToolSection.model_validate({"fields": {"x": {"scope": "session", "grounded_in": ["a"]}}})
+    assert m.name == "remember"
+    with pytest.raises(ValidationError):
+        MemoryToolSection.model_validate({"fields": {}})
+    with pytest.raises(ValidationError):
+        ToolResultsSection.model_validate({"max_user_ttl_seconds": 0})
+    with pytest.raises(ValidationError):
+        ToolResultsSection.model_validate({"bogus": 1})
+
+
+def test_validation_registry_has_tool_result_sections():
+    from dev_kit.schemas.validation import DOMAIN_SECTION_SCHEMAS
+    assert ("agent_core", "tool_results") in DOMAIN_SECTION_SCHEMAS
+    assert ("agent_core", "memory_tool") in DOMAIN_SECTION_SCHEMAS
