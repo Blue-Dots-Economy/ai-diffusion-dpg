@@ -1160,3 +1160,26 @@ def test_cap_of_two_allows_two_then_blocks():
     assert over_call_cap(2, 0) is False
     assert over_call_cap(2, 1) is False
     assert over_call_cap(2, 2) is True
+
+
+def test_run_turn_ungrounded_refusal_does_not_crash():
+    """An invented id must produce a refusal tool_result, not a TypeError."""
+    tc = ToolCall(tool_name="apply_job", tool_use_id="tu_apply",
+                  input_params={"profile_item_id": "invented-id"})
+    initial = _tool_response(tc)
+    followup = _text_response("Let me check that again.")
+    agent, llm, registry, gateway, _ = _make_manager(llm_responses=[initial, followup])
+    agent._grounded_params = {"apply_job": {"profile_item_id": ["fetch_profile"]}}
+    earlier = [
+        Message(role="assistant", content=[ToolUseBlock(
+            tool_use_id="tu_fp", tool_name="fetch_profile", input={})]),
+        Message(role="user", content=[ToolResultBlock(
+            tool_use_id="tu_fp", content='{"items":[{"item_id":"real-id"}]}')]),
+    ]
+
+    text, _, results = agent.run_turn(earlier + list(MESSAGES), SESSION_ID, initial)
+
+    assert text == "Let me check that again."
+    gateway.execute.assert_not_called()
+    assert results[0].tool_use_id == "tu_apply"
+    assert results[0].error == "UNGROUNDED_PARAMETER"

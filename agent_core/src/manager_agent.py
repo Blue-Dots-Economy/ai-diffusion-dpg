@@ -422,6 +422,7 @@ class ManagerAgent:
                         tool_call.tool_name, sorted(_ungrounded),
                     )
                     tool_result = ToolResult(
+                        tool_use_id=tool_call.tool_use_id,
                         tool_name=tool_call.tool_name,
                         success=False,
                         result={},
