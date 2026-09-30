@@ -18,7 +18,7 @@ Resources:
 - **Disk:** about 11 GB of images for the full file (`knowledge-engine` and `reach-layer-voice` are about 2 GB each). Keep 15 GB or more free.
 - **Architecture:** GHCR images are `linux/amd64`.
 
-Python, uv and Node are only needed to run tests or build images from source (`docker-compose.yml`), not for this guide.
+Python, uv and Node are only needed to run tests or build images from source (`docker-compose.yml`), not for this guide. Building from source also needs `docker login dhi.io`: every image except Knowledge Engine builds on Docker Hardened Images. Pulling the prebuilt GHCR images, as this guide does, needs no login.
 
 ## 2. Clone
 
@@ -146,7 +146,7 @@ You should see Memory context bundle (1) → Trust input check (3) → Language 
 | Stray `knowledge-engine/` directory appears at the repo root | Compose bind-mounted `../../knowledge-engine/data` (hyphen) | Fixed in compose: path is now `knowledge_engine/data`. Delete the stray empty directory |
 | `reach_layer_voice` restarting: `vobiz.auth_id is required` | Voice requires Vobiz credentials at boot | Set the Vobiz variables (dummy values are OK) or leave voice out of the service list |
 | `reach_layer_bridge` restarting: `Config file not found: /app/reach_layer/bridge/config/dpg.yaml` | Code bug: `bridge/main.py` `_dpg_config_path()` ignores `CONFIG_FOLDER` and resolves `config/dpg.yaml` against `WORKDIR /app/reach_layer/bridge` | Open issue, needs a code fix. Leave it out of the service list |
-| `reach_layer_mcp` restarting: `ImportError: cannot import name 'RequestContext' from 'mcp.server.lowlevel.server'` | `mcp>=1.0` is unpinned with no lockfile; the image resolved `mcp 2.2.0`. Once that's fixed, MCP also expects `CONFIG_FOLDER/reach_layer.yaml`, but compose mounts `domain.yaml` | Open issue, needs a dependency pin + mount/code fix. Leave it out of the service list |
+| `reach_layer_mcp` restarting: `ImportError: cannot import name 'RequestContext' from 'mcp.server.lowlevel.server'` | The default image (`sha-646216d`) was built with `mcp` unpinned and resolved `mcp 2.2.0`. `main` now pins `mcp>=1.0,<2` (#405), so images built from later commits fix the import. MCP still expects `CONFIG_FOLDER/reach_layer.yaml` while compose mounts `domain.yaml` | Open issue: needs a newer image tag plus a mount/code fix for the config name. Leave it out of the service list |
 | `ngrok` restarting | No or invalid `NGROK_AUTHTOKEN` | Only start it with a real token |
 | `dependency failed to start: container X is unhealthy` from a plain `up -d` | One of the services above; Compose aborts the whole `up` at the first unhealthy dependency | `$COMPOSE ps -a`, then `docker logs <container>` for the one that is `Restarting` |
 | Chat returns `error_type: api_error` | LLM key missing or invalid; `docker logs agent_core` shows `401 Unauthorized ... invalid_api_key` | Set a real `OPENAI_API_KEY` (or the key for your domain's provider) and `$COMPOSE up -d agent_core` |
