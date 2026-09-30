@@ -148,7 +148,7 @@ Call the tool only if what you need is missing here, or the caller says it chang
 
 ### 7.3 Pre-tool check
 One shared helper, used by the sync tool loop and both stream-loop execute sites, runs before `gateway.execute`:
-- **Unexpired entry for `(tool, args_hash)`** → return its `data` without calling Action Gateway, labelled `(stored result, fetched N min ago)`. Outcome `hit`. No `session_values` come with it: `session_mapping` already ran when the entry was first fetched live.
+- **Unexpired entry for `(tool, args_hash)`** → return its `data` without calling Action Gateway, labelled `(stored result, fetched N min ago)`. Outcome `hit`. No `session_values` come with it: `session_mapping` ran only when the entry was first fetched live. With session scope that is fine, because the mapped values are already in this session's state. With user scope a later session gets the hit but never the mapped values, so user scope is unsafe for a connector whose tool declares `session_mapping` until hits replay stored `session_values` (tracked follow-up). dev-kit cross-block validation rejects `cache.scope: user` on such a connector.
 - **`force_refresh: true`** → skip the entry and call live. This optional boolean is added by the framework to the input schema of cached connectors only, and stripped before the request reaches Action Gateway. Outcome `refresh`.
 - **Otherwise** → live call. Outcome `miss`.
 
@@ -201,7 +201,7 @@ The LLM decides values that depend on the caller's choice, for example which of 
 
 ## 12. Blue Dots rollout (config only, separate commit)
 
-- `fetch_profile`: add `cache` (`scope: user`). Narrow its projection or `keep` to what the choice prompt needs: `item_id`, `lifecycle_status`, `updated_at`, the fields read out to the caller. No whole `item_state`. Its existing `session_mapping` stays.
+- `fetch_profile`: add `cache` (`scope: session`). Not `scope: user`: its tool declares `session_mapping` (`has_age`, `user_terms`, `user_privacy`, the live profile's values), and a hit does not replay it (§7.3), so on a redial a user-scope hit would leave those session fields unset and routing would re-ask for facts already on file. Narrow its projection or `keep` to what the choice prompt needs: `item_id`, `lifecycle_status`, `updated_at`, the fields read out to the caller. No whole `item_state`. Its existing `session_mapping` stays.
 - `save_profile`: add `invalidates: [fetch_profile]`. Its existing `session_mapping` stays.
 - `fetch_jobs`: evaluate `cache` (`scope: session`, `vary_on: [trade, location]`) during rollout.
 - Add `memory_tool` with `profile_item_id` (`grounded_in: [fetch_profile, save_profile]`) and `profile_action`.

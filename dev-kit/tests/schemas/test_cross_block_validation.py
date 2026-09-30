@@ -428,3 +428,33 @@ def test_non_numeric_ttl_yields_error_not_exception():
     ml = {"state": {"session": {"ttl_minutes": "x"}}}
     errs = validate_cross_block({"agent_core": _tr_ac(), "memory_layer": ml}, [])
     assert any("ttl_minutes" in e and "not a number" in e for e in errs)
+
+
+# -- R20: user-scope cache vs action_gateway session_mapping ------------------
+
+def _sm_errs(scope, session_mapping):
+    response = {"max_size_chars": 4000}
+    if session_mapping:
+        response["session_mapping"] = [{"source": "a.b", "target": "trade"}]
+    blocks = {
+        "agent_core": _tr_ac([{"name": "fetch_profile",
+                               "cache": {"scope": scope, "ttl_seconds": 600}}]),
+        "memory_layer": _TR_ML,
+        "action_gateway": {"tools": [{"id": "fetch_profile", "type": "rest_api",
+                                      "response": response}]},
+    }
+    return [e for e in validate_cross_block(blocks, []) if "session_mapping" in e]
+
+
+def test_user_scope_cache_with_session_mapping_is_flagged():
+    errs = _sm_errs("user", True)
+    assert len(errs) == 1
+    assert "fetch_profile" in errs[0] and "scope: session" in errs[0]
+
+
+def test_session_scope_cache_with_session_mapping_passes():
+    assert _sm_errs("session", True) == []
+
+
+def test_user_scope_cache_without_session_mapping_passes():
+    assert _sm_errs("user", False) == []

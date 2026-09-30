@@ -187,6 +187,46 @@ def _tool_result_memory_rules(ac: dict, ml: dict) -> list[str]:
     return errors
 
 
+def _tool_result_session_mapping_rules(ac: dict, ag: dict) -> list[str]:
+    """Reject user-scope caching of a connector whose tool declares ``session_mapping``.
+
+    A cache hit returns stored data only: it carries no ``session_values``, so
+    the tool's ``response.session_mapping`` runs only when the result is first
+    fetched live. With session scope that is within the same session, where the
+    mapped values are already in session state; with user scope a later session
+    would get the hit but never the mapped values.
+
+    Args:
+        ac: The agent_core block.
+        ag: The action_gateway block.
+
+    Returns:
+        One error string per user-scope cached connector whose matching
+        action_gateway tool (by ``id`` or ``name``) declares
+        ``response.session_mapping``.
+    """
+    errors: list[str] = []
+    mapped: set[str] = set()
+    for t in ag.get("tools") or []:
+        if not isinstance(t, dict) or not ((t.get("response") or {}).get("session_mapping")):
+            continue
+        mapped.update(str(k) for k in (t.get("id"), t.get("name")) if k)
+    for group in (ac.get("connectors") or {}).values():
+        for c in group or []:
+            if not isinstance(c, dict):
+                continue
+            cache = c.get("cache")
+            name = c.get("name")
+            if isinstance(cache, dict) and cache.get("scope") == "user" and name in mapped:
+                errors.append(
+                    f"connectors.{name}.cache.scope is 'user' but action_gateway tool '{name}' "
+                    f"declares response.session_mapping. A cache hit does not replay "
+                    f"session_mapping, so a later session would miss the mapped values. "
+                    f"Use scope: session for this connector."
+                )
+    return errors
+
+
 def validate_cross_block(
     blocks: dict[str, dict],
     selected_channels: Iterable[str],
@@ -445,6 +485,8 @@ def validate_cross_block(
     if applicable_after("tools"):
         errors.extend(_tool_result_memory_rules(ac, blocks.get("memory_layer") or {}))
         errors.extend(_tool_result_agent_rules(ac))
+        # 13c. User-scope cache is unsafe where the tool declares session_mapping.
+        errors.extend(_tool_result_session_mapping_rules(ac, blocks.get("action_gateway") or {}))
 
     # 14. Connector input_schema property names MUST match the action_gateway
     # tool's agent-source param names. The REST adapter passes the LLM's

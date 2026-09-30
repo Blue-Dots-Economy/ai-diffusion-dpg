@@ -49,10 +49,15 @@ agent:
 #     read:
 #       - name: fetch_profile
 #         cache:                  # store the result and show it in <known_facts>
-#           scope: user           # session | user (user outlives the call)
+#           scope: session        # session | user (user outlives the call)
 #           ttl_seconds: 1800     # counted from the write, never extended by a read
-#           keep: [items]         # projected fields to store (default: all)
-#           vary_on: []           # argument names that make a separate entry
+#           keep: [items]         # top-level fields to store, dict results only (default: all)
+#           vary_on: []           # session fields whose values make a separate entry
+#
+# scope: user is unsafe for a connector whose action_gateway tool declares
+# response.session_mapping: a cache hit does not replay session_mapping, so a
+# later session gets the stored result but not the mapped session values.
+# dev-kit validation rejects that combination.
 #     write:
 #       - name: save_profile
 #         invalidates: [fetch_profile]   # read connectors whose stored result to drop
