@@ -145,8 +145,8 @@ def test_key_name_not_grounded():
     assert rec.writes == [] and rec.saved == []
 
 
-def test_value_in_non_grounded_tool_rejected():
-    """Value in non-grounded tool result → rejected."""
+def test_value_in_grounded_and_non_grounded_tool_accepted():
+    """Value present in a grounded tool result is accepted even if a non-grounded one also has it."""
     rec = Recorder()
     stored = {
         "fetch_profile": ['{"items":[{"item_id":"p-1"}]}'],
@@ -155,6 +155,27 @@ def test_value_in_non_grounded_tool_rejected():
     r = TOOL.handle(call("profile_item_id", "p-1"), [], stored, rec.write, rec.on_saved)
     # Should still be grounded because it's in fetch_profile
     assert r.success is True
+
+
+def test_value_only_in_non_grounded_stored_result_rejected():
+    """Value found only in a non-grounded tool's stored result → rejected."""
+    rec = Recorder()
+    stored = {
+        "fetch_profile": ['{"items":[{"item_id":"p-1"}]}'],
+        "fetch_jobs": ['{"jobs":[{"id":"j-7"}]}'],
+    }
+    r = TOOL.handle(call("profile_item_id", "j-7"), [], stored, rec.write, rec.on_saved)
+    assert r.success is False and r.error == "REMEMBER_REJECTED"
+    assert rec.writes == [] and rec.saved == []
+
+
+def test_value_only_in_non_grounded_message_tool_result_rejected():
+    """Value found only in a non-grounded tool's tool_use/tool_result pair → rejected."""
+    rec = Recorder()
+    messages = message_with_tool_result("tu_jobs", "fetch_jobs", '{"jobs":[{"id":"j-7"}]}')
+    r = TOOL.handle(call("profile_item_id", "j-7"), messages, {}, rec.write, rec.on_saved)
+    assert r.success is False and r.error == "REMEMBER_REJECTED"
+    assert rec.writes == [] and rec.saved == []
 
 
 def test_value_grounded_via_messages_tool_result():
