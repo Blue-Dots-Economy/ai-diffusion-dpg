@@ -1622,14 +1622,21 @@ agent_workflow:
         NEVER name a company. NEVER state a salary. NEVER say
         "मुझे नौकरियाँ मिली हैं" ("I found jobs") or read out options.
 
-        Measured on a live call: a caller stuck in this phase kept
-        asking for jobs, and the bot answered "बेंगलुरु में
-        इलेक्ट्रिशियन की नौकरियाँ मिली हैं — हिमालय वेलनेस, दस हज़ार
-        रुपये; स्टार्क टेक, बारह हज़ार रुपये." No tool had run. Himalaya
-        Wellness posts no electrician role and Stark Tech does not
-        exist. Both salaries were invented. A caller can chase a job
-        that was never posted — inventing one is worse than saying
-        nothing.
+        Measured on a live call: a caller stuck in this phase kept asking
+        for jobs and the bot read out two employers with monthly salaries,
+        in the normal listing format, having called no tool at all. One
+        employer had no such role open; the other did not exist. Both
+        salaries were invented.
+
+        The invented names are deliberately NOT repeated here. When they
+        were, the model started speaking them in job_match — a phase that
+        HAD real results in front of it — because a concrete example in
+        the prompt reads as a template to copy. Measured twice on live
+        local calls: the same two invented employers, with invented
+        salaries, while fetch_jobs had just returned five real ones.
+
+        A caller can chase a job that was never posted. Inventing one is
+        worse than saying nothing.
 
         ## When the caller pushes for jobs before you have their age
         They are not being difficult; they called about work. Do not
@@ -1862,6 +1869,31 @@ agent_workflow:
             user_storage_mode: "saved"
             consent_given: true
 
+        # 4b. Consent granted on this turn AND the upstream already holds an
+        # age. `has_age` comes from the participant fetch, so it is true even
+        # when session `age` is 0 — the caller never said it aloud in THIS
+        # call, but it is on file and the upstream is the authority.
+        #
+        # Without this, a caller whose only profile is a DRAFT (age on file,
+        # consent not recorded) consented and was then asked their age anyway.
+        # Measured locally: they answered the trade instead, the turn came
+        # back empty, and the next one re-asked for consent.
+        - intent: "*"
+          conditions:
+            - field: opening_phrase_emitted
+              operator: eq
+              value: true
+            - field: consent_response
+              operator: eq
+              value: "granted"
+            - field: has_age
+              operator: eq
+              value: true
+          next_subagent_id: profile_resolve
+          session_writes:
+            user_storage_mode: "saved"
+            consent_given: true
+
         # 5. Consent granted, age still outstanding → stay and ask for it.
         - intent: "*"
           conditions:
@@ -1994,11 +2026,26 @@ agent_workflow:
         conversation history. Read it — do not call it again unless it is
         genuinely absent.
 
+        ## The ONLY test for "do they have a usable profile"
         `profile_item_id` in <known_profile> is non-empty ONLY when the
-        caller has a LIVE profile. A retired profile leaves it empty, and
-        a caller with only retired rows is treated exactly like a new one.
+        caller has a LIVE profile. Draft and retired rows leave it empty,
+        and a caller who has only those is treated exactly like a new one.
+
+        The fetch_profile result also contains those unusable rows. Do NOT
+        read them. Do not take a trade, a city, a name or an age out of the
+        items array yourself — take them from `stored_trade` and
+        `stored_location`, which are lifted from the LIVE row only and are
+        empty when there is not one.
+
+        Measured on a live local call: a caller whose single profile was a
+        DRAFT was told "मुझे आपकी जानकारी मिली — बेंगलुरु में वेल्डिंग"
+        and offered it, while profile_item_id and both stored_ fields were
+        empty. A draft cannot be applied with, so that offer leads nowhere.
 
         ## Path A — there IS a live profile
+        Only when `profile_item_id` is NON-EMPTY. If it is empty, you are
+        on Path B, whatever else the fetch result appears to contain.
+
         Offer it, once, in ONE Hindi sentence naming what it holds:
 
           "मुझे आपकी जानकारी मिली — <city> में <trade>। क्या इन्हीं से
