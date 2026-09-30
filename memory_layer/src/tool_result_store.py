@@ -72,18 +72,18 @@ class ToolResultStore:
         if (not self.enabled or scope not in _SCOPE_LETTER or not owner_id
                 or not _TOOL_RE.match(tool or "") or not _HASH_RE.match(args_hash or "")):
             return False
-        ttl = min(int(ttl_seconds), self._max_ttl[scope])
-        if ttl <= 0:
-            return False
         now = time.time() if now is None else now
-        key = f"{self._key_prefix(scope, owner_id)}{tool}:{args_hash}"
-        idx = self._idx(scope, owner_id)
-        value = json.dumps({
-            "tool": tool, "args_hash": args_hash, "data": data, "fetched_at": now,
-            "expires_at": now + ttl, "origin": origin, "scope": scope,
-        })
         start = time.time()
         try:
+            ttl = min(int(ttl_seconds), self._max_ttl[scope])
+            if ttl <= 0:
+                return False
+            key = f"{self._key_prefix(scope, owner_id)}{tool}:{args_hash}"
+            idx = self._idx(scope, owner_id)
+            value = json.dumps({
+                "tool": tool, "args_hash": args_hash, "data": data, "fetched_at": now,
+                "expires_at": now + ttl, "origin": origin, "scope": scope,
+            })
             pipe = self._client.pipeline()
             pipe.set(key, value, ex=ttl)
             pipe.sadd(idx, key)

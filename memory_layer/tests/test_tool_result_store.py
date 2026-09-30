@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 import fakeredis
 import pytest
 
@@ -131,3 +129,15 @@ def test_rejects_unknown_scope_and_bad_names(store):
     assert store.put("agent", "u1", "t", "aa11", {}, 60) is False
     assert store.put("user", "u1", "bad:tool", "aa11", {}, 60) is False
     assert store.put("user", "u1", "t", "XYZ", {}, 60) is False
+
+
+def test_put_with_non_json_serialisable_data_returns_false(store, client):
+    result = store.put("user", "u1", "t", "aa11", object(), 60)
+    assert result is False
+    assert client.keys("ml:tr:*") == []
+
+
+def test_put_with_none_ttl_returns_false(store, client):
+    result = store.put("user", "u1", "t", "aa11", {}, None)
+    assert result is False
+    assert client.keys("ml:tr:*") == []
