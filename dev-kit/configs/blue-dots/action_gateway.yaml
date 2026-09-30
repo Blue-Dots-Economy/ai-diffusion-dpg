@@ -97,6 +97,15 @@ tools:
           target: profile_item_id
         - source: "user_id"
           target: acting_as_user_id
+        # What the caller told us LAST time. Kept under their own names, not
+        # `trade`/`location`, on purpose: those two hold what the caller says
+        # in THIS call and routing uses them to decide the search is ready.
+        # If the stored values landed there directly, profile_resolve would
+        # be skipped and the caller never offered the choice.
+        - source: "items[lifecycle_status=live].item_state.nameOfJobRolesInterestedIn"
+          target: stored_trade
+        - source: "items[lifecycle_status=live].item_state.location"
+          target: stored_location
       projection:
         fields:
           # Both names map to the same root value. The existing prompts refer

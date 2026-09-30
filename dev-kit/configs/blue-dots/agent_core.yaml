@@ -780,6 +780,12 @@ connectors:
           save_profile's user_id field (create_new / update_existing
           path).
         required_before_calling: [acting_as_user_id, profile_item_id, selected_job_item_id]
+        # One application per turn, ENFORCED. The prompt says the same and the
+        # model broke it twice: five apply_job calls from a single job pick
+        # (three created), then two in another turn (both created). Each one is
+        # an application at an employer the caller never chose, sent to a real
+        # hiring manager with their name and number on it.
+        max_calls_per_turn: 1
         # ENFORCED, not just described. Each of these must appear verbatim in a
         # tool result from this conversation or the call is refused before it
         # leaves us. `must_not_substitute` below has always asked for this in
@@ -2000,11 +2006,16 @@ agent_workflow:
           ("I found your details — <trade> in <city>. Shall I search
            with these?")
 
-        Read <trade> from the live item's `nameOfJobRolesInterestedIn`
-        and <city> from its `location`. Both are in the fetch_profile
-        result — the profile DOES carry a trade, and an older instruction
-        claiming otherwise was wrong and made this phase re-ask a caller
-        for something already on file.
+        <trade> and <city> are already in <known_profile> as
+        `stored_trade` and `stored_location`, lifted from the live item by
+        fetch_profile. Read them from there. The profile DOES carry a
+        trade — an older instruction claiming otherwise was wrong, and it
+        made this phase re-ask a caller for something already on file.
+
+        Make the offer and STOP. Do not also ask for the trade in the same
+        breath: a turn that says "your details have Welding in Bengaluru"
+        and then asks which trade they want is the exact bug this phase
+        was rewritten to remove.
 
         If a field is genuinely missing from the item, do not invent it:
         name only the one you have, and ask for the other.
@@ -2065,6 +2076,19 @@ agent_workflow:
               operator: not_eq
               value: ""
           next_subagent_id: job_match
+        # The caller HAS a live profile: entry 1 makes the offer, entry 2 is
+        # their answer, and either answer leads to the search. Accepting uses
+        # the stored values; declining means their own words are already in
+        # `trade`/`location`, which job_match prefers.
+        - intent: "*"
+          conditions:
+            - field: profile_item_id
+              operator: not_eq
+              value: ""
+            - field: subagent_entry_count.profile_resolve
+              operator: gt
+              value: 1
+          next_subagent_id: job_match
         - intent: apply_now
           next_subagent_id: job_match
         - intent: job_pick
@@ -2112,9 +2136,15 @@ agent_workflow:
         ## The search — ONE call, once
         Call `fetch_jobs` with the caller's trade and city, their words
         translated to English ("डेटा एंट्री" -> "data entry operator").
-        Both values are already in <known_profile> by the time you get
-        here — profile_resolve does not let a caller through without
-        them, so you should not need to ask for either.
+
+        Take them from <known_profile>, in this order:
+          1. `trade` / `location` — what the caller said in THIS call.
+             These always win.
+          2. `stored_trade` / `stored_location` — what their saved profile
+             holds. Used when they accepted the offer to search with it.
+
+        You should not need to ask for either. If one really is missing
+        from both, ask for that ONE and search on the next turn.
 
         There is one search and it is this one. The anchored
         profile-based search was removed: on live dev-cluster data it put

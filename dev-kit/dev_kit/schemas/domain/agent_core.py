@@ -408,6 +408,7 @@ class InvocationRules(BaseModel):
     call_when: str = ""
     required_before_calling: list[str] = Field(default_factory=list)
     must_not_substitute: str = ""
+    max_calls_per_turn: Optional[int] = None
     grounded_params: Union[List[str], Dict[str, List[str]]] = Field(default_factory=list)
     on_empty: str = ""
     on_failure: str = ""

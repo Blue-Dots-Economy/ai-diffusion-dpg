@@ -54,7 +54,12 @@ from src.interfaces.reach_layer import ReachLayerBase
 from src.interfaces.trust_layer import TrustLayerBase
 from src.http_clients.trust_layer import TrustLayerConstraintError
 from src.preprocessing.language_normalisation import LanguageNormaliser
-from src.manager_agent import ManagerAgent, ungrounded_params
+from src.manager_agent import (
+    ManagerAgent,
+    over_call_cap,
+    refusal_result,
+    ungrounded_params,
+)
 from src.models import (
     DoneEvent,
     NLUResult,
@@ -3814,6 +3819,11 @@ class AgentCore(AgentCoreBase):
                 )
 
             except ToolUseRequested as e:
+                # Per-TURN tool-call counts. Declared here, outside the tool
+                # rounds below, so a capped tool cannot slip through by being
+                # requested again in a later round of the same turn.
+                _turn_tool_counts: dict[str, int] = {}
+
                 # ── Step 9: Tool use ───────────────────────────────────
                 was_tool_used = True
                 all_tool_calls = [
@@ -3882,35 +3892,54 @@ class AgentCore(AgentCoreBase):
                             tc, _ke_context,
                         )
                     elif self._async_gateway:
-                        # Same provenance guard the sync path gets inside
-                        # ManagerAgent.run_turn. stream_turn has its own tool
-                        # loop and never calls run_turn, so without this the
-                        # guard is dead on the path voice clients actually use.
-                        _ung = ungrounded_params(
-                            (getattr(self._manager_agent, "_grounded_params", {}) or {})
-                            .get(tc.tool_name) or {},
-                            tc, messages,
-                        )
-                        if _ung:
+                        # Two guards, one decision. Both refuse BEFORE the call
+                        # leaves us, because both protect writes that cannot be
+                        # taken back.
+                        #   cap        — the model acted on every row of a list
+                        #                it was shown (5 applies from one pick)
+                        #   grounding  — it supplied an id no tool returned
+                        # stream_turn has its own tool loop and never calls
+                        # ManagerAgent.run_turn, so the sync path's guards do
+                        # not cover the path a voice client actually uses.
+                        _caps = getattr(self._manager_agent, "_tool_call_caps", None)
+                        _caps = _caps if isinstance(_caps, dict) else {}
+                        _used = _turn_tool_counts.get(tc.tool_name, 0)
+                        _refusal = ""
+                        if over_call_cap(_caps.get(tc.tool_name), _used):
                             logger.warning(
-                                "orchestrator.stream_ungrounded_param tool=%s params=%s",
-                                tc.tool_name, sorted(_ung),
+                                "orchestrator.stream_tool_call_cap tool=%s used=%s",
+                                tc.tool_name, _used,
                             )
-                            tool_result = ToolResult(
-                                tool_use_id=tc.tool_use_id,
-                                tool_name=tc.tool_name,
-                                result={},
-                                success=False,
-                                error="UNGROUNDED_PARAMETER",
-                                result_text=(
+                            _refusal = (
+                                f"Refused: {tc.tool_name} has already run this turn and its "
+                                f"effect cannot be undone. One per turn. If the caller meant "
+                                f"a different one, ask which, and call it on the next turn."
+                            )
+                        else:
+                            _ung = ungrounded_params(
+                                (getattr(self._manager_agent, "_grounded_params", {}) or {})
+                                .get(tc.tool_name) or {},
+                                tc, messages,
+                            )
+                            if _ung:
+                                logger.warning(
+                                    "orchestrator.stream_ungrounded_param tool=%s params=%s",
+                                    tc.tool_name, sorted(_ung),
+                                )
+                                _refusal = (
                                     f"Refused: {', '.join(sorted(_ung))} did not come from "
                                     f"any tool result in this conversation, so the value was "
                                     f"invented. Do not guess an identifier. Re-read the most "
-                                    f"recent tool result, copy the exact value for the item the "
-                                    f"user chose, and call this tool again."
-                                ),
+                                    f"recent tool result, copy the exact value for the item "
+                                    f"the user chose, and call this tool again."
+                                )
+
+                        if _refusal:
+                            tool_result = refusal_result(
+                                tc.tool_name, tc.tool_use_id, _refusal,
                             )
                         else:
+                            _turn_tool_counts[tc.tool_name] = _used + 1
                             tool_result = await self._async_gateway.execute(
                                 tc, session_id, user_id,
                                 session_values=self._tool_session_values(bundle),

@@ -19,7 +19,7 @@ One top-level model per service:
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Dict, List, Literal, Union
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -53,6 +53,13 @@ class InvocationRulesConfig(BaseModel):
     must_not_substitute: str = Field(
         default="",
         description="What the LLM must never treat as a substitute for this tool",
+    )
+    max_calls_per_turn: Optional[int] = Field(
+        default=None,
+        description=(
+            "Hard cap on executions of this tool per turn. For irreversible "
+            "writes, a prompt rule is not enough."
+        ),
     )
     grounded_params: Union[List[str], Dict[str, List[str]]] = Field(
         default_factory=list,

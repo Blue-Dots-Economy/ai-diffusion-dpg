@@ -336,6 +336,15 @@ class InvocationRules(BaseModel):
     call_when: str = ""
     required_before_calling: list[str] = Field(default_factory=list)
     must_not_substitute: str = ""
+    max_calls_per_turn: Optional[int] = None
+    """Hard cap on how many times this tool may execute in a single turn.
+
+    For tools whose effect is irreversible, a prompt rule is not enough. A
+    model that is shown a list will sometimes act on every row of it: measured
+    on a live call, a caller picked one job and the agent emitted five
+    apply_job calls in one turn, creating applications at employers they never
+    chose. Extra calls beyond the cap are refused before they execute.
+    """
     grounded_params: list[str] | dict[str, list[str]] = Field(default_factory=list)
     """Params whose value must have appeared in an earlier tool result.
 
