@@ -511,6 +511,62 @@ class TestStreamTurnChannelValidation:
 
 
 
+class TestTerminalPhaseFixedCopy:
+    """A terminal subagent has no tools and verified copy. The model must not
+    be asked to paraphrase it — doing so told a 16-year-old that applications
+    are impossible "under sixteen", and returned empty turns on the consent
+    and age paths."""
+
+    def _agent_with_terminal(self, phrase):
+        agent = _make_agent_core()
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("x", "english")
+        agent._nlu_processor = MagicMock()
+        agent._nlu_processor.process.return_value = NLUResult(
+            intent="any_input", entities={}, sentiment="neutral", confidence=0.9
+        )
+        for sa in agent._workflow.subagents.values():
+            sa.is_terminal = True
+            sa.opening_phrase = phrase
+        return agent
+
+    @pytest.mark.asyncio
+    async def test_terminal_phase_speaks_config_verbatim_without_the_model(self):
+        agent = self._agent_with_terminal(
+            "उन्नीस साल से कम उम्र में फ़ोन पर आवेदन पूरा नहीं हो सकता।"
+        )
+
+        async def must_not_run(*args, **kwargs):
+            raise AssertionError("the model must not be called on a terminal phase")
+            yield  # pragma: no cover - generator marker
+
+        agent._llm.stream = must_not_run
+
+        events = await _collect_events(agent, _make_turn_input())
+
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "उन्नीस साल" in spoken, "the configured threshold must be spoken verbatim"
+        done = [e for e in events if isinstance(e, DoneEvent)]
+        assert len(done) == 1
+        assert done[0].session_ended is True
+        assert done[0].model_used == "none"
+
+    @pytest.mark.asyncio
+    async def test_terminal_phase_without_copy_still_uses_the_model(self):
+        """The skip is guarded on copy existing — a terminal phase with no
+        opening_phrase still needs the model to produce something."""
+        agent = self._agent_with_terminal("")
+
+        async def mock_stream(*args, **kwargs):
+            yield "Goodbye."
+
+        agent._llm.stream = mock_stream
+
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "Goodbye." in spoken
+
+
 class TestStreamTurnEmptyTurn:
     """GH-204 F3: a turn that produces no text must never reach the caller as
     silence — on a phone line that is indistinguishable from a dropped call."""

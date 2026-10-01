@@ -2696,8 +2696,18 @@ class AgentCore(AgentCoreBase):
         trust_output: TrustCheckResult,
         start: float,
         stamp,
+        message: str | None = None,
+        subagent_id: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
-        """Skip the LLM and emit the canned termination_message (#204).
+        """Skip the LLM and emit a canned closing line (#204).
+
+        Args:
+            message: the line to speak. Defaults to
+                ``conversation.termination_message`` — #204's goodbye. A
+                terminal subagent passes its own ``opening_phrase`` instead,
+                so a phase that ends the call for a REASON states that reason.
+            subagent_id: the phase to record for this turn. Defaults to
+                ``ended``.
 
         Pulls ``conversation.termination_message`` from config, translates it
         to the user's detected language using the same helper as the consent
@@ -2725,15 +2735,16 @@ class AgentCore(AgentCoreBase):
         Yields:
             Exactly one SentenceEvent followed by a terminal DoneEvent.
         """
-        termination_message: str = self._config.get("conversation", {}).get(
-            "termination_message", ""
-        ) or ""
+        termination_message: str = message if message is not None else (
+            self._config.get("conversation", {}).get("termination_message", "") or ""
+        )
 
         # Route to the "ended" subagent if the workflow defines one. This
         # keeps reconnect / observability semantics consistent with the
         # full LLM path (where global_routing on termination_intent moves
         # the session into the terminal subagent).
-        ended_subagent_id = "ended" if "ended" in self._workflow.subagents else (
+        _want = subagent_id or "ended"
+        ended_subagent_id = _want if _want in self._workflow.subagents else (
             bundle.session.get("current_subagent_id") or self._workflow.start_subagent_id
         )
         bundle.session["current_subagent_id"] = ended_subagent_id
@@ -4170,6 +4181,50 @@ class AgentCore(AgentCoreBase):
                 matched_rule.intent if matched_rule else "—",
                 int((time.time() - t6) * 1000),
             )
+
+            # ── Step 6b: terminal phases speak fixed copy, not generated text ──
+            # A terminal subagent has no tools and a verified opening_phrase.
+            # There is nothing for the model to decide, and asking it to
+            # paraphrase fixed copy is how two real failures happened:
+            #
+            #   - a 16-year-old was told "applications are not possible for
+            #     those under SIXTEEN" — the model echoed the caller's own age
+            #     as the threshold instead of the nineteen the config states;
+            #   - the consent-declined and under-19 turns came back EMPTY, so
+            #     the caller heard "sorry, I didn't catch that" at the moment
+            #     they were being turned away.
+            #
+            # Both disappear if the configured line is spoken verbatim. It is
+            # also faster: no model call on the last turn of the call.
+            _terminal = self._workflow.subagents.get(next_subagent_id)
+            _fixed_copy = (
+                (getattr(_terminal, "opening_phrase", "") or "").strip()
+                if _terminal is not None and getattr(_terminal, "is_terminal", False)
+                else ""
+            )
+            if _fixed_copy:
+                logger.info(
+                    "  [STEP 7] Prompt Assembly  ⏭  skipped — %s is terminal, "
+                    "speaking its configured line",
+                    next_subagent_id,
+                )
+                async for ev in self._stream_termination_short_circuit(
+                    session_id=session_id,
+                    user_id=user_id,
+                    turn_id=turn_id,
+                    turn_input=turn_input,
+                    detected_language=detected_language,
+                    nlu_result=nlu_result,
+                    bundle=bundle,
+                    trust_input=trust_input,
+                    trust_output=trust_output,
+                    start=start,
+                    stamp=_stamp,
+                    message=_fixed_copy,
+                    subagent_id=next_subagent_id,
+                ):
+                    yield ev
+                return
 
             # ── Step 7: Prompt assembly ────────────────────────────────
             logger.info(
