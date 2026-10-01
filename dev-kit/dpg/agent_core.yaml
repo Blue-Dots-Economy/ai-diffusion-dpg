@@ -76,6 +76,20 @@ agent:
 #       description: "item_id of the profile the caller chose"
 #       grounded_in: [fetch_profile, save_profile]
 
+# Session fields rendered into the LLM's <known_profile> (empty values and keys
+# already present are skipped). Spec: docs/superpowers/specs/2026-10-01-session-bootstrap-design.md
+# agent:
+#   prompt_session_fields: [profile_item_id, stored_trade, stored_location]
+#
+# Session bootstrap: runs these steps once on the first turn of a session,
+# before routing and without the LLM. Spec: same as above.
+# session_bootstrap:
+#   timeout_ms: 1500            # > 0; results arriving after this are discarded
+#   steps:                      # at least 1
+#     - type: tool              # only `tool` is supported
+#       tool: fetch_profile     # must name a connectors.read entry (read connectors only)
+#       requires_consent: false # true: skipped unless the caller consented to storage
+
 # conversation.* is domain-specific (blocked_message, escalation_message,
 # output_blocked_message, persona text). All fields must be set in domain.yaml.
 # The block intentionally lives only in domain configs.

@@ -56,6 +56,20 @@ agent:
     enabled: true
     confidence_threshold: 0.7
 
+  # Session fields shown to the LLM in <known_profile>. These three are written
+  # by fetch_profile's response.session_mapping (action_gateway.yaml), and the
+  # profile_resolve prompt reads them from <known_profile>.
+  prompt_session_fields: [profile_item_id, stored_trade, stored_location]
+
+# Session bootstrap: fetch the caller's profile before turn-1 routing, without
+# the LLM, so a returning caller's consent/age flags and live profile are in
+# session state when turn 1 is routed (session-bootstrap spec). Read connector only.
+session_bootstrap:
+  timeout_ms: 1500
+  steps:
+    - type: tool
+      tool: fetch_profile
+
 channels:
   bridge:
     system_prompt_suffix: |
@@ -1310,10 +1324,11 @@ agent_workflow:
         You are in the **opening** phase. It has exactly two questions,
         asked one per turn, in this order. Nothing else happens here.
 
-        ## Turn 1: greet, ask if they want work, and FETCH
-        On your FIRST turn call `fetch_profile` — before anything else, and
-        without mentioning it. Then say one short Hindi sentence: greet them
-        and ask whether they are looking for work.
+        ## Turn 1: greet and ask if they want work
+        `fetch_profile` already ran when the call started, before this turn;
+        its result is the fetch_profile entry of <known_facts>. Do not call it
+        again unless that entry is absent. Say one short Hindi sentence: greet
+        them and ask whether they are looking for work.
 
           "नमस्ते! क्या आप काम की तलाश में हैं?"
           ("Hello! Are you looking for work?")
