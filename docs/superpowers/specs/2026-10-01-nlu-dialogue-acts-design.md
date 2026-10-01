@@ -537,3 +537,43 @@ All with a mocked provider, meeting the coverage rule in `.claude/rules/testing-
 - **Spec B (Session Bootstrap, merged):** runs before pending resolution and NLU, so turn 1's frame already reflects the caller's profile flags and stored values. Its `session_mapping` keys are covered by the §7.3 collision check.
 - **Spec D (Main-LLM context and prompts):** consumes `<caller_turn>`. Owns option order, conversation history for the main LLM, the dead `tts_rules`, and prompts that reference state the model cannot see.
 - **Spec E (Deterministic turn actions):** uses `TurnUnderstanding` to skip the main LLM, or to pre-dispatch a tool, for specific (act, pending) pairs. Each pair is enabled once its precision in §11.4 clears Spec E's bar. Built on Spec B's step runner. Spec B v1 supports literal `args` only, so Spec E has to add argument binding from slots and session values, e.g. `fetch_jobs(query_text=<trade> <location>)`.
+
+## 16. Single mode: removing `intent` mode (amendment, 2026-10-01)
+
+**Decision.** None of the three domains (`blue-dots`, `blue-dots-economy`, `kkb`) is live, and Blue Dots is the pilot. This is a DPG refactor for accuracy, not a migration that must keep the old behaviour. So the dialogue-act contract becomes **the only** NLU contract, and `intent` mode is deleted with no compatibility path. This supersedes the opt-in framing of §2, §5, §7.1 and §14. Where those sections say "in `dialogue_act` mode", read "always".
+
+**Removed:**
+- **Config:** the `preprocessing.nlu_processor.mode` key and the old keys `intents`, `entities`, `domain_instruction`, `confidence_threshold`, `sentiment_classes`.
+- **Workflow:** subagent `valid_intents`, `agent_workflow.global_intents`, and the workflow-loader rules built on them (NLU intent load, the valid-intent and global-intent checks, `nlu_intent_set`).
+- **Runtime:** `NLUProcessor` (`preprocessing/nlu_processor.py`) and its tests. The orchestrator's intent-mode branches on both paths: the legacy entity-write loop, the `signal_intents` → Signal block, and the "build `TurnToolCache` late" path. The cache is always built after bootstrap.
+- **Dead code:** the `active_risks` → `assemble_constraints` branch, which NLU never populated. The turn-assembler semantic gate, which depended on `NLUProcessor` and was never wired.
+- **Domains:** `dev-kit/configs/kkb/` and `dev-kit/configs/blue-dots-economy/`, the kkb design docs, and every test fixture or default that points at them. Defaults and docs that named `kkb` as the reference domain now name `blue-dots`.
+- **Eval harness:** the intent-mode adapter and the `--mode` flag. The baseline comparison against the old method is run separately, outside this codebase. `gate()` and `--compare` stay, so any two report files can be compared.
+
+**Kept, now unconditional:**
+- `TurnUnderstander`, the frame and the strict-schema NLU call;
+- post-processing, `SlotWriter` and precedence;
+- `<caller_turn>`, `recent_turns` and `served_tool_results`;
+- the dedicated NLU provider (§9.1).
+- `NLUResult` stays as the routing contract (`intent` + `entities`).
+- The termination short-circuit and `signal_intents` as the signal-name → type map. `signals` lists the names NLU may emit, and `signal_intents` keeps mapping each to a Signal type.
+
+**Migrated:**
+- **User-state model (`conversation.user_state_model`).** It is a per-turn mental-state classification, not a stored fact, so it is not replaced by `<known_facts>` / `<known_profile>`. When it is enabled:
+  - the static system prompt gains the state definitions (ids, signals, first guidance line);
+  - the frame gains `previous_state: <id>`;
+  - the strict output schema gains `user_state: {id: enum(state ids), confidence: number}`.
+
+  `TurnUnderstanding.nlu_result.user_state` is filled from it. The existing `resolve_user_state`, persistence and guidance injection are unchanged, including the sticky fallback below `user_state_confidence_threshold`. On a fallback NLU result, `user_state` is None, which already keeps the previous state.
+- **Language switch.** It becomes a derived intent:
+  - an `act_intents` row `{acts: [request_change], topic: language, intent: language_switch_request}`;
+  - plus a `language_preference` slot (enum of `language_normalisation.supported_languages`).
+
+  The orchestrator's existing language-switch handling runs on the derived intent before routing, as before, on both paths. `language_switch_request` is framework-handled, so the §7.3 rule "an `act_intents` intent must be used by a routing rule" exempts it. Blue Dots declares the topic, slot and row.
+
+**Dev-kit.**
+- All intent/entity field rules, mirror fields, phase-prompt instructions, tools, renderer hooks and cross-block checks are removed.
+- The schema mirrors keep validating the dialogue-act blocks.
+- The wizard does **not** yet author `slots` / `act_intents` / `termination_gate` / `pending`. That is a follow-up, so until then a wizard-generated project has no working NLU section and must be completed by hand.
+
+**Startup.** A config that still carries any removed key (`mode`, `intents`, `entities`, `domain_instruction`, `confidence_threshold`, `sentiment_classes`, `valid_intents`, `global_intents`) fails schema validation, as `extra="forbid"` already does.
