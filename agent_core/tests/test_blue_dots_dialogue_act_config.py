@@ -120,3 +120,29 @@ def test_blue_dots_journey_routes_end_to_end():
     assert (state["trade"], state["location"], state["name"], state["consent_response"]) == (
         "Welder", "Bengaluru", "Arun", "granted")
 
+
+
+def _understand_once(step, state, result):
+    from src.understanding.dialogue_act_nlu import DialogueActNLUBase
+    from src.understanding.understander import TurnContext, TurnUnderstander
+
+    class _One(DialogueActNLUBase):
+        def classify(self, user_message):
+            return result, None, 1
+
+    cfg, wf = _load("dialogue_act")
+    und = TurnUnderstander(DialogueActConfig.from_config(cfg), wf, _One())
+    return und.understand(TurnContext(subagent_id=step, state=dict(state), session=dict(state),
+                                      segments=["x"], recent=[]))
+
+
+def test_age_given_with_consent_is_accepted():
+    """F4: 'हाँ, मेरी उम्र 25 है' while consent is pending keeps both slots."""
+    from src.understanding.models import DialogueActResult
+    u = _understand_once("opening", {}, DialogueActResult(
+        acts=("affirm", "provide_info"), relation="answers_pending",
+        slots={"consent_response": "granted", "age": 25}))
+    assert u.pending_id == "consent"
+    assert u.accepted_slots == {"consent_response": "granted", "age": 25}
+    assert {w.key: w.value for w in u.writes if w.key in ("consent_response", "age")} == {
+        "consent_response": "granted", "age": 25}

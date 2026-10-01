@@ -833,7 +833,8 @@ preprocessing:
       consent_response: { type: enum, values: [granted, declined], accept_when_pending: [consent],
                           description: "details save करने की अनुमति का जवाब" }
       # 5–99, not adult-only: the u18_blocked route must see under-age answers.
-      age:              { type: int, min: 5, max: 99, accept_when_pending: [age],
+      # Also accepted while consent is pending: callers often give age in the same breath.
+      age:              { type: int, min: 5, max: 99, accept_when_pending: [consent, age],
                           description: "उम्र, digits में", examples: ["बाईस → 22", "सोलह → 16"] }
       trade:            { type: string, normalise: title, description: "काम/ट्रेड, English में (Welder, Plumber)" }
       location:         { type: string, normalise: title, description: "शहर, canonical English (Bengaluru, Hubli)" }
