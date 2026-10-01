@@ -113,11 +113,12 @@ class SessionBootstrap:
 
     def _finish(self, start: float, outcomes: dict) -> BootstrapReport:
         latency = int((time.monotonic() - start) * 1000)
-        mark = "✓" if all(o == "ok" for o in outcomes.values()) else "✗"
+        all_ok = all(o == "ok" for o in outcomes.values())
+        mark = "✓" if all_ok else "✗"
         logger.info("  [STEP 1b] Session bootstrap  %s  tools=%s  outcomes=%s  latency=%dms",
                     mark, [s.tool for s in self._steps], outcomes, latency)
         logger.info("session_bootstrap.turn", extra={
-            "operation": "session_bootstrap.run", "status": "success", "latency_ms": latency})
+            "operation": "session_bootstrap.run", "status": "success" if all_ok else "failure", "latency_ms": latency})
         return BootstrapReport(outcomes=outcomes, latency_ms=latency)
 
     def run_sync(self, bundle, *, execute: Callable[[ToolCall], ToolResult],

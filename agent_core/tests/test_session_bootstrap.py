@@ -95,6 +95,23 @@ def test_step_line_mark_reflects_outcomes(caplog):
     assert "✓" in line and "✗" not in line
 
 
+def test_turn_log_status_reflects_outcomes(caplog):
+    """Test that session_bootstrap.turn log status is 'success' only when all outcomes are 'ok'."""
+    boot = SessionBootstrap.from_config(CONFIG, POL)
+    bad = ToolResult(tool_use_id="x", tool_name="fetch_profile", result={}, success=False, error="boom")
+    # Test failure case
+    with caplog.at_level("INFO", logger="src.session_bootstrap"):
+        boot.run_sync(bundle(), **sync_deps(Rec(), result=bad))
+    record = next(r for r in caplog.records if r.getMessage() == "session_bootstrap.turn")
+    assert record.status == "failure"
+    caplog.clear()
+    # Test success case
+    with caplog.at_level("INFO", logger="src.session_bootstrap"):
+        boot.run_sync(bundle(), **sync_deps(Rec()))
+    record = next(r for r in caplog.records if r.getMessage() == "session_bootstrap.turn")
+    assert record.status == "success"
+
+
 def test_consent_skip():
     cfg = {**CONFIG, "session_bootstrap": {"steps": [{"type": "tool", "tool": "fetch_profile", "requires_consent": True}]}}
     boot, rec, b = SessionBootstrap.from_config(cfg, POL), Rec(), bundle()
