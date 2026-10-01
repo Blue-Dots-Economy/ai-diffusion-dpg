@@ -110,3 +110,41 @@ def test_gate_fails_on_gated_tag_slot_regression_only():
     worse["tags"]["age"]["slot_accuracy"] = 0.5
     fails = gate(base, worse)
     assert len(fails) == 1 and "age" in fails[0] and "slot_accuracy" in fails[0]
+
+
+def test_score_reports_apply_false_positives_per_tag():
+    """F5: apply_now predicted where the label is not apply_now, counted per tag."""
+    ack = EvalCase.from_dict({**CASE, "id": "a", "expect": {"intent": "any_input", "terminate": False}})
+    sub = EvalCase.from_dict({**CASE, "id": "s", "tags": ["submit"], "expect": {"intent": "apply_now"}})
+    rep = score([ack, sub], {"a": [_p("apply_now"), _p("any_input")], "s": [_p("apply_now")]},
+                mode="dialogue_act")
+    assert rep["tags"]["acknowledge"]["apply_fp"] == 1
+    assert rep["tags"]["submit"]["apply_fp"] == 0
+
+
+def test_gate_fails_on_apply_false_positive_on_acknowledge():
+    base = {"fields": {"intent": {"accuracy": 0.8}, "slots": {"accuracy": 0.9}},
+            "tags": {"acknowledge": {"termination_fp": 0, "apply_fp": 0}}, "latency_ms": {"p50": 1000}}
+    worse = json.loads(json.dumps(base))
+    worse["tags"]["acknowledge"]["apply_fp"] = 1
+    fails = gate(base, worse)
+    assert fails == ["apply_now false positives on acknowledge cases"]
+    assert gate(base, base) == []
+
+
+def test_synthetic_cases_unique_ids_and_ten_per_tag():
+    """F5: the shipped case set has unique ids and >= 10 cases per tag."""
+    from collections import Counter
+    from pathlib import Path
+    cases = load_cases(Path(__file__).resolve().parents[2] / "eval" / "nlu" / "cases" / "synthetic.jsonl")
+    ids = Counter(c.id for c in cases)
+    assert [i for i, n in ids.items() if n > 1] == []
+    tags = Counter(t for c in cases for t in c.tags)
+    assert tags and all(n >= 10 for n in tags.values()), tags
+    ack_submit = [c for c in cases if "acknowledge" in c.tags and c.step == "apply_confirm"
+                  and c.state.get("applications_submitted") == 0]
+    assert len(ack_submit) >= 10
+    assert all(c.expect["intent"] == "any_input" and c.expect.get("terminate") is False for c in ack_submit)
+    by_text = {c.caller_now[-1]: c for c in cases if c.step == "apply_confirm"}
+    assert by_text["रुको मत भेजो"].expect["intent"] == "decline"
+    assert by_text["रुको मत भेजो"].expect["acts"] == ["deny"]

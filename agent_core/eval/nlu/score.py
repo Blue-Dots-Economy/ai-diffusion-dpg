@@ -9,6 +9,7 @@ from eval.nlu.adapters import Prediction
 from eval.nlu.cases import EvalCase
 
 _GATED_TAGS = ("consent", "age", "termination")
+_APPLY_INTENT = "apply_now"
 
 
 def _canon(v) -> str:
@@ -31,7 +32,7 @@ def score(cases: list[EvalCase], preds: dict[str, list[Prediction]], mode: str) 
         mode: ``intent`` or ``dialogue_act`` (acts/relation/topic scored only for the latter).
 
     Returns:
-        Report dict: fields, tags, confusion, termination_false_positives,
+        Report dict: fields, tags (incl. per-tag termination_fp and apply_fp), confusion, termination_false_positives,
         latency_ms {p50, p95}, fallback_rate, agreement, precision_by_act_pending.
     """
     fields: dict[str, list[int]] = defaultdict(list)
@@ -75,15 +76,19 @@ def score(cases: list[EvalCase], preds: dict[str, list[Prediction]], mode: str) 
                 # correct among predictions carrying this act under this pending.
                 for act in p.acts:
                     prec[f"{act}|{p.pending or 'none'}"].append(ok)
+            # An application the caller did not ask for (e.g. apply on a thank-you).
+            apply_fp = int(p.intent == _APPLY_INTENT and exp["intent"] != _APPLY_INTENT)
             for t in case.tags:
                 tags[t]["intent"].append(ok)
                 tags[t]["fp"].append(fp)
+                tags[t]["apply_fp"].append(apply_fp)
     return {
         "mode": mode, "cases": len(cases), "runs": total,
         "fields": {k: {"accuracy": round(sum(v) / len(v), 4), "n": len(v)} for k, v in fields.items()},
         "tags": {t: {"intent_accuracy": round(sum(d["intent"]) / len(d["intent"]), 4) if d["intent"] else None,
                      "slot_accuracy": round(sum(d["slot"]) / len(d["slot"]), 4) if d["slot"] else None,
-                     "termination_fp": sum(d["fp"]), "n": len(d["intent"])} for t, d in tags.items()},
+                     "termination_fp": sum(d["fp"]), "apply_fp": sum(d["apply_fp"]),
+                     "n": len(d["intent"])} for t, d in tags.items()},
         "confusion": {k: dict(v) for k, v in confusion.items()},
         "termination_false_positives": term_fp,
         "latency_ms": {"p50": int(median(latencies)) if latencies else 0, "p95": _pct(latencies, 0.95)},
@@ -120,6 +125,8 @@ def gate(intent_report: dict, da_report: dict) -> list[str]:
                 fails.append(f"tag '{tag}' {fld} regressed: {new} < {old}")
     if (da_report.get("tags", {}).get("acknowledge") or {}).get("termination_fp", 0) > 0:
         fails.append("termination false positives on acknowledge cases")
+    if (da_report.get("tags", {}).get("acknowledge") or {}).get("apply_fp", 0) > 0:
+        fails.append("apply_now false positives on acknowledge cases")
     if da_report["latency_ms"]["p50"] > intent_report["latency_ms"]["p50"] + 50:
         fails.append(f"p50 {da_report['latency_ms']['p50']} ms > intent-mode p50 + 50 ms")
     return fails
