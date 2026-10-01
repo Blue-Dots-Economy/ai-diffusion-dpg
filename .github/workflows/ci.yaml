@@ -62,13 +62,24 @@ jobs:
       # every run rather than installing a pinned set. That is the existing
       # convention, not a choice made here — but it does mean a CI failure can
       # come from an upstream release rather than from this repo's code.
+      # `--all-extras` rather than `--extra dev`: the packages do not declare
+      # test dependencies the same way. Eleven use `[project.optional-dependencies]
+      # dev`, but reach_layer/base uses a PEP 735 `[dependency-groups] dev`, which
+      # has no extra called "dev" at all — `--extra dev` fails there with
+      # "Extra `dev` is not defined in the optional-dependencies table". uv
+      # includes the default dependency-group automatically, so --all-extras
+      # covers both shapes.
       - name: Install ${{ matrix.pkg }}
         working-directory: ${{ matrix.pkg }}
-        run: uv sync --extra dev
+        run: uv sync --all-extras
 
+      # `--with pytest-cov`: eleven packages declare pytest-cov, reach_layer/base
+      # and reach_layer/bridge do not, and there pytest rejects --cov outright
+      # ("unrecognized arguments: --cov="). Injecting it at run time keeps every
+      # leg producing coverage without editing thirteen pyproject.toml files.
       - name: Test with coverage
         working-directory: ${{ matrix.pkg }}
-        run: uv run pytest --cov=${{ matrix.cov }} --cov-report=xml:coverage.xml --cov-report=term-missing
+        run: uv run --with pytest-cov pytest --cov=${{ matrix.cov }} --cov-report=xml:coverage.xml --cov-report=term-missing
 
       # always(): a failing suite still has partial coverage worth reporting to
       # SonarCloud, and the `test` job is what gates on the failure itself.
