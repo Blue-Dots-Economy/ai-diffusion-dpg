@@ -1979,10 +1979,18 @@ agent_workflow:
               operator: not_eq
               value: ""
           next_subagent_id: job_match
-        # The caller HAS a live profile: entry 1 makes the offer, entry 2 is
-        # their answer, and either answer leads to the search. Accepting uses
-        # the stored values; declining means their own words are already in
+        # The caller HAS a live profile: entry 1 makes the offer, and their
+        # answer leads straight to the search. Accepting uses the stored
+        # values; declining means their own words are already in
         # `trade`/`location`, which job_match prefers.
+        #
+        # `gt 0`, NOT `gt 1`: routing reads the count BEFORE this turn's
+        # increment, so on the answer turn it is still 1 (the offer). With
+        # `gt 1` the accept turn stayed here — a phase with no job tool,
+        # told to say nothing — and the model filled the silence by claiming
+        # jobs were found; the search only ran a turn later. Entry from
+        # `opening` is routed by opening's rules, so this never skips the
+        # offer.
         - intent: "*"
           conditions:
             - field: profile_item_id
@@ -1990,7 +1998,7 @@ agent_workflow:
               value: ""
             - field: subagent_entry_count.profile_resolve
               operator: gt
-              value: 1
+              value: 0
           next_subagent_id: job_match
         - intent: apply_now
           next_subagent_id: job_match
