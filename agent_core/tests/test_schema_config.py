@@ -703,3 +703,12 @@ def test_memory_tool_field_collision_rejected():
         "selected_job_item_id": {"scope": "session", "description": "x"}}}
     with pytest.raises(ValueError, match="collides with memory_tool field"):
         MergedConfig.validate_full(cfg)
+
+
+def test_framework_handled_intent_needs_no_routing_rule():
+    cfg = copy.deepcopy(_da_base())
+    nlu = cfg["preprocessing"]["nlu_processor"]
+    nlu["topics"].append("language")
+    nlu["act_intents"].append(
+        {"acts": ["request_change"], "topic": "language", "intent": "language_switch_request"})
+    MergedConfig.validate_full(cfg)

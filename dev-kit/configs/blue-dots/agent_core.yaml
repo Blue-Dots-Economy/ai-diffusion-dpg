@@ -827,7 +827,7 @@ preprocessing:
     # NLU dialogue-acts spec. Authored but INACTIVE: switch to dialogue_act in
     # its own commit once the replay harness gate (§11.5) passes.
     mode: intent
-    topics: [job_details, salary, location, search, profile, process, identity, other]
+    topics: [job_details, salary, location, search, profile, process, identity, language, other]
     signals: [pay_disappointment, distance_issue, counsellor_request]
     slots:
       consent_response: { type: enum, values: [granted, declined], accept_when_pending: [consent],
@@ -845,6 +845,7 @@ preprocessing:
       qualification:    { type: string, description: "School / College / ITI / Certification" }
       job_nature:       { type: enum, values: [Internship, Apprenticeship, Full-time, Flexible] }
       monthly_in_hand:  { type: int, min: 0, max: 1000000 }
+      language_preference: { type: enum, values: [english, hindi], description: "जिस भाषा में बात करनी है" }
     known_fields: [consent_response, age, trade, location, name, stored_trade, stored_location]
     examples:
       - { pending: closing_offer, caller: "ठीक है धन्यवाद", out: { acts: [acknowledge], relation: answers_pending } }
@@ -858,12 +859,15 @@ preprocessing:
       - { pending: select_job, caller: "फ्लिपकार्ट वाला", out: { acts: [select], relation: answers_pending, reference: { option: 1, spoken: "फ्लिपकार्ट वाला" } } }
       - { pending: age, caller: "सैलरी कितनी है", out: { acts: [ask], relation: new_topic, topic: salary } }
       - { pending: select_job, caller: "बाद में बात करते हैं", out: { acts: [close], relation: new_topic } }
+      - { pending: select_job, caller: "इंग्लिश में बात करो", out: { acts: [request_change], relation: new_topic, topic: language, slots: { language_preference: english } } }
+      - { pending: age, caller: "हिंदी में बोलिए", out: { acts: [request_change], relation: new_topic, topic: language, slots: { language_preference: hindi } } }
     act_intents:
       - { acts: [deny], pending: consent, relation: answers_pending, intent: decline }
       - { acts: [select], pending: select_job, intent: job_pick }
       - { acts: [affirm], pending: submit_confirm, relation: answers_pending, intent: apply_now }
       - { acts: [deny], pending: submit_confirm, relation: answers_pending, intent: decline }
       - { acts: [request_change], topic: search, intent: explore_more }
+      - { acts: [request_change], topic: language, intent: language_switch_request }
       - { acts: [close], intent: termination_intent, gated: true }
     termination_gate:
       any_of:

@@ -486,6 +486,9 @@ class LanguageNormalisationConfig(BaseModel):
     code_switching: bool = True
 
 
+# Intents the orchestrator acts on itself (not via a workflow routing rule).
+_FRAMEWORK_HANDLED_INTENTS = frozenset({"language_switch_request"})
+
 _DIALOGUE_ACTS: tuple[str, ...] = (
     "affirm", "deny", "acknowledge", "provide_info", "correct", "select",
     "ask", "request_change", "repeat", "hold", "close", "other",
@@ -1074,7 +1077,7 @@ class MergedConfig(BaseModel):
 
         routed = {r.intent for s in wf.subagents for r in s.routing} | {r.intent for r in wf.global_routing}
         for i, row in enumerate(nlu.act_intents):
-            if row.intent not in routed:
+            if row.intent not in routed and row.intent not in _FRAMEWORK_HANDLED_INTENTS:
                 raise ValueError(
                     f"preprocessing.nlu_processor.act_intents[{i}]: intent '{row.intent}' "
                     f"is not used by any routing rule")

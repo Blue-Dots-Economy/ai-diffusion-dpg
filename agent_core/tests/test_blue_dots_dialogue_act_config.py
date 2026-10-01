@@ -162,3 +162,20 @@ def test_termination_rule_follows_off_track_and_comments_say_so():
     raw = (BLUE_DOTS / "agent_core.yaml").read_text(encoding="utf-8")
     assert "This must be the FIRST\n" not in raw
     assert raw.count("first rule after off_track") == 5
+
+
+def test_language_switch_derived_from_request_change_language():
+    from src.understanding.models import DialogueActResult
+    u = _understand_once("job_match", {}, DialogueActResult(
+        acts=("request_change",), relation="new_topic", topic="language",
+        slots={"language_preference": "english"}))
+    assert u.nlu_result.intent == "language_switch_request"
+    assert u.nlu_result.entities["language_preference"] == "english"
+
+
+def test_language_switch_unsupported_value_is_rejected():
+    from src.understanding.models import DialogueActResult
+    u = _understand_once("job_match", {}, DialogueActResult(
+        acts=("request_change",), relation="new_topic", topic="language",
+        slots={"language_preference": "tamil"}))
+    assert "language_preference" not in u.nlu_result.entities

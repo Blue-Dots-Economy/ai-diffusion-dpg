@@ -129,3 +129,29 @@ async def test_interrupted_turn_before_fold_records_user_message_as_caller():
     await record.persist_task
     by_key = {c.args[3]: c.args[4] for c in agent._async_memory.write.await_args_list}
     assert by_key[RECENT_TURNS_KEY][-1] == {"caller": "पुणे", "bot": "कौन सा शहर?", "interrupted": True}
+
+
+def _lang_understanding(value):
+    return TurnUnderstanding(
+        nlu_result=NLUResult(intent="language_switch_request", entities={"language_preference": value},
+                             sentiment="neutral", confidence=1.0),
+        dialogue=DialogueActResult(acts=("request_change",), relation="new_topic", topic="language"),
+        pending_id=None, writes=[], signals=[])
+
+
+async def test_language_switch_derived_intent_sets_session_language():
+    agent = _agent(_lang_understanding("hindi"))
+    agent._config["preprocessing"]["language_normalisation"]["supported_languages"] = ["english", "hindi"]
+    await _collect_events(agent, _make_turn_input())
+    # bundle.session["language_preference"] is mirrored into the turn language (default is english)
+    kwargs = agent._manager_agent.build_system_prompt.call_args.kwargs
+    assert kwargs["detected_language"] == "hindi"
+
+
+async def test_language_switch_unsupported_language_yields_message():
+    agent = _agent(_lang_understanding("tamil"))
+    agent._config["preprocessing"]["language_normalisation"]["supported_languages"] = ["english", "hindi"]
+    events = await _collect_events(agent, _make_turn_input())
+    texts = [getattr(e, "text", "") for e in events]
+    assert any("english, hindi" in t for t in texts)
+    agent._manager_agent.build_system_prompt.assert_not_called()
