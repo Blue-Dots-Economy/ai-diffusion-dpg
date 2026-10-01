@@ -261,3 +261,21 @@ def test_invalidated_data_stays_a_grounding_source_but_is_not_served():
     assert cache.render_known_facts() == ""
     grounding = cache.stored_results_by_tool()["fetch_profile"]
     assert any("id-1" in s for s in grounding) and any("id-2" in s for s in grounding)
+
+
+def test_after_call_origin_bootstrap_and_returns_entry():
+    cache = TurnToolCache(POL, [], {}, clock())
+    entry = cache.after_call(tc("fetch_profile"), live("fetch_profile", {"items": []}), origin="bootstrap")
+    assert entry is not None
+    assert entry["origin"] == "bootstrap" and entry["tool"] == "fetch_profile"
+    assert entry["data"] == {"items": []} and entry["scope"] == "user"
+    [put] = cache.drain_batch()["puts"]
+    assert put["origin"] == "bootstrap"
+
+
+def test_after_call_default_origin_turn_and_none_when_not_stored():
+    cache = TurnToolCache(POL, [], {}, clock())
+    assert cache.after_call(tc("fetch_profile"), live("fetch_profile", {}))["origin"] == "turn"
+    assert cache.after_call(tc("fetch_profile"), live("fetch_profile", {}, success=False)) is None
+    assert cache.after_call(tc("uncached"), live("uncached", {})) is None
+    assert cache.after_call(tc("save_profile"), live("save_profile", {})) is None

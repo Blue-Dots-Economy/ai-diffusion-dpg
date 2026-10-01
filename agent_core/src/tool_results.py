@@ -218,31 +218,36 @@ class TurnToolCache:
         return replace(tool_call, input_params={
             k: v for k, v in tool_call.input_params.items() if k != FORCE_REFRESH})
 
-    def after_call(self, tool_call: ToolCall, result: ToolResult) -> None:
-        """Record a live call: invalidate what a write affects, store a cacheable result."""
+    def after_call(self, tool_call: ToolCall, result: ToolResult, origin: str = "turn") -> dict | None:
+        """Record a live call: invalidate what a write affects, store a cacheable result.
+
+        Returns the stored entry dict (tool, args_hash, data, fetched_at, expires_at, origin, scope),
+        or None when nothing was stored.
+        """
         for target in self._p.invalidates.get(tool_call.tool_name, ()):
             self._invalidate(target)
         pol = self._p.cache.get(tool_call.tool_name)
         if pol is None or not result.success:
-            return
+            return None
         if not getattr(result, "projected", False):
             _log("reject_unprojected", tool_call.tool_name, pol.scope)
-            return
+            return None
         try:
             data: Any = json.loads(result.result_text)
         except (TypeError, ValueError):
             _log("reject_invalid", tool_call.tool_name, pol.scope)
-            return
+            return None
         # keep applies only to dict payloads; other JSON shapes are stored whole.
         if pol.keep and isinstance(data, dict):
             data = {k: data[k] for k in pol.keep if k in data}
         h, t = self._hash(tool_call), self._now()
         self._entries[(tool_call.tool_name, h)] = {
             "tool": tool_call.tool_name, "args_hash": h, "data": data, "fetched_at": t,
-            "expires_at": t + pol.ttl_seconds, "origin": "turn", "scope": pol.scope}
+            "expires_at": t + pol.ttl_seconds, "origin": origin, "scope": pol.scope}
         self._puts.append({"scope": pol.scope, "tool": tool_call.tool_name, "args_hash": h,
-                           "data": data, "ttl_seconds": pol.ttl_seconds, "origin": "turn"})
+                           "data": data, "ttl_seconds": pol.ttl_seconds, "origin": origin})
         _log("store", tool_call.tool_name, pol.scope, ttl_s=pol.ttl_seconds)
+        return self._entries[(tool_call.tool_name, h)]
 
     def _invalidate(self, tool: str) -> None:
         for (t, _), e in self._entries.items():
