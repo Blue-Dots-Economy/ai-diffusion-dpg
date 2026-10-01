@@ -287,6 +287,8 @@ class NLUProcessorSection(BaseModel):
     model: str = ""   # empty allowed — helper inherits agent.primary_model at runtime
     user_state_confidence_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
     signal_intents: dict[str, str] = Field(default_factory=dict)
+    log_raw_response: bool = False   # opt-in raw NLU response log; off by default (PII)
+    log_raw_response_max_chars: int = Field(default=2000, ge=0)
     timeout_ms: int = Field(default=2500, gt=0)
     retry_attempts: int = Field(default=2, ge=1)
     history_turns: int = Field(default=2, ge=0)

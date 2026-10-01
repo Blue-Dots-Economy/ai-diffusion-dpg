@@ -429,6 +429,13 @@ class NLUProcessorConfig(BaseModel):
         description="Below this confidence, user-state classification stays sticky (previous state retained). Conversational agents only.",
     )
     history_turns: int = Field(default=2)
+    log_raw_response: bool = Field(
+        default=False,
+        description="Opt-in INFO log of the parsed NLU response and composed user message. Off by default (may carry PII).",
+    )
+    log_raw_response_max_chars: int = Field(
+        default=2000, ge=0, description="Truncation limit for the log_raw_response log line.",
+    )
     signal_intents: dict[str, str] = Field(
         default_factory=dict,
         description="Optional map of signal name → signal_type written to the ContextGraph Signal node, e.g. {pay_disappointment: objection}",

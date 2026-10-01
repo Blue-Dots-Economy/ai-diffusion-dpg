@@ -639,3 +639,30 @@ class TestRemovedIntentModeKeys:
         from dev_kit.schemas.dpg.agent_core import NLUProcessorDpg
         with pytest.raises(ValidationError, match="mode"):
             NLUProcessorDpg(mode="intent")
+
+
+class TestLogRawResponseKeys:
+    """Runtime NLUProcessorConfig accepts log_raw_response(_max_chars); every dev-kit mirror must too."""
+
+    @staticmethod
+    def _models():
+        from dev_kit.schema import NLUProcessorConfig
+        from dev_kit.schemas.domain.agent_core import NLUProcessorSection
+        from dev_kit.schemas.dpg.agent_core import NLUProcessorDpg
+        return [NLUProcessorConfig, NLUProcessorSection, NLUProcessorDpg]
+
+    @pytest.mark.parametrize("idx", [0, 1, 2], ids=["flat", "domain", "dpg"])
+    def test_accepts_both_keys(self, idx):
+        model = self._models()[idx]
+        m = model(log_raw_response=True, log_raw_response_max_chars=500)
+        assert m.log_raw_response is True
+        assert m.log_raw_response_max_chars == 500
+        d = model()
+        assert d.log_raw_response is False
+        assert d.log_raw_response_max_chars == 2000
+
+    @pytest.mark.parametrize("idx", [0, 1, 2], ids=["flat", "domain", "dpg"])
+    def test_rejects_negative_max_chars(self, idx):
+        model = self._models()[idx]
+        with pytest.raises(ValidationError, match="log_raw_response_max_chars"):
+            model(log_raw_response_max_chars=-1)

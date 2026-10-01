@@ -151,6 +151,8 @@ class NLUProcessorDpg(BaseModel):
     timeout_ms: int = Field(default=2500, gt=0)
     retry_attempts: int = Field(default=2, ge=1)
     history_turns: int = Field(default=2, ge=0)
+    log_raw_response: bool = False
+    log_raw_response_max_chars: int = Field(default=2000, ge=0)
     off_track: OffTrackDpg = Field(default_factory=OffTrackDpg)
 
 
