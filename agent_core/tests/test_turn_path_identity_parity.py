@@ -554,3 +554,68 @@ async def test_both_paths_apply_identical_understanding():
     assert sync_prompt == stream_prompt != ""
     sync_agent._nlu_processor.process.assert_not_called()
     stream_agent._nlu_processor.process.assert_not_called()
+
+
+# ── F3: the last-served tool entry is persisted at end of turn on both paths ──
+
+from src.models import ContextBundle  # noqa: E402
+from src.tool_results import TurnToolCache  # noqa: E402
+
+_SERVED_KEY = "served_tool_results"
+
+
+def _served_writes(calls):
+    return [c.args[4] for c in calls if c.args[2] == "session" and c.args[3] == _SERVED_KEY]
+
+
+@pytest.mark.asyncio
+async def test_served_map_persisted_on_both_paths(monkeypatch):
+    """Existing map merged with this turn's served entries, read into TurnContext, written once."""
+    monkeypatch.setattr(TurnToolCache, "served", lambda self: {"fetch_jobs": "hb"})
+    prior = {"fetch_profile": "hp", "fetch_jobs": "ha"}
+    expected = {"fetch_profile": "hp", "fetch_jobs": "hb"}
+
+    sync_agent = _da(_make_agent(session_data={"current_subagent_id": "market_truth",
+                                               "opening_phrase_emitted": True, _SERVED_KEY: dict(prior)}))
+    sync_agent.process_turn(_turn_input("Hello"))
+    assert sync_agent._understander.understand.call_args.args[0].served == prior
+    assert _served_writes(sync_agent._memory.write.call_args_list) == [expected]
+
+    stream_agent = _da(_make_agent_core())
+    stream_agent._async_memory.context_bundle.return_value = ContextBundle(
+        session={"current_subagent_id": "start", _SERVED_KEY: dict(prior)}, profile={})
+
+    async def mock_stream(*args, **kwargs):
+        yield "ok. "
+
+    stream_agent._llm.stream = mock_stream
+    await _collect_events(stream_agent, _make_turn_input(user_message="Hello"))
+    assert stream_agent._understander.understand.call_args.args[0].served == prior
+    assert _served_writes(stream_agent._async_memory.write.call_args_list) == [expected]
+
+
+@pytest.mark.asyncio
+async def test_served_map_not_written_when_unchanged_or_intent_mode(monkeypatch):
+    monkeypatch.setattr(TurnToolCache, "served", lambda self: {"fetch_jobs": "ha"})
+    prior = {"fetch_jobs": "ha"}
+    sync_agent = _da(_make_agent(session_data={"current_subagent_id": "market_truth",
+                                               "opening_phrase_emitted": True, _SERVED_KEY: dict(prior)}))
+    sync_agent.process_turn(_turn_input("Hello"))
+    assert _served_writes(sync_agent._memory.write.call_args_list) == []
+
+    stream_agent = _da(_make_agent_core())
+    stream_agent._async_memory.context_bundle.return_value = ContextBundle(
+        session={"current_subagent_id": "start", _SERVED_KEY: "corrupt"}, profile={})
+
+    async def mock_stream(*args, **kwargs):
+        yield "ok. "
+
+    stream_agent._llm.stream = mock_stream
+    await _collect_events(stream_agent, _make_turn_input(user_message="Hello"))
+    assert stream_agent._understander.understand.call_args.args[0].served == {}   # dict-guarded
+    assert _served_writes(stream_agent._async_memory.write.call_args_list) == [prior]
+
+    intent_agent = _make_agent(session_data={"current_subagent_id": "market_truth",
+                                             "opening_phrase_emitted": True})
+    intent_agent.process_turn(_turn_input("Hello"))
+    assert _served_writes(intent_agent._memory.write.call_args_list) == []

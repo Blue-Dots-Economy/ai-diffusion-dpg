@@ -180,3 +180,40 @@ def test_corrupt_nlu_extras_is_replaced_with_dict():
     u = und.understand(_ctx("job_match", session={"nlu_extras": "x"}))
     assert u.fallback_reason is None
     assert StateWrite("session", "nlu_extras", {"tool": "drill"}) in u.writes
+
+
+def test_select_prefers_last_served_entry_over_newest():
+    """F3: search A, search B, re-call A (cache hit) — the caller heard A, so option 1 is A's row."""
+    from src.tool_results import ToolResultPolicies, TurnToolCache
+    pol = ToolResultPolicies.from_config({"connectors": {"read": [
+        {"name": "fetch_jobs", "cache": {"scope": "session", "ttl_seconds": 600}}]}})
+    now = 1000.0
+    a = {"tool": "fetch_jobs", "args_hash": "ha", "data": [{"item_id": "a1", "role": "Welder", "company": "A"}],
+         "fetched_at": now - 60, "expires_at": now + 500, "origin": "turn", "scope": "session"}
+    b = dict(a, args_hash="hb", data=[{"item_id": "b1", "role": "Fitter", "company": "B"}], fetched_at=now - 10)
+    cache = TurnToolCache(pol, [a, b], {}, now=lambda: now)
+    und, nlu = _u(DialogueActResult(acts=("select",), relation="answers_pending", option=1,
+                                    slots={"consent": None, "age": None, "trade": None}))
+    ctx = TurnContext(subagent_id="job_match", state={}, session={}, segments=["pehla"], recent=[],
+                      tool_cache=cache, served={"fetch_jobs": "ha"})
+    u = und.understand(ctx)
+    assert u.resolved.id == "a1"
+    assert "1. Welder · A" in nlu.classify.call_args.args[0]
+
+
+def test_select_falls_back_to_latest_when_served_entry_gone():
+    cache = MagicMock()
+    cache.entry.return_value = None
+    cache.latest_entry.return_value = {"data": [{"item_id": "j9", "role": "Welder", "company": "X"}]}
+    und, _ = _u(DialogueActResult(acts=("select",), relation="answers_pending", option=1,
+                                  slots={"consent": None, "age": None, "trade": None}))
+    ctx = TurnContext(subagent_id="job_match", state={}, session={}, segments=["x"], recent=[],
+                      tool_cache=cache, served={"fetch_jobs": "gone"})
+    u = und.understand(ctx)
+    cache.entry.assert_called_once_with("fetch_jobs", "gone")
+    assert u.resolved.id == "j9"
+
+
+def test_static_tool_cache_entry_is_none():
+    from eval.nlu.offline import StaticToolCache
+    assert StaticToolCache({"fetch_jobs": [{"item_id": "j"}]}).entry("fetch_jobs", "h") is None

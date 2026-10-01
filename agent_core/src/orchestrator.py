@@ -83,6 +83,10 @@ from src.understanding.config import DialogueActConfig
 from src.understanding.history import RECENT_TURNS_KEY, append_recent_turn
 from src.understanding.precedence import nlu_owned_values
 from src.understanding.understander import TurnContext, TurnUnderstander, TurnUnderstanderBase
+
+# Session key: tool → args_hash of the stored result the caller last heard
+# (NLU dialogue-acts spec §5.2). dialogue_act mode only.
+SERVED_TOOL_RESULTS_KEY = "served_tool_results"
 from src.tool_results import ToolResultPolicies, TurnToolCache, augment_tool_definitions
 from src.remember import RememberTool
 from src.session_bootstrap import SessionBootstrap
@@ -577,9 +581,33 @@ class AgentCore(AgentCoreBase):
             TurnContext.
         """
         session = dict(bundle.session or {})
+        served = session.get(SERVED_TOOL_RESULTS_KEY)
         return TurnContext(subagent_id=subagent_id, state=self._routing_state(bundle), session=session,
                            segments=[s for s in segments if s], recent=list(session.get(RECENT_TURNS_KEY) or []),
-                           tool_cache=tool_cache)
+                           tool_cache=tool_cache, served=dict(served) if isinstance(served, dict) else {})
+
+    def _served_tool_results_update(self, bundle, tool_cache) -> dict | None:
+        """Merge this turn's last-served tool entries into the session map (spec §5.2).
+
+        dialogue_act mode only; intent mode never writes the key.
+
+        Args:
+            bundle: The turn's ContextBundle; ``bundle.session`` is updated
+                when the map changes.
+            tool_cache: This turn's TurnToolCache, or None.
+
+        Returns:
+            The merged map to persist, or None when unchanged (nothing to write).
+        """
+        if self._understander is None or tool_cache is None:
+            return None
+        stored = bundle.session.get(SERVED_TOOL_RESULTS_KEY)
+        merged = dict(stored) if isinstance(stored, dict) else {}
+        merged.update(tool_cache.served())
+        if merged == stored or (stored is None and not merged):
+            return None
+        bundle.session[SERVED_TOOL_RESULTS_KEY] = merged
+        return merged
 
     async def _apply_understanding_async(self, session_id: str, user_id: str, bundle,
                                          understanding, raw_text: str) -> None:
@@ -1503,6 +1531,9 @@ class AgentCore(AgentCoreBase):
             )
         finally:
             self._persist_tool_cache_sync(session_id, user_id, tool_cache)
+        _served = self._served_tool_results_update(bundle, tool_cache)
+        if _served is not None:
+            self._write_memory_sync(session_id, user_id, "session", SERVED_TOOL_RESULTS_KEY, _served)
 
         # Persist anything a connector's session_mapping lifted out of a
         # response. The sync path runs its tools inside Manager Agent, which
@@ -5065,6 +5096,10 @@ class AgentCore(AgentCoreBase):
                     {k: v for k, v in ex.items() if k != "delivered"} if isinstance(ex, dict) else ex
                     for ex in _capped
                 ]
+            _served = self._served_tool_results_update(bundle, tool_cache)
+            if _served is not None:
+                asyncio.create_task(self._async_memory.write(
+                    session_id, user_id, "session", SERVED_TOOL_RESULTS_KEY, _served))
             if _capped is not None:
                 bundle.session["recent_tool_exchanges"] = _capped
                 asyncio.create_task(

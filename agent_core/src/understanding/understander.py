@@ -50,6 +50,8 @@ class TurnContext:
         segments: This turn's utterances; earlier ones were interrupted.
         recent: ``recent_turns`` entries, oldest first.
         tool_cache: This turn's ``TurnToolCache``, or None.
+        served: Session ``served_tool_results`` (tool → args_hash of the
+            entry the caller last heard), preferred over the newest entry.
     """
 
     subagent_id: str
@@ -58,6 +60,17 @@ class TurnContext:
     segments: list[str]
     recent: list[dict] = field(default_factory=list)
     tool_cache: Any | None = None
+    served: dict = field(default_factory=dict)
+
+
+def _offered_entry(ctx: TurnContext, tool: str) -> dict | None:
+    """The entry on offer: the last-served one when still fresh, else the newest (spec §5.2)."""
+    h = ctx.served.get(tool) if isinstance(ctx.served, dict) else None
+    if isinstance(h, str) and h:
+        e = ctx.tool_cache.entry(tool, h)
+        if e is not None:
+            return e
+    return ctx.tool_cache.latest_entry(tool)
 
 
 class TurnUnderstanderBase(ABC):
@@ -124,7 +137,7 @@ class TurnUnderstander(TurnUnderstanderBase):
             pending = self._resolver.resolve(ctx.subagent_id, ctx.state)
             rows: list[dict] = []
             if pending is not None and pending.options_from is not None and ctx.tool_cache is not None:
-                rows = offered_rows(ctx.tool_cache.latest_entry(pending.options_from.tool))
+                rows = offered_rows(_offered_entry(ctx, pending.options_from.tool))
             known = [(label, ctx.state.get(key)) for label, key in self._cfg.known_state_keys()]
             recent = ctx.recent[-self._cfg.history_turns:] if self._cfg.history_turns > 0 else []
             message = self._frame.build(step=ctx.subagent_id, pending=pending, rows=rows, known=known,

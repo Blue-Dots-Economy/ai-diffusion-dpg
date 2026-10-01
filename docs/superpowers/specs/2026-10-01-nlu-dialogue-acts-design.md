@@ -141,7 +141,7 @@ bot: <last reply>
 ```
 
 - `pending`: the resolved pending question's id and its `expects` text (§7.2). When no candidate matches, it is `none`.
-- `offered`: present only when the pending question declares `options_from`. Rows come from the **latest** unexpired Spec A entry for that tool (highest `fetched_at`; a new search replaces the previous list), in stored order, with the configured display fields. Numbering starts at 1. It is capped at the number of rows the tool projection returns. The tool must have a `cache` policy (§7.3).
+- `offered`: present only when the pending question declares `options_from`. Rows come from the **last served** unexpired Spec A entry for that tool (the entry the caller last heard, by live store or cache hit, tracked in the `served_tool_results` session map), falling back to the highest `fetched_at` (a new search replaces the previous list). Rows keep stored order, with the configured display fields. Numbering starts at 1. It is capped at the number of rows the tool projection returns. The tool must have a `cache` policy (§7.3).
 - `known`: values for `known_fields` only, read from the same overlay as `<known_profile>` with §6.5 precedence. `known_fields` may name session fields written by `session_mapping` (e.g. `stored_trade`, `stored_location`), so NLU can understand a "हाँ" to "shall I use your saved details?". Values are rendered as stored.
 - `recent`: the last `history_turns` exchanges from `recent_turns` (§7.5). An interrupted bot reply is marked `[interrupted]`. When a reply exceeds the per-entry cap, the **tail** is kept, because the question is at the end.
 - `caller_now`: the utterance. When #411 folds carried-over segments into the turn, each segment is listed on its own line, and all but the last are marked `[interrupted]`. Today the fold joins them with spaces and no marker.
@@ -192,7 +192,7 @@ A slot with `accept_when_pending` is kept only if the resolved pending id is in 
 
 ### 6.3 Resolve the reference
 
-If `reference.option` is set and the pending question has `options_from`, the option number is mapped to the row's `id_field` (e.g. `item_id`) in the same stored entry that rendered `offered`. The result is `resolved: {option, id, label}`, or `unresolved: {option, reason}` when the option is out of range or the entry has expired. The resolved ID is written to the pending question's `resolves_to` state key (e.g. `selected_job_item_id`). It needs no extra grounding: it comes from a stored entry, and `ungrounded_params` already checks against `stored_results_by_tool()`.
+If `reference.option` is set and the pending question has `options_from`, the option number is mapped to the row's `id_field` (e.g. `item_id`) in the same stored entry that rendered `offered` — the last-served entry (`TurnToolCache.served()`, persisted at end of turn as `served_tool_results`), else the newest. The result is `resolved: {option, id, label}`, or `unresolved: {option, reason}` when the option is out of range or the entry has expired. The resolved ID is written to the pending question's `resolves_to` state key (e.g. `selected_job_item_id`). It needs no extra grounding: it comes from a stored entry, and `ungrounded_params` already checks against `stored_results_by_tool()`.
 
 **Dependency on Spec D:** the bot must present options in stored order. Today the job-match prompt re-ranks the first batch by salary before speaking, so spoken order and stored order can differ.
 

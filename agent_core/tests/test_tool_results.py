@@ -298,3 +298,33 @@ def test_latest_entry_sees_entry_stored_this_turn():
     cache.after_call(tc("fetch_jobs", {"query_text": "welder"}, tid="t1"),
                      live("fetch_jobs", [{"item_id": "j1"}]))
     assert cache.latest_entry("fetch_jobs")["data"] == [{"item_id": "j1"}]
+
+
+def test_served_tracks_cache_hit_and_live_store():
+    """NLU spec §5.2: the last-served entry per tool, on a hit or a live store (F3)."""
+    now = 10_000.0
+    sess = {"trade": "welder", "location": "pune"}
+    h_a = args_hash({"q": "a"}, {"trade": "welder", "location": "pune"})
+    cache = TurnToolCache(POL, [entry("fetch_jobs", [{"item_id": "A"}], h_a, fetched=now - 300, ttl=600,
+                                      scope="session")], sess, now=clock(now))
+    assert cache.served() == {}
+    cache.after_call(tc("fetch_jobs", {"q": "b"}), live("fetch_jobs", [{"item_id": "B"}]))
+    h_b = args_hash({"q": "b"}, {"trade": "welder", "location": "pune"})
+    assert cache.served() == {"fetch_jobs": h_b}
+    assert cache.lookup(tc("fetch_jobs", {"q": "a"})) is not None        # re-call of A's args: hit
+    assert cache.served() == {"fetch_jobs": h_a}
+    assert cache.entry("fetch_jobs", h_a)["data"] == [{"item_id": "A"}]
+    assert cache.latest_entry("fetch_jobs")["data"] == [{"item_id": "B"}]   # newest is still B
+    assert cache.entry("fetch_jobs", "nope") is None
+
+
+def test_served_ignores_miss_and_entry_respects_expiry():
+    now = 10_000.0
+    cache = TurnToolCache(POL, [entry("fetch_jobs", [1], "old", fetched=now - 700, ttl=600, scope="session")],
+                          {}, now=clock(now))
+    assert cache.lookup(tc("fetch_jobs", {"q": "z"})) is None
+    assert cache.served() == {}
+    assert cache.entry("fetch_jobs", "old") is None
+    served = cache.served()
+    served["x"] = "y"                                                   # a copy, not the internal map
+    assert cache.served() == {}

@@ -36,7 +36,7 @@ class OfflineGateway(ActionGatewayBase):
 
 
 class StaticToolCache:
-    """Minimal TurnToolCache stand-in: ``latest_entry`` over fixed rows per tool."""
+    """Minimal TurnToolCache stand-in: ``latest_entry`` over fixed rows per tool; ``entry`` is always None."""
 
     def __init__(self, rows_by_tool: dict[str, list[dict]]) -> None:
         self._rows = rows_by_tool
@@ -45,6 +45,10 @@ class StaticToolCache:
         """Return ``{"data": rows}`` for a tool with rows, else None."""
         rows = self._rows.get(tool)
         return {"data": list(rows)} if rows else None
+
+    def entry(self, tool: str, args_hash_value: str) -> dict | None:
+        """No served tracking offline: always None, so ``latest_entry`` applies."""
+        return None
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
