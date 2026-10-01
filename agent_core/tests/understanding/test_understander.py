@@ -217,3 +217,21 @@ def test_select_falls_back_to_latest_when_served_entry_gone():
 def test_static_tool_cache_entry_is_none():
     from eval.nlu.offline import StaticToolCache
     assert StaticToolCache({"fetch_jobs": [{"item_id": "j"}]}).entry("fetch_jobs", "h") is None
+
+
+def test_understanding_log_carries_no_slot_values_or_caller_text(caplog):
+    """M6: the nlu.understanding record is PII-free (keys and reasons only); no eval capture by default."""
+    import logging
+    caller = "मेरा नाम Ramesh Sharma, उम्र 150, ट्रेड plumbersecret"
+    und, _ = _u(DialogueActResult(acts=("provide_info",), relation="answers_other",
+                                  slots={"consent": "granted", "age": 150, "trade": "plumbersecret"}))
+    with caplog.at_level(logging.DEBUG, logger="src.understanding.understander"):
+        u = und.understand(_ctx("job_match", segments=(caller,)))
+    assert u.writes and u.rejected_slots                      # one written, some rejected
+    recs = [r for r in caplog.records if r.name == "src.understanding.understander"]
+    assert [r.getMessage() for r in recs] == ["nlu.understanding"]
+    skip = set(logging.LogRecord("", 0, "", 0, "", None, None).__dict__) | {"message", "asctime"}
+    blob = recs[0].getMessage() + repr({k: v for k, v in recs[0].__dict__.items() if k not in skip})
+    for secret in ("Ramesh", "plumbersecret", "Plumbersecret", "150", "granted", caller):
+        assert secret not in blob, secret
+    assert "trade" in blob                                    # keys are logged
