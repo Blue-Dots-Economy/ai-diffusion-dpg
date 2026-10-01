@@ -1,0 +1,142 @@
+name: CI
+# This repo had no CI: 205 test files across 13 uv packages, and none of them
+# ran on a pull request. That is also why SonarCloud could not be wired up the
+# way the other repos do it — their `sonar` job piggybacks on a CI job that has
+# already installed dependencies and produced coverage, and there was nothing
+# here to piggyback on.
+#
+# One matrix leg per package. `fail-fast: false` so one red suite does not mask
+# the state of the other twelve — with no CI history, the first runs are a
+# survey as much as a gate.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test / ${{ matrix.id }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # `id` exists because artifact names cannot contain "/", and five of
+          # these packages live under reach_layer/.
+          - { pkg: action_gateway,      id: action_gateway,      cov: src }
+          - { pkg: agent_core,          id: agent_core,          cov: src }
+          - { pkg: knowledge_engine,    id: knowledge_engine,    cov: src }
+          - { pkg: memory_layer,        id: memory_layer,        cov: src }
+          - { pkg: observability_layer, id: observability_layer, cov: src }
+          - { pkg: trust_layer,         id: trust_layer,         cov: src }
+          # Flat layouts — no src/ directory, so coverage targets the package.
+          - { pkg: dev-kit,             id: dev-kit,             cov: dev_kit }
+          - { pkg: reach_layer/base,    id: reach_layer-base,    cov: schema }
+          - { pkg: reach_layer/bridge,  id: reach_layer-bridge,  cov: src }
+          - { pkg: reach_layer/cli,     id: reach_layer-cli,     cov: src }
+          - { pkg: reach_layer/mcp,     id: reach_layer-mcp,     cov: src }
+          - { pkg: reach_layer/voice,   id: reach_layer-voice,   cov: src }
+          - { pkg: reach_layer/web,     id: reach_layer-web,     cov: src }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Python 3.13: eleven packages declare >=3.11 but dev-kit and
+      # reach_layer/bridge declare >=3.13, so 3.13 is the only version that
+      # satisfies the whole matrix.
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      # uv.lock is gitignored (.gitignore:35), so `uv sync` resolves fresh on
+      # every run rather than installing a pinned set. That is the existing
+      # convention, not a choice made here — but it does mean a CI failure can
+      # come from an upstream release rather than from this repo's code.
+      - name: Install ${{ matrix.pkg }}
+        working-directory: ${{ matrix.pkg }}
+        run: uv sync --extra dev
+
+      - name: Test with coverage
+        working-directory: ${{ matrix.pkg }}
+        run: uv run pytest --cov=${{ matrix.cov }} --cov-report=xml:coverage.xml --cov-report=term-missing
+
+      # always(): a failing suite still has partial coverage worth reporting to
+      # SonarCloud, and the `test` job is what gates on the failure itself.
+      - name: Upload coverage
+        if: always() && hashFiles(format('{0}/coverage.xml', matrix.pkg)) != ''
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: coverage-${{ matrix.id }}
+          path: ${{ matrix.pkg }}/coverage.xml
+          retention-days: 1
+
+  sonar:
+    needs: test
+    # always(): a red suite should still be analysed. The `test` job already
+    # reports the failure; suppressing the scan as well would leave the
+    # dashboard stale exactly when the code most needs looking at.
+    if: always()
+    runs-on: ubuntu-latest
+    # Job-level, not step-level: a step's own `env:` block is not in scope for
+    # its own `if:`, and the `secrets` context is unavailable in a step
+    # conditional.
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Shallow clones leave Sonar unable to attribute new code to commits.
+          fetch-depth: 0
+
+      # Each leg wrote <pkg>/coverage.xml; restore them to those same paths so
+      # sonar.python.coverage.reportPaths resolves.
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          pattern: coverage-*
+          path: /tmp/coverage
+
+      - name: Restore coverage reports to their package directories
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          found=0
+          for d in /tmp/coverage/coverage-*/; do
+            id="$(basename "$d")"; id="${id#coverage-}"
+            # reach_layer-voice -> reach_layer/voice; others map unchanged.
+            case "$id" in reach_layer-*) pkg="reach_layer/${id#reach_layer-}" ;; *) pkg="$id" ;; esac
+            if [ -f "${d}coverage.xml" ]; then
+              cp "${d}coverage.xml" "${pkg}/coverage.xml"
+              echo "restored ${pkg}/coverage.xml"; found=$((found+1))
+            fi
+          done
+          echo "restored ${found} coverage report(s)"
+
+      # Two guards, for two different failure modes:
+      #   `if:`               — no token at all. GitHub withholds repo secrets
+      #                         from fork and Dependabot pull_request runs, and
+      #                         SONAR_TOKEN is not configured on this repo yet,
+      #                         so an ungated scan would fail every run.
+      #   `continue-on-error` — token present but the scan fails (outage,
+      #                         expired token, quality gate). That must not
+      #                         redden CI; problems surface in the run log and
+      #                         in SonarCloud's own commit check.
+      - name: SonarCloud scan
+        if: env.SONAR_TOKEN != ''
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
+        continue-on-error: true
+
+      - name: Explain the skip
+        if: env.SONAR_TOKEN == ''
+        run: |
+          echo "::warning title=SonarCloud scan skipped::SONAR_TOKEN is not set on this repository, so the scan did not run. Add the secret and create the SonarCloud project (key Blue-Dots-Economy_ai-diffusion-dpg, org blue-dots-economy) with Automatic Analysis switched OFF — CI-based and automatic analysis cannot both run against one project."
