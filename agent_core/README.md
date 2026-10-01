@@ -66,8 +66,7 @@ agent_core/
 │   │   ├── metrics.py                   # provider-agnostic OTel instruments
 │   │   └── __init__.py                  # public exports + build_chat_provider() factory
 │   ├── preprocessing/
-│   │   ├── language_normalisation.py
-│   │   └── nlu_processor.py
+│   │   └── language_normalisation.py
 │   ├── http_clients/                    # Sync HTTP adapters
 │   │   ├── memory_layer.py
 │   │   ├── trust_layer.py               # fail-closed on any error
@@ -100,7 +99,6 @@ agent_core/
     ├── test_chat_provider_types.py
     ├── test_workflow_loader.py
     ├── test_tool_registry.py
-    ├── test_nlu_processor.py
     ├── test_language_normalisation.py
     ├── test_http_clients.py
     ├── test_memory_http_client.py

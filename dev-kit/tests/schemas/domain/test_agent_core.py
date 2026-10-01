@@ -652,6 +652,7 @@ class TestTurnAssemblerLifecycleMirror:
         {"interruption": {"on_new_input": "explode"}},
         {"fold": {"max_segments": -1}},
         {"carryover": {"enabled": True}},
+        {"semantic_gate": {"enabled": False}},
     ])
     def test_rejects_invalid(self, payload):
         with pytest.raises(ValidationError):

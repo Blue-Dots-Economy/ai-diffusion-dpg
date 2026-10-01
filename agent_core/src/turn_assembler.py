@@ -15,15 +15,12 @@ Design decisions NOT in the original spec (documented here for traceability):
    carries this metadata so TurnAssembler can construct TurnInput without a second
    HTTP call. First segment's metadata is cached on the Session for subsequent segments.
 
-2. context_bundle() on first segment: The semantic completeness gate needs NLU context
-   (current_question, current_subagent_id) which comes from Memory Layer session state.
-   We call async_memory.context_bundle() once on the first segment and cache it on
-   the Turn. This is a lightweight read that would happen anyway at stream_turn()
-   start — we just pull it earlier to enable smarter assembly decisions.
+2. context_bundle() on first segment: We call async_memory.context_bundle() once on
+   the first segment and cache it on the Turn. This is a lightweight read that would
+   happen anyway at stream_turn() start — we just pull it earlier.
 
-3. Constructor dependencies: TurnAssembler takes nlu_processor, workflow,
-   async_memory, and config alongside agent_core. NLU classification is run by
-   the injected NLUProcessor (which holds its own chat_provider).
+3. Constructor dependencies: TurnAssembler takes workflow, async_memory, and config
+   alongside agent_core.
 
 4. subscribe() rolls over across turns: After DoneEvent, subscribe() waits for
    session.turn_changed to learn when a new Turn becomes current. This supports
@@ -199,7 +196,6 @@ class TurnAssembler(TurnAssemblerBase):
         self,
         agent_core: Any,
         config: dict,
-        nlu_processor: Any = None,
         workflow: Any = None,
         async_memory: Any = None,
         clock: Optional[Callable[[], float]] = None,
@@ -211,9 +207,6 @@ class TurnAssembler(TurnAssemblerBase):
             config: Full agent_core config dict. Turn assembler reads defaults from
                     config["reach_layer"]["turn_assembler"] and per-channel overrides
                     from config["reach_layer"]["channels"][<name>]["turn_assembler"].
-            nlu_processor: NLUProcessor instance for semantic completeness gate.
-                           When provided, the processor must already hold its own
-                           chat_provider — turn_assembler does not pass an LLM in.
             workflow: AgentWorkflow instance for intent scoping.
             async_memory: AsyncMemoryLayerBase for fetching context_bundle on first segment.
             clock: Monotonic seconds source; injectable for tests.
@@ -228,7 +221,6 @@ class TurnAssembler(TurnAssemblerBase):
 
         self._agent_core = agent_core
         self._config = config
-        self._nlu_processor = nlu_processor
         self._workflow = workflow
         self._async_memory = async_memory
 
@@ -245,10 +237,6 @@ class TurnAssembler(TurnAssemblerBase):
             )
 
         self._default_config = {
-            "semantic_gate": ta_defaults.get("semantic_gate", {
-                "enabled": False,
-                "confidence_threshold": 0.75,
-            }),
             "silence_trigger": ta_defaults.get("silence_trigger", {
                 "silence_ms": 400,
             }),
@@ -286,13 +274,12 @@ class TurnAssembler(TurnAssemblerBase):
             Merged config dict for this channel.
         """
         base = {
-            "semantic_gate": dict(self._default_config["semantic_gate"]),
             "silence_trigger": dict(self._default_config["silence_trigger"]),
             "max_wait_ceiling": dict(self._default_config["max_wait_ceiling"]),
         }
         # Per-channel overrides: reach_layer.channels.<channel>.turn_assembler
         channel_ta = self._channels_config.get(channel or "", {}).get("turn_assembler", {})
-        for section in ("semantic_gate", "silence_trigger", "max_wait_ceiling"):
+        for section in ("silence_trigger", "max_wait_ceiling"):
             if section in channel_ta:
                 base[section].update(channel_ta[section])
         return base
@@ -939,11 +926,9 @@ class TurnAssembler(TurnAssemblerBase):
         """Evaluate the policy stack in order after each add_segment().
 
         Policy order (spec-defined):
-            1. Semantic completeness gate — if NLU confidence >= threshold, invoke immediately
-            2. Silence trigger — timer that resets on each segment
-            3. Max wait ceiling — absolute timer, never resets
+            1. Silence trigger — timer that resets on each segment
+            2. Max wait ceiling — absolute timer, never resets
 
-        If semantic gate triggers, silence timer is not started.
         If both timers fire simultaneously, only the first to acquire the lock transitions.
 
         Args:
@@ -951,14 +936,7 @@ class TurnAssembler(TurnAssemblerBase):
             turn: The current Turn.
             config: Resolved per-channel config.
         """
-        # Policy 1: Semantic completeness gate
-        gate_config = config.get("semantic_gate", {})
-        if gate_config.get("enabled", False):
-            triggered = await self._semantic_gate(session_id, turn, gate_config)
-            if triggered:
-                return  # Invoked — skip timers
-
-        # Policy 2: Silence trigger — reset on every segment
+        # Policy 1: Silence trigger — reset on every segment
         silence_config = config.get("silence_trigger", {})
         silence_ms = silence_config.get("silence_ms", 400)
 
@@ -970,7 +948,7 @@ class TurnAssembler(TurnAssemblerBase):
             self._silence_timer(session_id, silence_ms)
         )
 
-        # Policy 3: Max wait ceiling — started once, never reset
+        # Policy 2: Max wait ceiling — started once, never reset
         ceiling_config = config.get("max_wait_ceiling", {})
         max_wait_ms = ceiling_config.get("max_wait_ms", 8000)
 
@@ -978,100 +956,6 @@ class TurnAssembler(TurnAssemblerBase):
             turn.ceiling_task = asyncio.create_task(
                 self._ceiling_timer(session_id, max_wait_ms)
             )
-
-    async def _semantic_gate(
-        self, session_id: str, turn: Turn, gate_config: dict
-    ) -> bool:
-        """Evaluate semantic completeness using NLU classification.
-
-        Runs the NLU processor on the assembled text. If confidence >= threshold
-        and intent is not "unknown", acquires the lock and triggers invocation.
-
-        If NLU call fails: logs error and falls through (never blocks on infra failure).
-
-        Args:
-            session_id: Session identifier.
-            turn: The current Turn.
-            gate_config: Semantic gate config with confidence_threshold.
-
-        Returns:
-            True if invocation was triggered, False to fall through to timers.
-        """
-        if not self._nlu_processor:
-            return False
-
-        threshold = gate_config.get("confidence_threshold", 0.75)
-        assembled_text = " ".join(s.text.strip() for s in turn.segments)
-
-        try:
-            # Get NLU context from cached context_bundle
-            current_question = ""
-            current_subagent_id = ""
-            allowed_intents = None
-
-            if turn.context_bundle:
-                session_data = turn.context_bundle.session or {}
-                current_question = session_data.get("current_question", "")
-                current_subagent_id = session_data.get(
-                    "current_subagent_id",
-                    self._workflow.start_subagent_id if self._workflow else "",
-                )
-
-                # Scope intents to current subagent (same as orchestrator)
-                if self._workflow and current_subagent_id in self._workflow.subagents:
-                    subagent = self._workflow.subagents[current_subagent_id]
-                    allowed_intents = list(subagent.valid_intents or [])
-                    if self._workflow.global_intents:
-                        allowed_intents.extend(self._workflow.global_intents)
-
-            start = time.time()
-            nlu_result = self._nlu_processor.process(
-                normalised_input=assembled_text,
-                current_question=current_question,
-                current_subagent_id=current_subagent_id,
-                allowed_intents=allowed_intents,
-            )
-
-            logger.info(
-                "turn_assembler.semantic_gate",
-                extra={
-                    "operation": "turn_assembler.semantic_gate",
-                    "status": "success",
-                    "session_id": session_id,
-                    "intent": nlu_result.intent,
-                    "confidence": nlu_result.confidence,
-                    "threshold": threshold,
-                    "latency_ms": int((time.time() - start) * 1000),
-                },
-            )
-
-            if nlu_result.confidence >= threshold and nlu_result.intent != "unknown":
-                session = self._sessions.get(session_id)
-                if session is None:
-                    return False
-                async with session._lock:
-                    if turn.status != TurnStatus.WAITING:
-                        return False
-                    turn.status = TurnStatus.INVOKED
-                    self._cancel_timer_tasks(turn)
-                    turn.invocation_task = asyncio.create_task(
-                        self._invoke(turn)
-                    )
-                return True
-
-        except Exception as e:
-            # Spec: NLU infra failure → log, fall through — never block on NLU failure
-            logger.warning(
-                "turn_assembler.semantic_gate_error",
-                extra={
-                    "operation": "turn_assembler.semantic_gate",
-                    "status": "failure",
-                    "session_id": session_id,
-                    "error": f"{type(e).__name__}: {e}",
-                },
-            )
-
-        return False
 
     async def _silence_timer(self, session_id: str, silence_ms: int) -> None:
         """Sleep for silence_ms then trigger invocation if still WAITING.

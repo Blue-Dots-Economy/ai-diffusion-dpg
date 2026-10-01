@@ -102,7 +102,6 @@ class TurnAssemblerDpg(BaseModel):
     """Defaults for the streaming TurnAssembler used by session-mode channels."""
 
     model_config = ConfigDict(extra="forbid")
-    semantic_gate: dict = Field(default_factory=lambda: {"enabled": False, "confidence_threshold": 0.75})
     silence_trigger: dict = Field(default_factory=lambda: {"silence_ms": 400})
     max_wait_ceiling: dict = Field(default_factory=lambda: {"max_wait_ms": 8000})
     interruption: dict = Field(default_factory=lambda: {

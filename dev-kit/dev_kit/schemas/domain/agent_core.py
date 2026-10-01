@@ -431,20 +431,6 @@ class TtsRulesConfig(BaseModel):
     named_entities: str = ""      # KKB has this; LLM doesn't generate
 
 
-class SemanticGateConfig(BaseModel):
-    """Mirrors runtime SemanticGateConfig 1:1.
-
-    Earlier the parent ``TurnAssemblerConfig`` typed this as a bare
-    ``dict``, which let typo keys like ``threshhold`` through the
-    mirror; the runtime's strict ``SemanticGateConfig(extra="forbid")``
-    then crashed at boot. Same fix pattern as ConnectorDef.input_schema
-    above.
-    """
-    model_config = ConfigDict(extra="forbid")
-    enabled: bool = False
-    confidence_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
-
-
 class SilenceTriggerConfig(BaseModel):
     """Mirrors runtime SilenceTriggerConfig 1:1."""
     model_config = ConfigDict(extra="forbid")
@@ -479,14 +465,13 @@ class CarryoverConfig(BaseModel):
 
 
 class TurnAssemblerConfig(BaseModel):
-    """TurnAssembler policy stack — semantic gate + silence trigger + max-wait ceiling.
+    """TurnAssembler policy stack — silence trigger + max-wait ceiling.
 
     Sub-fields now use strict Pydantic classes that mirror the runtime
     exactly. Previously each was typed ``dict``, which silently
     accepted wrong keys and only failed at boot.
     """
     model_config = ConfigDict(extra="forbid")
-    semantic_gate: SemanticGateConfig = Field(default_factory=SemanticGateConfig)
     silence_trigger: SilenceTriggerConfig = Field(default_factory=SilenceTriggerConfig)
     max_wait_ceiling: MaxWaitCeilingConfig = Field(default_factory=MaxWaitCeilingConfig)
     interruption: InterruptionConfig = Field(default_factory=InterruptionConfig)

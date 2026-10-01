@@ -658,10 +658,6 @@ class TtsRulesConfig(BaseModel):
 class ChannelTurnAssemblerConfig(BaseModel):
     """Turn-assembler settings for a channel (GH-137)."""
 
-    semantic_gate: dict[str, Any] = Field(
-        default_factory=lambda: {"enabled": False, "confidence_threshold": 0.75},
-        description="NLU gate configuration for this channel",
-    )
     silence_trigger: dict[str, Any] = Field(
         default_factory=lambda: {"silence_ms": 0},
         description="Silence trigger configuration for this channel",

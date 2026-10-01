@@ -86,7 +86,6 @@ EXPECTED_PATHS = {
     "channels.voice.tts_rules.email",
     "channels.voice.tts_rules.named_entities",
     "channels.voice.terminal_word",
-    "channels.voice.turn_assembler.semantic_gate",
     # Predetermined (catalogue §7.1)
     "agent.ask_for_consent",
     "conversation.user_state_model.enabled",

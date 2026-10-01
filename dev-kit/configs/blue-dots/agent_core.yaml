@@ -3146,13 +3146,5 @@ agent_workflow:
         - intent: "*"
           next_subagent_id: clarification
 
-# Reach Layer per-channel turn_assembler lives under channels.*; this
-# block only carries the cross-channel semantic gate setting.
-reach_layer:
-  turn_assembler:
-    semantic_gate:
-      enabled: true
-      confidence_threshold: 0.75
-
 observability:
   domain: "blue_dot"

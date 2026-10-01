@@ -59,9 +59,6 @@ channels:
       english_loanwords: ""   # How to handle English loanwords in TTS output.
     terminal_word: ""         # Required when voice is declared. Word that signals call end.
     turn_assembler:
-      semantic_gate:
-        enabled: false
-        confidence_threshold: 0.75
       silence_trigger:
         silence_ms: 400
       max_wait_ceiling:
@@ -71,7 +68,6 @@ channels:
     tts_rules: null
     terminal_word: null
     turn_assembler:
-      semantic_gate: {enabled: false, confidence_threshold: 0.75}
       silence_trigger: {silence_ms: 1500}
       max_wait_ceiling: {max_wait_ms: 15000}
   cli:
@@ -79,7 +75,6 @@ channels:
     tts_rules: null
     terminal_word: null
     turn_assembler:
-      semantic_gate: {enabled: false, confidence_threshold: 0.75}
       silence_trigger: {silence_ms: 200}
       max_wait_ceiling: {max_wait_ms: 5000}
 
@@ -139,12 +134,11 @@ agent_workflow:
                  #   special_handler, valid_intents, tools, system_prompt, routing.
                  # See dev-kit/dev_kit/schemas/agent_core.yaml for full annotated example.
 
-# Optional. Per-channel turn-assembler tuning (semantic gate).
+# Optional. Per-channel turn-assembler tuning (silence trigger, max wait ceiling).
 # reach_layer:
 #   turn_assembler:
-#     semantic_gate:
-#       enabled: true
-#       confidence_threshold: 0.75
+#     silence_trigger:
+#       silence_ms: 400
 
 observability:
   domain: ""  # Required. Domain identifier (e.g. "blue-dots", "farmer_friendly").

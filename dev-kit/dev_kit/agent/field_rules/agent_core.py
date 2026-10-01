@@ -724,21 +724,6 @@ FIELD_RULES: dict[str, FieldRule] = {
         description="Voice terminal word that signals end of agent turn.",
         pydantic_class="ChannelsSection",
     ),
-    "channels.voice.turn_assembler.semantic_gate": FieldRule(
-        category="chat",
-        phase="reach",
-        applies_if='"voice" in selected_channels',
-        invalidated_by=["selected_channels"],
-        # Must be a structured SemanticGateConfig dict — bare strings or
-        # free-form maps are rejected by the strict mirror class:
-        #   `{"enabled": true, "confidence_threshold": 0.75}`
-        # See dev_kit/schemas/domain/agent_core.py SemanticGateConfig.
-        description=(
-            "Semantic gate for voice TurnAssembler. Shape: "
-            '{"enabled": bool, "confidence_threshold": 0.0-1.0}.'
-        ),
-        pydantic_class="SemanticGateConfig",
-    ),
 
     # ── Predetermined: channels.voice.turn_assembler.* ────────────────────────
 

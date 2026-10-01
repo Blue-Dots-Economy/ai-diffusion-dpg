@@ -761,13 +761,6 @@ class TtsRulesConfig(BaseModel):
     named_entities: str = ""
 
 
-class SemanticGateConfig(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    enabled: bool = False
-    confidence_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
-
-
 class SilenceTriggerConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -816,7 +809,6 @@ class TurnAssemblerConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    semantic_gate: SemanticGateConfig = Field(default_factory=SemanticGateConfig)
     silence_trigger: SilenceTriggerConfig = Field(default_factory=SilenceTriggerConfig)
     max_wait_ceiling: MaxWaitCeilingConfig = Field(default_factory=MaxWaitCeilingConfig)
     interruption: InterruptionConfig = Field(default_factory=InterruptionConfig)

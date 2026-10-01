@@ -12,7 +12,6 @@ from eval.nlu.cases import load_cases
 from eval.nlu.offline import OfflineGateway, load_merged_config
 from eval.nlu.score import gate, score
 from src.chat_provider import build_chat_provider
-from src.preprocessing.nlu_processor import NLUProcessor
 from src.schema.config import MergedConfig
 from src.tool_registry import ToolRegistry
 from src.understanding.understander import TurnUnderstander
@@ -62,11 +61,8 @@ def main(argv: list[str] | None = None) -> int:
         for c in cases:
             preds[c.id] = [predict_dialogue_act(c, und) for _ in range(args.repeat)]
     else:
-        nlu = NLUProcessor(config, chat_provider=build_chat_provider(provider_cfg))
-        routed, rt = _routed(workflow), _resolves_to(workflow) or "selected_job_item_id"
-        emap = dict(config.get("entity_to_profile_field") or {})
-        for c in cases:
-            preds[c.id] = [predict_intent(c, nlu, workflow, emap, routed, rt) for _ in range(args.repeat)]
+        # NLUProcessor is deleted (Task 5); Task 9 removes --mode entirely.
+        raise SystemExit("intent mode is no longer available: NLUProcessor was removed")
     report = score(cases, preds, args.mode)
     text = json.dumps(report, ensure_ascii=False, indent=2)
     if args.out:

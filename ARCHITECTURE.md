@@ -168,7 +168,6 @@ not declare the block are unaffected.
 - `agent_core/src/manager_agent.py` — system prompt assembly, tool-use loop (sync + async)
 - `agent_core/src/chat_provider/` — `ChatProviderBase`, `build_chat_provider()`, neutral types, `AnthropicChatProvider` (only file that imports `anthropic`), `OpenAIChatProvider` (only file that imports `openai`)
 - `agent_core/src/preprocessing/language_normaliser.py`
-- `agent_core/src/preprocessing/nlu_processor.py`
 - `agent_core/src/tool_registry.py`
 - `agent_core/src/workflow_loader.py` — loads subagent graph from config at startup
 - `agent_core/src/http_clients/` — sync HTTP adapters; `http_clients/async_/` — async variants

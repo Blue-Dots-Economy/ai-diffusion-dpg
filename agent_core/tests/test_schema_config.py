@@ -110,7 +110,6 @@ def _minimal_valid_config() -> dict:
         },
         "reach_layer": {
             "turn_assembler": {
-                "semantic_gate": {"enabled": True, "confidence_threshold": 0.75},
                 "silence_trigger": {"silence_ms": 400},
                 "max_wait_ceiling": {"max_wait_ms": 8000},
             }
@@ -712,3 +711,10 @@ def test_framework_handled_intent_needs_no_routing_rule():
     nlu["act_intents"].append(
         {"acts": ["request_change"], "topic": "language", "intent": "language_switch_request"})
     MergedConfig.validate_full(cfg)
+
+
+def test_rejects_semantic_gate_in_turn_assembler():
+    cfg = _minimal_valid_config()
+    cfg["channels"]["voice"]["turn_assembler"]["semantic_gate"] = {"enabled": False}
+    with pytest.raises(ValidationError, match="semantic_gate"):
+        MergedConfig.validate_full(cfg)
