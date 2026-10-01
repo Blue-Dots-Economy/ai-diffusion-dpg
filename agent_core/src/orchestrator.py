@@ -3368,7 +3368,8 @@ class AgentCore(AgentCoreBase):
         try:
             record.persist_task = asyncio.get_running_loop().create_task(
                 self._persist_interrupted(turn_input.session_id, user_id, record,
-                                          exchanges, carry, turn_input.channel)
+                                          exchanges, carry, turn_input.channel,
+                                          user_message=turn_input.user_message or "")
             )
         except RuntimeError:
             logger.warning(
@@ -3385,6 +3386,7 @@ class AgentCore(AgentCoreBase):
         exchanges: list[dict],
         carry: "dict | None",
         channel: "str | None" = None,
+        user_message: str = "",
     ) -> None:
         """Write an interrupted turn's tool rounds and utterances to Memory Layer.
 
@@ -3406,6 +3408,8 @@ class AgentCore(AgentCoreBase):
             exchanges: Captured rounds, already marked undelivered.
             carry: The ``turn_carryover`` payload, or None.
             channel: Channel, for the fold cap when appending.
+            user_message: The turn's utterance; the ``recent_turns`` caller
+                text when the fold has not run (``record.segments`` empty).
         """
         start = time.time()
         try:
@@ -3457,7 +3461,8 @@ class AgentCore(AgentCoreBase):
                     await self._async_memory.write(
                         session_id, user_id, "session", RECENT_TURNS_KEY,
                         append_recent_turn(session_state.get(RECENT_TURNS_KEY),
-                                           caller=" ".join(record.segments), bot=heard, interrupted=True,
+                                           caller=" ".join(s for s in record.segments if s) or user_message,
+                                           bot=heard, interrupted=True,
                                            history_turns=self._dialogue_cfg.history_turns))
             logger.info(
                 "orchestrator.interrupted_persist",

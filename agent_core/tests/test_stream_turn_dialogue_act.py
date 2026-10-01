@@ -117,3 +117,15 @@ async def test_replace_policy_with_no_rounds_still_persists_spoken_question(dial
     assert by_key["current_question"] == "कौन सा शहर?"
     assert "turn_carryover" not in by_key
     assert (RECENT_TURNS_KEY in by_key) is dialogue_act
+
+
+async def test_interrupted_turn_before_fold_records_user_message_as_caller():
+    """M3: no fold yet (record.segments empty) → the recent_turns caller is the turn's utterance."""
+    agent = _agent(_understanding())
+    agent._async_memory.context_bundle.return_value = ContextBundle(session={RECENT_TURNS_KEY: []}, profile={})
+    record = TurnRecord(write_carryover=False)
+    record.spoken = ["कौन सा शहर?"]
+    agent._on_turn_not_completed(_make_turn_input(user_message="पुणे"), record, "t1")
+    await record.persist_task
+    by_key = {c.args[3]: c.args[4] for c in agent._async_memory.write.await_args_list}
+    assert by_key[RECENT_TURNS_KEY][-1] == {"caller": "पुणे", "bot": "कौन सा शहर?", "interrupted": True}
