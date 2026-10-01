@@ -4352,9 +4352,26 @@ class AgentCore(AgentCoreBase):
                 # #204's short-circuit uses, so a call ends identically whether
                 # NLU caught the goodbye or the model did.
                 if _only_end_session and not _closing_text_exists:
-                    _canned = (self._config.get("conversation", {}) or {}).get(
-                        "termination_message", ""
-                    ) or ""
+                    # Prefer the subagent's own opening_phrase over the generic
+                    # goodbye. A phase that ends the call for a REASON has that
+                    # reason written in its opening_phrase, and the caller needs
+                    # it: u18_blocked explains the portal route, consent_declined
+                    # says nothing was saved. Measured — a caller giving age 16
+                    # routed correctly to u18_blocked, the model called
+                    # end_session with no text, and the generic
+                    # termination_message was all they heard.
+                    #
+                    # This is also the only place opening_phrase reaches a caller
+                    # on this path at all: it is emitted in process_turn only, so
+                    # on the streaming path every phase's opening_phrase is
+                    # otherwise dead config.
+                    _canned = (
+                        getattr(next_subagent, "opening_phrase", "") or ""
+                    ).strip()
+                    if not _canned:
+                        _canned = (self._config.get("conversation", {}) or {}).get(
+                            "termination_message", ""
+                        ) or ""
                     _canned = self._translate_consent_message(
                         _canned, detected_language,
                     )

@@ -704,6 +704,36 @@ class TestStreamTurnEndSession:
         assert len(done) == 1 and done[0].session_ended is True
 
     @pytest.mark.asyncio
+    async def test_terminal_phase_speaks_its_own_reason_not_the_generic_goodbye(self):
+        """GH-204 F10/F32: a phase that ends the call for a reason has that
+        reason in its opening_phrase. The caller must hear it, not the generic
+        termination_message — a 16-year-old needs to be told about the portal."""
+        agent = self._make_end_session_agent()
+        agent._config["conversation"] = {"termination_message": "आपका दिन शुभ हो।"}
+        for sa in agent._workflow.subagents.values():
+            sa.opening_phrase = "उन्नीस साल से कम उम्र में फ़ोन पर आवेदन नहीं हो सकता।"
+
+        async def mock_stream(*args, **kwargs):
+            raise ChatToolUseRequested([
+                ToolUseBlock(tool_name="end_session", tool_use_id="tu_end",
+                             input={"reason": "task_complete"})
+            ])
+            yield  # pragma: no cover - generator marker
+
+        agent._llm.stream = mock_stream
+        agent._async_gateway.execute = AsyncMock(
+            side_effect=AssertionError("end_session must not reach Action Gateway")
+        )
+
+        events = await _collect_events(agent, _make_turn_input())
+
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "उन्नीस साल" in spoken, "the caller must hear WHY the call ended"
+        assert "आपका दिन शुभ हो" not in spoken, (
+            "the generic goodbye must not replace the phase's own reason"
+        )
+
+    @pytest.mark.asyncio
     async def test_end_session_without_text_or_canned_line_falls_back_to_llm(self):
         """With no configured termination_message there is nothing to speak, so
         the second pass must still run — hanging up in silence is worse than a
