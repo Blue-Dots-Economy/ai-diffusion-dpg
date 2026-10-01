@@ -2696,8 +2696,18 @@ class AgentCore(AgentCoreBase):
         trust_output: TrustCheckResult,
         start: float,
         stamp,
+        message: str | None = None,
+        subagent_id: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
-        """Skip the LLM and emit the canned termination_message (#204).
+        """Skip the LLM and emit a canned closing line (#204).
+
+        Args:
+            message: the line to speak. Defaults to
+                ``conversation.termination_message`` — #204's goodbye. A
+                terminal subagent passes its own ``opening_phrase`` instead,
+                so a phase that ends the call for a REASON states that reason.
+            subagent_id: the phase to record for this turn. Defaults to
+                ``ended``.
 
         Pulls ``conversation.termination_message`` from config, translates it
         to the user's detected language using the same helper as the consent
@@ -2725,15 +2735,16 @@ class AgentCore(AgentCoreBase):
         Yields:
             Exactly one SentenceEvent followed by a terminal DoneEvent.
         """
-        termination_message: str = self._config.get("conversation", {}).get(
-            "termination_message", ""
-        ) or ""
+        termination_message: str = message if message is not None else (
+            self._config.get("conversation", {}).get("termination_message", "") or ""
+        )
 
         # Route to the "ended" subagent if the workflow defines one. This
         # keeps reconnect / observability semantics consistent with the
         # full LLM path (where global_routing on termination_intent moves
         # the session into the terminal subagent).
-        ended_subagent_id = "ended" if "ended" in self._workflow.subagents else (
+        _want = subagent_id or "ended"
+        ended_subagent_id = _want if _want in self._workflow.subagents else (
             bundle.session.get("current_subagent_id") or self._workflow.start_subagent_id
         )
         bundle.session["current_subagent_id"] = ended_subagent_id
@@ -4171,6 +4182,50 @@ class AgentCore(AgentCoreBase):
                 int((time.time() - t6) * 1000),
             )
 
+            # ── Step 6b: terminal phases speak fixed copy, not generated text ──
+            # A terminal subagent has no tools and a verified opening_phrase.
+            # There is nothing for the model to decide, and asking it to
+            # paraphrase fixed copy is how two real failures happened:
+            #
+            #   - a 16-year-old was told "applications are not possible for
+            #     those under SIXTEEN" — the model echoed the caller's own age
+            #     as the threshold instead of the nineteen the config states;
+            #   - the consent-declined and under-19 turns came back EMPTY, so
+            #     the caller heard "sorry, I didn't catch that" at the moment
+            #     they were being turned away.
+            #
+            # Both disappear if the configured line is spoken verbatim. It is
+            # also faster: no model call on the last turn of the call.
+            _terminal = self._workflow.subagents.get(next_subagent_id)
+            _fixed_copy = (
+                (getattr(_terminal, "opening_phrase", "") or "").strip()
+                if _terminal is not None and getattr(_terminal, "is_terminal", False)
+                else ""
+            )
+            if _fixed_copy:
+                logger.info(
+                    "  [STEP 7] Prompt Assembly  ⏭  skipped — %s is terminal, "
+                    "speaking its configured line",
+                    next_subagent_id,
+                )
+                async for ev in self._stream_termination_short_circuit(
+                    session_id=session_id,
+                    user_id=user_id,
+                    turn_id=turn_id,
+                    turn_input=turn_input,
+                    detected_language=detected_language,
+                    nlu_result=nlu_result,
+                    bundle=bundle,
+                    trust_input=trust_input,
+                    trust_output=trust_output,
+                    start=start,
+                    stamp=_stamp,
+                    message=_fixed_copy,
+                    subagent_id=next_subagent_id,
+                ):
+                    yield ev
+                return
+
             # ── Step 7: Prompt assembly ────────────────────────────────
             logger.info(
                 "  [STEP 7] Prompt Assembly  →  subagent=%s  language=%s",
@@ -4556,20 +4611,77 @@ class AgentCore(AgentCoreBase):
                 # this loop is what writes the reply, and skipping it would end the
                 # call in silence. Any other tool in the round still needs its
                 # result read back, so the skip requires end_session to be alone.
-                _skip_final_pass = (
-                    bool(all_tool_calls)
-                    and all(tc.tool_name == "end_session" for tc in all_tool_calls)
-                    and bool(
-                        sentence_index
-                        or token_buffer.strip()
-                        or full_response_text.strip()
-                        or _trust_batcher.has_pending
-                    )
+                _only_end_session = bool(all_tool_calls) and all(
+                    tc.tool_name == "end_session" for tc in all_tool_calls
                 )
+                _closing_text_exists = bool(
+                    sentence_index
+                    or token_buffer.strip()
+                    or full_response_text.strip()
+                    or _trust_batcher.has_pending
+                )
+                _skip_final_pass = _only_end_session
+
+                # The model is told to speak its closing line alongside the
+                # tool call, and in practice never does — across every
+                # end_session observed on the VM it came back as
+                # stop_reason=tool_use with no text at all. Rather than spend a
+                # round trip letting it write a goodbye we already have in
+                # config, speak the configured one. It is the same string
+                # #204's short-circuit uses, so a call ends identically whether
+                # NLU caught the goodbye or the model did.
+                if _only_end_session and not _closing_text_exists:
+                    # Prefer the subagent's own opening_phrase over the generic
+                    # goodbye. A phase that ends the call for a REASON has that
+                    # reason written in its opening_phrase, and the caller needs
+                    # it: u18_blocked explains the portal route, consent_declined
+                    # says nothing was saved. Measured — a caller giving age 16
+                    # routed correctly to u18_blocked, the model called
+                    # end_session with no text, and the generic
+                    # termination_message was all they heard.
+                    #
+                    # This is also the only place opening_phrase reaches a caller
+                    # on this path at all: it is emitted in process_turn only, so
+                    # on the streaming path every phase's opening_phrase is
+                    # otherwise dead config.
+                    _canned = (
+                        getattr(next_subagent, "opening_phrase", "") or ""
+                    ).strip()
+                    if not _canned:
+                        _canned = (self._config.get("conversation", {}) or {}).get(
+                            "termination_message", ""
+                        ) or ""
+                    _canned = self._translate_consent_message(
+                        _canned, detected_language,
+                    )
+                    if _canned:
+                        logger.info(
+                            "  [STEP 8] LLM Stream Call #2  ⏭  skipped — spoke the "
+                            "configured termination_message instead"
+                        )
+                        full_response_text += _canned + " "
+                        yield _stamp(SentenceEvent(
+                            text=_canned, sentence_index=sentence_index,
+                        ))
+                        sentence_index += 1
+                    else:
+                        # Nothing configured to fall back on: the second pass is
+                        # the only thing that can produce a reply, so make it
+                        # rather than hang up on the caller in silence.
+                        _skip_final_pass = False
+                        logger.warning(
+                            "orchestrator.stream_end_session_no_canned_line",
+                            extra={
+                                "operation": "orchestrator.stream_turn",
+                                "status": "fallback",
+                                "session_id": session_id,
+                            },
+                        )
+
                 if _skip_final_pass:
                     logger.info(
                         "  [STEP 8] LLM Stream Call #2  ⏭  skipped — end_session was "
-                        "the only tool and the closing text is already written"
+                        "the only tool of the round"
                     )
                 else:
                     logger.info(
@@ -4848,6 +4960,38 @@ class AgentCore(AgentCoreBase):
                 if _trust_batcher.was_escalated:
                     break
             full_response_text = full_response_text.rstrip()
+
+            # A turn that reaches here with nothing to say leaves the caller
+            # listening to silence on a phone line, with no way to tell whether
+            # the bot is thinking or the call is dead. The empty-completion
+            # retry above already had two attempts; this is the backstop for
+            # when both came back empty.
+            #
+            # An escalated turn is deliberately withheld content, not an empty
+            # one — Trust Layer speaks its own refusal, so leave it alone.
+            if not sentence_index and not was_escalated:
+                _empty_line = (self._config.get("conversation", {}) or {}).get(
+                    "empty_response_message", ""
+                ) or ""
+                _empty_line = self._translate_consent_message(
+                    _empty_line, detected_language,
+                )
+                logger.warning(
+                    "orchestrator.stream_empty_turn",
+                    extra={
+                        "operation": "orchestrator.stream_turn",
+                        "status": "degraded",
+                        "session_id": session_id,
+                        "subagent_id": current_subagent_id,
+                        "recovered": bool(_empty_line),
+                    },
+                )
+                if _empty_line:
+                    full_response_text = _empty_line
+                    yield _stamp(SentenceEvent(
+                        text=_empty_line, sentence_index=sentence_index,
+                    ))
+                    sentence_index += 1
 
             # ── Step 11: Write current_question ────────────────────────
             # GH-151 #5: fire-and-forget. The next turn reads context_bundle,
