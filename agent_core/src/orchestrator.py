@@ -401,6 +401,37 @@ class AgentCore(AgentCoreBase):
                 profile_context[k] = v
         return profile_context
 
+    def _session_grounded_values(self, bundle, spec: dict) -> dict[str, list[str]]:
+        """Values for grounded params that session_mapping lifted from a tool.
+
+        A param named in ``grounded_params`` is often also a session field — it
+        is written there by the producing connector's ``session_mapping``. Those
+        copies came from the upstream result, so they ground the call, and they
+        outlive the tool-result cache.
+
+        That difference is the point. ``save_profile`` invalidates the cached
+        ``fetch_profile`` because the profile has just changed, which is
+        correct. Without this, the NEXT turn's ``apply_job`` had no evidence
+        for ``profile_item_id`` and was refused — so a returning caller could
+        never apply (measured on the VM against UAT).
+
+        Args:
+            bundle: This turn's context bundle.
+            spec: The tool's ``grounded_params`` map.
+
+        Returns:
+            Param name → the session value for it, when present and non-empty.
+        """
+        out: dict[str, list[str]] = {}
+        if not spec:
+            return out
+        session = getattr(bundle, "session", None) or {}
+        for name in spec:
+            v = session.get(name)
+            if isinstance(v, str) and v:
+                out[name] = [v]
+        return out
+
     def _remember_on_saved(self, bundle, turn_session_values: dict | None = None):
         """Build the callback that mirrors a remembered value into the bundle.
 
@@ -4522,11 +4553,15 @@ class AgentCore(AgentCoreBase):
                                 f"a different one, ask which, and call it on the next turn."
                             )
                         elif not _is_remember:
+                            _spec = (
+                                getattr(self._manager_agent, "_grounded_params", {}) or {}
+                            ).get(tc.tool_name) or {}
                             _ung = ungrounded_params(
-                                (getattr(self._manager_agent, "_grounded_params", {}) or {})
-                                .get(tc.tool_name) or {},
-                                tc, messages,
+                                _spec, tc, messages,
                                 stored_results=tool_cache.stored_results_by_tool(),
+                                session_grounded=self._session_grounded_values(
+                                    bundle, _spec,
+                                ),
                             )
                             if _ung:
                                 logger.warning(
@@ -4844,11 +4879,15 @@ class AgentCore(AgentCoreBase):
                                         f"on the next turn."
                                     )
                                 elif not _is_remember2:
+                                    _spec2 = (
+                                        getattr(self._manager_agent, "_grounded_params", {}) or {}
+                                    ).get(tc.tool_name) or {}
                                     _ung2 = ungrounded_params(
-                                        (getattr(self._manager_agent, "_grounded_params", {}) or {})
-                                        .get(tc.tool_name) or {},
-                                        tc, messages,
+                                        _spec2, tc, messages,
                                         stored_results=tool_cache.stored_results_by_tool(),
+                                        session_grounded=self._session_grounded_values(
+                                            bundle, _spec2,
+                                        ),
                                     )
                                     if _ung2:
                                         logger.warning(
