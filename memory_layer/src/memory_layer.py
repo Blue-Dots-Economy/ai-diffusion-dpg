@@ -39,6 +39,9 @@ logger = logging.getLogger(__name__)
 # these would (e.g.) suppress the greeting on every callback for the same user.
 _SESSION_LIFECYCLE_FIELDS: frozenset[str] = frozenset({
     "opening_phrase_emitted",
+    # Session bootstrap latch (session-bootstrap spec §5.1): a new call must
+    # bootstrap afresh, never inherit "already done" from the call it adopts.
+    "bootstrap_done",
 })
 
 

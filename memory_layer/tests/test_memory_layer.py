@@ -285,6 +285,32 @@ def test_context_bundle_adoption_preserves_is_returning_for_returning_user():
     assert result["session"]["is_returning"] == "true"
 
 
+def test_context_bundle_adoption_skips_session_lifecycle_fields():
+    """Session lifecycle fields (opening_phrase_emitted, bootstrap_done) must not be adopted."""
+    layer, stores = _make_layer()
+    stores["user"].user_exists.return_value = True       # returning user
+    stores["user"].get_profile.return_value = {}
+    stores["journey"].get_last_journey_summary.return_value = None
+
+    # new-sess does not exist; old-sess does exist (will be adopted)
+    stores["redis"].session_exists.side_effect = lambda s: s == "old-sess"
+    stores["redis"].get_user_sessions.return_value = {"old-sess": "2024-01-01T10:00:00Z"}
+    # old session has lifecycle fields that should be skipped
+    stores["redis"].get_session.return_value = {
+        "opening_phrase_emitted": "true",
+        "bootstrap_done": "true",
+        "trade": "welder",
+    }
+
+    result = layer.context_bundle("new-sess", "user-1")
+
+    # After adoption, lifecycle fields must not be present
+    assert "opening_phrase_emitted" not in result["session"]
+    assert "bootstrap_done" not in result["session"]
+    # But regular fields like trade should be adopted
+    assert result["session"]["trade"] == "welder"
+
+
 # ---------------------------------------------------------------------------
 # context_bundle — existing session (hot path)
 # ---------------------------------------------------------------------------
