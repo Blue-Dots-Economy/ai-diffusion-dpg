@@ -183,7 +183,7 @@ class AgentWorkflow:
         """Return the tool definitions to inject into the LLM call for a subagent.
 
         When ``global_tool_defs`` is non-empty, it takes precedence and every
-        subagent sees the same tool set (KKB behaviour). Otherwise the per-subagent
+        subagent sees the same tool set (Blue Dots behaviour). Otherwise the per-subagent
         ``tool_defs`` slice is returned, or an empty list if the subagent is unknown.
 
         Args:

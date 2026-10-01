@@ -83,7 +83,7 @@ class AgentSection(BaseModel):
     consent_prompt: str = ""
     prompt_session_fields: list[str] = Field(default_factory=list)
 
-    # Optional sub-blocks mirrored from runtime AgentConfig. KKB declares
+    # Optional sub-blocks mirrored from runtime AgentConfig. Blue Dots declares
     # termination_short_circuit; current_question and recent_tool_exchanges
     # are framework-defaulted but accepted here for round-trip parity.
     termination_short_circuit: Optional[TerminationShortCircuitConfig] = None
@@ -281,7 +281,7 @@ class OffTrackConfig(BaseModel):
 
 
 class NLUProcessorSection(BaseModel):
-    """Dialogue-act NLU helper config. provider=None inherits agent.provider (spec §16: no intent mode)."""
+    """Dialogue-act NLU helper config. provider=None inherits agent.provider."""
     model_config = ConfigDict(extra="forbid")
     provider: Optional[ProviderField] = None   # None → inherit agent.provider at runtime
     model: str = ""   # empty allowed — helper inherits agent.primary_model at runtime
@@ -414,8 +414,8 @@ class TtsRulesConfig(BaseModel):
     abbreviations: str = ""
     output_script: str = ""
     english_loanwords: str = ""
-    email: str = ""               # KKB has this; LLM doesn't generate
-    named_entities: str = ""      # KKB has this; LLM doesn't generate
+    email: str = ""               # Blue Dots has this; LLM doesn't generate
+    named_entities: str = ""      # Blue Dots has this; LLM doesn't generate
 
 
 class SilenceTriggerConfig(BaseModel):
@@ -505,7 +505,7 @@ class InvocationRules(BaseModel):
     GH-176 presentation-contract fields (exception_no_call, ranking_order,
     presentation_limit, refinement_loop_max, safety) are hand-authored by
     the operator in the YAML — the LLM phase prompt does not ask for them.
-    Spec accepts them so existing KKB-style configs round-trip cleanly.
+    Spec accepts them so existing Blue Dots-style configs round-trip cleanly.
     Runtime accepts empty defaults on all fields.
     """
     model_config = ConfigDict(extra="forbid")

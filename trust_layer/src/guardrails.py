@@ -42,7 +42,7 @@ def _contains_term(haystack: str, needle: str) -> bool:
     """Return True iff ``needle`` occurs in ``haystack`` as a whole word.
 
     Used for escalation topics only. A naked substring test is wrong for short
-    topics: the KKB topic "FIR" (a police report) matched "first", "confirm",
+    topics: the Blue Dots topic "FIR" (a police report) matched "first", "confirm",
     "firm" and "fire", so an ordinary "yes confirm" was escalated to a human
     agent mid-flow. Anchoring on word boundaries keeps multi-word topics like
     "police case" working while making short ones safe.

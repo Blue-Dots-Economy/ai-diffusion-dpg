@@ -26,7 +26,7 @@ class SessionFieldDefinition(BaseModel):
     def enum_requires_values(self) -> "SessionFieldDefinition":
         """Validate enum schema. Empty-string default is allowed — represents
         "not yet set" so the orchestrator's first-turn write can populate it
-        (e.g. KKB's `income_urgency` starts as "" until user expresses urgency).
+        (e.g. Blue Dots' `income_urgency` starts as "" until user expresses urgency).
         """
         if self.type == SessionFieldType.enum:
             if not self.values:

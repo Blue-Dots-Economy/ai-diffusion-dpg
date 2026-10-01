@@ -17,7 +17,7 @@ trust:
     output_blocked_message: "" # Required. Message returned to user when LLM output is blocked.
 
   policy_packs:
-    policy_pack_name:          # Replace with your pack name, e.g. "kkb_advisory_jobs".
+    policy_pack_name:          # Replace with your pack name, e.g. "blue_dots_advisory_jobs".
                                # Must match trust.policy_pack above.
       risks: []                # Required. List of active risk identifiers in this pack.
       guardrails:

@@ -55,4 +55,4 @@ def test_fallback_and_none():
     u = TurnUnderstanding(nlu_result=NR, fallback_reason="provider_error:timeout")
     assert render_caller_turn(u) == "understanding unavailable this turn"
     assert render_caller_turn(None) == ""
-    assert render_caller_turn(TurnUnderstanding(nlu_result=NR)) == ""     # intent mode: no dialogue
+    assert render_caller_turn(TurnUnderstanding(nlu_result=NR)) == ""     # fallback result: no dialogue

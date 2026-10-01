@@ -1039,7 +1039,7 @@ class AgentCore(AgentCoreBase):
             self._turn_context(bundle, current_subagent_id, [turn_input.user_message], tool_cache))
         nlu_result = understanding.nlu_result
         logger.info(
-            "  [STEP 5] NLU Processor  ✓  intent=%s  confidence=%.2f  entities=%s"
+            "  [STEP 5] NLU  ✓  intent=%s  confidence=%.2f  entities=%s"
             "  latency=%dms",
             nlu_result.intent, nlu_result.confidence,
             list((nlu_result.entities or {}).keys()),  # keys only: values may be PII
@@ -3946,7 +3946,7 @@ class AgentCore(AgentCoreBase):
             nlu_result = early_nlu_result
             yield _stamp(SignalEvent(stage="nlu", status="complete"))
             logger.info(
-                "  [STEP 5] NLU Processor  ✓  intent=%s  confidence=%.2f"
+                "  [STEP 5] NLU  ✓  intent=%s  confidence=%.2f"
                 "  entities=%s  (parallel — see STEP 4+5)",
                 nlu_result.intent, nlu_result.confidence,
                 list((nlu_result.entities or {}).keys()),

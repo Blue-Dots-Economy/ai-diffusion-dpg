@@ -24,7 +24,7 @@
 
 The framework assembles AI-powered voice/chat systems from **7 standardised DPG building blocks** configured per-domain via a **Domain Configuration Kit** (YAML). Runtime block boundaries are fixed; all domain intelligence is external (config-driven).
 
-The reference domain is **KKB (Kaam Ki Baat)** — a labour-market assistant helping informal workers in India find trades, check market salaries, and apply to ONEST job postings. Entry point: dial the number configured in `channels.voice.dial_number`.
+The reference domain is **Blue Dots** (`dev-kit/configs/blue-dots/`) — a voice assistant that onboards callers and connects them with opportunities. Entry point: dial the number configured in `channels.voice.dial_number`.
 
 ### Ports
 
@@ -47,9 +47,9 @@ The reference domain is **KKB (Kaam Ki Baat)** — a labour-market assistant hel
 
 **Original design:** NLU (intent classification, entity extraction) was inside Knowledge Engine.
 
-**Current implementation:** NLU runs entirely inside Agent Core (`preprocessing/nlu_processor.py`) before KE is called. NLU results are passed to KE in the request body.
+**Current implementation:** NLU runs entirely inside Agent Core (`understanding/`, the dialogue-act `TurnUnderstander`) before KE is called. There is a single NLU mode: one strict-schema LLM call per turn that classifies dialogue acts and fills typed slots, from which code derives the routing intent. NLU results are passed to KE in the request body. See `docs/superpowers/specs/2026-10-01-nlu-dialogue-acts-design.md` §16.
 
-**Why:** NLU drives early-exit decisions (low-confidence bail-out) and is coupled to Language Normalisation sequencing — both Agent Core responsibilities. Moving it inward keeps KE stateless and retrieval-focused.
+**Why:** NLU is coupled to Language Normalisation sequencing and to the session's pending question — both Agent Core responsibilities. Moving it inward keeps KE stateless and retrieval-focused.
 
 ### Language Normalisation is also in Agent Core
 
@@ -95,10 +95,10 @@ Sole orchestrator and sole LLM caller. Stateless between turns.
 **Responsibilities:**
 - Read session state from Memory Layer at turn start.
 - Consent gate: if `ask_for_consent: true` in config and `user_storage_mode` not yet set, deliver scripted consent prompt (turn 1) or evaluate response via Trust Layer `/consent/verify` and write `user_storage_mode` to Memory Layer (turn 2).
-- Input safety check via Trust Layer (mandatory) — passes `active_risks` from NLU when available.
+- Input safety check via Trust Layer (mandatory).
 - Language Normalisation (internal — `preprocessing/language_normaliser.py`).
-- NLU (internal — `preprocessing/nlu_processor.py`). Outputs intent, entities, confidence, and optional `active_risks`. Early exit if confidence < threshold.
-- Pre-LLM guardrail assembly via Trust Layer `/assemble_constraints` — returns prompt constraints, required disclosures, and action gates when active risks are present.
+- Dialogue-act NLU (internal — `understanding/`, `TurnUnderstander`). Resolves the pending question from the session, builds a frame (`pending`, `known_fields`, `recent_turns`), makes one strict-schema LLM call returning dialogue acts and typed slots, then post-processing derives the routing intent from the `act_intents` table and `SlotWriter` plans the session writes. `NLUResult` (intent, entities, confidence — 1.0 derived, 0.0 fallback — and optional `user_state`) is the routing contract. The caller's utterance reaches the main LLM wrapped in `<caller_turn>`.
+- Pre-LLM guardrail assembly via Trust Layer `/assemble_constraints` — returns prompt constraints, required disclosures, and action gates.
 - Manager Agent routing: select active subagent and tool list based on `current_subagent_id` + NLU intent, following routing rules defined in `dev-kit/configs/<domain>/agent_core.yaml`.
 - Assemble retrieval context via Knowledge Engine (passes NLU results + session state in body).
 - LLM call #1 — system prompt = subagent prompt + guardrail constraints + required disclosures.
@@ -143,8 +143,8 @@ Subsequent turns run the subagent's normal `system_prompt`. The session flag
 **User-state model (optional, Conversational agents only).** Orthogonal to the
 system state described above, Conversational domains may declare a
 `conversation.user_state_model` block with a list of states (id, signals,
-guidance). The NLU Processor classifies the user's current mental state
-alongside intent on the same LLM call. The orchestrator resolves the new
+guidance). The dialogue-act NLU classifies the user's current mental state
+(`user_state`) on the same strict-schema LLM call that returns the dialogue acts. The orchestrator resolves the new
 state via `agent_core/src/preprocessing/user_state_resolver.py` — sticky on
 low confidence, transition on confident id change. The active state's
 guidance text is injected into the main LLM system prompt by
@@ -156,7 +156,7 @@ not declare the block are unaffected.
 
 **Streaming path (`POST /stream_turn`):** Agent Core also exposes an async SSE endpoint. `stream_turn()` uses async HTTP clients (`interfaces/async_/`) for all external calls, yields `SignalEvent`s at each pipeline stage, streams LLM tokens split into sentences, runs a per-sentence Trust output check, and emits a final `DoneEvent`. Steps 12–13 (memory write + observability emit) fire via `asyncio.create_task` after `DoneEvent` — never in the response path.
 
-**TurnAssembler:** Every streaming turn runs through `TurnAssembler`, both `POST /stream_turn` (request-scoped: one request = one complete utterance, invoked immediately) and the session endpoints `POST /sessions/{id}/input` + `GET /sessions/{id}/events` (segment stream: semantic gate · silence trigger · max-wait ceiling). It holds `Session` objects keyed by `session_id`; each owns one current `Turn` (segments, event queue, abort signal, `TurnRecord` ledger). A new input or a client disconnect interrupts the turn *cooperatively*: its queue is sealed (#224), it runs on to the orchestrator's next safe point (tool calls are never cut), and the successor waits for it (`interruption.drain_max_ms`). What the interrupted turn held survives in Memory Layer. `turn_carryover` holds its utterances, which the next turn folds into its input (`fold.max_segments`, `carryover.max_age_ms`). `recent_tool_exchanges` holds its completed tool rounds, marked `delivered: false` and replayed with `carryover.undelivered_note`. `POST /process_turn` does not use the assembler. Spec: `docs/superpowers/specs/2026-09-29-turn-assembler-request-mode-design.md`.
+**TurnAssembler:** Every streaming turn runs through `TurnAssembler`, both `POST /stream_turn` (request-scoped: one request = one complete utterance, invoked immediately) and the session endpoints `POST /sessions/{id}/input` + `GET /sessions/{id}/events` (segment stream: silence trigger · max-wait ceiling). It holds `Session` objects keyed by `session_id`; each owns one current `Turn` (segments, event queue, abort signal, `TurnRecord` ledger). A new input or a client disconnect interrupts the turn *cooperatively*: its queue is sealed (#224), it runs on to the orchestrator's next safe point (tool calls are never cut), and the successor waits for it (`interruption.drain_max_ms`). What the interrupted turn held survives in Memory Layer. `turn_carryover` holds its utterances, which the next turn folds into its input (`fold.max_segments`, `carryover.max_age_ms`). `recent_tool_exchanges` holds its completed tool rounds, marked `delivered: false` and replayed with `carryover.undelivered_note`. `POST /process_turn` does not use the assembler. Spec: `docs/superpowers/specs/2026-09-29-turn-assembler-request-mode-design.md`.
 
 **LLM access (`chat_provider/`).** `ChatProviderBase` is the single LLM interface every Agent Core component depends on. Concrete providers (`AnthropicChatProvider`, `OpenAIChatProvider`) are selected via `build_chat_provider(agent_config)` based on `agent.provider`. Each provider owns the wire-format translation, retry/timeout, and OTel telemetry for its SDK; nothing else in agent_core imports the underlying provider library. NLU and language-normalisation use dedicated provider instances (configured by their own `model` fields) so cheap classification calls can run on a smaller model. Multimodal *input* (image blocks) is supported day one; image generation, TTS, ASR, and realtime APIs are deliberately out of scope and would land as sibling abstractions rather than as additions to ChatProviderBase.
 
@@ -253,7 +253,7 @@ Mandatory safety gate. Stateless. Runs on every turn — never skipped. Structur
 
 | Sub-block | File | Status | Responsibility |
 |---|---|---|---|
-| ContentBlock | `blocks/content.py` | ✅ | Phrase-match input/output blocking and escalation routing. Receives `active_risks` from NLU. |
+| ContentBlock | `blocks/content.py` | ✅ | Phrase-match input/output blocking and escalation routing. |
 | GuardrailsBlock | `blocks/guardrails.py` | ✅ | Pre-LLM constraint assembly. Maps active risks → Policy Pack → prompt constraints, disclosures, action gates. |
 | ConsentBlock | `blocks/consent.py` | ✅ | Evaluates user message against consent/decline phrases. Stateless — Agent Core owns flag management. |
 | HiTLBlock | `blocks/hitl.py` | ⏳ | Escalation queue. Returns `holding_message` and `ticket_id`. Queue backend configurable (log → Redis/webhook). |
@@ -342,7 +342,7 @@ Normalises inbound channels and delivers responses. Ships as **three independent
 A channel and an assembly mode are orthogonal concepts. The mode is the wire protocol used to deliver a turn:
 
 - `direct` — one request carries one complete utterance (`POST /process_turn` → one `TurnResult`, or `POST /stream_turn` → SSE, run through the TurnAssembler as a request-scoped turn). Suitable for any channel that has a fully assembled user message before invoking Agent Core.
-- `session` — multi-segment input is buffered in Agent Core's `TurnAssembler` as a segment stream, which decides when to invoke `stream_turn()` (semantic gate · silence trigger · max-wait ceiling). Required only when input arrives as a stream of partial segments.
+- `session` — multi-segment input is buffered in Agent Core's `TurnAssembler` as a segment stream, which decides when to invoke `stream_turn()` (silence trigger · max-wait ceiling). Required only when input arrives as a stream of partial segments.
 
 | mode | submit endpoint | when to pick it |
 |---|---|---|
@@ -452,10 +452,10 @@ Agent Core: consent gate                                  [only if ask_for_conse
   │  user_storage_mode=None, prior turn exists → POST /consent/verify → write user_storage_mode → continue
   │  user_storage_mode set → skip
   ▼
-Agent Core: NLU (internal)                                [intent, entities, confidence, active_risks (optional)]
-  │
-  ▼ (low confidence → early exit)
-Agent Core: POST /check/input → Trust Layer               [MANDATORY — passes active_risks]
+Agent Core: dialogue-act NLU (internal)                   [pending question → frame → strict NLU call → post-processing]
+  │                                                       [→ NLUResult(intent, entities, confidence), session writes, <caller_turn>]
+  ▼
+Agent Core: POST /check/input → Trust Layer               [MANDATORY]
   │
   ▼ (block → TurnResponse(blocked_input_message))
     (escalate → POST /escalate → TurnResponse(holding_message))
@@ -463,7 +463,7 @@ Agent Core: POST /check/input → Trust Layer               [MANDATORY — passe
 Agent Core: Language Normalisation (internal)             [dialect, code-switching, transliteration]
   │
   ▼
-Agent Core: POST /assemble_constraints → Trust Layer      [if active_risks present]
+Agent Core: POST /assemble_constraints → Trust Layer      [guardrail constraints for the active policy pack]
   │  returns: prompt_constraints, required_disclosures, action_gates, refusal_templates
   ▼
 Agent Core: Manager Agent selects subagent + tools        [current_subagent_id + NLU intent → routing rules in config]
@@ -500,7 +500,7 @@ Agent Core: deliver response → Reach Layer
 | Streaming (SSE), via TurnAssembler (request-scoped) | `POST /stream_turn` | `SignalEvent` → `SentenceEvent`s → `DoneEvent` | Web (when SSE preferred), CLI |
 | Session/TurnAssembler | `POST /sessions/{id}/input` + `GET /sessions/{id}/events` | SSE subscription | Voice (only — VAD multi-segment input) |
 
-All three paths run the same 13-step sequence. Every streaming turn goes through TurnAssembler: `/stream_turn` as a request-scoped turn (one request = one complete utterance, invoked immediately, no trigger policy); the session endpoints as a segment stream that calls `stream_turn()` in-process when a trigger fires (semantic gate, silence timer, or max-wait ceiling). `/process_turn` does not use it. Channels and modes are independent — see Reach Layer above for the channel ↔ mode default mapping.
+All three paths run the same 13-step sequence. Every streaming turn goes through TurnAssembler: `/stream_turn` as a request-scoped turn (one request = one complete utterance, invoked immediately, no trigger policy); the session endpoints as a segment stream that calls `stream_turn()` in-process when a trigger fires (silence timer or max-wait ceiling). `/process_turn` does not use it. Channels and modes are independent — see Reach Layer above for the channel ↔ mode default mapping.
 
 ---
 
@@ -571,8 +571,8 @@ dev-kit/
 │   └── ...
 ├── configs/
 │   └── blue-dots/                # blue-dots domain overrides
-│       ├── agent_core.yaml       # primary_model, fallback_model, intents, connectors
-│       ├── knowledge_engine.yaml # glossary mappings, RAG sources, intent filters
+│       ├── agent_core.yaml       # primary_model, fallback_model, NLU slots/act_intents, connectors
+│       ├── knowledge_engine.yaml # glossary mappings, RAG sources, act-intent filters
 │       ├── memory_layer.yaml     # graph schema (profile_graph_relations), merge rules
 │       ├── trust_layer.yaml      # blocked phrases, escalation topics, consent phrases
 │       ├── action_gateway.yaml   # connector endpoints, timeout
@@ -602,76 +602,16 @@ Model names, persona text, tool definitions, guardrail rules, intent definitions
 
 ---
 
-## 7. blue-dots Domain — User Journey Model
+## 7. Blue Dots Domain — Reference Configuration
 
-This section describes the KKB-specific conversation design implemented in the domain config. It is not part of the DPG framework itself — a different domain would configure a different journey.
+The reference domain is **Blue Dots**. Its whole conversation design is domain configuration and is not part of the DPG framework — a different domain configures a different journey. Read it in `dev-kit/configs/blue-dots/`:
 
-### User Personas
+- `agent_core.yaml` — the subagent graph, per-subagent `pending` questions, routing rules, and the `preprocessing.nlu_processor` block (`slots`, `act_intents`, `termination_gate`, `topics`, `signals`, `examples`).
+- `memory_layer.yaml`, `trust_layer.yaml`, `reach_layer.yaml`, `action_gateway.yaml` — the matching blocks.
 
-| Persona | Profile | Primary Constraint |
-|---|---|---|
-| ITI Graduate ★ | 19–24, trade-certified, first job seeker | Distance + skill confidence |
-| Women Returning to Work | 26–38, career gap 2–8 years | Hours + distance + family approval |
-| Daily Wage Labourer | 30–45, informal, no fixed employer | Immediacy + daily income certainty |
-| AI-Displaced Worker | 35–50, formal sector, job eliminated | Income continuity + dignity |
-| Person with Disability | Any age, accessibility needs | Role accessibility + remote options |
-
-★ Primary persona. Others appear at decision-tree branch points.
-
-### Five Mental States (Journey State Machine)
-
-A caller is always in one of five states. Detecting the correct state is the system's primary intelligence task.
-
-| State | `current_mental_state` | System Behaviour |
-|---|---|---|
-| FOG | `profile_building` (start) | Does not know what they want. Deliver market truth first. Never jump to options. |
-| ORIENTATION | `profile_building` → `market_truth` | Collect profile. Then surface live ONEST data. |
-| EVALUATION | `skill_check` → `evaluation` | Compare options. Surface decision parameters. Never push one path. Honest trade-offs. |
-| COMMITMENT | `commitment` | User decided. Remove friction. Consent mandatory before every action. |
-| FOLLOW-THROUGH | `follow_through` | Did employer call? Did course start? Track outcome. Trust is built or broken here. |
-
-### Subagent Graph (KKB)
-
-Conversation flow is defined as a directed graph of subagents in `dev-kit/configs/blue-dots/agent_core.yaml`. Each subagent has its own system prompt, tool list, valid intents, and routing rules. The orchestrator tracks `current_subagent_id` in session state and advances it on each turn based on NLU intent + routing conditions.
-
-| Subagent ID | Entry Condition | Tools | Terminal |
-|---|---|---|---|
-| `profile_building` | Session start (first subagent) | none | No |
-| `market_truth` | Profile hard minimums met | `onest_market_lookup` | No |
-| `skill_check` | User engaged with market truth | `onest_market_lookup` | No |
-| `evaluation` | Skill assessed | `onest_market_lookup` | No |
-| `commitment` | User ready to apply | `onest_apply` | No |
-| `follow_through` | Application submitted | none | No |
-| `counsellor_request` | `counsellor_request` global intent | none | Yes |
-| `capture_dropoff` | User drops off | none | Yes |
-| `ended` | `termination_intent` global intent | none | Yes |
-| `clarification` | Fallback (unrecognised input) | none | No |
+**NLU in this domain.** There is one NLU mode. Per turn the dialogue-act `TurnUnderstander` takes the pending question and known fields, makes one strict-schema call, and code derives the routing intent from the `act_intents` table; typed `slots` replace free-form entities, and `termination_gate` plus `signals` drive the short-circuit and Signal writes. The earlier intent-list mode was removed with no compatibility path; spec §16 records what was removed and what replaced each concept: `docs/superpowers/specs/2026-10-01-nlu-dialogue-acts-design.md`.
 
 **Consent** is handled by the orchestrator before the subagent graph is entered — not by any subagent. See Section 4 Runtime Turn Sequence.
-
-### Profile Collection (5 rounds)
-
-| Round | Fields collected | Layer |
-|---|---|---|
-| 1 | name, age, gender | Identity |
-| 2 | disability_status, location | Identity |
-| 3 | trade_or_stream, iti_pass_year, iti_institute | Capability |
-| 4 | max_distance_km, salary_expectation_min, preferred_shift | Constraint |
-| 5 | target_roles, open_to_relocation | Aspiration |
-
-**Hard minimum fields** (required for ONEST query): `capability.trade_or_stream` + `identity.location`. If missing after Round 5, one grace turn asks only those fields. System proceeds regardless of answer.
-
-**Journey layer fields** (never asked, system-tracked): `session_count`, `current_mental_state`, `last_market_truth_delivered`, `options_presented`, `actions_taken`, `outcomes_tracked`, `drop_off_reason`.
-
-### Returning User Entry Points
-
-| Profile state on return | Entry point |
-|---|---|
-| No profile / expired | Consent gate (if `ask_for_consent: true`), then `profile_building` |
-| `user_storage_mode: anonymous` | Consent gate re-runs (new session, `user_storage_mode` cleared), then `profile_building` |
-| Partial profile (hard min missing) | Resume `profile_building` at saved `collection_round` |
-| Full profile (hard min met) | `market_truth` (skip collection) |
-| Active session within TTL | Resume at `current_subagent_id` saved in session |
 
 ---
 
@@ -694,8 +634,7 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 | Feature | Status | Notes |
 |---|---|---|
 | Language normalisation | ✅ | Dialect, code-switching, transliteration — in Agent Core |
-| NLU (intent + entity) | ✅ | Intent classification, entity extraction, confidence — in Agent Core |
-| NLU active_risks output | ✅ | `active_risks: list[str] \| None` field added to NLUResult |
+| NLU (dialogue acts) | ✅ | Single mode: pending question → frame → strict NLU → post-processing → `<caller_turn>`; routing intent derived from `act_intents` — in Agent Core |
 | Subagent-based routing | ✅ | current_subagent_id tracked; routing rules driven by config graph |
 | Semantic RAG | ✅ | ChromaDB, multilingual embeddings, intent-based filtering |
 | Glossary mapping | ✅ | Config-driven colloquial → canonical |
@@ -716,7 +655,7 @@ Conversation flow is defined as a directed graph of subagents in `dev-kit/config
 | Fail-closed Trust Layer | ✅ | All endpoints and AC HTTP client are fail-closed (resolved) |
 | Reach Layer web adapter | ✅ | Web UI + POST /chat + session restore via Memory Layer (approved exception) |
 | Async SSE streaming (`stream_turn`) | ✅ | Per-sentence Trust output check; `SignalEvent`/`SentenceEvent`/`DoneEvent` |
-| TurnAssembler (multi-segment input) | ✅ | Semantic gate + silence trigger + max-wait ceiling; session endpoints |
+| TurnAssembler (multi-segment input) | ✅ | Silence trigger + max-wait ceiling; session endpoints |
 | Action Gateway adapter framework | ✅ | RestApiAdapter + McpAdapter; config-driven via `tools:[]`; OTel instrumented |
 | Reach Layer restructure (3 channels) | ✅ | `reach_layer/base/` + `cli/` + `web/` + `voice/` as independent deployables |
 | Web UI React SPA | ✅ | React 19 + Vite 6 + Tailwind; dark/light theme; Markdown; Google Sign-In optional |

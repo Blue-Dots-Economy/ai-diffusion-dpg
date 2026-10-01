@@ -19,7 +19,7 @@ def _minimal_valid_config() -> dict:
     return {
         "server": {"host": "0.0.0.0", "port": 8003},
         "trust": {
-            "policy_pack": "kkb_advisory_jobs",
+            "policy_pack": "blue_dots_advisory_jobs",
             "input_rules": {
                 "blocked_phrases": ["bomb"],
                 "escalation_topics": ["suicide"],
@@ -30,7 +30,7 @@ def _minimal_valid_config() -> dict:
                 "output_blocked_message": "blocked",
             },
             "policy_packs": {
-                "kkb_advisory_jobs": {
+                "blue_dots_advisory_jobs": {
                     "guardrails": {
                         "false_certainty": {
                             "severity": "blocker",
@@ -62,9 +62,9 @@ def _minimal_valid_config() -> dict:
 def test_accepts_valid_full_config():
     cfg = MergedConfig.validate_full(_minimal_valid_config())
     assert cfg.server.port == 8003
-    assert cfg.trust.policy_pack == "kkb_advisory_jobs"
-    assert "kkb_advisory_jobs" in cfg.trust.policy_packs
-    guardrails = cfg.trust.policy_packs["kkb_advisory_jobs"].guardrails
+    assert cfg.trust.policy_pack == "blue_dots_advisory_jobs"
+    assert "blue_dots_advisory_jobs" in cfg.trust.policy_packs
+    guardrails = cfg.trust.policy_packs["blue_dots_advisory_jobs"].guardrails
     assert "false_certainty" in guardrails
     assert guardrails["false_certainty"].severity == GuardrailSeverity.blocker
     assert guardrails["false_certainty"].failure_mode == GuardrailFailureMode.block
@@ -106,7 +106,7 @@ def test_rejects_unknown_key_on_input_rules():
 
 def test_rejects_unknown_key_on_guardrail():
     config = _minimal_valid_config()
-    config["trust"]["policy_packs"]["kkb_advisory_jobs"]["guardrails"]["false_certainty"]["id"] = "GR-001"
+    config["trust"]["policy_packs"]["blue_dots_advisory_jobs"]["guardrails"]["false_certainty"]["id"] = "GR-001"
     with pytest.raises(ValidationError) as exc:
         MergedConfig.validate_full(config)
     assert "id" in str(exc.value)
@@ -114,7 +114,7 @@ def test_rejects_unknown_key_on_guardrail():
 
 def test_rejects_unknown_key_on_policy_pack():
     config = _minimal_valid_config()
-    config["trust"]["policy_packs"]["kkb_advisory_jobs"]["risks"] = ["false_certainty"]
+    config["trust"]["policy_packs"]["blue_dots_advisory_jobs"]["risks"] = ["false_certainty"]
     with pytest.raises(ValidationError) as exc:
         MergedConfig.validate_full(config)
     assert "risks" in str(exc.value)
@@ -138,14 +138,14 @@ def test_rejects_unknown_key_on_dignity_check():
 
 def test_rejects_invalid_severity_enum():
     config = _minimal_valid_config()
-    config["trust"]["policy_packs"]["kkb_advisory_jobs"]["guardrails"]["false_certainty"]["severity"] = "critical"
+    config["trust"]["policy_packs"]["blue_dots_advisory_jobs"]["guardrails"]["false_certainty"]["severity"] = "critical"
     with pytest.raises(ValidationError):
         MergedConfig.validate_full(config)
 
 
 def test_rejects_invalid_failure_mode_enum():
     config = _minimal_valid_config()
-    config["trust"]["policy_packs"]["kkb_advisory_jobs"]["guardrails"]["false_certainty"]["failure_mode"] = "ignore"
+    config["trust"]["policy_packs"]["blue_dots_advisory_jobs"]["guardrails"]["false_certainty"]["failure_mode"] = "ignore"
     with pytest.raises(ValidationError):
         MergedConfig.validate_full(config)
 
@@ -167,10 +167,10 @@ def test_rejects_invalid_fail_action_enum():
 def test_guardrail_without_severity_or_failure_mode_is_valid():
     """severity and failure_mode are Optional pending GH-170 implementation."""
     config = _minimal_valid_config()
-    del config["trust"]["policy_packs"]["kkb_advisory_jobs"]["guardrails"]["false_certainty"]["severity"]
-    del config["trust"]["policy_packs"]["kkb_advisory_jobs"]["guardrails"]["false_certainty"]["failure_mode"]
+    del config["trust"]["policy_packs"]["blue_dots_advisory_jobs"]["guardrails"]["false_certainty"]["severity"]
+    del config["trust"]["policy_packs"]["blue_dots_advisory_jobs"]["guardrails"]["false_certainty"]["failure_mode"]
     cfg = MergedConfig.validate_full(config)
-    gr = cfg.trust.policy_packs["kkb_advisory_jobs"].guardrails["false_certainty"]
+    gr = cfg.trust.policy_packs["blue_dots_advisory_jobs"].guardrails["false_certainty"]
     assert gr.severity is None
     assert gr.failure_mode is None
 
@@ -207,11 +207,11 @@ def test_open_map_allows_domain_defined_pack_names():
         "trust": {
             "policy_packs": {
                 "fasal_doctor_advisory": {"guardrails": {}},
-                "kkb_advisory_jobs": {"guardrails": {}},
+                "blue_dots_advisory_jobs": {"guardrails": {}},
             }
         }
     })
-    assert set(cfg.trust.policy_packs.keys()) == {"fasal_doctor_advisory", "kkb_advisory_jobs"}
+    assert set(cfg.trust.policy_packs.keys()) == {"fasal_doctor_advisory", "blue_dots_advisory_jobs"}
 
 
 def test_consent_store_default_path():

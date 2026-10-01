@@ -583,7 +583,7 @@ class SubAgentSchema(BaseModel):
 class AgentWorkflowConfig(BaseModel):
     """Full structural definition of the multi-subagent workflow for a domain."""
 
-    workflow_id: str = Field(..., description="Unique workflow identifier, e.g. kkb_iti_graduate")
+    workflow_id: str = Field(..., description="Unique workflow identifier, e.g. blue_dots_worker")
     version: str = Field(..., description="Semantic version string, e.g. '1.0.0'")
     agent_system_prompt: str = Field(
         default="",

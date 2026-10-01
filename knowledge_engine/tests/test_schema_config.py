@@ -29,7 +29,7 @@ def _minimal_valid_config() -> dict:
                 },
                 "static_knowledge_base": {
                     "enabled": True,
-                    "collection_name": "kkb_knowledge",
+                    "collection_name": "blue_dots_knowledge",
                     "chroma_persist_dir": "/app/chroma_db",
                     "top_k": 3,
                     "similarity_threshold": 0.65,

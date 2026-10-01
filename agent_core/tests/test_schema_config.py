@@ -82,7 +82,7 @@ def _minimal_valid_config() -> dict:
         "agent_workflow": {
             "workflow_id": "blue-dots",
             "version": "1.0.0",
-            "agent_system_prompt": "You are KKB.",
+            "agent_system_prompt": "You are Blue Dots.",
             "subagents": [
                 {
                     "id": "entry",
@@ -707,7 +707,7 @@ def test_rejects_semantic_gate_in_turn_assembler():
 
 
 # ---------------------------------------------------------------------------
-# Removed intent-mode keys (spec §16): a config still carrying one fails startup
+# Removed legacy NLU keys (spec §16): a config still carrying one fails startup
 # ---------------------------------------------------------------------------
 
 def _set_nlu(key, value):

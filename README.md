@@ -1,8 +1,8 @@
 # AI Composition Framework
 
-A modular framework for building AI-powered voice and chat systems from **7 standardised Digital Public Goods (DPG) building blocks**, configured entirely via YAML. The runtime blocks are fixed; all domain-specific intelligence — persona, knowledge, safety rules, connectors, intents — lives in a domain configuration kit. No source code changes are needed to deploy to a new domain.
+A modular framework for building AI-powered voice and chat systems from **7 standardised Digital Public Goods (DPG) building blocks**, configured entirely via YAML. The runtime blocks are fixed; all domain-specific intelligence — persona, knowledge, safety rules, connectors, dialogue-act NLU — lives in a domain configuration kit. No source code changes are needed to deploy to a new domain.
 
-Reference domain: **KKB (Kaam Ki Baat)** — a labour-market assistant for informal workers in India, helping users find trades, check market salaries, and apply to ONEST job postings.
+Reference domain: **Blue Dots** (`dev-kit/configs/blue-dots/`) — a voice assistant that onboards callers and connects them with opportunities.
 
 ---
 
@@ -33,17 +33,17 @@ At startup, each block deep-merges these two files — domain values override fr
 
 The **Configuration Agent** (`dev-kit/dev_kit/agent/`) interviews a domain expert through a structured chat session and generates these YAML files automatically. See [dev-kit/README.md](dev-kit/README.md) for full details.
 
-### What each domain YAML configures (KKB example)
+### What each domain YAML configures (Blue Dots example)
 
 | File | Key configuration |
 |------|-------------------|
-| `agent_core.yaml` | Primary/fallback models, 40+ intents, 20+ entity types, 10-subagent workflow graph, connectors, persona |
-| `knowledge_engine.yaml` | 8 glossary mappings, 5 RAG source documents, similarity threshold, intent→doc_type filters |
-| `memory_layer.yaml` | 24 UserProfile declared fields, graph edge types, session TTLs, reengagement triggers |
-| `trust_layer.yaml` | Blocked phrases, escalation topics, 5 Policy Pack guardrails (GR-001–GR-005), consent phrases |
+| `agent_core.yaml` | Primary/fallback models, dialogue-act NLU (slots, act_intents, termination gate), subagent workflow graph, connectors, persona |
+| `knowledge_engine.yaml` | Glossary mappings, RAG source documents, similarity threshold, act-intent→doc_type filters |
+| `memory_layer.yaml` | UserProfile declared fields, graph edge types, session TTLs, reengagement triggers |
+| `trust_layer.yaml` | Blocked phrases, escalation topics, Policy Pack guardrails, consent phrases |
 | `action_gateway.yaml` | ONEST API endpoints, timeouts |
 | `reach_layer.yaml` | Agent Core URL, web adapter UI text |
-| `observability_layer.yaml` | 4 lifecycle states, 3 custom metrics, SLI thresholds, PII field exclusions |
+| `observability_layer.yaml` | Lifecycle states, custom metrics, SLI thresholds, PII field exclusions |
 
 The framework defaults (`dev-kit/dpg/`) provide safe starting values for every field; domain overrides only need to specify what changes.
 

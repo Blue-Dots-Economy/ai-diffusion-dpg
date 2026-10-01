@@ -470,7 +470,7 @@ class LanguageNormalisationConfig(BaseModel):
 
     # GH-313: when False the leading LLM call is skipped; the main LLM mirrors
     # the user's language via a directive in build_system_prompt(). Defaults to
-    # True for backward compatibility; KKB sets False.
+    # True for backward compatibility; Blue Dots sets False.
     enabled: bool = True
 
     # Per-helper provider override (#287 follow-up). When set, build_chat_provider

@@ -129,7 +129,7 @@ class UserStateClassification:
     """
     Classification output for the user's mental state dimension.
 
-    Populated by NLU Processor when the domain declares conversation.user_state_model.
+    Populated by the dialogue-act NLU when the domain declares conversation.user_state_model.
     None on NLUResult when the model is disabled or absent.
     """
 

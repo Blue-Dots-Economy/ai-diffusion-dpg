@@ -2,7 +2,7 @@
 """
 agent_core/src/understanding/understander.py
 
-TurnUnderstander: the dialogue_act replacement for NLUProcessor.process()
+TurnUnderstander: the dialogue-act NLU: one strict-JSON understanding call per turn
 (NLU dialogue-acts spec §5–§6, §9, §10). Pure apart from the LLM call; the
 orchestrator applies ``TurnUnderstanding.writes`` and ``signals``.
 

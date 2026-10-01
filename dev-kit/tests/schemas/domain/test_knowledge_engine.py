@@ -31,7 +31,7 @@ def test_static_kb_minimal_valid_uses_defaults():
 def test_static_kb_collection_name_pattern():
     """collection_name must match snake_case pattern."""
     StaticKnowledgeBaseSection(
-        collection_name="kkb_docs",
+        collection_name="blue_dots_docs",
         metadata_filters=MetadataFiltersConfig(use_intent_filter=False),
     )
     with pytest.raises(ValidationError):

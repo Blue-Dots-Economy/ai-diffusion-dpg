@@ -170,7 +170,7 @@ class KnowledgeEngineBase(ABC):
     Prompt assembly (system prompt + messages) is Agent Core's responsibility,
     handled by ManagerAgent.build_system_prompt() and build_messages().
 
-    Language Normalisation and NLU Processor run in Agent Core before this call.
+    Language Normalisation and the dialogue-act NLU run in Agent Core before this call.
     KE receives their results as parameters and runs only Glossary, Static KB, Multimodal.
     """
 

@@ -4,7 +4,7 @@ knowledge_engine/src/engine.py
 KnowledgeEngine — the orchestrator for the 3 retrieval blocks.
 
 Implements KnowledgeEngineBase. Called by Agent Core after Language Normalisation
-and NLU Processor have already run (Agent Core steps 3-4). KE receives the NLU
+and the dialogue-act NLU have already run (Agent Core steps 3-4). KE receives the NLU
 results as parameters and returns raw knowledge chunks.
 
 Prompt assembly (system prompt + messages) is Agent Core's responsibility,
@@ -43,7 +43,7 @@ from src.blocks.multimodal_input_handler import MultimodalInputHandlerBlock
 logger = logging.getLogger(__name__)
 
 # Fixed execution order — block name maps to class.
-# Language Normalisation and NLU Processor have been moved to Agent Core.
+# Language Normalisation and the NLU have been moved to Agent Core.
 _BLOCK_REGISTRY: list[tuple[str, type[KnowledgeBlock]]] = [
     ("glossary", GlossaryBlock),
     ("static_knowledge_base", StaticKnowledgeBaseBlock),

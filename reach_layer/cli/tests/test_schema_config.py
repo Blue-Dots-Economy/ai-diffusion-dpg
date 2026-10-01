@@ -59,7 +59,7 @@ def _minimal_valid_config() -> dict:
                         "session_ttl_s": 86400,
                         "cookie_samesite": "lax",
                     },
-                    "ui": {"app_name": "Kaam Ki Baat", "app_icon": "💼"},
+                    "ui": {"app_name": "Blue Dots", "app_icon": "💼"},
                 },
                 "voice": {
                     "enabled": True,

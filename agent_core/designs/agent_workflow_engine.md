@@ -6,7 +6,7 @@ Version 1.0 · March 2026
 
 ## Overview
 
-The Agent Core becomes workflow-aware. Any usecase deployer defines their conversation as an `AgentWorkflow` — a collection of `SubAgent` units, each owning its own instructions, tools, and intents. The engine loads this workflow at startup and activates the right subagent turn by turn — determining where the user is, what intents are valid, and where to transition next — entirely driven by config.
+The Agent Core becomes workflow-aware. Any usecase deployer defines their conversation as an `AgentWorkflow` — a collection of `SubAgent` units, each owning its own instructions, tools, and pending questions. The engine loads this workflow at startup and activates the right subagent turn by turn — determining where the user is, what intents are valid, and where to transition next — entirely driven by config.
 
 This replaces the flat `WorkflowStep` enum and implicit LLM-driven routing with an explicit, declarative subagent model.
 
@@ -17,9 +17,9 @@ This replaces the flat `WorkflowStep` enum and implicit LLM-driven routing with 
 | Concept | Description |
 |---|---|
 | `AgentWorkflow` | The full usecase workflow — a collection of subagents and global routing rules |
-| `SubAgent` | A single state in the conversation. Owns its own intents, routing, tools, and LLM system prompt |
+| `SubAgent` | A single state in the conversation. Owns its own pending questions, routing, tools, and LLM system prompt |
 | `current_subagent_id` | Stored in session state. The only piece of graph state the Memory Layer holds |
-| Intent-scoped NLU | NLU classifies only within the valid intents of the current subagent + global intents |
+| Pending-question NLU | The dialogue-act NLU reads each turn against the current subagent's pending question; routing intents are derived from dialogue acts (`act_intents`) |
 | Routing | Deterministic: intent + optional session field conditions → next_subagent_id |
 
 ---
@@ -39,8 +39,9 @@ subagents:
     special_handler: <string|null>      # Optional. Bypasses LLM entirely.
                                         # Values: "hitl" | "whatsapp_handoff" | null
 
-    valid_intents: [<intent_name>]      # NLU classifies ONLY within this set + global_intents.
-                                        # Scopes intent classification to what is meaningful here.
+    pending: [<question_id>]            # Questions this subagent can have outstanding. The NLU
+                                        # interprets the caller's reply against the pending
+                                        # question (see the NLU spec, section 16).
 
     tools: [<tool_name>]                # Action Gateway tools available at this subagent.
                                         # Only these tool definitions are passed to the LLM.
@@ -91,7 +92,7 @@ The top-level config block that wraps all subagents and defines workflow-wide ru
 
 ```yaml
 agent_workflow:
-  workflow_id: <string>                    # Usecase identifier (e.g. "kkb_iti_graduate")
+  workflow_id: <string>                    # Usecase identifier (e.g. "blue_dots_worker")
   version: <string>                     # Semver. Logged with every turn for auditability.
 
   agent_system_prompt: |               # Defines the entire use case at the agent level.
@@ -102,12 +103,9 @@ agent_workflow:
                                        # Channel tone and language style are injected at runtime
                                        # by the Reach Layer / Language Normalisation — not here.
 
-  global_intents: [<intent_name>]       # Intents valid at ANY subagent regardless of current subagent.
-                                        # Examples: counsellor_request, termination_intent,
-                                        # whatsapp_handoff_request.
-                                        # These are ALWAYS added to NLU's classification set.
-
-  global_routing:                       # Routing rules for global_intents. Applied after
+  global_routing:                       # Routing rules for intents that apply at ANY subagent
+                                        # (e.g. counsellor_request, termination_intent). The
+                                        # intents come from the gated act_intents rows. Applied after
                                         # subagent-level routing fails to match.
     - intent: <intent_name>
       next_subagent_id: <subagent_id>
@@ -135,10 +133,7 @@ agent_workflow:
 
 1. Load `agent_workflow` block from domain config YAML.
 2. Parse into `AgentWorkflow` object. Validate: exactly one `is_start` subagent, all `next_subagent` references resolve, no orphaned subagents.
-3. Pre-compute NLU intent set per subagent: merge subagent.valid_intents + workflow.global_intents for every
-   subagent and store as a dict keyed by subagent_id. This is static after startup — computed once,
-   looked up by subagent_id on every turn instead of recomputing the merge each time.
-   Example: { "market_truth": ["interested_engaged", "pay_disappointment", ..., "counsellor_request"] }
+3. Validate the `preprocessing.nlu_processor` dialogue-act block against the workflow (pending ids, `act_intents` intents and routing references).
 
 4. Pre-compute tool definition set per subagent: for each subagent, fetch the full tool definitions from
    Action Gateway for only the tools listed in subagent.tools. Store as a dict keyed by subagent_id.
@@ -162,10 +157,10 @@ Step 3:  Safety check on input (Trust Layer) — unchanged
 
 Step 4:  Language Normalisation — unchanged
 
-Step 5:  NLU Processor
-         → pass current_subagent.valid_intents + workflow.global_intents as the allowed intent set
-         → NLU classifies intent AND extracts entities in a single call
-         → Workflow Gate writes extracted entities to session state synchronously
+Step 5:  Dialogue-act NLU (TurnUnderstander)
+         → resolve the pending question, build the frame, make one strict-schema call
+         → post-processing derives the routing intent and typed slot values in a single pass
+         → Workflow Gate writes the slot values to session state synchronously
            (routing in Step 6 sees current-turn values, not just last-turn state)
 
 Step 6:  Determine next_subagent_id via routing resolution (see Routing Algorithm below)
@@ -271,17 +266,7 @@ session state (key additions):
 
 ## NLU Scoping
 
-The NLU processor receives the scoped intent set instead of the full global intent list:
-
-```python
-# Before (flat list)
-nlu_intents = config.preprocessing.nlu.intents  # all intents, always
-
-# After (scoped)
-nlu_intents = current_subagent.valid_intents + workflow.global_intents
-```
-
-This improves classification accuracy: NLU is not asked to distinguish between intents that are not meaningful at the current stage.
+NLU is scoped by the question the agent just asked, not by an intent list. The dialogue-act NLU receives the current subagent's pending question and the known fields, classifies the caller's dialogue acts, and code derives the routing intent from the `act_intents` table. This keeps classification accurate without asking the model to choose among intents that are not meaningful at the current stage. See `docs/superpowers/specs/2026-10-01-nlu-dialogue-acts-design.md` §16.
 
 ---
 
@@ -356,7 +341,7 @@ Sections that remain unchanged: `agent`, `preprocessing`, `connectors`, `trust`,
 1. Exactly one subagent has `is_start: true`.
 2. Every `next_subagent_id` reference in routing rules resolves to a subagent id in the workflow.
 3. Every tool name in `subagent.tools` must exist in the Action Gateway tool registry.
-4. Every intent in `subagent.valid_intents` must exist in `preprocessing.nlu.intents`.
-5. Global intents must NOT appear in any subagent's `valid_intents` (they're added automatically).
+4. Every `pending` id and every `act_intents` row's `pending` key must resolve.
+5. An `act_intents` intent must be used by a routing rule (framework-handled intents such as `language_switch_request` are exempt).
 6. Terminal subagents have no routing rules.
 7. At least one routing rule per non-terminal subagent (or a catch-all `"*"` rule).

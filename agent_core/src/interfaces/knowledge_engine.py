@@ -7,7 +7,7 @@ The Knowledge Engine performs RAG retrieval over domain documents and returns
 raw chunks. Agent Core (via ManagerAgent) is responsible for assembling the
 final system prompt and messages from the retrieved chunks.
 
-Language Normalisation and NLU Processor run in Agent Core (steps 3-4 of
+Language Normalisation and the dialogue-act NLU run in Agent Core (steps 3-4 of
 process_turn). KE receives their results as parameters for intent-based
 filtering and glossary normalisation.
 """

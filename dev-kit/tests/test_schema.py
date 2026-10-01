@@ -615,7 +615,7 @@ class TestWebChannelConfigMode:
 
 
 class TestRemovedIntentModeKeys:
-    """The flat schema mirror drops the intent-mode keys (NLU single-mode, spec §16)."""
+    """The flat schema mirror drops the removed legacy NLU keys (NLU single-mode, spec §16)."""
 
     @pytest.mark.parametrize("key", ["mode", "intents", "entities", "domain_instruction",
                                      "confidence_threshold", "sentiment_classes"])

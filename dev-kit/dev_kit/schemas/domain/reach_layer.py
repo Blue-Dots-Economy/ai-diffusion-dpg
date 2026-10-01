@@ -94,7 +94,7 @@ class VoiceAgentCoreClient(BaseModel):
 class VadConfig(BaseModel):
     """Silero VAD tuning for telephony audio (8 kHz). Mirrors runtime VadConfig.
 
-    KKB tightens stop_secs to 1.0 for Hindi cadence with rural callers.
+    Blue Dots tightens stop_secs to 1.0 for Hindi cadence with rural callers.
     """
     model_config = ConfigDict(extra="forbid")
     stop_secs: float = Field(default=0.4, ge=0.0, le=10.0)

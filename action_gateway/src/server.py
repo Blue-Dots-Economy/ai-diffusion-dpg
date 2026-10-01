@@ -216,7 +216,7 @@ def create_app(registry: AdapterRegistry) -> FastAPI:
     # Mock upstream endpoints (GH-151 follow-up)
     # ------------------------------------------------------------------
     # Deterministic canned responses backing the ``get_profile``,
-    # ``update_profile``, and ``apply_job`` tools in the KKB config. They
+    # ``update_profile``, and ``apply_job`` tools in the Blue Dots config. They
     # live on the Action Gateway itself so the existing RestApiAdapter
     # can call them via http://action_gateway:9999/mock/... without any
     # extra service, while still exercising the full tool → HTTP →

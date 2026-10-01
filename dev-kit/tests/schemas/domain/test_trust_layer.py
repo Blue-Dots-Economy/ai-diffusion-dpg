@@ -164,14 +164,14 @@ def test_trust_section_minimal():
 def test_trust_section_with_policy_pack():
     t = TrustSection(
         **_minimal_trust_section_kwargs(),
-        policy_pack="kkb_advisory",
+        policy_pack="blue_dots_advisory",
         policy_packs={
-            "kkb_advisory": PolicyPackConfig(guardrails={
+            "blue_dots_advisory": PolicyPackConfig(guardrails={
                 "medical": GuardrailConfig(severity="blocker"),
             }),
         },
     )
-    assert t.policy_pack == "kkb_advisory"
+    assert t.policy_pack == "blue_dots_advisory"
 
 
 def test_trust_section_policy_pack_must_be_declared():

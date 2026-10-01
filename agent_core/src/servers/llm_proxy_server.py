@@ -3,7 +3,7 @@ agent_core/src/servers/llm_proxy_server.py
 
 FastAPI application exposing the internal LLM proxy endpoint.
 
-NOTE: This server is NOT currently used. Language Normalisation and NLU Processor
+NOTE: This server is NOT currently used. Language Normalisation and the dialogue-act NLU
 call their injected ChatProviderBase directly. The proxy endpoint is retained so
 that other DPG layers (e.g. Trust Layer, Action Gateway) can use it in the
 future without requiring their own provider API key.

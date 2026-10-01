@@ -326,7 +326,7 @@ def test_user_state_model_enabled_with_states_still_validates_default():
 # -- TtsRulesConfig ----------------------------------------------------------
 
 def test_tts_rules_includes_email_and_named_entities():
-    """KKB has these fields."""
+    """Blue Dots has these fields."""
     t = TtsRulesConfig(email="Spell email", named_entities="Speak entities")
     assert t.email == "Spell email"
     assert t.named_entities == "Speak entities"
@@ -491,7 +491,7 @@ def _make_subagent(id="greeting", **kw):
 
 def _workflow_kwargs(**overrides):
     base = dict(
-        workflow_id="kkb_demo",
+        workflow_id="blue_dots_demo",
         version="1.0.0",
         agent_system_prompt="A demo agent for testing the workflow validators.",
         subagents=[_make_subagent(is_start=True)],
@@ -503,7 +503,7 @@ def _workflow_kwargs(**overrides):
 
 def test_workflow_minimal_valid():
     w = AgentWorkflowSection(**_workflow_kwargs())
-    assert w.workflow_id == "kkb_demo"
+    assert w.workflow_id == "blue_dots_demo"
 
 
 def test_workflow_workflow_id_pattern():
@@ -734,7 +734,7 @@ def test_subagent_accepts_pending():
     assert sa.pending[0].options_from.id_field == "item_id"
 
 
-# -- Removed intent-mode keys (NLU single-mode, spec §16) --------------------
+# -- Removed legacy NLU keys (NLU single-mode, spec §16) --------------------
 
 @pytest.mark.parametrize("key, value", [
     ("mode", "dialogue_act"), ("intents", ["greet"]), ("entities", ["name"]),

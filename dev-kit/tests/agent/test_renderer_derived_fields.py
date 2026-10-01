@@ -206,9 +206,9 @@ def test_slug_function_handles_special_chars():
 
 def test_slug_end_to_end_with_apply():
     """apply_derived_fields uses the same slug logic as the slug() function."""
-    project_name = "KKB Finance -- 2025!"
+    project_name = "Blue Dots Finance -- 2025!"
     expected_slug = slug(project_name)
-    assert expected_slug == "kkb_finance_2025"
+    assert expected_slug == "blue_dots_finance_2025"
 
     accumulator = _fresh_accumulator()
     intake = _intake(project_name=project_name)

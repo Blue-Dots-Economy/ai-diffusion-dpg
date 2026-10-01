@@ -3,7 +3,7 @@ import pytest
 from pydantic import ValidationError
 
 
-def test_from_config_full_kkb_config():
+def test_from_config_full_blue_dots_config():
     from schema.config import ObservabilityConfig, InstrumentType
     config = {
         "observability": {

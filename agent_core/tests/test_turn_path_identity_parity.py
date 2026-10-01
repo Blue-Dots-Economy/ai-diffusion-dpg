@@ -613,6 +613,6 @@ def test_sync_nlu_log_prints_entity_keys_not_values(caplog):
                         nlu_result=NLUResult(intent="any_input", entities={"name": "Ramesh Kumar"}, confidence=0.9))
     with caplog.at_level(logging.INFO, logger="src.orchestrator"):
         agent.process_turn(_turn_input("मेरा नाम Ramesh Kumar है"))
-    lines = [r.getMessage() for r in caplog.records if "[STEP 5] NLU Processor  ✓" in r.getMessage()]
+    lines = [r.getMessage() for r in caplog.records if "[STEP 5] NLU  ✓" in r.getMessage()]
     assert lines and "name" in lines[0]
     assert "Ramesh" not in lines[0]

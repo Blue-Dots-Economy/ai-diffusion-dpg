@@ -472,7 +472,7 @@ class TurnAssembler(TurnAssemblerBase):
 
         Creates a new Session (and first Turn) if this is the first segment for
         the session. On first segment, also fetches context_bundle from Memory
-        Layer for the semantic completeness gate.
+        Layer and caches it on the Turn.
 
         If the current turn is already invoked (barge-in), sets the abort signal
         on the current turn and installs a new Turn with the barge-in segment.
@@ -556,7 +556,7 @@ class TurnAssembler(TurnAssemblerBase):
                 },
             )
 
-        # Outside the lock: cache context on first segment for the semantic gate.
+        # Outside the lock: cache context on the first segment.
         if not turn._context_fetched and self._async_memory:
             await self._fetch_context(turn, segment)
 
@@ -1177,9 +1177,9 @@ class TurnAssembler(TurnAssemblerBase):
     async def _fetch_context(self, turn: Turn, segment: SegmentInput) -> None:
         """Fetch context_bundle from Memory Layer on first segment.
 
-        Design decision #2: The semantic gate needs current_question and
-        current_subagent_id from session state. We fetch this once and cache it
-        on the Turn. If the fetch fails, the semantic gate falls through to timers.
+        Design decision #2: current_question and current_subagent_id come from
+        session state. We fetch this once and cache it on the Turn. If the fetch
+        fails the turn proceeds without cached context; timers still function.
 
         Args:
             turn: The current Turn (cache target).
@@ -1204,8 +1204,8 @@ class TurnAssembler(TurnAssemblerBase):
                 },
             )
         except Exception as e:
-            # Context fetch failure is non-fatal — semantic gate will work
-            # without context, just with less accuracy. Timers still function.
+            # Context fetch failure is non-fatal: the turn proceeds without
+            # cached context. Timers still function.
             logger.warning(
                 "turn_assembler.context_fetch_error",
                 extra={
