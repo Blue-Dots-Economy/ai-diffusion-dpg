@@ -53,9 +53,7 @@ tools:
       Returning after a break), experience_years
       (workExperienceYearsConditional: 0 / < 1 Year / 1 Year /
       2 Years / 3 Years / 3-5 Years / 5-10 Years / 10-15 Years /
-      15+ Years / Other), qualification
-      (highestQualificationOrSkill: School / College / ITI Other
-      Vocational Trainings / Certification Learned on the job),
+      15+ Years / Other),
       job_nature (natureOfJobsInterestedIn: Internship / Apprenticeship
       / Full-time / Flexible), help_needed (otherHelpNeeded: Training /
       Accommodation / Travel / Other). The trade field may be empty or
@@ -298,7 +296,14 @@ tools:
             workExperience: "{work_experience}"
             workExperienceYearsConditional: "{experience_years}"
             nameOfJobRolesInterestedIn: "{trade}"
-            highestQualificationOrSkill: "{qualification}"
+            # highestQualificationOrSkill is NOT sent: UAT's profile_1.0 schema
+            # rejects it outright — `400 INVALID_ITEM_STATE: must NOT have
+            # additional properties`. UAT models qualification as
+            # `educationCategory` with a different vocabulary ("ITI", …), not a
+            # rename of this field. The voice flow never asks for it, but the
+            # param was agent-supplied and optional, so one hallucinated value
+            # would have failed the whole save. Measured field by field against
+            # UAT: every other item_state key below is accepted.
             natureOfJobsInterestedIn: "{job_nature}"
             otherHelpNeeded: "{help_needed}"
         # `required: true` here is not documentation — it becomes the
@@ -391,14 +396,6 @@ tools:
             type: string
             required: false
             description: 'nameOfJobRolesInterestedIn (e.g. "Plumber").'
-          - name: qualification
-            source: agent
-            type: string
-            required: false
-            description: >
-              highestQualificationOrSkill. One of: "School", "College",
-              "ITI / Other Vocational Trainings", "Certification /
-              Learned on the job".
           - name: job_nature
             source: agent
             type: string
