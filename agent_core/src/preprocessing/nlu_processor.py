@@ -4,9 +4,10 @@ agent_core/src/nlu_processor.py
 NLU intent classification, entity extraction, and sentiment detection —
 executed in Agent Core before the KE call.
 
-Uses a single LLM call (Haiku). Recent session history is included in the LLM
-messages so the model can resolve context-dependent intents such as follow-up
-questions ("tell me more", "what about plumber?").
+Uses a single LLM call. The user message carries the current workflow step,
+the last bot reply (`current_question`), stored profile field names and the
+utterance. Conversation history is not injected; see the dialogue_act mode
+(`src/understanding/`) for a context-rich alternative.
 
 On any LLM failure or JSON parse error, degrades gracefully:
     returns NLUResult(intent="unknown", confidence=0.0, ...).
@@ -95,8 +96,10 @@ class NLUProcessor:
     """
     Classifies intent, extracts entities, and detects sentiment via a single LLM call.
 
-    Injects recent session history into the LLM prompt so the model can resolve
-    context-dependent follow-up messages (e.g. "tell me more about that").
+    The user message carries the current workflow step, the last bot reply
+    (`current_question`), stored profile field names and the utterance.
+    Conversation history is not injected; see the dialogue_act mode
+    (`src/understanding/`) for a context-rich alternative.
 
     Instantiated once by AgentCore at startup — config is parsed once in __init__
     and reused across all sessions. Config section: preprocessing.nlu_processor

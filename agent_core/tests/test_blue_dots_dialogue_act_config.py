@@ -1,0 +1,122 @@
+"""The Blue Dots domain config validates in both NLU modes; pending questions resolve as designed."""
+from pathlib import Path
+
+import pytest
+
+from eval.nlu.offline import OfflineGateway, load_merged_config
+from src.schema.config import MergedConfig
+from src.tool_registry import ToolRegistry
+from src.understanding.config import DialogueActConfig
+from src.understanding.pending import PendingResolver
+from src.workflow_loader import AgentWorkflowLoader
+
+BLUE_DOTS = Path(__file__).resolve().parents[2] / "dev-kit" / "configs" / "blue-dots"
+
+
+def _load(mode):
+    cfg = load_merged_config(BLUE_DOTS, mode)
+    MergedConfig.validate_full(cfg)
+    wf = AgentWorkflowLoader().load(config=cfg, tool_registry=ToolRegistry(cfg, OfflineGateway(cfg)))
+    return cfg, wf
+
+
+def test_intent_mode_still_loads_and_is_the_default():
+    cfg, _ = _load("intent")
+    import yaml
+    raw = yaml.safe_load((BLUE_DOTS / "agent_core.yaml").read_text(encoding="utf-8"))
+    assert raw["preprocessing"]["nlu_processor"]["mode"] == "intent"
+
+
+def test_dialogue_act_mode_loads():
+    cfg, _ = _load("dialogue_act")
+    da = DialogueActConfig.from_config(cfg)
+    assert {"consent_response", "age", "trade", "location", "name"} <= set(da.slots)
+    assert da.slots["age"].min == 5 and da.slots["age"].max == 99
+
+
+@pytest.mark.parametrize("step, state, expected", [
+    ("opening", {}, "consent"),
+    ("opening", {"consent_response": "granted"}, "age"),
+    ("opening", {"consent_given": True, "has_age": True}, None),
+    ("job_match", {}, "select_job"),
+    ("apply_confirm", {"applications_submitted": 0}, "submit_confirm"),
+    ("apply_confirm", {"applications_submitted": 1}, "closing_offer"),
+])
+def test_pending_resolution(step, state, expected):
+    _, wf = _load("dialogue_act")
+    p = PendingResolver(wf).resolve(step, state)
+    assert (p.id if p else None) == expected
+
+
+def test_off_track_rule_precedes_catch_all_everywhere():
+    _, wf = _load("dialogue_act")
+    for sid, sub in wf.subagents.items():
+        if sub.is_terminal or not sub.routing:
+            continue
+        intents = [r.intent for r in sub.routing]
+        if "*" in intents:
+            assert "off_track" in intents and intents.index("off_track") < intents.index("*"), sid
+
+def test_blue_dots_journey_routes_end_to_end():
+    """Real TurnUnderstander + real routing over the Blue Dots workflow, scripted NLU (spec §12)."""
+    from eval.nlu.offline import StaticToolCache
+    from src.understanding.dialogue_act_nlu import DialogueActNLUBase
+    from src.understanding.models import DialogueActResult
+    from src.understanding.understander import TurnContext, TurnUnderstander
+    from tests.test_stream_turn import _make_agent_core
+
+    class _Scripted(DialogueActNLUBase):
+        def __init__(self, results):
+            self._results = list(results)
+
+        def classify(self, user_message):
+            return self._results.pop(0), None, 1
+
+    def R(*acts, relation="answers_pending", option=None, **slots):
+        return DialogueActResult(acts=acts, relation=relation, option=option, slots=slots)
+
+    seeds = {"opening_phrase_emitted": True, "trade": "", "location": "", "name": "", "age": 0,
+             "profile_item_id": "", "applications_submitted": 0}
+    jobs = [{"item_id": "j1", "role": "Welder", "company": "Flipkart"},
+            {"item_id": "j2", "role": "Welder", "company": "Titan"}]
+    # (subagent the turn starts in, scripted NLU result, tool effects landing after routing)
+    script = [
+        ("opening", R("affirm", consent_response="granted"), {}),
+        ("opening", R("provide_info", age=25), {}),
+        ("profile_resolve", R("provide_info", trade="welder"), {}),
+        ("profile_resolve", R("provide_info", location="bengaluru"), {}),
+        ("job_match", R("other", relation="unrelated"), {}),
+        ("job_match", R("other", relation="unrelated"), {}),
+        ("job_match", R("other", relation="unclear"), {}),                       # 3rd → off_track
+        ("job_match", R("select", option=1), {}),
+        ("profile_setup", R("provide_info", name="Arun"), {"profile_item_id": "p1"}),  # save_profile mapping
+        ("profile_setup", R("affirm", relation="answers_other"), {}),
+        ("apply_confirm", R("acknowledge", relation="unclear"), {}),             # thank-you before submit
+        ("apply_confirm", R("affirm"), {"applications_submitted": 1}),           # apply_job mapping
+        ("apply_confirm", R("acknowledge"), {}),
+    ]
+    cfg, wf = _load("dialogue_act")
+    und = TurnUnderstander(DialogueActConfig.from_config(cfg), wf, _Scripted([r for _, r, _ in script]))
+    agent = _make_agent_core(workflow=wf)
+    state, sid, trail = dict(seeds), "opening", []
+    for expected_step, _, tool_effects in script:
+        assert sid == expected_step, trail
+        u = und.understand(TurnContext(subagent_id=sid, state=dict(state), session=dict(state), segments=["x"],
+                                       recent=[], tool_cache=StaticToolCache({"fetch_jobs": jobs})))
+        for w in u.writes:
+            state[w.key] = w.value
+        nxt, rule = agent._resolve_next_subagent(current_subagent=wf.subagents[sid], nlu_result=u.nlu_result,
+                                                 session=state)
+        state.update(rule.session_writes if rule else {})
+        state.update(tool_effects)
+        trail.append((u.nlu_result.intent, nxt))
+        sid = nxt
+    intents = [i for i, _ in trail]
+    assert trail[6] == ("off_track", "job_match")
+    assert intents[7] == "job_pick" and state["selected_job_item_id"] == "j1"
+    assert trail[10] == ("any_input", "apply_confirm")        # no apply, no hang-up on a thank-you
+    assert intents[11] == "apply_now"
+    assert sid == "ended"
+    assert (state["trade"], state["location"], state["name"], state["consent_response"]) == (
+        "Welder", "Bengaluru", "Arun", "granted")
+

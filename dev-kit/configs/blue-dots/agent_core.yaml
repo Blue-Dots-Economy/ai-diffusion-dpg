@@ -474,6 +474,14 @@ connectors:
           माफ़ कीजिए, नौकरियों की सेवा अभी उपलब्ध नहीं है। मैं थोड़ी देर
           में दोबारा कोशिश करती हूँ।
         bridge_line: "मैं आपके लिए नौकरियाँ देखती हूँ।"
+      # Stored so the dialogue-act NLU frame can list the jobs on offer and
+      # resolve "पहले वाला" to an item_id (NLU dialogue-acts spec §5.2, §6.3).
+      # Session scope: a later call searches afresh. The projection is a list,
+      # so `keep` does not apply. Each query_text is its own entry; the latest
+      # one is the list on offer.
+      cache:
+        scope: session
+        ttl_seconds: 1800
   # save_profile and apply_job were listed under `read:` though both are
   # write tools (category: write in action_gateway.yaml). `invalidates` is only
   # valid on `write`, so they moved here; tool order and consent handling are
@@ -815,6 +823,51 @@ preprocessing:
       pay_disappointment: objection
       distance_issue: constraint
       counsellor_request: escalation_signal
+
+    # NLU dialogue-acts spec. Authored but INACTIVE: switch to dialogue_act in
+    # its own commit once the replay harness gate (§11.5) passes.
+    mode: intent
+    topics: [job_details, salary, location, search, profile, process, identity, other]
+    signals: [pay_disappointment, distance_issue, counsellor_request]
+    slots:
+      consent_response: { type: enum, values: [granted, declined], accept_when_pending: [consent],
+                          description: "details save करने की अनुमति का जवाब" }
+      # 5–99, not adult-only: the u18_blocked route must see under-age answers.
+      age:              { type: int, min: 5, max: 99, accept_when_pending: [age],
+                          description: "उम्र, digits में", examples: ["बाईस → 22", "सोलह → 16"] }
+      trade:            { type: string, normalise: title, description: "काम/ट्रेड, English में (Welder, Plumber)" }
+      location:         { type: string, normalise: title, description: "शहर, canonical English (Bengaluru, Hubli)" }
+      name:             { type: string, description: "caller का नाम" }
+      gender:           { type: enum, values: [male, female, other] }
+      work_experience:  { type: enum, values: [Fresher, Worked before, Returning after a break] }
+      experience_years: { type: int, min: 0, max: 60 }
+      qualification:    { type: string, description: "School / College / ITI / Certification" }
+      job_nature:       { type: enum, values: [Internship, Apprenticeship, Full-time, Flexible] }
+      monthly_in_hand:  { type: int, min: 0, max: 1000000 }
+    known_fields: [consent_response, age, trade, location, name, stored_trade, stored_location]
+    examples:
+      - { pending: closing_offer, caller: "ठीक है धन्यवाद", out: { acts: [acknowledge], relation: answers_pending } }
+      - { pending: submit_confirm, caller: "ठीक है धन्यवाद", out: { acts: [acknowledge], relation: unclear } }
+      - { pending: submit_confirm, caller: "हाँ भेज दो", out: { acts: [affirm], relation: answers_pending } }
+      - { pending: consent, caller: "हाँ जी ठीक है", out: { acts: [affirm], relation: answers_pending, slots: { consent_response: granted } } }
+      - { pending: select_job, caller: "हाँ ढूंढो", out: { acts: [affirm], relation: answers_other } }
+      - { pending: age, caller: "बाईस साल", out: { acts: [provide_info], relation: answers_pending, slots: { age: 22 } } }
+      - { pending: age, caller: "वेल्डिंग का काम चाहिए", out: { acts: [provide_info], relation: answers_other, slots: { trade: Welder } } }
+      - { pending: select_job, caller: "इलेक्ट्रीशियन नहीं वेल्डर", out: { acts: [correct], relation: answers_other, slots: { trade: Welder } } }
+      - { pending: select_job, caller: "फ्लिपकार्ट वाला", out: { acts: [select], relation: answers_pending, reference: { option: 1, spoken: "फ्लिपकार्ट वाला" } } }
+      - { pending: age, caller: "सैलरी कितनी है", out: { acts: [ask], relation: new_topic, topic: salary } }
+      - { pending: select_job, caller: "बाद में बात करते हैं", out: { acts: [close], relation: new_topic } }
+    act_intents:
+      - { acts: [deny], pending: consent, relation: answers_pending, intent: decline }
+      - { acts: [select], pending: select_job, intent: job_pick }
+      - { acts: [affirm], pending: submit_confirm, relation: answers_pending, intent: apply_now }
+      - { acts: [deny], pending: submit_confirm, relation: answers_pending, intent: decline }
+      - { acts: [request_change], topic: search, intent: explore_more }
+      - { acts: [close], intent: termination_intent, gated: true }
+    termination_gate:
+      any_of:
+        - { pending: closing_offer }
+        - { field: applications_submitted, operator: gt, value: 0 }
 
 # NLU entities are CALL-scoped working state, not durable identity.
 #
@@ -1535,7 +1588,25 @@ agent_workflow:
         caller about when they could reapply. Do not take any other
         details. Do not continue the journey.
 
+      pending:
+        - id: consent
+          expects: "हाँ/नहीं — details save करने की अनुमति"
+          when:
+            - { field: consent_given, operator: not_eq, value: true }
+            - { field: consent_response, operator: in, value: [null, ""] }
+        - id: age
+          expects: "उम्र, साल में"
+          when:
+            - { field: has_age, operator: not_eq, value: true }
+            - { field: age, operator: in, value: [null, "", 0] }
       routing:
+        # dialogue_act mode only (intent mode never emits it): after
+        # off_track.threshold off-script turns, stay here; <caller_turn> tells
+        # the model to re-ask simply or offer to end the call (spec §6.6).
+        # Placed above termination_intent only because the two never coincide;
+        # termination_intent still beats every other rule here.
+        - intent: off_track
+          next_subagent_id: opening
           # A goodbye ends the call, from ANY phase. This must be the FIRST
           # rule here and repeated in every phase: routing is 3-pass and
           # pass 1 (these subagent rules) always beats pass 2 (workflow
@@ -1957,7 +2028,27 @@ agent_workflow:
         5. Every turn produces exactly one spoken Hindi sentence. A turn
            that is only a tool call leaves the caller hearing silence.
 
+      pending:
+        - id: use_saved_details
+          expects: "saved काम और शहर इस्तेमाल करें? हाँ/नहीं"
+          when:
+            - { field: profile_item_id, operator: not_eq, value: "" }
+            - { field: profile_item_id, operator: not_eq, value: null }
+            - { field: subagent_entry_count.profile_resolve, operator: lt, value: 2 }
+        - id: trade
+          expects: "कौन सा काम"
+          when: [{ field: trade, operator: in, value: [null, ""] }]
+        - id: location
+          expects: "किस शहर में काम"
+          when: [{ field: location, operator: in, value: [null, ""] }]
       routing:
+        # dialogue_act mode only (intent mode never emits it): after
+        # off_track.threshold off-script turns, stay here; <caller_turn> tells
+        # the model to re-ask simply or offer to end the call (spec §6.6).
+        # Placed above termination_intent only because the two never coincide;
+        # termination_intent still beats every other rule here.
+        - intent: off_track
+          next_subagent_id: profile_resolve
         - intent: termination_intent
           next_subagent_id: ended
         - intent: decline
@@ -2230,7 +2321,19 @@ agent_workflow:
         `fetch_jobs`, and present the NEW results. Do not narrate
         old results.
 
+      pending:
+        - id: select_job
+          expects: "offered jobs में से एक, या दूसरी search"
+          options_from: { tool: fetch_jobs, fields: [role, company], id_field: item_id }
+          resolves_to: selected_job_item_id
       routing:
+        # dialogue_act mode only (intent mode never emits it): after
+        # off_track.threshold off-script turns, stay here; <caller_turn> tells
+        # the model to re-ask simply or offer to end the call (spec §6.6).
+        # Placed above termination_intent only because the two never coincide;
+        # termination_intent still beats every other rule here.
+        - intent: off_track
+          next_subagent_id: job_match
           # A goodbye ends the call, from ANY phase. This must be the FIRST
           # rule here and repeated in every phase: routing is 3-pass and
           # pass 1 (these subagent rules) always beats pass 2 (workflow
@@ -2452,7 +2555,18 @@ agent_workflow:
         Second failure: say a counsellor will reach out within
         twenty-four hours, then end the session.
 
+      pending:
+        - id: name
+          expects: "caller का नाम"
+          when: [{ field: name, operator: in, value: [null, ""] }]
       routing:
+        # dialogue_act mode only (intent mode never emits it): after
+        # off_track.threshold off-script turns, stay here; <caller_turn> tells
+        # the model to re-ask simply or offer to end the call (spec §6.6).
+        # Placed above termination_intent only because the two never coincide;
+        # termination_intent still beats every other rule here.
+        - intent: off_track
+          next_subagent_id: profile_setup
           # A goodbye ends the call, from ANY phase. This must be the FIRST
           # rule here and repeated in every phase: routing is 3-pass and
           # pass 1 (these subagent rules) always beats pass 2 (workflow
@@ -2927,7 +3041,20 @@ agent_workflow:
         ## If user declines apply or wants a different job
         Route back to job_match. Don't apply.
 
+      pending:
+        - id: closing_offer
+          expects: "और कुछ मदद चाहिए? / कॉल खत्म"
+          when: [{ field: applications_submitted, operator: gt, value: 0 }]
+        - id: submit_confirm
+          expects: "आवेदन भेजूँ? हाँ/नहीं"
       routing:
+        # dialogue_act mode only (intent mode never emits it): after
+        # off_track.threshold off-script turns, stay here; <caller_turn> tells
+        # the model to re-ask simply or offer to end the call (spec §6.6).
+        # Placed above termination_intent only because the two never coincide;
+        # termination_intent still beats every other rule here.
+        - intent: off_track
+          next_subagent_id: apply_confirm
           # A goodbye ends the call, from ANY phase. This must be the FIRST
           # rule here and repeated in every phase: routing is 3-pass and
           # pass 1 (these subagent rules) always beats pass 2 (workflow
@@ -3012,6 +3139,13 @@ agent_workflow:
         gently. Do not say "I don't understand." Reflect what you
         know and ask one open question.
       routing:
+        # dialogue_act mode only (intent mode never emits it): after
+        # off_track.threshold off-script turns, stay here; <caller_turn> tells
+        # the model to re-ask simply or offer to end the call (spec §6.6).
+        # Placed above termination_intent only because the two never coincide;
+        # termination_intent still beats every other rule here.
+        - intent: off_track
+          next_subagent_id: clarification
           # A goodbye ends the call, from ANY phase. This must be the FIRST
           # rule here and repeated in every phase: routing is 3-pass and
           # pass 1 (these subagent rules) always beats pass 2 (workflow
