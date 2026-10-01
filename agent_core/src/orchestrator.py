@@ -31,6 +31,7 @@ from typing import Any, Optional
 from src.base import AgentCoreBase
 from src.chat_provider import build_chat_provider
 from src.chat_provider.base import ChatProviderBase, ToolUseRequested, ProviderAPIError, SAFE_MESSAGES, DEFAULT_SAFE_MESSAGE
+from src.conditions import evaluate_condition
 from src.chat_provider.types import (
     ChatRequest,
     ChatResponse,
@@ -1777,37 +1778,7 @@ class AgentCore(AgentCoreBase):
         Returns:
             True if the condition is satisfied, False otherwise.
         """
-        field = condition.field
-        if "." in field:
-            parent, child = field.split(".", 1)
-            value = session.get(parent, {})
-            if isinstance(value, dict):
-                value = value.get(child, 0)
-            else:
-                value = 0
-        else:
-            value = session.get(field)
-
-        op = condition.operator
-        cond_val = condition.value
-
-        if op == "eq":
-            return value == cond_val
-        if op == "not_eq":
-            return value != cond_val
-        if op == "in":
-            return value in (cond_val if isinstance(cond_val, list) else [cond_val])
-        if op == "lt":
-            try:
-                return float(value or 0) < float(cond_val)
-            except (TypeError, ValueError):
-                return False
-        if op == "gt":
-            try:
-                return float(value or 0) > float(cond_val)
-            except (TypeError, ValueError):
-                return False
-        return False
+        return evaluate_condition(condition, session)
 
     # ------------------------------------------------------------------
     # Private: special handlers
