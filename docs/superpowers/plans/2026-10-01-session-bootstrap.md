@@ -291,8 +291,9 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - `BootstrapReport(outcomes: dict[str, str], latency_ms: int)` (frozen dataclass)
   - `SessionBootstrap.from_config(config: dict | None, policies) -> SessionBootstrap | None`. Returns None when `session_bootstrap` is absent.
   - `.needed(bundle) -> bool`. True when the latch is not truthy in `bundle.session`.
-  - `.run_sync(bundle, *, execute, check_consent, write_session, apply_tool_results, session_values) -> BootstrapReport`
-  - `async .run_async(bundle, *, execute, check_consent, write_session, apply_tool_results, session_values) -> BootstrapReport`
+  - `.run_sync(bundle, *, execute, check_consent, write_session, apply_tool_results) -> BootstrapReport`
+  - `async .run_async(bundle, *, execute, check_consent, write_session, apply_tool_results) -> BootstrapReport`
+  - `execute` already binds `session_values` (the orchestrator passes `_tool_session_values(bundle)` inside it).
 - Callable shapes (async variants are awaitables):
   - `execute(tool_call) -> ToolResult`
   - `check_consent(tool_name) -> bool`
@@ -347,7 +348,7 @@ def sync_deps(rec, result=None, consent=True, raise_exc=None):
         return result or ok_result(has_age=True, profile_item_id="p1")
     return dict(execute=execute, check_consent=lambda t: consent,
                 write_session=lambda k, v: rec.writes.append((k, v)),
-                apply_tool_results=lambda b: rec.batches.append(b), session_values={})
+                apply_tool_results=lambda b: rec.batches.append(b))
 
 
 def test_from_config_none_without_section():
@@ -417,7 +418,7 @@ async def test_async_success_and_timeout_discard():
         return True
 
     report = await boot.run_async(b, execute=execute, check_consent=consent, write_session=noop,
-                                  apply_tool_results=noop, session_values={})
+                                  apply_tool_results=noop)
     assert report.outcomes == {"fetch_profile": "ok"} and b.session["has_age"] is True
 
     rec2, b2 = Rec(), bundle()
@@ -427,7 +428,7 @@ async def test_async_success_and_timeout_discard():
         return ok_result(has_age=True)
 
     report2 = await boot.run_async(b2, execute=slow, check_consent=consent, write_session=noop,
-                                   apply_tool_results=noop, session_values={})
+                                   apply_tool_results=noop)
     assert report2.outcomes == {"fetch_profile": "timeout"}
     assert "has_age" not in b2.session and b2.tool_results == [] and b2.session[LATCH] is True
 ```
@@ -563,7 +564,7 @@ class SessionBootstrap:
 
     def run_sync(self, bundle, *, execute: Callable[[ToolCall], ToolResult],
                  check_consent: Callable[[str], bool], write_session: Callable[[str, Any], None],
-                 apply_tool_results: Callable[[dict], None], session_values: dict) -> BootstrapReport:
+                 apply_tool_results: Callable[[dict], None]) -> BootstrapReport:
         """Run steps in order on the sync path. Never raises."""
         start = time.monotonic()
         outcomes: dict = {}
@@ -612,8 +613,7 @@ class SessionBootstrap:
     async def run_async(self, bundle, *, execute: Callable[[ToolCall], Awaitable[ToolResult]],
                         check_consent: Callable[[str], Awaitable[bool]],
                         write_session: Callable[[str, Any], Awaitable[None]],
-                        apply_tool_results: Callable[[dict], Awaitable[None]],
-                        session_values: dict) -> BootstrapReport:
+                        apply_tool_results: Callable[[dict], Awaitable[None]]) -> BootstrapReport:
         """Run steps concurrently on the stream path within the budget. Never raises."""
         start = time.monotonic()
         outcomes: dict = {}
@@ -639,6 +639,7 @@ class SessionBootstrap:
             logger.error("session_bootstrap.wait_error", extra={
                 "operation": "session_bootstrap.run", "status": "failure", "error": type(e).__name__})
             done, pending = set(), set(tasks)
+        pending_ids = {id(t) for t in pending}
         for t in pending:
             t.cancel()
         finished: dict = {}
@@ -651,7 +652,7 @@ class SessionBootstrap:
                     "operation": "session_bootstrap.step", "status": "failure", "error": type(e).__name__})
         for i, step in enumerate(self._steps):           # apply in config order
             if i not in finished:
-                outcome = "timeout" if any(not t.done() or t.cancelled() for t in [tasks[i]]) else "failed"
+                outcome = "timeout" if id(tasks[i]) in pending_ids else "failed"
             else:
                 _, payload, early = finished[i]
                 if early:
@@ -676,8 +677,7 @@ class SessionBootstrap:
 ```
 
 Notes for the implementer:
-- In `run_async`, a step whose task raised (it is in `done` but not in `finished`) must be reported as `failed`, and a step cancelled at the deadline as `timeout`. If the expression above doesn't distinguish the two cleanly, track `pending` membership explicitly (`timeout` when the task was in `pending`). That is the intended behaviour.
-- `session_values` is accepted for symmetry with the orchestrator's call. The `execute` callables passed in already bind it. Keep the parameter, documented as "passed through by the caller's execute binding; unused here", or have `execute` receive it. Choose one and test it.
+- In `run_async`, a step whose task raised (in `done` but not in `finished`) is `failed`; a step still pending at the deadline is `timeout` (tracked via `pending_ids`).
 - Sync timing test: the monkeypatched `time.monotonic` sequence must match your call order. Adjust the iterator so the post-call check sees a time past the deadline.
 
 - [ ] **Step 4: Run and check it passes.**
@@ -830,7 +830,6 @@ Expected: FAIL
                         check_consent=lambda tool: self._trust.check_consent(session_id, tool),
                         write_session=lambda k, v: self._write_memory_sync(session_id, user_id, "session", k, v),
                         apply_tool_results=lambda batch: self._memory.apply_tool_results(session_id, user_id, batch),
-                        session_values=self._tool_session_values(bundle),
                     )
             except Exception as e:  # never break a turn
                 logger.error("orchestrator.session_bootstrap_error", extra={
@@ -858,7 +857,7 @@ Expected: FAIL
 
                     await self._bootstrap.run_async(
                         bundle, execute=_exec, check_consent=_consent, write_session=_write,
-                        apply_tool_results=_apply, session_values=self._tool_session_values(bundle))
+                        apply_tool_results=_apply)
                 except Exception as e:  # never break a turn
                     logger.error("orchestrator.session_bootstrap_error", extra={
                         "operation": "orchestrator.stream_turn", "status": "failure",
