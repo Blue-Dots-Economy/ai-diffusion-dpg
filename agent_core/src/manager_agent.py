@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from src.chat_provider.base import ChatProviderBase, ProviderAPIError
 from src.chat_provider.types import (
@@ -34,6 +34,7 @@ from src.interfaces.knowledge_engine import KnowledgeEngineBase
 from src.interfaces.trust_layer import TrustLayerBase
 from src.models import RetrievalChunk, ToolCall, ToolResult
 from src.tool_registry import ToolRegistry
+from src.tool_results import TurnToolCache
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,8 @@ def ungrounded_params(
 spec: dict[str, list[str]],
 tool_call,
 messages: list,
+stored_results: dict[str, list[str]] | None = None,
+strict: bool = False,
 ) -> set[str]:
     """Return the configured params whose value no tool result contains.
 
@@ -113,6 +116,12 @@ messages: list,
             ``input_params``.
         messages: Conversation so far; tool results are read from the
             ``ToolResultBlock`` entries inside it.
+        stored_results: Tool name → serialised results that are no longer in
+            the message list. Counts exactly like tool_result blocks of that
+            tool.
+        strict: When True, reject if nothing has been fetched at all (used by
+            the ``remember`` tool). When False (default), allow any value on
+            the first call.
 
     Returns:
         Names of params that were supplied but appear in no tool result.
@@ -145,11 +154,19 @@ messages: list,
             src = origin.get(str(getattr(block, "tool_use_id", "")), "")
             by_tool.setdefault(src, []).append(content)
 
+    for src, texts in (stored_results or {}).items():
+        for text in texts or []:
+            if isinstance(text, str) and text:
+                seen_any.append(text)
+                by_tool.setdefault(str(src), []).append(text)
+
     if not seen_any:
         # Nothing has been fetched yet, so nothing can be grounded. Let the
         # call through rather than blocking a legitimate first call whose
         # value came from session state seeded outside this conversation.
-        return set()
+        if not strict:
+            return set()
+        return {n for n in spec if (tool_call.input_params or {}).get(n) not in (None, "")}
 
     missing: set[str] = set()
     for name, sources in spec.items():
@@ -246,10 +263,12 @@ class ManagerAgent:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _ungrounded_params(self, tool_call, messages: list) -> set[str]:
+    def _ungrounded_params(self, tool_call, messages: list,
+                           stored_results: dict[str, list[str]] | None = None) -> set[str]:
         """Instance wrapper around :func:`ungrounded_params` for this agent's config."""
         return ungrounded_params(
-            self._grounded_params.get(tool_call.tool_name) or {}, tool_call, messages
+            self._grounded_params.get(tool_call.tool_name) or {}, tool_call, messages,
+            stored_results=stored_results,
         )
 
     # ------------------------------------------------------------------
@@ -266,6 +285,9 @@ class ManagerAgent:
         ke_context: dict | None = None,
         user_id: str = "",
         session_values: dict | None = None,
+        tool_cache: TurnToolCache | None = None,
+        remember_name: str = "",
+        remember_handler: Callable[[ToolCall, list], ToolResult] | None = None,
     ) -> tuple[str, list[ToolCall], list[ToolResult]]:
         """
         Drive the tool-use loop starting from the initial LLM response.
@@ -273,6 +295,14 @@ class ManagerAgent:
         Routes knowledge_retrieval tool calls directly to the Knowledge Engine
         via _execute_knowledge_retrieval. All other tool calls go through the
         Action Gateway's consent gate and execution path.
+
+        Per-turn call caps (``tool_call_caps``) are checked for every tool
+        except ``remember``, which is handled first and is never capped nor
+        counted. Only live Action Gateway calls increment a tool's count:
+        stored-result hits, grounding refusals and knowledge retrieval do
+        not, so a refused call can be retried with a valid value and a
+        cached read can be served more than once. The streaming path
+        (``AgentCore.stream_turn``) applies the same rules.
 
         Args:
             messages:         The messages list (neutral chat_provider types) that produced
@@ -296,6 +326,15 @@ class ManagerAgent:
                               entities, sentiment, confidence, normalised_input,
                               detected_language. If None, knowledge_retrieval calls
                               return an empty tool_result.
+            tool_cache:       Per-turn tool-result cache. When given, cacheable
+                              calls are served from stored results and live
+                              results are recorded for persistence. None
+                              disables all of it.
+            remember_name:    Name of the framework ``remember`` tool; calls to
+                              it go to ``remember_handler`` and never reach the
+                              Action Gateway. Empty disables.
+            remember_handler: Callable ``(tool_call, messages) -> ToolResult``
+                              that handles ``remember`` calls.
 
         Returns:
             (final_response_text, list_of_all_tool_calls_executed, list_of_all_tool_results)
@@ -384,8 +423,13 @@ class ManagerAgent:
                     ))
                     continue
 
+                # The framework ``remember`` tool is a validated state write,
+                # not an upstream effect: it is never capped nor counted.
+                _is_remember = remember_handler is not None and tool_call.tool_name == remember_name
                 _used = _turn_tool_counts.get(tool_call.tool_name, 0)
-                if over_call_cap(self._tool_call_caps.get(tool_call.tool_name), _used):
+                if not _is_remember and over_call_cap(
+                    self._tool_call_caps.get(tool_call.tool_name), _used,
+                ):
                     logger.warning(
                         "manager_agent.tool_call_cap tool=%s used=%s",
                         tool_call.tool_name, _used,
@@ -408,36 +452,51 @@ class ManagerAgent:
                         content=tool_result.result_text,
                     ))
                     continue
-                _turn_tool_counts[tool_call.tool_name] = _used + 1
 
-                _ungrounded = self._ungrounded_params(tool_call, messages)
-                if _ungrounded:
-                    # The model supplied an identifier no upstream ever returned.
-                    # Refuse to execute and tell it so — a fabricated id reaches
-                    # the upstream as a well-formed value and comes back as a
-                    # generic "not found", which the model then reports to the
-                    # caller as though the request had merely been redundant.
-                    logger.warning(
-                        "manager_agent.ungrounded_param tool=%s params=%s",
-                        tool_call.tool_name, sorted(_ungrounded),
-                    )
-                    tool_result = ToolResult(
-                        tool_name=tool_call.tool_name,
-                        success=False,
-                        result={},
-                        error="UNGROUNDED_PARAMETER",
-                        result_text=(
-                            f"Refused: {', '.join(sorted(_ungrounded))} did not come from "
-                            f"any tool result in this conversation, so the value was "
-                            f"invented. Do not guess an identifier. Re-read the most "
-                            f"recent tool result, copy the exact value for the item the "
-                            f"user chose, and call this tool again."
-                        ),
-                    )
-                elif self._registry.get_route(tool_call.tool_name) == "knowledge_engine":
-                    tool_result = self._execute_knowledge_retrieval(tool_call, ke_context)
+                if _is_remember:
+                    tool_result = remember_handler(tool_call, messages)
                 else:
-                    tool_result = self._execute_tool(tool_call, session_id, user_id)
+                    _stored = tool_cache.stored_results_by_tool() if tool_cache else None
+                    _ungrounded = self._ungrounded_params(tool_call, messages, _stored)
+                    if _ungrounded:
+                        # The model supplied an identifier no upstream ever returned.
+                        # Refuse to execute and tell it so — a fabricated id reaches
+                        # the upstream as a well-formed value and comes back as a
+                        # generic "not found", which the model then reports to the
+                        # caller as though the request had merely been redundant.
+                        logger.warning(
+                            "manager_agent.ungrounded_param tool=%s params=%s",
+                            tool_call.tool_name, sorted(_ungrounded),
+                        )
+                        tool_result = ToolResult(
+                            tool_use_id=tool_call.tool_use_id,
+                            tool_name=tool_call.tool_name,
+                            success=False,
+                            result={},
+                            error="UNGROUNDED_PARAMETER",
+                            result_text=(
+                                f"Refused: {', '.join(sorted(_ungrounded))} did not come from "
+                                f"any tool result in this conversation, so the value was "
+                                f"invented. Do not guess an identifier. Re-read the most "
+                                f"recent tool result, copy the exact value for the item the "
+                                f"user chose, and call this tool again."
+                            ),
+                        )
+                    elif self._registry.get_route(tool_call.tool_name) == "knowledge_engine":
+                        tool_result = self._execute_knowledge_retrieval(tool_call, ke_context)
+                    else:
+                        _hit = tool_cache.lookup(tool_call) if tool_cache else None
+                        if _hit is not None:
+                            tool_result = _hit
+                        else:
+                            # Only a live Action Gateway call counts toward the
+                            # per-turn cap: stored results, refusals and
+                            # knowledge retrieval have no upstream effect.
+                            _turn_tool_counts[tool_call.tool_name] = _used + 1
+                            _call = tool_cache.prepare(tool_call) if tool_cache else tool_call
+                            tool_result = self._execute_tool(_call, session_id, user_id)
+                            if tool_cache:
+                                tool_cache.after_call(tool_call, tool_result)
                 all_tool_calls.append(tool_call)
                 all_tool_results.append(tool_result)
 
@@ -545,6 +604,7 @@ class ManagerAgent:
         guardrail_constraints: dict | None = None,
         user_state_guidance: str | None = None,
         session_end_eval_prompt: str | None = None,
+        known_facts: str = "",
     ) -> SystemPrompt:
         """Build a neutral SystemPrompt with TextBlock entries for one LLM call.
 
@@ -563,6 +623,7 @@ class ManagerAgent:
             <channel_context>     channel + detected_language line
             <resumption>          resumption note (first turn after adoption)
             <known_profile>       profile grounding
+            <known_facts>         stored tool results rendered for grounding
             <active_guardrails>   guardrail constraints + required disclosures
 
         Empty inputs elide their section entirely; empty tiers are not
@@ -585,6 +646,9 @@ class ManagerAgent:
             session_end_eval_prompt: Optional prompt that instructs the LLM to emit
                                     the ``end_session`` tool when the user signals
                                     departure.
+            known_facts:            Rendered stored tool results (from
+                                    ``TurnToolCache.render_known_facts``); empty
+                                    elides the ``<known_facts>`` section.
 
         Returns:
             Neutral SystemPrompt with TextBlock entries; the Anthropic provider
@@ -676,6 +740,7 @@ class ManagerAgent:
             xml("channel_context", channel_ctx),
             xml("resumption", resumption_note),
             xml("known_profile", profile_body),
+            xml("known_facts", known_facts),
             xml("active_guardrails", guardrails_body),
         ])
 

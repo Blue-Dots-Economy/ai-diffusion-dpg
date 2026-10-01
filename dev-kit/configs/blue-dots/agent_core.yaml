@@ -56,6 +56,20 @@ agent:
     enabled: true
     confidence_threshold: 0.7
 
+  # Session fields shown to the LLM in <known_profile>. These three are written
+  # by fetch_profile's response.session_mapping (action_gateway.yaml), and the
+  # profile_resolve prompt reads them from <known_profile>.
+  prompt_session_fields: [profile_item_id, stored_trade, stored_location]
+
+# Session bootstrap: fetch the caller's profile before turn-1 routing, without
+# the LLM, so a returning caller's consent/age flags and live profile are in
+# session state when turn 1 is routed (session-bootstrap spec). Read connector only.
+session_bootstrap:
+  timeout_ms: 1500
+  steps:
+    - type: tool
+      tool: fetch_profile
+
 channels:
   bridge:
     system_prompt_suffix: |
@@ -117,9 +131,10 @@ channels:
       actual answer.
 
       ## Prior tool results
-      Prior tool results in this conversation are visible to you as real
-      tool_result messages earlier in the message history. Do not re-invoke
-      a tool unless the relevant parameters have changed; reuse the
+      Prior tool results in this conversation are in <known_facts> or, for
+      a tool with no entry there, visible to you as real tool_result
+      messages earlier in the message history. Do not re-invoke a tool
+      unless the relevant parameters have changed; reuse the
       already-returned data when answering follow-up questions.
 
       ## Phone numbers, IDs, and internal state
@@ -367,6 +382,18 @@ conversation:
       them the whole journey and they have to redial.
     fail_action: "none"
 
+# Framework `remember` tool: deliberately NOT enabled for blue-dots.
+#
+# Declaring `memory_tool` offers `remember` to the model alongside every tool
+# list, prompt or no prompt. Measured on a local run (2026-10-01): the model
+# called it unprompted, nothing grounded the value so every call was rejected,
+# and on the streaming path it retried until the tool-round cap — an 8.9 s turn
+# whose reply never listed the jobs. profile_item_id is already set from the
+# live item by fetch_profile's session_mapping, so nothing needs it yet.
+#
+# To enable later: declare `memory_tool` (fields + grounded_in, see
+# dev-kit/dpg/agent_core.yaml) together with the prompt that calls it.
+
 # Connector descriptions seen by the LLM when picking a tool. The full
 # adapter + path config lives in action_gateway.yaml; this block adds the
 # invocation_rules that gate when the LLM may call each tool.
@@ -375,8 +402,10 @@ connectors:
     - name: fetch_profile
       description: >
         Look up the caller's seeker profile(s) by phone number. Returns
-        zero, one, or many profiles. Call once on the first turn after
-        consent is granted. Takes no parameters — the caller's phone is
+        zero, one, or many profiles. Already fetched when the call started —
+        use the fetch_profile entry of <known_facts> or, if there is none,
+        the earlier fetch_profile result. Call it yourself only if neither
+        exists or the caller says their details changed. Takes no parameters — the caller's phone is
         injected from the session user_id by the rest_api adapter.
       input_schema:
         type: object
@@ -384,12 +413,11 @@ connectors:
         additionalProperties: false
       invocation_rules:
         call_when: >
-          Once, on the first turn of the call, in the `opening` phase. It
-          answers three questions at once — has this caller consented, is
-          their age on file, and do they have a live profile — so nothing
-          downstream needs to ask what it already returned. It is
-          read-only and idempotent, so a repeat call is harmless, but a
-          repeat is normally a sign the earlier result was not read.
+          Use the fetch_profile entry of <known_facts> or, if there is
+          none, the earlier fetch_profile result in this conversation. An
+          empty <known_facts> alone is no reason to call again. Call only
+          if neither exists, or the caller says their details changed
+          (then pass force_refresh=true).
         required_before_calling: []
         must_not_substitute: >
           Never invent profile content. If fetch_profile returned zero
@@ -401,6 +429,22 @@ connectors:
           माफ़ कीजिए, अभी आपकी जानकारी नहीं मिल पा रही। मैं थोड़ी
           देर में दोबारा कोशिश करती हूँ।
         bridge_line: "एक पल —"
+      # Stored for 30 minutes so later turns of the call read the result from
+      # <known_facts> instead of re-fetching. save_profile invalidates it
+      # (below). Session scope, NOT user: a cache hit does not replay
+      # session_mapping, so on a redial (new session) has_age, user_terms,
+      # user_privacy, profile_item_id, acting_as_user_id, stored_trade and
+      # stored_location would never be written, re-asking consent/age and
+      # sending returning callers down the new-user path. User scope needs a
+      # framework follow-up first. `keep` lists projected fields of
+      # fetch_profile's response.projection (action_gateway.yaml). The
+      # projection is deliberately NOT narrowed: profile_setup (update path)
+      # and apply_confirm read item_state fields (age, work_experience, ...)
+      # from items[], so the whole items array must stay.
+      cache:
+        scope: session
+        ttl_seconds: 1800
+        keep: [source_item_owner, acting_as_user_id, items]
 
     - name: fetch_jobs
       description: >
@@ -435,6 +479,11 @@ connectors:
           माफ़ कीजिए, नौकरियों की सेवा अभी उपलब्ध नहीं है। मैं थोड़ी देर
           में दोबारा कोशिश करती हूँ।
         bridge_line: "मैं आपके लिए नौकरियाँ देखती हूँ।"
+  # save_profile and apply_job were listed under `read:` though both are
+  # write tools (category: write in action_gateway.yaml). `invalidates` is only
+  # valid on `write`, so they moved here; tool order and consent handling are
+  # unchanged (the gateway category decides consent, not this grouping).
+  write:
     - name: save_profile
       description: >
         Create a new seeker profile or update an existing one. The
@@ -511,6 +560,8 @@ connectors:
         on_failure: >
           माफ़ कीजिए, आपकी जानकारी सेव नहीं हो पाई। मैं एक बार और कोशिश करती हूँ।
         bridge_line: "मैं आपकी जानकारी सेव कर रही हूँ।"
+      # A save changes what fetch_profile returns, so drop its stored result.
+      invalidates: [fetch_profile]
 
     - name: apply_job
       description: >
@@ -1340,9 +1391,10 @@ agent_workflow:
       # suppresses canned opening phrases (GH-239) because the LLM's own first
       # reply already greets, so a voice caller hears the equivalent produced
       # from the system prompt below. Hindi, because it is spoken as written.
-      # Emitted verbatim on turn 1, BEFORE any LLM call — so no tool has run
-      # and nothing is known about the caller yet. It must therefore not ask
-      # for consent: a caller whose consent is already on file would be asked
+      # Emitted verbatim on turn 1, BEFORE any LLM call. The start-of-call
+      # bootstrap fetch may already have run, but this phrase stays static and
+      # must never ask for consent, because it has to work when that fetch
+      # failed: a caller whose consent is already on file would be asked
       # anyway, which is the exact behaviour this phase was reworked to stop.
       # It greets and asks the one thing that is useful for everyone.
       opening_phrase: >
@@ -1367,24 +1419,27 @@ agent_workflow:
         You are in the **opening** phase. It has exactly two questions,
         asked one per turn, in this order. Nothing else happens here.
 
-        ## Turn 1: greet, ask if they want work, and FETCH
-        On your FIRST turn call `fetch_profile` — before anything else, and
-        without mentioning it. Then say one short Hindi sentence: greet them
-        and ask whether they are looking for work.
+        ## Turn 1: greet and ask if they want work
+        `fetch_profile` already ran when the call started, before this turn;
+        its result is the fetch_profile entry of <known_facts>. Do not call it
+        again unless that entry is absent. Say one short Hindi sentence: greet
+        them and ask whether they are looking for work.
 
           "नमस्ते! क्या आप काम की तलाश में हैं?"
           ("Hello! Are you looking for work?")
 
-        Ask NOTHING about consent or age on this turn. The fetch tells us
-        what is already on file, and its answer is only available from the
-        NEXT turn — so asking now is how a caller ends up being asked for
-        something the system already knows.
+        Ask NOTHING about consent or age on this turn — the greeting is all
+        this turn does. The fetch tells us what is already on file, so asking
+        now is how a caller ends up being asked for something the system
+        already knows.
 
-        ## The turn you fetch on: ask for the TRADE, never for consent
-        On the turn where you call `fetch_profile` the flags have not arrived
-        yet — tools run after routing, so the result reaches you on the turn
-        AFTER. Asking for consent now is guessing, and for most callers the
-        guess is wrong: they have already consented.
+        ## Fallback: if you have to fetch yourself, ask for the TRADE, never for consent
+        If the fetch_profile entry is absent from <known_facts> (the
+        start-of-call fetch failed) and you call `fetch_profile` yourself, its
+        flags have not arrived on that turn — tools run after routing, so the
+        result reaches you on the turn AFTER. Asking for consent now is
+        guessing, and for most callers the guess is wrong: they have already
+        consented.
 
         Ask instead for the one thing needed either way:
 
@@ -1394,7 +1449,10 @@ agent_workflow:
         That is useful for every caller, so no turn is wasted while the fetch
         comes back.
 
-        ## What the fetch tells you, from the next turn onward
+        ## What the fetch tells you
+        These facts are in session state from the first turn when the
+        start-of-call fetch succeeded; otherwise from the turn after you
+        fetch yourself.
         Three facts arrive in session state:
 
           has_age        an age is already on file
@@ -1663,8 +1721,10 @@ agent_workflow:
         # 1b. NOTHING TO ASK — the fetch already answered both questions.
         #
         # These three arrive from fetch_profile via the connector's
-        # session_mapping, from turn 2 onward (tools run after routing, so the
-        # turn that fetches cannot also branch on the result). All true means
+        # session_mapping. The start-of-call session bootstrap runs fetch_profile
+        # before turn-1 routing, so they are in session state from turn 1; if
+        # that fetch fails and the LLM fetches itself, they arrive from the turn
+        # after (tools run after routing). All true means
         # the caller has consented and has an age on file, so this phase has
         # no question left and must not invent one.
         #
@@ -1911,9 +1971,10 @@ agent_workflow:
         city, then hand over. You never search here.
 
         ## What you already know
-        `fetch_profile` ran in the opening phase and its result is in your
-        conversation history. Read it — do not call it again unless it is
-        genuinely absent.
+        `fetch_profile` ran when the call started. Its result is the
+        fetch_profile entry of <known_facts> or, if there is none, the
+        earlier fetch_profile result. Read it — do not call it again unless
+        both are genuinely absent.
 
         ## The ONLY test for "do they have a usable profile"
         `profile_item_id` in <known_profile> is non-empty ONLY when the
@@ -2012,10 +2073,18 @@ agent_workflow:
               operator: not_eq
               value: ""
           next_subagent_id: job_match
-        # The caller HAS a live profile: entry 1 makes the offer, entry 2 is
-        # their answer, and either answer leads to the search. Accepting uses
-        # the stored values; declining means their own words are already in
+        # The caller HAS a live profile: entry 1 makes the offer, and their
+        # answer leads straight to the search. Accepting uses the stored
+        # values; declining means their own words are already in
         # `trade`/`location`, which job_match prefers.
+        #
+        # `gt 0`, NOT `gt 1`: routing reads the count BEFORE this turn's
+        # increment, so on the answer turn it is still 1 (the offer). With
+        # `gt 1` the accept turn stayed here — a phase with no job tool,
+        # told to say nothing — and the model filled the silence by claiming
+        # jobs were found; the search only ran a turn later. Entry from
+        # `opening` is routed by opening's rules, so this never skips the
+        # offer.
         - intent: "*"
           conditions:
             - field: profile_item_id
@@ -2023,7 +2092,7 @@ agent_workflow:
               value: ""
             - field: subagent_entry_count.profile_resolve
               operator: gt
-              value: 1
+              value: 0
           next_subagent_id: job_match
         - intent: apply_now
           next_subagent_id: job_match
@@ -2442,8 +2511,8 @@ agent_workflow:
           - profile_item_id: OMIT (this is a CREATE)
 
         ## save_profile body — update_existing
-        The chosen profile's existing fields are in fetch_profile's
-        tool_result (in conversation history). Ask ONCE: "What would
+        The chosen profile's existing fields are in the fetch_profile
+        entry of <known_facts> (or the earlier fetch_profile result). Ask ONCE: "What would
         you like to change about your profile?" Capture the new
         value. Confirm ONCE: "Got it — <field> updated to <value>,
         everything else stays the same. Should I save?" On the user's
@@ -2606,7 +2675,7 @@ agent_workflow:
         | Field              | Caller HAD a live profile                | Profile was just created              |
         |--------------------|------------------------------------------|---------------------------------------|
         | profile_item_id    | the live item's `item_id` from the       | the new profile's `item_id`           |
-        |                    | fetch_profile tool_result — the SAME     | from save_profile's response          |
+        |                    | fetch_profile result — the SAME          | from save_profile's response          |
         |                    | value already in session as              | items[] array (the last one by        |
         |                    | profile_item_id                          | created_at = the one just created)    |
         | acting_as_user_id  | `source_item_owner` from the same        | save_profile's top-level `user_id`    |
@@ -2616,6 +2685,9 @@ agent_workflow:
         | role               | selected job's `role` from fetch_jobs    | (same)                                |
         | age                | profile.age from fetch_profile           | save_profile's response               |
         | work_experience    | profile.work_experience                  | save_profile's response               |
+
+        "fetch_profile" above means the fetch_profile entry of
+        <known_facts> (or the earlier fetch_profile result).
 
         ## ONE application. ONE apply_job call. Ever.
         The caller chose ONE job. You send ONE application, with ONE
@@ -2699,8 +2771,9 @@ agent_workflow:
         If the caller names a different job after a failure, do exactly the
         same thing for the new job — re-fetch, match, apply.
 
-        All these values are in your conversation history — the
-        respective tool_results are still in context. Read them.
+        The fetch_profile values are in <known_facts> (or the earlier
+        fetch_profile result); the others are in the respective
+        tool_results still in context. Read them.
 
         ## Confirmation policy
         The caller has ALREADY said they want this job — that is what

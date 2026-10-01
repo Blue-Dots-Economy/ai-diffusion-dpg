@@ -110,6 +110,14 @@ class ConnectorDef(BaseModel):
         default_factory=InvocationRulesConfig,
         description="LLM invocation contract for this connector (GH-137)",
     )
+    cache: Optional[dict] = Field(
+        default=None,
+        description="Tool-result cache rule (scope, ttl_seconds, keep, vary_on); read connectors only",
+    )
+    invalidates: list[str] = Field(
+        default_factory=list,
+        description="Read connector names whose cached results this write connector invalidates",
+    )
 
 
 class InternalConnectorDef(BaseModel):
@@ -174,6 +182,10 @@ class AgentConfig(BaseModel):
     ask_for_consent: bool = Field(
         default=False,
         description="If True, Agent Core asks new users for DPDP consent before storing any data.",
+    )
+    prompt_session_fields: list[str] = Field(
+        default_factory=list,
+        description="Session fields rendered into the system prompt when non-empty",
     )
     consent_prompt: str = Field(
         default="",
@@ -633,6 +645,13 @@ class AgentCoreConfig(BaseModel):
         description="Maps NLU entity names to UserProfile declared_fields in the Memory Layer. "
                     "e.g. {trade_or_stream: trade_or_stream, location: location}",
     )
+    tool_results: Optional[dict] = Field(
+        default=None, description="Global tool-result persistence limits (max_user_ttl_seconds)"
+    )
+    memory_tool: Optional[dict] = Field(
+        default=None, description="Framework `remember` tool config (name, fields)"
+    )
+    session_bootstrap: Optional[dict] = None
     hitl: HitlConfig | None = Field(
         default=None,
         description="HITL config. Required if any subagent uses special_handler: hitl.",

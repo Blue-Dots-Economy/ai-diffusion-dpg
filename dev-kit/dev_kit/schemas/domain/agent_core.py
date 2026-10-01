@@ -81,6 +81,7 @@ class AgentSection(BaseModel):
     max_tool_rounds: int = Field(default=3, ge=1, le=20)
     ask_for_consent: bool = False
     consent_prompt: str = ""
+    prompt_session_fields: list[str] = Field(default_factory=list)
 
     # Optional sub-blocks mirrored from runtime AgentConfig. KKB declares
     # termination_short_circuit; current_question and recent_tool_exchanges
@@ -469,6 +470,15 @@ class InputSchema(BaseModel):
     additionalProperties: bool = False
 
 
+class ToolCacheConfig(BaseModel):
+    """Per-connector tool-result cache rule. Mirrors the runtime ``ToolCacheConfig``."""
+    model_config = ConfigDict(extra="forbid")
+    scope: Literal["session", "user"]
+    ttl_seconds: int = Field(..., gt=0)
+    keep: list[str] = Field(default_factory=list)
+    vary_on: list[str] = Field(default_factory=list)
+
+
 class ConnectorDef(BaseModel):
     """External tool/connector exposed to the LLM (REST API, identity, write actions).
 
@@ -481,6 +491,8 @@ class ConnectorDef(BaseModel):
     description: str = ""
     input_schema: InputSchema = Field(default_factory=InputSchema)
     invocation_rules: InvocationRules = Field(default_factory=InvocationRules)
+    cache: Optional[ToolCacheConfig] = None
+    invalidates: list[str] = Field(default_factory=list)
 
 
 class InternalConnectorDef(ConnectorDef):
@@ -495,6 +507,73 @@ class ConnectorsSection(BaseModel):
     read: list[ConnectorDef] = Field(default_factory=list)
     write: list[ConnectorDef] = Field(default_factory=list)
     identity: list[ConnectorDef] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_cache_rules(self) -> "ConnectorsSection":
+        """Mirror the runtime ``ConnectorsConfig._check_cache_rules``.
+
+        Internal connectors inherit ``cache``/``invalidates`` from
+        ``ConnectorDef`` here, but the runtime ``InternalConnectorDef`` has no
+        such fields (extra="forbid"), so they are rejected as misplaced.
+
+        Returns:
+            The validated section.
+
+        Raises:
+            ValueError: If cache/invalidates is misplaced or an invalidates
+                target is not a read connector.
+        """
+        read_names = {c.name for c in self.read}
+        for group_name in ("write", "identity", "internal"):
+            for c in getattr(self, group_name):
+                if c.cache is not None:
+                    raise ValueError(f"connector '{c.name}': cache is only allowed on read connectors")
+        for group_name in ("read", "identity", "internal"):
+            for c in getattr(self, group_name):
+                if c.invalidates:
+                    raise ValueError(f"connector '{c.name}': invalidates is only allowed on write connectors")
+        for c in self.write:
+            for target in c.invalidates:
+                if target not in read_names:
+                    raise ValueError(f"connector '{c.name}': invalidates unknown read connector '{target}'")
+        return self
+
+
+class ToolResultsSection(BaseModel):
+    """agent_core.tool_results — global limits for tool-result persistence."""
+    model_config = ConfigDict(extra="forbid")
+    max_user_ttl_seconds: int = Field(default=86400, gt=0)
+
+
+class SessionBootstrapStepModel(BaseModel):
+    """One deterministic first-turn step (mirrors runtime ``SessionBootstrapStep``)."""
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["tool"]
+    tool: str = Field(min_length=1)
+    args: dict[str, Any] = Field(default_factory=dict)
+    requires_consent: bool = False
+
+
+class SessionBootstrapSection(BaseModel):
+    """agent_core.session_bootstrap — steps run inline on the first turn."""
+    model_config = ConfigDict(extra="forbid")
+    timeout_ms: int = Field(default=1500, gt=0)
+    steps: list[SessionBootstrapStepModel] = Field(min_length=1)
+
+
+class MemoryToolField(BaseModel):
+    """One field the framework ``remember`` tool may store."""
+    model_config = ConfigDict(extra="forbid")
+    scope: Literal["session", "persistent"]
+    description: str = ""
+    grounded_in: list[str] = Field(default_factory=list)
+
+
+class MemoryToolSection(BaseModel):
+    """agent_core.memory_tool — the framework ``remember`` tool."""
+    model_config = ConfigDict(extra="forbid")
+    name: str = "remember"
+    fields: dict[str, MemoryToolField] = Field(..., min_length=1)
 
 
 # -- agent_core.agent_workflow (workflow phase) ------------------------------

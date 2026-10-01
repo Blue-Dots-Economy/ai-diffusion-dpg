@@ -438,6 +438,8 @@ services:
       - MEMGRAPH_URI=bolt://memgraph:7687
       - MEMGRAPH_USER=memgraph
       - MEMGRAPH_PASSWORD=${MEMGRAPH_PASSWORD:-}
+      # Pseudonymises ids in stored tool results. Unset disables storage.
+      - TOOL_RESULT_KEY_SECRET=${TOOL_RESULT_KEY_SECRET:-}
     volumes:
       - ../../../dev-kit/dpg/memory_layer.yaml:/app/config/dpg.yaml:ro
       - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/memory_layer.yaml:/app/config/memory_layer.yaml:ro

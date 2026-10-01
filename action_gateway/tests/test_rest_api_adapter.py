@@ -278,6 +278,19 @@ class TestRestApiAdapterExecute:
         assert full_params.get("params", {}).get("location") == "Delhi"
 
     @pytest.mark.asyncio
+    async def test_projected_flag_false_without_projection(self, rest_tool_config):
+        """A successful call with no response.projection reports projected=False."""
+        adapter = RestApiAdapter(rest_tool_config)
+        mock_resp = make_mock_response(200, {"temp": 22})
+
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=mock_resp)
+            result = await adapter.execute("test_weather", {"location": "Delhi"}, "sess-1")
+
+        assert result.success is True
+        assert result.projected is False
+
+    @pytest.mark.asyncio
     async def test_post_request(self, rest_write_tool_config):
         """POST request sends params as JSON body."""
         adapter = RestApiAdapter(rest_write_tool_config)
@@ -487,6 +500,17 @@ class TestRestApiAdapterProjectionInvariant:
                 }
             )
         return {"data": {"items": items}}
+
+    @pytest.mark.asyncio
+    async def test_projected_flag_true_when_projection_applied(self, rest_projection_config):
+        """A successful call shaped by response.projection reports projected=True."""
+        adapter = RestApiAdapter(rest_projection_config)
+        mock_resp = make_mock_response(200, {"results": [{"name": "a", "extra": 1}]})
+        with patch.object(adapter, "_http_client") as mock_client:
+            mock_client.request = AsyncMock(return_value=mock_resp)
+            result = await adapter.execute("test_market_lookup", {"q": "x"}, "sess-proj-1")
+        assert result.success is True
+        assert result.projected is True
 
     @pytest.mark.asyncio
     async def test_projection_runs_on_full_raw_dict_when_response_exceeds_max_size_chars(

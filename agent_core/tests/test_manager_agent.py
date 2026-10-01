@@ -15,6 +15,8 @@ Coverage:
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -31,6 +33,7 @@ from src.chat_provider.types import (
 )
 from src.manager_agent import ManagerAgent
 from src.models import ToolCall, ToolResult
+from src.tool_results import ToolResultPolicies, TurnToolCache, args_hash
 
 
 def _flat(prompt) -> str:
@@ -1123,6 +1126,29 @@ def test_list_form_still_means_any_tool_result():
     assert agent._ungrounded_params(call, _two_tool_history()) == set()
 
 
+def test_stored_result_grounds_value_when_exchange_not_in_messages():
+    from src.manager_agent import ungrounded_params
+    spec = {"profile_item_id": ["fetch_profile"]}
+    tc = _call("apply_job", {"profile_item_id": "real-id"})
+    stored = {"fetch_profile": ['{"items":[{"item_id":"real-id"}]}']}
+    assert ungrounded_params(spec, tc, [], stored_results=stored) == set()
+
+
+def test_stored_result_from_other_tool_does_not_ground():
+    from src.manager_agent import ungrounded_params
+    spec = {"profile_item_id": ["fetch_profile"]}
+    tc = _call("apply_job", {"profile_item_id": "job-id"})
+    stored = {"fetch_jobs": ['[{"item_id":"job-id"}]']}
+    assert ungrounded_params(spec, tc, [], stored_results=stored) == {"profile_item_id"}
+
+
+def test_strict_rejects_when_nothing_seen():
+    from src.manager_agent import ungrounded_params
+    tc = _call("remember", {"value": "x"})
+    assert ungrounded_params({"value": ["fetch_profile"]}, tc, [], strict=True) == {"value"}
+    assert ungrounded_params({"value": ["fetch_profile"]}, tc, []) == set()   # lenient default unchanged
+
+
 # --- max_calls_per_turn ----------------------------------------------------
 # A prompt rule cannot gate an irreversible write. Measured on live calls: a
 # caller picked ONE job and the agent emitted five apply_job calls in one turn
@@ -1160,3 +1186,83 @@ def test_cap_of_two_allows_two_then_blocks():
     assert over_call_cap(2, 0) is False
     assert over_call_cap(2, 1) is False
     assert over_call_cap(2, 2) is True
+
+
+def test_run_turn_ungrounded_refusal_does_not_crash():
+    """An invented id must produce a refusal tool_result, not a TypeError."""
+    tc = ToolCall(tool_name="apply_job", tool_use_id="tu_apply",
+                  input_params={"profile_item_id": "invented-id"})
+    initial = _tool_response(tc)
+    followup = _text_response("Let me check that again.")
+    agent, llm, registry, gateway, _ = _make_manager(llm_responses=[initial, followup])
+    agent._grounded_params = {"apply_job": {"profile_item_id": ["fetch_profile"]}}
+    earlier = [
+        Message(role="assistant", content=[ToolUseBlock(
+            tool_use_id="tu_fp", tool_name="fetch_profile", input={})]),
+        Message(role="user", content=[ToolResultBlock(
+            tool_use_id="tu_fp", content='{"items":[{"item_id":"real-id"}]}')]),
+    ]
+
+    text, _, results = agent.run_turn(earlier + list(MESSAGES), SESSION_ID, initial)
+
+    assert text == "Let me check that again."
+    gateway.execute.assert_not_called()
+    assert results[0].tool_use_id == "tu_apply"
+    assert results[0].error == "UNGROUNDED_PARAMETER"
+
+
+# ---------------------------------------------------------------------------
+# Tool-result persistence (sync path)
+# ---------------------------------------------------------------------------
+
+_POL = ToolResultPolicies.from_config({"connectors": {"read": [
+    {"name": "get_balance", "cache": {"scope": "session", "ttl_seconds": 600}}]}})
+
+
+def _entry():
+    return {"tool": "get_balance", "args_hash": args_hash({"account": "12345"}),
+            "data": {"balance": 100}, "fetched_at": time.time(), "expires_at": 9e12,
+            "origin": "turn", "scope": "session"}
+
+
+def test_run_turn_serves_cache_hit_without_gateway():
+    tc = _tool_call()
+    agent, llm, _, gateway, _ = _make_manager([_tool_response(tc), _text_response("100.")])
+    cache = TurnToolCache(_POL, [_entry()], {})
+    _, _, results = agent.run_turn(list(MESSAGES), SESSION_ID, _tool_response(tc), tool_cache=cache)
+    gateway.execute.assert_not_called()
+    assert results[0].result_text.startswith("(stored result")
+
+
+def test_run_turn_miss_executes_and_records():
+    tc = _tool_call()
+    live = ToolResult(tool_use_id="tu_abc", tool_name="get_balance", result={}, success=True,
+                      result_text='{"balance": 5}', projected=True)
+    agent, _, _, gateway, _ = _make_manager([_tool_response(tc), _text_response()], tool_result=live)
+    cache = TurnToolCache(_POL, [], {})
+    agent.run_turn(list(MESSAGES), SESSION_ID, _tool_response(tc), tool_cache=cache)
+    gateway.execute.assert_called_once()
+    assert cache.drain_batch()["puts"][0]["data"] == {"balance": 5}
+
+
+def test_run_turn_routes_remember_to_handler():
+    tc = ToolCall(tool_name="remember", tool_use_id="tu_r", input_params={"field": "f", "value": "v"})
+    agent, _, _, gateway, _ = _make_manager([_tool_response(tc), _text_response()])
+    seen = []
+
+    def handler(call, messages):
+        seen.append(call.tool_use_id)
+        return ToolResult(tool_use_id=call.tool_use_id, tool_name="remember", result={}, success=True,
+                          result_text="Saved f.")
+
+    agent.run_turn(list(MESSAGES), SESSION_ID, _tool_response(tc),
+                   remember_name="remember", remember_handler=handler)
+    assert seen == ["tu_r"]
+    gateway.execute.assert_not_called()
+
+
+def test_build_system_prompt_renders_known_facts():
+    agent = _make_manager_for_prompt()
+    prompt = agent.build_system_prompt("persona", "", "english", "web", {}, known_facts="- t — x")
+    assert "<known_facts>" in _flat(prompt) and "- t — x" in _flat(prompt)
+    assert "<known_facts>" not in _flat(agent.build_system_prompt("persona", "", "english", "web", {}))

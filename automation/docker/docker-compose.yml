@@ -551,6 +551,10 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
+      # main.py resolves dpg.yaml relative to its workdir and ignores
+      # CONFIG_FOLDER, so it must also be mounted here (as on the shared VM);
+      # without it the bridge exits with FileNotFoundError on startup.
+      - ../../dev-kit/dpg/reach_layer.yaml:/app/reach_layer/bridge/config/dpg.yaml:ro
       - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
     networks:
       - dpg_net
@@ -686,7 +690,10 @@ services:
   #   restart: unless-stopped
 
   memgraph:
-    image: memgraph/memgraph
+    # Pinned to match automation/deploy/shared-vm. Newer images make the binary
+    # the entrypoint, so the `command:` below (which names it) is rejected as a
+    # positional argument and memgraph never becomes healthy.
+    image: memgraph/memgraph:2.17.0
     container_name: memgraph
     command: [
       "/usr/lib/memgraph/memgraph",

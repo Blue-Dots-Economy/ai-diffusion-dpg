@@ -656,3 +656,73 @@ class TestTurnAssemblerLifecycleMirror:
     def test_rejects_invalid(self, payload):
         with pytest.raises(ValidationError):
             TurnAssemblerConfig.model_validate(payload)
+
+
+# -- tool-result persistence --------------------------------------------------
+
+def test_connectors_section_accepts_cache_and_invalidates():
+    s = ConnectorsSection.model_validate({
+        "read": [{"name": "fetch_jobs", "cache": {"scope": "session", "ttl_seconds": 60, "vary_on": ["trade"]}}],
+        "write": [{"name": "apply", "invalidates": ["fetch_jobs"]}],
+    })
+    assert s.read[0].cache.ttl_seconds == 60
+    assert s.write[0].invalidates == ["fetch_jobs"]
+
+
+@pytest.mark.parametrize("payload", [
+    {"write": [{"name": "w", "cache": {"scope": "user", "ttl_seconds": 5}}]},
+    {"read": [{"name": "r", "invalidates": ["r"]}]},
+    {"write": [{"name": "w", "invalidates": ["ghost"]}]},
+    {"internal": [{"name": "i", "cache": {"scope": "user", "ttl_seconds": 5}}]},
+    {"internal": [{"name": "i", "invalidates": ["r"]}], "read": [{"name": "r"}]},
+    {"read": [{"name": "r", "cache": {"scope": "user", "ttl_seconds": 0}}]},
+    {"read": [{"name": "r", "cache": {"scope": "global", "ttl_seconds": 5}}]},
+])
+def test_connectors_section_rejects_bad_cache_rules(payload):
+    with pytest.raises(ValidationError):
+        ConnectorsSection.model_validate(payload)
+
+
+def test_tool_results_and_memory_tool_sections():
+    from dev_kit.schemas.domain.agent_core import MemoryToolSection, ToolResultsSection
+    assert ToolResultsSection().max_user_ttl_seconds == 86400
+    m = MemoryToolSection.model_validate({"fields": {"x": {"scope": "session", "grounded_in": ["a"]}}})
+    assert m.name == "remember"
+    with pytest.raises(ValidationError):
+        MemoryToolSection.model_validate({"fields": {}})
+    with pytest.raises(ValidationError):
+        ToolResultsSection.model_validate({"max_user_ttl_seconds": 0})
+    with pytest.raises(ValidationError):
+        ToolResultsSection.model_validate({"bogus": 1})
+
+
+def test_validation_registry_has_tool_result_sections():
+    from dev_kit.schemas.validation import DOMAIN_SECTION_SCHEMAS
+    assert ("agent_core", "tool_results") in DOMAIN_SECTION_SCHEMAS
+    assert ("agent_core", "memory_tool") in DOMAIN_SECTION_SCHEMAS
+
+
+# -- session bootstrap ---------------------------------------------------------
+
+def test_session_bootstrap_and_prompt_session_fields_accepted():
+    from dev_kit.schemas.validation import DOMAIN_SECTION_SCHEMAS
+    a = AgentSection(primary_model=_ANTHROPIC_PRIMARY, fallback_model=_ANTHROPIC_FALLBACK,
+                     prompt_session_fields=["profile_item_id"])
+    assert a.prompt_session_fields == ["profile_item_id"]
+    schema = DOMAIN_SECTION_SCHEMAS[("agent_core", "session_bootstrap")]
+    s = schema.model_validate({"steps": [{"type": "tool", "tool": "fetch_profile", "args": {"a": 1}}]})
+    assert s.timeout_ms == 1500
+    assert s.steps[0].requires_consent is False
+
+
+@pytest.mark.parametrize("payload, match", [
+    ({"steps": [{"type": "set", "tool": "t"}]}, "Input should be 'tool'"),
+    ({"steps": []}, "List should have at least 1 item"),
+    ({"timeout_ms": 0, "steps": [{"type": "tool", "tool": "t"}]}, "greater than 0"),
+    ({"steps": [{"type": "tool", "tool": ""}]}, "at least 1 character"),
+    ({"steps": [{"type": "tool", "tool": "t", "bogus": 1}]}, "Extra inputs are not permitted"),
+])
+def test_session_bootstrap_rejects_bad_shapes(payload, match):
+    from dev_kit.schemas.validation import DOMAIN_SECTION_SCHEMAS
+    with pytest.raises(ValidationError, match=match):
+        DOMAIN_SECTION_SCHEMAS[("agent_core", "session_bootstrap")].model_validate(payload)

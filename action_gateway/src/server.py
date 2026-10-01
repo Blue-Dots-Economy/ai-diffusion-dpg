@@ -171,6 +171,7 @@ def create_app(registry: AdapterRegistry) -> FastAPI:
             result=result.result,
             result_text=result.result_text,
             session_values=result.session_values,
+            projected=result.projected,
             error=result.error,
         )
 

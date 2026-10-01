@@ -104,11 +104,14 @@ class ContextBundle:
                    ...promoted session fields from merge_on_session_end config...
                  }
                  None for new users.
+
+        tool_results: Unexpired tool-result entries from Memory Layer (spec §6).
     """
 
     session: dict
     profile: dict
     journey: dict | None = None
+    tool_results: list[dict] = field(default_factory=list)
 
     @staticmethod
     def empty() -> ContextBundle:
@@ -192,6 +195,8 @@ class ToolResult:
     # this a workflow cannot gate on anything a tool returned — the gap behind
     # consent_response, profile_setup_done and the participant fetch alike.
     session_values: dict[str, Any] = field(default_factory=dict)
+    # True when the Action Gateway applied the connector's projection to the result.
+    projected: bool = False
 
 
 # ---------------------------------------------------------------------------

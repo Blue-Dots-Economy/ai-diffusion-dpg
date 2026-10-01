@@ -40,6 +40,56 @@ agent:
     # streaming: true      # Both providers support streaming natively.
     # image_input: true    # Both providers support image input.
 
+# Tool-result persistence (spec: tool-result persistence, 2026-09-30).
+# Off by default: a tool with none of these keys behaves as before. Enable in
+# the domain config; storage also needs TOOL_RESULT_KEY_SECRET on Memory Layer.
+#
+# Per-connector, in domain `connectors:` (cache on read, invalidates on write):
+#   connectors:
+#     read:
+#       - name: fetch_profile
+#         cache:                  # store the result and show it in <known_facts>
+#           scope: session        # session | user (user outlives the call)
+#           ttl_seconds: 1800     # counted from the write, never extended by a read
+#           keep: [items]         # top-level fields to store, dict results only (default: all)
+#           vary_on: []           # session fields whose values make a separate entry
+#
+# scope: user is unsafe for a connector whose action_gateway tool declares
+# response.session_mapping: a cache hit does not replay session_mapping, so a
+# later session gets the stored result but not the mapped session values.
+# dev-kit validation rejects that combination.
+#     write:
+#       - name: save_profile
+#         invalidates: [fetch_profile]   # read connectors whose stored result to drop
+#
+# Upper bound for scope: user ttl_seconds.
+# tool_results:
+#   max_user_ttl_seconds: 86400
+#
+# Framework `remember` tool: lets the model store a value from a tool result.
+# The value must exactly equal one in the `grounded_in` tools' results.
+# memory_tool:
+#   name: remember
+#   fields:
+#     profile_item_id:
+#       scope: session            # session | persistent
+#       description: "item_id of the profile the caller chose"
+#       grounded_in: [fetch_profile, save_profile]
+
+# Session fields rendered into the LLM's <known_profile> (empty values and keys
+# already present are skipped). Spec: docs/superpowers/specs/2026-10-01-session-bootstrap-design.md
+# agent:
+#   prompt_session_fields: [profile_item_id, stored_trade, stored_location]
+#
+# Session bootstrap: runs these steps once on the first turn of a session,
+# before routing and without the LLM. Spec: same as above.
+# session_bootstrap:
+#   timeout_ms: 1500            # > 0; results arriving after this are discarded
+#   steps:                      # at least 1
+#     - type: tool              # only `tool` is supported
+#       tool: fetch_profile     # must name a connectors.read entry (read connectors only)
+#       requires_consent: false # true: skipped unless the caller consented to storage
+
 # conversation.* is domain-specific (blocked_message, escalation_message,
 # output_blocked_message, persona text). All fields must be set in domain.yaml.
 # The block intentionally lives only in domain configs.
