@@ -5064,7 +5064,7 @@ def test_blue_dots_journey_routes_end_to_end():
         ("job_match", R("other", relation="unrelated"), {}),
         ("job_match", R("other", relation="unclear"), {}),                       # 3rd → off_track
         ("job_match", R("select", option=1), {}),
-        ("profile_setup", R("provide_info", name="arun"), {"profile_item_id": "p1"}),  # save_profile mapping
+        ("profile_setup", R("provide_info", name="Arun"), {"profile_item_id": "p1"}),  # save_profile mapping
         ("profile_setup", R("affirm", relation="answers_other"), {}),
         ("apply_confirm", R("acknowledge", relation="unclear"), {}),             # thank-you before submit
         ("apply_confirm", R("affirm"), {"applications_submitted": 1}),           # apply_job mapping
