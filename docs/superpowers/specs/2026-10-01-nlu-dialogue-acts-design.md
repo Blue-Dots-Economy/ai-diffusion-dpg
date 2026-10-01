@@ -321,7 +321,7 @@ Startup fails if:
 - an `accept_when_pending`, `examples[].pending` or `termination_gate` pending id is not declared by any subagent;
 - an `options_from.tool` has no `cache` policy, so Spec A never stores its results;
 - `resolves_to` or a slot's mapped state key collides with a key that a connector `session_mapping` writes, or with a `memory_tool` (`remember`) field;
-- the rendered system prompt varies by subagent. This is a guard for the caching goal.
+(The system prompt cannot vary by subagent: it is rendered once from config with no per-turn or per-subagent input. A unit test pins this, rather than a startup check.)
 
 ### 7.4 Runtime ↔ dev-kit sync
 
