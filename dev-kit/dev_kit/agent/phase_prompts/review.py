@@ -115,11 +115,15 @@ the references section and auto-fix any of these — write via
   its connector must be in `connectors.internal`, not
   `connectors.read`. Fix silently if misplaced.
 
-- **`global_intents` ∩ `subagent.valid_intents` empty.** Remove any
-  overlap; prefer keeping the subagent-specific placement.
+- **Every `act_intents` intent and `off_track` are routed.** Each must
+  be used by some subagent `routing` rule or by `global_routing`
+  (`language_switch_request` is framework-handled and needs no route).
+  Add a missing `off_track` route as a self-loop; ask the user before
+  adding a route for a hand-authored `act_intents` row.
 
-- **`intent_filters` keys ⊆ `nlu_processor.intents`.** NLU intents
-  may be a strict superset — that is FINE, do not "fix" it.
+- **`intent_filters` keys are derivable.** Each key must be an
+  `act_intents` intent, `any_input`, `off_track` or
+  `language_switch_request`. Unused derivable names are FINE.
 
 - **`default_fallback_subagent_id`** must be a declared subagent id;
   set it to the first non-terminal subagent's id if missing.

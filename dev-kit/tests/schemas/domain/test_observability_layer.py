@@ -177,13 +177,13 @@ def test_observability_section_domain_required():
 
 def test_observability_section_domain_pattern_not_enforced_here():
     """In observability_layer schema, domain is just non-empty (the agent_core.observability schema enforces the slug pattern)."""
-    ObservabilitySection(domain="kkb")
+    ObservabilitySection(domain="blue-dots")
     ObservabilitySection(domain="employ-voice-bot")
 
 
 def test_observability_section_full():
     o = ObservabilitySection(
-        domain="kkb",
+        domain="blue-dots",
         outcomes=OutcomesConfig(
             lifecycle=[LifecycleState(state="started")],
             metrics=[MetricDefinition(name="m", instrument="counter", description="d")],
@@ -192,12 +192,12 @@ def test_observability_section_full():
         audit=AuditOverride(retention_days=90),
         telemetry=TelemetryOverride(pii_fields_excluded=["user_message"]),
     )
-    assert o.domain == "kkb"
+    assert o.domain == "blue-dots"
     assert o.sli.turn_latency_p99_ms == 1500
 
 
 def test_observability_section_only_domain_required_others_optional():
-    o = ObservabilitySection(domain="kkb")
+    o = ObservabilitySection(domain="blue-dots")
     assert o.outcomes is None
     assert o.sli is None
     assert o.audit is None
@@ -206,4 +206,4 @@ def test_observability_section_only_domain_required_others_optional():
 
 def test_observability_section_extra_forbidden():
     with pytest.raises(ValidationError):
-        ObservabilitySection(domain="kkb", unknown_field="y")
+        ObservabilitySection(domain="blue-dots", unknown_field="y")

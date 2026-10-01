@@ -60,8 +60,8 @@ class Turn:
     record: TurnRecord = field(default_factory=TurnRecord)
     predecessor: Optional["Turn"] = None
 
-    # Context cache — fetched once on first add_segment() so the semantic gate
-    # has NLU context (current_question, current_subagent_id) without re-reading
+    # Context cache — fetched once on first add_segment() so the session context
+    # (current_question, current_subagent_id) is available without re-reading
     # Memory Layer on every segment.
     _context_fetched: bool = False
     context_bundle: Optional[ContextBundle] = None

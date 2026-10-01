@@ -55,7 +55,7 @@ services:
       # When running docker compose manually, add KEY=value lines to this section.
     volumes:
       - ../../dev-kit/dpg/action_gateway.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/${DOMAIN:-kkb}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-blue-dots}/action_gateway.yaml:/app/config/action_gateway.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -89,7 +89,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}       # set to DEBUG for chat_provider/orchestrator tracing
     volumes:
       - ../../dev-kit/dpg/agent_core.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/${DOMAIN:-kkb}/agent_core.yaml:/app/config/agent_core.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-blue-dots}/agent_core.yaml:/app/config/agent_core.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -200,7 +200,7 @@ services:
     # The KE server starts immediately; documents are ingested when the user uploads via /upload.
     volumes:
       - ../../dev-kit/dpg/knowledge_engine.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/${DOMAIN:-kkb}/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-blue-dots}/knowledge_engine.yaml:/app/config/knowledge_engine.yaml:ro
       - ../../knowledge-engine/data:/app/data:ro   # source docs (read-only)
       - chroma_data:/app/chroma_db            # writable ChromaDB volume (CHROMA_PERSIST_DIR points here)
       - kb_data:/data/kb                      # upload staging area for KB documents
@@ -239,7 +239,7 @@ services:
       - MEMGRAPH_PASSWORD=${MEMGRAPH_PASSWORD:-}
     volumes:
       - ../../dev-kit/dpg/memory_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/${DOMAIN:-kkb}/memory_layer.yaml:/app/config/memory_layer.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-blue-dots}/memory_layer.yaml:/app/config/memory_layer.yaml:ro
     networks:
       - dpg_net
     depends_on:
@@ -271,7 +271,7 @@ services:
       - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev-kit/dpg/observability_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/${DOMAIN:-kkb}/observability_layer.yaml:/app/config/observability_layer.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-blue-dots}/observability_layer.yaml:/app/config/observability_layer.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -318,7 +318,7 @@ services:
       # Unified Reach Layer config: DPG defaults + per-domain overrides.
       # Loader scopes to the web channel via load_reach_config("web").
       - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-blue-dots}/reach_layer.yaml:/app/config/domain.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -351,7 +351,7 @@ services:
   #     # Unified Reach Layer config: DPG defaults + per-domain overrides.
   #     # Loader scopes to the cli channel via load_reach_config("cli").
   #     - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
-  #     - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
+  #     - ../../dev-kit/configs/${DOMAIN:-blue-dots}/reach_layer.yaml:/app/config/domain.yaml:ro
   #   networks:
   #     - dpg_net
   #   stdin_open: true
@@ -385,7 +385,7 @@ services:
       # Unified Reach Layer config: DPG defaults + per-domain overrides.
       # Loader scopes to the voice channel via load_reach_config("voice").
       - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-blue-dots}/reach_layer.yaml:/app/config/domain.yaml:ro
       - ./recordings:/var/recordings
     ports:
       - "8006:8006"
@@ -427,7 +427,7 @@ services:
       - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-blue-dots}/reach_layer.yaml:/app/config/domain.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -472,7 +472,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       - ../../dev-kit/dpg/reach_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/${DOMAIN:-kkb}/reach_layer.yaml:/app/config/domain.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-blue-dots}/reach_layer.yaml:/app/config/domain.yaml:ro
     networks:
       - dpg_net
     deploy:
@@ -502,7 +502,7 @@ services:
       - CONFIG_FOLDER=/app/config
     volumes:
       - ../../dev-kit/dpg/trust_layer.yaml:/app/config/dpg.yaml:ro
-      - ../../dev-kit/configs/${DOMAIN:-kkb}/trust_layer.yaml:/app/config/trust_layer.yaml:ro
+      - ../../dev-kit/configs/${DOMAIN:-blue-dots}/trust_layer.yaml:/app/config/trust_layer.yaml:ro
     networks:
       - dpg_net
     deploy:

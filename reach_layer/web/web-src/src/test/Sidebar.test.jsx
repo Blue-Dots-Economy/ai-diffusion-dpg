@@ -3,7 +3,7 @@ import { render, screen, fireEvent, within } from '@testing-library/react'
 import { Sidebar } from '../components/chat/Sidebar'
 
 const config = {
-  app_name: 'KKB',
+  app_name: 'Blue Dots',
   app_tagline: 'DPG Skill-Jobs AI',
   app_icon: '💼',
   agent_avatar: '🌾',

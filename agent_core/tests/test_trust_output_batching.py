@@ -23,6 +23,7 @@ from src.orchestrator import _TrustOutputBatcher
 
 # Reuse the harness from the existing stream test module — keeps the
 # AgentCore wiring identical and avoids drift if those helpers change.
+from tests.fakes import fake_understander
 from tests.test_stream_turn import _collect_events, _make_agent_core, _make_turn_input
 
 
@@ -204,10 +205,9 @@ def _wire_basic_nlu(agent):
     """Apply the minimum NLU/normaliser mocks shared by streaming tests."""
     agent._language_normaliser = MagicMock()
     agent._language_normaliser.normalise.return_value = ("msg", "english")
-    agent._nlu_processor = MagicMock()
-    agent._nlu_processor.process.return_value = NLUResult(
-        intent="greeting", entities={}, sentiment="neutral", confidence=0.9
-    )
+    agent._understander = fake_understander(NLUResult(
+        intent="greeting", entities={}, confidence=0.9
+    ))
 
 
 def _enable_batching(agent, *, max_sentences=3, max_interval_ms=10_000, enabled=True):

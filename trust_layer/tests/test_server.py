@@ -207,7 +207,7 @@ def test_check_output_block_is_case_insensitive(client):
 
 FULL_CONFIG = {
     "trust": {
-        "policy_pack": "kkb_advisory_jobs",
+        "policy_pack": "blue_dots_advisory_jobs",
         "input_rules": {
             "blocked_phrases": ["bomb"],
             "escalation_topics": ["suicide"],
@@ -218,7 +218,7 @@ FULL_CONFIG = {
             "output_blocked_message": "Bad output.",
         },
         "policy_packs": {
-            "kkb_advisory_jobs": {
+            "blue_dots_advisory_jobs": {
                 "risks": ["false_certainty"],
                 "guardrails": {
                     "false_certainty": {

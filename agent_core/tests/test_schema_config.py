@@ -12,6 +12,7 @@ from src.schema.config import (
     RoutingOperator,
     ServerConfig,
     SpecialHandler,
+    _DIALOGUE_ACTS,
 )
 
 
@@ -70,8 +71,6 @@ def _minimal_valid_config() -> dict:
             },
             "nlu_processor": {
                 "model": "claude-sonnet-4-6-20250514",
-                "intents": ["greeting", "unknown"],
-                "entities": ["name", "location"],
                 "signal_intents": {"pay_disappointment": "objection"},
             },
         },
@@ -81,15 +80,16 @@ def _minimal_valid_config() -> dict:
         },
         "hitl": {"response_message": "connecting you"},
         "agent_workflow": {
-            "workflow_id": "kkb",
+            "workflow_id": "blue-dots",
             "version": "1.0.0",
-            "agent_system_prompt": "You are KKB.",
+            "agent_system_prompt": "You are Blue Dots.",
             "subagents": [
                 {
                     "id": "entry",
                     "is_start": True,
                     "system_prompt": "entry prompt",
                     "routing": [
+                        {"intent": "off_track", "next_subagent_id": "entry"},
                         {"intent": "*", "next_subagent_id": "end"},
                     ],
                 },
@@ -109,7 +109,6 @@ def _minimal_valid_config() -> dict:
         },
         "reach_layer": {
             "turn_assembler": {
-                "semantic_gate": {"enabled": True, "confidence_threshold": 0.75},
                 "silence_trigger": {"silence_ms": 400},
                 "max_wait_ceiling": {"max_wait_ms": 8000},
             }
@@ -119,7 +118,7 @@ def _minimal_valid_config() -> dict:
         "trust_client": {"endpoint": "http://trust:8003", "timeout_ms": 2000},
         "learning_client": {"endpoint": "http://obs:8004", "timeout_ms": 2000},
         "action_gateway_client": {"endpoint": "http://ag:9999", "timeout_ms": 5000},
-        "observability": {"domain": "kkb"},
+        "observability": {"domain": "blue-dots"},
     }
 
 
@@ -127,7 +126,6 @@ def test_accepts_valid_full_config():
     cfg = MergedConfig.validate_full(_minimal_valid_config())
     assert cfg.agent.primary_model == "claude-haiku-4-5-20251001"
     assert cfg.agent.max_tool_rounds == 3
-    assert len(cfg.preprocessing.nlu_processor.intents) == 2
     assert cfg.preprocessing.nlu_processor.signal_intents["pay_disappointment"] == "objection"
     assert cfg.entity_to_profile_field["location"] == "location"
     assert cfg.hitl.response_message == "connecting you"
@@ -235,7 +233,7 @@ def test_rejects_non_positive_timeout():
 
 def test_rejects_out_of_range_confidence():
     config = _minimal_valid_config()
-    config["preprocessing"]["nlu_processor"]["confidence_threshold"] = 1.5
+    config["preprocessing"]["nlu_processor"]["user_state_confidence_threshold"] = 1.5
     with pytest.raises(ValidationError):
         MergedConfig.validate_full(config)
 
@@ -282,6 +280,7 @@ def test_routing_condition_all_operators_accepted():
     for op in ["eq", "not_eq", "gt", "lt", "in"]:
         cfg = MergedConfig.validate_full({
             "agent_workflow": {
+                "global_routing": [{"intent": "off_track", "next_subagent_id": "s"}],
                 "subagents": [
                     {
                         "id": "s",
@@ -428,7 +427,7 @@ class TestAgentProviderAndFeatures:
             (repo_root / "dev-kit" / "dpg" / "agent_core.yaml").read_text()
         ) or {}
         domain = yaml.safe_load(
-            (repo_root / "dev-kit" / "configs" / "kkb" / "agent_core.yaml").read_text()
+            (repo_root / "dev-kit" / "configs" / "blue-dots" / "agent_core.yaml").read_text()
         ) or {}
         merged: dict = {**dpg}
         for k, v in domain.items():
@@ -594,4 +593,161 @@ def test_no_bootstrap_is_default():
 ])
 def test_invalid_bootstrap_rejected(cfg, match):
     with pytest.raises(ValidationError, match=match):
+        MergedConfig.validate_full(cfg)
+
+
+# ---------------------------------------------------------------------------
+# dialogue-act NLU blocks + SubAgent.pending
+# ---------------------------------------------------------------------------
+
+def _da_base() -> dict:
+    """Minimal merged config with dialogue-act NLU blocks that validates."""
+    return {
+        "connectors": {"read": [{"name": "fetch_jobs", "description": "jobs",
+                                 "cache": {"scope": "session", "ttl_seconds": 600}}]},
+        "preprocessing": {"nlu_processor": {
+            "topics": ["salary", "search"],
+            "slots": {"age": {"type": "int", "min": 14, "max": 80, "accept_when_pending": ["age"]},
+                      "consent": {"type": "enum", "values": ["granted", "declined"],
+                                  "accept_when_pending": ["consent"]}},
+            "act_intents": [
+                {"acts": ["affirm"], "pending": "submit_confirm", "relation": "answers_pending",
+                 "intent": "apply_now"},
+                {"acts": ["close"], "intent": "termination_intent", "gated": True},
+            ],
+            "termination_gate": {"any_of": [{"pending": "closing_offer"}]},
+            "off_track": {"threshold": 3, "intent": "off_track"},
+        }},
+        "agent_workflow": {
+            "global_routing": [{"intent": "termination_intent", "next_subagent_id": "ended"}],
+            "subagents": [
+                {"id": "opening", "is_start": True,
+                 "pending": [{"id": "consent", "when": [{"field": "consent_response", "operator": "in",
+                                                         "value": [None, ""]}]},
+                             {"id": "age"}],
+                 "routing": [{"intent": "off_track", "next_subagent_id": "recovery"}]},
+                {"id": "apply_confirm",
+                 "pending": [{"id": "submit_confirm"}, {"id": "closing_offer"}],
+                 "routing": [{"intent": "apply_now", "next_subagent_id": "ended"}]},
+                {"id": "job_match",
+                 "pending": [{"id": "select_job",
+                              "options_from": {"tool": "fetch_jobs", "fields": ["role"], "id_field": "item_id"},
+                              "resolves_to": "selected_job_item_id"}]},
+                {"id": "recovery"}, {"id": "ended", "is_terminal": True},
+            ],
+        },
+    }
+
+
+def test_dialogue_act_minimal_config_validates():
+    cfg = MergedConfig.validate_full(_da_base())
+    nlu = cfg.preprocessing.nlu_processor
+    assert nlu.timeout_ms == 2500 and nlu.retry_attempts == 2
+    assert cfg.agent_workflow.subagents[2].pending[0].options_from.tool == "fetch_jobs"
+
+
+def test_acts_constant_is_the_framework_list():
+    assert _DIALOGUE_ACTS == ("affirm", "deny", "acknowledge", "provide_info", "correct", "select",
+                              "ask", "request_change", "repeat", "hold", "close", "other")
+
+
+@pytest.mark.parametrize("mutate, match", [
+    (lambda c: c["preprocessing"]["nlu_processor"]["act_intents"][0].update(acts=["shout"]),
+     "unknown act"),
+    (lambda c: c["preprocessing"]["nlu_processor"]["slots"]["age"].update(accept_when_pending=["nope"]),
+     "undeclared pending id 'nope'"),
+    (lambda c: c["preprocessing"]["nlu_processor"]["act_intents"][0].update(pending="nope"),
+     "undeclared pending id 'nope'"),
+    (lambda c: c["preprocessing"]["nlu_processor"]["termination_gate"]["any_of"].append({"pending": "nope"}),
+     "undeclared pending id 'nope'"),
+    (lambda c: c["preprocessing"]["nlu_processor"]["act_intents"][0].update(intent="unrouted"),
+     "intent 'unrouted' is not used by any routing rule"),
+    (lambda c: c["preprocessing"]["nlu_processor"]["off_track"].update(intent="nowhere"),
+     "off_track.intent 'nowhere' is not used by any routing rule"),
+    (lambda c: c["connectors"]["read"][0].pop("cache"),
+     "options_from.tool 'fetch_jobs' has no cache policy"),
+    (lambda c: c["preprocessing"]["nlu_processor"]["act_intents"].append(
+        {"acts": ["ask"], "topic": "weather", "intent": "apply_now"}),
+     "topic 'weather' is not in topics"),
+    (lambda c: c["preprocessing"]["nlu_processor"]["slots"].update(bad={"type": "enum"}),
+     "enum slot needs values"),
+    (lambda c: c["agent_workflow"]["subagents"][2]["pending"][0].pop("options_from"),
+     "resolves_to requires options_from"),
+])
+def test_dialogue_act_rejections(mutate, match):
+    cfg = copy.deepcopy(_da_base())
+    mutate(cfg)
+    with pytest.raises((ValidationError, ValueError), match=match):
+        MergedConfig.validate_full(cfg)
+
+
+def test_memory_tool_field_collision_rejected():
+    cfg = copy.deepcopy(_da_base())
+    cfg["connectors"]["internal"] = []
+    cfg["memory_tool"] = {"name": "remember", "fields": {
+        "selected_job_item_id": {"scope": "session", "description": "x"}}}
+    with pytest.raises(ValueError, match="collides with memory_tool field"):
+        MergedConfig.validate_full(cfg)
+
+
+def test_framework_handled_intent_needs_no_routing_rule():
+    cfg = copy.deepcopy(_da_base())
+    nlu = cfg["preprocessing"]["nlu_processor"]
+    nlu["topics"].append("language")
+    nlu["act_intents"].append(
+        {"acts": ["request_change"], "topic": "language", "intent": "language_switch_request"})
+    MergedConfig.validate_full(cfg)
+
+
+def test_rejects_semantic_gate_in_turn_assembler():
+    cfg = _minimal_valid_config()
+    cfg["channels"]["voice"]["turn_assembler"]["semantic_gate"] = {"enabled": False}
+    with pytest.raises(ValidationError, match="semantic_gate"):
+        MergedConfig.validate_full(cfg)
+
+
+# ---------------------------------------------------------------------------
+# Removed legacy NLU keys (spec §16): a config still carrying one fails startup
+# ---------------------------------------------------------------------------
+
+def _set_nlu(key, value):
+    def _m(c):
+        c["preprocessing"]["nlu_processor"][key] = value
+    return _m
+
+
+@pytest.mark.parametrize("mutate, key", [
+    pytest.param(_set_nlu("mode", "dialogue_act"), "mode", id="nlu.mode"),
+    pytest.param(_set_nlu("intents", ["greeting"]), "intents", id="nlu.intents"),
+    pytest.param(_set_nlu("entities", ["name"]), "entities", id="nlu.entities"),
+    pytest.param(_set_nlu("domain_instruction", "x"), "domain_instruction", id="nlu.domain_instruction"),
+    pytest.param(_set_nlu("confidence_threshold", 0.5), "confidence_threshold", id="nlu.confidence_threshold"),
+    pytest.param(_set_nlu("sentiment_classes", ["neutral"]), "sentiment_classes", id="nlu.sentiment_classes"),
+    pytest.param(_set_nlu("log_raw_response_max_chars", 500), "log_raw_response_max_chars",
+                 id="nlu.log_raw_response_max_chars"),
+    pytest.param(lambda c: c["agent_workflow"]["subagents"][0].update(valid_intents=["apply_now"]),
+                 "valid_intents", id="subagent.valid_intents"),
+    pytest.param(lambda c: c["agent_workflow"].update(global_intents=["termination_intent"]),
+                 "global_intents", id="workflow.global_intents"),
+])
+def test_removed_intent_mode_key_rejected(mutate, key):
+    cfg = copy.deepcopy(_da_base())
+    mutate(cfg)
+    with pytest.raises(ValidationError, match=key):
+        MergedConfig.validate_full(cfg)
+
+
+def test_dialogue_act_rules_enforced_without_mode_key():
+    cfg = copy.deepcopy(_da_base())
+    cfg["preprocessing"]["nlu_processor"]["act_intents"][0]["intent"] = "unrouted"
+    with pytest.raises((ValidationError, ValueError), match="intent 'unrouted' is not used"):
+        MergedConfig.validate_full(cfg)
+
+
+def test_off_track_intent_must_be_routed_when_a_workflow_exists():
+    """The off-track rule now runs on every config; an empty workflow has nothing to route."""
+    MergedConfig.validate_full({})
+    cfg = _minimal_valid_config()
+    cfg["agent_workflow"]["subagents"][0]["routing"].pop(0)
+    with pytest.raises(ValidationError, match="off_track.intent 'off_track' is not used"):
         MergedConfig.validate_full(cfg)

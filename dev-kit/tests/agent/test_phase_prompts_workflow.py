@@ -78,3 +78,19 @@ def test_workflow_no_kb_note_when_no_kb():
     # global_tools is mentioned in the hard rules but KB-specific pre-check
     # block should not appear
     assert "connectors.internal" not in result or "Pre-check" not in result
+
+
+def test_workflow_prompt_never_mentions_intent_lists() -> None:
+    import re
+    hand_authored = (
+        "NLU slots, act→intent rows and pending questions are authored by hand in "
+        "agent_core.yaml for now (see spec §16)."
+    )
+    for state in (_intake(), _intake(has_kb=True, is_multi_turn=True, has_external_tools=True)):
+        result = build([], "", "", state)
+        assert re.search(r"\bintents\b", result, re.IGNORECASE) is None
+        for word in ("valid_intents", "global_intents", "domain_instruction"):
+            assert word not in result
+        assert hand_authored in " ".join(result.split())
+        # The runtime rejects a workflow whose off-track intent is unrouted.
+        assert "off_track" in result

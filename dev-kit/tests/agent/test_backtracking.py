@@ -43,11 +43,6 @@ from dev_kit.agent.skeleton import build_skeleton
 # this file self-contained. If you add a stuck-field workaround there, drop
 # the equivalent entry here too.
 _TEST_VALUES: dict[str, Any] = {
-    "agent_core.preprocessing.nlu_processor.intents": ["greeting", "question"],
-    "agent_core.preprocessing.nlu_processor.entities": ["topic"],
-    "agent_core.preprocessing.nlu_processor.domain_instruction": (
-        "Classify user intents."
-    ),
     "agent_core.preprocessing.nlu_processor.provider": "anthropic",
     "agent_core.preprocessing.nlu_processor.model": "claude-sonnet-4-6",
     "agent_core.preprocessing.language_normalisation.provider": "anthropic",
@@ -202,6 +197,9 @@ def _auto_answer_llm(slug_root: Path, intake: IntakeState):
         for path, rule in pending:
             value = _test_value_for(path, rule.default)
             calls.append(ToolCall("update_config", {"path": path, "value": value}))
+        if phase == "knowledge":
+            # The knowledge phase also waits on the Azure-Blob answer.
+            calls.append(ToolCall("update_intake", {"field": "uses_azure_blob", "value": False}))
         return LLMResponse(
             text=f"phase={phase} pending={len(pending)}",
             tool_calls=calls,
@@ -215,7 +213,7 @@ def _auto_answer_llm(slug_root: Path, intake: IntakeState):
 # ---------------------------------------------------------------------------
 
 
-def test_backtracking_flips_has_kb_returns_to_language(tmp_path: Path) -> None:
+def test_backtracking_flips_has_kb_returns_to_knowledge(tmp_path: Path) -> None:
     """Flipping has_kb mid-conversation rewinds the wizard to an earlier phase.
 
     Sequence:
@@ -223,12 +221,12 @@ def test_backtracking_flips_has_kb_returns_to_language(tmp_path: Path) -> None:
     1. Project starts with ``has_kb=False`` parked at the ``workflow`` phase
        with all prior chat fields stamped ``answered``.
     2. On turn 0 the scripted LLM emits ``update_intake(has_kb=True)``.
-    3. The end-of-turn router observes ``needs_re_asking`` entries in
-       earlier phases (language + knowledge + workflow + reach) and selects
-       the earliest one. Per the FIELD_RULES catalogue,
-       ``agent_core.preprocessing.nlu_processor.intents`` (language phase)
-       lists ``has_kb`` in ``invalidated_by`` — language is earlier than
-       knowledge in ``PHASE_ORDER`` — so the wizard backtracks there.
+    3. The cascade marks the answered workflow fields that list ``has_kb``
+       (``agent_workflow.global_tools``) ``needs_re_asking`` and turns the
+       gated-off knowledge-phase fields ``pending``. The end-of-turn router
+       sees pending fields in the earlier, now-relevant knowledge phase and
+       backtracks there. (Before NLU single-mode the language-phase intent
+       list also listed ``has_kb``; it no longer exists, spec §16.)
     """
     projects_root, slug_root, _ = _setup_project_at_workflow(tmp_path)
 
@@ -253,15 +251,15 @@ def test_backtracking_flips_has_kb_returns_to_language(tmp_path: Path) -> None:
 
     # Router backtracked to the earliest invalidated phase.
     new_phase = load_current_phase(slug_root)
-    assert new_phase == "language", (
-        f"expected backtrack to 'language', got {new_phase!r}"
+    assert new_phase == "knowledge", (
+        f"expected backtrack to 'knowledge', got {new_phase!r}"
     )
     assert PHASE_ORDER.index(new_phase) < PHASE_ORDER.index("workflow")
 
-    # The NLU intents field (language phase) is now marked needs_re_asking.
+    # The answered workflow field that depends on has_kb is re-asked.
     field_status = load_field_status(slug_root / "_meta" / "field_status.json")
     assert (
-        field_status.get("agent_core.preprocessing.nlu_processor.intents")
+        field_status.get("agent_core.agent_workflow.global_tools")
         == "needs_re_asking"
     )
 
@@ -270,8 +268,7 @@ def test_backtracking_flips_has_kb_returns_to_language(tmp_path: Path) -> None:
     # now sit at `pending` (no default) or `answered` (default seeded) —
     # NOT `needs_re_asking`, which only makes sense for fields the user
     # had already answered. The router will still visit the knowledge
-    # phase after the language re-ask completes, because the phase has
-    # pending chat fields.
+    # phase because it now has pending chat fields.
     knowledge_chat_paths = {
         p
         for p, rule in AGGREGATED_FIELD_RULES.items()
@@ -295,9 +292,9 @@ def test_backtracking_then_advance_progresses_through_invalidated_phases(
     Sequence:
 
     1. Same starting state as the previous test (workflow phase, has_kb=False).
-    2. Turn 0: scripted LLM flips has_kb to True (backtracks to language).
+    2. Turn 0: scripted LLM flips has_kb to True (backtracks to knowledge).
     3. Subsequent turns auto-answer every pending field for the current
-       phase. The wizard should advance language -> knowledge -> ... until
+       phase. The wizard should advance knowledge -> ... until
        it returns to a phase at or beyond workflow (or stalls on a field the
        auto-answer registry does not cover).
 
@@ -319,7 +316,7 @@ def test_backtracking_then_advance_progresses_through_invalidated_phases(
         projects_root=projects_root,
         llm_call=initial_llm,
     )
-    assert load_current_phase(slug_root) == "language"
+    assert load_current_phase(slug_root) == "knowledge"
 
     # Update the in-memory intake snapshot used by the auto-answer LLM so
     # collect_pending_fields evaluates applies_if against the new value.
@@ -328,7 +325,7 @@ def test_backtracking_then_advance_progresses_through_invalidated_phases(
 
     # Drive forward — bounded turns and stall detection so a misconfigured
     # registry can't infinite-loop the test.
-    last_phase = "language"
+    last_phase = "knowledge"
     stall = 0
     final_phase = last_phase
     for i in range(20):
@@ -351,11 +348,11 @@ def test_backtracking_then_advance_progresses_through_invalidated_phases(
             stall = 0
         last_phase = after
 
-    # The wizard must have advanced past language again — the whole point
+    # The wizard must have advanced past knowledge again — the whole point
     # of backtracking is that we re-ask and then move forward, not that we
     # park there forever.
-    assert PHASE_ORDER.index(final_phase) > PHASE_ORDER.index("language"), (
-        f"expected wizard to advance past language after backtracking; "
+    assert PHASE_ORDER.index(final_phase) > PHASE_ORDER.index("knowledge"), (
+        f"expected wizard to advance past knowledge after backtracking; "
         f"final_phase={final_phase!r}"
     )
 

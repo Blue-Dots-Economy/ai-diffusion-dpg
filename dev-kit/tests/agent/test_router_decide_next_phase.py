@@ -28,7 +28,7 @@ def _answered_field_status_for_phase(phase: str, state: IntakeState) -> dict[str
 
 def test_stays_when_current_incomplete():
     state = _intake()
-    field_status = {"agent_core.preprocessing.nlu_processor.intents": "pending"}
+    field_status = {"agent_core.conversation.blocked_message": "pending"}
     nxt = decide_next_phase("language", state, accumulator={}, field_status=field_status)
     assert nxt == "language"
 
@@ -46,7 +46,7 @@ def test_advances_when_current_complete():
 def test_backtracks_when_earlier_phase_invalidated():
     state = _intake()
     field_status = {
-        "agent_core.preprocessing.nlu_processor.intents": "needs_re_asking",
+        "agent_core.conversation.blocked_message": "needs_re_asking",
     }
     nxt = decide_next_phase("workflow", state, accumulator={}, field_status=field_status)
     assert nxt == "language"
@@ -102,7 +102,7 @@ def test_stay_log_lists_pending_field_paths(caplog) -> None:
     state = _intake()
     # Only ONE chat field marked pending; everything else missing from
     # field_status — both should appear in the pending list.
-    field_status = {"agent_core.preprocessing.nlu_processor.intents": "pending"}
+    field_status = {"agent_core.conversation.blocked_message": "pending"}
 
     with caplog.at_level(logging.INFO, logger="dev_kit.agent.router"):
         nxt = decide_next_phase("language", state, accumulator={}, field_status=field_status)
@@ -124,7 +124,7 @@ def test_stay_log_lists_pending_field_paths(caplog) -> None:
     pending_fields = getattr(rec, "pending_fields", None)
     assert isinstance(pending_fields, list) and pending_fields
     assert any(
-        "agent_core.preprocessing.nlu_processor.intents" in path
+        "agent_core.conversation.blocked_message" in path
         for path in pending_fields
     )
     pending_count = getattr(rec, "pending_field_count", None)
@@ -212,3 +212,26 @@ def test_on_intake_update_sets_azure_blob_decided():
     on_intake_update("uses_azure_blob", False, state, accumulator={"agent_core": {}, "knowledge_engine": {}}, field_status={})
     assert state.uses_azure_blob is False
     assert state.azure_blob_decided is True
+
+
+def test_backtracks_to_earlier_phase_with_newly_applicable_pending_field():
+    """Flipping has_kb on at workflow makes knowledge fields pending; revisit it.
+
+    Before NLU single-mode the has_kb flip also invalidated the language-phase
+    intent list, and that backtrack happened to walk through knowledge. With
+    no intent list, the pending knowledge fields themselves must trigger it.
+    """
+    state = _intake(has_kb=True)
+    field_status = {
+        "knowledge_engine.knowledge.blocks.static_knowledge_base.intent_filters": "pending",
+    }
+    assert decide_next_phase("workflow", state, accumulator={}, field_status=field_status) == "knowledge"
+
+
+def test_pending_field_in_irrelevant_or_gated_off_phase_does_not_backtrack():
+    state = _intake(has_kb=False)
+    field_status = {
+        "knowledge_engine.knowledge.blocks.static_knowledge_base.intent_filters": "pending",
+        "agent_core.agent_workflow.agent_system_prompt": "pending",
+    }
+    assert decide_next_phase("workflow", state, accumulator={}, field_status=field_status) == "workflow"

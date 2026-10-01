@@ -34,4 +34,4 @@ knowledge:
 # Engine returns retrieval chunks only — do not duplicate those fields here.
 
 observability:
-  domain: ""  # Required. Domain identifier (e.g. "kkb", "farmer_friendly").
+  domain: ""  # Required. Domain identifier (e.g. "blue-dots", "farmer_friendly").

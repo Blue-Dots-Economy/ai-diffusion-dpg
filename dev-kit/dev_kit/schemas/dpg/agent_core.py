@@ -102,7 +102,6 @@ class TurnAssemblerDpg(BaseModel):
     """Defaults for the streaming TurnAssembler used by session-mode channels."""
 
     model_config = ConfigDict(extra="forbid")
-    semantic_gate: dict = Field(default_factory=lambda: {"enabled": False, "confidence_threshold": 0.75})
     silence_trigger: dict = Field(default_factory=lambda: {"silence_ms": 400})
     max_wait_ceiling: dict = Field(default_factory=lambda: {"max_wait_ms": 8000})
     interruption: dict = Field(default_factory=lambda: {
@@ -137,6 +136,32 @@ class ChannelsDpg(BaseModel):
     mcp: Optional[ChannelConfigDpg] = None
 
 
+class OffTrackDpg(BaseModel):
+    """Off-track threshold and recovery intent defaults (dialogue-act NLU)."""
+
+    model_config = ConfigDict(extra="forbid")
+    threshold: int = Field(default=3, ge=1)
+    intent: str = "off_track"
+
+
+class NLUProcessorDpg(BaseModel):
+    """Framework defaults for ``preprocessing.nlu_processor`` (domain fields live in the domain half)."""
+
+    model_config = ConfigDict(extra="forbid")
+    timeout_ms: int = Field(default=2500, gt=0)
+    retry_attempts: int = Field(default=2, ge=1)
+    history_turns: int = Field(default=2, ge=0)
+    log_raw_response: bool = False
+    off_track: OffTrackDpg = Field(default_factory=OffTrackDpg)
+
+
+class PreprocessingDpg(BaseModel):
+    """DPG framework defaults for the preprocessing helpers."""
+
+    model_config = ConfigDict(extra="forbid")
+    nlu_processor: NLUProcessorDpg = Field(default_factory=NLUProcessorDpg)
+
+
 class AgentCoreDpgConfig(BaseModel):
     """Validated against the operator-edited dev-kit/dpg/agent_core.yaml."""
 
@@ -150,4 +175,5 @@ class AgentCoreDpgConfig(BaseModel):
     action_gateway_client: ClientConfig
     reach_layer: ReachLayerDefaults
     observability: ObservabilityDpg
+    preprocessing: PreprocessingDpg = Field(default_factory=PreprocessingDpg)
     channels: Optional[ChannelsDpg] = None

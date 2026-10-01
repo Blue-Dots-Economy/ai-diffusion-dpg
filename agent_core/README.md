@@ -27,7 +27,7 @@ agent_core/
 ├── pyproject.toml
 ├── config/
 │   ├── dpg.yaml          # Framework defaults (server, timeouts, endpoints)
-│   └── domain.yaml       # Domain config template (models, intents, connectors, workflow)
+│   └── domain.yaml       # Domain config template (models, NLU slots/act_intents, connectors, workflow)
 ├── src/
 │   ├── base.py                          # AgentCoreBase ABC — process_turn() + stream_turn()
 │   ├── models.py                        # TurnInput, TurnResult, ContextBundle, NLUResult,
@@ -66,8 +66,7 @@ agent_core/
 │   │   ├── metrics.py                   # provider-agnostic OTel instruments
 │   │   └── __init__.py                  # public exports + build_chat_provider() factory
 │   ├── preprocessing/
-│   │   ├── language_normalisation.py
-│   │   └── nlu_processor.py
+│   │   └── language_normalisation.py
 │   ├── http_clients/                    # Sync HTTP adapters
 │   │   ├── memory_layer.py
 │   │   ├── trust_layer.py               # fail-closed on any error
@@ -100,7 +99,6 @@ agent_core/
     ├── test_chat_provider_types.py
     ├── test_workflow_loader.py
     ├── test_tool_registry.py
-    ├── test_nlu_processor.py
     ├── test_language_normalisation.py
     ├── test_http_clients.py
     ├── test_memory_http_client.py
@@ -126,10 +124,14 @@ Both `process_turn()` and `stream_turn()` run the same 13-step sequence:
 2.  Trust check input           Trust Layer — block, escalate, or allow
 3.  Language Normalisation      Internal LLM call (haiku model) — dialect, code-switching,
                                 transliteration
-4.  NLU Processor               Internal LLM call (haiku model) — intent, entities,
-                                sentiment, confidence score
+4.  Dialogue-act NLU            TurnUnderstander — pending question + known fields form the
+                                frame; one strict-schema LLM call returns dialogue acts and
+                                typed slots; post-processing derives the routing intent and
+                                the session writes. A structured summary of the
+                                understanding is rendered into the main LLM prompt as
+                                <caller_turn>
 5.  Routing                     Deterministic — NLU result + session conditions select subagent
-6.  Assemble constraints        Trust Layer.assemble_constraints if active_risks present
+6.  Assemble constraints        Trust Layer.assemble_constraints
 7.  Build system prompt         Subagent prompt + guardrail constraints + required disclosures
 8.  LLM call #1                 ChatProviderBase — call() (sync) or stream() (streaming),
                                 via the configured provider (anthropic, openai, or google)
@@ -173,11 +175,11 @@ POST /sessions/{id}/input  ─►  TurnAssembler.add_segment()
                                     ▼
                             Session.current_turn: Turn (segments, timers, queue, abort)
                                     │
-                     ┌──────────────┼──────────────┐
-                     │              │              │
-              semantic_gate    silence_trigger   max_wait_ceiling
-              (NLU confidence)  (resets on every  (absolute ceiling,
-                                 new segment)     never resets)
+                         ┌──────────┴──────────┐
+                         │                     │
+                 silence_trigger        max_wait_ceiling
+                 (resets on every       (absolute ceiling,
+                  new segment)           never resets)
                                     │
                                     ▼
                            agent_core.stream_turn()  ──►  Turn.event_queue
@@ -190,9 +192,8 @@ POST /sessions/{id}/input  ─►  TurnAssembler.add_segment()
 
 **Policy stack** — first to fire wins:
 
-1. **Semantic completeness gate** — runs NLU on assembled text; if `confidence ≥ threshold` and intent is not `unknown`, invoke immediately.
-2. **Silence trigger** — `asyncio.Task` started on first segment, reset (cancel + restart) on every subsequent `add_segment()`. Fires after `silence_ms`.
-3. **Max-wait ceiling** — `asyncio.Task` started once on buffer creation, never reset. Fires after `max_wait_ms`.
+1. **Silence trigger** — `asyncio.Task` started on first segment, reset (cancel + restart) on every subsequent `add_segment()`. Fires after `silence_ms`.
+2. **Max-wait ceiling** — `asyncio.Task` started once on buffer creation, never reset. Fires after `max_wait_ms`.
 
 If both the silence timer and the ceiling fire simultaneously, only the first to acquire the session-buffer lock wins the state transition.
 
@@ -289,7 +290,7 @@ LLM proxy endpoint (implemented, not yet wired).
 Implements both `process_turn()` (sync) and `stream_turn()` (async generator). Runs the 13-step sequence. Holds no session state. All dependencies are injected at construction, including the async HTTP clients used by `stream_turn()`. `_split_sentences()` is a small utility that splits LLM tokens into sentence boundaries (supports Devanagari and fullwidth punctuation).
 
 **`turn_assembler.py` — TurnAssembler**
-Buffers multi-segment input and decides when to invoke `stream_turn()`. Holds `_sessions: dict[str, Session]` in memory; each Session owns the current Turn. Constructor takes optional `nlu_processor`, `workflow`, `async_memory` — if absent, the semantic gate is effectively disabled.
+Buffers multi-segment input and decides when to invoke `stream_turn()`. Holds `_sessions: dict[str, Session]` in memory; each Session owns the current Turn. Constructor takes optional `workflow` and `async_memory`; when `async_memory` is present, the session context bundle is cached on the Turn at the first segment.
 
 **`manager_agent.py` — ManagerAgent**
 LLM → tool → LLM loop. Both sync and async variants. Used by `process_turn()` for synchronous tool rounds; `stream_turn()` handles tool use via the `ToolUseRequested` exception raised from `provider.stream()`.
@@ -300,8 +301,8 @@ LLM → tool → LLM loop. Both sync and async variants. Used by `process_turn()
 **`preprocessing/language_normalisation.py` — LanguageNormaliser**
 Runs before NLU. Detects dialect, normalises code-switching (Hindi/Kannada/English), and transliterates Romanised Indic text. Currently only the `internal` provider (LLM-based normalisation via a haiku model) is implemented.
 
-**`preprocessing/nlu_processor.py` — NLUProcessor**
-Classifies intent, extracts entities, produces confidence score. Low-confidence → clarification response without a second LLM call. Also used by TurnAssembler's semantic gate.
+**`understanding/` — TurnUnderstander (the single, dialogue-act NLU)**
+Understands each turn in the context of the question the agent just asked. It resolves the session's pending question, builds a frame (`pending`, `known_fields`, `recent_turns`, `served_tool_results`), makes one strict-schema LLM call that returns dialogue acts and typed slots, and post-processes the result: the routing intent is derived from the `act_intents` table (`NLUResult.confidence` is 1.0 for a derived intent, 0.0 for a fallback) and `SlotWriter` plans the session writes. When `conversation.user_state_model` is enabled the same call also returns `user_state`. A structured summary of the understanding (acts, relation, resolved option, slot updates, signals) is rendered into the main LLM's prompt as `<caller_turn>`. Uses a dedicated NLU provider instance. There is no other NLU mode; see `docs/superpowers/specs/2026-10-01-nlu-dialogue-acts-design.md` §16.
 
 **`tool_registry.py` — ToolRegistry**
 Loads tool definitions from config at startup and routes tool calls by name. Tracks which tools require consent (`write` and `identity` connector types).
@@ -334,7 +335,7 @@ Config is loaded at startup from two YAML files: `config/dpg.yaml` (framework de
 | `conversation.blocked_message` | Returned when input is blocked by Trust Layer |
 | `conversation.escalation_message` | Returned when input triggers escalation |
 | `conversation.output_blocked_message` | Returned when LLM output is blocked |
-| `conversation.unknown_intent_message` | Returned on low-confidence NLU result |
+| `conversation.unknown_intent_message` | Fallback reply when a subagent declares an unknown `special_handler` |
 | `connectors.read[]` / `write[]` / `identity[]` / `internal[]` | Tool definitions |
 
 ### Preprocessing
@@ -342,7 +343,8 @@ Config is loaded at startup from two YAML files: `config/dpg.yaml` (framework de
 | Key | Description |
 |---|---|
 | `preprocessing.language_normalisation.model` / `provider` / `supported_languages` | Dialect/transliteration config |
-| `preprocessing.nlu_processor.model` / `confidence_threshold` / `intents` / `entities` | NLU config |
+| `preprocessing.nlu_processor.model` / `slots` / `act_intents` / `topics` / `signals` / `signal_intents` / `termination_gate` / `examples` / `off_track` | Dialogue-act NLU config |
+| `preprocessing.nlu_processor.user_state_confidence_threshold` | Sticky fallback for the user-state classifier |
 
 ### Agent workflow (subagents)
 
@@ -350,8 +352,7 @@ Config is loaded at startup from two YAML files: `config/dpg.yaml` (framework de
 |---|---|
 | `agent_workflow.workflow_id` | Workflow identifier |
 | `agent_workflow.agent_system_prompt` | Base system prompt |
-| `agent_workflow.global_intents` | Intents handled at the global level |
-| `agent_workflow.subagents[]` | Subagent definitions with intent scopes and tool lists |
+| `agent_workflow.subagents[]` | Subagent definitions with `pending` questions, routing rules and tool lists |
 
 ### Reach Layer / TurnAssembler (new)
 
@@ -359,8 +360,6 @@ TurnAssembler is an Agent Core component but is tuned per channel. Config lives 
 
 | Key | Description |
 |---|---|
-| `reach_layer.turn_assembler.semantic_gate.enabled` | Enable NLU-based early trigger |
-| `reach_layer.turn_assembler.semantic_gate.confidence_threshold` | Invoke immediately if NLU ≥ this value |
 | `reach_layer.turn_assembler.silence_trigger.silence_ms` | Silence timer (resets on every segment) |
 | `reach_layer.turn_assembler.max_wait_ceiling.max_wait_ms` | Absolute wait ceiling (never resets) |
 | `reach_layer.channels.<name>.turn_assembler.*` | Per-channel override of any of the above |
@@ -438,4 +437,3 @@ See `CLAUDE.md` and `ARCHITECTURE.md` in the repository root for full engineerin
 
 **Channel-aware prompt assembly not yet implemented.** All channels (voice, web, CLI) receive the same system prompt regardless of channel. A future optimisation should shorten prompts for voice channels, which have tighter latency budgets and no Markdown rendering (#97).
 
-**NLU mode switching not yet implemented.** The `workflow_step`-based NLU mode switching described in issue #4 (conditional NLU execution) is not yet built. NLU runs on every turn regardless of workflow step.

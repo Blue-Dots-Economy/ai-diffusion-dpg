@@ -65,7 +65,7 @@ def test_user_state_classification_defaults():
 
 def test_nlu_result_user_state_default_is_none():
     """Test that NLUResult.user_state defaults to None when not provided."""
-    result = NLUResult(intent="greeting", entities={}, sentiment="neutral", confidence=0.9)
+    result = NLUResult(intent="greeting", entities={}, confidence=0.9)
     assert result.user_state is None
 
 
@@ -73,7 +73,7 @@ def test_nlu_result_accepts_user_state():
     """Test that NLUResult accepts and stores a user_state field."""
     usc = UserStateClassification(id="orientation", confidence=0.7)
     result = NLUResult(
-        intent="greeting", entities={}, sentiment="neutral",
+        intent="greeting", entities={},
         confidence=0.9, user_state=usc,
     )
     assert result.user_state is usc
@@ -130,3 +130,10 @@ def test_signal_event_to_sse_includes_turn_id_field():
     ev = SignalEvent(stage="trust_input", status="complete", turn_id="t-2")
     parsed = json.loads(ev.to_sse().removeprefix("data: ").rstrip())
     assert parsed["turn_id"] == "t-2"
+
+
+def test_nlu_result_has_no_sentiment_or_active_risks():
+    """NLUResult carries intent, entities, confidence and user_state only."""
+    result = NLUResult(intent="x", entities={}, confidence=1.0)
+    assert not hasattr(result, "sentiment")
+    assert not hasattr(result, "active_risks")

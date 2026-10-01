@@ -24,7 +24,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         applies_if="is_multi_turn",
         invalidated_by=["is_multi_turn"],
         default=1440,
-        description="Session TTL in minutes. Mirror: gt=0, le=10080. KKB uses 2880.",
+        description="Session TTL in minutes. Mirror: gt=0, le=10080. Blue Dots uses 2880.",
         pydantic_class="SessionStateConfig",
     ),
     # No default — the LLM proposes a domain-specific session schema in

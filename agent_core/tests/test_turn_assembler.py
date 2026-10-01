@@ -6,7 +6,7 @@ Covers:
   - Session and Turn lifecycle
   - TurnAssemblerBase ABC enforcement
   - TurnAssembler: add_segment, subscribe, cancel, session_end
-  - Policy stack: silence trigger, max wait ceiling, semantic gate
+  - Policy stack: silence trigger, max wait ceiling
   - Invocation path: stream_turn() called directly with abort_event/turn_id
   - Memory consistency on cancellation (#83)
   - Edge cases: empty text, missing session, concurrent timers
@@ -39,8 +39,6 @@ from src.turn_assembler import (
 
 
 def _make_config(
-    semantic_enabled=False,
-    confidence_threshold=0.75,
     silence_ms=50,       # Short for fast tests
     max_wait_ms=200,     # Short for fast tests
     channel_overrides=None,
@@ -54,10 +52,6 @@ def _make_config(
     cfg = {
         "reach_layer": {
             "turn_assembler": {
-                "semantic_gate": {
-                    "enabled": semantic_enabled,
-                    "confidence_threshold": confidence_threshold,
-                },
                 "silence_trigger": {"silence_ms": silence_ms},
                 "max_wait_ceiling": {"max_wait_ms": max_wait_ms},
             },
@@ -90,14 +84,12 @@ def _make_mock_agent_core():
 def _make_assembler(
     agent_core=None,
     config=None,
-    nlu_processor=None,
     workflow=None,
     async_memory=None,
 ):
     return TurnAssembler(
         agent_core=agent_core or _make_mock_agent_core(),
         config=config or _make_config(),
-        nlu_processor=nlu_processor,
         workflow=workflow,
         async_memory=async_memory,
     )
@@ -184,10 +176,13 @@ class TestTurnAssemblerConstruction:
         with pytest.raises(ValueError, match="config"):
             TurnAssembler(agent_core=MagicMock(), config=None)
 
+    def test_rejects_nlu_processor_param(self):
+        with pytest.raises(TypeError):
+            TurnAssembler(agent_core=MagicMock(), config={}, nlu_processor=MagicMock())
+
     def test_default_config_values(self):
         ta = _make_assembler(config={"reach_layer": {"turn_assembler": {}}})
         # Should use defaults without crashing
-        assert ta._default_config["semantic_gate"]["enabled"] is False
         assert ta._default_config["silence_trigger"]["silence_ms"] == 400
         assert ta._default_config["max_wait_ceiling"]["max_wait_ms"] == 8000
 
@@ -465,142 +460,6 @@ class TestMaxWaitCeiling:
         await ta.add_segment("s1", _make_segment("world"))
         # Ceiling task should be the same object — not recreated
         assert session.current_turn.ceiling_task is ceiling_task
-
-
-# ---------------------------------------------------------------------------
-# Semantic gate
-# ---------------------------------------------------------------------------
-
-
-class TestSemanticGate:
-
-    @pytest.mark.asyncio
-    async def test_gate_triggers_on_high_confidence(self):
-        """When NLU confidence >= threshold, invocation triggers immediately."""
-        nlu = MagicMock()
-        nlu.process.return_value = NLUResult(
-            intent="greeting", confidence=0.9, entities={}, sentiment="positive"
-        )
-
-        agent = _make_mock_agent_core()
-        ta = _make_assembler(
-            agent_core=agent,
-            config=_make_config(semantic_enabled=True, confidence_threshold=0.75, silence_ms=5000),
-            nlu_processor=nlu,
-            
-        )
-
-        await ta.add_segment("s1", _make_segment("hello"))
-        await asyncio.sleep(0.1)
-
-        session = ta._sessions.get("s1")
-        assert session is not None
-        assert session.current_turn is not None
-        assert session.current_turn.status in (TurnStatus.INVOKED, TurnStatus.COMPLETED)
-
-    @pytest.mark.asyncio
-    async def test_gate_falls_through_on_low_confidence(self):
-        """When NLU confidence < threshold, falls through to silence timer."""
-        nlu = MagicMock()
-        nlu.process.return_value = NLUResult(
-            intent="unknown", confidence=0.3, entities={}, sentiment="neutral"
-        )
-
-        ta = _make_assembler(
-            config=_make_config(semantic_enabled=True, confidence_threshold=0.75, silence_ms=5000, max_wait_ms=5000),
-            nlu_processor=nlu,
-            
-        )
-
-        await ta.add_segment("s1", _make_segment("hello"))
-        # Should NOT trigger immediately — falls through to timers
-        session = ta._sessions["s1"]
-        assert session.current_turn.status == TurnStatus.WAITING
-
-    @pytest.mark.asyncio
-    async def test_gate_falls_through_on_unknown_intent(self):
-        """High confidence but 'unknown' intent does not trigger."""
-        nlu = MagicMock()
-        nlu.process.return_value = NLUResult(
-            intent="unknown", confidence=0.95, entities={}, sentiment="neutral"
-        )
-
-        ta = _make_assembler(
-            config=_make_config(semantic_enabled=True, silence_ms=5000, max_wait_ms=5000),
-            nlu_processor=nlu,
-            
-        )
-
-        await ta.add_segment("s1", _make_segment("hello"))
-        session = ta._sessions["s1"]
-        assert session.current_turn.status == TurnStatus.WAITING
-
-    @pytest.mark.asyncio
-    async def test_gate_graceful_on_nlu_error(self):
-        """NLU exception → log and fall through, never block."""
-        nlu = MagicMock()
-        nlu.process.side_effect = RuntimeError("NLU down")
-
-        ta = _make_assembler(
-            config=_make_config(semantic_enabled=True, silence_ms=5000, max_wait_ms=5000),
-            nlu_processor=nlu,
-            
-        )
-
-        await ta.add_segment("s1", _make_segment("hello"))
-        session = ta._sessions["s1"]
-        assert session.current_turn.status == TurnStatus.WAITING  # Fell through
-
-    @pytest.mark.asyncio
-    async def test_gate_disabled_skips_nlu(self):
-        """When semantic gate is disabled, NLU is never called."""
-        nlu = MagicMock()
-
-        ta = _make_assembler(
-            config=_make_config(semantic_enabled=False, silence_ms=5000, max_wait_ms=5000),
-            nlu_processor=nlu,
-            
-        )
-
-        await ta.add_segment("s1", _make_segment("hello"))
-        nlu.process.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_gate_uses_context_bundle(self):
-        """Semantic gate uses cached context_bundle for NLU context."""
-        nlu = MagicMock()
-        nlu.process.return_value = NLUResult(
-            intent="greeting", confidence=0.9, entities={}, sentiment="positive"
-        )
-
-        async_memory = AsyncMock()
-        async_memory.context_bundle.return_value = ContextBundle(
-            session={"current_question": "What trade?", "current_subagent_id": "profile_building"},
-            profile={},
-        )
-
-        workflow = MagicMock()
-        workflow.start_subagent_id = "profile_building"
-        workflow.subagents = {"profile_building": MagicMock(valid_intents=["greeting"], special_handler=None)}
-        workflow.global_intents = ["termination_intent"]
-
-        agent = _make_mock_agent_core()
-        ta = _make_assembler(
-            agent_core=agent,
-            config=_make_config(semantic_enabled=True, silence_ms=5000),
-            nlu_processor=nlu,
-            
-            workflow=workflow,
-            async_memory=async_memory,
-        )
-
-        await ta.add_segment("s1", _make_segment("hello"))
-        await asyncio.sleep(0.1)
-
-        # NLU should have been called with context
-        call_args = nlu.process.call_args
-        assert call_args.kwargs.get("current_question") == "What trade?"
-        assert call_args.kwargs.get("current_subagent_id") == "profile_building"
 
 
 # ---------------------------------------------------------------------------
@@ -1162,7 +1021,6 @@ class TestGH137ChannelsPath:
         cfg = {
             "reach_layer": {
                 "turn_assembler": {
-                    "semantic_gate": {"enabled": True, "confidence_threshold": 0.75},
                     "silence_trigger": {"silence_ms": 400},
                     "max_wait_ceiling": {"max_wait_ms": 8000},
                 }
@@ -1170,15 +1028,14 @@ class TestGH137ChannelsPath:
             "channels": {
                 "voice": {
                     "turn_assembler": {
-                        "semantic_gate": {"enabled": False, "confidence_threshold": 0.9},
+                        "silence_trigger": {"silence_ms": 900},
                     }
                 }
             },
         }
         ta = _make_assembler(config=cfg)
         policy = ta._resolve_config("voice")
-        assert policy["semantic_gate"]["enabled"] is False
-        assert policy["semantic_gate"]["confidence_threshold"] == 0.9
+        assert policy["silence_trigger"]["silence_ms"] == 900
 
     def test_turn_assembler_rejects_legacy_reach_layer_channels(self):
         cfg = {

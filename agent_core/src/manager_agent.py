@@ -350,7 +350,7 @@ class ManagerAgent:
             ke_context:       Dict with context required to call the Knowledge Engine
                               when knowledge_retrieval is invoked. Expected fields:
                               session_id, user_message, profile, session, intent,
-                              entities, sentiment, confidence, normalised_input,
+                              entities, confidence, normalised_input,
                               detected_language. If None, knowledge_retrieval calls
                               return an empty tool_result.
             tool_cache:       Per-turn tool-result cache. When given, cacheable
@@ -632,6 +632,7 @@ class ManagerAgent:
         user_state_guidance: str | None = None,
         session_end_eval_prompt: str | None = None,
         known_facts: str = "",
+        caller_turn: str = "",
     ) -> SystemPrompt:
         """Build a neutral SystemPrompt with TextBlock entries for one LLM call.
 
@@ -651,6 +652,7 @@ class ManagerAgent:
             <resumption>          resumption note (first turn after adoption)
             <known_profile>       profile grounding
             <known_facts>         stored tool results rendered for grounding
+            <caller_turn>         NLU conclusion for this turn (dialogue-act NLU)
             <active_guardrails>   guardrail constraints + required disclosures
 
         Empty inputs elide their section entirely; empty tiers are not
@@ -676,6 +678,8 @@ class ManagerAgent:
             known_facts:            Rendered stored tool results (from
                                     ``TurnToolCache.render_known_facts``); empty
                                     elides the ``<known_facts>`` section.
+            caller_turn:            Rendered NLU conclusion (``render_caller_turn``);
+                                    empty elides ``<caller_turn>``.
 
         Returns:
             Neutral SystemPrompt with TextBlock entries; the Anthropic provider
@@ -768,6 +772,7 @@ class ManagerAgent:
             xml("resumption", resumption_note),
             xml("known_profile", profile_body),
             xml("known_facts", known_facts),
+            xml("caller_turn", caller_turn),
             xml("active_guardrails", guardrails_body),
         ])
 
@@ -851,7 +856,6 @@ class ManagerAgent:
                 session=ke_context.get("session", {}),
                 intent=ke_context.get("intent", ""),
                 entities=ke_context.get("entities", {}),
-                sentiment=ke_context.get("sentiment", "neutral"),
                 confidence=ke_context.get("confidence", 0.0),
                 normalised_input=ke_context.get("normalised_input", ""),
                 detected_language=ke_context.get("detected_language", ""),

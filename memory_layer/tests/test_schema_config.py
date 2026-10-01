@@ -54,11 +54,11 @@ def _minimal_valid_config() -> dict:
                     "event": "DOP_MT",
                     "delay_hours": 72,
                     "channel": "outbound_call",
-                    "message_template": "kkb_reengagement_mt",
+                    "message_template": "blue_dots_reengagement_mt",
                 }
             ]
         },
-        "observability": {"domain": "kkb"},
+        "observability": {"domain": "blue-dots"},
     }
 
 

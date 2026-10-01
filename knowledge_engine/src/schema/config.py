@@ -3,7 +3,7 @@ MergedConfig — strict schema for the Knowledge Engine merged runtime config.
 
 Merged config = dev-kit/dpg/knowledge_engine.yaml (framework defaults)
                 deep-merged with a domain YAML
-                (e.g. dev-kit/configs/kkb/knowledge_engine.yaml).
+                (e.g. dev-kit/configs/blue-dots/knowledge_engine.yaml).
 
 Every model sets ``extra="forbid"``: unknown keys at any nesting level
 fail at startup with a pydantic ValidationError, not at first request.

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "trust_layer"
 version = "0.1.0"
-description = "Trust Layer stub — phrase-based guardrails for KKB PoC"
+description = "Trust Layer stub — phrase-based guardrails for the Blue Dots PoC"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110",

@@ -11,7 +11,7 @@ def _intake(**overrides):
         is_multi_turn=False, needs_persistent_user_data=False, is_companion_style=False,
         needs_consent=False, has_hitl=False,
         selected_channels=["web"], default_language="english", supported_languages=["english"],
-        domain_description="A pilot project", project_name="kkb",
+        domain_description="A pilot project", project_name="blue-dots",
     )
     base.update(overrides)
     return IntakeState(**base)
@@ -52,8 +52,8 @@ def test_skeleton_companion_off_omits_dignity_questions():
 def test_skeleton_field_status_marks_chat_pending():
     state = _intake()
     _, field_status = build_skeleton(state)
-    # `agent_core.preprocessing.nlu_processor.intents` is always-asked chat → pending
-    assert field_status["agent_core.preprocessing.nlu_processor.intents"] == "pending"
+    # `agent_core.conversation.blocked_message` is always-asked chat → pending
+    assert field_status["agent_core.conversation.blocked_message"] == "pending"
 
 
 def test_skeleton_field_status_marks_inapplicable_when_gated_off():
@@ -183,3 +183,15 @@ def test_skeleton_writes_collection_name_using_project_slug():
     assert kb.get("collection_name") == "tour_pal_knowledge", (
         f"expected `tour_pal_knowledge`, got {kb.get('collection_name')!r}"
     )
+
+
+def test_skeleton_writes_and_asks_no_intent_mode_paths():
+    """NLU single-mode (spec §16): no intents/entities seeded or pending."""
+    for state in (_intake(), _intake(has_kb=True, needs_persistent_user_data=True, is_multi_turn=True)):
+        accumulator, field_status = build_skeleton(state)
+        nlu = accumulator["agent_core"].get("preprocessing", {}).get("nlu_processor", {})
+        for key in ("intents", "entities", "domain_instruction", "mode"):
+            assert key not in nlu
+        assert "global_intents" not in accumulator["agent_core"].get("agent_workflow", {})
+        assert "agent_core.preprocessing.nlu_processor.intents" not in field_status
+        assert not any(p.endswith((".intents", ".entities", ".domain_instruction")) for p in field_status)

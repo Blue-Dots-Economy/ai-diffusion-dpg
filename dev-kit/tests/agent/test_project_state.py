@@ -28,7 +28,7 @@ def test_empty_accumulator_has_all_blocks():
 def test_save_load_roundtrip(tmp_path: Path):
     acc = empty_accumulator()
     acc["agent_core"]["agent"] = {"primary_model": "claude-sonnet-4-5"}
-    acc["trust_layer"]["trust"] = {"policy_pack": "kkb_advisory_jobs"}
+    acc["trust_layer"]["trust"] = {"policy_pack": "blue_dots_advisory_jobs"}
     p = tmp_path / "accumulator.json"
     save_accumulator(p, acc)
     loaded = load_accumulator(p)

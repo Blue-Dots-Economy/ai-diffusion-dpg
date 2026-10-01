@@ -563,3 +563,31 @@ class TestStream:
             if len(out) == 2:
                 abort.set()
         assert out == ["hel", "lo"]
+
+
+import anthropic as _anthropic
+from unittest.mock import MagicMock
+from src.chat_provider.types import ChatRequest, Message, TextBlock
+
+
+class _FakeAnthropicTimeout(_anthropic.APITimeoutError):
+    def __init__(self):  # noqa: D401
+        pass
+
+
+class TestAnthropicRetryOptions:
+    def test_sdk_max_retries_is_passed_to_both_clients(self):
+        cfg = {**VALID_CONFIG, "sdk_max_retries": 0}
+        with patch("anthropic.Anthropic") as sync_cls, patch("anthropic.AsyncAnthropic") as async_cls:
+            AnthropicChatProvider(cfg)
+        assert sync_cls.call_args.kwargs == {"max_retries": 0}
+        assert async_cls.call_args.kwargs == {"max_retries": 0}
+
+    def test_timeout_not_retried_when_disabled(self):
+        cfg = {**VALID_CONFIG, "retry_on_timeout": False}
+        with patch("anthropic.Anthropic"), patch("anthropic.AsyncAnthropic"):
+            p = AnthropicChatProvider(cfg)
+        p._client.messages.create = MagicMock(side_effect=_FakeAnthropicTimeout())
+        resp = p.call(ChatRequest(messages=[Message(role="user", content=[TextBlock(text="hi")])]))
+        assert resp.stop_reason == "error"
+        assert p._client.messages.create.call_count == 1

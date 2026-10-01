@@ -147,7 +147,6 @@ def test_retrieve_passes_nlu_params_to_context(engine_for_retrieve):
         session={"current_node": "market_truth"},
         intent="market_truth_query",
         entities={"trade": "electrician", "location": "Hubli"},
-        sentiment="positive",
         confidence=0.92,
         normalised_input="electrician kaam chahiye Hubli",
         detected_language="hinglish",
@@ -217,3 +216,10 @@ def test_retrieve_block_exception_returns_partial_results():
     )
     assert isinstance(chunks, list)
     assert any(c.text == "Fallback result" for c in chunks)
+
+
+def test_retrieve_has_no_sentiment_parameter():
+    import inspect
+    from src.base import KEContext
+    assert "sentiment" not in inspect.signature(KnowledgeEngine.retrieve).parameters
+    assert "sentiment" not in KEContext.__dataclass_fields__

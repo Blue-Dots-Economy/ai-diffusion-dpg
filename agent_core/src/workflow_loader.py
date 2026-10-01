@@ -5,11 +5,11 @@ Parses and validates the ``agent_workflow`` configuration block at startup.
 
 Belongs to the Agent Core DPG block. Produces an ``AgentWorkflow`` object that
 is the single authoritative representation of the multi-subagent workflow for
-the lifetime of the process. All subagent routing, tool scoping, and NLU
-intent scoping decisions are derived from this object at turn time.
+the lifetime of the process. All subagent routing and tool scoping decisions
+are derived from this object at turn time.
 
-No I/O occurs after load — all pre-computation (intent sets, tool definition
-slices) is performed once here so hot-path code does only O(1) dict lookups.
+No I/O occurs after load — all pre-computation (tool definition slices) is
+performed once here so hot-path code does only O(1) dict lookups.
 """
 
 from __future__ import annotations
@@ -77,6 +77,40 @@ class RoutingRule:
     session_writes: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class OptionsFrom:
+    """Cached tool whose latest result lists the options a pending question offers.
+
+    Attributes:
+        tool: Connector name with a Spec A cache policy.
+        fields: Row fields rendered for each option, in order.
+        id_field: Row field holding the option's id (e.g. ``item_id``).
+    """
+
+    tool: str
+    fields: tuple[str, ...]
+    id_field: str
+
+
+@dataclass(frozen=True)
+class PendingQuestion:
+    """What a subagent may be waiting for (NLU dialogue-acts spec §7.2).
+
+    Attributes:
+        id: Pending-question id referenced by NLU config.
+        expects: Short description rendered into the NLU frame.
+        when: Conditions that make this the pending question; empty = always.
+        options_from: Source of offered options, or None.
+        resolves_to: State key that receives the resolved option id.
+    """
+
+    id: str
+    expects: str = ""
+    when: tuple[RoutingCondition, ...] = ()
+    options_from: OptionsFrom | None = None
+    resolves_to: str | None = None
+
+
 @dataclass
 class SubAgent:
     """
@@ -89,12 +123,12 @@ class SubAgent:
         is_start:         True if this subagent is the entry point for new sessions.
         is_terminal:      True if this subagent ends the conversation (no outbound routing).
         special_handler:  Optional framework handler — "hitl", "whatsapp_handoff", or None.
-        valid_intents:    Intents this subagent is responsible for handling.
         tools:            Tool names available to this subagent.
         system_prompt:    System prompt injected for LLM calls in this subagent.
         output_format:    JSON schema for structured output validation, or None.
         routing:          Routing rules emitted from this subagent.
         opening_phrase:   Optional opening phrase spoken/displayed when entering this subagent.
+        pending:          Questions this subagent may be waiting on (dialogue-act NLU).
         fixed_opening:    Optional template spoken verbatim, without a model
                           call, on the first turn into this subagent when every
                           field in fixed_opening_requires is present in session
@@ -108,12 +142,12 @@ class SubAgent:
     is_start: bool
     is_terminal: bool
     special_handler: str | None
-    valid_intents: list[str]
     tools: list[str]
     system_prompt: str
     output_format: dict | None
     routing: list[RoutingRule]
     opening_phrase: str = ""
+    pending: list["PendingQuestion"] = field(default_factory=list)
     fixed_opening: str = ""
     fixed_opening_requires: list[str] = field(default_factory=list)
 
@@ -124,19 +158,17 @@ class AgentWorkflow:
     Immutable, fully parsed and pre-computed representation of the multi-subagent
     workflow graph for a single deployment.
 
-    Pre-computed fields (``nlu_intent_set``, ``tool_defs``, ``global_tool_defs``)
+    Pre-computed fields (``tool_defs``, ``global_tool_defs``)
     are populated by :class:`AgentWorkflowLoader` at startup.
 
     Attributes:
         workflow_id:                Unique identifier for this workflow.
         version:                    SemVer string for this workflow.
         agent_system_prompt:        Top-level system prompt shared across subagents.
-        global_intents:             Intents handled globally before subagent routing.
         global_routing:             Routing rules applied globally after intent classification.
         default_fallback_subagent_id: Subagent to route to when no routing rule matches.
         subagents:                  All subagents keyed by their id for O(1) lookup.
         start_subagent_id:          ID of the subagent with ``is_start=True``.
-        nlu_intent_set:             Per-subagent scoped intent list (subagent + global intents).
         tool_defs:                  Per-subagent tool definition slices (excludes
                                     built-in ``knowledge_retrieval``).
         global_tool_defs:           Shared tool-def list applied to every subagent when
@@ -147,12 +179,10 @@ class AgentWorkflow:
     workflow_id: str
     version: str
     agent_system_prompt: str
-    global_intents: list[str]
     global_routing: list[RoutingRule]
     default_fallback_subagent_id: str
     subagents: dict[str, SubAgent]
     start_subagent_id: str
-    nlu_intent_set: dict[str, list[str]] = field(default_factory=dict)
     tool_defs: dict[str, list[dict]] = field(default_factory=dict)
     global_tool_defs: list[dict] = field(default_factory=list)
 
@@ -160,7 +190,7 @@ class AgentWorkflow:
         """Return the tool definitions to inject into the LLM call for a subagent.
 
         When ``global_tool_defs`` is non-empty, it takes precedence and every
-        subagent sees the same tool set (KKB behaviour). Otherwise the per-subagent
+        subagent sees the same tool set (Blue Dots behaviour). Otherwise the per-subagent
         ``tool_defs`` slice is returned, or an empty list if the subagent is unknown.
 
         Args:
@@ -191,14 +221,14 @@ class AgentWorkflowLoader:
         """
         Parse the ``agent_workflow`` block from config and return a validated workflow.
 
-        Performs all 7 structural validation checks and pre-computes per-subagent
-        intent sets and tool definition slices. Never returns a partially-valid
-        workflow — raises ``ConfigurationError`` at the first detected violation.
+        Runs the 5 structural validation rules and the global_tools check, and
+        pre-computes per-subagent tool definition slices. Never returns a
+        partially-valid workflow — raises ``ConfigurationError`` at the first
+        detected violation.
 
         Args:
             config:        Full domain configuration dict. Must contain
-                           ``config["agent_workflow"]`` and
-                           ``config["preprocessing"]["nlu_processor"]["intents"]``.
+                           ``config["agent_workflow"]``.
             tool_registry: Initialised ToolRegistry used to validate tool names and
                            fetch tool definitions.
 
@@ -237,7 +267,6 @@ class AgentWorkflowLoader:
             )
 
         agent_system_prompt = workflow_cfg.get("agent_system_prompt", "")
-        global_intents: list[str] = workflow_cfg.get("global_intents") or []
         default_fallback_subagent_id = workflow_cfg.get("default_fallback_subagent_id", "")
 
         global_tools_raw: list[str] = workflow_cfg.get("global_tools") or []
@@ -274,12 +303,7 @@ class AgentWorkflowLoader:
             subagents[subagent.id] = subagent
 
         # ------------------------------------------------------------------
-        # Collect NLU intents from preprocessing config
-        # ------------------------------------------------------------------
-        all_nlu_intents: set[str] = self._load_nlu_intents(config)
-
-        # ------------------------------------------------------------------
-        # Run all 7 validation rules
+        # Run the 5 numbered validation rules and the global_tools check
         # ------------------------------------------------------------------
         start_subagent_id = self._validate_exactly_one_start(subagents)
         self._validate_routing_references(subagents, global_routing)
@@ -290,17 +314,12 @@ class AgentWorkflowLoader:
         }
         self._validate_tool_names(subagents, tool_registry, internal_tool_names)
         self._validate_global_tool_names(global_tools_raw, tool_registry, internal_tool_names)
-        self._validate_subagent_intents(subagents, all_nlu_intents)
-        self._validate_global_intents_not_in_subagents(subagents, global_intents)
         self._validate_terminal_routing(subagents)
         self._validate_nonterminal_routing(subagents)
 
         # ------------------------------------------------------------------
-        # Pre-compute per-subagent intent sets and tool definitions
+        # Pre-compute per-subagent tool definitions
         # ------------------------------------------------------------------
-        nlu_intent_set: dict[str, list[str]] = self._build_nlu_intent_set(
-            subagents, global_intents
-        )
         tool_defs: dict[str, list[dict]] = self._build_tool_defs(
             subagents, tool_registry
         )
@@ -315,12 +334,10 @@ class AgentWorkflowLoader:
             workflow_id=workflow_id,
             version=version,
             agent_system_prompt=agent_system_prompt,
-            global_intents=global_intents,
             global_routing=global_routing,
             default_fallback_subagent_id=default_fallback_subagent_id,
             subagents=subagents,
             start_subagent_id=start_subagent_id,
-            nlu_intent_set=nlu_intent_set,
             tool_defs=tool_defs,
             global_tool_defs=global_tool_defs,
         )
@@ -482,7 +499,6 @@ class AgentWorkflowLoader:
             )
         special_handler: str | None = special_handler_raw or None
 
-        valid_intents: list[str] = raw.get("valid_intents") or []
         tools: list[str] = raw.get("tools") or []
         system_prompt: str = raw.get("system_prompt", "")
         output_format: dict | None = raw.get("output_format") or None
@@ -500,6 +516,21 @@ class AgentWorkflowLoader:
             for r in routing_raw
         ]
 
+        pending: list[PendingQuestion] = []
+        for i, raw_p in enumerate(raw.get("pending") or []):
+            ctx = f"subagent '{subagent_id}'.pending[{i}]"
+            pid = (raw_p or {}).get("id")
+            if not pid:
+                raise ConfigurationError(f"{ctx}: missing required 'id'")
+            when = tuple(self._parse_routing_condition(c, context=f"{ctx}.when[{j}]")
+                         for j, c in enumerate(raw_p.get("when") or []))
+            of_raw = raw_p.get("options_from")
+            options_from = (OptionsFrom(tool=of_raw["tool"], fields=tuple(of_raw.get("fields") or ()),
+                                        id_field=of_raw["id_field"]) if of_raw else None)
+            pending.append(PendingQuestion(id=pid, expects=str(raw_p.get("expects", "") or ""),
+                                           when=when, options_from=options_from,
+                                           resolves_to=raw_p.get("resolves_to") or None))
+
         return SubAgent(
             id=subagent_id,
             name=name,
@@ -507,18 +538,18 @@ class AgentWorkflowLoader:
             is_start=is_start,
             is_terminal=is_terminal,
             special_handler=special_handler,
-            valid_intents=valid_intents,
             tools=tools,
             system_prompt=system_prompt,
             output_format=output_format,
             routing=routing,
             opening_phrase=opening_phrase,
+            pending=pending,
             fixed_opening=str(raw.get("fixed_opening", "") or ""),
             fixed_opening_requires=list(raw.get("fixed_opening_requires", []) or []),
         )
 
     # ------------------------------------------------------------------
-    # Private validation helpers (rules 1–7)
+    # Private validation helpers (rules 1–5)
     # ------------------------------------------------------------------
 
     def _validate_exactly_one_start(self, subagents: dict[str, SubAgent]) -> str:
@@ -617,63 +648,9 @@ class AgentWorkflowLoader:
                         f"ToolRegistry. Registered tools: {sorted(registered_tools)}"
                     )
 
-    def _validate_subagent_intents(
-        self,
-        subagents: dict[str, SubAgent],
-        all_nlu_intents: set[str],
-    ) -> None:
-        """
-        Validate that every intent in subagent.valid_intents exists in the NLU config (rule 4).
-
-        Args:
-            subagents:        All subagents keyed by id.
-            all_nlu_intents:  Set of all declared NLU intents from preprocessing config.
-
-        Raises:
-            ConfigurationError: If any subagent intent is not in the NLU intent set.
-        """
-        for sa_id, subagent in subagents.items():
-            for intent in subagent.valid_intents:
-                if intent == "other":
-                    # "other" is a router catch-all — not an NLU classifier label.
-                    continue
-                if intent not in all_nlu_intents:
-                    raise ConfigurationError(
-                        f"agent_workflow validation failed (rule 4): subagent '{sa_id}' "
-                        f"declares intent '{intent}' which is not present in "
-                        f"config['preprocessing']['nlu_processor']['intents']"
-                    )
-
-    def _validate_global_intents_not_in_subagents(
-        self,
-        subagents: dict[str, SubAgent],
-        global_intents: list[str],
-    ) -> None:
-        """
-        Validate that no global intent appears in any subagent's valid_intents (rule 5).
-
-        Args:
-            subagents:       All subagents keyed by id.
-            global_intents:  List of global intent names from the workflow config.
-
-        Raises:
-            ConfigurationError: If any global intent is also claimed by a subagent.
-        """
-        # "other" is a router catch-all — it may appear in both subagent valid_intents
-        # and global_intents without conflict.
-        global_intent_set = set(global_intents) - {"other"}
-        for sa_id, subagent in subagents.items():
-            overlap = global_intent_set & (set(subagent.valid_intents) - {"other"})
-            if overlap:
-                raise ConfigurationError(
-                    f"agent_workflow validation failed (rule 5): subagent '{sa_id}' "
-                    f"declares intents that are also in global_intents: {sorted(overlap)}. "
-                    f"Global intents must not appear in any subagent's valid_intents."
-                )
-
     def _validate_terminal_routing(self, subagents: dict[str, SubAgent]) -> None:
         """
-        Validate that terminal subagents have an empty routing list (rule 6).
+        Validate that terminal subagents have an empty routing list (rule 4).
 
         Args:
             subagents: All subagents keyed by id.
@@ -684,14 +661,14 @@ class AgentWorkflowLoader:
         for sa_id, subagent in subagents.items():
             if subagent.is_terminal and subagent.routing:
                 raise ConfigurationError(
-                    f"agent_workflow validation failed (rule 6): subagent '{sa_id}' is "
+                    f"agent_workflow validation failed (rule 4): subagent '{sa_id}' is "
                     f"marked is_terminal=true but has {len(subagent.routing)} routing "
                     f"rule(s). Terminal subagents must have an empty routing list."
                 )
 
     def _validate_nonterminal_routing(self, subagents: dict[str, SubAgent]) -> None:
         """
-        Validate that non-terminal subagents have at least one routing rule (rule 7).
+        Validate that non-terminal subagents have at least one routing rule (rule 5).
 
         A subagent satisfies this rule if it has at least one routing rule, or if
         it has a catch-all ``"*"`` rule among its routing rules.
@@ -709,7 +686,7 @@ class AgentWorkflowLoader:
             has_catchall = any(r.intent == "*" for r in subagent.routing)
             if not has_routing and not has_catchall:
                 raise ConfigurationError(
-                    f"agent_workflow validation failed (rule 7): subagent '{sa_id}' is "
+                    f"agent_workflow validation failed (rule 5): subagent '{sa_id}' is "
                     f"non-terminal but has no routing rules. Non-terminal subagents must "
                     f"have at least one routing rule or a catch-all '*' rule."
                 )
@@ -717,64 +694,6 @@ class AgentWorkflowLoader:
     # ------------------------------------------------------------------
     # Private pre-computation helpers
     # ------------------------------------------------------------------
-
-    def _load_nlu_intents(self, config: dict) -> set[str]:
-        """
-        Extract the full NLU intent set from the preprocessing config.
-
-        Args:
-            config: Full domain configuration dict.
-
-        Returns:
-            Set of all declared intent name strings.
-
-        Raises:
-            ConfigurationError: If the required path into config is missing or empty.
-        """
-        preprocessing = config.get("preprocessing")
-        if not preprocessing:
-            raise ConfigurationError(
-                "config is missing required key 'preprocessing'"
-            )
-        nlu_processor = preprocessing.get("nlu_processor")
-        if not nlu_processor:
-            raise ConfigurationError(
-                "config['preprocessing'] is missing required key 'nlu_processor'"
-            )
-        intents = nlu_processor.get("intents")
-        if not intents:
-            raise ConfigurationError(
-                "config['preprocessing']['nlu_processor']['intents'] is required "
-                "and must not be empty"
-            )
-        if not isinstance(intents, list):
-            raise ConfigurationError(
-                f"config['preprocessing']['nlu_processor']['intents'] must be a list, "
-                f"got {type(intents)}"
-            )
-        return set(intents)
-
-    def _build_nlu_intent_set(
-        self,
-        subagents: dict[str, SubAgent],
-        global_intents: list[str],
-    ) -> dict[str, list[str]]:
-        """
-        Pre-compute per-subagent scoped intent lists for NLU at turn time.
-
-        Each subagent's scoped set is ``subagent.valid_intents + global_intents``.
-
-        Args:
-            subagents:       All subagents keyed by id.
-            global_intents:  Global intents shared across all subagents.
-
-        Returns:
-            Dict mapping subagent_id to its scoped intent list.
-        """
-        result: dict[str, list[str]] = {}
-        for sa_id, subagent in subagents.items():
-            result[sa_id] = list(subagent.valid_intents) + list(global_intents)
-        return result
 
     def _build_tool_defs(
         self,

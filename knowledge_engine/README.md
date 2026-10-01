@@ -80,7 +80,6 @@ Run RAG retrieval for one conversation turn. Returns knowledge chunks — not th
   "session": {},
   "intent": "market_truth_query",
   "entities": {"trade": "electrician", "location": "Hubli"},
-  "sentiment": "neutral",
   "confidence": 0.91,
   "normalised_input": "electrician ka kaam kahan milega",
   "detected_language": "hi"

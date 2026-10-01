@@ -1,8 +1,8 @@
 # dev-kit/configs/blue-dots/trust_layer.yaml
 # Blue Dots — Trust Layer domain config.
-# Mirrors KKB's job-domain policy pack. Differences from KKB:
+# Derived from the original jobs-domain policy pack. Differences from it:
 #   - Caller-facing refusal / blocked / holding messages in Hindi (see below).
-#   - Hindi consent + decline phrases added on top of KKB's
+#   - Hindi consent + decline phrases added on top of the base
 #     Hindi / Romanised sets.
 #   - Output-blocked phrases keep the English subset and drop the
 #     Hindi promotional phrases.
@@ -158,7 +158,7 @@ observability:
   domain: "blue_dot"
 
 # GH-137 pre-response dignity check. Blue Dots is a Conversational
-# agent, so dignity_check is enabled. The 6 KKB questions transfer
+# agent, so dignity_check is enabled. The 6 dignity questions transfer
 # verbatim — they are domain-agnostic.
 dignity_check:
   enabled: true

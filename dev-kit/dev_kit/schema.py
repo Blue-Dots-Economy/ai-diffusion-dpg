@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -323,32 +323,130 @@ class LanguageNormalisationConfig(BaseModel):
     code_switching: bool = Field(default=True, description="Handle mixed-language input within a single message")
 
 
+_DIALOGUE_ACTS: tuple[str, ...] = (
+    "affirm", "deny", "acknowledge", "provide_info", "correct", "select",
+    "ask", "request_change", "repeat", "hold", "close", "other",
+)
+
+
+class NLUSlotConfig(BaseModel):
+    """One caller-stated value the dialogue-act NLU extracts."""
+
+    type: Literal["string", "int", "enum"] = Field(default="string", description="Slot value type")
+    values: list[str] = Field(default_factory=list, description="Allowed values (required for enum slots)")
+    min: int | None = Field(default=None, description="Inclusive lower bound for int slots")
+    max: int | None = Field(default=None, description="Inclusive upper bound for int slots")
+    normalise: Literal["title", "lower"] | None = Field(default=None, description="Optional value normalisation")
+    accept_when_pending: list[str] = Field(
+        default_factory=list, description="Pending ids under which a bare reply may fill this slot"
+    )
+    description: str = Field(default="", description="Slot description shown to NLU")
+    examples: list[str] = Field(default_factory=list, description="Example values shown to NLU")
+
+    @model_validator(mode="after")
+    def _check(self) -> "NLUSlotConfig":
+        """Enum slots need values; int bounds must be ordered."""
+        if self.type == "enum" and not self.values:
+            raise ValueError("enum slot needs values")
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError("slot min must be <= max")
+        return self
+
+
+class NLUExampleConfig(BaseModel):
+    """A few-shot example rendered into the static NLU prompt."""
+
+    pending: str = Field(default="", description="Pending question id the example is set under")
+    caller: str = Field(..., description="Caller utterance")
+    out: dict[str, Any] = Field(..., description="Expected NLU output")
+
+
+class ActIntentRuleConfig(BaseModel):
+    """(acts, pending, relation, topic) → routing intent."""
+
+    acts: list[str] = Field(default_factory=list, description="Dialogue acts matched by this row")
+    pending: str | None = Field(default=None, description="Pending id the row applies to")
+    relation: Literal["answers_pending", "answers_other", "new_topic", "unrelated", "unclear"] | None = Field(
+        default=None, description="Relation of the turn to the pending question"
+    )
+    topic: str | None = Field(default=None, description="Topic the row applies to")
+    intent: str = Field(..., description="Routing intent emitted when the row matches")
+    gated: bool = Field(default=False, description="Row only fires when termination_gate passes")
+
+    @field_validator("acts")
+    @classmethod
+    def _known_acts(cls, value: list[str]) -> list[str]:
+        """Reject acts outside the framework list."""
+        bad = [a for a in value if a not in _DIALOGUE_ACTS]
+        if bad:
+            raise ValueError(f"unknown act(s) {bad}; allowed: {list(_DIALOGUE_ACTS)}")
+        return value
+
+
+class TerminationGateItem(BaseModel):
+    """Either a pending id or a routing condition."""
+
+    pending: str | None = Field(default=None, description="Pending id that opens the gate")
+    field: str | None = Field(default=None, description="Session field for a condition")
+    operator: Literal["eq", "not_eq", "in", "lt", "gt"] | None = Field(default=None, description="Condition operator")
+    value: Any = Field(default=None, description="Condition comparison value")
+
+    @model_validator(mode="after")
+    def _one_form(self) -> "TerminationGateItem":
+        """Exactly one of ``pending`` or ``field``+``operator``."""
+        has_pending = self.pending is not None
+        has_cond = self.field is not None and self.operator is not None
+        if has_pending == has_cond:
+            raise ValueError("termination_gate item needs exactly one of 'pending' or 'field'+'operator'")
+        return self
+
+
+class TerminationGateConfig(BaseModel):
+    """Conditions under which a gated act-intent row may fire."""
+
+    any_of: list[TerminationGateItem] = Field(default_factory=list, description="Gate passes if any item holds")
+
+
+class OffTrackConfig(BaseModel):
+    """Consecutive off-track turns before routing to recovery."""
+
+    threshold: int = Field(default=3, ge=1, description="Consecutive off-track turns before recovery")
+    intent: str = Field(default="off_track", description="Recovery routing intent")
+
+
 class NLUProcessorConfig(BaseModel):
+    """Dialogue-act NLU settings (mirrors runtime ``NLUProcessorConfig``, spec §16)."""
+
+    model_config = {"extra": "forbid"}
+
     provider: Literal["anthropic", "openai", "ollama", "google"] | None = Field(
         default=None,
         description="Per-helper provider override. Lets a deployment run primary chat on one provider while keeping NLU on another. None → inherit agent.provider.",
     )
     model: str = Field(default="", description="Claude model ID for NLU classification. Empty = use agent.primary_model.")
-    confidence_threshold: float = Field(default=0.5, description="Float 0-1. Intents below this are treated as unknown")
     user_state_confidence_threshold: float = Field(
         default=0.4,
         description="Below this confidence, user-state classification stays sticky (previous state retained). Conversational agents only.",
     )
     history_turns: int = Field(default=2)
-    domain_instruction: str = Field(
-        default="",
-        description="Domain-specific instruction prepended to the NLU classification prompt",
-    )
-    intents: list[str] = Field(..., description="List of intent identifiers for this domain, e.g. greeting, profile_answer, apply_now")
-    entities: list[str] = Field(..., description="List of entity identifiers to extract, e.g. name, location, trade_or_stream")
-    sentiment_classes: list[str] = Field(
-        default=["neutral", "positive", "distressed"],
-        description="Sentiment classes to classify, e.g. [neutral, positive, distressed]",
+    log_raw_response: bool = Field(
+        default=False,
+        description="Opt-in INFO log of the parsed NLU response and composed user message. Off by default (may carry PII).",
     )
     signal_intents: dict[str, str] = Field(
         default_factory=dict,
-        description="Optional map of intent → signal_type written to the ContextGraph Signal node, e.g. {pay_disappointment: objection}",
+        description="Optional map of signal name → signal_type written to the ContextGraph Signal node, e.g. {pay_disappointment: objection}",
     )
+    timeout_ms: int = Field(default=2500, gt=0, description="dialogue_act NLU call timeout in ms")
+    retry_attempts: int = Field(default=2, ge=1, description="dialogue_act NLU total attempts")
+    topics: list[str] = Field(default_factory=list, description="Topics for 'ask' / 'request_change' acts")
+    signals: list[str] = Field(default_factory=list, description="Signal names NLU may emit")
+    slots: dict[str, NLUSlotConfig] = Field(default_factory=dict, description="Caller-stated values to extract")
+    known_fields: list[str] = Field(default_factory=list, description="State fields shown to NLU in the frame")
+    examples: list[NLUExampleConfig] = Field(default_factory=list, description="Few-shot examples for the NLU prompt")
+    act_intents: list[ActIntentRuleConfig] = Field(default_factory=list, description="Ordered (acts, pending, relation, topic) → intent table")
+    termination_gate: TerminationGateConfig = Field(default_factory=TerminationGateConfig, description="When a gated act-intent row may fire")
+    off_track: OffTrackConfig = Field(default_factory=OffTrackConfig, description="Off-track threshold and recovery intent")
 
 
 class PreprocessingConfig(BaseModel):
@@ -402,8 +500,35 @@ class RoutingRuleSchema(BaseModel):
     )
 
 
+class OptionsFromConfig(BaseModel):
+    """Where a pending question's offered options come from (a cached tool)."""
+
+    tool: str = Field(..., description="Cached tool whose result lists the options")
+    fields: list[str] = Field(..., min_length=1, description="Result fields shown to NLU for each option")
+    id_field: str = Field(..., description="Result field that identifies an option")
+
+
+class PendingQuestionConfig(BaseModel):
+    """What a subagent may be waiting for."""
+
+    id: str = Field(..., min_length=1, description="Pending question id")
+    expects: str = Field(default="", description="Plain-language description of the expected reply")
+    when: list[RoutingConditionSchema] = Field(default_factory=list, description="Conditions under which the question is pending")
+    options_from: OptionsFromConfig | None = Field(default=None, description="Source of the offered options")
+    resolves_to: str | None = Field(default=None, description="State key the chosen option id is written to")
+
+    @model_validator(mode="after")
+    def _resolves_needs_options(self) -> "PendingQuestionConfig":
+        """``resolves_to`` is only meaningful with ``options_from``."""
+        if self.resolves_to and self.options_from is None:
+            raise ValueError("resolves_to requires options_from")
+        return self
+
+
 class SubAgentSchema(BaseModel):
     """Configuration for a single subagent node in the workflow graph."""
+
+    model_config = {"extra": "forbid"}
 
     id: str = Field(..., description="Unique subagent identifier within this workflow")
     name: str = Field(default="", description="Human-readable display name")
@@ -423,16 +548,21 @@ class SubAgentSchema(BaseModel):
         description="Phrase emitted on the first turn only (after consent). "
                     "Empty string means no opening phrase (GH-137).",
     )
+    fixed_opening: str = Field(
+        default="",
+        description="Template spoken verbatim, without a model call, on the first turn into "
+                    "this subagent when every fixed_opening_requires field is in session and "
+                    "the caller's turn carried no entities.",
+    )
+    fixed_opening_requires: list[str] = Field(
+        default_factory=list,
+        description="Session field names fixed_opening substitutes.",
+    )
     special_handler: Literal["hitl", "whatsapp_handoff"] | None = Field(
         default=None,
         description="Optional framework-level handler. "
                     "'hitl' bypasses the LLM and returns hitl.response_message. "
                     "'whatsapp_handoff' triggers a channel handoff.",
-    )
-    valid_intents: list[str] = Field(
-        default=[],
-        description="Intents this subagent handles. Must be declared in preprocessing.nlu_processor.intents. "
-                    "Must not overlap with agent_workflow.global_intents.",
     )
     tools: list[str] = Field(
         default=[],
@@ -453,25 +583,26 @@ class SubAgentSchema(BaseModel):
                     "Terminal subagents must have an empty list. "
                     "Non-terminal subagents must have at least one rule.",
     )
+    pending: list[PendingQuestionConfig] = Field(
+        default_factory=list,
+        description="Questions this subagent may be waiting on (dialogue-act NLU).",
+    )
 
 
 class AgentWorkflowConfig(BaseModel):
     """Full structural definition of the multi-subagent workflow for a domain."""
 
-    workflow_id: str = Field(..., description="Unique workflow identifier, e.g. kkb_iti_graduate")
+    model_config = {"extra": "forbid"}
+
+    workflow_id: str = Field(..., description="Unique workflow identifier, e.g. blue_dots_worker")
     version: str = Field(..., description="Semantic version string, e.g. '1.0.0'")
     agent_system_prompt: str = Field(
         default="",
         description="Top-level system prompt for the orchestrating LLM. Injected on every turn.",
     )
-    global_intents: list[str] = Field(
-        default=[],
-        description="Intents handled globally before subagent routing. "
-                    "Must not appear in any subagent's valid_intents.",
-    )
     global_routing: list[RoutingRuleSchema] = Field(
         default=[],
-        description="Routing rules applied globally when a global_intent fires",
+        description="Routing rules applied before subagent routing (e.g. termination_intent → ended)",
     )
     global_tools: list[str] = Field(
         default_factory=list,
@@ -518,10 +649,8 @@ class TtsRulesConfig(BaseModel):
 class ChannelTurnAssemblerConfig(BaseModel):
     """Turn-assembler settings for a channel (GH-137)."""
 
-    semantic_gate: dict[str, Any] = Field(
-        default_factory=lambda: {"enabled": False, "confidence_threshold": 0.75},
-        description="NLU gate configuration for this channel",
-    )
+    model_config = {"extra": "forbid"}
+
     silence_trigger: dict[str, Any] = Field(
         default_factory=lambda: {"silence_ms": 0},
         description="Silence trigger configuration for this channel",

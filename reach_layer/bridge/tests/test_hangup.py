@@ -259,7 +259,7 @@ def test_session_end_without_hangup_tool_warns(caplog):
     the configured one. Both look identical from the caller's side — the bot
     says goodbye and the line never drops — and both were previously silent.
     """
-    translator = StreamTranslator("kkb", hangup_tool=None)
+    translator = StreamTranslator("blue-dots", hangup_tool=None)
 
     with caplog.at_level(logging.WARNING):
         chunks = translator.finish({"session_ended": True}, include_usage=False)
@@ -270,7 +270,7 @@ def test_session_end_without_hangup_tool_warns(caplog):
 
 
 def test_session_end_with_hangup_tool_does_not_warn(caplog):
-    translator = StreamTranslator("kkb", hangup_tool="end_conversation")
+    translator = StreamTranslator("blue-dots", hangup_tool="end_conversation")
 
     with caplog.at_level(logging.WARNING):
         chunks = translator.finish({"session_ended": True}, include_usage=False)
@@ -282,7 +282,7 @@ def test_session_end_with_hangup_tool_does_not_warn(caplog):
 
 def test_unfinished_session_never_warns(caplog):
     """A normal turn ends with session_ended False and must stay quiet."""
-    translator = StreamTranslator("kkb", hangup_tool=None)
+    translator = StreamTranslator("blue-dots", hangup_tool=None)
 
     with caplog.at_level(logging.WARNING):
         translator.finish({"session_ended": False}, include_usage=False)

@@ -180,6 +180,9 @@ class TurnToolCache:
         # rendered again, but the model has already seen it, so it still
         # grounds values (e.g. ``remember``) for the rest of the turn.
         self._invalidated_data: dict[str, list[str]] = {}
+        # tool → args_hash of the entry last served to the model this turn
+        # (cache hit or live store). NLU dialogue-acts spec §5.2.
+        self._served: dict[str, str] = {}
 
     def _hash(self, tool_call: ToolCall) -> str:
         pol = self._p.cache[tool_call.tool_name]
@@ -203,6 +206,7 @@ class TurnToolCache:
             _log("miss", tool_call.tool_name, pol.scope)
             return None
         age = self._now() - float(e["fetched_at"])
+        self._served[tool_call.tool_name] = str(e["args_hash"])
         _log("hit", tool_call.tool_name, pol.scope, age_s=int(age), ttl_s=pol.ttl_seconds)
         data = e["data"]
         return ToolResult(
@@ -246,6 +250,7 @@ class TurnToolCache:
             "expires_at": t + pol.ttl_seconds, "origin": origin, "scope": pol.scope}
         self._puts.append({"scope": pol.scope, "tool": tool_call.tool_name, "args_hash": h,
                            "data": data, "ttl_seconds": pol.ttl_seconds, "origin": origin})
+        self._served[tool_call.tool_name] = h
         _log("store", tool_call.tool_name, pol.scope, ttl_s=pol.ttl_seconds)
         return self._entries[(tool_call.tool_name, h)]
 
@@ -263,6 +268,49 @@ class TurnToolCache:
     def fresh_tools(self) -> set[str]:
         """Tools with at least one unexpired entry (their exchanges leave the replay)."""
         return {tool for tool, _ in self._fresh()}
+
+    def latest_entry(self, tool: str) -> dict | None:
+        """Return the unexpired entry with the highest ``fetched_at`` for a tool.
+
+        Used by the dialogue-act NLU frame and option resolver (NLU
+        dialogue-acts spec §5.2, §6.3): a new search with different arguments
+        is a different entry, and the latest one is the list on offer.
+
+        Args:
+            tool: Tool name.
+
+        Returns:
+            A copy of the normalised entry dict, or None when none is fresh.
+        """
+        candidates = [e for (t, _), e in self._fresh().items() if t == tool]
+        if not candidates:
+            return None
+        return dict(max(candidates, key=lambda e: float(e["fetched_at"])))
+
+    def served(self) -> dict[str, str]:
+        """Return tool → args_hash of the entry last served this turn (hit or live store).
+
+        The orchestrator persists the merged map as ``served_tool_results`` so the
+        next turn's NLU frame offers the list the caller last heard (NLU
+        dialogue-acts spec §5.2).
+
+        Returns:
+            A copy of the map; empty when nothing was served.
+        """
+        return dict(self._served)
+
+    def entry(self, tool: str, args_hash_value: str) -> dict | None:
+        """Return a copy of the fresh entry for ``(tool, args_hash)``, or None.
+
+        Args:
+            tool: Tool name.
+            args_hash_value: The entry's args hash.
+
+        Returns:
+            A copy of the normalised entry dict, or None when absent or expired.
+        """
+        e = self._fresh().get((tool, args_hash_value))
+        return dict(e) if e is not None else None
 
     def stored_results_by_tool(self) -> dict[str, list[str]]:
         """Serialised data per tool, for grounding checks.

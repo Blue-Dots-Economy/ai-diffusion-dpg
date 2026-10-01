@@ -85,7 +85,6 @@ class RetrieveRequest(BaseModel):
     session: dict[str, Any] = {}
     intent: str = "unknown"
     entities: dict[str, Any] = {}
-    sentiment: str = "neutral"
     confidence: float = 0.0
     normalised_input: str = ""
     detected_language: str = ""
@@ -292,7 +291,6 @@ def create_app(ke: KnowledgeEngine, config: dict) -> FastAPI:
                     session=request.session,
                     intent=request.intent,
                     entities=request.entities,
-                    sentiment=request.sentiment,
                     confidence=request.confidence,
                     normalised_input=request.normalised_input,
                     detected_language=request.detected_language,

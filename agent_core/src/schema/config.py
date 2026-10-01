@@ -3,7 +3,7 @@ MergedConfig — strict schema for the Agent Core merged runtime config.
 
 Merged config = dev-kit/dpg/agent_core.yaml (framework defaults)
                 deep-merged with a domain YAML
-                (e.g. dev-kit/configs/kkb/agent_core.yaml).
+                (e.g. dev-kit/configs/blue-dots/agent_core.yaml).
 
 Every model sets ``extra="forbid"``: unknown keys at any nesting level
 fail at startup with a pydantic ValidationError, not at first request.
@@ -474,7 +474,7 @@ class LanguageNormalisationConfig(BaseModel):
 
     # GH-313: when False the leading LLM call is skipped; the main LLM mirrors
     # the user's language via a directive in build_system_prompt(). Defaults to
-    # True for backward compatibility; KKB sets False.
+    # True for backward compatibility; Blue Dots sets False.
     enabled: bool = True
 
     # Per-helper provider override (#287 follow-up). When set, build_chat_provider
@@ -490,28 +490,141 @@ class LanguageNormalisationConfig(BaseModel):
     code_switching: bool = True
 
 
+# Intents the orchestrator acts on itself (not via a workflow routing rule).
+_FRAMEWORK_HANDLED_INTENTS = frozenset({"language_switch_request"})
+
+_DIALOGUE_ACTS: tuple[str, ...] = (
+    "affirm", "deny", "acknowledge", "provide_info", "correct", "select",
+    "ask", "request_change", "repeat", "hold", "close", "other",
+)
+_DIALOGUE_RELATIONS: tuple[str, ...] = (
+    "answers_pending", "answers_other", "new_topic", "unrelated", "unclear",
+)
+
+
+class NLUSlotConfig(BaseModel):
+    """One caller-stated value the dialogue-act NLU extracts (NLU dialogue-acts spec §7.1)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    type: Literal["string", "int", "enum"] = "string"
+    values: list[str] = Field(default_factory=list)
+    min: Optional[int] = None
+    max: Optional[int] = None
+    normalise: Optional[Literal["title", "lower"]] = None
+    accept_when_pending: list[str] = Field(default_factory=list)
+    description: str = ""
+    examples: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check(self) -> "NLUSlotConfig":
+        """Enum slots need values; int bounds must be ordered."""
+        if self.type == "enum" and not self.values:
+            raise ValueError("enum slot needs values")
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError("slot min must be <= max")
+        return self
+
+
+class NLUExampleConfig(BaseModel):
+    """A few-shot example rendered into the static NLU prompt."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    pending: str = ""
+    caller: str
+    out: dict[str, Any]
+
+
+class ActIntentRuleConfig(BaseModel):
+    """(acts, pending, relation, topic) → routing intent (spec §6.4)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    acts: list[str] = Field(default_factory=list)
+    pending: Optional[str] = None
+    relation: Optional[Literal["answers_pending", "answers_other", "new_topic", "unrelated", "unclear"]] = None
+    topic: Optional[str] = None
+    intent: str
+    gated: bool = False
+
+    @field_validator("acts")
+    @classmethod
+    def _known_acts(cls, value: list[str]) -> list[str]:
+        """Reject acts outside the framework list."""
+        bad = [a for a in value if a not in _DIALOGUE_ACTS]
+        if bad:
+            raise ValueError(f"unknown act(s) {bad}; allowed: {list(_DIALOGUE_ACTS)}")
+        return value
+
+
+class TerminationGateItem(BaseModel):
+    """Either a pending id or a routing condition (spec §6.7)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    pending: Optional[str] = None
+    field: Optional[str] = None
+    operator: Optional[RoutingOperator] = None
+    value: Any = None
+
+    @model_validator(mode="after")
+    def _one_form(self) -> "TerminationGateItem":
+        """Exactly one of ``pending`` or ``field``+``operator``."""
+        has_pending = self.pending is not None
+        has_cond = self.field is not None and self.operator is not None
+        if has_pending == has_cond:
+            raise ValueError("termination_gate item needs exactly one of 'pending' or 'field'+'operator'")
+        return self
+
+
+class TerminationGateConfig(BaseModel):
+    """Conditions under which a gated act-intent row may fire."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    any_of: list[TerminationGateItem] = Field(default_factory=list)
+
+
+class OffTrackConfig(BaseModel):
+    """Consecutive off-track turns before routing to recovery (spec §6.6)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    threshold: int = Field(default=3, ge=1)
+    intent: str = "off_track"
+
+
 class NLUProcessorConfig(BaseModel):
-    """NLU intent + entity + sentiment classifier."""
+    """Dialogue-act NLU: acts, relation, slots and signals per caller turn.
+
+    The routing intent is derived in code from ``act_intents``; there is no
+    intent list, entity list or free-text domain instruction (spec §16).
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     # Per-helper provider override — see LanguageNormalisationConfig.provider.
     provider: Literal["anthropic", "openai", "ollama", "google"] | None = None
     model: str = ""
-    confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     user_state_confidence_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
-    domain_instruction: str = ""
-    intents: list[str] = Field(default_factory=list)
-    entities: list[str] = Field(default_factory=list)
-    sentiment_classes: list[str] = Field(
-        default_factory=lambda: ["neutral", "positive", "distressed", "frustrated"]
-    )
     signal_intents: dict[str, str] = Field(default_factory=dict)
     # GH-218: opt-in INFO log with the full parsed NLU response JSON and the
     # final composed user message. Off by default because the values can
     # carry PII (entity values, message text). Turn on for triage windows.
     log_raw_response: bool = False
-    log_raw_response_max_chars: int = Field(default=2000, ge=0)
+    # NLU dialogue-acts spec §7.1, §9.1.
+    timeout_ms: int = Field(default=2500, gt=0)
+    retry_attempts: int = Field(default=2, ge=1)
+    history_turns: int = Field(default=2, ge=0)
+    topics: list[str] = Field(default_factory=list)
+    signals: list[str] = Field(default_factory=list)
+    slots: dict[str, NLUSlotConfig] = Field(default_factory=dict)
+    known_fields: list[str] = Field(default_factory=list)
+    examples: list[NLUExampleConfig] = Field(default_factory=list)
+    act_intents: list[ActIntentRuleConfig] = Field(default_factory=list)
+    termination_gate: TerminationGateConfig = Field(default_factory=TerminationGateConfig)
+    off_track: OffTrackConfig = Field(default_factory=OffTrackConfig)
 
 
 class PreprocessingConfig(BaseModel):
@@ -561,6 +674,35 @@ class RoutingRule(BaseModel):
     session_writes: dict[str, Any] = Field(default_factory=dict)
 
 
+class OptionsFromConfig(BaseModel):
+    """Where a pending question's offered options come from (a cached tool)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tool: str
+    fields: list[str] = Field(min_length=1)
+    id_field: str
+
+
+class PendingQuestionConfig(BaseModel):
+    """What a subagent may be waiting for (NLU dialogue-acts spec §7.2)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str = Field(min_length=1)
+    expects: str = ""
+    when: list[RoutingCondition] = Field(default_factory=list)
+    options_from: Optional[OptionsFromConfig] = None
+    resolves_to: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _resolves_needs_options(self) -> "PendingQuestionConfig":
+        """``resolves_to`` is only meaningful with ``options_from``."""
+        if self.resolves_to and self.options_from is None:
+            raise ValueError("resolves_to requires options_from")
+        return self
+
+
 class SubAgent(BaseModel):
     """One subagent node in the workflow graph."""
 
@@ -573,7 +715,6 @@ class SubAgent(BaseModel):
     is_terminal: bool = False
     opening_phrase: str = ""
     special_handler: Optional[SpecialHandler] = None
-    valid_intents: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
     system_prompt: str = ""
     output_format: Optional[dict[str, Any]] = None
@@ -595,6 +736,7 @@ class SubAgent(BaseModel):
     fixed_opening: str = ""
     fixed_opening_requires: list[str] = Field(default_factory=list)
     routing: list[RoutingRule] = Field(default_factory=list)
+    pending: list[PendingQuestionConfig] = Field(default_factory=list)
 
 
 class AgentWorkflowConfig(BaseModel):
@@ -605,7 +747,6 @@ class AgentWorkflowConfig(BaseModel):
     workflow_id: str = ""
     version: str = "1.0.0"
     agent_system_prompt: str = ""
-    global_intents: list[str] = Field(default_factory=list)
     global_routing: list[RoutingRule] = Field(default_factory=list)
     default_fallback_subagent_id: str = ""
     global_tools: list[str] = Field(default_factory=list)
@@ -632,13 +773,6 @@ class TtsRulesConfig(BaseModel):
     english_loanwords: str = ""
     email: str = ""
     named_entities: str = ""
-
-
-class SemanticGateConfig(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    enabled: bool = False
-    confidence_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
 
 
 class SilenceTriggerConfig(BaseModel):
@@ -689,7 +823,6 @@ class TurnAssemblerConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    semantic_gate: SemanticGateConfig = Field(default_factory=SemanticGateConfig)
     silence_trigger: SilenceTriggerConfig = Field(default_factory=SilenceTriggerConfig)
     max_wait_ceiling: MaxWaitCeilingConfig = Field(default_factory=MaxWaitCeilingConfig)
     interruption: InterruptionConfig = Field(default_factory=InterruptionConfig)
@@ -909,6 +1042,66 @@ class MergedConfig(BaseModel):
             for i, step in enumerate(self.session_bootstrap.steps):
                 if step.tool not in read_names:
                     raise ValueError(f"session_bootstrap.steps[{i}]: '{step.tool}' is not a read connector")
+        return self
+
+    @model_validator(mode="after")
+    def _check_dialogue_act_rules(self) -> "MergedConfig":
+        """Cross-check the dialogue-act NLU config against the workflow and connectors.
+
+        Returns:
+            The validated config.
+
+        Raises:
+            ValueError: On an undeclared pending id, an unrouted intent, an
+                unknown topic, an ``options_from`` tool without a cache policy,
+                or a state key colliding with a ``memory_tool`` field.
+        """
+        nlu = self.preprocessing.nlu_processor
+        wf = self.agent_workflow
+        declared = {p.id for s in wf.subagents for p in s.pending}
+
+        def _pending_ok(pid: str | None, where: str) -> None:
+            if pid and pid not in declared:
+                raise ValueError(f"{where}: undeclared pending id '{pid}'")
+
+        for name, slot in nlu.slots.items():
+            for pid in slot.accept_when_pending:
+                _pending_ok(pid, f"preprocessing.nlu_processor.slots.{name}.accept_when_pending")
+        for i, ex in enumerate(nlu.examples):
+            _pending_ok(ex.pending, f"preprocessing.nlu_processor.examples[{i}]")
+        for i, row in enumerate(nlu.act_intents):
+            _pending_ok(row.pending, f"preprocessing.nlu_processor.act_intents[{i}]")
+            if row.topic is not None and row.topic not in nlu.topics:
+                raise ValueError(f"preprocessing.nlu_processor.act_intents[{i}]: topic '{row.topic}' is not in topics")
+        for i, item in enumerate(nlu.termination_gate.any_of):
+            _pending_ok(item.pending, f"preprocessing.nlu_processor.termination_gate.any_of[{i}]")
+
+        routed = {r.intent for s in wf.subagents for r in s.routing} | {r.intent for r in wf.global_routing}
+        for i, row in enumerate(nlu.act_intents):
+            if row.intent not in routed and row.intent not in _FRAMEWORK_HANDLED_INTENTS:
+                raise ValueError(
+                    f"preprocessing.nlu_processor.act_intents[{i}]: intent '{row.intent}' "
+                    f"is not used by any routing rule")
+        if wf.subagents and nlu.off_track.intent not in routed:
+            raise ValueError(
+                f"preprocessing.nlu_processor.off_track.intent '{nlu.off_track.intent}' "
+                f"is not used by any routing rule")
+
+        cached = {c.name for c in self.connectors.read if c.cache is not None}
+        state_keys = {self.entity_to_profile_field.get(n, n) for n in nlu.slots}
+        for s in wf.subagents:
+            for p in s.pending:
+                if p.options_from and p.options_from.tool not in cached:
+                    raise ValueError(
+                        f"subagent '{s.id}' pending '{p.id}': options_from.tool "
+                        f"'{p.options_from.tool}' has no cache policy")
+                if p.resolves_to:
+                    state_keys.add(p.resolves_to)
+        if self.memory_tool:
+            clash = state_keys & set(self.memory_tool.fields)
+            if clash:
+                raise ValueError(
+                    f"dialogue_act state key '{sorted(clash)[0]}' collides with memory_tool field")
         return self
 
     @classmethod

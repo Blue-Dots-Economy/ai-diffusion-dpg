@@ -2,7 +2,7 @@
 MergedConfig — strict schema for the Action Gateway merged runtime config.
 
 Merged config = dev-kit/dpg/action_gateway.yaml (framework defaults)
-                deep-merged with a domain YAML (e.g. dev-kit/configs/kkb/
+                deep-merged with a domain YAML (e.g. dev-kit/configs/blue-dots/
                 action_gateway.yaml).
 
 Every model sets ``extra="forbid"``: unknown keys at any nesting level
