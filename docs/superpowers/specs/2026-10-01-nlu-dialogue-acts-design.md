@@ -289,7 +289,7 @@ preprocessing:
     termination_gate:
       any_of:
         - { pending: closing_offer }
-        - { field: applications_submitted, op: gt, value: 0 }
+        - { field: applications_submitted, operator: gt, value: 0 }
     off_track: { threshold: 3, intent: off_track }
 ```
 
@@ -301,9 +301,9 @@ In `dialogue_act` mode, the `intents`, `entities`, `domain_instruction`, `confid
 - id: opening
   pending:
     - { id: consent, expects: "हाँ/नहीं — details save करने की अनुमति",
-        when: [{ field: consent_response, op: empty }] }
+        when: [{ field: consent_response, operator: in, value: [null, ""] }] }
     - { id: age, expects: "उम्र, साल में",
-        when: [{ field: age, op: empty }] }
+        when: [{ field: age, operator: in, value: [null, "", 0] }] }
 - id: job_match
   pending:
     - id: select_job
@@ -312,7 +312,7 @@ In `dialogue_act` mode, the `intents`, `entities`, `domain_instruction`, `confid
       resolves_to: selected_job_item_id
 ```
 
-Candidates are evaluated in order, against the same merged state routing uses (§6.5 precedence), with the existing `_evaluate_condition`. The first match is the pending question. An entry with no `when` always matches. Resolution runs **before** NLU, on the subagent the caller is currently in, and **after** Spec B's bootstrap. On turn 1 a returning caller's `has_age`, `user_terms` and `user_privacy` are therefore already set, and consent and age are not pending for them. `valid_intents` is not used in this mode.
+Conditions use the existing routing-condition shape (`field`, `operator` ∈ `eq | not_eq | in | lt | gt`, `value`); "unset" is written `operator: in, value: [null, ""]`. Candidates are evaluated in order, against the same merged state routing uses (§6.5 precedence), with the existing `_evaluate_condition`. The first match is the pending question. An entry with no `when` always matches. Resolution runs **before** NLU, on the subagent the caller is currently in, and **after** Spec B's bootstrap. On turn 1 a returning caller's `has_age`, `user_terms` and `user_privacy` are therefore already set, and consent and age are not pending for them. `valid_intents` is not used in this mode.
 
 ### 7.3 Startup validation (`dialogue_act` mode)
 
