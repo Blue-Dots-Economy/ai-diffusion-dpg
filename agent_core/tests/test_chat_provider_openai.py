@@ -683,3 +683,49 @@ class TestStream:
             if len(out) == 2:
                 abort.set()
         assert out == ["hel", "lo"]
+
+
+class _FakeTimeout(_openai.APITimeoutError):
+    def __init__(self):  # noqa: D401
+        pass
+
+
+class TestRetryOptions:
+    def test_sdk_max_retries_is_passed_to_both_clients(self):
+        cfg = {**VALID_CONFIG, "sdk_max_retries": 0}
+        with patch("openai.OpenAI") as sync_cls, patch("openai.AsyncOpenAI") as async_cls:
+            OpenAIChatProvider(cfg)
+        assert sync_cls.call_args.kwargs == {"max_retries": 0}
+        assert async_cls.call_args.kwargs == {"max_retries": 0}
+
+    def test_sdk_max_retries_absent_keeps_sdk_default(self):
+        with patch("openai.OpenAI") as sync_cls, patch("openai.AsyncOpenAI"):
+            OpenAIChatProvider(VALID_CONFIG)
+        assert sync_cls.call_args.kwargs == {}
+
+    def test_timeout_not_retried_when_disabled(self):
+        cfg = {**VALID_CONFIG, "retry_on_timeout": False}
+        with patch("openai.OpenAI"), patch("openai.AsyncOpenAI"):
+            p = OpenAIChatProvider(cfg)
+        p._client.chat.completions.create = MagicMock(side_effect=_FakeTimeout())
+        resp = p.call(ChatRequest(messages=[Message(role="user", content=[TextBlock(text="hi")])]))
+        assert resp.stop_reason == "error"
+        assert resp.error_type == "timeout"
+        assert p._client.chat.completions.create.call_count == 1
+
+    def test_rate_limit_still_retried_when_timeout_retry_disabled(self):
+        cfg = {**VALID_CONFIG, "retry_on_timeout": False}
+        with patch("openai.OpenAI"), patch("openai.AsyncOpenAI"):
+            p = OpenAIChatProvider(cfg)
+        p._client.chat.completions.create = MagicMock(
+            side_effect=[_FakeRateLimit(), _mk_openai_completion(text="ok")])
+        resp = p.call(ChatRequest(messages=[Message(role="user", content=[TextBlock(text="hi")])]))
+        assert resp.stop_reason == "end_turn"
+        assert p._client.chat.completions.create.call_count == 2
+
+    def test_timeout_retried_by_default(self):
+        p = _make_provider()
+        p._client.chat.completions.create = MagicMock(
+            side_effect=[_FakeTimeout(), _mk_openai_completion(text="ok")])
+        resp = p.call(ChatRequest(messages=[Message(role="user", content=[TextBlock(text="hi")])]))
+        assert resp.stop_reason == "end_turn"

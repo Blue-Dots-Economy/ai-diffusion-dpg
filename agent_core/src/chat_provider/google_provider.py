@@ -142,6 +142,7 @@ class GoogleChatProvider(ChatProviderBase):
 
         Args:
             config: Runtime configuration dict with required and optional keys.
+                ``sdk_max_retries`` / ``retry_on_timeout`` are not honoured by this provider.
 
         Raises:
             ProviderConfigError: If required keys are missing or invalid, or
