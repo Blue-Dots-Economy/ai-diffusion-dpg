@@ -264,6 +264,24 @@ class TurnToolCache:
         """Tools with at least one unexpired entry (their exchanges leave the replay)."""
         return {tool for tool, _ in self._fresh()}
 
+    def latest_entry(self, tool: str) -> dict | None:
+        """Return the unexpired entry with the highest ``fetched_at`` for a tool.
+
+        Used by the dialogue-act NLU frame and option resolver (NLU
+        dialogue-acts spec §5.2, §6.3): a new search with different arguments
+        is a different entry, and the latest one is the list on offer.
+
+        Args:
+            tool: Tool name.
+
+        Returns:
+            A copy of the normalised entry dict, or None when none is fresh.
+        """
+        candidates = [e for (t, _), e in self._fresh().items() if t == tool]
+        if not candidates:
+            return None
+        return dict(max(candidates, key=lambda e: float(e["fetched_at"])))
+
     def stored_results_by_tool(self) -> dict[str, list[str]]:
         """Serialised data per tool, for grounding checks.
 

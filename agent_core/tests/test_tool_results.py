@@ -279,3 +279,22 @@ def test_after_call_default_origin_turn_and_none_when_not_stored():
     assert cache.after_call(tc("fetch_profile"), live("fetch_profile", {}, success=False)) is None
     assert cache.after_call(tc("uncached"), live("uncached", {})) is None
     assert cache.after_call(tc("save_profile"), live("save_profile", {})) is None
+
+
+def test_latest_entry_picks_newest_fresh_entry_for_tool():
+    now = 10_000.0
+    entries = [
+        entry("fetch_jobs", [{"item_id": "old"}], "a", fetched=now - 300, ttl=600, scope="session"),
+        entry("fetch_jobs", [{"item_id": "new"}], "b", fetched=now - 10, ttl=600, scope="session"),
+        entry("fetch_jobs", [{"item_id": "expired"}], "c", fetched=now - 700, ttl=600, scope="session"),
+    ]
+    cache = TurnToolCache(POL, entries, {}, now=clock(now))
+    assert cache.latest_entry("fetch_jobs")["data"] == [{"item_id": "new"}]
+    assert cache.latest_entry("fetch_profile") is None
+
+
+def test_latest_entry_sees_entry_stored_this_turn():
+    cache = TurnToolCache(POL, [], {}, now=clock(50.0))
+    cache.after_call(tc("fetch_jobs", {"query_text": "welder"}, tid="t1"),
+                     live("fetch_jobs", [{"item_id": "j1"}]))
+    assert cache.latest_entry("fetch_jobs")["data"] == [{"item_id": "j1"}]
