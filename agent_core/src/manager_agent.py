@@ -323,7 +323,7 @@ class ManagerAgent:
             ke_context:       Dict with context required to call the Knowledge Engine
                               when knowledge_retrieval is invoked. Expected fields:
                               session_id, user_message, profile, session, intent,
-                              entities, sentiment, confidence, normalised_input,
+                              entities, confidence, normalised_input,
                               detected_language. If None, knowledge_retrieval calls
                               return an empty tool_result.
             tool_cache:       Per-turn tool-result cache. When given, cacheable
@@ -625,7 +625,7 @@ class ManagerAgent:
             <resumption>          resumption note (first turn after adoption)
             <known_profile>       profile grounding
             <known_facts>         stored tool results rendered for grounding
-            <caller_turn>         NLU conclusion for this turn (dialogue_act mode)
+            <caller_turn>         NLU conclusion for this turn (dialogue-act NLU)
             <active_guardrails>   guardrail constraints + required disclosures
 
         Empty inputs elide their section entirely; empty tiers are not
@@ -829,7 +829,6 @@ class ManagerAgent:
                 session=ke_context.get("session", {}),
                 intent=ke_context.get("intent", ""),
                 entities=ke_context.get("entities", {}),
-                sentiment=ke_context.get("sentiment", "neutral"),
                 confidence=ke_context.get("confidence", 0.0),
                 normalised_input=ke_context.get("normalised_input", ""),
                 detected_language=ke_context.get("detected_language", ""),

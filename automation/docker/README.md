@@ -75,7 +75,7 @@ To add a new document and re-ingest:
 cp my_new_doc.pdf ../../knowledge_engine/data/
 
 # 2. Register it in the domain config (add a new entry under sources)
-#    dev-kit/configs/kkb/knowledge_engine.yaml → knowledge.blocks.static_knowledge_base.sources
+#    dev-kit/configs/blue-dots/knowledge_engine.yaml → knowledge.blocks.static_knowledge_base.sources
 
 # 3. Delete the chroma volume to force re-ingest (mandatory)
 docker volume rm docker_chroma_data

@@ -2643,7 +2643,7 @@ async def get_deploy_preview(slug: str, body: dict) -> dict:
         secrets = decrypt_secrets_dict(encrypted_secrets) if encrypted_secrets else body.get("secrets", {})
 
         raw = COMPOSE_FILE.read_text() if COMPOSE_FILE.exists() else "# docker-compose.dev.yml not found"
-        content = raw.replace("${DOMAIN:-kkb}", slug).replace("${DOMAIN}", slug)
+        content = raw.replace("${DOMAIN:-blue-dots}", slug).replace("${DOMAIN}", slug)
         resources = body.get("resources", {})
         if resources:
             content = _apply_resources_to_compose(content, resources)
@@ -3065,7 +3065,7 @@ async def _run_docker_deploy(
     try:
         # Read compose file, apply domain and resources
         raw = COMPOSE_FILE.read_text()
-        content = raw.replace("${DOMAIN:-kkb}", slug).replace("${DOMAIN}", slug)
+        content = raw.replace("${DOMAIN:-blue-dots}", slug).replace("${DOMAIN}", slug)
         if resources:
             content = _apply_resources_to_compose(content, resources)
 

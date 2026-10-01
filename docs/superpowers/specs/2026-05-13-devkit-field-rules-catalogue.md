@@ -40,7 +40,7 @@ Field paths are rooted at the block (without the block name prefix) and use dott
 - `connectors.internal[name=knowledge_retrieval]` — the internal connector whose `name == "knowledge_retrieval"`.
 - `agent_workflow.subagents[id=enquiry].system_prompt` — the system_prompt of the subagent with `id=="enquiry"`.
 
-When cross-block references are needed in this doc, paths are prefixed with the block name and a dot: `agent_core.preprocessing.nlu_processor.intents`.
+When cross-block references are needed in this doc, paths are prefixed with the block name and a dot: `agent_core.preprocessing.nlu_processor.act_intents`.
 
 ### 2.2 Categories (from FIELD_RULES design)
 
@@ -116,9 +116,6 @@ Phase = `language` unless otherwise noted.
 | `preprocessing.language_normalisation.model` | Optional per-helper override. |
 | `preprocessing.nlu_processor.provider` | Optional per-helper override. |
 | `preprocessing.nlu_processor.model` | Optional per-helper override. |
-| `preprocessing.nlu_processor.domain_instruction` | Domain-specific NLU classifier instructions. Invalidated by `domain_description`, `default_language`. |
-| `preprocessing.nlu_processor.intents` | Required (mirror: min_length=1). The canonical intent set. See §5.3 for downstream invariants. |
-| `preprocessing.nlu_processor.entities` | List of entity names NLU extracts. Co-evolves with `entity_to_profile_field` and `nlu_processor.signal_intents` when `needs_persistent_user_data=true`. |
 
 Phase = `workflow`:
 
@@ -126,8 +123,7 @@ Phase = `workflow`:
 |---|---|
 | `agent_workflow.agent_system_prompt` | Top-level persona prompt seen on every turn. Domain-defining. |
 | `agent_workflow.default_fallback_subagent_id` | Required (mirror: min_length=1). Must reference declared subagent. |
-| `agent_workflow.subagents` (entire list-of-objects) | Required (mirror: min_length=1). Subagents subtree includes per-entry id/name/description/is_start/is_terminal/opening_phrase/valid_intents/system_prompt/routing/(tools, special_handler if gated). |
-| `agent_workflow.global_intents` | Subset of `nlu_processor.intents`; disjoint with every subagent's `valid_intents`. |
+| `agent_workflow.subagents` (entire list-of-objects) | Required (mirror: min_length=1). Subagents subtree includes per-entry id/name/description/is_start/is_terminal/opening_phrase/system_prompt/routing/(tools, special_handler if gated). |
 | `agent_workflow.global_routing` | Each rule's `next_subagent_id` must reference declared subagent. |
 | `agent_workflow.global_tools` | List of tool names. Must subset `connectors.*` names + MCP-namespaced tool names. Includes `"knowledge_retrieval"` iff `has_kb=true` (hard rule). |
 
@@ -209,11 +205,10 @@ Detailed per-field rules (defaults, types, sub-fields) live in §7's per-block c
 |---|---|---|
 | agent_core | `connectors.internal[name=knowledge_retrieval]` (full subtree: `name`, `route`, `description`, `input_schema`, `invocation_rules.*`) | Becomes the active KB connector. `name` and `route="knowledge_engine"` are predetermined; `description` and the six `invocation_rules` are chat. |
 | agent_core | `agent_workflow.global_tools` | **MUST include** `"knowledge_retrieval"` (hard rule per phases.py:1006-1013). |
-| agent_core | `preprocessing.nlu_processor.intents` | May add a KB-related intent (e.g., `lookup`, `faq`); `needs_re_asking` on the false→true transition. |
 | knowledge_engine | `knowledge.blocks.static_knowledge_base.enabled` | Predetermined `true`. |
 | knowledge_engine | `knowledge.blocks.static_knowledge_base.collection_name` | Predetermined: `f"{project_slug}_knowledge"`. |
 | knowledge_engine | `knowledge.blocks.static_knowledge_base.default_doc_type` | Chat (default `"general"`). |
-| knowledge_engine | `knowledge.blocks.static_knowledge_base.intent_filters` | Chat (open map: intent → list[doc_type]). Keys must be a subset of `agent_core.preprocessing.nlu_processor.intents`. |
+| knowledge_engine | `knowledge.blocks.static_knowledge_base.intent_filters` | Chat (open map: routing intent → list[doc_type]). Keys must be an `agent_core.preprocessing.nlu_processor.act_intents` intent, `any_input`, the off-track intent or `language_switch_request` (§5.3). |
 | knowledge_engine | `knowledge.blocks.glossary.enabled` and `glossary.mappings` | Chat. Mappings are list-of-objects keyed by `canonical`. |
 | reach_layer | `reach_layer.channels.web.ke_internal_url` | Becomes meaningful (Reach→KE direct call for `/ingest`). |
 | compose | `knowledge_engine` service | Deployed. |
@@ -259,7 +254,6 @@ Detailed per-field rules (defaults, types, sub-fields) live in §7's per-block c
 | agent_core | `conversation.termination_message` | Chat (meaningful for multi-turn flow). |
 | agent_core | `agent.termination_short_circuit.{enabled, confidence_threshold}` | Framework defaults stay (`true`, `0.7`); operational only — domain doesn't write. |
 | agent_core | `agent_workflow.subagents` | Typically multiple non-terminal subagents. |
-| agent_core | `agent_workflow.global_intents` | May include `termination_intent`. |
 | agent_core | `agent_workflow.global_routing` | May include termination → ended subagent. |
 | memory_layer | `state.session.ttl_minutes` | Chat (default 1440 = 24h; kkb uses 2880 = 48h). |
 | memory_layer | `state.session.schema` (open map of `SessionFieldDefinition`) | Chat. Domain-specific session fields. Reserved names forbidden (see §7.3). |
@@ -269,7 +263,7 @@ Detailed per-field rules (defaults, types, sub-fields) live in §7's per-block c
 **When false:**
 
 - Single-shot bots collapse `agent_workflow.subagents` to a minimal start + terminal pair.
-- `agent_workflow.global_intents` and `global_routing` likely empty.
+- `agent_workflow.global_routing` likely empty.
 - `conversation.termination_message` may be a single short ack.
 - `agent.termination_short_circuit` largely irrelevant (no multi-turn flow to short-circuit).
 - `state.session.*` chat fields are `not_applicable` (session memory unused).
@@ -282,9 +276,8 @@ Detailed per-field rules (defaults, types, sub-fields) live in §7's per-block c
 
 | Block | Field | Effect |
 |---|---|---|
-| agent_core | `entity_to_profile_field` (open map) | Chat. Bridges NLU entities → Memory Layer profile schema keys. |
-| agent_core | `preprocessing.nlu_processor.entities` | Chat. Profile-bearing entities co-evolve with this. |
-| agent_core | `preprocessing.nlu_processor.signal_intents` (open map: intent → signal_type) | Chat (advanced). Longitudinal signals feed context graph. |
+| agent_core | `entity_to_profile_field` (open map) | Chat. Bridges NLU slot names → Memory Layer profile schema keys. |
+| agent_core | `preprocessing.nlu_processor.signal_intents` (open map: signal name → signal_type) | Chat (advanced). Longitudinal signals feed context graph. |
 | agent_core | `conversation.profile_complete_message` | Chat. |
 | agent_core | `conversation.returning_user_greeting` | Chat. |
 | memory_layer | `state.persistent` (whole subtree presence) | Predetermined `set: PersistentConfig(...) if needs_persistent_user_data else None`. |
@@ -297,7 +290,6 @@ Detailed per-field rules (defaults, types, sub-fields) live in §7's per-block c
 **When false:**
 
 - `agent_core.entity_to_profile_field` empty / not asked.
-- `agent_core.preprocessing.nlu_processor.entities` minimal (transient only).
 - `agent_core.preprocessing.nlu_processor.signal_intents` empty.
 - `conversation.profile_complete_message` and `returning_user_greeting` not asked.
 - `memory_layer.state.persistent` is `None` (entire subtree cleared from accumulator).
@@ -446,7 +438,6 @@ When the default language changes:
 | agent_core | `channels.voice.tts_rules.*` | `needs_re_asking` (if voice present) — script directive may need rewriting. |
 | agent_core | `channels.voice.terminal_word` | `needs_re_asking` (if voice present). |
 | agent_core | All `connectors.*[].invocation_rules.{on_empty, on_failure, bridge_line}` | `needs_re_asking` — spoken/displayed text. |
-| agent_core | `preprocessing.nlu_processor.domain_instruction` | `needs_re_asking`. |
 | agent_core | `agent_workflow.agent_system_prompt` | `needs_re_asking`. |
 | agent_core | `agent_workflow.subagents[id=*].{opening_phrase, system_prompt, name, description}` | `needs_re_asking`. |
 | agent_core | `conversation.user_state_model.states[id=*].{signals, guidance}` | `needs_re_asking` (if `is_companion_style`). |
@@ -485,9 +476,6 @@ When changed (e.g., the user re-describes the project):
 
 | Block | Field | Effect |
 |---|---|---|
-| agent_core | `preprocessing.nlu_processor.domain_instruction` | `needs_re_asking` — entirely domain-shaped. |
-| agent_core | `preprocessing.nlu_processor.intents` | `needs_re_asking` — intent list derived from domain. |
-| agent_core | `preprocessing.nlu_processor.entities` | `needs_re_asking`. |
 | agent_core | `agent_workflow.agent_system_prompt` | `needs_re_asking` — persona references domain. |
 | agent_core | `agent_workflow.subagents[id=*].system_prompt` and `.description` | `needs_re_asking`. |
 | agent_core | `connectors.internal[name=knowledge_retrieval].description` | `needs_re_asking` (says what KB contains). |
@@ -545,21 +533,21 @@ This section captures behaviours that span multiple FIELD_RULES entries or invol
 Changing `default_language` or `supported_languages` ripples across many chat fields. See §4.9 and §4.10 for the exhaustive list per block. The single key invariant: every user-facing string is `invalidated_by` either `default_language` or both `default_language` and `supported_languages`.
 
 Single-language fields (only sensitive to `default_language`): TTS rules, voice text fields, system prompts.
-Multi-language fields (sensitive to `supported_languages` as well): NLU domain instruction, web UI strings (multilingual presentation), blocked-phrase lists, conversation messages.
+Multi-language fields (sensitive to `supported_languages` as well): web UI strings (multilingual presentation), blocked-phrase lists, conversation messages.
 
-### 5.3 NLU intents — cross-block invariant
+### 5.3 Routing intents — cross-block invariant
 
-`agent_core.preprocessing.nlu_processor.intents` is referenced by:
+There is no NLU intent list (NLU single-mode, spec §16). The routing intent on
+a turn is derived in code from `agent_core.preprocessing.nlu_processor.act_intents`,
+or is `any_input` / the off-track intent (`off_track.intent`, default
+`off_track`). NLU slots, act→intent rows and pending questions are authored by
+hand in `agent_core.yaml` for now; the wizard never asks for them.
 
-| Consumer field | Constraint |
+| Consumer / rule | Constraint |
 |---|---|
-| `agent_core.agent_workflow.global_intents` | Subset of `intents`; disjoint with every subagent's `valid_intents` (mirror validator). |
-| `agent_core.agent_workflow.subagents[id=*].valid_intents` | Subset of `intents`; disjoint with `global_intents`. |
-| `agent_core.agent_workflow.subagents[id=*].routing[].intent` | Each concrete intent (not `"*"` wildcard) must subset `intents`. |
-| `agent_core.preprocessing.nlu_processor.signal_intents` keys | Subset of `intents` (open map). |
-| `knowledge_engine.knowledge.blocks.static_knowledge_base.intent_filters` keys | Subset of `intents` (cross-block invariant per phases.py:548-555). |
-
-Changing `intents` invalidates every consumer. The mirror validates the within-block subsets; `validate_cross_block_invariants` validates the KE invariant.
+| `act_intents[*].intent` | Used by some `agent_workflow.subagents[*].routing[].intent` or `agent_workflow.global_routing[].intent`, except `language_switch_request` (framework-handled). Runtime `_check_dialogue_act_rules`; mirrored by `validate_cross_block` check 3. |
+| `off_track.intent` | Routed whenever the workflow has subagents. Same runtime check and mirror. |
+| `knowledge_engine.knowledge.blocks.static_knowledge_base.intent_filters` keys | An `act_intents` intent, `any_input`, the off-track intent or `language_switch_request`. `validate_cross_block` check 5; self-guards until `act_intents` is authored. |
 
 ### 5.4 Connector / Tool name parity (agent_core ↔ action_gateway)
 
@@ -578,8 +566,7 @@ The wizard writes both blocks atomically in the tools phase. `validate_cross_blo
 - Exactly one subagent has `is_start=true`.
 - Every `next_subagent_id` (in `subagents[*].routing` and `agent_workflow.global_routing`) references a declared subagent ID.
 - `agent_workflow.default_fallback_subagent_id` references a declared subagent.
-- Every `valid_intents` is a subset of `nlu_processor.intents`.
-- `global_intents` and `subagents[*].valid_intents` are pairwise disjoint.
+- Every `act_intents` intent and the off-track intent are routed (§5.3).
 - Terminal subagents (`is_terminal=true`) have no routing.
 
 `validate_workflow_graph` runs at workflow phase completion. Additional reachability check: every non-terminal subagent should be reachable from the start subagent (recommended; not yet implemented as of writing).
@@ -619,15 +606,15 @@ When `"voice" in selected_channels`:
 
 `validate_cross_block_invariants` should check channel parity (`agent_core.channels.<X>` keys ↔ `reach_layer.channels.<X>` keys ↔ `selected_channels`).
 
-### 5.9 Persistent state — entity ↔ profile bridge
+### 5.9 Persistent state — slot ↔ profile bridge
 
 When `needs_persistent_user_data=true`:
 
-- `agent_core.preprocessing.nlu_processor.entities` lists the entity names NLU produces.
-- `agent_core.entity_to_profile_field` maps each entity → profile field name in the memory graph.
+- `agent_core.preprocessing.nlu_processor.slots` names the caller-stated values NLU extracts (hand-authored, §5.3).
+- `agent_core.entity_to_profile_field` maps each slot name → profile field name in the memory graph.
 - `memory_layer.state.persistent.graph.user_node` / `subnodes` schema must accommodate these field names.
 
-The `entity_to_profile_field` map's keys must be a subset of `nlu_processor.entities` (logical invariant; not currently schema-validated).
+The `entity_to_profile_field` map's keys should be slot names (logical invariant; not currently schema-validated).
 
 ### 5.10 Observability outcomes — cross-block
 
@@ -658,14 +645,13 @@ The router lands the wizard in the **earliest affected phase** (lowest phase ind
   - `agent_core.connectors.internal[name=knowledge_retrieval].description`
   - `agent_core.connectors.internal[name=knowledge_retrieval].invocation_rules.{call_when, must_not_substitute, on_empty, on_failure, bridge_line, required_before_calling}`
   - `agent_core.agent_workflow.global_tools` (must add `"knowledge_retrieval"`)
-  - `agent_core.preprocessing.nlu_processor.intents` (consider adding a KB-related intent)
   - `knowledge_engine.knowledge.blocks.static_knowledge_base.default_doc_type`
   - `knowledge_engine.knowledge.blocks.static_knowledge_base.intent_filters`
   - `knowledge_engine.knowledge.blocks.glossary.mappings`
 - **Derived stale:** `agent_core.agent_workflow.global_tools` (if treated as derived from connector list).
 - **Phases:** `knowledge` becomes relevant.
 - **Compose:** `knowledge_engine` joins on next deploy.
-- **Earliest affected phase:** `language` (because NLU intents may need updating before KB phase).
+- **Earliest affected phase:** `knowledge` (its newly-applicable fields are `pending`, and the router revisits an earlier relevant phase with pending fields).
 
 ### 6.2 `has_kb: true → false`
 
@@ -710,7 +696,6 @@ The router lands the wizard in the **earliest affected phase** (lowest phase ind
 - **Predetermined:** none directly.
 - **Chat `needs_re_asking`:**
   - `agent_core.agent_workflow.subagents` (graph likely needs more than start+terminal)
-  - `agent_core.agent_workflow.global_intents`
   - `agent_core.agent_workflow.global_routing`
   - `agent_core.conversation.termination_message`
   - `memory_layer.state.session.ttl_minutes`
@@ -726,7 +711,7 @@ The router lands the wizard in the **earliest affected phase** (lowest phase ind
   - `agent_core.agent_workflow.subagents` (collapse to minimal pair)
   - `agent_core.conversation.termination_message` (may be a short ack)
 - **Chat cleared (→ `not_applicable`):**
-  - `agent_core.agent_workflow.global_intents` / `global_routing` likely empty
+  - `agent_core.agent_workflow.global_routing` likely empty
   - `memory_layer.state.session.ttl_minutes`, `schema`, `state.persistent.merge_on_session_end`, `reengagement.triggers`
 
 ### 6.7 `needs_persistent_user_data: false → true`
@@ -734,20 +719,18 @@ The router lands the wizard in the **earliest affected phase** (lowest phase ind
 - **Predetermined:** `memory_layer.state.persistent` ← `PersistentConfig(...)` (full skeleton). `memory_layer.user_data_persistence.default_mode` ← `"saved"`.
 - **Chat `needs_re_asking`:**
   - `agent_core.entity_to_profile_field`
-  - `agent_core.preprocessing.nlu_processor.entities` (add profile-bearing entities)
   - `agent_core.preprocessing.nlu_processor.signal_intents`
   - `agent_core.conversation.profile_complete_message`, `returning_user_greeting`
   - `memory_layer.state.persistent.graph.user_node.label`
   - `memory_layer.state.persistent.graph.user_node.key`
   - `memory_layer.state.persistent.graph.subnodes`
   - `memory_layer.state.persistent.merge_on_session_end` (if also `is_multi_turn=true`)
-- **Earliest affected phase:** `language` (entities) or `memory`.
+- **Earliest affected phase:** `language` (profile map, signal types) or `memory`.
 
 ### 6.8 `needs_persistent_user_data: true → false`
 
 - **Predetermined:** `memory_layer.state.persistent` ← `None` (entire subtree cleared). `memory_layer.user_data_persistence.default_mode` ← `"anonymous"`.
 - **Chat `needs_re_asking`:**
-  - `agent_core.preprocessing.nlu_processor.entities` (strip profile entities)
 - **Chat cleared (→ `not_applicable`):**
   - `agent_core.entity_to_profile_field`
   - `agent_core.preprocessing.nlu_processor.signal_intents`
@@ -925,7 +908,7 @@ Source: `agent_core/src/schema/config.py` (~700 lines). Top-level keys: `server`
 
 **Domain-half category counts** (approx):
 - predetermined: ~10 (`agent.ask_for_consent`, `conversation.user_state_model.enabled`, `conversation.session_end_eval.enabled`, `conversation.user_state_model.default_state` seeding, `preprocessing.language_normalisation.default_language`, `preprocessing.language_normalisation.supported_languages`, `connectors.internal[name=knowledge_retrieval].{name,route,input_schema seed}`, voice TurnAssembler timing defaults)
-- chat: ~70 (most of `conversation.*`, `connectors.read/write/identity[name=*].*`, `agent_workflow.subagents[id=*].*`, `agent_workflow.global_*`, NLU `intents`/`entities`/`domain_instruction`/`signal_intents`, voice `tts_rules.*`, web/voice TurnAssembler fields)
+- chat: ~70 (most of `conversation.*`, `connectors.read/write/identity[name=*].*`, `agent_workflow.subagents[id=*].*`, `agent_workflow.global_*`, NLU `signal_intents`, voice `tts_rules.*`, web/voice TurnAssembler fields)
 - deploy: ~5 (model name aliases for deploy-time overlay are mostly under `agent.*` and rely on the deploy form)
 - derived: ~2 (`observability.domain`, `agent_workflow.workflow_id`)
 - framework_default_only: ~30 (server, retry timing, features bits, recent_tool_exchanges, current_question, termination_short_circuit, language normalisation operational tuning, NLU thresholds, sentiment classes, inter-service client endpoints/timeouts/circuit-breakers)
@@ -971,21 +954,17 @@ The catalogue here lists only domain-half fields (predetermined / chat / deploy 
 | `preprocessing.language_normalisation.supported_languages` | predetermined | language | always | `supported_languages` | `set: supported_languages` | Must contain default_language. |
 | `preprocessing.nlu_processor.provider` | chat (advanced) | language | always | `agent.provider` | None (inherit) | — |
 | `preprocessing.nlu_processor.model` | chat (advanced) | language | always | `preprocessing.nlu_processor.provider, agent.provider` | "" (inherit) | — |
-| `preprocessing.nlu_processor.domain_instruction` | chat | language | always | `domain_description, project_name, default_language` | — | Multi-paragraph NLU classifier instructions. |
-| `preprocessing.nlu_processor.intents` | chat | language | always | `has_kb, has_external_tools, is_multi_turn, needs_consent, domain_description` | — | Required (mirror min_length=1). |
-| `preprocessing.nlu_processor.entities` | chat | language | always | `domain_description, needs_persistent_user_data` | — | Co-domain with `entity_to_profile_field`. |
-| `preprocessing.nlu_processor.signal_intents` (open map) | chat (advanced) | language | `needs_persistent_user_data` | `needs_persistent_user_data, preprocessing.nlu_processor.intents` | {} | Keys must subset `intents`. |
-| `entity_to_profile_field` (open map) | chat | language or memory | `needs_persistent_user_data` | `needs_persistent_user_data, preprocessing.nlu_processor.entities` | {} | Bridges NLU entities → Memory profile. |
+| `preprocessing.nlu_processor.signal_intents` (open map) | chat (advanced) | language | `needs_persistent_user_data` | `needs_persistent_user_data, preprocessing.nlu_processor.signals` | {} | Signal name → signal type. |
+| `entity_to_profile_field` (open map) | chat | language or memory | `needs_persistent_user_data` | `needs_persistent_user_data, preprocessing.nlu_processor.slots` | {} | Bridges NLU slot names → Memory profile. |
 | `hitl.response_message` | chat | language or trust | `has_hitl` | `has_hitl, default_language, supported_languages` | — | Required (mirror min_length=1). |
 | `agent_workflow.workflow_id` | derived | workflow | always | `project_name` | `compute: f"{project_slug}_workflow"` | — |
 | `agent_workflow.version` | framework_default_only | workflow | always | — | `"1.0.0"` | Phase prompt seeds. |
 | `agent_workflow.agent_system_prompt` | chat | workflow | always | `domain_description, default_language, supported_languages, is_companion_style` | — | Required (mirror min_length=1). Persona prompt. |
-| `agent_workflow.global_intents` | chat | workflow | always | `preprocessing.nlu_processor.intents, is_multi_turn` | [] | Subset of `nlu_processor.intents`; disjoint with subagent valid_intents. |
-| `agent_workflow.global_routing[]` (list, positional) | chat | workflow | always | `agent_workflow.global_intents, agent_workflow.subagents` | [] | Per rule: intent, next_subagent_id, condition/conditions, session_writes. |
+| `agent_workflow.global_routing[]` (list, positional) | chat | workflow | always | `agent_workflow.subagents` | [] | Per rule: intent, next_subagent_id, condition/conditions, session_writes. |
 | `agent_workflow.default_fallback_subagent_id` | chat | workflow | always | `agent_workflow.subagents` | — | Required. Must reference declared subagent. |
 | `agent_workflow.global_tools` | chat | workflow | always | `has_kb, has_external_tools, connectors.read, connectors.internal` | [] | Must subset connector names + MCP tools. Includes `knowledge_retrieval` iff `has_kb`. |
 | `agent_workflow.subagents[id=*]` (list-of-objects) | chat | workflow | always | `has_kb, has_external_tools, is_multi_turn, is_companion_style, needs_persistent_user_data, domain_description` | — | Required (min_length=1). Exactly one `is_start=true`. |
-| `agent_workflow.subagents[id=*].{id,name,description,is_start,is_terminal,opening_phrase,system_prompt,valid_intents,routing,tools,special_handler,output_format}` | chat | workflow | (various; see §6) | (per-field — see source audit) | — | Per-subagent subtree. |
+| `agent_workflow.subagents[id=*].{id,name,description,is_start,is_terminal,opening_phrase,system_prompt,routing,tools,special_handler,output_format}` | chat | workflow | (various; see §6) | (per-field — see source audit) | — | Per-subagent subtree. |
 | `channels.web.system_prompt_suffix` | chat | language or reach | always | `default_language, supported_languages` | — | Web is always present. |
 | `channels.web.turn_assembler.silence_trigger.silence_ms` | chat | reach | always | — | 0 | Web is direct mode. |
 | `channels.web.turn_assembler.max_wait_ceiling.max_wait_ms` | chat | reach | always | — | (default) | — |
@@ -999,7 +978,7 @@ The catalogue here lists only domain-half fields (predetermined / chat / deploy 
 
 **Framework-default-only allowlist (agent_core):**
 
-`server.host`, `server.port`, `agent.features.*` (prompt_cache, streaming, image_input), `agent.timeout_ms`, `agent.retry_attempts`, `agent.retry_backoff_seconds`, `agent.termination_short_circuit.{enabled, confidence_threshold}`, `agent.current_question.max_chars`, `agent.recent_tool_exchanges.{max_items, max_chars}`, `conversation.session_end_eval.fail_action`, `preprocessing.language_normalisation.{min_detection_tokens, transliteration, code_switching}`, `preprocessing.nlu_processor.{confidence_threshold, user_state_confidence_threshold, sentiment_classes, log_raw_response, log_raw_response_max_chars}`, `ke_client.{endpoint, timeout_ms}`, `memory_client.{endpoint, timeout_ms, read_timeout_ms, write_timeout_ms, circuit_breaker.*}`, `trust_client.{endpoint, timeout_ms, check_input.*, check_output.*, check_output_batch.*}`, `learning_client.{endpoint, timeout_ms}`, `action_gateway_client.{endpoint, timeout_ms}`, `reach_layer.turn_assembler` (top-level fallback), `observability.otel.*`.
+`server.host`, `server.port`, `agent.features.*` (prompt_cache, streaming, image_input), `agent.timeout_ms`, `agent.retry_attempts`, `agent.retry_backoff_seconds`, `agent.termination_short_circuit.{enabled, confidence_threshold}`, `agent.current_question.max_chars`, `agent.recent_tool_exchanges.{max_items, max_chars}`, `conversation.session_end_eval.fail_action`, `preprocessing.language_normalisation.{min_detection_tokens, transliteration, code_switching}`, `preprocessing.nlu_processor.{user_state_confidence_threshold, log_raw_response, log_raw_response_max_chars}`, `ke_client.{endpoint, timeout_ms}`, `memory_client.{endpoint, timeout_ms, read_timeout_ms, write_timeout_ms, circuit_breaker.*}`, `trust_client.{endpoint, timeout_ms, check_input.*, check_output.*, check_output_batch.*}`, `learning_client.{endpoint, timeout_ms}`, `action_gateway_client.{endpoint, timeout_ms}`, `reach_layer.turn_assembler` (top-level fallback), `observability.otel.*`.
 
 **Mirror drift / ambiguities (agent_core):**
 
@@ -1170,7 +1149,7 @@ Source: `knowledge_engine/src/schema/config.py`. Top-level: `server`, `knowledge
 | `knowledge.blocks.static_knowledge_base.enabled` | predetermined | knowledge | always | `has_kb` | `set: has_kb` | — |
 | `knowledge.blocks.static_knowledge_base.collection_name` | predetermined | knowledge | `has_kb` | `has_kb, project_name` | `set: f"{slug}_knowledge" if has_kb else None` | — |
 | `knowledge.blocks.static_knowledge_base.default_doc_type` | chat | knowledge | `has_kb` | `has_kb, domain_description` | `"general"` | — |
-| `knowledge.blocks.static_knowledge_base.intent_filters` (open map) | chat | knowledge | `has_kb` | `has_kb, agent_core.preprocessing.nlu_processor.intents` | — | Keys must subset `agent_core.preprocessing.nlu_processor.intents`. |
+| `knowledge.blocks.static_knowledge_base.intent_filters` (open map) | chat | knowledge | `has_kb` | `has_kb, agent_core.preprocessing.nlu_processor.act_intents` | — | Keys must be a derivable routing intent (§5.3). |
 | `knowledge.blocks.static_knowledge_base.sources` (list-of-objects, `[path=X]`) | (not wizard-managed) | post-deploy | `has_kb` | — | — | Populated by IngestDocuments post-deploy. |
 | `knowledge.blocks.multimodal_input_handler.enabled` | chat (PoC) | knowledge | `has_kb` | `has_kb` | false | Out of scope per design §11. |
 | `observability.domain` | derived | observability | always | `project_name` | `compute: slug` | — |

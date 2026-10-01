@@ -17,12 +17,12 @@ def _intake(**overrides):
     return IntakeState(**base)
 
 
-def test_flip_has_kb_marks_nlu_intents_for_re_ask():
+def test_flip_has_kb_marks_global_tools_for_re_ask():
     state = _intake(has_kb=False)
-    accumulator = {"agent_core": {"preprocessing": {"nlu_processor": {"intents": ["unknown"]}}},
+    accumulator = {"agent_core": {"agent_workflow": {"global_tools": []}},
                    "knowledge_engine": {}, "trust_layer": {}, "memory_layer": {},
                    "action_gateway": {}, "reach_layer": {}, "observability_layer": {}}
-    field_status = {"agent_core.preprocessing.nlu_processor.intents": "answered"}
+    field_status = {"agent_core.agent_workflow.global_tools": "answered"}
 
     result = on_intake_update(
         field="has_kb", new_value=True,
@@ -30,9 +30,9 @@ def test_flip_has_kb_marks_nlu_intents_for_re_ask():
     )
 
     assert state.has_kb is True
-    assert field_status["agent_core.preprocessing.nlu_processor.intents"] == "needs_re_asking"
+    assert field_status["agent_core.agent_workflow.global_tools"] == "needs_re_asking"
     assert result["affected_count"] >= 1
-    assert result["earliest_affected_phase"] in ("language", "knowledge")
+    assert result["earliest_affected_phase"] == "workflow"
 
 
 def test_flip_companion_style_recomputes_dignity_enabled():
@@ -194,7 +194,7 @@ def test_cascade_does_not_promote_pending_field_to_needs_re_asking():
     `needs_re_asking` status. Pending/missing entries are left alone.
     """
     state = _intake(has_kb=False)
-    # nlu_processor.intents (chat, invalidated_by has_kb) starts with NO
+    # agent_workflow.global_tools (chat, invalidated_by has_kb) starts with NO
     # entry in field_status — never answered.
     accumulator = _empty_accumulator()
     field_status: dict[str, str] = {}
@@ -207,7 +207,7 @@ def test_cascade_does_not_promote_pending_field_to_needs_re_asking():
     # The cascade visited this chat field but must not have written
     # needs_re_asking. The field has no entry (will be picked up by
     # skeleton later) or is `pending`.
-    status = field_status.get("agent_core.preprocessing.nlu_processor.intents")
+    status = field_status.get("agent_core.agent_workflow.global_tools")
     assert status != "needs_re_asking", (
         f"Pending/missing chat field was incorrectly promoted to "
         f"needs_re_asking; got status={status!r}"
@@ -222,7 +222,7 @@ def test_cascade_promotes_answered_to_needs_re_asking():
     state = _intake(has_kb=False)
     accumulator = _empty_accumulator()
     field_status = {
-        "agent_core.preprocessing.nlu_processor.intents": "answered",
+        "agent_core.agent_workflow.global_tools": "answered",
     }
 
     on_intake_update(
@@ -231,7 +231,7 @@ def test_cascade_promotes_answered_to_needs_re_asking():
     )
 
     assert (
-        field_status["agent_core.preprocessing.nlu_processor.intents"]
+        field_status["agent_core.agent_workflow.global_tools"]
         == "needs_re_asking"
     )
 

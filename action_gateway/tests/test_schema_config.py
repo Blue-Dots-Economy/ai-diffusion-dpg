@@ -45,7 +45,7 @@ def test_accepts_valid_full_config():
     cfg = MergedConfig.validate_full({
         "server": {"host": "0.0.0.0", "port": 9999},
         "tools": [_valid_rest_tool()],
-        "observability": {"domain": "kkb"},
+        "observability": {"domain": "blue-dots"},
     })
     assert cfg.server.port == 9999
     assert len(cfg.tools) == 1

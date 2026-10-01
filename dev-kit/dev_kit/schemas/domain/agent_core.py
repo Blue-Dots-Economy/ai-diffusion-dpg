@@ -83,7 +83,7 @@ class AgentSection(BaseModel):
     consent_prompt: str = ""
     prompt_session_fields: list[str] = Field(default_factory=list)
 
-    # Optional sub-blocks mirrored from runtime AgentConfig. KKB declares
+    # Optional sub-blocks mirrored from runtime AgentConfig. Blue Dots declares
     # termination_short_circuit; current_question and recent_tool_exchanges
     # are framework-defaulted but accepted here for round-trip parity.
     termination_short_circuit: Optional[TerminationShortCircuitConfig] = None
@@ -281,20 +281,13 @@ class OffTrackConfig(BaseModel):
 
 
 class NLUProcessorSection(BaseModel):
-    """NLU classifier helper config. provider=None inherits agent.provider; intents must be non-empty in intent mode."""
+    """Dialogue-act NLU helper config. provider=None inherits agent.provider."""
     model_config = ConfigDict(extra="forbid")
     provider: Optional[ProviderField] = None   # None → inherit agent.provider at runtime
     model: str = ""   # empty allowed — helper inherits agent.primary_model at runtime
-    confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     user_state_confidence_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
-    domain_instruction: str = ""
-    mode: Literal["intent", "dialogue_act"] = "intent"
-    intents: list[str] = Field(default_factory=list)   # required only in intent mode (validator)
-    entities: list[str] = Field(default_factory=list)
-    sentiment_classes: list[str] = Field(
-        default_factory=lambda: ["neutral", "positive", "distressed", "frustrated"]
-    )
     signal_intents: dict[str, str] = Field(default_factory=dict)
+    log_raw_response: bool = False   # opt-in raw NLU response log; off by default (PII)
     timeout_ms: int = Field(default=2500, gt=0)
     retry_attempts: int = Field(default=2, ge=1)
     history_turns: int = Field(default=2, ge=0)
@@ -306,13 +299,6 @@ class NLUProcessorSection(BaseModel):
     act_intents: list[ActIntentRuleConfig] = Field(default_factory=list)
     termination_gate: TerminationGateConfig = Field(default_factory=TerminationGateConfig)
     off_track: OffTrackConfig = Field(default_factory=OffTrackConfig)
-
-    @model_validator(mode="after")
-    def intents_required_in_intent_mode(self) -> "NLUProcessorSection":
-        """workflow_loader rejects an empty intents list in intent mode only."""
-        if self.mode == "intent" and not self.intents:
-            raise ValueError("intents must be non-empty in intent mode")
-        return self
 
     @model_validator(mode="after")
     def model_must_match_helper_provider(self) -> "NLUProcessorSection":
@@ -427,22 +413,8 @@ class TtsRulesConfig(BaseModel):
     abbreviations: str = ""
     output_script: str = ""
     english_loanwords: str = ""
-    email: str = ""               # KKB has this; LLM doesn't generate
-    named_entities: str = ""      # KKB has this; LLM doesn't generate
-
-
-class SemanticGateConfig(BaseModel):
-    """Mirrors runtime SemanticGateConfig 1:1.
-
-    Earlier the parent ``TurnAssemblerConfig`` typed this as a bare
-    ``dict``, which let typo keys like ``threshhold`` through the
-    mirror; the runtime's strict ``SemanticGateConfig(extra="forbid")``
-    then crashed at boot. Same fix pattern as ConnectorDef.input_schema
-    above.
-    """
-    model_config = ConfigDict(extra="forbid")
-    enabled: bool = False
-    confidence_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
+    email: str = ""               # Blue Dots has this; LLM doesn't generate
+    named_entities: str = ""      # Blue Dots has this; LLM doesn't generate
 
 
 class SilenceTriggerConfig(BaseModel):
@@ -479,14 +451,13 @@ class CarryoverConfig(BaseModel):
 
 
 class TurnAssemblerConfig(BaseModel):
-    """TurnAssembler policy stack — semantic gate + silence trigger + max-wait ceiling.
+    """TurnAssembler policy stack — silence trigger + max-wait ceiling.
 
     Sub-fields now use strict Pydantic classes that mirror the runtime
     exactly. Previously each was typed ``dict``, which silently
     accepted wrong keys and only failed at boot.
     """
     model_config = ConfigDict(extra="forbid")
-    semantic_gate: SemanticGateConfig = Field(default_factory=SemanticGateConfig)
     silence_trigger: SilenceTriggerConfig = Field(default_factory=SilenceTriggerConfig)
     max_wait_ceiling: MaxWaitCeilingConfig = Field(default_factory=MaxWaitCeilingConfig)
     interruption: InterruptionConfig = Field(default_factory=InterruptionConfig)
@@ -533,7 +504,7 @@ class InvocationRules(BaseModel):
     GH-176 presentation-contract fields (exception_no_call, ranking_order,
     presentation_limit, refinement_loop_max, safety) are hand-authored by
     the operator in the YAML — the LLM phase prompt does not ask for them.
-    Spec accepts them so existing KKB-style configs round-trip cleanly.
+    Spec accepts them so existing Blue Dots-style configs round-trip cleanly.
     Runtime accepts empty defaults on all fields.
     """
     model_config = ConfigDict(extra="forbid")
@@ -756,7 +727,6 @@ class SubAgent(BaseModel):
     is_start: bool = False
     is_terminal: bool = False
     special_handler: Optional[SpecialHandler] = None
-    valid_intents: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
     system_prompt: str = Field(..., min_length=1)
     opening_phrase: str = Field(..., min_length=1)   # required for all subagents
@@ -767,7 +737,7 @@ class SubAgent(BaseModel):
 
 
 class AgentWorkflowSection(BaseModel):
-    """Top-level workflow definition: subagents, routing, fallback. 4 cross-field validators enforce graph integrity."""
+    """Top-level workflow definition: subagents, routing, fallback. 3 cross-field validators enforce graph integrity."""
     model_config = ConfigDict(extra="forbid")
     # workflow_id allows hyphens — runtime workflow_loader does not enforce a
     # pattern beyond non-empty (e.g. youth-schemes-agent uses hyphens).
@@ -776,7 +746,6 @@ class AgentWorkflowSection(BaseModel):
     # agent_system_prompt min_length=1 — runtime accepts any non-empty string.
     agent_system_prompt: str = Field(..., min_length=1)
     subagents: list[SubAgent] = Field(..., min_length=1)
-    global_intents: list[str] = Field(default_factory=list)
     global_tools: list[str] = Field(default_factory=list)
     global_routing: list[RoutingRule] = Field(default_factory=list)
     default_fallback_subagent_id: str = Field(..., min_length=1)
@@ -808,19 +777,6 @@ class AgentWorkflowSection(BaseModel):
                 raise ValueError(
                     f"global_routing intent '{rule.intent}' targets unknown subagent "
                     f"'{rule.next_subagent_id}'"
-                )
-        return self
-
-    @model_validator(mode="after")
-    def global_intents_must_not_overlap_subagent_intents(self) -> "AgentWorkflowSection":
-        """An intent cannot appear in both global_intents and any subagent's valid_intents — runtime crashes on overlap."""
-        global_set = set(self.global_intents)
-        for sa in self.subagents:
-            overlap = global_set & set(sa.valid_intents)
-            if overlap:
-                raise ValueError(
-                    f"Intents {sorted(overlap)} appear in both global_intents and "
-                    f"subagent '{sa.id}' valid_intents — runtime crashes on overlap"
                 )
         return self
 

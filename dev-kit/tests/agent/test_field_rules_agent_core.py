@@ -23,13 +23,9 @@ EXPECTED_PATHS = {
     "preprocessing.language_normalisation.model",
     "preprocessing.nlu_processor.provider",
     "preprocessing.nlu_processor.model",
-    "preprocessing.nlu_processor.domain_instruction",
-    "preprocessing.nlu_processor.intents",
-    "preprocessing.nlu_processor.entities",
     "agent_workflow.agent_system_prompt",
     "agent_workflow.default_fallback_subagent_id",
     "agent_workflow.subagents",
-    "agent_workflow.global_intents",
     "agent_workflow.global_routing",
     "agent_workflow.global_tools",
     "channels.web.system_prompt_suffix",
@@ -60,7 +56,6 @@ EXPECTED_PATHS = {
     "connectors.internal[name=knowledge_retrieval].invocation_rules.on_failure",
     "connectors.internal[name=knowledge_retrieval].invocation_rules.bridge_line",
     "preprocessing.nlu_processor.signal_intents",
-    "preprocessing.nlu_processor.mode",
     "preprocessing.nlu_processor.slots",
     "preprocessing.nlu_processor.act_intents",
     "preprocessing.nlu_processor.known_fields",
@@ -86,7 +81,6 @@ EXPECTED_PATHS = {
     "channels.voice.tts_rules.email",
     "channels.voice.tts_rules.named_entities",
     "channels.voice.terminal_word",
-    "channels.voice.turn_assembler.semantic_gate",
     # Predetermined (catalogue §7.1)
     "agent.ask_for_consent",
     "conversation.user_state_model.enabled",
@@ -137,3 +131,33 @@ def test_chat_fields_have_phase():
             assert rule.phase in FIELD_RULES_PHASES_VALID, (
                 f"{path}: phase {rule.phase!r} not in FIELD_RULES_PHASES_VALID"
             )
+
+
+# NLU single-mode (spec §16): the wizard never asks for intents or entities.
+_REMOVED_LEAVES = {
+    "intents", "entities", "domain_instruction", "global_intents", "valid_intents",
+    "sentiment_classes",
+}
+_REMOVED_NLU_PATHS = {
+    "agent_core.preprocessing.nlu_processor.mode",
+    "agent_core.preprocessing.nlu_processor.confidence_threshold",
+}
+
+
+def _removed(path: str) -> bool:
+    return path.rsplit(".", 1)[-1] in _REMOVED_LEAVES or path in _REMOVED_NLU_PATHS
+
+
+def test_registry_has_no_intent_mode_rules():
+    from dev_kit.agent.field_rules import AGGREGATED_FIELD_RULES
+    bad = sorted(p for p in AGGREGATED_FIELD_RULES if _removed(p))
+    assert bad == []
+
+
+def test_no_rule_is_invalidated_by_a_removed_path():
+    from dev_kit.agent.field_rules import AGGREGATED_FIELD_RULES
+    bad = {
+        path: [dep for dep in (rule.invalidated_by or []) if _removed(dep) or _removed(f"agent_core.{dep}")]
+        for path, rule in AGGREGATED_FIELD_RULES.items()
+    }
+    assert {p: d for p, d in bad.items() if d} == {}

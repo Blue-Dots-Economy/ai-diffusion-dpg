@@ -31,7 +31,7 @@ reach_layer:
       # fills with "hello?" (which the client treats as barge-in and cancels
       # the turn). One line per turn at most, never once the reply has started.
       # Hindi, emitted verbatim. end_session is deliberately unmapped.
-      # KKB-Slim: "Call them silently... No waiting message and no status
+      # Blue Dots: "Call them silently... No waiting message and no status
       # narration before, during or immediately after any of them." A hold is
       # permitted, but it is a NEUTRAL hold and "must never reveal what is
       # happening" — so every phrase here is the same two words.

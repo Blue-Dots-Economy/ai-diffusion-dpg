@@ -3,7 +3,7 @@ agent_core/src/language_normalisation.py
 
 Language detection and normalisation — executed in Agent Core before the KE call.
 
-Runs after Trust check (step 2), before NLU Processor (step 4).
+Runs after Trust check (step 2), before the NLU (step 4).
 
 Uses a single LLM call (llm_native provider) with the configured model.
 

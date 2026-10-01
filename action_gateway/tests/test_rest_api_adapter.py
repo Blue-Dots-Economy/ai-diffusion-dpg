@@ -422,7 +422,7 @@ class TestRestApiAdapterExecute:
 class TestRestApiAdapterProjectionInvariant:
     """Regression guard for the projection-on-raw-dict invariant (GH #198).
 
-    Mirrors the KKB ``onest_market_lookup`` shape: a payload whose serialised
+    Mirrors the Blue Dots ``onest_market_lookup`` shape: a payload whose serialised
     size exceeds ``max_size_chars`` and whose projected fields live deep
     inside list items pulled via a ``list_key``. Pins the contract that
     ``_apply_projection`` always sees the full raw dict and that truncation
@@ -476,7 +476,7 @@ class TestRestApiAdapterProjectionInvariant:
 
     @staticmethod
     def _build_oversized_payload(num_items: int = 50) -> dict:
-        """Build a deeply-nested KKB-shaped payload that exceeds 4000 chars.
+        """Build a deeply-nested Blue Dots-shaped payload that exceeds 4000 chars.
 
         Each item carries a ``noise`` blob to bloat the serialised form well
         past ``max_size_chars`` so the deepest fields fall beyond the

@@ -3,7 +3,7 @@ MergedConfig — strict schema for the Trust Layer merged runtime config.
 
 Merged config = dev-kit/dpg/trust_layer.yaml (framework defaults)
                 deep-merged with a domain YAML
-                (e.g. dev-kit/configs/kkb/trust_layer.yaml).
+                (e.g. dev-kit/configs/blue-dots/trust_layer.yaml).
 
 Every model sets ``extra="forbid"``: unknown keys at any nesting level
 fail at startup with a pydantic ValidationError, not at first request.

@@ -52,7 +52,6 @@ def make_context(normalised_input: str, entities: dict = None) -> KEContext:
         detected_language="hinglish",
         intent="unknown",
         entities=entities or {},
-        sentiment="neutral",
         confidence=0.0,
         retrieval_chunks=[],
         always_include_chunks=[],

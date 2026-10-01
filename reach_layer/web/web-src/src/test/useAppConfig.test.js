@@ -15,12 +15,12 @@ describe('useAppConfig', () => {
 
   it('merges server config with defaults when fetch succeeds', async () => {
     vi.spyOn(api, 'fetchAppConfig').mockResolvedValue({
-      app_name: 'KKB Assistant',
+      app_name: 'Blue Dots Assistant',
       app_icon: '🏦',
     })
     const { result } = renderHook(() => useAppConfig())
     await waitFor(() => expect(result.current.configLoading).toBe(false))
-    expect(result.current.config.app_name).toBe('KKB Assistant')
+    expect(result.current.config.app_name).toBe('Blue Dots Assistant')
     expect(result.current.config.app_icon).toBe('🏦')
     // Defaults still present for keys not overridden
     expect(result.current.config.storage_key).toBe('dpg_user_id')

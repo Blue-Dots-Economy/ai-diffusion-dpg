@@ -9,7 +9,7 @@ from src.understanding.models import ACTS
 
 def _cfg():
     return DialogueActConfig.from_config({"preprocessing": {"nlu_processor": {
-        "mode": "dialogue_act", "topics": ["salary"], "signals": ["pay_disappointment"],
+        "topics": ["salary"], "signals": ["pay_disappointment"],
         "slots": {"age": {"type": "int", "min": 14, "max": 80, "description": "उम्र"},
                   "consent": {"type": "enum", "values": ["granted", "declined"]},
                   "trade": {"type": "string", "normalise": "title"}},
@@ -44,13 +44,22 @@ def test_schema_is_strict_compatible():
             assert set(node["required"]) == set(node["properties"])
     props = schema["properties"]
     assert props["acts"]["items"]["enum"] == list(ACTS)
-    assert props["slots"]["properties"]["age"]["type"] == ["integer", "null"]
-    assert props["slots"]["properties"]["consent"]["enum"] == ["granted", "declined", None]
+    # Slots are name/value pairs; types and enums are enforced by normalise_slots.
+    assert props["slots"]["type"] == "array"
+    assert set(props["slots"]["items"]["properties"]["name"]["enum"]) >= {"age", "consent"}
+    assert {"type": "null"} in props["reference"]["anyOf"]
     assert props["topic"]["enum"] == ["salary", None]
 
 
+def test_prompt_examples_render_slots_as_pairs():
+    cfg = DialogueActConfig.from_config({"preprocessing": {"nlu_processor": {
+        "slots": {"age": {"type": "int"}},
+        "examples": [{"pending": "age", "caller": "बाईस", "out": {"acts": ["provide_info"], "slots": {"age": 22}}}]}}})
+    assert '"slots": [{"name": "age", "value": "22"}]' in build_system_prompt_text(cfg)
+
+
 def test_schema_with_no_topics_or_signals():
-    cfg = DialogueActConfig.from_config({"preprocessing": {"nlu_processor": {"mode": "dialogue_act"}}})
+    cfg = DialogueActConfig.from_config({"preprocessing": {"nlu_processor": {}}})
     schema = build_output_schema(cfg)
     assert schema["properties"]["topic"] == {"type": "null"}
     assert schema["properties"]["signals"]["items"] == {"type": "string"}

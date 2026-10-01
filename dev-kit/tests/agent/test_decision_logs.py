@@ -143,7 +143,7 @@ def test_point3_field_marked_needs_re_asking_log(caplog) -> None:
     """router.field_marked_needs_re_asking emitted for each chat field invalidated."""
     state = _make_intake(has_kb=False)
     accumulator = _empty_accumulator()
-    field_status = {"agent_core.preprocessing.nlu_processor.intents": "answered"}
+    field_status = {"agent_core.agent_workflow.global_tools": "answered"}
 
     with caplog.at_level(logging.INFO, logger="dev_kit.agent.router"):
         on_intake_update(
@@ -227,12 +227,12 @@ def test_point6_phase_transition_backtrack_log(caplog) -> None:
     state = _make_intake()
     accumulator = _empty_accumulator()
     # Simulate a field in the earlier 'tier' phase needing re-asking while we're in 'trust'
-    field_status = {"agent_core.preprocessing.nlu_processor.intents": "needs_re_asking"}
+    field_status = {"agent_core.conversation.blocked_message": "needs_re_asking"}
 
     with caplog.at_level(logging.WARNING, logger="dev_kit.agent.router"):
         result = decide_next_phase("trust", state, accumulator, field_status)
 
-    # The 'nlu_processor.intents' field is in 'language' phase (earlier than 'trust')
+    # 'conversation.blocked_message' is in the 'language' phase (earlier than 'trust')
     assert result != "trust", "Expected backtrack from 'trust'"
 
     records = _find_log(caplog.records, "router.decide_next_phase")

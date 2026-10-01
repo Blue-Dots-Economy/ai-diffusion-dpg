@@ -296,7 +296,7 @@ def _phase_for_path(path: str) -> str | None:
     """Look up the phase name for a full dotted path via AGGREGATED_FIELD_RULES.
 
     Args:
-        path: Full dotted path, e.g. ``"agent_core.preprocessing.nlu_processor.intents"``.
+        path: Full dotted path, e.g. ``"agent_core.preprocessing.nlu_processor.act_intents"``.
 
     Returns:
         The phase name string, or None if the path is not in AGGREGATED_FIELD_RULES
@@ -322,6 +322,44 @@ def _earliest_phase_with_needs_re_asking(field_status: dict[str, str]) -> str | 
             continue
         phase = _phase_for_path(path)
         if phase is None:
+            continue
+        earliest = _earlier_phase(earliest, phase)
+    return earliest
+
+
+def _earliest_reopened_phase(
+    current_phase: str,
+    state: IntakeState,
+    field_status: dict[str, str],
+) -> str | None:
+    """Find the earliest relevant phase before ``current_phase`` with a pending field.
+
+    An intake flip (e.g. ``has_kb`` False → True) turns gated-off fields in
+    an already-passed phase from ``not_applicable`` into ``pending``. Those
+    fields have no answer to invalidate, so they are never
+    ``needs_re_asking``; without this scan the wizard would move on and
+    never configure them.
+
+    Args:
+        current_phase: The phase the wizard is currently in.
+        state: Current IntakeState (phase relevance and ``applies_if``).
+        field_status: Dict of full path → status.
+
+    Returns:
+        The earliest such phase name, or None.
+    """
+    current_idx = PHASE_ORDER.index(current_phase)
+    earliest: str | None = None
+    for path, status in field_status.items():
+        if status != "pending":
+            continue
+        rule = AGGREGATED_FIELD_RULES.get(path)
+        phase = rule.phase if rule else None
+        if phase is None or phase not in PHASE_ORDER:
+            continue
+        if PHASE_ORDER.index(phase) >= current_idx:
+            continue
+        if not PHASE_RELEVANCE[phase](state) or not eval_expr(rule.applies_if, state):
             continue
         earliest = _earlier_phase(earliest, phase)
     return earliest
@@ -431,7 +469,9 @@ def decide_next_phase(
     Rules applied in order:
 
     1. **Backtrack**: if any field has ``needs_re_asking`` in an earlier phase
-       than ``current_phase``, return that earlier phase.
+       than ``current_phase``, return that earlier phase. Otherwise, if an
+       earlier relevant phase has an applicable ``pending`` field (made
+       applicable by an intake flip), return that phase.
     2. **Advance**: if ``current_phase`` is complete (all applicable chat fields
        answered), return the next relevant phase.  If no further relevant phase
        exists, stay on ``current_phase`` (wizard complete).
@@ -469,6 +509,21 @@ def decide_next_phase(
             },
         )
         return invalidated
+
+    reopened = _earliest_reopened_phase(current_phase, state, field_status)
+    if reopened:
+        logger.warning(
+            "router.decide_next_phase",
+            extra={
+                "operation": "router.decide_next_phase",
+                "status": "backtrack",
+                "from_phase": current_phase,
+                "to_phase": reopened,
+                "reason": "newly_applicable",
+                "triggered_by": None,
+            },
+        )
+        return reopened
 
     if _is_phase_complete(current_phase, state, field_status):
         nxt = _next_relevant_phase(current_phase, state)

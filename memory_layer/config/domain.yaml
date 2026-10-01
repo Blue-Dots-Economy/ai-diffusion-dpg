@@ -47,4 +47,4 @@ reengagement:
                 # Loop-based: { event: "DOP_RL", loop_threshold: 3, action: hitl_counsellor }
 
 observability:
-  domain: ""  # Required. Domain identifier (e.g. "kkb", "farmer_friendly").
+  domain: ""  # Required. Domain identifier (e.g. "blue-dots", "farmer_friendly").

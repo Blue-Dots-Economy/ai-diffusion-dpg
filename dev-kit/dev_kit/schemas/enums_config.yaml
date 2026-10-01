@@ -12,13 +12,13 @@ anthropic_models:
   - claude-haiku-4-5-20251001
   - claude-sonnet-4-6
   - claude-opus-4-7
-  - claude-sonnet-4-5-20250929   # used by KKB NLU helper
+  - claude-sonnet-4-5-20250929   # used by the NLU understander
 
 openai_models:
   - gpt-4.1-mini-2025-04-14
   - gpt-4o-2024-08-06            # documented in openai_provider.py
-  - gpt-4.1-2025-04-14           # referenced in kkb domain config
-  - gpt-5.4-mini-2026-03-17      # referenced in kkb domain config
+  - gpt-4.1-2025-04-14           # referenced in blue-dots domain config
+  - gpt-5.4-mini-2026-03-17      # referenced in blue-dots domain config
 
 ollama_models:
   - llama3.2

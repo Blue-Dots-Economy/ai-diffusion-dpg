@@ -283,10 +283,10 @@ def _make_manager_for_prompt() -> ManagerAgent:
 def test_build_system_prompt_includes_persona():
     agent = _make_manager_for_prompt()
     result = _flat(agent.build_system_prompt(
-        "You are Kaam Ki Baat, a job advisory assistant.",
+        "You are Blue Dots, a job advisory assistant.",
         "", "hindi", "cli", {},
     ))
-    assert "Kaam Ki Baat" in result
+    assert "Blue Dots" in result
 
 
 def test_build_system_prompt_includes_detected_language():

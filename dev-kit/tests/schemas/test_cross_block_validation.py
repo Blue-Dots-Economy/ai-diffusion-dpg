@@ -19,49 +19,6 @@ def test_empty_state_passes():
     assert validate_cross_block(_empty_blocks(), selected_channels=[]) == []
 
 
-def test_intent_filters_must_match_nlu_intents():
-    """Check 5 — the user's reported case."""
-    blocks = _empty_blocks()
-    blocks["agent_core"] = {
-        "preprocessing": {"nlu_processor": {"intents": ["greeting", "ask_packages"]}},
-    }
-    blocks["knowledge_engine"] = {
-        "knowledge": {
-            "blocks": {
-                "static_knowledge_base": {
-                    "intent_filters": {
-                        "ask_packages": ["package_info"],
-                        "ask_locations": ["site_info"],   # missing from NLU intents
-                        "ask_booking": ["booking_policy"],  # missing
-                    },
-                },
-            },
-        },
-    }
-    errors = validate_cross_block(blocks, selected_channels=[])
-    assert any("ask_locations" in e and "not declared" in e for e in errors)
-    assert any("ask_booking" in e and "not declared" in e for e in errors)
-    # ask_packages is in NLU, so it should not error
-    assert not any("'ask_packages'" in e and "not declared" in e for e in errors)
-
-
-def test_intent_filters_pass_when_all_in_nlu():
-    blocks = _empty_blocks()
-    blocks["agent_core"] = {
-        "preprocessing": {"nlu_processor": {"intents": ["greeting", "ask_packages", "ask_booking"]}},
-    }
-    blocks["knowledge_engine"] = {
-        "knowledge": {
-            "blocks": {
-                "static_knowledge_base": {
-                    "intent_filters": {"ask_packages": ["a"], "ask_booking": ["b"]},
-                },
-            },
-        },
-    }
-    assert validate_cross_block(blocks, selected_channels=[]) == []
-
-
 def _minimal_workflow(**overrides) -> dict:
     """Minimal valid agent_workflow shell for tests focused on tool/intent checks.
 
@@ -99,22 +56,6 @@ def test_mcp_namespaced_tools_skipped():
     assert validate_cross_block(blocks, selected_channels=[]) == []
 
 
-def test_global_subagent_intent_overlap_rejected():
-    blocks = _empty_blocks()
-    blocks["agent_core"] = {
-        "agent_workflow": _minimal_workflow(
-            global_intents=["greeting", "shared_intent"],
-            subagents=[{
-                "id": "main",
-                "is_terminal": True,   # terminal subagents skip the opening_phrase check
-                "valid_intents": ["shared_intent"],
-            }],
-        ),
-    }
-    errors = validate_cross_block(blocks, selected_channels=[])
-    assert any("shared_intent" in e and "both" in e for e in errors)
-
-
 def test_voice_selected_requires_voice_config():
     blocks = _empty_blocks()
     blocks["reach_layer"] = {"reach_layer": {"channels": {}}}
@@ -134,28 +75,6 @@ def test_dignity_check_requires_questions_when_enabled():
     blocks["trust_layer"] = {"dignity_check": {"enabled": True, "questions": []}}
     errors = validate_cross_block(blocks, selected_channels=[])
     assert any("dignity_check" in e and "questions is empty" in e for e in errors)
-
-
-def test_intent_filter_drift_detected_by_cross_block_validation():
-    """Cross-block validation must flag KE intent_filters that reference undeclared NLU intents."""
-    blocks = _empty_blocks()
-    blocks["agent_core"] = {
-        "preprocessing": {"nlu_processor": {"intents": ["greeting"]}}
-    }
-    blocks["knowledge_engine"] = {
-        "knowledge": {
-            "blocks": {
-                "static_knowledge_base": {
-                    "intent_filters": {"ask_packages": ["info"]},  # not in NLU intents
-                }
-            }
-        }
-    }
-    errors = validate_cross_block(blocks, selected_channels=[], current_phase="knowledge")
-
-    assert any("ask_packages" in e for e in errors), (
-        "Expected intent-filter drift error to be detected. Got: " + str(errors)
-    )
 
 
 def test_connector_param_renamed_from_tool_is_flagged():
@@ -211,43 +130,6 @@ def test_connector_matching_tool_passes():
     assert validate_cross_block(blocks, selected_channels=[]) == []
 
 
-def test_workflow_intent_not_in_nlu_is_flagged():
-    """Check 15 — subagent valid_intents that aren't in NLU = silent expansion."""
-    blocks = _empty_blocks()
-    blocks["agent_core"] = {
-        "preprocessing": {"nlu_processor": {"intents": ["unknown", "booking_inquiry"]}},
-        "agent_workflow": _minimal_workflow(
-            subagents=[{
-                "id": "main",
-                "is_terminal": True,
-                "valid_intents": ["booking_inquiry", "tour_selected", "package_inquiry"],
-            }],
-        ),
-    }
-    errors = validate_cross_block(blocks, selected_channels=[])
-    assert any(
-        "tour_selected" in e
-        and "package_inquiry" in e
-        and "silent expansion" in e
-        for e in errors
-    )
-
-
-def test_workflow_intents_subset_of_nlu_passes():
-    blocks = _empty_blocks()
-    blocks["agent_core"] = {
-        "preprocessing": {"nlu_processor": {"intents": ["unknown", "booking_inquiry", "tour_selected"]}},
-        "agent_workflow": _minimal_workflow(
-            subagents=[{
-                "id": "main",
-                "is_terminal": True,
-                "valid_intents": ["booking_inquiry", "tour_selected"],
-            }],
-        ),
-    }
-    assert validate_cross_block(blocks, selected_channels=[]) == []
-
-
 def test_channel_check_does_not_fire_before_language_phase():
     """Leaving overview with web/voice selected but channels not yet
     configured should NOT block phase advance — channels are configured
@@ -278,19 +160,6 @@ def test_voice_raya_check_fires_only_from_reach_phase():
     assert not any("raya" in e for e in errors)
     errors = validate_cross_block(blocks, selected_channels=["voice"], current_phase="reach")
     assert any("raya" in e for e in errors)
-
-
-def test_intent_filter_check_only_after_knowledge():
-    blocks = _empty_blocks()
-    blocks["agent_core"] = {"preprocessing": {"nlu_processor": {"intents": ["unknown"]}}}
-    blocks["knowledge_engine"] = {
-        "knowledge": {"blocks": {"static_knowledge_base": {"intent_filters": {"ask_x": ["doc"]}}}},
-    }
-    # Before knowledge phase: skip
-    assert validate_cross_block(blocks, selected_channels=[], current_phase="language") == []
-    # Knowledge phase or later: fire
-    errors = validate_cross_block(blocks, selected_channels=[], current_phase="knowledge")
-    assert any("ask_x" in e and "not declared" in e for e in errors)
 
 
 def test_no_phase_context_runs_every_check():
@@ -500,7 +369,7 @@ from dev_kit.schemas.cross_block_validation import _dialogue_act_session_mapping
 def _ac_da(resolves_to="selected_job_item_id"):
     return {
         "entity_to_profile_field": {"consent": "consent_response"},
-        "preprocessing": {"nlu_processor": {"mode": "dialogue_act", "slots": {"consent": {}, "trade": {}}}},
+        "preprocessing": {"nlu_processor": {"slots": {"consent": {}, "trade": {}}}},
         "agent_workflow": {"subagents": [{"id": "job_match", "pending": [
             {"id": "select_job", "resolves_to": resolves_to,
              "options_from": {"tool": "fetch_jobs", "fields": ["role"], "id_field": "item_id"}}]}]},
@@ -522,8 +391,132 @@ def test_session_mapping_collision_with_resolves_to():
     assert any("selected_job_item_id" in e for e in errs)
 
 
-def test_no_collision_and_intent_mode_skipped():
+def test_no_collision():
     assert _dialogue_act_session_mapping_rules(_ac_da(), _ag("stored_trade")) == []
-    ac = _ac_da()
-    ac["preprocessing"]["nlu_processor"]["mode"] = "intent"
-    assert _dialogue_act_session_mapping_rules(ac, _ag("consent_response")) == []
+
+
+# -- Dialogue-act intents (NLU single-mode, spec §16) -------------------------
+
+
+def _kb_filters(filters: dict) -> dict:
+    return {"knowledge": {"blocks": {"static_knowledge_base": {"intent_filters": filters}}}}
+
+
+def _da_ac(act_intents=None, routing=None, global_routing=None, off_track=None) -> dict:
+    """agent_core block with dialogue-act rows and one non-terminal subagent."""
+    nlu: dict = {"act_intents": act_intents or []}
+    if off_track is not None:
+        nlu["off_track"] = off_track
+    return {
+        "preprocessing": {"nlu_processor": nlu},
+        "agent_workflow": _minimal_workflow(
+            subagents=[{
+                "id": "main",
+                "is_start": True,
+                "is_terminal": True,
+                "routing": routing if routing is not None else [],
+            }],
+            global_routing=global_routing or [],
+        ),
+    }
+
+
+def _route(intent: str) -> dict:
+    return {"intent": intent, "next_subagent_id": "main"}
+
+
+def test_unrouted_act_intent_is_flagged():
+    blocks = _empty_blocks()
+    blocks["agent_core"] = _da_ac(
+        act_intents=[{"acts": ["affirm"], "intent": "consent_given"},
+                     {"acts": ["deny"], "intent": "consent_denied"}],
+        routing=[_route("consent_given"), _route("off_track")],
+    )
+    errors = validate_cross_block(blocks, selected_channels=[], current_phase="workflow")
+    assert (
+        "agent_core.preprocessing.nlu_processor.act_intents[1]: intent 'consent_denied' "
+        "is not used by any routing rule"
+    ) in errors
+    assert not any("'consent_given'" in e for e in errors)
+
+
+def test_act_intent_routed_by_global_routing_passes():
+    blocks = _empty_blocks()
+    blocks["agent_core"] = _da_ac(
+        act_intents=[{"acts": ["close"], "intent": "termination"}],
+        routing=[_route("off_track")],
+        global_routing=[_route("termination")],
+    )
+    assert validate_cross_block(blocks, selected_channels=[], current_phase="workflow") == []
+
+
+def test_language_switch_request_needs_no_route():
+    blocks = _empty_blocks()
+    blocks["agent_core"] = _da_ac(
+        act_intents=[{"acts": ["request_change"], "topic": "language", "intent": "language_switch_request"}],
+        routing=[_route("off_track")],
+    )
+    assert validate_cross_block(blocks, selected_channels=[], current_phase="workflow") == []
+
+
+def test_unrouted_off_track_intent_is_flagged_when_subagents_exist():
+    blocks = _empty_blocks()
+    blocks["agent_core"] = _da_ac(routing=[_route("*")])
+    errors = validate_cross_block(blocks, selected_channels=[], current_phase="workflow")
+    assert (
+        "agent_core.preprocessing.nlu_processor.off_track.intent 'off_track' "
+        "is not used by any routing rule"
+    ) in errors
+
+
+def test_custom_off_track_intent_is_checked():
+    blocks = _empty_blocks()
+    blocks["agent_core"] = _da_ac(routing=[_route("off_track")], off_track={"intent": "drift"})
+    errors = validate_cross_block(blocks, selected_channels=[], current_phase="workflow")
+    assert any("off_track.intent 'drift' is not used by any routing rule" in e for e in errors)
+
+
+def test_off_track_check_skipped_without_subagents():
+    blocks = _empty_blocks()
+    blocks["agent_core"] = {"agent_workflow": _minimal_workflow(subagents=[])}
+    assert validate_cross_block(blocks, selected_channels=[], current_phase="workflow") == []
+
+
+def test_routing_checks_wait_for_workflow_phase():
+    blocks = _empty_blocks()
+    blocks["agent_core"] = _da_ac(act_intents=[{"acts": ["affirm"], "intent": "yes"}])
+    assert validate_cross_block(blocks, selected_channels=[], current_phase="language") == []
+
+
+def test_intent_filters_must_name_a_derivable_intent():
+    blocks = _empty_blocks()
+    blocks["agent_core"] = _da_ac(
+        act_intents=[{"acts": ["ask"], "intent": "faq"}],
+        routing=[_route("faq"), _route("off_track")],
+    )
+    blocks["knowledge_engine"] = _kb_filters({
+        "faq": ["a"], "any_input": ["b"], "off_track": ["c"],
+        "language_switch_request": ["d"], "ask_packages": ["e"],
+    })
+    errors = validate_cross_block(blocks, selected_channels=[], current_phase="knowledge")
+    flagged = [e for e in errors if "intent_filters" in e]
+    assert len(flagged) == 1
+    assert "'ask_packages'" in flagged[0]
+    assert "act_intents" in flagged[0]
+
+
+def test_intent_filters_check_only_after_knowledge():
+    blocks = _empty_blocks()
+    blocks["agent_core"] = {"preprocessing": {"nlu_processor": {"act_intents": [
+        {"acts": ["ask"], "intent": "faq"}]}}}
+    blocks["knowledge_engine"] = _kb_filters({"ask_x": ["doc"]})
+    assert validate_cross_block(blocks, selected_channels=[], current_phase="language") == []
+    errors = validate_cross_block(blocks, selected_channels=[], current_phase="knowledge")
+    assert any("'ask_x'" in e for e in errors)
+
+
+def test_intent_filters_check_waits_for_hand_authored_act_intents():
+    """No act_intents yet (they are hand-authored) -> nothing to check against."""
+    blocks = _empty_blocks()
+    blocks["knowledge_engine"] = _kb_filters({"ask_x": ["doc"]})
+    assert validate_cross_block(blocks, selected_channels=[], current_phase="knowledge") == []

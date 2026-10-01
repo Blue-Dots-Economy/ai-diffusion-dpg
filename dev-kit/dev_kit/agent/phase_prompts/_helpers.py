@@ -181,7 +181,7 @@ choices.
 
 **Two confirmation paths — distinguish "yes" from "edit":**
 
-When you present a multi-field proposal (model choice, NLU intents,
+When you present a multi-field proposal (model choice, profile map,
 knowledge base config, session schema, persistent profile, subagent
 graph, voice config, observability lifecycle, etc.):
 
@@ -305,27 +305,27 @@ structured proposal is on the table — readers cannot scan it.
   in plain text. The bold renders white on the dark UI; without it every
   line is the same grey weight and the user has to read every word.
 - **Lists of items always go on their own line as bullets.** Never
-  comma-separate a list of intents / entities / supported languages /
+  comma-separate a list of doc types / subagents / supported languages /
   channels / voices etc. in a single line — even when there are only
   three. The wrong shape:
 
   ```
-  Intents: unknown, destination_query, booking_request
+  Doc types: tours, pricing, booking_policy
   ```
 
   The right shape:
 
   ```
-  **Intents:**
-  - `unknown`
-  - `destination_query`
-  - `booking_request`
+  **Doc types:**
+  - `tours`
+  - `pricing`
+  - `booking_policy`
   ```
 
 - **Wrap every identifier in backticks** — field paths
   (`agent_core.conversation.blocked_message`), tool names
   (`update_config`), config values (`anthropic`, `gpt-5.4-mini-2026-03-17`),
-  intent / entity names (`booking_request`, `destination`), and field
+  intent / signal names (`booking_request`, `off_track`), and field
   keys (`primary_model`). Backticks make them visually distinct from
   prose and keep the LLM from being tempted to translate or paraphrase
   them.
@@ -356,8 +356,8 @@ structured proposal is on the table — readers cannot scan it.
   ```
   **entity_to_profile_field:**
 
-  | Entity          | Profile field |
-  |-----------------|---------------|
+  | Extracted value  | Profile field |
+  |------------------|---------------|
   | `traveller_name` | `name`        |
   | `contact_phone`  | `phone`       |
   | `contact_email`  | `email`       |
@@ -388,9 +388,9 @@ structured proposal is on the table — readers cannot scan it.
   The right shape:
 
   ```
-  **signal_intents** — intents that write a longitudinal record to the
-  user's profile when they fire (use `event` for one-off actions like a
-  booking; `profile_update` for intents that should remember a
+  **signal_intents** — signals that write a longitudinal record to the
+  user's profile when the NLU emits them (use `event` for one-off actions
+  like a booking; `profile_update` for signals that should remember a
   preference across sessions):
 
   ```json
@@ -399,7 +399,7 @@ structured proposal is on the table — readers cannot scan it.
   ```
 
   Apply this to every block-name label the user is unlikely to
-  recognise: `intents`, `entities`, `entity_to_profile_field`,
+  recognise: `entity_to_profile_field`,
   `signal_intents`, `dignity_check`, `user_state_model`,
   `intent_filters`, `state.session`, `state.persistent`,
   `user_data_persistence`, `tts_rules`, `terminal_word`,
@@ -542,7 +542,7 @@ def _phase_focus_header(phase_label: str, pending_fields: list) -> str:
 You are in the **{phase_label}** phase. Your only job this turn is to
 configure the pending fields listed below. Do NOT continue conversation
 threads from earlier turns. Do NOT ask the user about anything from a
-different phase (channels, voice, languages, intents, subagents, deploy
+different phase (channels, voice, languages, subagents, deploy
 credentials, etc. — those belong to other phases). Do NOT propose a
 plan that spans multiple phases.
 

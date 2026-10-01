@@ -10,7 +10,7 @@ def _cfg():
     return DialogueActConfig.from_config({
         "entity_to_profile_field": {"consent": "consent_response"},
         "entity_persistence": {"scope": "session"},
-        "preprocessing": {"nlu_processor": {"mode": "dialogue_act", "slots": {
+        "preprocessing": {"nlu_processor": {"slots": {
             "consent": {"type": "enum", "values": ["granted", "declined"]},
             "trade": {"type": "string"}, "age": {"type": "int", "min": 14, "max": 80}}}}})
 
@@ -71,7 +71,7 @@ def test_nlu_owned_values_skips_seeds_and_unlisted():
 def test_persistent_scope_writes_value_without_provenance():
     cfg = DialogueActConfig.from_config({
         "entity_persistence": {"scope": "persistent"},
-        "preprocessing": {"nlu_processor": {"mode": "dialogue_act", "slots": {
+        "preprocessing": {"nlu_processor": {"slots": {
             "trade": {"type": "string"}}}}})
     writes, _ = _plan(cfg=cfg, accepted={"trade": "Welder"})
     assert StateWrite("persistent", "trade", "Welder") in writes

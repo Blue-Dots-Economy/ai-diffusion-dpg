@@ -118,7 +118,7 @@ Validates the loaded `ObservabilityConfig` against the Pydantic v2 schema and re
 
 **Response:**
 ```json
-{ "status": "ok", "domain": "kkb" }
+{ "status": "ok", "domain": "blue-dots" }
 ```
 
 ---

@@ -20,9 +20,9 @@ from src.understanding.models import ACTS, RELATIONS, DialogueActResult
 logger = logging.getLogger(__name__)
 
 _ACT_TEXT = {
-    "affirm": "says yes / agrees to what was asked (हाँ, जी हाँ, ठीक है — only as an answer to a yes/no question)",
+    "affirm": "says yes / agrees to a yes/no question (हाँ, जी, ठीक है, ओके — also when followed by a thank-you)",
     "deny": "says no / refuses what was asked (नहीं, मत करो)",
-    "acknowledge": "only acknowledges or thanks, without answering anything (ठीक है, अच्छा, धन्यवाद, जी)",
+    "acknowledge": "only thanks or says 'I see', without agreeing to anything (धन्यवाद, शुक्रिया, अच्छा)",
     "provide_info": "gives a fact about themselves (age, trade, city, name, …)",
     "correct": "corrects something said earlier (\"X नहीं, Y\")",
     "select": "chooses one of the offered options (by number, name or description)",
@@ -65,15 +65,23 @@ def build_output_schema(cfg: DialogueActConfig) -> dict:
         JSON schema dict.
     """
     signal_items = {"type": "string", "enum": list(cfg.signals)} if cfg.signals else {"type": "string"}
-    return _obj({
+    props = {
         "acts": {"type": "array", "items": {"type": "string", "enum": list(ACTS)}},
         "relation": {"type": "string", "enum": list(RELATIONS)},
         "topic": {"type": ["string", "null"], "enum": [*cfg.topics, None]} if cfg.topics else {"type": "null"},
-        "slots": _obj({name: _slot_schema(s) for name, s in cfg.slots.items()}),
-        "reference": _obj({"option": {"type": ["integer", "null"]}, "spoken": {"type": ["string", "null"]}}),
+        # Pairs, not an object keyed by every slot: strict mode would force a
+        # null per configured slot on every turn (~50 output tokens of latency).
+        "slots": {"type": "array", "items": _obj({"name": {"type": "string", "enum": list(cfg.slots)},
+                                                  "value": {"type": "string"}})},
+        "reference": {"anyOf": [_obj({"option": {"type": "integer"}, "spoken": {"type": "string"}}),
+                                {"type": "null"}]},
         "signals": {"type": "array", "items": signal_items},
         "extras": {"type": "array", "items": _obj({"key": {"type": "string"}, "value": {"type": "string"}})},
-    })
+    }
+    if cfg.user_states:
+        props["user_state"] = _obj({"id": {"type": "string", "enum": [s["id"] for s in cfg.user_states]},
+                                    "confidence": {"type": "number"}})
+    return _obj(props)
 
 
 def _slot_line(spec: SlotSpec) -> str:
@@ -82,6 +90,14 @@ def _slot_line(spec: SlotSpec) -> str:
     ex = f" e.g. {'; '.join(spec.examples)}" if spec.examples else ""
     desc = f" — {spec.description}" if spec.description else ""
     return f"- {spec.name}: {kind}{bounds}{desc}{ex}"
+
+
+def _example_out(out: dict) -> dict:
+    """Render an authored example in the output schema's shape (slots as name/value pairs)."""
+    slots = out.get("slots")
+    if isinstance(slots, dict):
+        out = {**out, "slots": [{"name": k, "value": str(v)} for k, v in slots.items()]}
+    return out
 
 
 def build_system_prompt_text(cfg: DialogueActConfig) -> str:
@@ -107,7 +123,8 @@ def build_system_prompt_text(cfg: DialogueActConfig) -> str:
         "",
         "Topics (only for ask / request_change; otherwise null): " + (", ".join(cfg.topics) or "none"),
         "",
-        "Slots — values the caller SAID in <caller_now>; null when not said:",
+        "Slots — values the caller SAID in <caller_now>, as {name, value} pairs (value as text, "
+        "numbers as digits); list only slots that were said, usually none or one:",
         *[_slot_line(s) for s in cfg.slots.values()],
         "",
         "Rules:",
@@ -116,15 +133,22 @@ def build_system_prompt_text(cfg: DialogueActConfig) -> str:
         "- Never infer consent from a yes to anything except the consent question.",
         "- Hindi number words become digits (बाईस → 22).",
         "- For select, set reference.option to the number of the offered option the caller means "
-        "(by position, company or role) and reference.spoken to their words; otherwise both null.",
+        "(by position, company or role) and reference.spoken to their words; otherwise reference is null.",
         "- extras: other personal details worth keeping, as key/value text pairs; usually empty.",
         "- signals: only from this list, when clearly present: " + (", ".join(cfg.signals) or "none"),
     ]
+    if cfg.user_states:
+        parts += ["", "Caller state — classify their mental state; keep previous_state (in <frame>) "
+                      "when the turn does not clearly shift it:"]
+        for s in cfg.user_states:
+            first = (str(s.get("guidance") or "").strip().splitlines() or [""])[0]
+            sigs = " | ".join(s.get("signals") or []) or "(none)"
+            parts.append(f"- {s['id']}: signals {sigs} — {first}")
     if cfg.examples:
         parts += ["", "Examples:"]
         for ex in cfg.examples:
             parts.append(f"- pending: {ex.get('pending') or 'none'} | caller: {ex.get('caller', '')} → "
-                         f"{json.dumps(ex.get('out', {}), ensure_ascii=False)}")
+                         f"{json.dumps(_example_out(ex.get('out') or {}), ensure_ascii=False)}")
     return "\n".join(parts)
 
 
@@ -180,7 +204,8 @@ class DialogueActNLU(DialogueActNLUBase):
             try:
                 return _done(DialogueActResult.from_parsed(
                     response.parsed_output, slot_names=tuple(self._cfg.slots),
-                    topics=self._cfg.topics, signals=self._cfg.signals), None)
+                    topics=self._cfg.topics, signals=self._cfg.signals,
+                    user_state_ids=[s["id"] for s in self._cfg.user_states]), None)
             except ValueError:
                 return _done(DialogueActResult.fallback(), "schema_violation")
         except Exception as e:  # noqa: BLE001 — never raise into the turn

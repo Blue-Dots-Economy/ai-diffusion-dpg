@@ -34,14 +34,14 @@ def test_web_ui_app_name_required():
 
 
 def test_web_ui_minimal():
-    ui = WebUiConfig(app_name="KKB")
+    ui = WebUiConfig(app_name="Blue Dots")
     assert ui.app_tagline == ""
     assert ui.start_btn_label == ""
 
 
 def test_web_ui_full():
     ui = WebUiConfig(
-        app_name="KKB",
+        app_name="Blue Dots",
         app_tagline="Tagline",
         app_icon="🌾",
         new_session_msg="Welcome back",
@@ -62,8 +62,8 @@ def test_web_channel_requires_ui():
 
 
 def test_web_channel_full():
-    s = WebChannelSection(ui=WebUiConfig(app_name="KKB"))
-    assert s.ui.app_name == "KKB"
+    s = WebChannelSection(ui=WebUiConfig(app_name="Blue Dots"))
+    assert s.ui.app_name == "Blue Dots"
 
 
 # -- RayaVoiceConfig (with cross-field validator) ----------------------------
@@ -187,7 +187,7 @@ def test_channels_section_all_optional():
 
 
 def test_channels_section_web_only():
-    c = ChannelsSection(web=WebChannelSection(ui=WebUiConfig(app_name="KKB")))
+    c = ChannelsSection(web=WebChannelSection(ui=WebUiConfig(app_name="Blue Dots")))
     assert c.web is not None and c.voice is None
 
 
@@ -201,8 +201,8 @@ def test_common_observability_domain_required():
 
 
 def test_common_section_full():
-    c = CommonSection(observability=CommonObservabilityConfig(domain="kkb"))
-    assert c.observability.domain == "kkb"
+    c = CommonSection(observability=CommonObservabilityConfig(domain="blue-dots"))
+    assert c.observability.domain == "blue-dots"
 
 
 # -- ReachLayerSection -------------------------------------------------------
@@ -217,10 +217,10 @@ def test_reach_layer_section_full():
     voice_id, lang = _voice_pair()
     r = ReachLayerSection(
         channels=ChannelsSection(
-            web=WebChannelSection(ui=WebUiConfig(app_name="KKB")),
+            web=WebChannelSection(ui=WebUiConfig(app_name="Blue Dots")),
             voice=_voice_channel(),
         ),
-        common=CommonSection(observability=CommonObservabilityConfig(domain="kkb")),
+        common=CommonSection(observability=CommonObservabilityConfig(domain="blue-dots")),
     )
     assert r.channels.web is not None
     assert r.channels.voice is not None

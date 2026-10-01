@@ -1307,3 +1307,17 @@ class TestStripBannedSentences:
         text = "Line one.\nLet me try again.\n\nLine three."
         out = _strip_banned_sentences(text)
         assert "\n\n\n" not in out
+
+
+def test_cross_phase_references_surfaces_act_intent_names_not_intent_lists() -> None:
+    """NLU single-mode: refs show the hand-authored act_intents routing intents."""
+    acc = {b: {} for b in BLOCKS}
+    acc["agent_core"] = {"preprocessing": {"nlu_processor": {"act_intents": [
+        {"acts": ["affirm"], "intent": "consent_given"},
+        {"acts": ["deny"], "intent": "consent_denied"},
+        {"acts": ["affirm"], "pending": "x", "intent": "consent_given"},
+    ]}}}
+    out = cross_phase_references(acc)
+    assert "agent_core.preprocessing.nlu_processor.act_intents intents: ['consent_denied', 'consent_given']" in out
+    assert "nlu_processor.intents" not in out
+    assert "nlu_processor.entities" not in out

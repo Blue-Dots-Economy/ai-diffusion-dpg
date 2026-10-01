@@ -12,6 +12,7 @@ from src.chat_provider.types import ToolUseBlock
 from src.models import ContextBundle, DoneEvent, NLUResult, SegmentInput, ToolResult
 from src.turn_assembler import TurnAssembler, TurnStatus
 
+from tests.fakes import fake_understander
 from tests.test_stream_turn import _make_agent_core
 
 
@@ -41,8 +42,8 @@ def _agent(memory, llm_script):
     agent._config["channels"]["bridge"] = {"system_prompt_suffix": ""}
     agent._llm.stream = llm_script
     agent._language_normaliser = type("N", (), {"normalise": lambda s, *a, **k: ("m", "hindi")})()
-    agent._nlu_processor = type("P", (), {"process": lambda s, *a, **k: NLUResult(
-        intent="search", entities={}, sentiment="neutral", confidence=0.9)})()
+    agent._understander = fake_understander(NLUResult(
+        intent="search", entities={}, confidence=0.9))
     agent._tool_registry.get_route.return_value = None
     return agent
 

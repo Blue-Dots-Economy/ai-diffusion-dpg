@@ -49,7 +49,12 @@ class GateItem:
 
 @dataclass(frozen=True)
 class DialogueActConfig:
-    """Parsed ``preprocessing.nlu_processor`` for dialogue_act mode."""
+    """Parsed ``preprocessing.nlu_processor`` for the dialogue-act NLU.
+
+    ``user_states`` / ``user_state_default`` / ``user_state_threshold`` come
+    from ``conversation.user_state_model`` (empty, ``""`` and 0.4 when the
+    model is disabled) and ``nlu_processor.user_state_confidence_threshold``.
+    """
 
     slots: dict[str, SlotSpec]
     known_fields: tuple[str, ...]
@@ -67,20 +72,21 @@ class DialogueActConfig:
     entity_scope: str
     signal_types: dict[str, str]
     log_raw_response: bool = False
+    user_states: tuple[dict, ...] = ()
+    user_state_default: str = ""
+    user_state_threshold: float = 0.4
 
     @classmethod
-    def from_config(cls, config: dict | None) -> "DialogueActConfig | None":
-        """Parse the merged config; None unless ``mode == "dialogue_act"``.
+    def from_config(cls, config: dict | None) -> "DialogueActConfig":
+        """Parse the merged config's ``preprocessing.nlu_processor`` block.
 
         Args:
             config: Full merged agent_core config (already schema-validated).
 
         Returns:
-            The parsed config, or None in intent mode.
+            The parsed config; missing blocks fall back to empty/default values.
         """
         nlu: dict[str, Any] = ((config or {}).get("preprocessing") or {}).get("nlu_processor") or {}
-        if nlu.get("mode") != "dialogue_act":
-            return None
         slots = {
             name: SlotSpec(
                 name=name, type=s.get("type", "string"), values=tuple(s.get("values") or ()),
@@ -102,6 +108,8 @@ class DialogueActConfig:
             for g in ((nlu.get("termination_gate") or {}).get("any_of") or [])
         )
         off = nlu.get("off_track") or {}
+        usm = ((config or {}).get("conversation") or {}).get("user_state_model") or {}
+        usm_on = bool(usm.get("enabled"))
         return cls(
             slots=slots,
             known_fields=tuple(nlu.get("known_fields") or ()),
@@ -119,6 +127,9 @@ class DialogueActConfig:
             entity_scope=str(((config or {}).get("entity_persistence") or {}).get("scope", "persistent")),
             signal_types=dict(nlu.get("signal_intents") or {}),
             log_raw_response=bool(nlu.get("log_raw_response", False)),
+            user_states=tuple(dict(s) for s in usm.get("states") or []) if usm_on else (),
+            user_state_default=str(usm.get("default_state", "")) if usm_on else "",
+            user_state_threshold=float(nlu.get("user_state_confidence_threshold", 0.4)) if usm_on else 0.4,
         )
 
     def state_key(self, slot: str) -> str:

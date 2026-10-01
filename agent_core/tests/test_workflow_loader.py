@@ -6,8 +6,8 @@ No external dependencies — ToolRegistry is mocked via MagicMock.
 
 Coverage:
 - Normal: valid minimal config loads successfully
-- Normal: all 7 validation rules pass on a well-formed config
-- Normal: nlu_intent_set pre-computed correctly (subagent + global intents)
+- Normal: all 5 validation rules pass on a well-formed config
+- Normal: no NLU intents are read; no per-subagent intent set
 - Normal: tool_defs pre-computed via registry.get_definitions_for
 - Normal: global_routing parsed correctly
 - Normal: routing condition (single) parsed correctly
@@ -15,7 +15,6 @@ Coverage:
 - Normal: session_writes on routing rules parsed correctly
 - Normal: special_handler values accepted (hitl, whatsapp_handoff)
 - Normal: terminal subagent with no routing passes validation
-- Edge: global_intents empty list is valid
 - Edge: subagent with no tools is valid
 - Edge: falsy routing condition value (0, False) accepted
 - Edge: output_format None is valid
@@ -26,19 +25,13 @@ Coverage:
 - Failure: missing version raises ConfigurationError
 - Failure: empty subagents list raises ConfigurationError
 - Failure: duplicate subagent id raises ConfigurationError
-- Failure: missing preprocessing config raises ConfigurationError
-- Failure: missing nlu_processor config raises ConfigurationError
-- Failure: empty intents list raises ConfigurationError
-- Failure: intents not a list raises ConfigurationError
 - Rule 1: no start subagent raises ConfigurationError
 - Rule 1: multiple start subagents raises ConfigurationError
 - Rule 2: unknown next_subagent_id in subagent routing raises ConfigurationError
 - Rule 2: unknown next_subagent_id in global_routing raises ConfigurationError
 - Rule 3: unregistered tool name raises ConfigurationError
-- Rule 4: subagent intent not in NLU intents raises ConfigurationError
-- Rule 5: global intent also in subagent raises ConfigurationError
-- Rule 6: terminal subagent with routing rules raises ConfigurationError
-- Rule 7: non-terminal subagent with no routing raises ConfigurationError
+- Rule 4: terminal subagent with routing rules raises ConfigurationError
+- Rule 5: non-terminal subagent with no routing raises ConfigurationError
 - Failure: invalid routing condition operator raises ConfigurationError
 - Failure: routing condition missing field raises ConfigurationError
 - Failure: routing condition missing operator raises ConfigurationError
@@ -73,10 +66,7 @@ def _make_tool_registry(tool_names: list[str] | None = None) -> MagicMock:
 
 def _minimal_config(
     *,
-    extra_intents: list[str] | None = None,
-    global_intents: list[str] | None = None,
     tools: list[str] | None = None,
-    valid_intents: list[str] | None = None,
     routing: list[dict] | None = None,
     extra_subagents: list[dict] | None = None,
     global_routing: list[dict] | None = None,
@@ -86,15 +76,12 @@ def _minimal_config(
 
     The start subagent routes to the terminal subagent via a catch-all rule.
     """
-    nlu_intents = ["greeting", "farewell", "unknown"] + (extra_intents or [])
-
     terminal = {
         "id": "end",
         "name": "End",
         "description": "Terminal node",
         "is_start": False,
         "is_terminal": True,
-        "valid_intents": [],
         "tools": [],
         "system_prompt": "You are done.",
         "opening_phrase": "Goodbye.",
@@ -107,7 +94,6 @@ def _minimal_config(
         "description": "Entry node",
         "is_start": True,
         "is_terminal": False,
-        "valid_intents": valid_intents if valid_intents is not None else ["greeting"],
         "tools": tools or [],
         "system_prompt": "You are a helpful agent.",
         "opening_phrase": "Hello.",
@@ -119,16 +105,10 @@ def _minimal_config(
     subagents = [start, terminal] + (extra_subagents or [])
 
     return {
-        "preprocessing": {
-            "nlu_processor": {
-                "intents": nlu_intents,
-            }
-        },
         "agent_workflow": {
             "workflow_id": "test_workflow",
             "version": "1.0.0",
             "agent_system_prompt": "Top-level system prompt.",
-            "global_intents": global_intents or [],
             "global_routing": global_routing or [],
             "default_fallback_subagent_id": "start",
             "subagents": subagents,
@@ -177,30 +157,13 @@ def test_subagents_keyed_by_id(loader, registry):
     assert "end" in workflow.subagents
 
 
-def test_nlu_intent_set_includes_subagent_and_global(loader, registry):
-    config = _minimal_config(
-        extra_intents=["help"],
-        global_intents=["farewell"],
-        valid_intents=["greeting", "help"],
-    )
-    workflow = loader.load(config, registry)
-    intent_set = workflow.nlu_intent_set["start"]
-    assert "greeting" in intent_set
-    assert "help" in intent_set
-    assert "farewell" in intent_set  # global intent appended
 
 
-def test_nlu_intent_set_terminal_subagent_gets_global_intents(loader, registry):
-    config = _minimal_config(global_intents=["farewell"])
-    workflow = loader.load(config, registry)
-    assert "farewell" in workflow.nlu_intent_set["end"]
 
 
 def test_tool_defs_pre_computed_via_registry(loader):
     registry = _make_tool_registry(["my_tool"])
     config = _minimal_config(
-        extra_intents=["help"],
-        valid_intents=["greeting"],
         tools=["my_tool"],
     )
     workflow = loader.load(config, registry)
@@ -218,12 +181,9 @@ def test_tool_defs_empty_for_subagent_with_no_tools(loader, registry):
 
 def test_global_routing_parsed(loader, registry):
     config = _minimal_config(
-        extra_intents=["farewell"],
-        global_intents=["farewell"],
         global_routing=[
             {"intent": "farewell", "next_subagent_id": "end"}
         ],
-        valid_intents=["greeting"],
     )
     workflow = loader.load(config, registry)
     assert len(workflow.global_routing) == 1
@@ -296,7 +256,6 @@ def test_special_handler_hitl_accepted(loader, registry):
         "is_start": False,
         "is_terminal": True,
         "special_handler": "hitl",
-        "valid_intents": [],
         "tools": [],
         "system_prompt": "",
         "opening_phrase": "Connecting you to a counsellor.",
@@ -315,7 +274,6 @@ def test_special_handler_whatsapp_handoff_accepted(loader, registry):
         "is_start": False,
         "is_terminal": True,
         "special_handler": "whatsapp_handoff",
-        "valid_intents": [],
         "tools": [],
         "system_prompt": "",
         "opening_phrase": "Continuing on WhatsApp.",
@@ -343,16 +301,8 @@ def test_output_format_none_is_valid(loader, registry):
 # ---------------------------------------------------------------------------
 
 
-def test_empty_global_intents_is_valid(loader, registry):
-    config = _minimal_config(global_intents=[])
-    workflow = loader.load(config, registry)
-    assert workflow.global_intents == []
 
 
-def test_subagent_with_no_valid_intents_is_valid(loader, registry):
-    config = _minimal_config(valid_intents=[])
-    workflow = loader.load(config, registry)
-    assert workflow.subagents["start"].valid_intents == []
 
 
 def test_routing_condition_value_zero_is_accepted(loader, registry):
@@ -441,33 +391,12 @@ def test_duplicate_subagent_id_raises(loader, registry):
         loader.load(config, registry)
 
 
-def test_missing_preprocessing_raises(loader, registry):
-    config = _minimal_config()
-    del config["preprocessing"]
-    with pytest.raises(ConfigurationError, match="preprocessing"):
-        loader.load(config, registry)
 
 
-def test_missing_nlu_processor_raises(loader, registry):
-    config = _minimal_config()
-    # Keep preprocessing non-empty so its own check doesn't fire first
-    config["preprocessing"] = {"other_key": True}
-    with pytest.raises(ConfigurationError, match="nlu_processor"):
-        loader.load(config, registry)
 
 
-def test_empty_intents_list_raises(loader, registry):
-    config = _minimal_config()
-    config["preprocessing"]["nlu_processor"]["intents"] = []
-    with pytest.raises(ConfigurationError, match="intents"):
-        loader.load(config, registry)
 
 
-def test_intents_not_a_list_raises(loader, registry):
-    config = _minimal_config()
-    config["preprocessing"]["nlu_processor"]["intents"] = "greeting,farewell"
-    with pytest.raises(ConfigurationError, match="must be a list"):
-        loader.load(config, registry)
 
 
 # ---------------------------------------------------------------------------
@@ -504,10 +433,7 @@ def test_rule2_unknown_next_subagent_in_routing_raises(loader, registry):
 
 def test_rule2_unknown_next_subagent_in_global_routing_raises(loader, registry):
     config = _minimal_config(
-        extra_intents=["farewell"],
-        global_intents=["farewell"],
         global_routing=[{"intent": "farewell", "next_subagent_id": "ghost"}],
-        valid_intents=["greeting"],
     )
     with pytest.raises(ConfigurationError, match="rule 2"):
         loader.load(config, registry)
@@ -521,8 +447,6 @@ def test_rule2_unknown_next_subagent_in_global_routing_raises(loader, registry):
 def test_rule3_unregistered_tool_raises(loader):
     registry = _make_tool_registry(["known_tool"])
     config = _minimal_config(
-        extra_intents=["help"],
-        valid_intents=["greeting"],
         tools=["unknown_tool"],
     )
     with pytest.raises(ConfigurationError, match="rule 3"):
@@ -532,8 +456,6 @@ def test_rule3_unregistered_tool_raises(loader):
 def test_rule3_registered_tool_passes(loader):
     registry = _make_tool_registry(["my_tool"])
     config = _minimal_config(
-        extra_intents=["help"],
-        valid_intents=["greeting"],
         tools=["my_tool"],
     )
     workflow = loader.load(config, registry)
@@ -541,54 +463,28 @@ def test_rule3_registered_tool_passes(loader):
 
 
 # ---------------------------------------------------------------------------
-# Validation rule 4: subagent intents in NLU config
+# Validation rule 4: terminal subagents must have no routing
 # ---------------------------------------------------------------------------
 
 
-def test_rule4_subagent_intent_not_in_nlu_intents_raises(loader, registry):
-    config = _minimal_config(valid_intents=["undeclared_intent"])
-    with pytest.raises(ConfigurationError, match="rule 4"):
-        loader.load(config, registry)
-
-
-# ---------------------------------------------------------------------------
-# Validation rule 5: global intents not in subagents
-# ---------------------------------------------------------------------------
-
-
-def test_rule5_global_intent_also_in_subagent_raises(loader, registry):
-    config = _minimal_config(
-        extra_intents=["farewell"],
-        global_intents=["farewell"],
-        valid_intents=["greeting", "farewell"],  # farewell is also global → violation
-    )
-    with pytest.raises(ConfigurationError, match="rule 5"):
-        loader.load(config, registry)
-
-
-# ---------------------------------------------------------------------------
-# Validation rule 6: terminal subagents must have no routing
-# ---------------------------------------------------------------------------
-
-
-def test_rule6_terminal_with_routing_raises(loader, registry):
+def test_rule4_terminal_with_routing_raises(loader, registry):
     config = _minimal_config()
     # Add a routing rule to the terminal subagent
     config["agent_workflow"]["subagents"][1]["routing"] = [
         {"intent": "*", "next_subagent_id": "start"}
     ]
-    with pytest.raises(ConfigurationError, match="rule 6"):
+    with pytest.raises(ConfigurationError, match="rule 4"):
         loader.load(config, registry)
 
 
 # ---------------------------------------------------------------------------
-# Validation rule 7: non-terminal subagents must have routing
+# Validation rule 5: non-terminal subagents must have routing
 # ---------------------------------------------------------------------------
 
 
-def test_rule7_nonterminal_with_no_routing_raises(loader, registry):
+def test_rule5_nonterminal_with_no_routing_raises(loader, registry):
     config = _minimal_config(routing=[])
-    with pytest.raises(ConfigurationError, match="rule 7"):
+    with pytest.raises(ConfigurationError, match="rule 5"):
         loader.load(config, registry)
 
 
@@ -682,7 +578,6 @@ def test_invalid_special_handler_raises(loader, registry):
         "is_start": False,
         "is_terminal": True,
         "special_handler": "not_a_real_handler",
-        "valid_intents": [],
         "tools": [],
         "system_prompt": "",
         "opening_phrase": "x",
@@ -733,8 +628,7 @@ def test_subagent_opening_phrase_default_empty():
     from src.workflow_loader import SubAgent
     sa = SubAgent(
         id="greeting", name="Greeting", description="d",
-        is_start=True, is_terminal=False, special_handler=None,
-        valid_intents=[], tools=[], system_prompt="",
+        is_start=True, is_terminal=False, special_handler=None, tools=[], system_prompt="",
         output_format=None, routing=[],
     )
     assert sa.opening_phrase == ""
@@ -744,8 +638,7 @@ def test_subagent_opening_phrase_accepts_string():
     from src.workflow_loader import SubAgent
     sa = SubAgent(
         id="greeting", name="Greeting", description="d",
-        is_start=True, is_terminal=False, special_handler=None,
-        valid_intents=[], tools=[], system_prompt="",
+        is_start=True, is_terminal=False, special_handler=None, tools=[], system_prompt="",
         output_format=None, routing=[],
         opening_phrase="नमस्ते।",
     )
@@ -759,7 +652,6 @@ def test_loader_extracts_opening_phrase_from_yaml():
             "workflow_id": "test",
             "version": "1.0.0",
             "agent_system_prompt": "You are helpful.",
-            "global_intents": [],
             "global_routing": [],
             "default_fallback_subagent_id": "greeting",
             "subagents": [
@@ -769,7 +661,6 @@ def test_loader_extracts_opening_phrase_from_yaml():
                     "description": "Opener",
                     "is_start": True,
                     "is_terminal": False,
-                    "valid_intents": ["greeting"],
                     "tools": [],
                     "system_prompt": "Greet.",
                     "opening_phrase": "नमस्ते।",
@@ -783,19 +674,13 @@ def test_loader_extracts_opening_phrase_from_yaml():
                     "description": "Terminal",
                     "is_start": False,
                     "is_terminal": True,
-                    "valid_intents": [],
                     "tools": [],
                     "system_prompt": "Done.",
                     "opening_phrase": "Goodbye.",
                     "routing": [],
                 }
             ],
-        },
-        "preprocessing": {
-            "nlu_processor": {
-                "intents": ["greeting"],
-            }
-        },
+        }
     }
     loader = AgentWorkflowLoader()
     registry = _make_tool_registry()
@@ -810,7 +695,6 @@ def test_loader_missing_opening_phrase_raises():
             "workflow_id": "test",
             "version": "1.0.0",
             "agent_system_prompt": "You are helpful.",
-            "global_intents": [],
             "global_routing": [],
             "default_fallback_subagent_id": "greeting",
             "subagents": [
@@ -820,7 +704,6 @@ def test_loader_missing_opening_phrase_raises():
                     "description": "Opener",
                     "is_start": True,
                     "is_terminal": False,
-                    "valid_intents": ["greeting"],
                     "tools": [],
                     "system_prompt": "Greet.",
                     "routing": [
@@ -833,18 +716,12 @@ def test_loader_missing_opening_phrase_raises():
                     "description": "Terminal",
                     "is_start": False,
                     "is_terminal": True,
-                    "valid_intents": [],
                     "tools": [],
                     "system_prompt": "Done.",
                     "routing": [],
                 }
             ],
-        },
-        "preprocessing": {
-            "nlu_processor": {
-                "intents": ["greeting"],
-            }
-        },
+        }
     }
     loader = AgentWorkflowLoader()
     registry = _make_tool_registry()
@@ -902,7 +779,7 @@ def test_global_tools_validated_against_registry(loader):
 
 
 # ---------------------------------------------------------------------------
-# Pending questions and dialogue_act intent set
+# Pending questions
 # ---------------------------------------------------------------------------
 
 from src.workflow_loader import OptionsFrom, PendingQuestion  # noqa: E402
@@ -934,11 +811,12 @@ def test_pending_defaults_to_empty():
     assert all(s.pending == [] for s in wf.subagents.values())
 
 
-def test_dialogue_act_mode_needs_no_nlu_intents_and_skips_valid_intents_check():
-    cfg = _minimal_config()
-    nlu = cfg["preprocessing"]["nlu_processor"]
-    nlu["mode"] = "dialogue_act"
-    nlu["intents"] = []
-    nlu["act_intents"] = [{"acts": ["affirm"], "intent": "apply_now"}]
-    cfg["agent_workflow"]["subagents"][0]["valid_intents"] = ["legacy_only_intent"]
-    AgentWorkflowLoader().load(cfg, _make_tool_registry())   # must not raise
+
+
+def test_loads_without_nlu_intents_and_has_no_intent_set(loader, registry):
+    """The loader no longer reads NLU intents; the workflow carries no intent set."""
+    config = _minimal_config()
+    workflow = loader.load(config, registry)
+    assert not hasattr(workflow, "nlu_intent_set")
+    assert not hasattr(workflow, "global_intents")
+    assert not hasattr(workflow.subagents["start"], "valid_intents")

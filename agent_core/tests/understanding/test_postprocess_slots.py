@@ -4,7 +4,7 @@ from src.understanding.postprocess import accept_slots, normalise_slots
 
 
 def _cfg():
-    return DialogueActConfig.from_config({"preprocessing": {"nlu_processor": {"mode": "dialogue_act", "slots": {
+    return DialogueActConfig.from_config({"preprocessing": {"nlu_processor": {"slots": {
         "age": {"type": "int", "min": 14, "max": 80, "accept_when_pending": ["age"]},
         "consent": {"type": "enum", "values": ["granted", "declined"], "accept_when_pending": ["consent"]},
         "trade": {"type": "string", "normalise": "title"},

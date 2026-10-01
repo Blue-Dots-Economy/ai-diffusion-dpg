@@ -398,43 +398,14 @@ FIELD_RULES: dict[str, FieldRule] = {
         invalidated_by=["preprocessing.nlu_processor.provider", "agent.provider"],
         pydantic_class="PreprocessingSection",
     ),
-    "preprocessing.nlu_processor.domain_instruction": FieldRule(
-        category="chat",
-        phase="language",
-        description="Multi-paragraph NLU classifier domain instruction.",
-        invalidated_by=["domain_description", "project_name", "default_language"],
-        pydantic_class="PreprocessingSection",
-    ),
-    "preprocessing.nlu_processor.intents": FieldRule(
-        category="chat",
-        phase="language",
-        description="List of NLU intent names. Required (min_length=1).",
-        invalidated_by=["has_kb", "has_external_tools", "is_multi_turn", "needs_consent", "domain_description"],
-        pydantic_class="PreprocessingSection",
-    ),
-    "preprocessing.nlu_processor.entities": FieldRule(
-        category="chat",
-        phase="language",
-        description="List of entity names. Co-domain with entity_to_profile_field.",
-        invalidated_by=["domain_description", "needs_persistent_user_data"],
-        pydantic_class="PreprocessingSection",
-    ),
 
-    # ── dialogue_act NLU mode (opt-in; applies_if only sees IntakeState flags,
-    #    so these are not gated on nlu_processor.mode) ───────────────────────
+    # ── Dialogue-act NLU. Hand-authored in agent_core.yaml for now (spec §16):
+    #    every entry has a default, so the wizard never asks for it. ─────────
 
-    "preprocessing.nlu_processor.mode": FieldRule(
-        category="chat",
-        phase="language",
-        default="intent",
-        description="NLU contract: 'intent' (per-subagent intents) or 'dialogue_act' (acts + pending questions).",
-        pydantic_class="PreprocessingSection",
-    ),
     "preprocessing.nlu_processor.slots": FieldRule(
         category="chat",
         phase="language",
         default={},
-        invalidated_by=["preprocessing.nlu_processor.mode"],
         description="Caller-stated values to extract: type, bounds/values, normalise, accept_when_pending.",
         pydantic_class="PreprocessingSection",
     ),
@@ -442,7 +413,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         category="chat",
         phase="workflow",
         default=[],
-        invalidated_by=["preprocessing.nlu_processor.mode", "agent_workflow.subagents"],
+        invalidated_by=["agent_workflow.subagents"],
         description="Ordered (acts, pending, relation, topic) → routing intent table.",
         pydantic_class="PreprocessingSection",
     ),
@@ -504,9 +475,9 @@ FIELD_RULES: dict[str, FieldRule] = {
         category="chat",
         phase="language",
         applies_if="needs_persistent_user_data",
-        invalidated_by=["needs_persistent_user_data", "preprocessing.nlu_processor.intents"],
+        invalidated_by=["needs_persistent_user_data", "preprocessing.nlu_processor.signals"],
         default={},
-        description="Open map of intent → profile-signal. Keys must subset intents.",
+        description="Open map of signal name → Signal type written to the ContextGraph.",
         pydantic_class="PreprocessingSection",
     ),
 
@@ -516,9 +487,9 @@ FIELD_RULES: dict[str, FieldRule] = {
         category="chat",
         phase="language",
         applies_if="needs_persistent_user_data",
-        invalidated_by=["needs_persistent_user_data", "preprocessing.nlu_processor.entities"],
+        invalidated_by=["needs_persistent_user_data", "preprocessing.nlu_processor.slots"],
         default={},
-        description="Open map: NLU entity → Memory profile field. Bridges NLU → Memory.",
+        description="Open map: NLU slot name → Memory profile field. Bridges NLU → Memory.",
         pydantic_class="EntityToProfileFieldSection",
     ),
 
@@ -564,20 +535,12 @@ FIELD_RULES: dict[str, FieldRule] = {
         invalidated_by=["domain_description", "default_language", "supported_languages", "is_companion_style"],
         pydantic_class="AgentWorkflowSection",
     ),
-    "agent_workflow.global_intents": FieldRule(
-        category="chat",
-        phase="workflow",
-        default=[],
-        description="Global intent list. Subset of nlu_processor.intents; disjoint with subagent valid_intents.",
-        invalidated_by=["preprocessing.nlu_processor.intents", "is_multi_turn"],
-        pydantic_class="AgentWorkflowSection",
-    ),
     "agent_workflow.global_routing": FieldRule(
         category="chat",
         phase="workflow",
         default=[],
         description="Global routing rules (intent → next_subagent_id). Per rule: intent, next_subagent_id, conditions, session_writes.",
-        invalidated_by=["agent_workflow.global_intents", "agent_workflow.subagents"],
+        invalidated_by=["agent_workflow.subagents"],
         pydantic_class="AgentWorkflowSection",
     ),
     "agent_workflow.default_fallback_subagent_id": FieldRule(
@@ -723,21 +686,6 @@ FIELD_RULES: dict[str, FieldRule] = {
         invalidated_by=["selected_channels", "default_language"],
         description="Voice terminal word that signals end of agent turn.",
         pydantic_class="ChannelsSection",
-    ),
-    "channels.voice.turn_assembler.semantic_gate": FieldRule(
-        category="chat",
-        phase="reach",
-        applies_if='"voice" in selected_channels',
-        invalidated_by=["selected_channels"],
-        # Must be a structured SemanticGateConfig dict — bare strings or
-        # free-form maps are rejected by the strict mirror class:
-        #   `{"enabled": true, "confidence_threshold": 0.75}`
-        # See dev_kit/schemas/domain/agent_core.py SemanticGateConfig.
-        description=(
-            "Semantic gate for voice TurnAssembler. Shape: "
-            '{"enabled": bool, "confidence_threshold": 0.0-1.0}.'
-        ),
-        pydantic_class="SemanticGateConfig",
     ),
 
     # ── Predetermined: channels.voice.turn_assembler.* ────────────────────────

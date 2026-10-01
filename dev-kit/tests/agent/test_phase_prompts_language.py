@@ -58,13 +58,13 @@ def test_build_injects_cross_phase_refs_param():
 def test_build_renders_pending_fields():
     fields = [
         _fake_field("agent_core.agent.primary_model", "Primary LLM model ID"),
-        _fake_field("agent_core.preprocessing.nlu_processor.intents", "NLU intent list"),
+        _fake_field("agent_core.conversation.blocked_message", "Blocked-input message"),
     ]
     result = build(fields, "", "", _intake())
     assert "agent_core.agent.primary_model" in result
     assert "Primary LLM model ID" in result
-    assert "agent_core.preprocessing.nlu_processor.intents" in result
-    assert "NLU intent list" in result
+    assert "agent_core.conversation.blocked_message" in result
+    assert "Blocked-input message" in result
 
 
 def test_language_group2_names_no_default_conversation_messages() -> None:
@@ -252,13 +252,8 @@ def test_language_group4_explains_each_label_before_listing_values() -> None:
     """
     result = build([], "", "", _intake(needs_persistent_user_data=True))
 
-    # Each of the four bold labels must have the em-dash explanation form
-    # `**Label** — explanation:` rather than the bare colon form
-    # `**Label:**` straight to values.
-    assert "**Intents** — the categories of user request" in result
-    assert "**Entities** — the structured values" in result
     assert "**entity_to_profile_field** — the mapping" in result
-    assert "**signal_intents** — intents that fire" in result
+    assert "**signal_intents** — signals that fire" in result
 
     # The bare-colon shape that triggered the regression must be flagged
     # as wrong in the prompt's anti-pattern section.
@@ -267,64 +262,31 @@ def test_language_group4_explains_each_label_before_listing_values() -> None:
 
 def test_language_group4_reply_pattern_uses_markdown_formatting() -> None:
     """The Group 4 worked example must use markdown formatting conventions
-    so the LLM has a template to copy.
-
-    GoGuide regression: the bot shipped `Intents: unknown, destination_query,
-    package_inquiry, booking_request, ...` — a single comma-separated line.
-    The user wanted bold labels, one-per-line bullets, a markdown table for
-    the entity-to-profile mapping, and a fenced code block for the JSON
-    dict. All of these must appear in the in-prompt example.
+    (bold heading, a table for the profile map, a fenced JSON block for the
+    signal map) so the LLM has a template to copy.
     """
     result = build([], "", "", _intake(needs_persistent_user_data=True))
 
-    # The example block starts with a bold "Proposed NLU setup:" line.
-    assert "**Proposed NLU setup:**" in result
-    # Each sub-list has a bold label with em-dash explanation, then
-    # one-per-line bullets. The bold labels appear as
-    # `**Intents** — ...` / `**Entities** — ...` etc.
-    assert "**Intents** — " in result
-    assert "**Entities** — " in result
-    # The intent example uses backticked identifiers on separate bullet lines.
-    assert "- `unknown`" in result
-    assert "- `destination_query`" in result
-    # entity_to_profile_field example is a markdown table.
+    assert "**Proposed profile setup:**" in result
     assert "**entity_to_profile_field** — " in result
-    assert "| Entity" in result
+    assert "| Extracted value" in result
     assert "| Profile field |" in result
-    # signal_intents example is a fenced JSON code block, not inline prose.
     assert "**signal_intents** — " in result
     assert "```json" in result
-    # The anti-pattern (comma-list) is explicitly forbidden in the prompt.
     assert "Never ship comma-separated lists" in result
 
 
-def test_language_group4_proposes_intents_entities_and_signal_intents() -> None:
-    """Group 4 must propose all four lists (intents, entities,
-    entity_to_profile_field, signal_intents) in ONE turn — not split into
-    three open-ended questions.
-
-    GoGuide regression: the bot asked three separate open-ended questions
-    ("are there intents that should write a signal?", "are there entity
-    types to extract?", "what profile fields should the bot remember?")
-    instead of proposing concrete defaults for the user to confirm.
+def test_language_group4_proposes_profile_map_and_signal_types() -> None:
+    """Group 4 proposes entity_to_profile_field and signal_intents in ONE
+    turn rather than open-ended questions (GoGuide regression).
     """
     result = build([], "", "", _intake(needs_persistent_user_data=True))
 
-    # All four list names appear as proposal targets.
-    assert "intents" in result.lower()
-    assert "entities" in result.lower()
     assert "entity_to_profile_field" in result
     assert "signal_intents" in result
-
-    # Group 4 must instruct the LLM to propose, not ask open-ended.
     assert "propose" in result.lower()
-    # Reply pattern must include the concrete worked example so the LLM
-    # has a template to follow (bold heading + markdown structure).
-    assert "**Proposed NLU setup:**" in result
-    # Must explicitly forbid the open-ended signal_intents ask that the
-    # GoGuide bot produced (the phrase is split across a soft wrap in the
-    # prompt, so match the distinctive fragment only).
-    assert "are there intents that should write a signal?" in result
+    assert "**Proposed profile setup:**" in result
+    assert "are there signals that should be recorded?" in result
 
 
 def test_language_prompt_does_not_ask_for_default_or_supported_languages() -> None:
@@ -353,3 +315,23 @@ def test_language_prompt_does_not_ask_for_default_or_supported_languages() -> No
     # the LLM has to ask.
     assert "`default_language` = `english`" in result
     assert "`supported_languages` = `['english', 'hindi']`" in result
+
+
+HAND_AUTHORED = (
+    "NLU slots, act→intent rows and pending questions are authored by hand in "
+    "agent_core.yaml for now (see spec §16)."
+)
+
+
+def _assert_no_intent_mode_vocabulary(text: str) -> None:
+    import re
+    assert re.search(r"\bintents\b", text, re.IGNORECASE) is None, re.findall(r".{40}\bintents\b.{40}", text, re.I)
+    for word in ("domain_instruction", "valid_intents", "global_intents", "nlu_processor.entities"):
+        assert word not in text
+
+
+def test_language_prompt_never_asks_for_intents_or_entities() -> None:
+    for state in (_intake(), _intake(needs_persistent_user_data=True, selected_channels=["web", "voice"])):
+        result = build([], "", "", state)
+        _assert_no_intent_mode_vocabulary(result)
+        assert HAND_AUTHORED in " ".join(result.split())

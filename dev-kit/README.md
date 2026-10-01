@@ -76,9 +76,9 @@ dev-kit/
 │   ├── observability_layer.yaml
 │   └── reach_layer.yaml
 ├── configs/
-│   └── kkb/                      # KKB domain overrides (reference domain)
-│       ├── agent_core.yaml       # Models, intents (40+), entities (20+), subagent graph (10 subagents), connectors
-│       ├── knowledge_engine.yaml # Glossary (8 mappings), RAG sources (5 docs), intent filters
+│   └── blue-dots/                # blue-dots domain overrides (reference domain)
+│       ├── agent_core.yaml       # Models, dialogue-act NLU, subagent graph, connectors
+│       ├── knowledge_engine.yaml # Glossary, RAG sources, act-intent filters
 │       ├── memory_layer.yaml     # 24 UserProfile declared fields, journey schema, TTLs, merge rules, reengagement
 │       ├── trust_layer.yaml      # 5 Policy Pack guardrails, blocked phrases, consent phrases
 │       ├── action_gateway.yaml   # Connector endpoints, timeouts
@@ -127,10 +127,10 @@ Each YAML file configures one DPG block. The table below lists the key sections 
 
 | File | Configures | Key sections |
 |------|-----------|--------------|
-| `agent_core.yaml` | Agent Core | Models, intents (40+ for KKB), entity types (20+), subagent workflow graph (10 subagents for KKB), connectors, consent |
-| `knowledge_engine.yaml` | Knowledge Engine | Glossary mappings, RAG sources, similarity threshold, top-k, intent→doc_type filters |
-| `memory_layer.yaml` | Memory Layer | Session schema, graph node/edge types, TTLs, merge rules, reengagement triggers, 24 UserProfile declared fields (KKB) |
-| `trust_layer.yaml` | Trust Layer | Blocked phrases, escalation topics, Policy Pack guardrails (5 for KKB: GR-001–GR-005), consent phrases |
+| `agent_core.yaml` | Agent Core | Models, dialogue-act NLU (slots, act_intents, termination gate; hand-authored for now), subagent workflow graph, connectors, consent |
+| `knowledge_engine.yaml` | Knowledge Engine | Glossary mappings, RAG sources, similarity threshold, top-k, act-intent→doc_type filters |
+| `memory_layer.yaml` | Memory Layer | Session schema, graph node/edge types, TTLs, merge rules, reengagement triggers, UserProfile declared fields |
+| `trust_layer.yaml` | Trust Layer | Blocked phrases, escalation topics, Policy Pack guardrails, consent phrases |
 | `action_gateway.yaml` | Action Gateway | Connector endpoints, authentication, timeouts, retry policy |
 | `reach_layer.yaml` | Reach Layer | Agent Core URL, UI text for web adapter |
 | `observability_layer.yaml` | Observability Layer | Lifecycle states, custom metrics, SLI thresholds, PII field exclusions |
@@ -140,7 +140,7 @@ Each YAML file configures one DPG block. The table below lists the key sections 
 ## Adding a New Domain
 
 1. Create `dev-kit/configs/<new-domain>/`.
-2. Add one YAML file per DPG block (copy from `dev-kit/configs/kkb/` as a starting point).
+2. Add one YAML file per DPG block (copy from `dev-kit/configs/blue-dots/` as a starting point).
 3. Override only the values that differ from the framework defaults in `dev-kit/dpg/`.
 4. Point `DOMAIN` to `<new-domain>` in your environment or Docker compose file.
 5. Validate: `python -m dev_kit.loader validate --domain <new-domain>`

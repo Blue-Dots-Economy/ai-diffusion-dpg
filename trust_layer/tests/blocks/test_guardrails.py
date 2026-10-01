@@ -2,11 +2,11 @@ import pytest
 from trust_layer.src.blocks.guardrails import GuardrailsBlock
 
 
-KKB_CONFIG = {
+BLUE_DOTS_CONFIG = {
     "trust": {
-        "policy_pack": "kkb_advisory_jobs",
+        "policy_pack": "blue_dots_advisory_jobs",
         "policy_packs": {
-            "kkb_advisory_jobs": {
+            "blue_dots_advisory_jobs": {
                 "risks": ["false_certainty", "emotional_overreach"],
                 "guardrails": {
                     "false_certainty": {
@@ -36,7 +36,7 @@ KKB_CONFIG = {
 
 @pytest.fixture
 def block():
-    return GuardrailsBlock(KKB_CONFIG)
+    return GuardrailsBlock(BLUE_DOTS_CONFIG)
 
 
 # ── normal ────────────────────────────────────────────────────────────────

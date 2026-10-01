@@ -1,6 +1,6 @@
 """Phase prompt builder: language.
 
-Configures LLM provider/models, language normalisation, NLU intents/entities,
+Configures LLM provider/models, language normalisation, the NLU model,
 conversation messages, and (for voice agents) TTS rules and terminal word.
 Part of the dev-kit deterministic wizard's phase-prompt system.
 
@@ -253,8 +253,8 @@ Configure via:
   `supported_languages` under this section are ALREADY set by the router
   from the project form — never include them in `values`.
 - `update_config(block=agent_core, section=preprocessing.nlu_processor,
-  values={{provider: ..., model: ..., domain_instruction: ...,
-  intents: [...], entities: [...]}})` — see Group 4 below for intents.
+  values={{provider: ..., model: ...}})` — only to override the NLU
+  provider/model. See Group 4 below for the rest of the NLU setup.
 - `update_config(block=agent_core, section=conversation, values={{...}})`
   — see Group 2 below.
 - `update_config(path="agent_core.entity_to_profile_field",
@@ -330,110 +330,72 @@ values={{...}})` ONCE for all the messages above, and (if voice) one
 extra path-form call for `session_end_eval.prompt`. Ask: "Do these look
 good, or would you like to change any?"
 {voice_groups}
-**Group 4 — NLU intents, entities, entity→profile map, and signal_intents
-(one turn, propose everything together):**
+**Group 4 — NLU setup and, if `needs_persistent_user_data=true`, the
+profile map and signal types (one turn, propose everything together):**
 
-Derive ALL four lists ENTIRELY from the described use case (`domain_description`
-above) and present them as a single labelled block — do NOT ask the user
-"what intents do you want?" or "what entities should we extract?" with no
-suggestion. Propose concrete values; the user only types if they want to
-change something specific.
+NLU slots, act→intent rows and pending questions are authored by hand in
+agent_core.yaml for now (see spec §16). Do NOT ask the user for them, do
+NOT propose them, and do NOT write any `preprocessing.nlu_processor` key
+other than `provider`, `model` and `signal_intents`.
 
-Rules for the proposal:
+If `needs_persistent_user_data=true`, propose these two maps ENTIRELY from
+the described use case (`domain_description` above) as a single labelled
+block — do NOT ask open-ended questions with no suggestion. Propose concrete
+values; the user only types if they want to change something specific.
+Skip this group when `needs_persistent_user_data=false`.
 
-- **intents** — 6–10 intent names in snake_case. Start with `unknown` (the
-  baseline for unrecognised input — required). Do NOT auto-include
-  `greeting`, `clarification`, `consent_granted`, or `consent_declined`
-  unless the user explicitly asks for them. Generate the rest from the
-  project's scope (e.g. for a tour-planning bot: `destination_query`,
-  `package_inquiry`, `booking_request`, `weather_check`,
-  `escalation_request`). After the user signs off, the intent list is
-  FROZEN — do not add, rename, remove, or merge intents in later phases
-  without explicit user approval.
-- **entities** — 4–8 entities the bot will need to extract from user
-  messages in snake_case. Derive from the domain (e.g. for a tour bot:
-  `destination`, `date_range`, `budget`, `group_size`, `contact_phone`,
-  `contact_email`, `traveller_name`).
 - **entity_to_profile_field** — a `dict[str, str]` mapping each
-  user-data entity name to the profile-field key where it should be
-  stored (e.g. `{{"contact_phone": "phone", "contact_email": "email",
-  "traveller_name": "name"}}`). Skip the mapping for transient entities
-  like `date_range` or `budget` that do not belong in a persistent
-  profile.
-- **signal_intents** — a `dict[str, str]` mapping each intent that
-  represents a meaningful user action to a signal type. Use `"event"`
-  for one-off interactions (e.g. `booking_request: event`) and
-  `"profile_update"` for intents that change persistent state (e.g.
-  `destination_query: profile_update` if the bot should remember the
-  user's interest). Skip transient/utility intents (`unknown`,
-  `clarification`, `escalation_request`).
+  caller-stated value the bot extracts (an NLU slot name, e.g.
+  `contact_phone`) to the profile-field key where it should be stored
+  (e.g. `{{"contact_phone": "phone", "contact_email": "email",
+  "traveller_name": "name"}}`). Skip transient values like a date range
+  or a budget that do not belong in a persistent profile.
+- **signal_intents** — a `dict[str, str]` mapping each signal name the
+  NLU may emit to a signal type. Use `"event"` for one-off interactions
+  (e.g. `booking_request: event`) and `"profile_update"` for signals
+  that change persistent state (e.g. `destination_interest:
+  profile_update` if the bot should remember the user's interest).
 
 Reply pattern for Group 4 — ONE turn, bulleted proposals + ONE numbered
 question. Apply the markdown formatting rules from the "Strict reply
-rules" block above (bold labels, one-per-line bullets for lists, table
-for the two-column mapping, fenced code block for the JSON dict, and
-backticks around every identifier). Critically: each bold label that
-names a schema concept gets a ONE-LINE plain-English explanation on
-the same line (em-dash separator) so the user can decide what to keep
-without having to read the schema.
+rules" block above (bold labels, a table for the two-column mapping, a
+fenced code block for the JSON dict, and backticks around every
+identifier). Critically: each bold label that names a schema concept
+gets a ONE-LINE plain-English explanation on the same line (em-dash
+separator) so the user can decide what to keep without having to read
+the schema.
 
 ```
-**Proposed NLU setup:**
+**Proposed profile setup:**
 
-**Intents** — the categories of user request the NLU classifier learns
-to recognise (one intent per user message, used to pick the right
-subagent and to gate knowledge-base lookups):
-
-- `unknown`
-- `destination_query`
-- `package_inquiry`
-- `booking_request`
-- `weather_check`
-- `escalation_request`
-
-**Entities** — the structured values the NLU extracts from each user
-message (e.g. a destination name, a date, a phone number). Extracted
-entities are written into session state and used by tools/connectors:
-
-- `destination`
-- `date_range`
-- `budget`
-- `group_size`
-- `traveller_name`
-- `contact_phone`
-- `contact_email`
-
-**entity_to_profile_field** — the mapping from each extracted entity to
-the persistent user-profile field where its value should be stored on
-write. Transient entities (dates, budget) are omitted because they do
+**entity_to_profile_field** — the mapping from each value the bot
+extracts to the persistent user-profile field where it should be stored
+on write. Transient values (dates, budget) are omitted because they do
 not belong in a long-lived profile:
 
-| Entity            | Profile field |
+| Extracted value   | Profile field |
 |-------------------|---------------|
 | `traveller_name`  | `name`        |
 | `contact_phone`   | `phone`       |
 | `contact_email`   | `email`       |
 
-**signal_intents** — intents that fire a longitudinal write to the
-context graph when they occur. Use `event` for one-off actions
-(e.g. a booking) and `profile_update` for intents that should
-remember a preference across sessions. Skip transient/utility intents
-like `unknown` or `escalation_request`:
+**signal_intents** — signals that fire a longitudinal write to the
+context graph when the NLU emits them. Use `event` for one-off actions
+(e.g. a booking) and `profile_update` for signals that should remember
+a preference across sessions:
 
 ```json
 {{
   "booking_request": "event",
-  "destination_query": "profile_update",
-  "package_inquiry": "event"
+  "destination_interest": "profile_update"
 }}
 ```
 
 1. Does this look right, or would you like to add, remove, or rename anything?
 ```
 
-Never ship comma-separated lists like `Intents: unknown, destination_query,
-booking_request` — they are unscannable on the dark chat UI. Never ask
-"are there intents that should write a signal?" as a separate
+Never ship comma-separated lists — they are unscannable on the dark chat
+UI. Never ask "are there signals that should be recorded?" as a separate
 open-ended question — propose the map yourself and let the user adjust.
 Never present a label like `**signal_intents:**` and jump straight to
 the values without the one-liner explanation — the user does not know

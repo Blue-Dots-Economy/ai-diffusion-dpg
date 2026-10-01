@@ -378,7 +378,6 @@ class TestSubAgentSchema:
         assert s.is_start is False
         assert s.is_terminal is False
         assert s.special_handler is None
-        assert s.valid_intents == []
         assert s.tools == []
         assert s.routing == []
 
@@ -430,9 +429,8 @@ class TestAgentWorkflowConfig:
         with pytest.raises(ValidationError):
             AgentWorkflowConfig(**data)
 
-    def test_global_intents_default_empty(self):
+    def test_global_routing_default_empty(self):
         wf = AgentWorkflowConfig(**self._make_minimal_workflow())
-        assert wf.global_intents == []
         assert wf.global_routing == []
         assert wf.default_fallback_subagent_id == ""
 
@@ -546,56 +544,56 @@ class TestMemoryLayerConfig:
 
 
 # ===========================================================================
-# Integration: load KKB domain configs via loader and validate
+# Integration: load blue-dots domain configs via loader and validate
 # ===========================================================================
 
 
 class TestLoaderIntegration:
-    def test_load_agent_core_kkb(self):
-        cfg = load_agent_core("kkb")
+    def test_load_agent_core_blue_dots(self):
+        cfg = load_agent_core("blue-dots")
         assert cfg.agent.primary_model != ""
         assert cfg.agent.fallback_model != ""
         assert len(cfg.agent_workflow.subagents) >= 1
 
-    def test_kkb_workflow_has_exactly_one_start(self):
-        cfg = load_agent_core("kkb")
+    def test_blue_dots_workflow_has_exactly_one_start(self):
+        cfg = load_agent_core("blue-dots")
         start_agents = [s for s in cfg.agent_workflow.subagents if s.is_start]
         assert len(start_agents) == 1
 
-    def test_kkb_agent_ask_for_consent_is_bool(self):
-        cfg = load_agent_core("kkb")
+    def test_blue_dots_agent_ask_for_consent_is_bool(self):
+        cfg = load_agent_core("blue-dots")
         assert isinstance(cfg.agent.ask_for_consent, bool)
 
-    def test_load_trust_layer_kkb(self):
-        cfg = load_trust_layer("kkb")
-        assert "kkb_advisory_jobs" in cfg.trust.policy_packs
-        assert cfg.trust.policy_pack == "kkb_advisory_jobs"
+    def test_load_trust_layer_blue_dots(self):
+        cfg = load_trust_layer("blue-dots")
+        assert "blue_dots_advisory_jobs" in cfg.trust.policy_packs
+        assert cfg.trust.policy_pack == "blue_dots_advisory_jobs"
         assert len(cfg.trust.input_rules.blocked_phrases) > 0
         assert cfg.trust.input_rules.blocked_input_message != ""
         assert cfg.trust.output_rules.output_blocked_message != ""
         assert cfg.trust.consent.consent_phrases != []
         assert cfg.trust.hitl is not None
 
-    def test_load_observability_layer_kkb(self):
-        cfg = load_observability_layer("kkb")
-        assert cfg.observability.domain == "kkb"
+    def test_load_observability_layer_blue_dots(self):
+        cfg = load_observability_layer("blue-dots")
+        assert cfg.observability.domain == "blue_dot"
         assert len(cfg.observability.outcomes.lifecycle) > 0
         assert len(cfg.observability.outcomes.metrics) > 0
         assert cfg.observability.sli.turn_latency_p99_ms == 1200
 
-    def test_kkb_policy_pack_guardrails_validate(self):
-        cfg = load_trust_layer("kkb")
-        pack = cfg.trust.policy_packs["kkb_advisory_jobs"]
+    def test_blue_dots_policy_pack_guardrails_validate(self):
+        cfg = load_trust_layer("blue-dots")
+        pack = cfg.trust.policy_packs["blue_dots_advisory_jobs"]
         assert "false_certainty" in pack.guardrails
         gr = pack.guardrails["false_certainty"]
         assert gr.severity == "blocker"
         assert gr.failure_mode == "block"
         assert len(gr.prompt_constraints) > 0
 
-    def test_kkb_internal_connector_present(self):
-        cfg = load_agent_core("kkb")
+    def test_blue_dots_internal_connector_present(self):
+        cfg = load_agent_core("blue-dots")
         internal_names = [c.name for c in cfg.connectors.internal]
-        assert "knowledge_retrieval" in internal_names
+        assert internal_names == []  # blue-dots does not use the knowledge engine
 
 
 class TestWebChannelConfigMode:
@@ -614,3 +612,68 @@ class TestWebChannelConfigMode:
     def test_invalid_mode_raises(self):
         with pytest.raises(ValidationError):
             WebChannelConfig(mode="partial")
+
+
+class TestRemovedIntentModeKeys:
+    """The flat schema mirror drops the removed legacy NLU keys (NLU single-mode, spec §16)."""
+
+    @pytest.mark.parametrize("key", ["mode", "intents", "entities", "domain_instruction",
+                                     "confidence_threshold", "sentiment_classes"])
+    def test_nlu_processor_has_no_removed_key(self, key):
+        from dev_kit.schema import NLUProcessorConfig
+        assert key not in NLUProcessorConfig.model_fields
+
+    def test_subagent_has_no_valid_intents(self):
+        assert "valid_intents" not in SubAgentSchema.model_fields
+
+    def test_workflow_has_no_global_intents(self):
+        assert "global_intents" not in AgentWorkflowConfig.model_fields
+
+    @pytest.mark.parametrize("key", ["mode", "intents", "entities", "domain_instruction"])
+    def test_nlu_processor_rejects_removed_key(self, key):
+        from dev_kit.schema import NLUProcessorConfig
+        with pytest.raises(ValidationError, match=key):
+            NLUProcessorConfig(**{key: "x"})
+
+    def test_subagent_rejects_valid_intents(self):
+        with pytest.raises(ValidationError, match="valid_intents"):
+            SubAgentSchema(id="a", valid_intents=["x"])
+
+    def test_workflow_rejects_global_intents(self):
+        with pytest.raises(ValidationError, match="global_intents"):
+            AgentWorkflowConfig(workflow_id="w", version="1.0.0", global_intents=["x"])
+
+    def test_turn_assembler_rejects_semantic_gate(self):
+        from dev_kit.schema import ChannelTurnAssemblerConfig
+        with pytest.raises(ValidationError, match="semantic_gate"):
+            ChannelTurnAssemblerConfig(semantic_gate={"enabled": True})
+
+    def test_dpg_nlu_defaults_reject_mode(self):
+        from dev_kit.schemas.dpg.agent_core import NLUProcessorDpg
+        with pytest.raises(ValidationError, match="mode"):
+            NLUProcessorDpg(mode="intent")
+
+
+class TestLogRawResponseKeys:
+    """Runtime NLUProcessorConfig accepts log_raw_response; every dev-kit mirror must too."""
+
+    @staticmethod
+    def _models():
+        from dev_kit.schema import NLUProcessorConfig
+        from dev_kit.schemas.domain.agent_core import NLUProcessorSection
+        from dev_kit.schemas.dpg.agent_core import NLUProcessorDpg
+        return [NLUProcessorConfig, NLUProcessorSection, NLUProcessorDpg]
+
+    @pytest.mark.parametrize("idx", [0, 1, 2], ids=["flat", "domain", "dpg"])
+    def test_accepts_key(self, idx):
+        model = self._models()[idx]
+        m = model(log_raw_response=True)
+        assert m.log_raw_response is True
+        d = model()
+        assert d.log_raw_response is False
+
+    @pytest.mark.parametrize("idx", [0, 1, 2], ids=["flat", "domain", "dpg"])
+    def test_rejects_removed_max_chars(self, idx):
+        model = self._models()[idx]
+        with pytest.raises(ValidationError, match="log_raw_response_max_chars"):
+            model(log_raw_response_max_chars=500)

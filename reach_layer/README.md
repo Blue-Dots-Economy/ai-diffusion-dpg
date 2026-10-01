@@ -293,7 +293,6 @@ TurnAssembler lives inside Agent Core but is tuned per channel, so the tuning ke
 
 | Key | Description |
 |-----|-------------|
-| `reach_layer.turn_assembler.semantic_gate.{enabled,confidence_threshold}` | NLU-based early trigger defaults |
 | `reach_layer.turn_assembler.silence_trigger.silence_ms` | Silence timer default |
 | `reach_layer.turn_assembler.max_wait_ceiling.max_wait_ms` | Max wait default |
 | `reach_layer.channels.<name>.turn_assembler.*` | Per-channel override of any of the above |

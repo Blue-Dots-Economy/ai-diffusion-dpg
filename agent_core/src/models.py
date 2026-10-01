@@ -129,7 +129,7 @@ class UserStateClassification:
     """
     Classification output for the user's mental state dimension.
 
-    Populated by NLU Processor when the domain declares conversation.user_state_model.
+    Populated by the dialogue-act NLU when the domain declares conversation.user_state_model.
     None on NLUResult when the model is disabled or absent.
     """
 
@@ -140,15 +140,13 @@ class UserStateClassification:
 @dataclass
 class NLUResult:
     """
-    Combined output of Language Normalisation and NLU Processor steps run in Agent Core.
+    Output of the dialogue-act understanding step run in Agent Core.
     Produced before the Knowledge Engine call and passed as parameters to KE's retrieve().
     """
 
-    intent: str                              # classified intent label from config intents list
-    entities: dict[str, Any]                 # extracted entity key→value pairs
-    sentiment: str                           # one of the configured sentiment classes
-    confidence: float                        # 0.0–1.0; below threshold triggers early exit
-    active_risks: list[str] | None = None    # risk signals from NLU; None if not classified
+    intent: str                              # routing intent derived from act_intents (or any_input / off_track)
+    entities: dict[str, Any]                 # accepted slots keyed by state key
+    confidence: float                        # 1.0 for a derived intent, 0.0 for a fallback result
     user_state: UserStateClassification | None = None   # classified user mental state (GH-139); None when model disabled
 
 

@@ -6,7 +6,7 @@ from src.understanding.postprocess import derive_intent, gate_passes, next_off_t
 
 def _cfg():
     return DialogueActConfig.from_config({"preprocessing": {"nlu_processor": {
-        "mode": "dialogue_act", "topics": ["search", "salary"],
+        "topics": ["search", "salary"],
         "act_intents": [
             {"acts": ["affirm"], "pending": "submit_confirm", "relation": "answers_pending", "intent": "apply_now"},
             {"acts": ["deny"], "pending": "submit_confirm", "relation": "answers_pending", "intent": "decline"},

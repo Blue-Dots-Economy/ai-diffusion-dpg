@@ -1,4 +1,4 @@
-"""Stream-path wiring of dialogue_act mode."""
+"""Stream-path wiring of the dialogue-act understanding (the single NLU path)."""
 from unittest.mock import MagicMock
 
 import pytest
@@ -13,7 +13,7 @@ pytestmark = pytest.mark.asyncio
 
 def _understanding(intent="any_input", writes=(), signals=()):
     return TurnUnderstanding(
-        nlu_result=NLUResult(intent=intent, entities={}, sentiment="neutral", confidence=1.0),
+        nlu_result=NLUResult(intent=intent, entities={}, confidence=1.0),
         dialogue=DialogueActResult(acts=("provide_info",), relation="answers_pending"),
         pending_id="age", writes=list(writes), signals=list(signals))
 
@@ -22,8 +22,6 @@ def _agent(understanding):
     agent = _make_agent_core()
     agent._understander = MagicMock()
     agent._understander.understand.return_value = understanding
-    agent._dialogue_cfg = MagicMock(history_turns=2, signal_types={})
-    agent._nlu_processor = MagicMock()
 
     async def mock_stream(*args, **kwargs):
         yield "ठीक है। "
@@ -32,11 +30,11 @@ def _agent(understanding):
     return agent
 
 
-async def test_dialogue_act_mode_replaces_nlu_and_applies_writes():
+async def test_understanding_runs_and_applies_writes():
     u = _understanding(writes=[StateWrite("session", "age", 25), StateWrite("session", "slot_provenance", ["age"])])
     agent = _agent(u)
     await _collect_events(agent, _make_turn_input())
-    agent._nlu_processor.process.assert_not_called()
+    agent._understander.understand.assert_called_once()
     ctx = agent._understander.understand.call_args.args[0]
     assert ctx.tool_cache is not None                       # cache built before NLU
     written = {(c.args[2], c.args[3]): c.args[4] for c in agent._async_memory.write.await_args_list}
@@ -66,22 +64,6 @@ async def test_signals_written_as_signal_nodes():
     assert sig and sig[0].args[4]["type"] == "pay_disappointment"
 
 
-async def test_intent_mode_untouched():
-    agent = _make_agent_core()
-    agent._nlu_processor = MagicMock()
-    agent._nlu_processor.process.return_value = NLUResult(intent="greeting", entities={}, sentiment="neutral",
-                                                           confidence=0.9)
-
-    async def mock_stream(*args, **kwargs):
-        yield "Hi. "
-
-    agent._llm.stream = mock_stream
-    await _collect_events(agent, _make_turn_input())
-    agent._nlu_processor.process.assert_called_once()
-    assert agent._manager_agent.build_system_prompt.call_args.kwargs.get("caller_turn", "") == ""
-    assert not any(c.args[3] == RECENT_TURNS_KEY for c in agent._async_memory.write.call_args_list)
-
-
 async def test_interrupted_turn_persists_what_was_spoken():
     agent = _agent(_understanding())
     agent._async_memory.context_bundle.return_value = ContextBundle(session={RECENT_TURNS_KEY: []}, profile={})
@@ -102,10 +84,9 @@ async def test_interrupted_turn_with_nothing_spoken_writes_no_question():
     assert not any(c.args[3] == "current_question" for c in agent._async_memory.write.await_args_list)
 
 
-@pytest.mark.parametrize("dialogue_act", [True, False])
-async def test_replace_policy_with_no_rounds_still_persists_spoken_question(dialogue_act):
+async def test_replace_policy_with_no_rounds_still_persists_spoken_question():
     """on_new_input: replace (no carry-over) and no tool rounds still schedule the persist."""
-    agent = _agent(_understanding()) if dialogue_act else _make_agent_core()
+    agent = _agent(_understanding())
     agent._async_memory.context_bundle.return_value = ContextBundle(session={}, profile={})
     record = TurnRecord(write_carryover=False)
     record.spoken = ["कौन सा शहर?"]
@@ -116,7 +97,7 @@ async def test_replace_policy_with_no_rounds_still_persists_spoken_question(dial
     by_key = {c.args[3]: c.args[4] for c in agent._async_memory.write.await_args_list}
     assert by_key["current_question"] == "कौन सा शहर?"
     assert "turn_carryover" not in by_key
-    assert (RECENT_TURNS_KEY in by_key) is dialogue_act
+    assert RECENT_TURNS_KEY in by_key
 
 
 async def test_interrupted_turn_before_fold_records_user_message_as_caller():
@@ -129,3 +110,28 @@ async def test_interrupted_turn_before_fold_records_user_message_as_caller():
     await record.persist_task
     by_key = {c.args[3]: c.args[4] for c in agent._async_memory.write.await_args_list}
     assert by_key[RECENT_TURNS_KEY][-1] == {"caller": "पुणे", "bot": "कौन सा शहर?", "interrupted": True}
+
+
+def _lang_understanding(value):
+    return TurnUnderstanding(
+        nlu_result=NLUResult(intent="language_switch_request", entities={"language_preference": value}, confidence=1.0),
+        dialogue=DialogueActResult(acts=("request_change",), relation="new_topic", topic="language"),
+        pending_id=None, writes=[], signals=[])
+
+
+async def test_language_switch_derived_intent_sets_session_language():
+    agent = _agent(_lang_understanding("hindi"))
+    agent._config["preprocessing"]["language_normalisation"]["supported_languages"] = ["english", "hindi"]
+    await _collect_events(agent, _make_turn_input())
+    # bundle.session["language_preference"] is mirrored into the turn language (default is english)
+    kwargs = agent._manager_agent.build_system_prompt.call_args.kwargs
+    assert kwargs["detected_language"] == "hindi"
+
+
+async def test_language_switch_unsupported_language_yields_message():
+    agent = _agent(_lang_understanding("tamil"))
+    agent._config["preprocessing"]["language_normalisation"]["supported_languages"] = ["english", "hindi"]
+    events = await _collect_events(agent, _make_turn_input())
+    texts = [getattr(e, "text", "") for e in events]
+    assert any("english, hindi" in t for t in texts)
+    agent._manager_agent.build_system_prompt.assert_not_called()

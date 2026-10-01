@@ -21,7 +21,7 @@ def nlu_owned_values(session: dict | None) -> dict:
         session: Session state (``bundle.session``).
 
     Returns:
-        key → value to layer over the profile. Empty in intent mode.
+        key → value to layer over the profile. Empty when no provenance is recorded.
     """
     session = session or {}
     keys = session.get(PROVENANCE_KEY)

@@ -9,12 +9,12 @@ def test_web_channel_config_validates():
     """A valid web channel config should parse without errors."""
     data = {
         "reach_layer": {
-            "common": {"observability": {"domain": "kkb"}},
+            "common": {"observability": {"domain": "blue-dots"}},
             "channels": {
                 "web": {
                     "auth": {"enabled": False, "google_client_id": "", "cookie_secure": False},
                     "ui": {
-                        "app_name": "Kaam Ki Baat",
+                        "app_name": "Blue Dots",
                         "app_tagline": "DPG Skill-Jobs AI",
                         "app_icon": "💼",
                     },
@@ -23,7 +23,7 @@ def test_web_channel_config_validates():
         }
     }
     config = ReachLayerConfig.model_validate(data)
-    assert config.reach_layer.channels.web.ui["app_name"] == "Kaam Ki Baat"
+    assert config.reach_layer.channels.web.ui["app_name"] == "Blue Dots"
     assert config.reach_layer.channels.web.auth.enabled is False
 
 

@@ -81,7 +81,7 @@ _PHASE_STALL_FORCE_THRESHOLD = int(
 # user/assistant turns regularly pushed the request size to where a single
 # turn cost as much as the entire rest of the wizard combined, and the
 # extra context didn't help: each phase prompt already injects the
-# cross-phase reference block (current model, NLU intents, knowledge
+# cross-phase reference block (current model, act_intents names, knowledge
 # filters, etc.) so the LLM has the canonical state without needing to
 # re-read it from history. 10 turns is enough for the bot to remember
 # the last 2-3 proposal+confirm cycles (which is all the conversational
@@ -194,7 +194,7 @@ class LLMResponse:
 # ---------------------------------------------------------------------------
 
 # Sentence-level patterns that expose internal machinery (schema paths,
-# retry intents, debug fragments) to the end user. The Akashvani E2E
+# retry notes, debug fragments) to the end user. The Akashvani E2E
 # surfaced each of these as real LLM output that confused the user. We
 # strip the matching sentence — from the pattern through the next
 # terminator — and leave the rest of the paragraph in place.
@@ -731,8 +731,8 @@ def cross_phase_references(accumulator: dict[str, dict]) -> str:
     """Render a multi-line string of already-set cross-phase reference values.
 
     Surfaces the values downstream phase prompts tell the LLM to read directly
-    (provider/model, language settings, NLU intents/entities, knowledge intent
-    filters). Returns an empty string when nothing has been set yet.
+    (provider/model, language settings, hand-authored ``act_intents`` intent
+    names, knowledge intent filters). Returns an empty string when nothing has been set yet.
 
     Patterned after ``ConfigAccumulator._render_cross_phase_references``.
 
@@ -768,12 +768,16 @@ def cross_phase_references(accumulator: dict[str, dict]) -> str:
         )
 
     nlu = preprocessing.get("nlu_processor") or {}
-    intents = nlu.get("intents")
-    if intents:
-        refs.append(f"  agent_core.preprocessing.nlu_processor.intents: {intents}")
-    entities = nlu.get("entities")
-    if entities:
-        refs.append(f"  agent_core.preprocessing.nlu_processor.entities: {entities}")
+    act_intent_names = sorted({
+        row["intent"]
+        for row in (nlu.get("act_intents") or [])
+        if isinstance(row, dict) and row.get("intent")
+    })
+    if act_intent_names:
+        refs.append(
+            "  agent_core.preprocessing.nlu_processor.act_intents intents: "
+            f"{act_intent_names}"
+        )
 
     kb = ((ke.get("knowledge") or {}).get("blocks") or {}).get("static_knowledge_base") or {}
     intent_filters = kb.get("intent_filters")

@@ -3,14 +3,14 @@ import { render, screen, fireEvent, within } from '@testing-library/react'
 import { ChatHeader } from '../components/chat/ChatHeader'
 
 const config = {
-  app_name: 'KKB Assistant',
+  app_name: 'Blue Dots Assistant',
   app_icon: '🏦',
 }
 
 describe('ChatHeader', () => {
   it('renders app name and Connected status', () => {
     render(<ChatHeader config={config} />)
-    expect(screen.getByText('KKB Assistant')).toBeInTheDocument()
+    expect(screen.getByText('Blue Dots Assistant')).toBeInTheDocument()
     expect(screen.getByText('Connected')).toBeInTheDocument()
   })
 

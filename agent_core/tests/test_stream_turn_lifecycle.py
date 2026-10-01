@@ -12,6 +12,7 @@ from src.chat_provider.base import ToolUseRequested as ChatToolUseRequested
 from src.chat_provider.types import ToolUseBlock
 from src.models import DoneEvent, NLUResult, SignalEvent, ToolResult, TurnRecord
 
+from tests.fakes import fake_understander
 from tests.test_stream_turn import _make_agent_core, _make_turn_input
 
 
@@ -37,8 +38,8 @@ def _tool_agent(rounds: int = 1):
         result={"ok": True}, success=True, result_text=f"result-{tc.tool_use_id}",
     )
     agent._language_normaliser = type("N", (), {"normalise": lambda self, *a, **k: ("msg", "english")})()
-    agent._nlu_processor = type("P", (), {"process": lambda self, *a, **k: NLUResult(
-        intent="search", entities={}, sentiment="neutral", confidence=0.9)})()
+    agent._understander = fake_understander(NLUResult(
+        intent="search", entities={}, confidence=0.9))
     agent._tool_registry.get_route.return_value = None
     return agent
 

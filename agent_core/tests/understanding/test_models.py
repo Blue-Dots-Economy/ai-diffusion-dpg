@@ -38,7 +38,8 @@ def test_from_parsed_unknown_topic_becomes_none_and_more_than_3_acts_truncate():
 
 @pytest.mark.parametrize("parsed", [
     None, [], {"acts": [], "relation": "unclear"}, {"acts": ["shout"], "relation": "unclear"},
-    {"acts": ["other"], "relation": "sideways"}, {"acts": ["other"], "relation": "unclear", "slots": []},
+    {"acts": ["other"], "relation": "sideways"}, {"acts": ["other"], "relation": "unclear", "slots": [{"name": "age"}]},
+    {"acts": ["other"], "relation": "unclear", "slots": "age"},
 ])
 def test_from_parsed_rejects_bad_shapes(parsed):
     with pytest.raises(ValueError):
@@ -54,3 +55,9 @@ def test_bool_option_is_not_an_int():
 def test_fallback_shape():
     f = DialogueActResult.fallback()
     assert f.acts == ("other",) and f.relation == "unclear" and f.slots == {} and f.option is None
+
+
+def test_from_parsed_reads_slot_pairs_last_wins():
+    r = DialogueActResult.from_parsed({"acts": ["provide_info"], "relation": "answers_pending",
+                                       "slots": [{"name": "age", "value": "21"}, {"name": "age", "value": "22"}]}, **KW)
+    assert r.slots == {"age": "22", "trade": None}

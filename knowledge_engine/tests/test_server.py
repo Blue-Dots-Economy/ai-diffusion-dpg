@@ -65,7 +65,6 @@ VALID_REQUEST = {
     "user_message": "kaam chahiye",
     "intent": "job_search",
     "entities": {},
-    "sentiment": "neutral",
     "confidence": 0.9,
     "normalised_input": "kaam chahiye",
     "detected_language": "hi",
@@ -190,3 +189,8 @@ class TestUploadRouterRegistered:
         """Verify /upload/job/{job_id} endpoint is registered on the FastAPI app."""
         routes = [r.path for r in client.app.routes]
         assert "/upload/job/{job_id}" in routes
+
+
+def test_retrieve_request_model_has_no_sentiment_field():
+    from main import RetrieveRequest
+    assert "sentiment" not in RetrieveRequest.model_fields

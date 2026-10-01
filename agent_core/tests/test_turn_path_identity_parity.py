@@ -31,6 +31,7 @@ from src.chat_provider.types import ToolUseBlock
 from src.chat_provider.base import ToolUseRequested as ChatToolUseRequested
 from src.models import NLUResult, ToolResult
 
+from tests.fakes import fake_understander
 from tests.test_manager_agent import (
     MESSAGES,
     SESSION_ID,
@@ -116,10 +117,9 @@ async def test_stream_path_forwards_user_id_to_gateway():
     )
     agent._language_normaliser = MagicMock()
     agent._language_normaliser.normalise.return_value = ("msg", "english")
-    agent._nlu_processor = MagicMock()
-    agent._nlu_processor.process.return_value = NLUResult(
-        intent="search", entities={}, sentiment="neutral", confidence=0.9
-    )
+    agent._understander = fake_understander(NLUResult(
+        intent="search", entities={}, confidence=0.9
+    ))
 
     await _collect_events(agent, _make_turn_input(user_id=USER_ID))
 
@@ -168,10 +168,9 @@ async def test_both_paths_forward_identical_identity():
     )
     stream_agent._language_normaliser = MagicMock()
     stream_agent._language_normaliser.normalise.return_value = ("msg", "english")
-    stream_agent._nlu_processor = MagicMock()
-    stream_agent._nlu_processor.process.return_value = NLUResult(
-        intent="search", entities={}, sentiment="neutral", confidence=0.9
-    )
+    stream_agent._understander = fake_understander(NLUResult(
+        intent="search", entities={}, confidence=0.9
+    ))
     await _collect_events(stream_agent, _make_turn_input(user_id=USER_ID))
 
     assert _forwarded_user_id(sync_gateway.execute) == _forwarded_user_id(
@@ -400,12 +399,12 @@ _BOOT_CONFIG = {
 _FLAGS = {"user_terms": True, "user_privacy": True, "has_age": True}
 _OPENING_PHRASE = "Welcome to Blue Dots. Shall we begin?"
 _NEW_CALLER = {"has_age": False}            # user_terms / user_privacy absent
-_GREETING = NLUResult(intent="greeting", entities={}, sentiment="neutral", confidence=0.9)
+_GREETING = NLUResult(intent="greeting", entities={}, confidence=0.9)
 
 
 def _sub(sid, routing=(), is_start=False, opening_phrase=""):
     return SubAgent(id=sid, name=sid, description=sid, is_start=is_start, is_terminal=False,
-                    special_handler=None, valid_intents=["greeting"], tools=[],
+                    special_handler=None, tools=[],
                     system_prompt=f"{sid} prompt", output_format=None, routing=list(routing),
                     opening_phrase=opening_phrase)
 
@@ -418,7 +417,6 @@ def _opening_workflow():
     wf = MagicMock(spec=AgentWorkflow)
     wf.start_subagent_id = "opening"
     wf.subagents = subs
-    wf.nlu_intent_set = {k: ["greeting"] for k in subs}
     wf.tool_defs = {k: [] for k in subs}
     wf.global_routing = []
     wf.default_fallback_subagent_id = "opening"
@@ -477,8 +475,7 @@ async def _stream_bootstrap_route(session_values: dict | None) -> list:
     agent._llm.stream = mock_stream
     agent._language_normaliser = MagicMock()
     agent._language_normaliser.normalise.return_value = ("Hello", "english")
-    agent._nlu_processor = MagicMock()
-    agent._nlu_processor.process.return_value = _GREETING
+    agent._understander = fake_understander(_GREETING)
     await _collect_events(agent, _make_turn_input())
     assert agent._async_gateway.execute.await_count == 1
     return _routed_to(agent._async_memory.write.await_args_list)
@@ -503,29 +500,27 @@ async def test_bootstrap_failure_leaves_routing_unchanged_on_both_paths():
     assert _sync_bootstrap_route(None) == ["opening"]
 
 
-# ── dialogue_act mode: both paths apply one understanding identically ───────
+# ── Both paths apply one understanding identically ───────────────────────
 
 from src.understanding.history import RECENT_TURNS_KEY  # noqa: E402
 from src.understanding.models import DialogueActResult, StateWrite, TurnUnderstanding  # noqa: E402
 
 _DA_U = TurnUnderstanding(
-    nlu_result=NLUResult(intent="any_input", entities={"age": 25}, sentiment="neutral", confidence=1.0),
+    nlu_result=NLUResult(intent="any_input", entities={"age": 25}, confidence=1.0),
     dialogue=DialogueActResult(acts=("provide_info",), relation="answers_pending"),
     pending_id="age", writes=[StateWrite("session", "age", 25), StateWrite("session", "slot_provenance", ["age"])])
 
 
 def _da(agent):
-    """Switch an agent into dialogue_act mode with a canned understanding."""
+    """Give an agent a canned understanding."""
     agent._understander = MagicMock()
     agent._understander.understand.return_value = _DA_U
-    agent._dialogue_cfg = MagicMock(history_turns=2, signal_types={})
-    agent._nlu_processor = MagicMock()
     return agent
 
 
 async def test_both_paths_apply_identical_understanding():
-    """Parity: dialogue_act mode writes, frames and prompts the same on both paths,
-    and both send the raw caller text to NLU (legacy NLU is never called)."""
+    """Parity: understanding writes, frames and prompts the same on both paths,
+    and both send the raw caller text to NLU."""
     # opening_phrase_emitted: past the sync canned-greeting gate, so turn 1 reaches NLU.
     sync_agent = _da(_make_agent(session_data={"current_subagent_id": "market_truth",
                                                "opening_phrase_emitted": True}))
@@ -552,8 +547,6 @@ async def test_both_paths_apply_identical_understanding():
     assert sync_ctx.segments == stream_ctx.segments == ["Hello"]   # raw caller text on both paths
     assert sync_ctx.tool_cache is not None and stream_ctx.tool_cache is not None
     assert sync_prompt == stream_prompt != ""
-    sync_agent._nlu_processor.process.assert_not_called()
-    stream_agent._nlu_processor.process.assert_not_called()
 
 
 # ── F3: the last-served tool entry is persisted at end of turn on both paths ──
@@ -592,7 +585,7 @@ async def test_served_map_persisted_on_both_paths(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_served_map_not_written_when_unchanged_or_intent_mode(monkeypatch):
+async def test_served_map_not_written_when_unchanged(monkeypatch):
     monkeypatch.setattr(TurnToolCache, "served", lambda self: {"fetch_jobs": "ha"})
     prior = {"fetch_jobs": "ha"}
     sync_agent = _da(_make_agent(session_data={"current_subagent_id": "market_truth",
@@ -612,20 +605,14 @@ async def test_served_map_not_written_when_unchanged_or_intent_mode(monkeypatch)
     assert stream_agent._understander.understand.call_args.args[0].served == {}   # dict-guarded
     assert _served_writes(stream_agent._async_memory.write.call_args_list) == [prior]
 
-    intent_agent = _make_agent(session_data={"current_subagent_id": "market_truth",
-                                             "opening_phrase_emitted": True})
-    intent_agent.process_turn(_turn_input("Hello"))
-    assert _served_writes(intent_agent._memory.write.call_args_list) == []
-
 
 def test_sync_nlu_log_prints_entity_keys_not_values(caplog):
     """M1: the sync [STEP 5] ✓ line logs entity keys only (no PII), like the stream path."""
     import logging
     agent = _make_agent(session_data={"current_subagent_id": "market_truth", "opening_phrase_emitted": True},
-                        nlu_result=NLUResult(intent="any_input", entities={"name": "Ramesh Kumar"},
-                                             sentiment="neutral", confidence=0.9))
+                        nlu_result=NLUResult(intent="any_input", entities={"name": "Ramesh Kumar"}, confidence=0.9))
     with caplog.at_level(logging.INFO, logger="src.orchestrator"):
         agent.process_turn(_turn_input("मेरा नाम Ramesh Kumar है"))
-    lines = [r.getMessage() for r in caplog.records if "[STEP 5] NLU Processor  ✓" in r.getMessage()]
+    lines = [r.getMessage() for r in caplog.records if "[STEP 5] NLU  ✓" in r.getMessage()]
     assert lines and "name" in lines[0]
     assert "Ramesh" not in lines[0]
