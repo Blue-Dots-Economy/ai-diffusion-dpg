@@ -1087,7 +1087,7 @@ class AgentCore(AgentCoreBase):
             "  [STEP 5] NLU Processor  ✓  intent=%s  confidence=%.2f  entities=%s"
             "  sentiment=%s  latency=%dms",
             nlu_result.intent, nlu_result.confidence,
-            nlu_result.entities if nlu_result.entities else {},
+            list((nlu_result.entities or {}).keys()),  # keys only: values may be PII
             nlu_result.sentiment,
             int((time.time() - t5) * 1000),
         )

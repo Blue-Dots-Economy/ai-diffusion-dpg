@@ -619,3 +619,16 @@ async def test_served_map_not_written_when_unchanged_or_intent_mode(monkeypatch)
                                              "opening_phrase_emitted": True})
     intent_agent.process_turn(_turn_input("Hello"))
     assert _served_writes(intent_agent._memory.write.call_args_list) == []
+
+
+def test_sync_nlu_log_prints_entity_keys_not_values(caplog):
+    """M1: the sync [STEP 5] ✓ line logs entity keys only (no PII), like the stream path."""
+    import logging
+    agent = _make_agent(session_data={"current_subagent_id": "market_truth", "opening_phrase_emitted": True},
+                        nlu_result=NLUResult(intent="any_input", entities={"name": "Ramesh Kumar"},
+                                             sentiment="neutral", confidence=0.9))
+    with caplog.at_level(logging.INFO, logger="src.orchestrator"):
+        agent.process_turn(_turn_input("मेरा नाम Ramesh Kumar है"))
+    lines = [r.getMessage() for r in caplog.records if "[STEP 5] NLU Processor  ✓" in r.getMessage()]
+    assert lines and "name" in lines[0]
+    assert "Ramesh" not in lines[0]
