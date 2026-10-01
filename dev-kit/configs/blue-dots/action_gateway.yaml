@@ -143,9 +143,10 @@ tools:
       details are intentionally not exposed to the LLM.
     base_url: "https://dev-signals.serveirc.com/signals-search"
     # Job discovery moved off network/item/fetch_local to signals-search.
-    # `item_state.jobProviderLocation` is PII-masked upstream ("B***"), so the
-    # old server-side city filter matches nothing. Search is semantic instead:
-    # the trade and the city both travel inside query_text.
+    # Search is semantic: the trade and the city both travel inside query_text,
+    # not as a server-side filter. Note that semantic search RANKS by the city
+    # but does not FILTER on it — a query naming one city still returns jobs in
+    # others, so the location field below is what the agent must read.
     auth:
       type: api_key
       header: x-api-key
@@ -189,6 +190,12 @@ tools:
           item_id: item_id
           role: item_state.role
           company: item_state.jobProviderName
+          # jobProviderLocation stopped being a masked PII field upstream, so
+          # the agent can finally be told where a job actually is. KNOWN GAP:
+          # rows created while it was masked still read back as "B***", and
+          # nothing yet stops the agent speaking one. Those rows are being
+          # cleaned up; revisit if they outlive the cleanup.
+          location: item_state.jobProviderLocation
           positions: item_state.positions
           nature_of_job: item_state.natureOfJob
           # Three pay models; only one is populated per posting.
