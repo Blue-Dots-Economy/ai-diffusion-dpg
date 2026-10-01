@@ -528,8 +528,25 @@ services:
       - "3000:3000"
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD:-admin}
+      # Open on the service-status overview instead of an empty home page;
+      # every dashboard links to the others from its header.
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/dashboards/service-status.json
+      # "Logs / App" (grafana.com 13639) still uses the legacy Angular graph
+      # panel. Migrate such panels to their React equivalents on load, so the
+      # dashboard keeps working once Angular support is removed.
+      - GF_FEATURE_TOGGLES_ENABLE=autoMigrateOldPanels
+      # Base of the dashboard links in alert messages.
+      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-http://localhost:3000}
+      # Discord alert webhooks, one per severity. Secrets: set them in .env.
+      # Grafana will not start on an empty Discord URL, so an unset one falls
+      # back to an unroutable placeholder: alerts then show in Grafana only.
+      - DISCORD_WEBHOOK_CRITICAL=${DISCORD_WEBHOOK_CRITICAL:-http://127.0.0.1:9/discord-webhook-not-configured}
+      - DISCORD_WEBHOOK_WARNING=${DISCORD_WEBHOOK_WARNING:-http://127.0.0.1:9/discord-webhook-not-configured}
+      - DISCORD_WEBHOOK_INFO=${DISCORD_WEBHOOK_INFO:-http://127.0.0.1:9/discord-webhook-not-configured}
     volumes:
-      - ./grafana/provisioning:/etc/grafana/provisioning
+      # Datasources, dashboards provider and alerting (rules, routing, Discord).
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
     networks:
       - dpg_net
     deploy:
@@ -709,6 +726,83 @@ services:
         limits:
           cpus: '0.1'
           memory: 256M
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Monitoring profile — the exporters behind the Grafana dashboards and alerts.
+  #
+  # Off by default: enable with `docker compose --profile monitoring up -d`
+  # (or COMPOSE_PROFILES=monitoring). Prometheus, Grafana and the collector run
+  # either way; without the profile the service-status, container and Redis
+  # dashboards have no data, and no alert pages for what was never started.
+  # No ports are published; Prometheus reaches them inside dpg_net.
+  # ---------------------------------------------------------------------------
+
+  # Probes every service's health endpoint (and Redis and Memgraph by TCP) on
+  # Prometheus's behalf. Most DPG blocks only push metrics through the
+  # collector, so without this nothing can say whether one is up.
+  blackbox_exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: blackbox_exporter
+    profiles: [monitoring]
+    command: ["--config.file=/etc/blackbox/blackbox.yml"]
+    volumes:
+      - ./blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 64M
+    restart: unless-stopped
+
+  # Per-container CPU / memory / network / disk. Needs the host's cgroup and
+  # Docker state read-only; privileged is cAdvisor's documented requirement
+  # for reading every container's cgroup, which is why this is opt-in.
+  # Prometheus keeps only this stack's containers (see prometheus.yml).
+  cadvisor:
+    image: ghcr.io/google/cadvisor:v0.60.6
+    container_name: cadvisor
+    profiles: [monitoring]
+    privileged: true
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=30s
+      - --store_container_labels=false
+      - --whitelisted_container_labels=com.docker.compose.service,com.docker.compose.project
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.3'
+          memory: 256M
+    restart: unless-stopped
+
+  # Redis INFO as Prometheus metrics, for the Redis dashboard.
+  redis_exporter:
+    image: oliver006/redis_exporter:v1.92.1
+    container_name: redis_exporter
+    profiles: [monitoring]
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - dpg_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 64M
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
