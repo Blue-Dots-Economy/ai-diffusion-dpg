@@ -81,6 +81,7 @@ class AgentSection(BaseModel):
     max_tool_rounds: int = Field(default=3, ge=1, le=20)
     ask_for_consent: bool = False
     consent_prompt: str = ""
+    prompt_session_fields: list[str] = Field(default_factory=list)
 
     # Optional sub-blocks mirrored from runtime AgentConfig. KKB declares
     # termination_short_circuit; current_question and recent_tool_exchanges
@@ -542,6 +543,22 @@ class ToolResultsSection(BaseModel):
     """agent_core.tool_results — global limits for tool-result persistence."""
     model_config = ConfigDict(extra="forbid")
     max_user_ttl_seconds: int = Field(default=86400, gt=0)
+
+
+class SessionBootstrapStepModel(BaseModel):
+    """One deterministic first-turn step (mirrors runtime ``SessionBootstrapStep``)."""
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["tool"]
+    tool: str = Field(min_length=1)
+    args: dict[str, Any] = Field(default_factory=dict)
+    requires_consent: bool = False
+
+
+class SessionBootstrapSection(BaseModel):
+    """agent_core.session_bootstrap — steps run inline on the first turn."""
+    model_config = ConfigDict(extra="forbid")
+    timeout_ms: int = Field(default=1500, gt=0)
+    steps: list[SessionBootstrapStepModel] = Field(min_length=1)
 
 
 class MemoryToolField(BaseModel):

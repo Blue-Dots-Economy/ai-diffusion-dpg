@@ -458,3 +458,37 @@ def test_session_scope_cache_with_session_mapping_passes():
 
 def test_user_scope_cache_without_session_mapping_passes():
     assert _sm_errs("user", False) == []
+
+
+# -- session bootstrap / prompt_session_fields ---------------------------------
+
+ML_B = {"state": {"session": {"ttl_minutes": 60, "schema": {
+    "profile_item_id": {"type": "string"}, "stored_trade": {"type": "string"}}}}}
+
+
+def _boot_errs(ac):
+    return [e for e in validate_cross_block({"agent_core": ac, "memory_layer": ML_B}, [])
+            if "prompt_session_fields" in e or "session_bootstrap" in e]
+
+
+def test_bootstrap_cross_block_valid():
+    ac = {"agent": {"prompt_session_fields": ["profile_item_id"]},
+          "connectors": {"read": [{"name": "fetch_profile"}], "write": []},
+          "session_bootstrap": {"steps": [{"type": "tool", "tool": "fetch_profile"}]}}
+    assert _boot_errs(ac) == []
+
+
+def test_bootstrap_cross_block_errors():
+    ac = {"agent": {"prompt_session_fields": ["ghost"]},
+          "connectors": {"read": [], "write": [{"name": "save_profile"}]},
+          "session_bootstrap": {"steps": [{"type": "tool", "tool": "save_profile"}]}}
+    errs = _boot_errs(ac)
+    assert any("'ghost' is not a declared session field" in e for e in errs)
+    assert any("'save_profile' is not a read connector" in e for e in errs)
+
+
+def test_bootstrap_prompt_fields_without_session_schema():
+    ac = {"agent": {"prompt_session_fields": ["x"]}}
+    errs = [e for e in validate_cross_block({"agent_core": ac, "memory_layer": {}}, [])
+            if "prompt_session_fields" in e]
+    assert any("'x' is not a declared session field" in e for e in errs)

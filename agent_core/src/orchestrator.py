@@ -79,6 +79,7 @@ from src.preprocessing.nlu_processor import NLUProcessor
 from src.tool_registry import ToolRegistry
 from src.tool_results import ToolResultPolicies, TurnToolCache, augment_tool_definitions
 from src.remember import RememberTool
+from src.session_bootstrap import SessionBootstrap
 from src.turn_policy import TurnPolicy, resolve_turn_policy
 from src.workflow_loader import AgentWorkflow, RoutingCondition, RoutingRule, SubAgent
 from opentelemetry import trace as otel_trace
@@ -367,7 +368,38 @@ class AgentCore(AgentCoreBase):
         # Tool-result persistence: per-tool cache/invalidate policies and the
         # optional framework ``remember`` tool, both derived from config.
         self._tool_policies = ToolResultPolicies.from_config(config)
+        self._bootstrap = SessionBootstrap.from_config(config, self._tool_policies)
         self._remember = RememberTool.from_config(config)
+        self._prompt_session_fields: list[str] = list(
+            ((config.get("agent") or {}).get("prompt_session_fields")) or [])
+
+    def _build_profile_context(self, bundle, entity_map: dict) -> dict:
+        """Profile facts for <known_profile>: profile, NLU-mapped session fields, listed session fields.
+
+        bundle.profile is the source of truth for declared profile fields;
+        persistent NLU writes update it in-place earlier in the turn. Session
+        values only fill what it does not carry, supporting the
+        entity_persistence.scope="session" path without letting stale session
+        copies overwrite fresh persistent values (the previous unconditional
+        overlay caused the age-stuck-at-0 leak: an "0" string from a
+        session-init copy outranked a fresh "25" in Memgraph because the
+        empty-check did not catch "0"). ``agent.prompt_session_fields`` names
+        further session fields, e.g. ones written by session_mapping, that the
+        prompt may read (session-bootstrap spec section 5.4).
+
+        Args:
+            bundle: Context bundle with ``profile`` and ``session`` mappings.
+            entity_map: NLU entity-to-profile-field mapping.
+
+        Returns:
+            New dict of profile context for prompt assembly.
+        """
+        profile_context = dict(bundle.profile)
+        overlay = set(entity_map.values()) | set(self._prompt_session_fields)
+        for k, v in bundle.session.items():
+            if k in overlay and v not in (None, "", "[]") and not profile_context.get(k):
+                profile_context[k] = v
+        return profile_context
 
     def _remember_on_saved(self, bundle, turn_session_values: dict | None = None):
         """Build the callback that mirrors a remembered value into the bundle.
@@ -562,18 +594,22 @@ class AgentCore(AgentCoreBase):
             adopt=not turn_input.fresh,
             caller_agent_id=getattr(turn_input, "caller_agent_id", None),
         )
+        logger.info(
+            "  [STEP 1] Memory context_bundle  ✓  current_subagent_id=%s"
+            "  is_returning=%s  latency=%dms",
+            bundle.session.get("current_subagent_id") or self._workflow.start_subagent_id,
+            bundle.session.get("is_returning", False),
+            int((time.time() - t1) * 1000),
+        )
+        # Session bootstrap: on the session's first turn, before anything reads
+        # bundle.session (routing, consent gate, opening phrase, pre-NLU args).
+        # Logged after STEP 1 so memory-read latency excludes it ([STEP 1b]).
+        self._run_session_bootstrap_sync(bundle, session_id, user_id)
         current_subagent_id: str = (
             bundle.session.get("current_subagent_id")
             or self._workflow.start_subagent_id
         )
         current_question: str = bundle.session.get("current_question", "")
-        logger.info(
-            "  [STEP 1] Memory context_bundle  ✓  current_subagent_id=%s"
-            "  is_returning=%s  latency=%dms",
-            current_subagent_id,
-            bundle.session.get("is_returning", False),
-            int((time.time() - t1) * 1000),
-        )
 
         # ── Step 4: Language Normalisation ───────────────────────────
         # Runs before the consent gate so the detected language is available
@@ -1116,24 +1152,7 @@ class AgentCore(AgentCoreBase):
             "  [STEP 7] Prompt Assembly  →  subagent=%s (%s)",
             next_subagent.id, next_subagent.name,
         )
-        # Merge collected session fields into profile for LLM grounding context.
-        # bundle.profile is the source of truth for declared profile fields —
-        # persistent NLU writes update it in-place earlier in this turn. The
-        # overlay below only fills profile fields that bundle.profile does NOT
-        # already carry, supporting the entity_persistence.scope="session" path
-        # without letting stale session copies overwrite fresh persistent values
-        # (the previous unconditional overlay was the cause of the age-stuck-at-0
-        # leak: an "0" string from session-init copy outranked a fresh "25" in
-        # Memgraph because the empty-check did not catch "0").
-        profile_context = dict(bundle.profile)
-        profile_field_names = set(entity_map.values())
-        for k, v in bundle.session.items():
-            if (
-                k in profile_field_names
-                and v not in (None, "", "[]")
-                and not profile_context.get(k)
-            ):
-                profile_context[k] = v
+        profile_context = self._build_profile_context(bundle, entity_map)
 
         # Ensure the prompt builder uses the most up-to-date language preference
         # (which might have been updated by NLU in Step 5).
@@ -1628,6 +1647,79 @@ class AgentCore(AgentCoreBase):
                 "fields": sorted(values),
             },
         )
+
+    def _run_session_bootstrap_sync(self, bundle, session_id: str, user_id: str) -> None:
+        """Run the session bootstrap on the sync path when this session needs it.
+
+        Step args are literal config values, not LLM output, so the grounding
+        guard does not apply. Never raises into the turn.
+
+        Args:
+            bundle:     This turn's context bundle; mutated in place.
+            session_id: Session identifier.
+            user_id:    User identifier.
+        """
+        if self._bootstrap is None or not self._bootstrap.needed(bundle):
+            return
+        try:
+            gateway = getattr(self._manager_agent, "_gateway", None)
+            if gateway is None:
+                logger.debug("orchestrator.session_bootstrap_skipped", extra={
+                    "operation": "orchestrator.process_turn", "status": "skipped",
+                    "reason": "no_gateway"})
+                return
+            self._bootstrap.run_sync(
+                bundle,
+                execute=lambda tc: gateway.execute(
+                    tc, session_id, user_id, session_values=self._tool_session_values(bundle)),
+                check_consent=lambda tool: self._trust.check_consent(session_id, tool),
+                write_session=lambda k, v: self._write_memory_sync(session_id, user_id, "session", k, v),
+                apply_tool_results=lambda batch: self._memory.apply_tool_results(session_id, user_id, batch),
+            )
+        except Exception as e:  # never break a turn
+            logger.error("orchestrator.session_bootstrap_error", extra={
+                "operation": "orchestrator.process_turn", "status": "failure",
+                "session_id": session_id, "error": type(e).__name__})
+
+    async def _run_session_bootstrap_async(self, bundle, session_id: str, user_id: str) -> None:
+        """Run the session bootstrap on the stream path when this session needs it.
+
+        Step args are literal config values, not LLM output, so the grounding
+        guard does not apply. Never raises into the turn.
+
+        Args:
+            bundle:     This turn's context bundle; mutated in place.
+            session_id: Session identifier.
+            user_id:    User identifier.
+        """
+        if self._bootstrap is None or not self._bootstrap.needed(bundle):
+            return
+        if not self._async_gateway:
+            logger.debug("orchestrator.session_bootstrap_skipped", extra={
+                "operation": "orchestrator.stream_turn", "status": "skipped",
+                "reason": "no_gateway"})
+            return
+        try:
+            async def _exec(tc):
+                return await self._async_gateway.execute(
+                    tc, session_id, user_id, session_values=self._tool_session_values(bundle))
+
+            async def _consent(tool):
+                return await self._async_trust.check_consent(session_id, tool) if self._async_trust else False
+
+            async def _write(k, v):
+                await self._async_memory.write(session_id, user_id, "session", k, v)
+
+            async def _apply(batch):
+                await self._async_memory.apply_tool_results(session_id, user_id, batch)
+
+            await self._bootstrap.run_async(
+                bundle, execute=_exec, check_consent=_consent, write_session=_write,
+                apply_tool_results=_apply)
+        except Exception as e:  # never break a turn
+            logger.error("orchestrator.session_bootstrap_error", extra={
+                "operation": "orchestrator.stream_turn", "status": "failure",
+                "session_id": session_id, "error": type(e).__name__})
 
     @staticmethod
     def _tool_session_values(bundle) -> dict:
@@ -3495,24 +3587,28 @@ class AgentCore(AgentCoreBase):
             t1 = time.time()
             yield _stamp(SignalEvent(stage="memory_read", status="start"))
             bundle = await self._async_memory.context_bundle(session_id, user_id, adopt=not turn_input.fresh)
+            yield _stamp(SignalEvent(stage="memory_read", status="complete"))
+            logger.info(
+                "  [STEP 1] Memory context_bundle  ✓  current_subagent_id=%s"
+                "  is_returning=%s  latency=%dms",
+                bundle.session.get("current_subagent_id") or self._workflow.start_subagent_id,
+                bundle.session.get("is_returning", False),
+                int((time.time() - t1) * 1000),
+            )
+            if _aborted():
+                return
+            # Session bootstrap: first turn only, before routing and carry-over.
+            # Runs after the STEP 1 log/signal so memory-read latency excludes
+            # it; the bootstrap reports its own latency ([STEP 1b]).
+            await self._run_session_bootstrap_async(bundle, session_id, user_id)
             current_subagent_id: str = (
                 bundle.session.get("current_subagent_id")
                 or self._workflow.start_subagent_id
             )
             current_question: str = bundle.session.get("current_question", "")
-            yield _stamp(SignalEvent(stage="memory_read", status="complete"))
-            if _aborted():
-                return
             # Spec §4.6: fold an interrupted predecessor's utterances into this
             # turn before NLU and the input trust check see the message.
             turn_input = await self._fold_carryover(turn_input, bundle, record, user_id)
-            logger.info(
-                "  [STEP 1] Memory context_bundle  ✓  current_subagent_id=%s"
-                "  is_returning=%s  latency=%dms",
-                current_subagent_id,
-                bundle.session.get("is_returning", False),
-                int((time.time() - t1) * 1000),
-            )
 
             # ── Step 4 + Step 5 (parallel): lang-norm + NLU ─────────────
             # GH-151 #2: language_normalisation and NLU were previously run
@@ -4081,19 +4177,7 @@ class AgentCore(AgentCoreBase):
                 next_subagent_id, detected_language,
             )
             next_subagent: SubAgent = self._workflow.subagents[next_subagent_id]
-            # bundle.profile is the source of truth for declared profile fields;
-            # persistent NLU writes update it in-place earlier this turn. The
-            # overlay only fills fields bundle.profile doesn't already carry
-            # (see sync-path build-context for the full rationale).
-            profile_context = dict(bundle.profile)
-            profile_field_names = set(entity_map.values())
-            for k, v in bundle.session.items():
-                if (
-                    k in profile_field_names
-                    and v not in (None, "", "[]")
-                    and not profile_context.get(k)
-                ):
-                    profile_context[k] = v
+            profile_context = self._build_profile_context(bundle, entity_map)
 
             final_language = profile_context.get("language_preference", detected_language)
             is_resumption = bundle.session.get("was_adopted", False)

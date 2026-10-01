@@ -1203,6 +1203,14 @@ class TestStreamTurnToolResultPersistence:
         assert set(tools) == {"get_balance", "remember"}
         assert "force_refresh" in tools["get_balance"].input_schema["properties"]
 
+    async def test_stream_prompt_session_fields_reach_build_system_prompt(self):
+        agent, _order, _requests = _tr_agent([], entries=[_tr_entry()])
+        agent._prompt_session_fields = ["profile_item_id"]
+        agent._async_memory.context_bundle.return_value.session["profile_item_id"] = "p1"
+        await _collect_events(agent, _make_turn_input())
+        profile = agent._manager_agent.build_system_prompt.call_args.kwargs["profile"]
+        assert profile["profile_item_id"] == "p1"
+
     async def test_stream_replay_skips_tools_with_fresh_stored_results(self):
         prior = {"tool_uses": [{"type": "tool_use", "id": "tu_p", "name": "get_balance",
                                 "input": {"account": "12345"}}],
@@ -1223,3 +1231,149 @@ class TestStreamTurnToolResultPersistence:
         assert isinstance(events[-1], DoneEvent) and events[-1].turn_status == "completed"
         errs = [r for r in caplog.records if r.message == "orchestrator.apply_tool_results_error"]
         assert errs and errs[0].error == "RuntimeError"      # class only, never the message
+
+
+# ---------------------------------------------------------------------------
+# Session bootstrap wiring (session-bootstrap spec §5) — stream path
+# ---------------------------------------------------------------------------
+
+import json as _json  # noqa: E402
+
+from src.session_bootstrap import LATCH, SessionBootstrap  # noqa: E402
+
+_BOOT_CONFIG = {
+    "connectors": {"read": [{"name": "fetch_profile", "cache": {"scope": "session", "ttl_seconds": 1800}}]},
+    "session_bootstrap": {"timeout_ms": 1500, "steps": [{"type": "tool", "tool": "fetch_profile"}]},
+}
+
+
+def _boot_result(success=True, **session_values):
+    return ToolResult(tool_use_id="bootstrap-0", tool_name="fetch_profile", result={}, success=success,
+                      result_text=_json.dumps({"items": [{"item_id": "p1"}]}), projected=True,
+                      session_values=session_values, error=None if success else "boom")
+
+
+def _boot_stream_agent(result=None, side_effect=None, **overrides):
+    """_make_agent_core with a configured bootstrap; returns (agent, order)."""
+    from src.tool_results import ToolResultPolicies
+
+    agent = _make_agent_core(**overrides)
+    agent._tool_policies = ToolResultPolicies.from_config(_BOOT_CONFIG)
+    agent._bootstrap = SessionBootstrap.from_config(_BOOT_CONFIG, agent._tool_policies)
+    order: list[str] = []
+
+    async def _execute(tc, *a, **kw):
+        order.append("bootstrap_execute")
+        if side_effect is not None:
+            raise side_effect
+        return result or _boot_result(has_age=True)
+
+    agent._async_gateway.execute = AsyncMock(side_effect=_execute)
+
+    async def mock_stream(*args, **kwargs):
+        order.append("llm")
+        yield "Hello there. "
+
+    agent._llm.stream = mock_stream
+    agent._language_normaliser = MagicMock()
+    agent._language_normaliser.normalise.return_value = ("Hello", "english")
+    agent._nlu_processor = MagicMock()
+    agent._nlu_processor.process.return_value = NLUResult(
+        intent="greeting", entities={}, sentiment="neutral", confidence=0.9)
+    return agent, order
+
+
+class TestStreamSessionBootstrap:
+
+    @pytest.mark.asyncio
+    async def test_stream_bootstrap_runs_once_before_llm_and_writes_latch(self):
+        agent, order = _boot_stream_agent()
+        events = await _collect_events(agent, _make_turn_input())
+        assert isinstance(events[-1], DoneEvent)
+
+        ex = agent._async_gateway.execute
+        assert ex.await_count == 1
+        tc = ex.await_args.args[0]
+        assert isinstance(tc, ToolCall) and tc.tool_name == "fetch_profile"
+        assert ex.await_args.args[1:3] == ("sess-1", "user-1")
+        assert "session_values" in ex.await_args.kwargs
+        assert order.index("bootstrap_execute") < order.index("llm")
+        keys = [c.args[3] for c in agent._async_memory.write.await_args_list]
+        assert LATCH in keys and "has_age" in keys
+        assert keys.index(LATCH) < keys.index("has_age")
+        batches = [c.args[2] for c in agent._async_memory.apply_tool_results.await_args_list]
+        assert any(p["tool"] == "fetch_profile" and p["origin"] == "bootstrap"
+                   for b in batches for p in b["puts"])
+
+        # Second turn: latch present on the (shared) bundle session → no re-run.
+        assert agent._async_memory.context_bundle.return_value.session[LATCH] is True
+        await _collect_events(agent, _make_turn_input())
+        assert ex.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_stream_bootstrap_entry_reaches_known_facts(self):
+        agent, _order = _boot_stream_agent()
+        await _collect_events(agent, _make_turn_input())
+        facts = agent._manager_agent.build_system_prompt.call_args.kwargs["known_facts"]
+        assert "fetch_profile" in facts and "p1" in facts
+
+    @pytest.mark.asyncio
+    async def test_stream_no_bootstrap_when_not_configured(self):
+        agent, order = _boot_stream_agent()
+        agent._bootstrap = None
+        await _collect_events(agent, _make_turn_input())
+        agent._async_gateway.execute.assert_not_awaited()
+        assert "bootstrap_execute" not in order
+
+    @pytest.mark.asyncio
+    async def test_stream_bootstrap_exception_never_breaks_the_turn(self):
+        agent, _order = _boot_stream_agent(side_effect=RuntimeError("upstream down"))
+        events = await _collect_events(agent, _make_turn_input())
+        assert isinstance(events[-1], DoneEvent) and events[-1].turn_status == "completed"
+
+    @pytest.mark.asyncio
+    async def test_stream_bootstrap_run_error_is_contained(self):
+        agent, _order = _boot_stream_agent()
+        agent._bootstrap = MagicMock()
+        agent._bootstrap.needed.return_value = True
+        agent._bootstrap.run_async = AsyncMock(side_effect=RuntimeError("bug"))
+        events = await _collect_events(agent, _make_turn_input())
+        assert isinstance(events[-1], DoneEvent) and events[-1].turn_status == "completed"
+
+
+class TestStreamSessionBootstrapOrdering:
+
+    @pytest.mark.asyncio
+    async def test_stream_memory_read_complete_and_step1_log_precede_bootstrap(self):
+        """Memory-read latency/signal exclude the bootstrap (ruling R7)."""
+        import logging
+        from tests.test_orchestrator import _OrderHandler
+
+        agent, order = _boot_stream_agent()
+        log = logging.getLogger("src.orchestrator")
+        handler, prev = _OrderHandler(order), log.level
+        log.addHandler(handler)
+        log.setLevel(logging.INFO)
+        try:
+            events = []
+            async for ev in agent.stream_turn(_make_turn_input()):
+                if isinstance(ev, SignalEvent) and ev.stage == "memory_read" and ev.status == "complete":
+                    order.append("memory_read_complete")
+                events.append(ev)
+        finally:
+            log.removeHandler(handler)
+            log.setLevel(prev)
+        assert order.index("memory_read_complete") < order.index("bootstrap_execute")
+        assert order.index("step1_logged") < order.index("bootstrap_execute") < order.index("llm")
+
+    @pytest.mark.asyncio
+    async def test_stream_bootstrap_skipped_without_gateway_logs_debug(self, caplog):
+        import logging
+        agent, _order = _boot_stream_agent()
+        agent._async_gateway = None
+        with caplog.at_level(logging.DEBUG, logger="src.orchestrator"):
+            await agent._run_session_bootstrap_async(
+                ContextBundle(session={}, profile={}), "sess-1", "user-1")
+        recs = [r for r in caplog.records if r.message == "orchestrator.session_bootstrap_skipped"]
+        assert len(recs) == 1 and recs[0].levelno == logging.DEBUG
+        assert not hasattr(recs[0], "session_id")

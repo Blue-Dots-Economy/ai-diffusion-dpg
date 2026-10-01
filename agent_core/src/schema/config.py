@@ -211,6 +211,8 @@ class AgentConfig(BaseModel):
     provider: Literal["anthropic", "openai", "ollama", "google"] = "anthropic"
     features: FeaturesConfig = Field(default_factory=FeaturesConfig)
     timeout_ms: int = Field(default=10000, gt=0)
+    prompt_session_fields: list[str] = Field(default_factory=list)
+    """Session fields rendered into <known_profile> (session-bootstrap spec §5.4)."""
 
     @field_validator("features", mode="before")
     @classmethod
@@ -787,6 +789,26 @@ class MemoryToolConfig(BaseModel):
     fields: dict[str, MemoryToolField] = Field(min_length=1)
 
 
+class SessionBootstrapStep(BaseModel):
+    """One deterministic step run on the first turn of a session (session-bootstrap spec §4)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    type: Literal["tool"]
+    tool: str = Field(min_length=1)
+    args: dict[str, Any] = Field(default_factory=dict)
+    requires_consent: bool = False
+
+
+class SessionBootstrapConfig(BaseModel):
+    """Steps run inline on the first turn, before routing, within ``timeout_ms``."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    timeout_ms: int = Field(default=1500, gt=0)
+    steps: list[SessionBootstrapStep] = Field(min_length=1)
+
+
 class MergedConfig(BaseModel):
     """Strict schema for the fully-merged agent_core config."""
 
@@ -830,6 +852,7 @@ class MergedConfig(BaseModel):
 
     tool_results: ToolResultsConfig = Field(default_factory=ToolResultsConfig)
     memory_tool: Optional[MemoryToolConfig] = None
+    session_bootstrap: Optional[SessionBootstrapConfig] = None
 
     @model_validator(mode="after")
     def _check_tool_result_rules(self) -> "MergedConfig":
@@ -840,8 +863,9 @@ class MergedConfig(BaseModel):
 
         Raises:
             ValueError: If a user-scope TTL exceeds the cap, the memory tool
-                name collides with a connector, or a ``grounded_in`` entry is
-                not a connector name.
+                name collides with a connector, a ``grounded_in`` entry is
+                not a connector name, or a session bootstrap step names
+                a non-read connector.
         """
         c = self.connectors
         names = {x.name for x in [*c.read, *c.write, *c.identity, *c.internal]}
@@ -859,6 +883,11 @@ class MergedConfig(BaseModel):
                 for src in f.grounded_in:
                     if src not in names:
                         raise ValueError(f"memory_tool.fields.{fname}.grounded_in: unknown connector '{src}'")
+        if self.session_bootstrap:
+            read_names = {c.name for c in self.connectors.read}
+            for i, step in enumerate(self.session_bootstrap.steps):
+                if step.tool not in read_names:
+                    raise ValueError(f"session_bootstrap.steps[{i}]: '{step.tool}' is not a read connector")
         return self
 
     @classmethod

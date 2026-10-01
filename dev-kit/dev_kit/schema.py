@@ -183,6 +183,10 @@ class AgentConfig(BaseModel):
         default=False,
         description="If True, Agent Core asks new users for DPDP consent before storing any data.",
     )
+    prompt_session_fields: list[str] = Field(
+        default_factory=list,
+        description="Session fields rendered into the system prompt when non-empty",
+    )
     consent_prompt: str = Field(
         default="",
         description="Message shown to the user when requesting consent. Used when ask_for_consent is True.",
@@ -647,6 +651,7 @@ class AgentCoreConfig(BaseModel):
     memory_tool: Optional[dict] = Field(
         default=None, description="Framework `remember` tool config (name, fields)"
     )
+    session_bootstrap: Optional[dict] = None
     hitl: HitlConfig | None = Field(
         default=None,
         description="HITL config. Required if any subagent uses special_handler: hitl.",

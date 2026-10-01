@@ -56,6 +56,20 @@ agent:
     enabled: true
     confidence_threshold: 0.7
 
+  # Session fields shown to the LLM in <known_profile>. These three are written
+  # by fetch_profile's response.session_mapping (action_gateway.yaml), and the
+  # profile_resolve prompt reads them from <known_profile>.
+  prompt_session_fields: [profile_item_id, stored_trade, stored_location]
+
+# Session bootstrap: fetch the caller's profile before turn-1 routing, without
+# the LLM, so a returning caller's consent/age flags and live profile are in
+# session state when turn 1 is routed (session-bootstrap spec). Read connector only.
+session_bootstrap:
+  timeout_ms: 1500
+  steps:
+    - type: tool
+      tool: fetch_profile
+
 channels:
   bridge:
     system_prompt_suffix: |
@@ -383,10 +397,10 @@ connectors:
     - name: fetch_profile
       description: >
         Look up the caller's seeker profile(s) by phone number. Returns
-        zero, one, or many profiles. Call on the first turn; later, use the
-        fetch_profile entry of <known_facts> or, if there is none, the
-        earlier fetch_profile result, unless the caller says their details
-        changed. Takes no parameters — the caller's phone is
+        zero, one, or many profiles. Already fetched when the call started —
+        use the fetch_profile entry of <known_facts> or, if there is none,
+        the earlier fetch_profile result. Call it yourself only if neither
+        exists or the caller says their details changed. Takes no parameters — the caller's phone is
         injected from the session user_id by the rest_api adapter.
       input_schema:
         type: object
@@ -1283,9 +1297,10 @@ agent_workflow:
       # suppresses canned opening phrases (GH-239) because the LLM's own first
       # reply already greets, so a voice caller hears the equivalent produced
       # from the system prompt below. Hindi, because it is spoken as written.
-      # Emitted verbatim on turn 1, BEFORE any LLM call — so no tool has run
-      # and nothing is known about the caller yet. It must therefore not ask
-      # for consent: a caller whose consent is already on file would be asked
+      # Emitted verbatim on turn 1, BEFORE any LLM call. The start-of-call
+      # bootstrap fetch may already have run, but this phrase stays static and
+      # must never ask for consent, because it has to work when that fetch
+      # failed: a caller whose consent is already on file would be asked
       # anyway, which is the exact behaviour this phase was reworked to stop.
       # It greets and asks the one thing that is useful for everyone.
       opening_phrase: >
@@ -1310,24 +1325,27 @@ agent_workflow:
         You are in the **opening** phase. It has exactly two questions,
         asked one per turn, in this order. Nothing else happens here.
 
-        ## Turn 1: greet, ask if they want work, and FETCH
-        On your FIRST turn call `fetch_profile` — before anything else, and
-        without mentioning it. Then say one short Hindi sentence: greet them
-        and ask whether they are looking for work.
+        ## Turn 1: greet and ask if they want work
+        `fetch_profile` already ran when the call started, before this turn;
+        its result is the fetch_profile entry of <known_facts>. Do not call it
+        again unless that entry is absent. Say one short Hindi sentence: greet
+        them and ask whether they are looking for work.
 
           "नमस्ते! क्या आप काम की तलाश में हैं?"
           ("Hello! Are you looking for work?")
 
-        Ask NOTHING about consent or age on this turn. The fetch tells us
-        what is already on file, and its answer is only available from the
-        NEXT turn — so asking now is how a caller ends up being asked for
-        something the system already knows.
+        Ask NOTHING about consent or age on this turn — the greeting is all
+        this turn does. The fetch tells us what is already on file, so asking
+        now is how a caller ends up being asked for something the system
+        already knows.
 
-        ## The turn you fetch on: ask for the TRADE, never for consent
-        On the turn where you call `fetch_profile` the flags have not arrived
-        yet — tools run after routing, so the result reaches you on the turn
-        AFTER. Asking for consent now is guessing, and for most callers the
-        guess is wrong: they have already consented.
+        ## Fallback: if you have to fetch yourself, ask for the TRADE, never for consent
+        If the fetch_profile entry is absent from <known_facts> (the
+        start-of-call fetch failed) and you call `fetch_profile` yourself, its
+        flags have not arrived on that turn — tools run after routing, so the
+        result reaches you on the turn AFTER. Asking for consent now is
+        guessing, and for most callers the guess is wrong: they have already
+        consented.
 
         Ask instead for the one thing needed either way:
 
@@ -1337,7 +1355,10 @@ agent_workflow:
         That is useful for every caller, so no turn is wasted while the fetch
         comes back.
 
-        ## What the fetch tells you, from the next turn onward
+        ## What the fetch tells you
+        These facts are in session state from the first turn when the
+        start-of-call fetch succeeded; otherwise from the turn after you
+        fetch yourself.
         Three facts arrive in session state:
 
           has_age        an age is already on file
@@ -1606,8 +1627,10 @@ agent_workflow:
         # 1b. NOTHING TO ASK — the fetch already answered both questions.
         #
         # These three arrive from fetch_profile via the connector's
-        # session_mapping, from turn 2 onward (tools run after routing, so the
-        # turn that fetches cannot also branch on the result). All true means
+        # session_mapping. The start-of-call session bootstrap runs fetch_profile
+        # before turn-1 routing, so they are in session state from turn 1; if
+        # that fetch fails and the LLM fetches itself, they arrive from the turn
+        # after (tools run after routing). All true means
         # the caller has consented and has an age on file, so this phase has
         # no question left and must not invent one.
         #
@@ -1854,7 +1877,7 @@ agent_workflow:
         city, then hand over. You never search here.
 
         ## What you already know
-        `fetch_profile` ran in the opening phase. Its result is the
+        `fetch_profile` ran when the call started. Its result is the
         fetch_profile entry of <known_facts> or, if there is none, the
         earlier fetch_profile result. Read it — do not call it again unless
         both are genuinely absent.
@@ -1956,10 +1979,18 @@ agent_workflow:
               operator: not_eq
               value: ""
           next_subagent_id: job_match
-        # The caller HAS a live profile: entry 1 makes the offer, entry 2 is
-        # their answer, and either answer leads to the search. Accepting uses
-        # the stored values; declining means their own words are already in
+        # The caller HAS a live profile: entry 1 makes the offer, and their
+        # answer leads straight to the search. Accepting uses the stored
+        # values; declining means their own words are already in
         # `trade`/`location`, which job_match prefers.
+        #
+        # `gt 0`, NOT `gt 1`: routing reads the count BEFORE this turn's
+        # increment, so on the answer turn it is still 1 (the offer). With
+        # `gt 1` the accept turn stayed here — a phase with no job tool,
+        # told to say nothing — and the model filled the silence by claiming
+        # jobs were found; the search only ran a turn later. Entry from
+        # `opening` is routed by opening's rules, so this never skips the
+        # offer.
         - intent: "*"
           conditions:
             - field: profile_item_id
@@ -1967,7 +1998,7 @@ agent_workflow:
               value: ""
             - field: subagent_entry_count.profile_resolve
               operator: gt
-              value: 1
+              value: 0
           next_subagent_id: job_match
         - intent: apply_now
           next_subagent_id: job_match

@@ -700,3 +700,29 @@ def test_validation_registry_has_tool_result_sections():
     from dev_kit.schemas.validation import DOMAIN_SECTION_SCHEMAS
     assert ("agent_core", "tool_results") in DOMAIN_SECTION_SCHEMAS
     assert ("agent_core", "memory_tool") in DOMAIN_SECTION_SCHEMAS
+
+
+# -- session bootstrap ---------------------------------------------------------
+
+def test_session_bootstrap_and_prompt_session_fields_accepted():
+    from dev_kit.schemas.validation import DOMAIN_SECTION_SCHEMAS
+    a = AgentSection(primary_model=_ANTHROPIC_PRIMARY, fallback_model=_ANTHROPIC_FALLBACK,
+                     prompt_session_fields=["profile_item_id"])
+    assert a.prompt_session_fields == ["profile_item_id"]
+    schema = DOMAIN_SECTION_SCHEMAS[("agent_core", "session_bootstrap")]
+    s = schema.model_validate({"steps": [{"type": "tool", "tool": "fetch_profile", "args": {"a": 1}}]})
+    assert s.timeout_ms == 1500
+    assert s.steps[0].requires_consent is False
+
+
+@pytest.mark.parametrize("payload, match", [
+    ({"steps": [{"type": "set", "tool": "t"}]}, "Input should be 'tool'"),
+    ({"steps": []}, "List should have at least 1 item"),
+    ({"timeout_ms": 0, "steps": [{"type": "tool", "tool": "t"}]}, "greater than 0"),
+    ({"steps": [{"type": "tool", "tool": ""}]}, "at least 1 character"),
+    ({"steps": [{"type": "tool", "tool": "t", "bogus": 1}]}, "Extra inputs are not permitted"),
+])
+def test_session_bootstrap_rejects_bad_shapes(payload, match):
+    from dev_kit.schemas.validation import DOMAIN_SECTION_SCHEMAS
+    with pytest.raises(ValidationError, match=match):
+        DOMAIN_SECTION_SCHEMAS[("agent_core", "session_bootstrap")].model_validate(payload)
