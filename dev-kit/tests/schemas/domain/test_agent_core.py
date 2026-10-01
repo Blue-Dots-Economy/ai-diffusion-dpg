@@ -716,11 +716,11 @@ def test_session_bootstrap_and_prompt_session_fields_accepted():
 
 
 @pytest.mark.parametrize("payload, match", [
-    ({"steps": [{"type": "set", "tool": "t"}]}, "type"),
-    ({"steps": []}, "steps"),
-    ({"timeout_ms": 0, "steps": [{"type": "tool", "tool": "t"}]}, "timeout_ms"),
-    ({"steps": [{"type": "tool", "tool": ""}]}, "tool"),
-    ({"steps": [{"type": "tool", "tool": "t", "bogus": 1}]}, "bogus"),
+    ({"steps": [{"type": "set", "tool": "t"}]}, "Input should be 'tool'"),
+    ({"steps": []}, "List should have at least 1 item"),
+    ({"timeout_ms": 0, "steps": [{"type": "tool", "tool": "t"}]}, "greater than 0"),
+    ({"steps": [{"type": "tool", "tool": ""}]}, "at least 1 character"),
+    ({"steps": [{"type": "tool", "tool": "t", "bogus": 1}]}, "Extra inputs are not permitted"),
 ])
 def test_session_bootstrap_rejects_bad_shapes(payload, match):
     from dev_kit.schemas.validation import DOMAIN_SECTION_SCHEMAS

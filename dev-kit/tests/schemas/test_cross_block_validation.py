@@ -485,3 +485,10 @@ def test_bootstrap_cross_block_errors():
     errs = _boot_errs(ac)
     assert any("'ghost' is not a declared session field" in e for e in errs)
     assert any("'save_profile' is not a read connector" in e for e in errs)
+
+
+def test_bootstrap_prompt_fields_without_session_schema():
+    ac = {"agent": {"prompt_session_fields": ["x"]}}
+    errs = [e for e in validate_cross_block({"agent_core": ac, "memory_layer": {}}, [])
+            if "prompt_session_fields" in e]
+    assert any("'x' is not a declared session field" in e for e in errs)
