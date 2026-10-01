@@ -2304,3 +2304,115 @@ def test_prompt_session_fields_reach_build_system_prompt():
     agent.process_turn(_turn_input())
     profile = agent._manager_agent.build_system_prompt.call_args.kwargs["profile"]
     assert profile["profile_item_id"] == "p1"
+
+
+# ---------------------------------------------------------------------------
+# Session bootstrap wiring (session-bootstrap spec §5) — sync path
+# ---------------------------------------------------------------------------
+
+import json as _json  # noqa: E402
+
+from src.session_bootstrap import LATCH, SessionBootstrap  # noqa: E402
+
+_BOOT_CONFIG = {
+    "connectors": {"read": [{"name": "fetch_profile", "cache": {"scope": "session", "ttl_seconds": 1800}}]},
+    "session_bootstrap": {"timeout_ms": 1500, "steps": [{"type": "tool", "tool": "fetch_profile"}]},
+}
+
+
+def _boot_result(**session_values):
+    return ToolResult(tool_use_id="bootstrap-0", tool_name="fetch_profile", result={}, success=True,
+                      result_text=_json.dumps({"items": [{"item_id": "p1"}]}), projected=True,
+                      session_values=session_values)
+
+
+def _boot_agent(result=None, side_effect=None):
+    """_make_agent with a configured bootstrap; returns (agent, order)."""
+    agent = _make_agent()
+    agent._tool_policies = ToolResultPolicies.from_config(_BOOT_CONFIG)
+    agent._bootstrap = SessionBootstrap.from_config(_BOOT_CONFIG, agent._tool_policies)
+    order: list[str] = []
+    gw = MagicMock()
+
+    def _execute(tc, *a, **kw):
+        order.append("bootstrap_execute")
+        if side_effect is not None:
+            raise side_effect
+        return result or _boot_result(has_age=True)
+
+    gw.execute.side_effect = _execute
+    agent._manager_agent._gateway = gw
+    run_turn_rv = agent._manager_agent.run_turn.return_value
+
+    def _run_turn(*a, **kw):
+        order.append("run_turn")
+        return run_turn_rv
+
+    agent._manager_agent.run_turn.side_effect = _run_turn
+    return agent, order
+
+
+def test_init_builds_bootstrap_from_config():
+    agent = _make_agent()
+    assert agent._bootstrap is None
+    built = AgentCore(
+        config={**VALID_CONFIG, **_BOOT_CONFIG}, chat_provider=MagicMock(spec=ChatProviderBase),
+        memory=MagicMock(), trust=MagicMock(), knowledge_engine=MagicMock(),
+        tool_registry=MagicMock(), manager_agent=MagicMock(), learning=MagicMock(),
+        workflow=_make_workflow(),
+    )
+    assert isinstance(built._bootstrap, SessionBootstrap)
+
+
+def test_sync_bootstrap_runs_once_before_llm_and_writes_latch():
+    agent, order = _boot_agent()
+    agent.process_turn(_turn_input())
+
+    gw = agent._manager_agent._gateway
+    gw.execute.assert_called_once()
+    tc = gw.execute.call_args.args[0]
+    assert isinstance(tc, ToolCall) and tc.tool_name == "fetch_profile"
+    assert gw.execute.call_args.args[1] == SESSION_ID
+    assert "session_values" in gw.execute.call_args.kwargs
+    assert order.index("bootstrap_execute") < order.index("run_turn")
+    keys = [c.args[3] for c in agent._memory.write.call_args_list]
+    assert LATCH in keys and "has_age" in keys
+    assert keys.index(LATCH) < keys.index("has_age")
+    agent._memory.apply_tool_results.assert_called_once()
+
+    # Second turn: the bundle session now carries the latch → no re-run.
+    assert agent._memory.context_bundle.return_value.session[LATCH] is True
+    agent.process_turn(_turn_input())
+    gw.execute.assert_called_once()
+
+
+def test_sync_bootstrap_entry_reaches_known_facts():
+    agent, _order = _boot_agent()
+    agent.process_turn(_turn_input())
+    facts = agent._manager_agent.build_system_prompt.call_args.kwargs["known_facts"]
+    assert "fetch_profile" in facts and "p1" in facts
+
+
+def test_sync_no_bootstrap_when_not_configured():
+    agent, order = _boot_agent()
+    agent._bootstrap = None
+    agent.process_turn(_turn_input())
+    agent._manager_agent._gateway.execute.assert_not_called()
+    assert "bootstrap_execute" not in order
+
+
+def test_sync_bootstrap_exception_never_breaks_the_turn():
+    agent, _order = _boot_agent(side_effect=RuntimeError("upstream down"))
+    result = agent.process_turn(_turn_input())
+    assert isinstance(result, TurnResult)
+    assert result.response_text == "Final response."
+    agent._manager_agent.run_turn.assert_called_once()
+
+
+def test_sync_bootstrap_run_error_is_contained():
+    agent, _order = _boot_agent()
+    agent._bootstrap = MagicMock()
+    agent._bootstrap.needed.return_value = True
+    agent._bootstrap.run_sync.side_effect = RuntimeError("bug")
+    result = agent.process_turn(_turn_input())
+    assert isinstance(result, TurnResult) and result.response_text == "Final response."

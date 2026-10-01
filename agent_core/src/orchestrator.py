@@ -79,6 +79,7 @@ from src.preprocessing.nlu_processor import NLUProcessor
 from src.tool_registry import ToolRegistry
 from src.tool_results import ToolResultPolicies, TurnToolCache, augment_tool_definitions
 from src.remember import RememberTool
+from src.session_bootstrap import SessionBootstrap
 from src.turn_policy import TurnPolicy, resolve_turn_policy
 from src.workflow_loader import AgentWorkflow, RoutingCondition, RoutingRule, SubAgent
 from opentelemetry import trace as otel_trace
@@ -367,6 +368,7 @@ class AgentCore(AgentCoreBase):
         # Tool-result persistence: per-tool cache/invalidate policies and the
         # optional framework ``remember`` tool, both derived from config.
         self._tool_policies = ToolResultPolicies.from_config(config)
+        self._bootstrap = SessionBootstrap.from_config(config, self._tool_policies)
         self._remember = RememberTool.from_config(config)
         self._prompt_session_fields: list[str] = list(
             ((config.get("agent") or {}).get("prompt_session_fields")) or [])
@@ -592,6 +594,9 @@ class AgentCore(AgentCoreBase):
             adopt=not turn_input.fresh,
             caller_agent_id=getattr(turn_input, "caller_agent_id", None),
         )
+        # Session bootstrap: on the session's first turn, before anything reads
+        # bundle.session (routing, consent gate, opening phrase, pre-NLU args).
+        self._run_session_bootstrap_sync(bundle, session_id, user_id)
         current_subagent_id: str = (
             bundle.session.get("current_subagent_id")
             or self._workflow.start_subagent_id
@@ -1641,6 +1646,71 @@ class AgentCore(AgentCoreBase):
                 "fields": sorted(values),
             },
         )
+
+    def _run_session_bootstrap_sync(self, bundle, session_id: str, user_id: str) -> None:
+        """Run the session bootstrap on the sync path when this session needs it.
+
+        Step args are literal config values, not LLM output, so the grounding
+        guard does not apply. Never raises into the turn.
+
+        Args:
+            bundle:     This turn's context bundle; mutated in place.
+            session_id: Session identifier.
+            user_id:    User identifier.
+        """
+        if self._bootstrap is None or not self._bootstrap.needed(bundle):
+            return
+        try:
+            gateway = getattr(self._manager_agent, "_gateway", None)
+            if gateway is None:
+                return
+            self._bootstrap.run_sync(
+                bundle,
+                execute=lambda tc: gateway.execute(
+                    tc, session_id, user_id, session_values=self._tool_session_values(bundle)),
+                check_consent=lambda tool: self._trust.check_consent(session_id, tool),
+                write_session=lambda k, v: self._write_memory_sync(session_id, user_id, "session", k, v),
+                apply_tool_results=lambda batch: self._memory.apply_tool_results(session_id, user_id, batch),
+            )
+        except Exception as e:  # never break a turn
+            logger.error("orchestrator.session_bootstrap_error", extra={
+                "operation": "orchestrator.process_turn", "status": "failure",
+                "session_id": session_id, "error": type(e).__name__})
+
+    async def _run_session_bootstrap_async(self, bundle, session_id: str, user_id: str) -> None:
+        """Run the session bootstrap on the stream path when this session needs it.
+
+        Step args are literal config values, not LLM output, so the grounding
+        guard does not apply. Never raises into the turn.
+
+        Args:
+            bundle:     This turn's context bundle; mutated in place.
+            session_id: Session identifier.
+            user_id:    User identifier.
+        """
+        if self._bootstrap is None or not self._bootstrap.needed(bundle) or not self._async_gateway:
+            return
+        try:
+            async def _exec(tc):
+                return await self._async_gateway.execute(
+                    tc, session_id, user_id, session_values=self._tool_session_values(bundle))
+
+            async def _consent(tool):
+                return await self._async_trust.check_consent(session_id, tool) if self._async_trust else False
+
+            async def _write(k, v):
+                await self._async_memory.write(session_id, user_id, "session", k, v)
+
+            async def _apply(batch):
+                await self._async_memory.apply_tool_results(session_id, user_id, batch)
+
+            await self._bootstrap.run_async(
+                bundle, execute=_exec, check_consent=_consent, write_session=_write,
+                apply_tool_results=_apply)
+        except Exception as e:  # never break a turn
+            logger.error("orchestrator.session_bootstrap_error", extra={
+                "operation": "orchestrator.stream_turn", "status": "failure",
+                "session_id": session_id, "error": type(e).__name__})
 
     @staticmethod
     def _tool_session_values(bundle) -> dict:
@@ -3508,6 +3578,8 @@ class AgentCore(AgentCoreBase):
             t1 = time.time()
             yield _stamp(SignalEvent(stage="memory_read", status="start"))
             bundle = await self._async_memory.context_bundle(session_id, user_id, adopt=not turn_input.fresh)
+            # Session bootstrap: first turn only, before routing and carry-over.
+            await self._run_session_bootstrap_async(bundle, session_id, user_id)
             current_subagent_id: str = (
                 bundle.session.get("current_subagent_id")
                 or self._workflow.start_subagent_id

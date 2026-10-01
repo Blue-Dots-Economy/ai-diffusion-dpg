@@ -373,3 +373,103 @@ async def test_both_paths_apply_per_turn_caps_identically(calls, caps, checks, e
     for check, text in zip(checks, a_texts):
         assert check(text), a_texts
     assert not any("has already run this turn" in t for t in a_texts)
+
+
+# ── session bootstrap: turn-1 routing on both paths ─────────────────────────
+#
+# A returning caller already accepted terms/privacy and has an age on file.
+# The bootstrap's fetch_profile lifts those as session_mapping values; the
+# opening subagent's rule 1b (all three True → profile_resolve) must then fire
+# on turn 1, before the opening question is asked again. On failure the
+# routing stays exactly as it is today (opening).
+
+import json as _json  # noqa: E402
+
+from src.session_bootstrap import SessionBootstrap  # noqa: E402
+from src.workflow_loader import AgentWorkflow, RoutingCondition, RoutingRule, SubAgent  # noqa: E402
+from tests.test_orchestrator import _make_agent, _turn_input  # noqa: E402
+
+_BOOT_CONFIG = {
+    "connectors": {"read": [{"name": "fetch_profile", "cache": {"scope": "session", "ttl_seconds": 1800}}]},
+    "session_bootstrap": {"timeout_ms": 1500, "steps": [{"type": "tool", "tool": "fetch_profile"}]},
+}
+_FLAGS = {"user_terms": True, "user_privacy": True, "has_age": True}
+
+
+def _sub(sid, routing=(), is_start=False):
+    return SubAgent(id=sid, name=sid, description=sid, is_start=is_start, is_terminal=False,
+                    special_handler=None, valid_intents=["greeting"], tools=[],
+                    system_prompt=f"{sid} prompt", output_format=None, routing=list(routing))
+
+
+def _opening_workflow():
+    rule_1b = RoutingRule(intent="*", next_subagent_id="profile_resolve", conditions=[
+        RoutingCondition(field=f, operator="eq", value=True) for f in _FLAGS])
+    subs = {"opening": _sub("opening", [rule_1b], is_start=True), "profile_resolve": _sub("profile_resolve")}
+    wf = MagicMock(spec=AgentWorkflow)
+    wf.start_subagent_id = "opening"
+    wf.subagents = subs
+    wf.nlu_intent_set = {k: ["greeting"] for k in subs}
+    wf.tool_defs = {k: [] for k in subs}
+    wf.global_routing = []
+    wf.default_fallback_subagent_id = "opening"
+    wf.agent_system_prompt = "System prompt"
+    return wf
+
+
+def _bootstrap_result(success: bool) -> ToolResult:
+    return ToolResult(tool_use_id="bootstrap-0", tool_name="fetch_profile", result={}, success=success,
+                      result_text=_json.dumps({"items": [{"item_id": "p1"}]}), projected=True,
+                      session_values=dict(_FLAGS) if success else {},
+                      error=None if success else "upstream 500")
+
+
+def _routed_to(write_calls) -> list:
+    return [c.args[4] for c in write_calls if c.args[3] == "current_subagent_id"]
+
+
+def _sync_bootstrap_route(success: bool) -> list:
+    agent = _make_agent(session_data={}, workflow=_opening_workflow(),
+                        nlu_result=NLUResult(intent="greeting", entities={}, sentiment="neutral",
+                                             confidence=0.9))
+    agent._tool_policies = ToolResultPolicies.from_config(_BOOT_CONFIG)
+    agent._bootstrap = SessionBootstrap.from_config(_BOOT_CONFIG, agent._tool_policies)
+    agent._manager_agent._gateway = MagicMock()
+    agent._manager_agent._gateway.execute.return_value = _bootstrap_result(success)
+    agent.process_turn(_turn_input())
+    agent._manager_agent._gateway.execute.assert_called_once()
+    return _routed_to(agent._memory.write.call_args_list)
+
+
+async def _stream_bootstrap_route(success: bool) -> list:
+    from src.models import ContextBundle
+    agent = _make_agent_core(workflow=_opening_workflow())
+    agent._async_memory.context_bundle.return_value = ContextBundle(session={}, profile={})
+    agent._tool_policies = ToolResultPolicies.from_config(_BOOT_CONFIG)
+    agent._bootstrap = SessionBootstrap.from_config(_BOOT_CONFIG, agent._tool_policies)
+    agent._async_gateway.execute = AsyncMock(return_value=_bootstrap_result(success))
+
+    async def mock_stream(*args, **kwargs):
+        yield "Welcome back. "
+
+    agent._llm.stream = mock_stream
+    agent._language_normaliser = MagicMock()
+    agent._language_normaliser.normalise.return_value = ("Hello", "english")
+    agent._nlu_processor = MagicMock()
+    agent._nlu_processor.process.return_value = NLUResult(
+        intent="greeting", entities={}, sentiment="neutral", confidence=0.9)
+    await _collect_events(agent, _make_turn_input())
+    assert agent._async_gateway.execute.await_count == 1
+    return _routed_to(agent._async_memory.write.await_args_list)
+
+
+async def test_bootstrap_flags_route_turn_one_past_opening_on_both_paths():
+    """Parity: bootstrap-lifted flags let rule 1b fire on turn 1, sync and stream alike."""
+    assert await _stream_bootstrap_route(True) == ["profile_resolve"]
+    assert _sync_bootstrap_route(True) == ["profile_resolve"]
+
+
+async def test_bootstrap_failure_leaves_routing_unchanged_on_both_paths():
+    """A failed bootstrap (success=False) writes no flags; turn 1 stays in opening."""
+    assert await _stream_bootstrap_route(False) == ["opening"]
+    assert _sync_bootstrap_route(False) == ["opening"]
