@@ -676,8 +676,8 @@ preprocessing:
       # Also accepted while consent is pending: callers often give age in the same breath.
       age:              { type: int, min: 5, max: 99, accept_when_pending: [consent, age],
                           description: "उम्र, digits में", examples: ["बाईस → 22", "सोलह → 16"] }
-      trade:            { type: string, normalise: title, description: "काम/ट्रेड, English में (Welder, Plumber)" }
-      location:         { type: string, normalise: title, description: "शहर, canonical English (Bengaluru, Hubli)" }
+      trade:            { type: string, normalise: title, description: "काम/ट्रेड, English में (Welder, Plumber). Only a concrete trade; vague answers (कुछ भी, कोई भी काम) → omit" }
+      location:         { type: string, normalise: title, description: "शहर, canonical English (Bengaluru, Hubli). Only a named place; vague answers (आसपास, कहीं भी, दूसरे शहर) → omit" }
       name:             { type: string, description: "caller का नाम" }
       gender:           { type: enum, values: [male, female, other] }
       work_experience:  { type: enum, values: [Fresher, Worked before, Returning after a break] }
@@ -689,9 +689,14 @@ preprocessing:
     known_fields: [consent_response, age, trade, location, name, stored_trade, stored_location]
     examples:
       - { pending: closing_offer, caller: "ठीक है धन्यवाद", out: { acts: [acknowledge], relation: answers_pending } }
-      - { pending: submit_confirm, caller: "ठीक है धन्यवाद", out: { acts: [acknowledge], relation: unclear } }
+      - { pending: submit_confirm, caller: "ठीक है धन्यवाद", out: { acts: [affirm], relation: answers_pending } }
+      - { pending: submit_confirm, caller: "धन्यवाद", out: { acts: [acknowledge], relation: unclear } }
+      - { pending: submit_confirm, caller: "नहीं नहीं, दूसरा वाला", out: { acts: [correct, select], relation: answers_pending, reference: { option: 2, spoken: "दूसरा वाला" } } }
+      - { pending: submit_confirm, caller: "और कोई नौकरी है क्या", out: { acts: [request_change], relation: new_topic, topic: search } }
+      - { pending: location, caller: "आसपास कहीं भी", out: { acts: [provide_info], relation: answers_pending } }
       - { pending: submit_confirm, caller: "हाँ भेज दो", out: { acts: [affirm], relation: answers_pending } }
       - { pending: consent, caller: "हाँ जी ठीक है", out: { acts: [affirm], relation: answers_pending, slots: { consent_response: granted } } }
+      - { pending: consent, caller: "नहीं, सेव मत करो", out: { acts: [deny], relation: answers_pending, slots: { consent_response: declined } } }
       - { pending: select_job, caller: "हाँ ढूंढो", out: { acts: [affirm], relation: answers_other } }
       - { pending: age, caller: "बाईस साल", out: { acts: [provide_info], relation: answers_pending, slots: { age: 22 } } }
       - { pending: age, caller: "वेल्डिंग का काम चाहिए", out: { acts: [provide_info], relation: answers_other, slots: { trade: Welder } } }
@@ -704,11 +709,14 @@ preprocessing:
     act_intents:
       - { acts: [deny], pending: consent, relation: answers_pending, intent: decline }
       - { acts: [select], pending: select_job, intent: job_pick }
+      - { acts: [select], pending: submit_confirm, intent: job_pick }
       - { acts: [affirm], pending: submit_confirm, relation: answers_pending, intent: apply_now }
       - { acts: [deny], pending: submit_confirm, relation: answers_pending, intent: decline }
       - { acts: [request_change], topic: search, intent: explore_more }
+      - { acts: [ask], topic: search, intent: explore_more }
       - { acts: [request_change], topic: language, intent: language_switch_request }
       - { acts: [close], intent: termination_intent, gated: true }
+      - { acts: [deny], pending: closing_offer, intent: termination_intent, gated: true }
     termination_gate:
       any_of:
         - { pending: closing_offer }
@@ -2830,12 +2838,19 @@ agent_workflow:
         ## If user declines apply or wants a different job
         Route back to job_match. Don't apply.
 
+        ## If user re-picks another listed job ("नहीं, दूसरा वाला")
+        The new pick is already saved. Do NOT apply yet: name the new
+        job (role + company) and ask once more whether to send it.
+
       pending:
         - id: closing_offer
           expects: "और कुछ मदद चाहिए? / कॉल खत्म"
           when: [{ field: applications_submitted, operator: gt, value: 0 }]
         - id: submit_confirm
-          expects: "आवेदन भेजूँ? हाँ/नहीं"
+          expects: "आवेदन भेजूँ? हाँ/नहीं, या दूसरी job चुनना"
+          # A re-pick ("नहीं, दूसरा वाला") resolves against the same offered list.
+          options_from: { tool: fetch_jobs, fields: [role, company], id_field: item_id }
+          resolves_to: selected_job_item_id
       routing:
         # off_track (spec §6.6): stay here after repeated
         # off-script turns; never coincides with termination_intent.
@@ -2866,6 +2881,10 @@ agent_workflow:
           next_subagent_id: profile_setup
         - intent: explore_more
           next_subagent_id: job_match
+        # Re-pick at the confirmation: selected_job_item_id is already
+        # updated; stay here and confirm the NEW job before applying.
+        - intent: job_pick
+          next_subagent_id: apply_confirm
         - intent: decline
           next_subagent_id: job_match
         # End the call once an application ACTUALLY EXISTS — not once a turn

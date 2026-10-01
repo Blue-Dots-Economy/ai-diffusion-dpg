@@ -131,6 +131,11 @@ def test_synthetic_cases_unique_ids_and_ten_per_tag():
                   and c.state.get("applications_submitted") == 0]
     assert len(ack_submit) >= 10
     assert all(c.expect["intent"] == "any_input" and c.expect.get("terminate") is False for c in ack_submit)
+    # Product ruling 2026-10-01: a bare agreement ("जी", "ठीक है") to "shall I submit?" submits;
+    # a pure thank-you does not.
+    agree = {c.caller_now[-1]: c for c in cases if c.expect.get("pending") == "submit_confirm"}
+    assert agree["जी"].expect["intent"] == "apply_now" and "acknowledge" not in agree["जी"].tags
+    assert agree["धन्यवाद"].expect["intent"] == "any_input"
     by_text = {c.caller_now[-1]: c for c in cases if c.step == "apply_confirm"}
     assert by_text["रुको मत भेजो"].expect["intent"] == "decline"
     assert by_text["रुको मत भेजो"].expect["acts"] == ["deny"]

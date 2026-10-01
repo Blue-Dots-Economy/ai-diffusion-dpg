@@ -29,7 +29,7 @@ class DialogueActResult:
         acts: 1–3 acts, in the order the caller performed them.
         relation: How the turn relates to the pending question.
         topic: Topic for ask / request_change, else None.
-        slots: Every configured slot name → raw value or None.
+        slots: Every configured slot name → raw value (text from the model's name/value pairs) or None.
         option: Offered-option number the caller referred to, or None.
         spoken_reference: The caller's words for that reference, or None.
         signals: Configured signal names the turn carries.
@@ -85,11 +85,16 @@ class DialogueActResult:
         relation = parsed.get("relation")
         if relation not in RELATIONS:
             raise ValueError(f"invalid relation: {relation!r}")
-        raw_slots = parsed.get("slots", {})
+        raw_slots = parsed.get("slots", [])
         if raw_slots is None:
-            raw_slots = {}
-        if not isinstance(raw_slots, dict):
-            raise ValueError("slots must be an object")
+            raw_slots = []
+        if isinstance(raw_slots, list):
+            # Schema shape: [{name, value}]; a repeated name keeps the last value.
+            if any(not isinstance(p, dict) or "name" not in p or "value" not in p for p in raw_slots):
+                raise ValueError("slots must be name/value pairs")
+            raw_slots = {str(p["name"]): p["value"] for p in raw_slots}
+        elif not isinstance(raw_slots, dict):
+            raise ValueError("slots must be a list of name/value pairs")
         topic = parsed.get("topic")
         topic = topic if isinstance(topic, str) and topic in set(topics) else None
         ref = parsed.get("reference") if isinstance(parsed.get("reference"), dict) else {}
