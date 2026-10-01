@@ -146,3 +146,15 @@ def test_age_given_with_consent_is_accepted():
     assert u.accepted_slots == {"consent_response": "granted", "age": 25}
     assert {w.key: w.value for w in u.writes if w.key in ("consent_response", "age")} == {
         "consent_response": "granted", "age": 25}
+
+
+def test_termination_rule_follows_off_track_and_comments_say_so():
+    """M4: termination_intent is the first rule after off_track; the comments match the order."""
+    _, wf = _load("dialogue_act")
+    for sid, sub in wf.subagents.items():
+        intents = [r.intent for r in (sub.routing or [])]
+        if "off_track" in intents and "termination_intent" in intents:
+            assert intents.index("termination_intent") == intents.index("off_track") + 1, sid
+    raw = (BLUE_DOTS / "agent_core.yaml").read_text(encoding="utf-8")
+    assert "This must be the FIRST\n" not in raw
+    assert raw.count("first rule after off_track") == 5

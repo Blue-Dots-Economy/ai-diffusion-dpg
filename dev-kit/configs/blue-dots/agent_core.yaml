@@ -1601,17 +1601,14 @@ agent_workflow:
             - { field: has_age, operator: not_eq, value: true }
             - { field: age, operator: in, value: [null, "", 0] }
       routing:
-        # dialogue_act mode only (intent mode never emits it): after
-        # off_track.threshold off-script turns, stay here; <caller_turn> tells
-        # the model to re-ask simply or offer to end the call (spec §6.6).
-        # Placed above termination_intent only because the two never coincide;
-        # termination_intent still beats every other rule here.
+        # off_track (dialogue_act only, spec §6.6): stay here after repeated
+        # off-script turns; never coincides with termination_intent.
         - intent: off_track
           next_subagent_id: opening
-          # A goodbye ends the call, from ANY phase. This must be the FIRST
-          # rule here and repeated in every phase: routing is 3-pass and
-          # pass 1 (these subagent rules) always beats pass 2 (workflow
-          # global_routing). Almost every phase ends in an `intent: "*"`
+          # A goodbye ends the call, from ANY phase. It must be the
+          # first rule after off_track here, repeated in every phase:
+          # routing is 3-pass and pass 1 (these subagent rules) always
+          # beats pass 2 (workflow global_routing). Almost every phase ends in an `intent: "*"`
           # catch-all, so the global termination_intent rule is unreachable
           # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
           # termination_intent at 0.95 and still routed to services_offer,
@@ -2043,11 +2040,8 @@ agent_workflow:
           expects: "किस शहर में काम"
           when: [{ field: location, operator: in, value: [null, ""] }]
       routing:
-        # dialogue_act mode only (intent mode never emits it): after
-        # off_track.threshold off-script turns, stay here; <caller_turn> tells
-        # the model to re-ask simply or offer to end the call (spec §6.6).
-        # Placed above termination_intent only because the two never coincide;
-        # termination_intent still beats every other rule here.
+        # off_track (dialogue_act only, spec §6.6): stay here after repeated
+        # off-script turns; never coincides with termination_intent.
         - intent: off_track
           next_subagent_id: profile_resolve
         - intent: termination_intent
@@ -2328,17 +2322,14 @@ agent_workflow:
           options_from: { tool: fetch_jobs, fields: [role, company], id_field: item_id }
           resolves_to: selected_job_item_id
       routing:
-        # dialogue_act mode only (intent mode never emits it): after
-        # off_track.threshold off-script turns, stay here; <caller_turn> tells
-        # the model to re-ask simply or offer to end the call (spec §6.6).
-        # Placed above termination_intent only because the two never coincide;
-        # termination_intent still beats every other rule here.
+        # off_track (dialogue_act only, spec §6.6): stay here after repeated
+        # off-script turns; never coincides with termination_intent.
         - intent: off_track
           next_subagent_id: job_match
-          # A goodbye ends the call, from ANY phase. This must be the FIRST
-          # rule here and repeated in every phase: routing is 3-pass and
-          # pass 1 (these subagent rules) always beats pass 2 (workflow
-          # global_routing). Almost every phase ends in an `intent: "*"`
+          # A goodbye ends the call, from ANY phase. It must be the
+          # first rule after off_track here, repeated in every phase:
+          # routing is 3-pass and pass 1 (these subagent rules) always
+          # beats pass 2 (workflow global_routing). Almost every phase ends in an `intent: "*"`
           # catch-all, so the global termination_intent rule is unreachable
           # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
           # termination_intent at 0.95 and still routed to services_offer,
@@ -2561,17 +2552,14 @@ agent_workflow:
           expects: "caller का नाम"
           when: [{ field: name, operator: in, value: [null, ""] }]
       routing:
-        # dialogue_act mode only (intent mode never emits it): after
-        # off_track.threshold off-script turns, stay here; <caller_turn> tells
-        # the model to re-ask simply or offer to end the call (spec §6.6).
-        # Placed above termination_intent only because the two never coincide;
-        # termination_intent still beats every other rule here.
+        # off_track (dialogue_act only, spec §6.6): stay here after repeated
+        # off-script turns; never coincides with termination_intent.
         - intent: off_track
           next_subagent_id: profile_setup
-          # A goodbye ends the call, from ANY phase. This must be the FIRST
-          # rule here and repeated in every phase: routing is 3-pass and
-          # pass 1 (these subagent rules) always beats pass 2 (workflow
-          # global_routing). Almost every phase ends in an `intent: "*"`
+          # A goodbye ends the call, from ANY phase. It must be the
+          # first rule after off_track here, repeated in every phase:
+          # routing is 3-pass and pass 1 (these subagent rules) always
+          # beats pass 2 (workflow global_routing). Almost every phase ends in an `intent: "*"`
           # catch-all, so the global termination_intent rule is unreachable
           # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
           # termination_intent at 0.95 and still routed to services_offer,
@@ -3049,17 +3037,14 @@ agent_workflow:
         - id: submit_confirm
           expects: "आवेदन भेजूँ? हाँ/नहीं"
       routing:
-        # dialogue_act mode only (intent mode never emits it): after
-        # off_track.threshold off-script turns, stay here; <caller_turn> tells
-        # the model to re-ask simply or offer to end the call (spec §6.6).
-        # Placed above termination_intent only because the two never coincide;
-        # termination_intent still beats every other rule here.
+        # off_track (dialogue_act only, spec §6.6): stay here after repeated
+        # off-script turns; never coincides with termination_intent.
         - intent: off_track
           next_subagent_id: apply_confirm
-          # A goodbye ends the call, from ANY phase. This must be the FIRST
-          # rule here and repeated in every phase: routing is 3-pass and
-          # pass 1 (these subagent rules) always beats pass 2 (workflow
-          # global_routing). Almost every phase ends in an `intent: "*"`
+          # A goodbye ends the call, from ANY phase. It must be the
+          # first rule after off_track here, repeated in every phase:
+          # routing is 3-pass and pass 1 (these subagent rules) always
+          # beats pass 2 (workflow global_routing). Almost every phase ends in an `intent: "*"`
           # catch-all, so the global termination_intent rule is unreachable
           # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
           # termination_intent at 0.95 and still routed to services_offer,
@@ -3140,17 +3125,14 @@ agent_workflow:
         gently. Do not say "I don't understand." Reflect what you
         know and ask one open question.
       routing:
-        # dialogue_act mode only (intent mode never emits it): after
-        # off_track.threshold off-script turns, stay here; <caller_turn> tells
-        # the model to re-ask simply or offer to end the call (spec §6.6).
-        # Placed above termination_intent only because the two never coincide;
-        # termination_intent still beats every other rule here.
+        # off_track (dialogue_act only, spec §6.6): stay here after repeated
+        # off-script turns; never coincides with termination_intent.
         - intent: off_track
           next_subagent_id: clarification
-          # A goodbye ends the call, from ANY phase. This must be the FIRST
-          # rule here and repeated in every phase: routing is 3-pass and
-          # pass 1 (these subagent rules) always beats pass 2 (workflow
-          # global_routing). Almost every phase ends in an `intent: "*"`
+          # A goodbye ends the call, from ANY phase. It must be the
+          # first rule after off_track here, repeated in every phase:
+          # routing is 3-pass and pass 1 (these subagent rules) always
+          # beats pass 2 (workflow global_routing). Almost every phase ends in an `intent: "*"`
           # catch-all, so the global termination_intent rule is unreachable
           # in practice — measured: "अच्छा, मैं फोन रखता हूँ" classified
           # termination_intent at 0.95 and still routed to services_offer,
