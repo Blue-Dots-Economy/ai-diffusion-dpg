@@ -635,6 +635,19 @@ class TestRemovedIntentModeKeys:
         with pytest.raises(ValidationError, match=key):
             NLUProcessorConfig(**{key: "x"})
 
+    def test_subagent_rejects_valid_intents(self):
+        with pytest.raises(ValidationError, match="valid_intents"):
+            SubAgentSchema(id="a", valid_intents=["x"])
+
+    def test_workflow_rejects_global_intents(self):
+        with pytest.raises(ValidationError, match="global_intents"):
+            AgentWorkflowConfig(workflow_id="w", version="1.0.0", global_intents=["x"])
+
+    def test_turn_assembler_rejects_semantic_gate(self):
+        from dev_kit.schema import ChannelTurnAssemblerConfig
+        with pytest.raises(ValidationError, match="semantic_gate"):
+            ChannelTurnAssemblerConfig(semantic_gate={"enabled": True})
+
     def test_dpg_nlu_defaults_reject_mode(self):
         from dev_kit.schemas.dpg.agent_core import NLUProcessorDpg
         with pytest.raises(ValidationError, match="mode"):

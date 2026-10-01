@@ -531,6 +531,8 @@ class PendingQuestionConfig(BaseModel):
 class SubAgentSchema(BaseModel):
     """Configuration for a single subagent node in the workflow graph."""
 
+    model_config = {"extra": "forbid"}
+
     id: str = Field(..., description="Unique subagent identifier within this workflow")
     name: str = Field(default="", description="Human-readable display name")
     description: str = Field(default="", description="Short description of this subagent's role")
@@ -582,6 +584,8 @@ class SubAgentSchema(BaseModel):
 
 class AgentWorkflowConfig(BaseModel):
     """Full structural definition of the multi-subagent workflow for a domain."""
+
+    model_config = {"extra": "forbid"}
 
     workflow_id: str = Field(..., description="Unique workflow identifier, e.g. blue_dots_worker")
     version: str = Field(..., description="Semantic version string, e.g. '1.0.0'")
@@ -637,6 +641,8 @@ class TtsRulesConfig(BaseModel):
 
 class ChannelTurnAssemblerConfig(BaseModel):
     """Turn-assembler settings for a channel (GH-137)."""
+
+    model_config = {"extra": "forbid"}
 
     silence_trigger: dict[str, Any] = Field(
         default_factory=lambda: {"silence_ms": 0},
