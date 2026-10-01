@@ -2,20 +2,33 @@
 # Blue Dots domain values for Action Gateway.
 # Merged with dev-kit/dpg/action_gateway.yaml by loader.py before deployment.
 #
-# Four tools back the voice-first job-seeker journey:
-#   fetch_profile  — GET  /mock/blue_dots/seeker_fetch  (seeker lookup by phone)
-#   fetch_jobs     — GET  /mock/blue_dots/job_fetch     (provider listings)
-#   onboard        — POST /mock/blue_dots/onboard       (create/update user+profile)
-#   apply_job      — POST /mock/blue_dots/apply         (submit application)
+# Four tools back the voice-first job-seeker journey. All of them call the
+# REAL Signals upstream — the in-process mocks this file once described are
+# long gone:
+#   fetch_profile  — GET  /api/v1/admin/participant   (seeker lookup by phone)
+#   fetch_jobs     — POST /signals-search/v1/search   (semantic job discovery)
+#   save_profile   — POST /api/v1/admin/participant   (create/update seeker)
+#   apply_job      — POST /api/v1/action/perform      (submit application)
 #
-# All four endpoints currently point at the in-process Action Gateway mocks
-# (http://action_gateway:9999/mock/blue_dots/*). Swap each tool's base_url
-# and path to the real upstream once the schemas are finalised.
+# WHICH CLUSTER. Every base_url below, plus apply_job's static `instance_url`
+# param, names the target environment. There are FIVE such values and they
+# must move together — instance_url is not a base_url, it travels inside the
+# apply body, and leaving it behind points applications at the wrong instance
+# without failing loudly.
 #
-# Auth (when we switch to the real services):
-#   - fetch_profile, fetch_jobs       — public, no key required
-#   - onboard, apply_job              — x-api-key header, shared secret
-#     (env var: BLUE_DOTS_API_KEY)
+#   UAT          https://signals.bluedotseconomy.org     ← current
+#   test cluster https://dev-signals.serveirc.com
+#
+# The keys and the acting-org id are environment-specific too and come from
+# the env, not this file: BLUE_DOTS_API_KEY, BLUE_DOTS_SEARCH_API_KEY (a
+# DIFFERENT key), BLUE_DOTS_ORG_ID. Pointing the URLs at one cluster while
+# the env still holds another's credentials yields 401/403, not a clear error.
+#
+# Auth:
+#   - every tool requires a key; none of these endpoints is public
+#   - fetch_profile, save_profile, apply_job — x-api-key: BLUE_DOTS_API_KEY,
+#     plus x-acting-org-id: BLUE_DOTS_ORG_ID
+#   - fetch_jobs                            — x-api-key: BLUE_DOTS_SEARCH_API_KEY
 
 tools:
 
@@ -47,7 +60,7 @@ tools:
       / Full-time / Flexible), help_needed (otherHelpNeeded: Training /
       Accommodation / Travel / Other). The trade field may be empty or
       noisy in older records — still ask the user to confirm.
-    base_url: "https://dev-signals.serveirc.com"
+    base_url: "https://signals.bluedotseconomy.org"
     # The phone lookup moved off network/item/fetch_local: `item_state.phone`
     # is a masked PII field upstream, so filtering on it now matches nothing.
     # GET /admin/participant?phone_number= looks the caller up by their account
@@ -141,7 +154,7 @@ tools:
       stipend_min / stipend_max, or task_rate_min / task_rate_max.
       Read out whichever is populated. Hiring-manager contact
       details are intentionally not exposed to the LLM.
-    base_url: "https://dev-signals.serveirc.com/signals-search"
+    base_url: "https://signals.bluedotseconomy.org/signals-search"
     # Job discovery moved off network/item/fetch_local to signals-search.
     # `item_state.jobProviderLocation` is PII-masked upstream ("B***"), so the
     # old server-side city filter matches nothing. Search is semantic instead:
@@ -218,7 +231,7 @@ tools:
       array — for UPDATE it has just the updated profile; for CREATE it
       has all the user's profiles and the newly-created one is the last
       by created_at.
-    base_url: "https://dev-signals.serveirc.com"
+    base_url: "https://signals.bluedotseconomy.org"
     auth:
       type: api_key
       header: x-api-key
@@ -445,7 +458,7 @@ tools:
       (item_network, item_domain, item_type, item_instance_url,
       action_type) lives in body_template and never needs to be
       supplied by the LLM.
-    base_url: "https://dev-signals.serveirc.com"
+    base_url: "https://signals.bluedotseconomy.org"
     auth:
       type: api_key
       header: x-api-key
@@ -495,7 +508,7 @@ tools:
           - name: instance_url
             source: static
             type: string
-            value: "https://dev-signals.serveirc.com"
+            value: "https://signals.bluedotseconomy.org"
           - name: profile_item_id
             source: agent
             type: string
