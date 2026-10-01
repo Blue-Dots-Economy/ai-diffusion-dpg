@@ -4,7 +4,7 @@
 # in-scope repos can't drift apart; see that repo's
 # .github/workflows/security-scan.yml and docs/operations/security-scanning-a2*.md.
 #
-# What runs here (language: python, no image-refs, gitleaks off):
+# What runs here (language: python, no image-refs, gitleaks on):
 #   * trivy-fs    — Dockerfile/IaC misconfig + filesystem secret detection ->
 #                   SARIF. Dependency CVEs are thin for now: every service
 #                   declares its deps in a pyproject.toml with NO lock file
@@ -22,20 +22,27 @@
 #                   no scan step, so these images are currently published
 #                   unscanned. Adding the scan there is the right fix — passing
 #                   image-refs here would scan them only after publication.
-#   * gitleaks    — OFF. The reusable workflow defaults run-gitleaks to true,
-#                   but this repo already runs gitleaks itself in
-#                   secret-scan.yaml: full history, blocking, on an image pinned
-#                   by digest, with .gitleaksignore fingerprints documented in
-#                   the job output. Enabling it here as well would scan the same
-#                   history twice and upload a second SARIF under a different
-#                   category. Drop secret-scan.yaml and flip this to true if the
-#                   fleet-standard scan is preferred — do one or the other, not
-#                   both.
+#   * gitleaks    — ON, and it replaces the repo's own secret-scan.yaml, which
+#                   is deleted in the same change. The two were equivalent in
+#                   every respect that matters: same gitleaks image BY DIGEST
+#                   (sha256:c00b6bd0…), same full history (fetch-depth: 0),
+#                   same `persist-credentials: false`, same SARIF category
+#                   ("gitleaks") — so existing alerts carry over rather than
+#                   being orphaned under a new category. Running both would
+#                   have scanned the same history twice for one result.
 #
 # Report-only (`block: false`): findings land in Security > Code scanning and the
-# job still passes. Green means "the scan ran", NOT "nothing found". Flip to
-# `block: true` (fail on HIGH/CRITICAL) only after triage, otherwise a
-# pre-existing alert backlog would red-wall every PR.
+# job still passes. Green means "the scan ran", NOT "nothing found".
+#
+# CAVEAT, and the one behaviour this change does not preserve: the deleted
+# secret-scan.yaml failed the job on ANY finding, unconditionally. Here gitleaks
+# runs with `--exit-code ${{ inputs.block && '1' || '0' }}`, so under
+# `block: false` a leaked secret is REPORTED, not blocked. `block` is a single
+# switch covering trivy-fs as well, so secret-blocking cannot be re-enabled on
+# its own through this interface. Flipping it to true would restore the old
+# secret posture and additionally make trivy-fs fail on HIGH/CRITICAL — which is
+# viable here (this repo had 0 open code-scanning alerts when the caller landed)
+# but diverges from the other four repos, which all run block: false.
 #
 # Triggers differ from the other repos because the branch model does: there is
 # no develop or feature integration branch here, so pull_request is unfiltered
@@ -71,5 +78,5 @@ jobs:
     uses: Blue-Dots-Economy/bluedots-automation/.github/workflows/security-scan.yml@d6a39c5b22be14b4b4aeaa78fc1d86c1f67bb555  # feature 2026-09-25 -- repin to @main once promoted
     with:
       language: python
-      run-gitleaks: false   # secret-scan.yaml already does this, blocking
+      run-gitleaks: true
       block: false
