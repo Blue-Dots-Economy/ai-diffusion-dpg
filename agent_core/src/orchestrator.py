@@ -582,9 +582,12 @@ class AgentCore(AgentCoreBase):
         """
         session = dict(bundle.session or {})
         served = session.get(SERVED_TOOL_RESULTS_KEY)
+        us = session.get("user_state")
+        prev_us = (us.get("id") if isinstance(us, dict) else None) or self._user_state_default or None
         return TurnContext(subagent_id=subagent_id, state=self._routing_state(bundle), session=session,
                            segments=[s for s in segments if s], recent=list(session.get(RECENT_TURNS_KEY) or []),
-                           tool_cache=tool_cache, served=dict(served) if isinstance(served, dict) else {})
+                           tool_cache=tool_cache, served=dict(served) if isinstance(served, dict) else {},
+                           previous_user_state=prev_us)
 
     def _served_tool_results_update(self, bundle, tool_cache) -> dict | None:
         """Merge this turn's last-served tool entries into the session map (spec §5.2).

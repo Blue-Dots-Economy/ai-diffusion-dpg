@@ -38,7 +38,8 @@ class FrameBuilderBase(ABC):
 
     @abstractmethod
     def build(self, *, step: str, pending: PendingQuestion | None, rows: list[dict],
-              known: list[tuple[str, Any]], recent: list[dict], segments: list[str]) -> str:
+              known: list[tuple[str, Any]], recent: list[dict], segments: list[str],
+              previous_state: str | None = None) -> str:
         """Render the user message for one NLU call."""
 
 
@@ -58,7 +59,8 @@ class FrameBuilder(FrameBuilderBase):
         return text if len(text) <= self._cap else "…" + text[-self._cap:]
 
     def build(self, *, step: str, pending: PendingQuestion | None, rows: list[dict],
-              known: list[tuple[str, Any]], recent: list[dict], segments: list[str]) -> str:
+              known: list[tuple[str, Any]], recent: list[dict], segments: list[str],
+              previous_state: str | None = None) -> str:
         """Render the user message for one NLU call.
 
         Args:
@@ -68,6 +70,7 @@ class FrameBuilder(FrameBuilderBase):
             known: (label, value) pairs; empty values are skipped.
             recent: Last exchanges, oldest first.
             segments: This turn's utterances; all but the last are marked interrupted.
+            previous_state: Caller's last user-state id; rendered when given.
 
         Returns:
             The rendered message.
@@ -84,6 +87,8 @@ class FrameBuilder(FrameBuilderBase):
         shown = [f"{k}={v}" for k, v in known if v not in _EMPTY]
         if shown:
             lines.append("known: " + " · ".join(shown))
+        if previous_state:
+            lines.append(f"previous_state: {previous_state}")
         lines.append("</frame>")
         if recent:
             lines.append("<recent>")

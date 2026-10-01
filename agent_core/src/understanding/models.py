@@ -34,6 +34,8 @@ class DialogueActResult:
         spoken_reference: The caller's words for that reference, or None.
         signals: Configured signal names the turn carries.
         extras: Ad-hoc (key, value) details; never read by routing.
+        user_state_id: Classified caller state id, or None.
+        user_state_confidence: Its confidence, or None.
     """
 
     acts: tuple[str, ...]
@@ -44,6 +46,8 @@ class DialogueActResult:
     spoken_reference: str | None = None
     signals: tuple[str, ...] = ()
     extras: tuple[tuple[str, str], ...] = ()
+    user_state_id: str | None = None
+    user_state_confidence: float | None = None
 
     @classmethod
     def fallback(cls) -> "DialogueActResult":
@@ -52,7 +56,7 @@ class DialogueActResult:
 
     @classmethod
     def from_parsed(cls, parsed: Any, *, slot_names: Iterable[str], topics: Iterable[str],
-                    signals: Iterable[str]) -> "DialogueActResult":
+                    signals: Iterable[str], user_state_ids: Iterable[str] = ()) -> "DialogueActResult":
         """Validate a provider's parsed JSON into a result.
 
         Tolerant where a wrong value is harmless (unknown topic → None,
@@ -64,6 +68,8 @@ class DialogueActResult:
             slot_names: Configured slot names.
             topics: Configured topics.
             signals: Configured signal names.
+            user_state_ids: Configured user-state ids; an unknown id or a
+                non-numeric confidence leaves the user-state fields None.
 
         Returns:
             The validated result.
@@ -94,10 +100,18 @@ class DialogueActResult:
         sig = tuple(s for s in (parsed.get("signals") or []) if s in allowed_signals)
         extras = tuple((str(e["key"]), str(e["value"])) for e in (parsed.get("extras") or [])
                        if isinstance(e, dict) and "key" in e and "value" in e)
+        us = parsed.get("user_state")
+        us_id: str | None = None
+        us_conf: float | None = None
+        if isinstance(us, dict) and us.get("id") in set(user_state_ids):
+            c = us.get("confidence")
+            if isinstance(c, (int, float)) and not isinstance(c, bool):
+                us_id, us_conf = us["id"], float(c)
         return cls(
             acts=tuple(acts[:MAX_ACTS]), relation=relation, topic=topic,
             slots={n: raw_slots.get(n) for n in slot_names},
             option=option, spoken_reference=spoken, signals=sig, extras=extras,
+            user_state_id=us_id, user_state_confidence=us_conf,
         )
 
 

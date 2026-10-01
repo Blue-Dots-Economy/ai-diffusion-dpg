@@ -65,7 +65,7 @@ def build_output_schema(cfg: DialogueActConfig) -> dict:
         JSON schema dict.
     """
     signal_items = {"type": "string", "enum": list(cfg.signals)} if cfg.signals else {"type": "string"}
-    return _obj({
+    props = {
         "acts": {"type": "array", "items": {"type": "string", "enum": list(ACTS)}},
         "relation": {"type": "string", "enum": list(RELATIONS)},
         "topic": {"type": ["string", "null"], "enum": [*cfg.topics, None]} if cfg.topics else {"type": "null"},
@@ -73,7 +73,11 @@ def build_output_schema(cfg: DialogueActConfig) -> dict:
         "reference": _obj({"option": {"type": ["integer", "null"]}, "spoken": {"type": ["string", "null"]}}),
         "signals": {"type": "array", "items": signal_items},
         "extras": {"type": "array", "items": _obj({"key": {"type": "string"}, "value": {"type": "string"}})},
-    })
+    }
+    if cfg.user_states:
+        props["user_state"] = _obj({"id": {"type": "string", "enum": [s["id"] for s in cfg.user_states]},
+                                    "confidence": {"type": "number"}})
+    return _obj(props)
 
 
 def _slot_line(spec: SlotSpec) -> str:
@@ -120,6 +124,13 @@ def build_system_prompt_text(cfg: DialogueActConfig) -> str:
         "- extras: other personal details worth keeping, as key/value text pairs; usually empty.",
         "- signals: only from this list, when clearly present: " + (", ".join(cfg.signals) or "none"),
     ]
+    if cfg.user_states:
+        parts += ["", "Caller state — classify their mental state; keep previous_state (in <frame>) "
+                      "when the turn does not clearly shift it:"]
+        for s in cfg.user_states:
+            first = (str(s.get("guidance") or "").strip().splitlines() or [""])[0]
+            sigs = " | ".join(s.get("signals") or []) or "(none)"
+            parts.append(f"- {s['id']}: signals {sigs} — {first}")
     if cfg.examples:
         parts += ["", "Examples:"]
         for ex in cfg.examples:
@@ -180,7 +191,8 @@ class DialogueActNLU(DialogueActNLUBase):
             try:
                 return _done(DialogueActResult.from_parsed(
                     response.parsed_output, slot_names=tuple(self._cfg.slots),
-                    topics=self._cfg.topics, signals=self._cfg.signals), None)
+                    topics=self._cfg.topics, signals=self._cfg.signals,
+                    user_state_ids=[s["id"] for s in self._cfg.user_states]), None)
             except ValueError:
                 return _done(DialogueActResult.fallback(), "schema_violation")
         except Exception as e:  # noqa: BLE001 — never raise into the turn

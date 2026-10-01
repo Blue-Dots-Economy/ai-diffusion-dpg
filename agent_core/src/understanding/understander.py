@@ -17,7 +17,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-from src.models import NLUResult
+from src.models import NLUResult, UserStateClassification
 from src.understanding.config import DialogueActConfig
 from src.understanding.dialogue_act_nlu import DialogueActNLU, DialogueActNLUBase
 from src.understanding.frame import FrameBuilder, FrameBuilderBase, offered_rows
@@ -52,6 +52,7 @@ class TurnContext:
         tool_cache: This turn's ``TurnToolCache``, or None.
         served: Session ``served_tool_results`` (tool → args_hash of the
             entry the caller last heard), preferred over the newest entry.
+        previous_user_state: Caller's previous user-state id, or None.
     """
 
     subagent_id: str
@@ -61,6 +62,7 @@ class TurnContext:
     recent: list[dict] = field(default_factory=list)
     tool_cache: Any | None = None
     served: dict = field(default_factory=dict)
+    previous_user_state: str | None = None
 
 
 def _offered_entry(ctx: TurnContext, tool: str) -> dict | None:
@@ -141,7 +143,9 @@ class TurnUnderstander(TurnUnderstanderBase):
             known = [(label, ctx.state.get(key)) for label, key in self._cfg.known_state_keys()]
             recent = ctx.recent[-self._cfg.history_turns:] if self._cfg.history_turns > 0 else []
             message = self._frame.build(step=ctx.subagent_id, pending=pending, rows=rows, known=known,
-                                        recent=recent, segments=ctx.segments)
+                                        recent=recent, segments=ctx.segments,
+                                        previous_state=(ctx.previous_user_state
+                                                        if self._cfg.user_states else None))
             dialogue, reason, _ = self._nlu.classify(message)
             if reason:
                 return self._finish(self._fallback(dialogue, pending, reason), ctx, message, start)
@@ -182,8 +186,18 @@ class TurnUnderstander(TurnUnderstanderBase):
             entities[pending.resolves_to] = resolved.id
         gate_blocked = (not gate_ok) and any(
             r.gated and set(r.acts) <= set(dialogue.acts) for r in cfg.act_intents)
+        user_state = None
+        if cfg.user_states:
+            valid = {s["id"] for s in cfg.user_states}
+            conf = dialogue.user_state_confidence or 0.0
+            if dialogue.user_state_id in valid and conf >= cfg.user_state_threshold:
+                chosen = dialogue.user_state_id
+            else:
+                chosen = ctx.previous_user_state or cfg.user_state_default
+            user_state = UserStateClassification(id=chosen, confidence=conf)
         u = TurnUnderstanding(
-            nlu_result=NLUResult(intent=intent, entities=entities, sentiment="neutral", confidence=1.0),
+            nlu_result=NLUResult(intent=intent, entities=entities, sentiment="neutral", confidence=1.0,
+                                 user_state=user_state),
             dialogue=dialogue, pending_id=pid, resolved=resolved, unresolved=unresolved,
             accepted_slots=accepted, updates=updates, rejected_slots=rejected + not_pending,
             writes=writes, signals=list(dialogue.signals), gate_blocked=gate_blocked,
