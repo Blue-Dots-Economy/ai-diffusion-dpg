@@ -213,7 +213,7 @@ The derived intent is placed in the `NLUResult.intent` routing already consumes.
 - A value that differs from the stored one is overwritten, with the old and new values logged as hashes.
 - **A value written by `SlotWriter` this session wins over the stored profile**, in routing state, in `_profile_context` (`<known_profile>`) and in `_tool_session_values`. Today the stored profile always wins, which hides a spoken correction until the profile is saved. The rule is provenance-based: `SlotWriter` records each key it writes in a `slot_provenance` session list, and only those keys get session precedence. Any other session copy keeps today's profile-first rule. That preserves the guard documented on `_profile_context` against the age-stuck-at-0 leak, where a stale session `"0"` outranked a fresh profile `25`. `SlotWriter` itself can never write such a value, because invalid and `null` slots are dropped (§6.1).
 - `extras` are written as a single `nlu_extras` session map, which routing never reads.
-- `signals` are appended to a `signals` session list and emitted to observability on both paths.
+- `signals` are written through the existing `signal`-scope Memory Layer write (one Signal node per signal, as the sync path does today for `signal_intents`), on both paths.
 
 ### 6.6 Off-track counter
 
@@ -244,7 +244,7 @@ Lines are omitted when empty. On an off-script turn it states the topic and that
 ### 6.9 End of turn
 
 - Append `{bot, caller, interrupted}` to `recent_turns`, capped at `history_turns × 2` entries. Written on completed **and** interrupted turns.
-- Write `current_question` on interrupted turns too, with what the caller actually heard where it is known. This fixes a stale question for both modes.
+- On an interrupted streaming turn, write `current_question` and a `recent_turns` entry from the sentences actually emitted before the interruption (`TurnRecord.spoken`, recorded where events are stamped). When nothing was emitted, nothing is written. This fixes a stale question for both modes.
 
 ## 7. Configuration
 
@@ -259,7 +259,7 @@ preprocessing:
     provider: openai
     model: gpt-4.1-mini-2025-04-14
     timeout_ms: 2500
-    retry_attempts: 1               # fast failures only (§9.1)
+    retry_attempts: 2               # total attempts; the 2nd only after a fast failure (§9.1)
     history_turns: 2
     topics: [job_details, salary, location, search, profile, process, identity, other]
     signals: [pay_disappointment, distance_issue, counsellor_request]
@@ -340,7 +340,6 @@ The same PR updates, per `.claude/rules/runtime-devkit-sync.md`:
 | `recent_turns` | list, capped at `history_turns × 2` | end of turn (§6.9) |
 | `slot_provenance` | list of state keys | §6.5 |
 | `off_track_count` | int | §6.6 |
-| `signals` | list | §6.5 |
 | `nlu_extras` | map | §6.5 |
 
 All are session scope in Memory Layer Redis, with the session's TTL. There is no new store.
@@ -385,7 +384,7 @@ New units under `agent_core/src/preprocessing/understanding/`, each behind an AB
 In `dialogue_act` mode NLU always gets its own chat-provider instance, even when the model matches the main agent's. It has:
 
 - `timeout_ms: 2500`;
-- `retry_attempts: 1`, applied only to fast failures: a connection error or a 429 within the first 500 ms;
+- `retry_attempts: 2` (total attempts, as for every provider): the second attempt runs only after a rate-limit (429) error;
 - **no retry after a timeout**; a timeout goes straight to the fallback.
 
 This needs two provider options, each defaulting to today's behaviour:
