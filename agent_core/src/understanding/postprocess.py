@@ -12,7 +12,9 @@ import re
 from typing import Any
 
 from src.understanding.config import DialogueActConfig, SlotSpec
-from src.understanding.models import SlotRejection
+from src.understanding.frame import option_label
+from src.understanding.models import ResolvedReference, SlotRejection, UnresolvedReference
+from src.workflow_loader import PendingQuestion
 
 _DIGITS = re.compile(r"^\s*\d+\s*$")
 
@@ -98,3 +100,31 @@ def accept_slots(slots: dict, cfg: DialogueActConfig, pending_id: str | None,
         else:
             ok[name] = value
     return ok, rejected
+
+
+def resolve_reference(option: int | None, pending: PendingQuestion | None,
+                      rows: list[dict]) -> tuple[ResolvedReference | None, UnresolvedReference | None]:
+    """Map an offered-option number to its row id (spec §6.3).
+
+    Args:
+        option: 1-based option number from NLU, or None.
+        pending: Resolved pending question; only one with ``options_from`` resolves.
+        rows: The rows rendered as ``offered`` this turn (same entry, same order).
+
+    Returns:
+        (resolved, None), (None, unresolved), or (None, None) when there is
+        nothing to resolve.
+    """
+    if option is None or pending is None or pending.options_from is None:
+        return None, None
+    if not rows:
+        return None, UnresolvedReference(option=option, offered=0, reason="no_options")
+    if not 1 <= option <= len(rows):
+        return None, UnresolvedReference(option=option, offered=len(rows), reason="out_of_range")
+    row = rows[option - 1]
+    of = pending.options_from
+    row_id = row.get(of.id_field)
+    if row_id in (None, ""):
+        return None, UnresolvedReference(option=option, offered=len(rows), reason="missing_id")
+    return ResolvedReference(option=option, id=str(row_id), label=option_label(row, of.fields),
+                             id_field=of.id_field), None
