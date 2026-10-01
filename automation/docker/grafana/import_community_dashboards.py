@@ -3,7 +3,7 @@
 
 Deployment tooling for the stack's Grafana, not part of any DPG block. Each
 dashboard is downloaded at a fixed revision and normalised for file
-provisioning, then written to ``grafana/dashboards/``. The output is
+provisioning, then written to ``grafana/provisioning/dashboards/``. The output is
 committed, so a deploy never needs internet access to grafana.com; rerun
 this only to bump a revision or add a dashboard.
 
@@ -27,7 +27,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-OUT_DIR = Path(__file__).resolve().parent / "dashboards"
+OUT_DIR = Path(__file__).resolve().parent / "provisioning" / "dashboards"
 URL = "https://grafana.com/api/dashboards/{id}/revisions/{rev}/download"
 TIMEOUT_S = 30
 

@@ -93,8 +93,9 @@ docker compose -f docker-compose.dev.yml up -d
 
 Grafana (<http://localhost:3000>, `admin` / `$GF_SECURITY_ADMIN_PASSWORD`,
 default `admin`) opens on **Service Status**. The dashboards, alert rules and
-Discord routing are provisioned from files, read-only in the UI: dashboards in
-`grafana/dashboards/`, the rest in `grafana/provisioning/`. Every dashboard has
+Discord routing are provisioned from files under `grafana/provisioning/`,
+read-only in the UI: the dashboards are in `provisioning/dashboards/` next to
+the provider config, alerting in `provisioning/alerting/`. Every dashboard has
 a *DPG dashboards* menu (top right) that switches between them and keeps the
 time range.
 

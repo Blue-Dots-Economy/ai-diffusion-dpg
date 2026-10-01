@@ -97,7 +97,7 @@ scrape_configs:
     relabel_configs: *probe_relabel
 
   # ---------------------------------------------------------------------------
-  # Component metrics for the dashboards in grafana/dashboards/.
+  # Component metrics for the dashboards in grafana/provisioning/dashboards/.
   # ---------------------------------------------------------------------------
 
   # The collector's own telemetry (receivers, processors, exporters, queues).

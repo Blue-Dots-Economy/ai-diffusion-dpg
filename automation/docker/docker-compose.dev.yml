@@ -530,7 +530,7 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD:-admin}
       # Open on the service-status overview instead of an empty home page;
       # every dashboard links to the others from its header.
-      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/dashboards/service-status.json
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/provisioning/dashboards/service-status.json
       # "Logs / App" (grafana.com 13639) still uses the legacy Angular graph
       # panel. Migrate such panels to their React equivalents on load, so the
       # dashboard keeps working once Angular support is removed.
@@ -544,9 +544,9 @@ services:
       - DISCORD_WEBHOOK_WARNING=${DISCORD_WEBHOOK_WARNING:-http://127.0.0.1:9/discord-webhook-not-configured}
       - DISCORD_WEBHOOK_INFO=${DISCORD_WEBHOOK_INFO:-http://127.0.0.1:9/discord-webhook-not-configured}
     volumes:
-      # Datasources, dashboards provider and alerting (rules, routing, Discord).
+      # Datasources, dashboards (provider + JSON) and alerting (rules, routing,
+      # Discord).
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/dashboards:/etc/grafana/dashboards:ro
     networks:
       - dpg_net
     deploy:
