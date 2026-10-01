@@ -2277,3 +2277,30 @@ def test_sync_remember_value_visible_to_later_session_params_in_same_turn():
     agent.process_turn(_turn_input())
     assert seen["ok"] is True
     assert seen["values"]["profile_action"] == "use_existing"
+
+
+def test_build_profile_context_adds_listed_session_fields_only():
+    agent = _make_agent()
+    agent._prompt_session_fields = ["profile_item_id", "stored_trade"]
+    b = ContextBundle(session={"profile_item_id": "p1", "stored_trade": "", "stored_location": "Pune",
+                               "trade": "Welding"}, profile={"name": "Asha"}, journey=None)
+    ctx = agent._build_profile_context(b, {"trade": "trade"})
+    assert ctx["profile_item_id"] == "p1"
+    assert "stored_trade" not in ctx            # empty value skipped
+    assert "stored_location" not in ctx         # not listed
+    assert ctx["trade"] == "Welding" and ctx["name"] == "Asha"
+
+
+def test_build_profile_context_does_not_override_existing():
+    agent = _make_agent()
+    agent._prompt_session_fields = ["name"]
+    b = ContextBundle(session={"name": "Other"}, profile={"name": "Asha"}, journey=None)
+    assert agent._build_profile_context(b, {})["name"] == "Asha"
+
+
+def test_prompt_session_fields_reach_build_system_prompt():
+    agent = _make_agent(session_data={"current_subagent_id": "market_truth", "profile_item_id": "p1"})
+    agent._prompt_session_fields = ["profile_item_id"]
+    agent.process_turn(_turn_input())
+    profile = agent._manager_agent.build_system_prompt.call_args.kwargs["profile"]
+    assert profile["profile_item_id"] == "p1"

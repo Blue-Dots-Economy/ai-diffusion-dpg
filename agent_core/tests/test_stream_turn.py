@@ -1203,6 +1203,14 @@ class TestStreamTurnToolResultPersistence:
         assert set(tools) == {"get_balance", "remember"}
         assert "force_refresh" in tools["get_balance"].input_schema["properties"]
 
+    async def test_stream_prompt_session_fields_reach_build_system_prompt(self):
+        agent, _order, _requests = _tr_agent([], entries=[_tr_entry()])
+        agent._prompt_session_fields = ["profile_item_id"]
+        agent._async_memory.context_bundle.return_value.session["profile_item_id"] = "p1"
+        await _collect_events(agent, _make_turn_input())
+        profile = agent._manager_agent.build_system_prompt.call_args.kwargs["profile"]
+        assert profile["profile_item_id"] == "p1"
+
     async def test_stream_replay_skips_tools_with_fresh_stored_results(self):
         prior = {"tool_uses": [{"type": "tool_use", "id": "tu_p", "name": "get_balance",
                                 "input": {"account": "12345"}}],

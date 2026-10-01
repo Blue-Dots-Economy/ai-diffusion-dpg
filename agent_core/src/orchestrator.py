@@ -368,6 +368,36 @@ class AgentCore(AgentCoreBase):
         # optional framework ``remember`` tool, both derived from config.
         self._tool_policies = ToolResultPolicies.from_config(config)
         self._remember = RememberTool.from_config(config)
+        self._prompt_session_fields: list[str] = list(
+            ((config.get("agent") or {}).get("prompt_session_fields")) or [])
+
+    def _build_profile_context(self, bundle, entity_map: dict) -> dict:
+        """Profile facts for <known_profile>: profile, NLU-mapped session fields, listed session fields.
+
+        bundle.profile is the source of truth for declared profile fields;
+        persistent NLU writes update it in-place earlier in the turn. Session
+        values only fill what it does not carry, supporting the
+        entity_persistence.scope="session" path without letting stale session
+        copies overwrite fresh persistent values (the previous unconditional
+        overlay caused the age-stuck-at-0 leak: an "0" string from a
+        session-init copy outranked a fresh "25" in Memgraph because the
+        empty-check did not catch "0"). ``agent.prompt_session_fields`` names
+        further session fields, e.g. ones written by session_mapping, that the
+        prompt may read (session-bootstrap spec section 5.4).
+
+        Args:
+            bundle: Context bundle with ``profile`` and ``session`` mappings.
+            entity_map: NLU entity-to-profile-field mapping.
+
+        Returns:
+            New dict of profile context for prompt assembly.
+        """
+        profile_context = dict(bundle.profile)
+        overlay = set(entity_map.values()) | set(self._prompt_session_fields)
+        for k, v in bundle.session.items():
+            if k in overlay and v not in (None, "", "[]") and not profile_context.get(k):
+                profile_context[k] = v
+        return profile_context
 
     def _remember_on_saved(self, bundle, turn_session_values: dict | None = None):
         """Build the callback that mirrors a remembered value into the bundle.
@@ -1116,24 +1146,7 @@ class AgentCore(AgentCoreBase):
             "  [STEP 7] Prompt Assembly  →  subagent=%s (%s)",
             next_subagent.id, next_subagent.name,
         )
-        # Merge collected session fields into profile for LLM grounding context.
-        # bundle.profile is the source of truth for declared profile fields —
-        # persistent NLU writes update it in-place earlier in this turn. The
-        # overlay below only fills profile fields that bundle.profile does NOT
-        # already carry, supporting the entity_persistence.scope="session" path
-        # without letting stale session copies overwrite fresh persistent values
-        # (the previous unconditional overlay was the cause of the age-stuck-at-0
-        # leak: an "0" string from session-init copy outranked a fresh "25" in
-        # Memgraph because the empty-check did not catch "0").
-        profile_context = dict(bundle.profile)
-        profile_field_names = set(entity_map.values())
-        for k, v in bundle.session.items():
-            if (
-                k in profile_field_names
-                and v not in (None, "", "[]")
-                and not profile_context.get(k)
-            ):
-                profile_context[k] = v
+        profile_context = self._build_profile_context(bundle, entity_map)
 
         # Ensure the prompt builder uses the most up-to-date language preference
         # (which might have been updated by NLU in Step 5).
@@ -4081,19 +4094,7 @@ class AgentCore(AgentCoreBase):
                 next_subagent_id, detected_language,
             )
             next_subagent: SubAgent = self._workflow.subagents[next_subagent_id]
-            # bundle.profile is the source of truth for declared profile fields;
-            # persistent NLU writes update it in-place earlier this turn. The
-            # overlay only fills fields bundle.profile doesn't already carry
-            # (see sync-path build-context for the full rationale).
-            profile_context = dict(bundle.profile)
-            profile_field_names = set(entity_map.values())
-            for k, v in bundle.session.items():
-                if (
-                    k in profile_field_names
-                    and v not in (None, "", "[]")
-                    and not profile_context.get(k)
-                ):
-                    profile_context[k] = v
+            profile_context = self._build_profile_context(bundle, entity_map)
 
             final_language = profile_context.get("language_preference", detected_language)
             is_resumption = bundle.session.get("was_adopted", False)
