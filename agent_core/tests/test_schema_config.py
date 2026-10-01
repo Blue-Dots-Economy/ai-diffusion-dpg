@@ -12,6 +12,7 @@ from src.schema.config import (
     RoutingOperator,
     ServerConfig,
     SpecialHandler,
+    _DIALOGUE_ACTS,
 )
 
 
@@ -594,4 +595,111 @@ def test_no_bootstrap_is_default():
 ])
 def test_invalid_bootstrap_rejected(cfg, match):
     with pytest.raises(ValidationError, match=match):
+        MergedConfig.validate_full(cfg)
+
+
+# ---------------------------------------------------------------------------
+# dialogue_act NLU mode + SubAgent.pending
+# ---------------------------------------------------------------------------
+
+def _da_base() -> dict:
+    """Minimal merged config in dialogue_act mode that validates."""
+    return {
+        "connectors": {"read": [{"name": "fetch_jobs", "description": "jobs",
+                                 "cache": {"scope": "session", "ttl_seconds": 600}}]},
+        "preprocessing": {"nlu_processor": {
+            "mode": "dialogue_act",
+            "topics": ["salary", "search"],
+            "slots": {"age": {"type": "int", "min": 14, "max": 80, "accept_when_pending": ["age"]},
+                      "consent": {"type": "enum", "values": ["granted", "declined"],
+                                  "accept_when_pending": ["consent"]}},
+            "act_intents": [
+                {"acts": ["affirm"], "pending": "submit_confirm", "relation": "answers_pending",
+                 "intent": "apply_now"},
+                {"acts": ["close"], "intent": "termination_intent", "gated": True},
+            ],
+            "termination_gate": {"any_of": [{"pending": "closing_offer"}]},
+            "off_track": {"threshold": 3, "intent": "off_track"},
+        }},
+        "agent_workflow": {
+            "global_routing": [{"intent": "termination_intent", "next_subagent_id": "ended"}],
+            "subagents": [
+                {"id": "opening", "is_start": True,
+                 "pending": [{"id": "consent", "when": [{"field": "consent_response", "operator": "in",
+                                                         "value": [None, ""]}]},
+                             {"id": "age"}],
+                 "routing": [{"intent": "off_track", "next_subagent_id": "recovery"}]},
+                {"id": "apply_confirm",
+                 "pending": [{"id": "submit_confirm"}, {"id": "closing_offer"}],
+                 "routing": [{"intent": "apply_now", "next_subagent_id": "ended"}]},
+                {"id": "job_match",
+                 "pending": [{"id": "select_job",
+                              "options_from": {"tool": "fetch_jobs", "fields": ["role"], "id_field": "item_id"},
+                              "resolves_to": "selected_job_item_id"}]},
+                {"id": "recovery"}, {"id": "ended", "is_terminal": True},
+            ],
+        },
+    }
+
+
+def test_dialogue_act_minimal_config_validates():
+    cfg = MergedConfig.validate_full(_da_base())
+    nlu = cfg.preprocessing.nlu_processor
+    assert nlu.mode == "dialogue_act" and nlu.timeout_ms == 2500 and nlu.retry_attempts == 2
+    assert cfg.agent_workflow.subagents[2].pending[0].options_from.tool == "fetch_jobs"
+
+
+def test_intent_mode_default_and_new_keys_optional():
+    cfg = MergedConfig.validate_full({})
+    assert cfg.preprocessing.nlu_processor.mode == "intent"
+
+
+def test_acts_constant_is_the_framework_list():
+    assert _DIALOGUE_ACTS == ("affirm", "deny", "acknowledge", "provide_info", "correct", "select",
+                              "ask", "request_change", "repeat", "hold", "close", "other")
+
+
+@pytest.mark.parametrize("mutate, match", [
+    (lambda c: c["preprocessing"]["nlu_processor"]["act_intents"][0].update(acts=["shout"]),
+     "unknown act"),
+    (lambda c: c["preprocessing"]["nlu_processor"]["slots"]["age"].update(accept_when_pending=["nope"]),
+     "undeclared pending id 'nope'"),
+    (lambda c: c["preprocessing"]["nlu_processor"]["act_intents"][0].update(pending="nope"),
+     "undeclared pending id 'nope'"),
+    (lambda c: c["preprocessing"]["nlu_processor"]["termination_gate"]["any_of"].append({"pending": "nope"}),
+     "undeclared pending id 'nope'"),
+    (lambda c: c["preprocessing"]["nlu_processor"]["act_intents"][0].update(intent="unrouted"),
+     "intent 'unrouted' is not used by any routing rule"),
+    (lambda c: c["preprocessing"]["nlu_processor"]["off_track"].update(intent="nowhere"),
+     "off_track.intent 'nowhere' is not used by any routing rule"),
+    (lambda c: c["connectors"]["read"][0].pop("cache"),
+     "options_from.tool 'fetch_jobs' has no cache policy"),
+    (lambda c: c["preprocessing"]["nlu_processor"]["act_intents"].append(
+        {"acts": ["ask"], "topic": "weather", "intent": "apply_now"}),
+     "topic 'weather' is not in topics"),
+    (lambda c: c["preprocessing"]["nlu_processor"]["slots"].update(bad={"type": "enum"}),
+     "enum slot needs values"),
+    (lambda c: c["agent_workflow"]["subagents"][2]["pending"][0].pop("options_from"),
+     "resolves_to requires options_from"),
+])
+def test_dialogue_act_rejections(mutate, match):
+    cfg = copy.deepcopy(_da_base())
+    mutate(cfg)
+    with pytest.raises((ValidationError, ValueError), match=match):
+        MergedConfig.validate_full(cfg)
+
+
+def test_dialogue_act_rules_not_enforced_in_intent_mode():
+    cfg = copy.deepcopy(_da_base())
+    cfg["preprocessing"]["nlu_processor"]["mode"] = "intent"
+    cfg["preprocessing"]["nlu_processor"]["act_intents"][0]["intent"] = "unrouted"
+    MergedConfig.validate_full(cfg)  # authored-but-inactive config is allowed
+
+
+def test_memory_tool_field_collision_rejected():
+    cfg = copy.deepcopy(_da_base())
+    cfg["connectors"]["internal"] = []
+    cfg["memory_tool"] = {"name": "remember", "fields": {
+        "selected_job_item_id": {"scope": "session", "description": "x"}}}
+    with pytest.raises(ValueError, match="collides with memory_tool field"):
         MergedConfig.validate_full(cfg)
