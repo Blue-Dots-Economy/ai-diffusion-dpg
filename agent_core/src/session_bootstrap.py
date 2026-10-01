@@ -113,8 +113,9 @@ class SessionBootstrap:
 
     def _finish(self, start: float, outcomes: dict) -> BootstrapReport:
         latency = int((time.monotonic() - start) * 1000)
-        logger.info("  [STEP 1b] Session bootstrap  ✓  tools=%s  outcomes=%s  latency=%dms",
-                    [s.tool for s in self._steps], outcomes, latency)
+        mark = "✓" if all(o == "ok" for o in outcomes.values()) else "✗"
+        logger.info("  [STEP 1b] Session bootstrap  %s  tools=%s  outcomes=%s  latency=%dms",
+                    mark, [s.tool for s in self._steps], outcomes, latency)
         logger.info("session_bootstrap.turn", extra={
             "operation": "session_bootstrap.run", "status": "success", "latency_ms": latency})
         return BootstrapReport(outcomes=outcomes, latency_ms=latency)

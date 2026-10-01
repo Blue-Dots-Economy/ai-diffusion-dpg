@@ -81,6 +81,20 @@ def test_sync_exception_never_raises():
     assert report.outcomes == {"fetch_profile": "failed"} and b.session[LATCH] is True
 
 
+def test_step_line_mark_reflects_outcomes(caplog):
+    boot = SessionBootstrap.from_config(CONFIG, POL)
+    bad = ToolResult(tool_use_id="x", tool_name="fetch_profile", result={}, success=False, error="boom")
+    with caplog.at_level("INFO"):
+        boot.run_sync(bundle(), **sync_deps(Rec(), result=bad))
+    line = next(r.getMessage() for r in caplog.records if "[STEP 1b]" in r.getMessage())
+    assert "✗" in line and "✓" not in line
+    caplog.clear()
+    with caplog.at_level("INFO"):
+        boot.run_sync(bundle(), **sync_deps(Rec()))
+    line = next(r.getMessage() for r in caplog.records if "[STEP 1b]" in r.getMessage())
+    assert "✓" in line and "✗" not in line
+
+
 def test_consent_skip():
     cfg = {**CONFIG, "session_bootstrap": {"steps": [{"type": "tool", "tool": "fetch_profile", "requires_consent": True}]}}
     boot, rec, b = SessionBootstrap.from_config(cfg, POL), Rec(), bundle()

@@ -397,10 +397,10 @@ connectors:
     - name: fetch_profile
       description: >
         Look up the caller's seeker profile(s) by phone number. Returns
-        zero, one, or many profiles. Call on the first turn; later, use the
-        fetch_profile entry of <known_facts> or, if there is none, the
-        earlier fetch_profile result, unless the caller says their details
-        changed. Takes no parameters — the caller's phone is
+        zero, one, or many profiles. Already fetched when the call started —
+        use the fetch_profile entry of <known_facts> or, if there is none,
+        the earlier fetch_profile result. Call it yourself only if neither
+        exists or the caller says their details changed. Takes no parameters — the caller's phone is
         injected from the session user_id by the rest_api adapter.
       input_schema:
         type: object
@@ -1297,9 +1297,10 @@ agent_workflow:
       # suppresses canned opening phrases (GH-239) because the LLM's own first
       # reply already greets, so a voice caller hears the equivalent produced
       # from the system prompt below. Hindi, because it is spoken as written.
-      # Emitted verbatim on turn 1, BEFORE any LLM call — so no tool has run
-      # and nothing is known about the caller yet. It must therefore not ask
-      # for consent: a caller whose consent is already on file would be asked
+      # Emitted verbatim on turn 1, BEFORE any LLM call. The start-of-call
+      # bootstrap fetch may already have run, but this phrase stays static and
+      # must never ask for consent, because it has to work when that fetch
+      # failed: a caller whose consent is already on file would be asked
       # anyway, which is the exact behaviour this phase was reworked to stop.
       # It greets and asks the one thing that is useful for everyone.
       opening_phrase: >
@@ -1876,7 +1877,7 @@ agent_workflow:
         city, then hand over. You never search here.
 
         ## What you already know
-        `fetch_profile` ran in the opening phase. Its result is the
+        `fetch_profile` ran when the call started. Its result is the
         fetch_profile entry of <known_facts> or, if there is none, the
         earlier fetch_profile result. Read it — do not call it again unless
         both are genuinely absent.
