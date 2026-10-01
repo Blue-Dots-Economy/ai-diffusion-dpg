@@ -217,7 +217,7 @@ The derived intent is placed in the `NLUResult.intent` routing already consumes.
 
 ### 6.6 Off-track counter
 
-`off_track_count` (session integer) increments when `relation` is `unrelated` or `unclear`, and resets to 0 on `answers_pending`. Other relations leave it unchanged. When it reaches `off_track.threshold`, the derived intent is replaced with `off_track.intent` (default `off_track`). The domain routes that intent to a recovery subagent, which re-asks the pending question simply or offers to end the call. A fallback result (§9.2) never changes the counter. The replacement never overrides a derived `termination_intent` that passed its gate.
+`off_track_count` (session integer) increments when `relation` is `unrelated` or `unclear`, and resets to 0 on `answers_pending`. Other relations leave it unchanged. When it reaches `off_track.threshold`, the derived intent is replaced with `off_track.intent` (default `off_track`), the counter resets to 0, and `<caller_turn>` gains an "off track" line telling the main LLM to re-ask the open question simply or offer to end the call. The domain routes the intent with an intent-specific rule placed before its `*` rules. It routes either to a recovery subagent or back to the same subagent. Global routing is not enough, because a subagent's own `*` rules match first. A fallback result (§9.2) never changes the counter. The replacement never overrides a derived `termination_intent` that passed its gate.
 
 ### 6.7 Termination gate
 
@@ -320,7 +320,6 @@ Startup fails if:
 - an `act_intents` intent is not used by any routing rule, global routing rule or the off-track route;
 - an `accept_when_pending`, `examples[].pending` or `termination_gate` pending id is not declared by any subagent;
 - an `options_from.tool` has no `cache` policy, so Spec A never stores its results;
-- an `options_from.id_field` or `fields` entry is not kept by that tool's `cache.keep` (when `keep` is set);
 - `resolves_to` or a slot's mapped state key collides with a key that a connector `session_mapping` writes, or with a `memory_tool` (`remember`) field;
 - the rendered system prompt varies by subagent. This is a guard for the caching goal.
 
@@ -527,7 +526,8 @@ All with a mocked provider, meeting the coverage rule in `.claude/rules/testing-
    - slots, known fields (including `stored_trade` and `stored_location`) and examples;
    - `act_intents` for the current routing intents;
    - `pending` for `opening`, `profile_resolve`, `job_match`, `profile_setup` and `apply_confirm`;
-   - an `off_track` recovery route that replaces `clarification`'s self-loop.
+   - an `off_track` rule placed first in each non-terminal subagent, routing back to the same subagent, so recovery happens in place through `<caller_turn>`;
+   - an `age` slot bounded 5–99, not 14–80, so the under-18 route still sees under-age answers.
 4. Run the harness on both modes and check the §11.5 gate.
 5. Switch `mode: dialogue_act` in its own commit, then compare VM calls with the 28 Sep and 30 Sep baselines.
 
