@@ -100,3 +100,20 @@ async def test_interrupted_turn_with_nothing_spoken_writes_no_question():
     record = TurnRecord()
     await agent._persist_interrupted("s1", "u1", record, exchanges=[], carry=None)
     assert not any(c.args[3] == "current_question" for c in agent._async_memory.write.await_args_list)
+
+
+@pytest.mark.parametrize("dialogue_act", [True, False])
+async def test_replace_policy_with_no_rounds_still_persists_spoken_question(dialogue_act):
+    """on_new_input: replace (no carry-over) and no tool rounds still schedule the persist."""
+    agent = _agent(_understanding()) if dialogue_act else _make_agent_core()
+    agent._async_memory.context_bundle.return_value = ContextBundle(session={}, profile={})
+    record = TurnRecord(write_carryover=False)
+    record.spoken = ["कौन सा शहर?"]
+    record.segments = ["वेल्डर"]
+    agent._on_turn_not_completed(_make_turn_input(), record, "t1")
+    assert record.persist_task is not None
+    await record.persist_task
+    by_key = {c.args[3]: c.args[4] for c in agent._async_memory.write.await_args_list}
+    assert by_key["current_question"] == "कौन सा शहर?"
+    assert "turn_carryover" not in by_key
+    assert (RECENT_TURNS_KEY in by_key) is dialogue_act

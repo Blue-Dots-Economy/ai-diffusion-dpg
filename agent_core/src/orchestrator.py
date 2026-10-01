@@ -3281,7 +3281,7 @@ class AgentCore(AgentCoreBase):
                     "turn_id": turn_id,
                     "written_at_ms": int(time.time() * 1000),
                 }
-        if not exchanges and carry is None:
+        if not exchanges and carry is None and not record.spoken:
             return
         try:
             record.persist_task = asyncio.get_running_loop().create_task(
