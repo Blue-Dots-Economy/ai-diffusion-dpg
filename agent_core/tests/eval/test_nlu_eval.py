@@ -91,3 +91,22 @@ def test_gate_reports_each_failed_condition():
     fails = gate(base, worse)
     assert len(fails) == 3 and any("p50" in f for f in fails)
     assert gate(base, base) == []
+
+
+def test_score_reports_per_tag_slot_accuracy():
+    case = EvalCase.from_dict({**CASE, "tags": ["age"], "expect": {"intent": "any_input", "slots": {"age": 22}}})
+    rep = score([case], {"ack-01": [_p("any_input", slots={"age": 22}), _p("any_input", slots={"age": 23})]},
+                mode="intent")
+    assert rep["tags"]["age"]["slot_accuracy"] == 0.5
+    no_slots = EvalCase.from_dict({**CASE, "tags": ["x"]})
+    assert score([no_slots], {"ack-01": [_p("any_input")]}, mode="intent")["tags"]["x"]["slot_accuracy"] is None
+
+
+def test_gate_fails_on_gated_tag_slot_regression_only():
+    base = {"fields": {"intent": {"accuracy": 0.8}, "slots": {"accuracy": 0.9}},
+            "tags": {"age": {"intent_accuracy": 1.0, "slot_accuracy": 1.0}, "acknowledge": {"termination_fp": 0}},
+            "latency_ms": {"p50": 1000}}
+    worse = json.loads(json.dumps(base))
+    worse["tags"]["age"]["slot_accuracy"] = 0.5
+    fails = gate(base, worse)
+    assert len(fails) == 1 and "age" in fails[0] and "slot_accuracy" in fails[0]

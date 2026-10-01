@@ -59,7 +59,10 @@ def score(cases: list[EvalCase], preds: dict[str, list[Prediction]], mode: str) 
             if "terminate" in exp:
                 fields["terminate"].append(int(p.terminate == exp["terminate"]))
             for k, v in (exp.get("slots") or {}).items():
-                fields["slots"].append(int(k in p.slots and _canon(p.slots[k]) == _canon(v)))
+                slot_ok = int(k in p.slots and _canon(p.slots[k]) == _canon(v))
+                fields["slots"].append(slot_ok)
+                for t in case.tags:
+                    tags[t]["slot"].append(slot_ok)
             if "option_id" in exp:
                 fields["option"].append(int(p.option_id == exp["option_id"]))
             if mode == "dialogue_act":
@@ -68,6 +71,8 @@ def score(cases: list[EvalCase], preds: dict[str, list[Prediction]], mode: str) 
                     if key in exp:
                         got = list(p.acts) if key == "acts" else getattr(p, attr)
                         fields[key].append(int(got == exp[key]))
+                # Decision precision, not act-label precision: the derived intent is
+                # correct among predictions carrying this act under this pending.
                 for act in p.acts:
                     prec[f"{act}|{p.pending or 'none'}"].append(ok)
             for t in case.tags:
@@ -77,6 +82,7 @@ def score(cases: list[EvalCase], preds: dict[str, list[Prediction]], mode: str) 
         "mode": mode, "cases": len(cases), "runs": total,
         "fields": {k: {"accuracy": round(sum(v) / len(v), 4), "n": len(v)} for k, v in fields.items()},
         "tags": {t: {"intent_accuracy": round(sum(d["intent"]) / len(d["intent"]), 4) if d["intent"] else None,
+                     "slot_accuracy": round(sum(d["slot"]) / len(d["slot"]), 4) if d["slot"] else None,
                      "termination_fp": sum(d["fp"]), "n": len(d["intent"])} for t, d in tags.items()},
         "confusion": {k: dict(v) for k, v in confusion.items()},
         "termination_false_positives": term_fp,
@@ -107,10 +113,11 @@ def gate(intent_report: dict, da_report: dict) -> list[str]:
         if acc(da_report, field) < acc(intent_report, field):
             fails.append(f"{field} accuracy {acc(da_report, field)} < intent mode {acc(intent_report, field)}")
     for tag in _GATED_TAGS:
-        old = (intent_report.get("tags", {}).get(tag) or {}).get("intent_accuracy")
-        new = (da_report.get("tags", {}).get(tag) or {}).get("intent_accuracy")
-        if old is not None and (new is None or new < old):
-            fails.append(f"tag '{tag}' regressed: {new} < {old}")
+        for fld in ("intent_accuracy", "slot_accuracy"):
+            old = (intent_report.get("tags", {}).get(tag) or {}).get(fld)
+            new = (da_report.get("tags", {}).get(tag) or {}).get(fld)
+            if old is not None and (new is None or new < old):
+                fails.append(f"tag '{tag}' {fld} regressed: {new} < {old}")
     if (da_report.get("tags", {}).get("acknowledge") or {}).get("termination_fp", 0) > 0:
         fails.append("termination false positives on acknowledge cases")
     if da_report["latency_ms"]["p50"] > intent_report["latency_ms"]["p50"] + 50:
