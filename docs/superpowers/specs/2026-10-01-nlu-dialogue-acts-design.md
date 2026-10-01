@@ -550,6 +550,15 @@ All with a mocked provider, meeting the coverage rule in `.claude/rules/testing-
 - **Domains:** `dev-kit/configs/kkb/` and `dev-kit/configs/blue-dots-economy/`, the kkb design docs, and every test fixture or default that points at them. Defaults and docs that named `kkb` as the reference domain now name `blue-dots`.
 - **Eval harness:** the intent-mode adapter and the `--mode` flag. The baseline comparison against the old method is run separately, outside this codebase. `gate()` and `--compare` stay, so any two report files can be compared.
 
+**Where each removed concept went.**
+- `intents` → the `act_intents` table: NLU picks acts, and code derives the routing intent.
+- `valid_intents` → per-subagent `pending` questions, plus the rows' `pending` key.
+- `global_intents` → the gated `close` row; `global_routing` stays.
+- `entities` → typed `slots`, with ad-hoc details in `extras`; `entity_to_profile_field` still maps slot names to state keys.
+- `domain_instruction` → structure: slot descriptions and normalisation, `accept_when_pending`, few-shot `examples`, act rows and the resolver. There is no free-text domain preamble.
+- `confidence_threshold` and the self-reported confidence → dropped, since the score was uninformative. `NLUResult.confidence` stays as a routing field: 1.0 for a derived intent, 0.0 for a fallback.
+- `sentiment_classes` / sentiment → **removed entirely**, from config, the NLU output, `NLUResult` and the knowledge-engine context. Re-add it if a consumer appears.
+
 **Kept, now unconditional:**
 - `TurnUnderstander`, the frame and the strict-schema NLU call;
 - post-processing, `SlotWriter` and precedence;
