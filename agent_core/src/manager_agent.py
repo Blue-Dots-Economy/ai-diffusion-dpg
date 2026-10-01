@@ -99,6 +99,7 @@ tool_call,
 messages: list,
 stored_results: dict[str, list[str]] | None = None,
 strict: bool = False,
+session_grounded: dict[str, list[str]] | None = None,
 ) -> set[str]:
     """Return the configured params whose value no tool result contains.
 
@@ -122,6 +123,16 @@ strict: bool = False,
         strict: When True, reject if nothing has been fetched at all (used by
             the ``remember`` tool). When False (default), allow any value on
             the first call.
+        session_grounded: Param name → values lifted into session state by a
+            producer tool's ``session_mapping``. These came FROM an upstream
+            result by construction, so they ground the same way a tool_result
+            does — and they outlive the tool-result cache.
+
+            This matters because cache freshness and grounding evidence are
+            different questions. ``save_profile`` correctly invalidates the
+            cached ``fetch_profile``, since the profile just changed. On the
+            NEXT turn the apply then had no evidence for ``profile_item_id``
+            and was refused, so a returning caller could never apply at all.
 
     Returns:
         Names of params that were supplied but appear in no tool result.
@@ -160,6 +171,17 @@ strict: bool = False,
                 seen_any.append(text)
                 by_tool.setdefault(str(src), []).append(text)
 
+    # Session values written by a producer's session_mapping count as that
+    # producer's output: they were copied out of its result. Recorded against
+    # every allowed source for the param, so the per-param source list still
+    # decides what may supply it.
+    session_values: dict[str, list[str]] = {}
+    for name, values in (session_grounded or {}).items():
+        for v in values or []:
+            if isinstance(v, str) and v:
+                session_values.setdefault(name, []).append(v)
+                seen_any.append(v)
+
     if not seen_any:
         # Nothing has been fetched yet, so nothing can be grounded. Let the
         # call through rather than blocking a legitimate first call whose
@@ -172,6 +194,11 @@ strict: bool = False,
     for name, sources in spec.items():
         value = (tool_call.input_params or {}).get(name)
         if value in (None, ""):
+            continue
+        # A session_mapping value for THIS param grounds it outright: it was
+        # copied out of a producer's result, and unlike the tool-result cache
+        # it survives that result being invalidated.
+        if str(value) in (session_values.get(name) or []):
             continue
         if sources:
             pool = [c for src in sources for c in by_tool.get(src, [])]

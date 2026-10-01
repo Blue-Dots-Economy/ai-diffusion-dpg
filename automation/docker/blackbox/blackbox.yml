@@ -1,4 +1,4 @@
-# Blackbox exporter probe modules for the shared VM service-status dashboard.
+# Blackbox exporter probe modules for the service-status dashboard.
 #
 # Prometheus asks the exporter to probe each service from inside dpg_net and
 # records the result as probe_success — see prometheus/prometheus.yml.

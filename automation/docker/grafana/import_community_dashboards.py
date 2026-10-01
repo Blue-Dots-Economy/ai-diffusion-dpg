@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Fetch the pinned grafana.com community dashboards used by the shared VM.
+"""Fetch the pinned grafana.com community dashboards used by the stack.
 
-Deployment tooling for the shared-VM Grafana, not part of any DPG block. Each
+Deployment tooling for the stack's Grafana, not part of any DPG block. Each
 dashboard is downloaded at a fixed revision and normalised for file
-provisioning, then written to ``grafana/dashboards/``. The output is
+provisioning, then written to ``grafana/provisioning/dashboards/``. The output is
 committed, so a deploy never needs internet access to grafana.com; rerun
 this only to bump a revision or add a dashboard.
 
@@ -27,7 +27,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-OUT_DIR = Path(__file__).resolve().parent / "dashboards"
+OUT_DIR = Path(__file__).resolve().parent / "provisioning" / "dashboards"
 URL = "https://grafana.com/api/dashboards/{id}/revisions/{rev}/download"
 TIMEOUT_S = 30
 
@@ -71,7 +71,7 @@ REWRITES = {
 # Per-dashboard template-variable overrides, merged into the variable.
 HIDDEN = {"hide": 2}
 VAR_OVERRIDES = {
-    # One job and one host on a single Docker VM: the pickers only add noise.
+    # One job and one host on a single Docker host: the pickers only add noise.
     15798: {"job": HIDDEN, "node": HIDDEN},
     763: {"namespace": HIDDEN},
     # A per-probe drill-down: its stat panels print one value per selected
@@ -180,7 +180,7 @@ def _drop_panels(panels: list, drop: re.Pattern) -> list:
 
 
 def normalise(raw: dict, uid: str, title: str, ds_type: str, source: str, drop: str | None) -> dict:
-    """Adapt a downloaded dashboard for file provisioning on the shared VM.
+    """Adapt a downloaded dashboard for file provisioning.
 
     Args:
         raw: Dashboard JSON as served by grafana.com.

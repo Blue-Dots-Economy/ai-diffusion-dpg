@@ -1,14 +1,16 @@
 # ai-diffusion-dpg — shared VM deployment.
 #
-# Separate from automation/docker/* on purpose — those two files serve local
-# development and are not changed by this deployment. The secrets init
-# container below is needed by this deployment only.
+# A standalone compose file with what is specific to the VM: the secrets init
+# container (SSM, instance role), loopback-only ports, persistent volumes and
+# the shared-host limits. The observability config itself is shared with the
+# local compose files and mounted from automation/docker/: the collector,
+# Prometheus and blackbox configs, and Grafana's provisioning and dashboards.
 #
-# 13 services: the 6 DPG blocks, the bridge and web channels, redis, memgraph,
-# otelcol, and two one-shot init containers.
+# The 6 DPG blocks, the bridge channel, redis, memgraph, otelcol, two one-shot
+# init containers, and the monitoring stack: jaeger, loki, prometheus, grafana
+# and the blackbox, cAdvisor and Redis exporters.
 # Deliberately absent: the voice channel and ngrok — the telephony platform
-# owns the call path — plus web/cli/mcp, dev-kit, and the grafana / jaeger /
-# loki / prometheus UIs.
+# owns the call path — plus web/cli/mcp and dev-kit.
 #
 # Run from a clone of the repo on the VM — config is mounted straight out of
 # the tree, so the only file you create is .env next to this one:
@@ -109,8 +111,8 @@ services:
         chmod 444 /secrets/env
         # Never print the values.
         echo "init_secrets: wrote /secrets/env from $$SOURCE (openai=$${#OPENAI} signals=$${#SIGNALS})"
-        # Discord alert webhooks, one file per severity, read by Grafana's
-        # alerting provisioning via $$__file{}. Optional, unlike the keys
+        # Discord alert webhooks, one file per severity, loaded into Grafana's
+        # environment by its entrypoint below. Optional, unlike the keys
         # above: env first, then SSM (<prefix>/discord_webhook_<severity>).
         # When neither is set, write an unroutable placeholder instead of
         # failing: Grafana refuses to start on an empty Discord URL, and a
@@ -277,10 +279,10 @@ services:
       # Bounded retention: this is a shared host and nobody is watching disk.
       - "--storage.tsdb.retention.time=15d"
     volumes:
-      # This deployment's own copy: the one under automation/docker/ is also
-      # mounted by the local dev compose files, and the service-status probe
-      # jobs added here would only show as down targets there.
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # The scrape config shared with the local compose files; probes for
+      # services this VM does not run (web, voice, MCP, dev-kit) just show as
+      # down and never alert.
+      - ../../docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     ports:
       - "127.0.0.1:9090:9090"
@@ -303,7 +305,7 @@ services:
     container_name: dpg_blackbox_exporter
     command: ["--config.file=/etc/blackbox/blackbox.yml"]
     volumes:
-      - ./blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+      - ../../docker/blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
     networks: [dpg_net]
     logging: *logging
     deploy:
@@ -370,7 +372,7 @@ services:
       - GF_AUTH_ANONYMOUS_ENABLED=false
       # Land on the service-status overview after login instead of an empty
       # home page; every DPG dashboard links to the rest from its header.
-      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/dashboards/service-status.json
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/provisioning/dashboards/service-status.json
       # "Logs / App" (grafana.com 13639) still uses the legacy Angular graph
       # panel. Migrate such panels to their React equivalents on load, so the
       # dashboard keeps working once Angular support is removed.
@@ -379,14 +381,23 @@ services:
       # in Discord alerts. Grafana is published on host port 3001 (reached over
       # the SSH tunnel on the VM), not the 3000 it listens on in the container.
       - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-http://localhost:3001}
+    # The shared contact points read each Discord webhook from an environment
+    # variable (automation/docker/grafana/provisioning/alerting). Here the
+    # webhooks come from SSM via init_secrets, as files in /secrets, so load
+    # them into the environment and then start Grafana as its image would.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        export DISCORD_WEBHOOK_CRITICAL="$$(cat /secrets/discord_webhook_critical)"
+        export DISCORD_WEBHOOK_WARNING="$$(cat /secrets/discord_webhook_warning)"
+        export DISCORD_WEBHOOK_INFO="$$(cat /secrets/discord_webhook_info)"
+        exec /run.sh
     volumes:
-      # This deployment's own datasources (fixed UIDs, which the provisioned
-      # alert rules reference), dashboards provider, dashboards and alerting.
-      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
-      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
-      - ./grafana/provisioning/alerting:/etc/grafana/provisioning/alerting:ro
-      - ./grafana/dashboards:/etc/grafana/dashboards:ro
-      # Discord webhook files written by init_secrets (read via __file{}).
+      # Shared with every Compose deployment: datasources (fixed UIDs, which
+      # the alert rules reference), the dashboards (provider and JSON), and
+      # alerting.
+      - ../../docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      # Discord webhook files written by init_secrets.
       - ${SECRETS_DIR:-/dev/shm/dpg-secrets}:/secrets:ro
       - grafana_data:/var/lib/grafana
     ports:

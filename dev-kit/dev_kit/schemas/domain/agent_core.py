@@ -732,6 +732,10 @@ class SubAgent(BaseModel):
     opening_phrase: str = Field(..., min_length=1)   # required for all subagents
     routing: list[RoutingRule] = Field(default_factory=list)
     pending: list[PendingQuestionConfig] = Field(default_factory=list)
+    # Mirrors runtime SubAgentConfig: spoken verbatim on the first turn when
+    # every fixed_opening_requires field is in session and the turn had no entities.
+    fixed_opening: str = ""
+    fixed_opening_requires: list[str] = Field(default_factory=list)
     # opening_phrase non-empty enforced by Field(..., min_length=1) above —
     # runtime requires it for ALL subagents (adopted-state callbacks).
 

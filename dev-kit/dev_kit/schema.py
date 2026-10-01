@@ -548,6 +548,16 @@ class SubAgentSchema(BaseModel):
         description="Phrase emitted on the first turn only (after consent). "
                     "Empty string means no opening phrase (GH-137).",
     )
+    fixed_opening: str = Field(
+        default="",
+        description="Template spoken verbatim, without a model call, on the first turn into "
+                    "this subagent when every fixed_opening_requires field is in session and "
+                    "the caller's turn carried no entities.",
+    )
+    fixed_opening_requires: list[str] = Field(
+        default_factory=list,
+        description="Session field names fixed_opening substitutes.",
+    )
     special_handler: Literal["hitl", "whatsapp_handoff"] | None = Field(
         default=None,
         description="Optional framework-level handler. "

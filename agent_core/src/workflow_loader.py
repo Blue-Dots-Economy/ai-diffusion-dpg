@@ -129,6 +129,11 @@ class SubAgent:
         routing:          Routing rules emitted from this subagent.
         opening_phrase:   Optional opening phrase spoken/displayed when entering this subagent.
         pending:          Questions this subagent may be waiting on (dialogue-act NLU).
+        fixed_opening:    Optional template spoken verbatim, without a model
+                          call, on the first turn into this subagent when every
+                          field in fixed_opening_requires is present in session
+                          and the caller's own turn carried no entities.
+        fixed_opening_requires: Session field names the template substitutes.
     """
 
     id: str
@@ -143,6 +148,8 @@ class SubAgent:
     routing: list[RoutingRule]
     opening_phrase: str = ""
     pending: list["PendingQuestion"] = field(default_factory=list)
+    fixed_opening: str = ""
+    fixed_opening_requires: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -537,6 +544,8 @@ class AgentWorkflowLoader:
             routing=routing,
             opening_phrase=opening_phrase,
             pending=pending,
+            fixed_opening=str(raw.get("fixed_opening", "") or ""),
+            fixed_opening_requires=list(raw.get("fixed_opening_requires", []) or []),
         )
 
     # ------------------------------------------------------------------

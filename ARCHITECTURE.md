@@ -425,7 +425,7 @@ vs. audit log — `user_id` allowed in traces for dashboarding, excluded from au
 
 **Primary implementation:** `OtelObservabilityLayer` with `OutcomeTracker` — functional OTel instrumentation. Audit trail = Loki (logs) + Jaeger (traces) via OTel Collector; no separate audit DB needed. DPDP PII exclusions enforced at DPG instrumentation layer via `observability.audit.pii_fields_excluded` and `observability.telemetry.pii_fields_excluded` config fields. `ConsoleLogger` is a backward-compatible PoC stub, not the primary implementation.
 
-**Planned production additions:** Grafana dashboard provisioning, persistent outcome store.
+**Planned production additions:** persistent outcome store. Grafana dashboards, alert rules and Discord routing are provisioned from `automation/docker/grafana/` (see its README, Monitoring).
 
 **Key files:**
 - `observability_layer/src/dpg_telemetry/` — shared bootstrap package (`init_otel`, `get_tracer`, `get_meter`)
@@ -664,7 +664,7 @@ The reference domain is **Blue Dots**. Its whole conversation design is domain c
 | Browser-side SSE streaming | ⏳ | `POST /chat/stream` endpoint — typewriter animation (#99) |
 | TTS stop on barge-in | ✅ | In-flight Raya TTS audio does not stop mid-utterance on barge-in (#98) |
 | WhatsApp/Mobile channels | ⏳ | Pending |
-| Grafana dashboard provisioning | ⏳ | `automation/docker/grafana/provisioning/` not yet implemented |
+| Grafana dashboard provisioning | ✅ | 8 dashboards plus alert rules routed to Discord, provisioned from `automation/docker/grafana/`; exporters behind the `monitoring` Compose profile |
 | Configuration Agent (Tier 1) — Deterministic Wizard | ✅ | FastAPI + React SPA; IntakeState-gated 11-phase wizard with FIELD_RULES, 8 canonical tools, runtime-schema dry-run, and decision logging at 14 points |
 | Live Tuning Dashboard (Tier 3) | ⏳ | Dashboard reading Observability Layer signals |
 | Profile building subagent flow | ✅ | Subagent graph implemented; full profile collection partially complete |
@@ -699,8 +699,7 @@ The 3-channel base class hierarchy is in place. Adding a new channel:
 
 ### Observability Layer
 
-1. Implement Grafana dashboard provisioning in `automation/docker/grafana/provisioning/`.
-2. Implement `OutcomeTracker` placement.rate gauge computation (ratio of placed/total sessions).
+1. Implement `OutcomeTracker` placement.rate gauge computation (ratio of placed/total sessions).
 
 ---
 

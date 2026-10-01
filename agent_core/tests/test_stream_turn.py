@@ -512,6 +512,175 @@ class TestStreamTurnChannelValidation:
 
 
 
+class TestFixedOpening:
+    """A phase whose Path-A reply is one fixed sentence built from session
+    values speaks it verbatim. Generating it lost it: a returning caller was
+    asked for their trade in 2 of 3 runs despite stored_trade being in the
+    prompt."""
+
+    def _agent(self, session, entities=None):
+        agent = _make_agent_core()
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("x", "english")
+        agent._understander = fake_understander(NLUResult(
+            intent="any_input", entities=entities or {}, confidence=0.9,
+        ))
+        for sa in agent._workflow.subagents.values():
+            sa.fixed_opening = "I found your details — {stored_trade} in {stored_location}."
+            sa.fixed_opening_requires = ["stored_trade", "stored_location"]
+        sess = {"current_subagent_id": "start"}
+        sess.update(session)
+        agent._async_memory.context_bundle.return_value = ContextBundle(
+            session=sess, profile={},
+        )
+        return agent
+
+    @pytest.mark.asyncio
+    async def test_speaks_it_verbatim_without_the_model(self):
+        agent = self._agent({"stored_trade": "Welder", "stored_location": "Ghaziabad"})
+
+        async def must_not_run(*a, **k):
+            raise AssertionError("the model must not be called")
+            yield  # pragma: no cover
+
+        agent._llm.stream = must_not_run
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "Welder in Ghaziabad" in spoken
+        done = [e for e in events if isinstance(e, DoneEvent)]
+        assert len(done) == 1
+        assert done[0].session_ended is False, (
+            "speaking a mid-conversation line must NOT hang up on the caller"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_callers_own_words_win(self):
+        """If they named a trade themselves, the model handles the turn."""
+        agent = self._agent(
+            {"stored_trade": "Welder", "stored_location": "Ghaziabad"},
+            entities={"trade": "Plumber"},
+        )
+
+        async def mock_stream(*a, **k):
+            yield "Plumber it is."
+
+        agent._llm.stream = mock_stream
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "Plumber it is." in spoken
+        assert "I found your details" not in spoken
+
+    @pytest.mark.asyncio
+    async def test_a_missing_value_falls_back_to_the_model(self):
+        agent = self._agent({"stored_trade": "Welder", "stored_location": ""})
+
+        async def mock_stream(*a, **k):
+            yield "Which city?"
+
+        agent._llm.stream = mock_stream
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "Which city?" in spoken
+
+
+class TestTerminalPhaseFixedCopy:
+    """A terminal subagent has no tools and verified copy. The model must not
+    be asked to paraphrase it — doing so told a 16-year-old that applications
+    are impossible "under sixteen", and returned empty turns on the consent
+    and age paths."""
+
+    def _agent_with_terminal(self, phrase):
+        agent = _make_agent_core()
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("x", "english")
+        agent._understander = fake_understander(NLUResult(
+            intent="any_input", entities={}, confidence=0.9
+        ))
+        for sa in agent._workflow.subagents.values():
+            sa.is_terminal = True
+            sa.opening_phrase = phrase
+        return agent
+
+    @pytest.mark.asyncio
+    async def test_terminal_phase_speaks_config_verbatim_without_the_model(self):
+        agent = self._agent_with_terminal(
+            "उन्नीस साल से कम उम्र में फ़ोन पर आवेदन पूरा नहीं हो सकता।"
+        )
+
+        async def must_not_run(*args, **kwargs):
+            raise AssertionError("the model must not be called on a terminal phase")
+            yield  # pragma: no cover - generator marker
+
+        agent._llm.stream = must_not_run
+
+        events = await _collect_events(agent, _make_turn_input())
+
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "उन्नीस साल" in spoken, "the configured threshold must be spoken verbatim"
+        done = [e for e in events if isinstance(e, DoneEvent)]
+        assert len(done) == 1
+        assert done[0].session_ended is True
+        assert done[0].model_used == "none"
+
+    @pytest.mark.asyncio
+    async def test_terminal_phase_without_copy_still_uses_the_model(self):
+        """The skip is guarded on copy existing — a terminal phase with no
+        opening_phrase still needs the model to produce something."""
+        agent = self._agent_with_terminal("")
+
+        async def mock_stream(*args, **kwargs):
+            yield "Goodbye."
+
+        agent._llm.stream = mock_stream
+
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "Goodbye." in spoken
+
+
+class TestStreamTurnEmptyTurn:
+    """GH-204 F3: a turn that produces no text must never reach the caller as
+    silence — on a phone line that is indistinguishable from a dropped call."""
+
+    @pytest.mark.asyncio
+    async def test_empty_turn_speaks_the_configured_fallback(self):
+        agent = _make_agent_core()
+        agent._config["conversation"] = {
+            "empty_response_message": "माफ़ कीजिए, दोबारा बताइए।"
+        }
+
+        async def mock_stream(*args, **kwargs):
+            return
+            yield  # pragma: no cover - generator marker
+
+        agent._llm.stream = mock_stream
+
+        events = await _collect_events(agent, _make_turn_input())
+
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "माफ़ कीजिए" in spoken, "an empty turn must still say something"
+        assert len([e for e in events if isinstance(e, DoneEvent)]) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_turn_with_text_is_left_alone(self):
+        """The backstop must not append to a turn that already spoke."""
+        agent = _make_agent_core()
+        agent._config["conversation"] = {
+            "empty_response_message": "माफ़ कीजिए, दोबारा बताइए।"
+        }
+
+        async def mock_stream(*args, **kwargs):
+            yield "Here is your answer."
+
+        agent._llm.stream = mock_stream
+
+        events = await _collect_events(agent, _make_turn_input())
+
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "Here is your answer." in spoken
+        assert "माफ़ कीजिए" not in spoken
+
+
 class TestStreamTurnEndSession:
     """GH-191: end_session must set DoneEvent.session_ended=True in streaming."""
 
@@ -622,11 +791,81 @@ class TestStreamTurnEndSession:
         assert "Goodbye" in spoken, "the closing line must still reach the caller"
 
     @pytest.mark.asyncio
-    async def test_end_session_without_text_still_makes_the_second_call(self):
-        """The skip is guarded on text existing. When the model called
-        end_session and said nothing, the second pass is what writes the reply —
-        skipping it would hang up on the caller in silence."""
+    async def test_end_session_without_text_speaks_the_canned_line(self):
+        """GH-204 F27: the model calls end_session with no text on every real
+        call, so rather than spend a round trip regenerating a goodbye we
+        already have in config, speak the configured termination_message."""
         agent = self._make_end_session_agent()
+        agent._config["conversation"] = {"termination_message": "अलविदा, धन्यवाद।"}
+
+        call_count = 0
+
+        async def mock_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ChatToolUseRequested([
+                    ToolUseBlock(
+                        tool_name="end_session",
+                        tool_use_id="tu_end",
+                        input={"reason": "user_goodbye"},
+                    )
+                ])
+                yield  # pragma: no cover - generator marker
+            raise AssertionError(
+                "LLM #2 must not run when a canned termination line exists"
+            )
+
+        agent._llm.stream = mock_stream
+        agent._async_gateway.execute = AsyncMock(
+            side_effect=AssertionError("end_session must not reach Action Gateway")
+        )
+
+        events = await _collect_events(agent, _make_turn_input())
+
+        assert call_count == 1, "the second pass must be skipped"
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "अलविदा" in spoken, "the caller must still hear a goodbye"
+        done = [e for e in events if isinstance(e, DoneEvent)]
+        assert len(done) == 1 and done[0].session_ended is True
+
+    @pytest.mark.asyncio
+    async def test_terminal_phase_speaks_its_own_reason_not_the_generic_goodbye(self):
+        """GH-204 F10/F32: a phase that ends the call for a reason has that
+        reason in its opening_phrase. The caller must hear it, not the generic
+        termination_message — a 16-year-old needs to be told about the portal."""
+        agent = self._make_end_session_agent()
+        agent._config["conversation"] = {"termination_message": "आपका दिन शुभ हो।"}
+        for sa in agent._workflow.subagents.values():
+            sa.opening_phrase = "उन्नीस साल से कम उम्र में फ़ोन पर आवेदन नहीं हो सकता।"
+
+        async def mock_stream(*args, **kwargs):
+            raise ChatToolUseRequested([
+                ToolUseBlock(tool_name="end_session", tool_use_id="tu_end",
+                             input={"reason": "task_complete"})
+            ])
+            yield  # pragma: no cover - generator marker
+
+        agent._llm.stream = mock_stream
+        agent._async_gateway.execute = AsyncMock(
+            side_effect=AssertionError("end_session must not reach Action Gateway")
+        )
+
+        events = await _collect_events(agent, _make_turn_input())
+
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "उन्नीस साल" in spoken, "the caller must hear WHY the call ended"
+        assert "आपका दिन शुभ हो" not in spoken, (
+            "the generic goodbye must not replace the phase's own reason"
+        )
+
+    @pytest.mark.asyncio
+    async def test_end_session_without_text_or_canned_line_falls_back_to_llm(self):
+        """With no configured termination_message there is nothing to speak, so
+        the second pass must still run — hanging up in silence is worse than a
+        round trip."""
+        agent = self._make_end_session_agent()
+        agent._config["conversation"] = {"termination_message": ""}
 
         call_count = 0
 

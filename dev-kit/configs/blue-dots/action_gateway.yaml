@@ -156,9 +156,10 @@ tools:
       details are intentionally not exposed to the LLM.
     base_url: "https://signals.bluedotseconomy.org/signals-search"
     # Job discovery moved off network/item/fetch_local to signals-search.
-    # `item_state.jobProviderLocation` is PII-masked upstream ("B***"), so the
-    # old server-side city filter matches nothing. Search is semantic instead:
-    # the trade and the city both travel inside query_text.
+    # Search is semantic: the trade and the city both travel inside query_text,
+    # not as a server-side filter. Note that semantic search RANKS by the city
+    # but does not FILTER on it — a query naming one city still returns jobs in
+    # others, so the location field below is what the agent must read.
     auth:
       type: api_key
       header: x-api-key
@@ -182,8 +183,22 @@ tools:
               textSearch: "{query_text}"
             pagination:
               limit: 5
-              offset: 0
+              # Optional. A placeholder whose value is absent drops the field,
+              # and the API treats a missing offset as 0 (verified), so a first
+              # search needs no offset at all and "और नौकरियाँ दिखाइए" can ask
+              # for the next page instead of re-reading the same one.
+              offset: "{offset}"
         params:
+          - name: offset
+            source: agent
+            type: integer
+            required: false
+            description: >
+              How many results to skip. OMIT on a first search. When the caller
+              asks for more jobs ("और नौकरियाँ दिखाइए", "और दिखाइए", "कुछ और
+              है?"), pass the number you have ALREADY read out to them, so the
+              next page continues rather than repeating. Re-running the same
+              search with no offset returns the same jobs again.
           - name: query_text
             source: agent
             type: string
@@ -202,6 +217,12 @@ tools:
           item_id: item_id
           role: item_state.role
           company: item_state.jobProviderName
+          # jobProviderLocation stopped being a masked PII field upstream, so
+          # the agent can finally be told where a job actually is. KNOWN GAP:
+          # rows created while it was masked still read back as "B***", and
+          # nothing yet stops the agent speaking one. Those rows are being
+          # cleaned up; revisit if they outlive the cleanup.
+          location: item_state.jobProviderLocation
           positions: item_state.positions
           nature_of_job: item_state.natureOfJob
           # Three pay models; only one is populated per posting.
@@ -517,14 +538,25 @@ tools:
               The chosen profile's item_id — from fetch_profile (use_existing
               path) or save_profile's response (create_new / update_existing).
           - name: acting_as_user_id
-            source: agent
+            # SESSION, not agent. Both producers write this field via their
+            # own session_mapping — fetch_profile and save_profile each map
+            # `user_id` to `acting_as_user_id` — so the value is always on
+            # hand and the model never has to recall it.
+            #
+            # It used to be agent-supplied, and the model got it wrong on
+            # every returning-caller apply measured against UAT: once by
+            # copying profile_item_id into it, then by inventing a
+            # well-formed UUID outright. The grounding guard caught each one
+            # and refused the apply, so the caller could not apply at all.
+            # Asking a model to echo a 36-character identifier from many
+            # turns back is the exact failure that guard was written for;
+            # the fix is to stop asking.
+            source: session
             type: string
             required: true
             description: >
-              The seeker's user UUID. From fetch_profile's
-              source_item_owner field (use_existing) or save_profile's
-              user_id (create_new / update_existing). The upstream rejects
-              the apply without it.
+              The seeker's user UUID. Injected from session state by the
+              adapter — do NOT supply it.
           - name: job_item_id
             source: agent
             type: string

@@ -1,7 +1,7 @@
 {
   "uid": "dpg-service-status",
   "title": "DPG - Service Status",
-  "description": "Up/down status of every long-running service on the shared VM, from blackbox-exporter health probes.",
+  "description": "Up/down status of every long-running service in the stack, from blackbox-exporter health probes.",
   "tags": [
     "dpg",
     "status"

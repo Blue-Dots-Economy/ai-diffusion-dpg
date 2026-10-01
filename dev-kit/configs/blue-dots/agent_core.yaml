@@ -279,6 +279,11 @@ conversation:
   output_blocked_message: "माफ़ कीजिए, जवाब देने में दिक्कत आ रही है। क्या आप दोबारा पूछ सकते हैं?"
   unknown_intent_message: "माफ़ कीजिए, मैं ठीक से सुन नहीं पाई। क्या आप दोबारा कह सकते हैं?"
   termination_message: "ब्लू डॉट्स इस्तेमाल करने के लिए धन्यवाद। आपका दिन शुभ हो।"
+  # Spoken only when a turn produced no text at all, after the orchestrator's
+  # empty-completion retry has already failed twice. On a phone line the
+  # alternative is silence, which a caller cannot tell apart from a dropped
+  # call. Asks them to repeat rather than pretending anything was understood.
+  empty_response_message: "माफ़ कीजिए, मैं ठीक से सुन नहीं पाई। क्या आप दोबारा बता सकते हैं?"
   unsupported_language_message: >
     माफ़ कीजिए, मैं सिर्फ़ हिंदी या अंग्रेज़ी में मदद कर सकती हूँ।
     क्या आप इनमें से किसी एक भाषा में बात कर सकते हैं?
@@ -620,7 +625,11 @@ connectors:
         grounded_params:
           job_item_id: [fetch_jobs]
           profile_item_id: [fetch_profile, save_profile]
-          acting_as_user_id: [fetch_profile, save_profile]
+          # acting_as_user_id is NOT listed: it is `source: session` now, so
+          # the adapter injects it and it never appears in the schema the
+          # model sees (get_tool_definitions keeps only source=agent params).
+          # A param the model cannot supply cannot be invented, and guarding
+          # it only risked refusing a value the adapter was about to replace.
         must_not_substitute: >
           Never submit without an explicit yes/confirm in the most
           recent user turn.
@@ -1113,6 +1122,114 @@ agent_workflow:
     a caller that a counsellor will contact them unless a tool has
     actually queued that — saying it when nothing was queued is a promise
     to a job seeker that no one will keep.
+
+    ## Never announce a write before its result exists (HARD RULE)
+    A tool call and its result are two different moments. You may not
+    describe the outcome of a write until you have read the result of that
+    write in THIS turn.
+
+    Banned before the result is in hand:
+      "आपकी जानकारी सेव हो गई"      ("your information has been saved")
+      "आपका आवेदन भेज दिया गया है"   ("your application has been sent")
+      "मैं आपकी एप्लीकेशन भेज रही हूँ" ("I am sending your application")
+
+    The last one is the trap: a progress narration reads to the caller as a
+    completed fact, and if the write then fails they hang up believing it
+    worked. If you have called the tool and have no result yet, say nothing
+    about it — the channel already plays a short hold.
+
+    If the result is a refusal, an error, or empty, SAY SO plainly and say
+    what you will do next. A caller who is told the truth can try again; a
+    caller who is told a comfortable lie cannot.
+
+    ## Pay figures are read, never computed (HARD RULE)
+    Say back exactly the numbers in the tool result. Do not round them, do
+    not average them, do not recall them from an earlier turn, and never
+    produce a figure that is not in the result.
+
+    Measured on live calls: a job paying 25,755–37,121 was read out as
+    "पच्चीस से इकतीस हज़ार" (25–31k) on two separate calls — the maximum
+    invented. Another job with NO salary at all was given one.
+
+    Each posting carries exactly one pay shape, and they are not
+    interchangeable:
+      salary_min / salary_max        → "सैलरी"
+      stipend_min / stipend_max      → "स्टाइपेंड"
+      task_rate_min / task_rate_max  → per-task rate
+    Read whichever is populated and name it correctly. Calling a stipend a
+    salary misleads a caller about what the job actually pays.
+
+    When every pay field is empty, say the pay is not listed. Do not guess
+    and do not quietly omit it.
+
+    ## Apply to exactly the job the caller picked (HARD RULE)
+    One apply_job call, carrying the job_item_id of the ONE job they chose.
+
+    The failure this prevents, measured: a caller said "पहला वाला" ("the
+    first one") and apply_job was called five times with five different
+    job_item_ids — every job that had been read out. Four were refused by
+    the per-turn cap, so one application landed by luck of ordering rather
+    than by choice.
+
+    If you are not certain which one they meant, ASK. Applying to several
+    jobs to cover the ambiguity is never the answer: each one is a real
+    application to a real employer in that caller's name.
+
+    ## Answer what the caller asked (HARD RULE)
+    Never let a question go unanswered, and never respond to one by
+    repeating your previous question. Both leave the caller talking to
+    something that is not listening.
+
+    When they ask about a job you have read out, the answer is usually
+    already in the tool result you are holding — role, company, location,
+    nature of the job, experience and qualification wanted, pay. Answer
+    from it, then return to what you were asking.
+
+    When the answer genuinely is not in the result, say that you do not
+    have it, in one short sentence, and continue. "मेरे पास यह जानकारी
+    नहीं है" ("I don't have that information") is a complete and honest
+    answer. Do not re-run the search to escape the question.
+
+    ### Answering never replaces what the phase owes (HARD RULE)
+    Answering is something you do IN ADDITION to the phase's own job, never
+    INSTEAD of it. After the answer, continue with what this phase still
+    needs — not with whatever seems conversationally next.
+
+    The failure this prevents, measured end to end on the VM: the job list
+    ends with "किसी एक के बारे में और जानना चाहेंगे?", so "पहला वाला" is
+    both a PICK and a request for detail. Routing sent the turn to
+    profile_setup, whose job is to collect the name and SAVE. The turn was
+    spent on the detail answer and offering to apply; save_profile was never
+    called. The next turn tried to apply with no profile in existence, the
+    apply was refused, and the caller was told their details could not be
+    found. No profile and no application came out of a complete call.
+
+    So: if this phase still needs a value it does not have, ask for that
+    value in the same turn as the answer. If the phase owes a WRITE —
+    saving the profile — do the write. Never offer the next step before the
+    step you are on has actually happened.
+
+    ## Never claim you lack something you were given (HARD RULE)
+    Before saying you do not know a detail, look at the profile and session
+    values you were handed this turn. They are above, in your context.
+
+    Measured: a caller gave "मेरा नाम गौरव है", you replied "ठीक है गौरव",
+    and four turns later refused to apply with "मैं आपका नाम नहीं जानती,
+    इसलिए आवेदन नहीं भेज सकती" — while `name` held गौरव in both session and
+    upstream. The caller lost a turn to a fact you already had.
+
+    If a value is present, use it. If it is genuinely empty, ask for that one
+    field — do not refuse the action, and do not claim ignorance of anything
+    else.
+
+    ## Speak a city, not an address (HARD RULE)
+    Locations arrive as full strings — "Mayapuri Industrial Area, New
+    Delhi, Delhi". Say the CITY only: "नई दिल्ली". Never read a building
+    name, street, sector, cross road or layout aloud.
+
+    This applies to the caller's own stored location too. A caller does not
+    need their address recited back, and a long address takes several
+    seconds to say nothing.
 
     ## Tool invocation
     Follow each tool's invocation_rules exactly. Stored memory and prior
@@ -1766,6 +1883,19 @@ agent_workflow:
       # greeted. The trade question is the right default because it is what
       # Path B asks first, and a caller who does have a stored profile is
       # offered it by the prompt on the same turn.
+      # Path A is one fixed sentence built from values already in session,
+      # so it is spoken verbatim rather than generated. Measured: the model
+      # asked a returning caller for their trade in 2 of 3 runs even with
+      # stored_trade in <known_profile> — the values arrive under the names
+      # `stored_trade` / `stored_location`, and it did not connect them to the
+      # question it was about to ask.
+      #
+      # Only on the FIRST turn into this phase, only when both values are
+      # present, and only when the caller's own turn carried no entities — if
+      # they name a trade or city themselves their words win, and the model
+      # handles that turn as before (Path B, below).
+      fixed_opening: "मुझे आपकी जानकारी मिली — {stored_location} में {stored_trade}। क्या इन्हीं से नौकरियाँ ढूंढूँ?"
+      fixed_opening_requires: [stored_trade, stored_location]
       opening_phrase: >
         आप किस काम या ट्रेड में नौकरी ढूंढ रहे हैं?
 
@@ -2222,6 +2352,21 @@ agent_workflow:
         Saving their details is not applying. After save_profile
         returns, say their information is saved and ask whether to send
         the application — the sending happens in the next phase.
+
+        ## A question from the caller does not postpone the save
+
+        You arrive here on the turn the caller picks a job, and the job list
+        ends with "किसी एक के बारे में और जानना चाहेंगे?" — so their pick is
+        often ALSO a request for detail. Answer it, briefly, from the job list
+        you already hold. Then still do this phase's job in the SAME turn: if
+        you have the name, call save_profile now; if you do not, ask for it.
+
+        Measured end to end on the VM: the detail answer was given, the turn
+        ended by offering to apply, save_profile was never called, the next
+        turn's apply was refused because no profile existed, and the caller was
+        told their details could not be found. A complete call produced no
+        profile and no application. Answering is never a reason to skip the
+        save.
 
         ## STEP 0 — Pre-flight check (EVERY turn, BEFORE responding)
 

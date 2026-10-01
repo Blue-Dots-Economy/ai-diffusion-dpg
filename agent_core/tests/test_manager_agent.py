@@ -31,7 +31,7 @@ from src.chat_provider.types import (
     ToolResultBlock,
     ToolUseBlock,
 )
-from src.manager_agent import ManagerAgent
+from src.manager_agent import ManagerAgent, ungrounded_params
 from src.models import ToolCall, ToolResult
 from src.tool_results import ToolResultPolicies, TurnToolCache, args_hash
 
@@ -850,6 +850,50 @@ def test_build_system_prompt_xml_tags_are_balanced():
 # ---------------------------------------------------------------------------
 # _is_collected — which profile values count as "already collected"
 # ---------------------------------------------------------------------------
+
+
+class TestGroundingSurvivesCacheInvalidation:
+    """A returning caller could not apply at all: save_profile correctly
+    invalidates the cached fetch_profile, and on the NEXT turn apply_job had no
+    evidence for profile_item_id. Session values written by session_mapping
+    came from the upstream result, so they ground it and outlive the cache."""
+
+    SPEC = {"profile_item_id": ["fetch_profile", "save_profile"]}
+    PID = "37f9420b-9477-4067-9189-eef2abd74a46"
+
+    def _call(self, value):
+        return ToolCall(tool_name="apply_job", tool_use_id="t",
+                        input_params={"profile_item_id": value})
+
+    def test_session_value_grounds_when_the_cache_is_gone(self):
+        assert ungrounded_params(
+            self.SPEC, self._call(self.PID), [],
+            stored_results={"fetch_jobs": ["unrelated"]},
+            session_grounded={"profile_item_id": [self.PID]},
+        ) == set()
+
+    def test_without_the_session_value_it_is_still_refused(self):
+        assert ungrounded_params(
+            self.SPEC, self._call(self.PID), [],
+            stored_results={"fetch_jobs": ["unrelated"]},
+        ) == {"profile_item_id"}
+
+    def test_an_invented_id_is_still_refused(self):
+        """The guard must keep its teeth: a session value for the param does
+        not license a DIFFERENT value for it."""
+        assert ungrounded_params(
+            self.SPEC, self._call("00000000-dead-beef-0000-000000000000"), [],
+            stored_results={"fetch_jobs": ["unrelated"]},
+            session_grounded={"profile_item_id": [self.PID]},
+        ) == {"profile_item_id"}
+
+    def test_an_empty_session_value_grounds_nothing(self):
+        assert ungrounded_params(
+            self.SPEC, self._call(self.PID), [],
+            stored_results={"fetch_jobs": ["unrelated"]},
+            session_grounded={"profile_item_id": [""]},
+        ) == {"profile_item_id"}
+
 
 class TestIsCollected:
     """Guards the age-rendered-as-zero defect.

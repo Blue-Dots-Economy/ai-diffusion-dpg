@@ -89,6 +89,88 @@ docker compose -f docker-compose.dev.yml up -d
 
 ---
 
+## Monitoring: Grafana dashboards and alerts
+
+Grafana (<http://localhost:3000>, `admin` / `$GF_SECURITY_ADMIN_PASSWORD`,
+default `admin`) opens on **Service Status**. The dashboards, alert rules and
+Discord routing are provisioned from files under `grafana/provisioning/`,
+read-only in the UI: the dashboards are in `provisioning/dashboards/` next to
+the provider config, alerting in `provisioning/alerting/`. Every dashboard has
+a *DPG dashboards* menu (top right) that switches between them and keeps the
+time range.
+
+Prometheus, Grafana, Loki, Jaeger and the collector always run. The exporters
+behind the container, Redis and service-status dashboards are opt-in, because
+cAdvisor runs privileged with read-only mounts of `/`, `/sys` and
+`/var/lib/docker`:
+
+```bash
+docker compose -f docker-compose.dev.yml --profile monitoring up -d
+# or: COMPOSE_PROFILES=monitoring docker compose -f docker-compose.dev.yml up -d
+```
+
+Without the profile, Service Traffic, Traces, Logs and OTel Collector still
+work; Service Status, Containers, Redis and Health Probes have no data, and
+nothing alerts for what was never started.
+
+| Dashboard | Answers | Source |
+| --- | --- | --- |
+| DPG - Service Status | Is every service up right now, and when was it not? | built here |
+| DPG - Service Traffic | Request rate, 5xx rate, p95 latency per block; error logs | built here |
+| DPG - Traces | Recent turns, failed and slow traces; click a trace ID for its waterfall and its logs side by side | built here |
+| DPG - Logs | Every log line for one service, searchable | grafana.com 13639 |
+| DPG - Containers | CPU, memory, network, disk per container | grafana.com 15798 |
+| DPG - Redis | Memory, clients, commands, keys | grafana.com 763 |
+| DPG - OTel Collector | Is telemetry flowing, or being refused or dropped? | grafana.com 15983 |
+| DPG - Health Probes (detail) | One probe's status, latency and HTTP phases | grafana.com 14928 |
+
+Three exporters (profile `monitoring`) feed them: `blackbox_exporter` (a health
+probe per service), `cadvisor` (containers) and `redis_exporter`. Prometheus
+scrapes them with `prometheus/prometheus.yml`, which keeps only this stack's
+containers.
+
+**Alerts.** 17 rules in `grafana/provisioning/alerting/`, routed by their
+`severity` label to a Discord channel each; a resolved message follows when an
+alert clears.
+
+| Severity | Alerts | Re-sent while firing |
+| --- | --- | --- |
+| critical | Service down · Crash-looping (3+ restarts in 10 min) · Out of memory · LLM calls failing | hourly |
+| warning | High memory · Host memory high · CPU overload · Latency overload · 5xx rate · Slow health checks · Error log spike · Telemetry dropping · Redis memory high · Monitoring target down | every 4 h |
+| info | Container restarted · Heartbeat (daily) | daily |
+
+*Service down* and *Monitoring target down* only consider services that were up
+in the last 24 hours, so a service a deployment never started (the dev-kit drops
+unused ones) does not alert; a service that crashes on start is caught by
+*Crash-looping*. The **Heartbeat** always fires, once a day: if it stops
+arriving, Grafana or the host is down and no other alert can be sent either.
+
+**Discord webhooks are secrets.** Set `DISCORD_WEBHOOK_CRITICAL`,
+`DISCORD_WEBHOOK_WARNING` and `DISCORD_WEBHOOK_INFO` in your shell or in a
+`.env` file next to the compose file; never commit them. An unset one falls
+back to an unroutable placeholder (Grafana will not start on an empty Discord
+URL): alerts then show in Grafana only, and delivery fails visibly as
+`Notify for alerts failed` in `docker compose logs grafana`. To check a
+channel, send a test from **Alerting → Contact points**. `GRAFANA_ROOT_URL`
+(default `http://localhost:3000`) is the base of the dashboard links in each
+message.
+
+**Changing dashboards.** The community ones are committed pre-adapted. To bump
+one or add another, edit the pinned list in
+`grafana/import_community_dashboards.py` and run it (Python 3.10+, standard
+library only); Grafana picks the files up within 10 s. The script records every
+adaptation it makes and why.
+
+Not covered: Memgraph has no dashboard (its metrics endpoint is an Enterprise
+feature; its up/down status is on Service Status), LLM provider failures such
+as an invalid API key do not appear in the HTTP metrics (Agent Core still
+answers with a 200, so they show up as the *LLM calls failing* alert and as
+ERROR logs), and nothing measures host disk space. On Traces, the service map is
+a header link to Jaeger's own UI, because Grafana 10.3's Jaeger data source has
+no dependency-graph query.
+
+---
+
 ## Resource Requirements
 
 | Service | RAM | CPU |
