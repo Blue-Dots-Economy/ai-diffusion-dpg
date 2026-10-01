@@ -4,7 +4,7 @@ Validates the operator-edited ``dev-kit/dpg/agent_core.yaml``. This module also
 defines the shared ``ServerConfig`` and ``OtelConfig`` types reused by the other
 DPG schemas in this package.
 """
-from typing import Optional
+from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from dev_kit.schemas.enums import ProviderField
@@ -137,6 +137,32 @@ class ChannelsDpg(BaseModel):
     mcp: Optional[ChannelConfigDpg] = None
 
 
+class OffTrackDpg(BaseModel):
+    """Off-track threshold and recovery intent defaults (dialogue_act NLU mode)."""
+
+    model_config = ConfigDict(extra="forbid")
+    threshold: int = Field(default=3, ge=1)
+    intent: str = "off_track"
+
+
+class NLUProcessorDpg(BaseModel):
+    """Framework defaults for ``preprocessing.nlu_processor`` (domain fields live in the domain half)."""
+
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["intent", "dialogue_act"] = "intent"
+    timeout_ms: int = Field(default=2500, gt=0)
+    retry_attempts: int = Field(default=2, ge=1)
+    history_turns: int = Field(default=2, ge=0)
+    off_track: OffTrackDpg = Field(default_factory=OffTrackDpg)
+
+
+class PreprocessingDpg(BaseModel):
+    """DPG framework defaults for the preprocessing helpers."""
+
+    model_config = ConfigDict(extra="forbid")
+    nlu_processor: NLUProcessorDpg = Field(default_factory=NLUProcessorDpg)
+
+
 class AgentCoreDpgConfig(BaseModel):
     """Validated against the operator-edited dev-kit/dpg/agent_core.yaml."""
 
@@ -150,4 +176,5 @@ class AgentCoreDpgConfig(BaseModel):
     action_gateway_client: ClientConfig
     reach_layer: ReachLayerDefaults
     observability: ObservabilityDpg
+    preprocessing: PreprocessingDpg = Field(default_factory=PreprocessingDpg)
     channels: Optional[ChannelsDpg] = None

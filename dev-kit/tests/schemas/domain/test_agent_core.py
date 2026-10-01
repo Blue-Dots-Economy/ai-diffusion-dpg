@@ -726,3 +726,27 @@ def test_session_bootstrap_rejects_bad_shapes(payload, match):
     from dev_kit.schemas.validation import DOMAIN_SECTION_SCHEMAS
     with pytest.raises(ValidationError, match=match):
         DOMAIN_SECTION_SCHEMAS[("agent_core", "session_bootstrap")].model_validate(payload)
+
+
+def test_nlu_section_dialogue_act_needs_no_intents():
+    s = NLUProcessorSection(mode="dialogue_act", slots={"age": {"type": "int", "min": 14, "max": 80}},
+                            act_intents=[{"acts": ["affirm"], "intent": "apply_now"}])
+    assert s.mode == "dialogue_act" and s.intents == []
+
+
+def test_nlu_section_intent_mode_still_requires_intents():
+    with pytest.raises(ValidationError, match="intents"):
+        NLUProcessorSection(mode="intent", intents=[])
+
+
+def test_nlu_section_rejects_unknown_act():
+    with pytest.raises(ValidationError, match="unknown act"):
+        NLUProcessorSection(mode="dialogue_act", act_intents=[{"acts": ["shout"], "intent": "x"}])
+
+
+def test_subagent_accepts_pending():
+    sa = SubAgent(id="job_match", name="Job match", system_prompt="p", opening_phrase="o",
+                  pending=[{"id": "select_job", "expects": "one of the jobs",
+                            "options_from": {"tool": "fetch_jobs", "fields": ["role"], "id_field": "item_id"},
+                            "resolves_to": "selected_job_item_id"}])
+    assert sa.pending[0].options_from.id_field == "item_id"

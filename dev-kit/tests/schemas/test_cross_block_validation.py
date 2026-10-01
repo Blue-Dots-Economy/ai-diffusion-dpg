@@ -492,3 +492,38 @@ def test_bootstrap_prompt_fields_without_session_schema():
     errs = [e for e in validate_cross_block({"agent_core": ac, "memory_layer": {}}, [])
             if "prompt_session_fields" in e]
     assert any("'x' is not a declared session field" in e for e in errs)
+
+
+from dev_kit.schemas.cross_block_validation import _dialogue_act_session_mapping_rules
+
+
+def _ac_da(resolves_to="selected_job_item_id"):
+    return {
+        "entity_to_profile_field": {"consent": "consent_response"},
+        "preprocessing": {"nlu_processor": {"mode": "dialogue_act", "slots": {"consent": {}, "trade": {}}}},
+        "agent_workflow": {"subagents": [{"id": "job_match", "pending": [
+            {"id": "select_job", "resolves_to": resolves_to,
+             "options_from": {"tool": "fetch_jobs", "fields": ["role"], "id_field": "item_id"}}]}]},
+    }
+
+
+def _ag(target):
+    return {"tools": [{"id": "fetch_profile", "response": {"session_mapping": [
+        {"source": "items[0].x", "target": target}]}}]}
+
+
+def test_session_mapping_collision_with_slot_state_key():
+    errs = _dialogue_act_session_mapping_rules(_ac_da(), _ag("consent_response"))
+    assert any("consent_response" in e for e in errs)
+
+
+def test_session_mapping_collision_with_resolves_to():
+    errs = _dialogue_act_session_mapping_rules(_ac_da(), _ag("selected_job_item_id"))
+    assert any("selected_job_item_id" in e for e in errs)
+
+
+def test_no_collision_and_intent_mode_skipped():
+    assert _dialogue_act_session_mapping_rules(_ac_da(), _ag("stored_trade")) == []
+    ac = _ac_da()
+    ac["preprocessing"]["nlu_processor"]["mode"] = "intent"
+    assert _dialogue_act_session_mapping_rules(ac, _ag("consent_response")) == []

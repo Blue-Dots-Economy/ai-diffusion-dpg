@@ -193,20 +193,126 @@ class LanguageNormalisationSection(BaseModel):
         return self
 
 
+_DIALOGUE_ACTS: tuple[str, ...] = (
+    "affirm", "deny", "acknowledge", "provide_info", "correct", "select",
+    "ask", "request_change", "repeat", "hold", "close", "other",
+)
+
+
+class NLUSlotConfig(BaseModel):
+    """One caller-stated value the dialogue-act NLU extracts (NLU dialogue-acts spec §7.1)."""
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["string", "int", "enum"] = "string"
+    values: list[str] = Field(default_factory=list)
+    min: Optional[int] = None
+    max: Optional[int] = None
+    normalise: Optional[Literal["title", "lower"]] = None
+    accept_when_pending: list[str] = Field(default_factory=list)
+    description: str = ""
+    examples: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check(self) -> "NLUSlotConfig":
+        """Enum slots need values; int bounds must be ordered."""
+        if self.type == "enum" and not self.values:
+            raise ValueError("enum slot needs values")
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError("slot min must be <= max")
+        return self
+
+
+class NLUExampleConfig(BaseModel):
+    """A few-shot example rendered into the static NLU prompt."""
+    model_config = ConfigDict(extra="forbid")
+    pending: str = ""
+    caller: str
+    out: dict[str, Any]
+
+
+class ActIntentRuleConfig(BaseModel):
+    """(acts, pending, relation, topic) → routing intent (spec §6.4)."""
+    model_config = ConfigDict(extra="forbid")
+    acts: list[str] = Field(default_factory=list)
+    pending: Optional[str] = None
+    relation: Optional[Literal["answers_pending", "answers_other", "new_topic", "unrelated", "unclear"]] = None
+    topic: Optional[str] = None
+    intent: str
+    gated: bool = False
+
+    @field_validator("acts")
+    @classmethod
+    def _known_acts(cls, value: list[str]) -> list[str]:
+        """Reject acts outside the framework list."""
+        bad = [a for a in value if a not in _DIALOGUE_ACTS]
+        if bad:
+            raise ValueError(f"unknown act(s) {bad}; allowed: {list(_DIALOGUE_ACTS)}")
+        return value
+
+
+class TerminationGateItem(BaseModel):
+    """Either a pending id or a routing condition (spec §6.7)."""
+    model_config = ConfigDict(extra="forbid")
+    pending: Optional[str] = None
+    field: Optional[str] = None
+    operator: Optional[RoutingOperator] = None
+    value: Any = None
+
+    @model_validator(mode="after")
+    def _one_form(self) -> "TerminationGateItem":
+        """Exactly one of ``pending`` or ``field``+``operator``."""
+        has_pending = self.pending is not None
+        has_cond = self.field is not None and self.operator is not None
+        if has_pending == has_cond:
+            raise ValueError("termination_gate item needs exactly one of 'pending' or 'field'+'operator'")
+        return self
+
+
+class TerminationGateConfig(BaseModel):
+    """Conditions under which a gated act-intent row may fire."""
+    model_config = ConfigDict(extra="forbid")
+    any_of: list[TerminationGateItem] = Field(default_factory=list)
+
+
+class OffTrackConfig(BaseModel):
+    """Consecutive off-track turns before routing to recovery (spec §6.6)."""
+    model_config = ConfigDict(extra="forbid")
+    threshold: int = Field(default=3, ge=1)
+    intent: str = "off_track"
+
+
 class NLUProcessorSection(BaseModel):
-    """NLU classifier helper config. provider=None inherits agent.provider; intents must be non-empty."""
+    """NLU classifier helper config. provider=None inherits agent.provider; intents must be non-empty in intent mode."""
     model_config = ConfigDict(extra="forbid")
     provider: Optional[ProviderField] = None   # None → inherit agent.provider at runtime
     model: str = ""   # empty allowed — helper inherits agent.primary_model at runtime
     confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     user_state_confidence_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
     domain_instruction: str = ""
-    intents: list[str] = Field(..., min_length=1)   # workflow_loader rejects empty list
+    mode: Literal["intent", "dialogue_act"] = "intent"
+    intents: list[str] = Field(default_factory=list)   # required only in intent mode (validator)
     entities: list[str] = Field(default_factory=list)
     sentiment_classes: list[str] = Field(
         default_factory=lambda: ["neutral", "positive", "distressed", "frustrated"]
     )
     signal_intents: dict[str, str] = Field(default_factory=dict)
+    timeout_ms: int = Field(default=2500, gt=0)
+    retry_attempts: int = Field(default=2, ge=1)
+    history_turns: int = Field(default=2, ge=0)
+    topics: list[str] = Field(default_factory=list)
+    signals: list[str] = Field(default_factory=list)
+    slots: dict[str, NLUSlotConfig] = Field(default_factory=dict)
+    known_fields: list[str] = Field(default_factory=list)
+    examples: list[NLUExampleConfig] = Field(default_factory=list)
+    act_intents: list[ActIntentRuleConfig] = Field(default_factory=list)
+    termination_gate: TerminationGateConfig = Field(default_factory=TerminationGateConfig)
+    off_track: OffTrackConfig = Field(default_factory=OffTrackConfig)
+
+    @model_validator(mode="after")
+    def intents_required_in_intent_mode(self) -> "NLUProcessorSection":
+        """workflow_loader rejects an empty intents list in intent mode only."""
+        if self.mode == "intent" and not self.intents:
+            raise ValueError("intents must be non-empty in intent mode")
+        return self
 
     @model_validator(mode="after")
     def model_must_match_helper_provider(self) -> "NLUProcessorSection":
@@ -611,6 +717,31 @@ class RoutingRule(BaseModel):
         return self
 
 
+class OptionsFromConfig(BaseModel):
+    """Where a pending question's offered options come from (a cached tool)."""
+    model_config = ConfigDict(extra="forbid")
+    tool: str
+    fields: list[str] = Field(min_length=1)
+    id_field: str
+
+
+class PendingQuestionConfig(BaseModel):
+    """What a subagent may be waiting for (NLU dialogue-acts spec §7.2)."""
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=1)
+    expects: str = ""
+    when: list[RoutingCondition] = Field(default_factory=list)
+    options_from: Optional[OptionsFromConfig] = None
+    resolves_to: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _resolves_needs_options(self) -> "PendingQuestionConfig":
+        """``resolves_to`` is only meaningful with ``options_from``."""
+        if self.resolves_to and self.options_from is None:
+            raise ValueError("resolves_to requires options_from")
+        return self
+
+
 class SubAgent(BaseModel):
     """One subagent in the workflow graph.
 
@@ -630,6 +761,7 @@ class SubAgent(BaseModel):
     system_prompt: str = Field(..., min_length=1)
     opening_phrase: str = Field(..., min_length=1)   # required for all subagents
     routing: list[RoutingRule] = Field(default_factory=list)
+    pending: list[PendingQuestionConfig] = Field(default_factory=list)
     # opening_phrase non-empty enforced by Field(..., min_length=1) above —
     # runtime requires it for ALL subagents (adopted-state callbacks).
 

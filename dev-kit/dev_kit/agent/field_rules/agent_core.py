@@ -420,6 +420,84 @@ FIELD_RULES: dict[str, FieldRule] = {
         pydantic_class="PreprocessingSection",
     ),
 
+    # ── dialogue_act NLU mode (opt-in; applies_if only sees IntakeState flags,
+    #    so these are not gated on nlu_processor.mode) ───────────────────────
+
+    "preprocessing.nlu_processor.mode": FieldRule(
+        category="chat",
+        phase="language",
+        default="intent",
+        description="NLU contract: 'intent' (per-subagent intents) or 'dialogue_act' (acts + pending questions).",
+        pydantic_class="PreprocessingSection",
+    ),
+    "preprocessing.nlu_processor.slots": FieldRule(
+        category="chat",
+        phase="language",
+        default={},
+        invalidated_by=["preprocessing.nlu_processor.mode"],
+        description="Caller-stated values to extract: type, bounds/values, normalise, accept_when_pending.",
+        pydantic_class="PreprocessingSection",
+    ),
+    "preprocessing.nlu_processor.act_intents": FieldRule(
+        category="chat",
+        phase="workflow",
+        default=[],
+        invalidated_by=["preprocessing.nlu_processor.mode", "agent_workflow.subagents"],
+        description="Ordered (acts, pending, relation, topic) → routing intent table.",
+        pydantic_class="PreprocessingSection",
+    ),
+    "preprocessing.nlu_processor.known_fields": FieldRule(
+        category="chat",
+        phase="language",
+        default=[],
+        description="State fields whose values are shown to NLU in the frame.",
+        pydantic_class="PreprocessingSection",
+    ),
+    "preprocessing.nlu_processor.examples": FieldRule(
+        category="chat",
+        phase="language",
+        default=[],
+        description="Few-shot examples rendered into the static NLU prompt.",
+        pydantic_class="PreprocessingSection",
+    ),
+    "preprocessing.nlu_processor.termination_gate": FieldRule(
+        category="chat",
+        phase="workflow",
+        default={"any_of": []},
+        description="When a gated act-intent row (e.g. close → termination) may fire.",
+        pydantic_class="PreprocessingSection",
+    ),
+    "preprocessing.nlu_processor.topics": FieldRule(
+        category="chat",
+        phase="language",
+        default=[],
+        description="Topics for 'ask' / 'request_change' acts.",
+        pydantic_class="PreprocessingSection",
+    ),
+    "preprocessing.nlu_processor.signals": FieldRule(
+        category="chat",
+        phase="language",
+        default=[],
+        description="Signal names NLU may emit (written as Signal nodes).",
+        pydantic_class="PreprocessingSection",
+    ),
+    "preprocessing.nlu_processor.off_track": FieldRule(
+        category="framework_default_only",
+        description="Off-track threshold and recovery intent.",
+    ),
+    "preprocessing.nlu_processor.timeout_ms": FieldRule(
+        category="framework_default_only",
+        description="Dialogue-act NLU call timeout.",
+    ),
+    "preprocessing.nlu_processor.retry_attempts": FieldRule(
+        category="framework_default_only",
+        description="Dialogue-act NLU total attempts.",
+    ),
+    "preprocessing.nlu_processor.history_turns": FieldRule(
+        category="framework_default_only",
+        description="Recent exchanges rendered into the NLU frame.",
+    ),
+
     # ── Gated chat: preprocessing.nlu_processor.signal_intents ───────────────
 
     "preprocessing.nlu_processor.signal_intents": FieldRule(

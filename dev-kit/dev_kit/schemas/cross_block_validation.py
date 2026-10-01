@@ -242,6 +242,41 @@ def _tool_result_session_mapping_rules(ac: dict, ag: dict) -> list[str]:
     return errors
 
 
+def _dialogue_act_session_mapping_rules(ac: dict, ag: dict) -> list[str]:
+    """Reject dialogue_act state keys that a connector session_mapping also writes.
+
+    NLU slots (mapped through ``entity_to_profile_field``) and pending
+    ``resolves_to`` keys are written by Agent Core's SlotWriter; a
+    ``response.session_mapping`` target of the same name would make two
+    writers race on one field (NLU dialogue-acts spec §7.3).
+
+    Args:
+        ac: The agent_core block.
+        ag: The action_gateway block.
+
+    Returns:
+        One error per colliding key; empty in intent mode.
+    """
+    nlu = ((ac.get("preprocessing") or {}).get("nlu_processor")) or {}
+    if nlu.get("mode") != "dialogue_act":
+        return []
+    emap = ac.get("entity_to_profile_field") or {}
+    keys = {emap.get(n, n) for n in (nlu.get("slots") or {})}
+    for s in ((ac.get("agent_workflow") or {}).get("subagents")) or []:
+        for p in (s or {}).get("pending") or []:
+            if (p or {}).get("resolves_to"):
+                keys.add(p["resolves_to"])
+    errors: list[str] = []
+    for t in ag.get("tools") or []:
+        for m in ((t or {}).get("response") or {}).get("session_mapping") or []:
+            target = (m or {}).get("target")
+            if target in keys:
+                errors.append(
+                    f"action_gateway tool '{t.get('id') or t.get('name')}' session_mapping target "
+                    f"'{target}' is also a dialogue_act NLU state key; rename one of them.")
+    return errors
+
+
 def validate_cross_block(
     blocks: dict[str, dict],
     selected_channels: Iterable[str],
@@ -503,6 +538,8 @@ def validate_cross_block(
         errors.extend(_session_bootstrap_rules(ac, blocks.get("memory_layer") or {}))
         # 13c. User-scope cache is unsafe where the tool declares session_mapping.
         errors.extend(_tool_result_session_mapping_rules(ac, blocks.get("action_gateway") or {}))
+        # 13d. dialogue_act state keys must not collide with session_mapping targets.
+        errors.extend(_dialogue_act_session_mapping_rules(ac, blocks.get("action_gateway") or {}))
 
     # 14. Connector input_schema property names MUST match the action_gateway
     # tool's agent-source param names. The REST adapter passes the LLM's
