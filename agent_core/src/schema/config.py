@@ -303,6 +303,10 @@ class ConversationConfig(BaseModel):
     consent_message: str = ""
     consent_decline_ack: str = ""
     unsupported_language_message: str = ""
+    # Spoken when a turn produced no text at all, after the orchestrator's
+    # empty-completion retry has already failed. Without it the caller gets
+    # silence, which on a phone line reads as a dropped call.
+    empty_response_message: str = ""
     profile_complete_message: str = ""
     returning_user_greeting: str = ""
     user_state_model: UserStateModelConfig = Field(default_factory=UserStateModelConfig)
