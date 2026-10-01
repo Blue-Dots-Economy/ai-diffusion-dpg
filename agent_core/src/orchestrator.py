@@ -83,10 +83,6 @@ from src.understanding.config import DialogueActConfig
 from src.understanding.history import RECENT_TURNS_KEY, append_recent_turn
 from src.understanding.precedence import nlu_owned_values
 from src.understanding.understander import TurnContext, TurnUnderstander, TurnUnderstanderBase
-
-# Session key: tool → args_hash of the stored result the caller last heard
-# (NLU dialogue-acts spec §5.2). dialogue_act mode only.
-SERVED_TOOL_RESULTS_KEY = "served_tool_results"
 from src.tool_results import ToolResultPolicies, TurnToolCache, augment_tool_definitions
 from src.remember import RememberTool
 from src.session_bootstrap import SessionBootstrap
@@ -96,6 +92,10 @@ from opentelemetry import trace as otel_trace
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
 logger = logging.getLogger(__name__)
+
+# Session key: tool → args_hash of the stored result the caller last heard
+# (NLU dialogue-acts spec §5.2). dialogue_act mode only.
+SERVED_TOOL_RESULTS_KEY = "served_tool_results"
 
 # A ``turn_carryover`` is written by whichever replica ran the interrupted
 # turn and read by whichever runs the next one, so their clocks can disagree.

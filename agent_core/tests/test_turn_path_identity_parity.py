@@ -558,9 +558,6 @@ async def test_both_paths_apply_identical_understanding():
 
 # ── F3: the last-served tool entry is persisted at end of turn on both paths ──
 
-from src.models import ContextBundle  # noqa: E402
-from src.tool_results import TurnToolCache  # noqa: E402
-
 _SERVED_KEY = "served_tool_results"
 
 
