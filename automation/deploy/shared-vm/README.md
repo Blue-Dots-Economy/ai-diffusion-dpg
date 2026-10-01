@@ -4,19 +4,22 @@ Docker Compose deployment for the shared EC2 host. Run it from a clone of this
 repo on the VM — the images carry the code, and the clone supplies the domain
 config, which is mounted straight out of `dev-kit/`.
 
-Kept separate from `automation/docker/*` on purpose: those two files serve local
-development, and nothing here changes them. The secrets init container below is
-needed by this deployment only.
+This compose file is standalone and holds what is specific to the VM: the
+secrets init container, loopback-only ports, persistent volumes and shared-host
+limits. The observability config (collector, Prometheus and blackbox configs,
+Grafana datasources, dashboards and alert rules) is shared with the local
+compose files and mounted from `automation/docker/`; its README describes what
+each dashboard and alert does.
 
 ## What runs
 
-11 services: the 6 DPG blocks, the bridge channel, `redis`, `memgraph`,
-`otelcol`, and a one-shot `init_secrets`.
+The 6 DPG blocks, the bridge channel, `redis`, `memgraph`, `otelcol`, the
+monitoring stack (`jaeger`, `loki`, `prometheus`, `grafana` and the
+`blackbox_exporter`, `cadvisor` and `redis_exporter` exporters), and two
+one-shot init containers, `init_secrets` and `init_kb_perms`.
 
 Deliberately absent: the **voice channel and ngrok** — the telephony platform
-owns the call path —
-`web` / `cli` / `mcp`, `dev-kit`, and the grafana / jaeger / loki / prometheus
-UIs.
+owns the call path — plus `web` / `cli` / `mcp` and `dev-kit`.
 
 ## Secrets
 
@@ -192,79 +195,32 @@ Metrics and traces appear within a few seconds of the first turn. Loki's
 ring settles — that is normal and does not mean logs are being dropped; query
 `/loki/api/v1/labels` through Grafana instead.
 
-### Dashboards
+### Dashboards and alerts
 
-Provisioned from files into Grafana's **DPG** folder, read-only in the UI.
-Grafana opens on **Service Status**; every dashboard has a *DPG dashboards*
-menu (top right) that switches between them and keeps the time range.
+Shared with the local compose files; see `automation/docker/README.md`
+(Monitoring) for the dashboards and the 17 alert rules. Here the exporters run
+unconditionally, with no profile. VM specifics:
 
-| Dashboard | Answers | Source |
-| --- | --- | --- |
-| DPG - Service Status | Is every service up right now, and when was it not? | built here |
-| DPG - Service Traffic | Request rate, 5xx rate, p95 latency per block; error logs | built here |
-| DPG - Traces | Recent turns, failed and slow traces; click a trace ID for its waterfall and its logs side by side | built here |
-| DPG - Logs | Every log line for one service, searchable | grafana.com 13639 |
-| DPG - Containers | CPU, memory, network, disk per container | grafana.com 15798 |
-| DPG - Redis | Memory, clients, commands, keys | grafana.com 763 |
-| DPG - OTel Collector | Is telemetry flowing, or being refused or dropped? | grafana.com 15983 |
-| DPG - Health Probes (detail) | One probe's status, latency and HTTP phases | grafana.com 14928 |
-
-They are fed by three exporters in this compose file: `blackbox_exporter`
-(health probes for every service), `cadvisor` (containers) and
-`redis_exporter`. Prometheus uses this directory's `prometheus/prometheus.yml`,
-not the one under `automation/docker/`, so local development is unaffected.
-
-On Traces, the service map is a header link to Jaeger's own UI
-(`localhost:16686/dependencies`, so it also works through the SSH tunnel
-above): Grafana 10.3's Jaeger data source has no dependency-graph query. The
-bridge channel emits no traces, so every trace starts at Agent Core.
-
-Memgraph has no dashboard: its Prometheus metrics endpoint is an Enterprise
-feature. Its up/down status is on Service Status (TCP probe on 7687).
-
-LLM provider failures, such as an invalid API key, do not appear in the HTTP
-metrics — Agent Core still answers the bridge with a 200 and an empty reply.
-They show up as ERROR logs: the *Error logs* tile on Service Traffic.
-
-The community dashboards are committed pre-adapted. To bump one or add
-another, edit the pinned list in `grafana/import_community_dashboards.py` and
-run it (Python 3.10+, standard library only); Grafana picks the files up
-within 10 s. The script records every adaptation it makes and why.
-
-### Alerts to Discord
-
-Grafana alerting is provisioned from `grafana/provisioning/alerting/`: 17
-rules, one Discord contact point per severity, and a policy that routes on the
-rule's `severity` label. Resolved messages are sent when an alert clears.
-
-| Severity | Alerts | Re-sent while firing |
-| --- | --- | --- |
-| critical | Service down · Crash-looping (3+ restarts in 10 min) · Out of memory · LLM calls failing | hourly |
-| warning | High memory · Host memory high · CPU overload · Latency overload · 5xx rate · Slow health checks · Error log spike · Telemetry dropping · Redis memory high · Monitoring target down | every 4 h |
-| info | Container restarted · Heartbeat (daily) | daily |
-
-The **Heartbeat** always fires and is posted once a day. If it stops arriving,
-Grafana or the host is down, and no other alert can be sent either.
-
-**Webhooks are secrets.** Store them in SSM as
-`<SSM_PREFIX>/discord_webhook_critical`, `…_warning` and `…_info`; on a host
-without SSM, set `DISCORD_WEBHOOK_CRITICAL` / `_WARNING` / `_INFO` in `.env`.
-`init_secrets` writes each to `/secrets/discord_webhook_<severity>`, which the
-contact points read with `$__file{}`. An unset webhook gets an unroutable
-placeholder instead (the log says which): Grafana will not start with an empty
-Discord URL, so a missing webhook degrades to "alerts visible in Grafana only"
-rather than taking the dashboards down. Changing a webhook needs
-`docker compose up -d init_secrets grafana`.
-
-Rules reference the datasources by fixed UID, so this deployment provisions
-its own `grafana/provisioning/datasources/` (it deletes and re-creates any
-same-named datasource an existing `grafana_data` volume holds).
-`GRAFANA_ROOT_URL` (default `http://localhost:3001`) is the base of the
-dashboard links in each message.
-
-To check delivery, send a test from **Alerting → Contact points** in Grafana,
-or look for `Notify for alerts failed` in `docker compose logs grafana`.
-Disk space is not covered: nothing in this stack measures host disk.
+- **Discord webhooks** are secrets. Store them in SSM as
+  `<SSM_PREFIX>/discord_webhook_critical`, `…_warning` and `…_info`; on a host
+  without SSM, set `DISCORD_WEBHOOK_CRITICAL` / `_WARNING` / `_INFO` in `.env`.
+  `init_secrets` writes each to `/secrets/discord_webhook_<severity>`, and
+  Grafana's entrypoint loads them into the environment the shared contact
+  points read. An unset webhook gets an unroutable placeholder (the
+  `init_secrets` log says which), so a missing one degrades to "alerts visible
+  in Grafana only" rather than stopping Grafana. To change a webhook, update
+  it in SSM or `.env`, then run `docker compose up -d --force-recreate
+  init_secrets` and, once that has finished, `docker compose restart grafana`.
+  Do it in two steps: Grafana reads the files as it starts, and one combined
+  command can start it before `init_secrets` has rewritten them.
+- **Services this VM does not run** (web, voice, MCP, dev-kit) show DOWN on
+  Service Status and never alert: *Service down* only fires for a service that
+  was up in the last 24 hours.
+- **`GRAFANA_ROOT_URL`** (default `http://localhost:3001`) is the base of the
+  dashboard links in each alert, which open through the SSH tunnel above.
+- **Retention:** Prometheus keeps 15 days on a volume; Loki and Grafana state
+  are on volumes too. Jaeger keeps traces in memory, so a restart loses them.
+  The bridge channel emits no traces, so every trace starts at Agent Core.
 
 ## Pinning by digest
 

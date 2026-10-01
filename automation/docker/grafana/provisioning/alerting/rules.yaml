@@ -1,12 +1,19 @@
-# DPG alert rules for the shared VM. Routed to Discord by the `severity`
-# label (policies.yaml): critical, warning or info.
+# DPG alert rules. Routed to Discord by the `severity` label (policies.yaml):
+# critical, warning or info.
 #
 # Every rule is the same three steps: A queries Prometheus or Loki, B reduces
 # each series to its last value, C compares it to the threshold. `for` is how
 # long C must hold before the alert fires, so short spikes do not page.
 #
-# Container rules use cAdvisor series for the dpg_* containers, excluding the
-# one-shot dpg_init_* containers, and group by the compose `service` label.
+# Container rules use the cAdvisor series Prometheus keeps for this stack's
+# containers (prometheus.yml filters them by name), grouped by `service`.
+#
+# "Service down" and "Monitoring target down" only consider services that were
+# up at some point in the last 24 hours. Deployments run different subsets of
+# the stack (the dev-kit drops unused services, the monitoring profile is
+# optional), and a service that was never started is not an outage. A service
+# that crashes on start is caught by Crash-looping instead.
+#
 # Query failures raise Grafana's own DatasourceError alert on the same route,
 # so a broken datasource is one warning, not a flood of false "down" alerts.
 #
@@ -30,7 +37,7 @@ groups:
         to: 0
       model:
         refId: A
-        expr: max by (service) (probe_success{job=~"service_status_.*"})
+        expr: max by (service) (probe_success{job=~"service_status_.*"}) and on (service) (max by (service) (max_over_time(probe_success{job=~"service_status_.*"}[24h])) == 1)
         instant: true
         intervalMs: 15000
         maxDataPoints: 43200
@@ -81,7 +88,7 @@ groups:
         to: 0
       model:
         refId: A
-        expr: max by (service) (changes(container_start_time_seconds{name=~"dpg_.+", name!~"dpg_init_.+"}[10m]))
+        expr: max by (service) (changes(container_start_time_seconds{name!=""}[10m]))
         instant: true
         intervalMs: 15000
         maxDataPoints: 43200
@@ -118,7 +125,7 @@ groups:
       severity: critical
     annotations:
       summary: '{{ $labels.service }} is crash-looping'
-      description: Restarted {{ $values.B.Value }} times in the last 10 minutes.
+      description: Restarted {{ with $values.B }}{{ .Value }}{{ else }}n/a{{ end }} times in the last 10 minutes.
       dashboard_url: '{{ externalURL }}d/dpg-containers'
     isPaused: false
   - uid: dpg-oom-killed
@@ -132,7 +139,7 @@ groups:
         to: 0
       model:
         refId: A
-        expr: max by (service) (increase(container_oom_events_total{name=~"dpg_.+", name!~"dpg_init_.+"}[5m]))
+        expr: max by (service) (increase(container_oom_events_total{name!=""}[5m]))
         instant: true
         intervalMs: 15000
         maxDataPoints: 43200
@@ -219,7 +226,7 @@ groups:
       service: agent_core
     annotations:
       summary: LLM provider calls are failing
-      description: '{{ $values.B.Value }} provider errors in 5 minutes; turns return empty replies. Check the API key and provider status.'
+      description: '{{ with $values.B }}{{ .Value }}{{ else }}n/a{{ end }} provider errors in 5 minutes; turns return empty replies. Check the API key and provider status.'
       dashboard_url: '{{ externalURL }}d/dpg-service-traffic'
     isPaused: false
 - orgId: 1
@@ -238,7 +245,7 @@ groups:
         to: 0
       model:
         refId: A
-        expr: max by (service) (container_memory_working_set_bytes{name=~"dpg_.+", name!~"dpg_init_.+"} / (container_spec_memory_limit_bytes{name=~"dpg_.+", name!~"dpg_init_.+"} > 0))
+        expr: max by (service) (container_memory_working_set_bytes{name!=""} / (container_spec_memory_limit_bytes{name!=""} > 0))
         instant: true
         intervalMs: 15000
         maxDataPoints: 43200
@@ -274,7 +281,7 @@ groups:
     labels:
       severity: warning
     annotations:
-      summary: '{{ $labels.service }} is using {{ humanizePercentage $values.B.Value }} of its memory limit'
+      summary: '{{ $labels.service }} is using {{ with $values.B }}{{ humanizePercentage .Value }}{{ else }}n/a{{ end }} of its memory limit'
       description: Above 90% for 5 minutes; it will be OOM-killed if it reaches the limit.
       dashboard_url: '{{ externalURL }}d/dpg-containers'
     isPaused: false
@@ -289,7 +296,7 @@ groups:
         to: 0
       model:
         refId: A
-        expr: sum(container_memory_working_set_bytes{name=~"dpg_.+", name!~"dpg_init_.+"}) / max(machine_memory_bytes)
+        expr: sum(container_memory_working_set_bytes{name!=""}) / max(machine_memory_bytes)
         instant: true
         intervalMs: 15000
         maxDataPoints: 43200
@@ -326,7 +333,7 @@ groups:
       severity: warning
       service: host
     annotations:
-      summary: The stack is using {{ humanizePercentage $values.B.Value }} of host memory
+      summary: The stack is using {{ with $values.B }}{{ humanizePercentage .Value }}{{ else }}n/a{{ end }} of host memory
       description: All containers together have been above 85% of host memory for 5 minutes.
       dashboard_url: '{{ externalURL }}d/dpg-containers'
     isPaused: false
@@ -341,8 +348,7 @@ groups:
         to: 0
       model:
         refId: A
-        expr: max by (service) (rate(container_cpu_usage_seconds_total{name=~"dpg_.+", name!~"dpg_init_.+"}[5m]) / (container_spec_cpu_quota{name=~"dpg_.+", name!~"dpg_init_.+"} / container_spec_cpu_period{name=~"dpg_.+",
-          name!~"dpg_init_.+"}))
+        expr: max by (service) (rate(container_cpu_usage_seconds_total{name!=""}[5m]) / (container_spec_cpu_quota{name!=""} / container_spec_cpu_period{name!=""}))
         instant: true
         intervalMs: 15000
         maxDataPoints: 43200
@@ -378,7 +384,7 @@ groups:
     labels:
       severity: warning
     annotations:
-      summary: '{{ $labels.service }} is using {{ humanizePercentage $values.B.Value }} of its CPU limit'
+      summary: '{{ $labels.service }} is using {{ with $values.B }}{{ humanizePercentage .Value }}{{ else }}n/a{{ end }} of its CPU limit'
       description: Above 90% of its CPU limit for 10 minutes; it is being throttled.
       dashboard_url: '{{ externalURL }}d/dpg-containers'
     isPaused: false
@@ -393,7 +399,7 @@ groups:
         to: 0
       model:
         refId: A
-        expr: max by (service) (rate(container_cpu_usage_seconds_total{name=~"dpg_.+", name!~"dpg_init_.+"}[5m]) unless on (name) (container_spec_cpu_quota{name=~"dpg_.+", name!~"dpg_init_.+"} > 0))
+        expr: max by (service) (rate(container_cpu_usage_seconds_total{name!=""}[5m]) unless on (name) (container_spec_cpu_quota{name!=""} > 0))
         instant: true
         intervalMs: 15000
         maxDataPoints: 43200
@@ -429,7 +435,7 @@ groups:
     labels:
       severity: warning
     annotations:
-      summary: '{{ $labels.service }} is using {{ printf "%.2f" $values.B.Value }} CPU cores'
+      summary: '{{ $labels.service }} is using {{ with $values.B }}{{ printf "%.2f" .Value }}{{ else }}n/a{{ end }} CPU cores'
       description: Above 1.5 cores for 10 minutes (no CPU limit set).
       dashboard_url: '{{ externalURL }}d/dpg-containers'
     isPaused: false
@@ -480,7 +486,7 @@ groups:
     labels:
       severity: warning
     annotations:
-      summary: '{{ $labels.service }} p95 latency is {{ printf "%.0f" $values.B.Value }} ms'
+      summary: '{{ $labels.service }} p95 latency is {{ with $values.B }}{{ printf "%.0f" .Value }}{{ else }}n/a{{ end }} ms'
       description: Above 3 s for 10 minutes; the voice latency target is 0.8 to 1.2 s.
       dashboard_url: '{{ externalURL }}d/dpg-service-traffic'
     isPaused: false
@@ -495,8 +501,7 @@ groups:
         to: 0
       model:
         refId: A
-        expr: label_replace((sum by (exported_job) (rate(dpg_http_server_duration_milliseconds_count{http_target!="/health", http_status_code=~"5.."}[5m])) / sum by (exported_job) (rate(dpg_http_server_duration_milliseconds_count{http_target!="/health"}[5m])))
-          and on (exported_job) (sum by (exported_job) (rate(dpg_http_server_duration_milliseconds_count{http_target!="/health"}[5m])) > 0.05), "service", "$1", "exported_job", "(.+)")
+        expr: label_replace((sum by (exported_job) (rate(dpg_http_server_duration_milliseconds_count{http_target!="/health", http_status_code=~"5.."}[5m])) / sum by (exported_job) (rate(dpg_http_server_duration_milliseconds_count{http_target!="/health"}[5m]))) and on (exported_job) (sum by (exported_job) (rate(dpg_http_server_duration_milliseconds_count{http_target!="/health"}[5m])) > 0.05), "service", "$1", "exported_job", "(.+)")
         instant: true
         intervalMs: 15000
         maxDataPoints: 43200
@@ -532,7 +537,7 @@ groups:
     labels:
       severity: warning
     annotations:
-      summary: '{{ $labels.service }} is returning {{ humanizePercentage $values.B.Value }} 5xx responses'
+      summary: '{{ $labels.service }} is returning {{ with $values.B }}{{ humanizePercentage .Value }}{{ else }}n/a{{ end }} 5xx responses'
       description: Above 5% for 5 minutes (ignored below 0.05 req/s so a single failure cannot trigger it).
       dashboard_url: '{{ externalURL }}d/dpg-service-traffic'
     isPaused: false
@@ -583,7 +588,7 @@ groups:
     labels:
       severity: warning
     annotations:
-      summary: '{{ $labels.service }} health checks take {{ printf "%.1f" $values.B.Value }} s'
+      summary: '{{ $labels.service }} health checks take {{ with $values.B }}{{ printf "%.1f" .Value }}{{ else }}n/a{{ end }} s'
       description: Above 2 s for 5 minutes; the service is up but struggling.
       dashboard_url: '{{ externalURL }}d/dpg-service-status'
     isPaused: false
@@ -632,7 +637,7 @@ groups:
     labels:
       severity: warning
     annotations:
-      summary: '{{ $labels.service }} logged {{ $values.B.Value }} errors in 5 minutes'
+      summary: '{{ $labels.service }} logged {{ with $values.B }}{{ .Value }}{{ else }}n/a{{ end }} errors in 5 minutes'
       description: More than 20 ERROR lines in 5 minutes.
       dashboard_url: '{{ externalURL }}d/dpg-traces'
     isPaused: false
@@ -647,8 +652,7 @@ groups:
         to: 0
       model:
         refId: A
-        expr: sum by (exporter) (label_replace(rate(otelcol_exporter_send_failed_spans{job="otelcol"}[5m]), "signal", "spans", "", "") or label_replace(rate(otelcol_exporter_send_failed_metric_points{job="otelcol"}[5m]),
-          "signal", "metrics", "", "") or label_replace(rate(otelcol_exporter_send_failed_log_records{job="otelcol"}[5m]), "signal", "logs", "", ""))
+        expr: sum by (exporter) (label_replace(rate(otelcol_exporter_send_failed_spans{job="otelcol"}[5m]), "signal", "spans", "", "") or label_replace(rate(otelcol_exporter_send_failed_metric_points{job="otelcol"}[5m]), "signal", "metrics", "", "") or label_replace(rate(otelcol_exporter_send_failed_log_records{job="otelcol"}[5m]), "signal", "logs", "", ""))
         instant: true
         intervalMs: 15000
         maxDataPoints: 43200
@@ -737,7 +741,7 @@ groups:
       severity: warning
       service: redis
     annotations:
-      summary: Redis is using {{ humanizePercentage $values.B.Value }} of its available memory
+      summary: Redis is using {{ with $values.B }}{{ humanizePercentage .Value }}{{ else }}n/a{{ end }} of its available memory
       description: Above 80% for 5 minutes; session state lives here.
       dashboard_url: '{{ externalURL }}d/dpg-redis'
     isPaused: false
@@ -752,7 +756,7 @@ groups:
         to: 0
       model:
         refId: A
-        expr: label_replace(min by (job) (up{job=~"otelcol|cadvisor|redis|dpg_metrics|service_status_.*"}), "service", "$1", "job", "(.+)")
+        expr: label_replace((min by (job) (up{job=~"otelcol|cadvisor|redis|dpg_metrics|service_status_.*"}) and on (job) (max by (job) (max_over_time(up{job=~"otelcol|cadvisor|redis|dpg_metrics|service_status_.*"}[24h])) == 1)), "service", "$1", "job", "(.+)")
         instant: true
         intervalMs: 15000
         maxDataPoints: 43200
@@ -808,7 +812,7 @@ groups:
         to: 0
       model:
         refId: A
-        expr: max by (service) (changes(container_start_time_seconds{name=~"dpg_.+", name!~"dpg_init_.+"}[5m]))
+        expr: max by (service) (changes(container_start_time_seconds{name!=""}[5m]))
         instant: true
         intervalMs: 15000
         maxDataPoints: 43200

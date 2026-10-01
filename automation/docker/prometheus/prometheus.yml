@@ -1,8 +1,143 @@
 # automation/docker/prometheus/prometheus.yml
+#
+# Shared by every Compose deployment of the stack (dev, full, and the shared VM).
+# Everything below dpg_metrics is fed by the optional `monitoring` Compose
+# profile (blackbox_exporter, cadvisor, redis_exporter). Without the profile
+# those targets simply do not exist: Prometheus logs failed scrapes, and the
+# alert rules ignore anything that has never been up (see rules.yaml).
 global:
   scrape_interval: 15s
 
 scrape_configs:
+  # Metrics the DPG services push through the OpenTelemetry collector.
   - job_name: dpg_metrics
     static_configs:
       - targets: ['otelcol:8889']
+
+  # ---------------------------------------------------------------------------
+  # Service status. One probe per service the stack can run; the `service` and
+  # `group` labels drive the Grafana "Service Status" dashboard and the alert
+  # rules. A deployment runs only some of these (the dev-kit drops services a
+  # project does not use, the VM runs one channel), so a probe for an absent
+  # service is simply DOWN and never alerts: "Service down" only fires for a
+  # service that was up within the last 24 hours. The one-shot init containers
+  # are left out on purpose, they exit by design.
+  # ---------------------------------------------------------------------------
+  - job_name: service_status_http
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets: ['http://agent_core:8000/health']
+        labels: { service: agent_core, group: dpg }
+      - targets: ['http://knowledge_engine:8001/health']
+        labels: { service: knowledge_engine, group: dpg }
+      - targets: ['http://memory_layer:8002/health']
+        labels: { service: memory_layer, group: dpg }
+      - targets: ['http://trust_layer:8003/health']
+        labels: { service: trust_layer, group: dpg }
+      - targets: ['http://observability_layer:8004/health']
+        labels: { service: observability_layer, group: dpg }
+      - targets: ['http://action_gateway:9999/health']
+        labels: { service: action_gateway, group: dpg }
+      - targets: ['http://reach_layer_web:8005/health']
+        labels: { service: reach_layer_web, group: channel }
+      - targets: ['http://reach_layer_voice:8006/health']
+        labels: { service: reach_layer_voice, group: channel }
+      - targets: ['http://reach_layer_mcp:8007/health']
+        labels: { service: reach_layer_mcp, group: channel }
+      - targets: ['http://reach_layer_bridge:8008/health']
+        labels: { service: reach_layer_bridge, group: channel }
+      - targets: ['http://dev_kit:8080/']
+        labels: { service: dev_kit, group: tooling }
+      - targets: ['http://otelcol:13133/']
+        labels: { service: otelcol, group: observability }
+      - targets: ['http://jaeger:14269/']
+        labels: { service: jaeger, group: observability }
+      - targets: ['http://loki:3100/ready']
+        labels: { service: loki, group: observability }
+      - targets: ['http://prometheus:9090/-/healthy']
+        labels: { service: prometheus, group: observability }
+      - targets: ['http://grafana:3000/api/health']
+        labels: { service: grafana, group: observability }
+      - targets: ['http://blackbox_exporter:9115/-/healthy']
+        labels: { service: blackbox_exporter, group: observability }
+      - targets: ['http://cadvisor:8080/healthz']
+        labels: { service: cadvisor, group: observability }
+      - targets: ['http://redis_exporter:9121/health']
+        labels: { service: redis_exporter, group: observability }
+    relabel_configs: &probe_relabel
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      # The community "Prometheus Blackbox Exporter" dashboard (grafana.com
+      # 14928) selects probes by a `target` label rather than `instance`.
+      - source_labels: [__param_target]
+        target_label: target
+      - target_label: __address__
+        replacement: blackbox_exporter:9115
+
+  - job_name: service_status_redis
+    metrics_path: /probe
+    params:
+      module: [redis_ping]
+    static_configs:
+      - targets: ['redis:6379']
+        labels: { service: redis, group: infra }
+    relabel_configs: *probe_relabel
+
+  - job_name: service_status_tcp
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    static_configs:
+      - targets: ['memgraph:7687']
+        labels: { service: memgraph, group: infra }
+    relabel_configs: *probe_relabel
+
+  # ---------------------------------------------------------------------------
+  # Component metrics for the dashboards in grafana/provisioning/dashboards/.
+  # ---------------------------------------------------------------------------
+
+  # The collector's own telemetry (receivers, processors, exporters, queues).
+  # Distinct from :8889, which re-exports what the DPG services send it.
+  - job_name: otelcol
+    static_configs:
+      - targets: ['otelcol:8888']
+
+  # Per-container CPU, memory, network and disk.
+  - job_name: cadvisor
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['cadvisor:8080']
+    metric_relabel_configs:
+      # cAdvisor reports every cgroup on the host, including other projects'
+      # containers and, on the shared VM, the telephony platform's. Keep only
+      # this stack's containers, matched by name. The optional dpg_ prefix is
+      # the shared VM's container_name convention; the one-shot init
+      # containers are deliberately not listed. machine_* (host CPU cores,
+      # total memory) carry no container name and are kept: the dashboards'
+      # capacity tiles and the host-memory alert read them.
+      - source_labels: [__name__, name]
+        regex: 'machine_.*;.*|.*;(?:dpg_)?(?:agent_core|action_gateway|knowledge_engine|memory_layer|trust_layer|observability_layer|reach_layer_web|reach_layer_voice|reach_layer_mcp|reach_layer_bridge|dev_kit|redis|memgraph|otelcol|jaeger|loki|prometheus|grafana|ngrok|blackbox_exporter|cadvisor|redis_exporter)'
+        action: keep
+      # The "Docker monitoring" dashboard (grafana.com 15798) and the alert
+      # rules group by the Kubernetes-style `container` and `service` labels,
+      # which cAdvisor does not set under plain Docker. Derive both from the
+      # container name, minus the optional dpg_ prefix.
+      - source_labels: [name]
+        regex: '(?:dpg_)?(.+)'
+        target_label: container
+        replacement: '$1'
+      - source_labels: [name]
+        regex: '(?:dpg_)?(.+)'
+        target_label: service
+        replacement: '$1'
+
+  - job_name: redis
+    static_configs:
+      - targets: ['redis_exporter:9121']
+        # The Redis dashboard (grafana.com 763) keys its instance picker off
+        # a `namespace` label, which is Kubernetes-only; supply one.
+        labels: { namespace: dpg }
