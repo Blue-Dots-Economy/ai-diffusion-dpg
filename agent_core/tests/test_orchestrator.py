@@ -2,7 +2,7 @@
 agent_core/tests/test_orchestrator.py
 
 Unit tests for AgentCore (orchestrator).
-All 6 DPG interfaces, ManagerAgent, LanguageNormaliser, NLUProcessor, and AgentWorkflow
+All 6 DPG interfaces, ManagerAgent, LanguageNormaliser, the turn understander, and AgentWorkflow
 are mocked.
 
 Coverage:
@@ -59,6 +59,8 @@ from src.chat_provider.types import (
     ToolDefinition,
     ToolUseBlock,
 )
+from src.understanding.models import StateWrite
+from tests.fakes import fake_understander
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +168,13 @@ def _make_workflow(
     return wf
 
 
+def _nlu_provider_mock() -> MagicMock:
+    """A dedicated-NLU provider stand-in (never called once the understander is faked)."""
+    p = MagicMock()
+    p.capabilities.supports_prompt_cache = False
+    return p
+
+
 def _make_agent(
     trust_input: TrustCheckResult = ALLOW,
     trust_output: TrustCheckResult = ALLOW,
@@ -180,8 +189,8 @@ def _make_agent(
     """
     Build an AgentCore with all external dependencies mocked.
 
-    LanguageNormaliser and NLUProcessor are replaced on the instance after
-    construction so their LLM calls do not interfere with the primary LLM mock.
+    LanguageNormaliser and the turn understander are replaced on the instance
+    after construction so their LLM calls do not interfere with the primary LLM mock.
     """
     session = (
         session_data if session_data is not None
@@ -236,14 +245,14 @@ def _make_agent(
         manager_agent=manager,
         learning=learning,
         workflow=workflow,
+        nlu_chat_provider=_nlu_provider_mock(),
     )
 
-    # Replace Language Normaliser and NLU Processor with controlled mocks
+    # Replace Language Normaliser and the understander with controlled mocks
     agent._language_normaliser = MagicMock()
     agent._language_normaliser.normalise.return_value = ("Hello", "english")
 
-    agent._nlu_processor = MagicMock()
-    agent._nlu_processor.process.return_value = nlu_result or _DEFAULT_NLU
+    agent._understander = fake_understander(nlu_result or _DEFAULT_NLU)
 
     return agent
 
@@ -273,9 +282,20 @@ def test_raises_on_none_workflow():
         )
 
 
+def test_understanding_runs_without_a_mode_key():
+    """Single NLU path: no ``mode`` key still builds the understander and runs it once per turn."""
+    assert "mode" not in VALID_CONFIG["preprocessing"]["nlu_processor"]
+    agent = _make_agent()
+    assert agent._understander is not None
+    assert not hasattr(agent, "_nlu_processor")
+    agent.process_turn(_turn_input())
+    agent._understander.understand.assert_called_once()
+
+
 class TestHelperProviderConstruction:
-    """Per-helper provider override (NLU + language_normalisation can run on
-    a different provider than agent.provider) — see #287 follow-up."""
+    """Helper providers: language_normalisation may reuse the primary provider
+    (#287 follow-up); the dialogue-act NLU always gets its own dedicated one
+    with the NLU timeout/retry policy (spec §9.1)."""
 
     def _build_agent_core(self, config: dict):
         return AgentCore(
@@ -299,29 +319,57 @@ class TestHelperProviderConstruction:
             **overrides,
         }
 
-    def test_helper_with_no_model_reuses_primary(self):
-        agent = self._build_agent_core({"agent": self._agent_block(), "preprocessing": {}})
-        assert agent._nlu_chat_provider is agent._llm
-        assert agent._lang_chat_provider is agent._llm
+    def _build_capturing(self, config: dict):
+        """Build with build_chat_provider patched; returns (agent, captured configs)."""
+        captured: list[dict] = []
 
-    def test_helper_with_matching_provider_and_model_reuses_primary(self):
+        def _fake_build(cfg):
+            captured.append(dict(cfg))
+            return _nlu_provider_mock()
+
+        with patch("src.orchestrator.build_chat_provider", side_effect=_fake_build):
+            agent = self._build_agent_core(config)
+        return agent, captured
+
+    def test_lang_helper_with_no_model_reuses_primary(self):
+        agent, _ = self._build_capturing({"agent": self._agent_block(), "preprocessing": {}})
+        assert agent._lang_chat_provider is agent._llm
+        assert not hasattr(agent, "_nlu_chat_provider")
+
+    def test_dialogue_act_provider_is_dedicated_even_when_model_matches(self):
         cfg = {
             "agent": self._agent_block(),
             "preprocessing": {
                 "nlu_processor": {
                     "provider": "openai",
                     "model": "gpt-4o-2024-08-06",
+                    "timeout_ms": 1800,
+                    "retry_attempts": 1,
                 },
             },
         }
-        agent = self._build_agent_core(cfg)
-        assert agent._nlu_chat_provider is agent._llm
+        agent, captured = self._build_capturing(cfg)
+        assert len(captured) == 1
+        nlu_cfg = captured[0]
+        assert nlu_cfg["provider"] == "openai"
+        assert nlu_cfg["primary_model"] == "gpt-4o-2024-08-06"
+        assert nlu_cfg["timeout_ms"] == 1800
+        assert nlu_cfg["retry_attempts"] == 1
+        assert nlu_cfg["sdk_max_retries"] == 0
+        assert nlu_cfg["retry_on_timeout"] is False
+        assert agent._understander._nlu._provider is not agent._llm
 
-    def test_helper_with_different_provider_builds_dedicated_provider(self):
-        """Regression: the production bug where deployment had agent.provider=openai
-        but nlu_processor.model was a Claude model — without per-helper provider
-        override, build_chat_provider would build an OpenAI provider with a Claude
-        model name and fail at SDK call time.
+    def test_dialogue_act_provider_defaults_to_agent_provider_and_model(self):
+        agent, captured = self._build_capturing({"agent": self._agent_block(), "preprocessing": {}})
+        assert len(captured) == 1
+        assert captured[0]["provider"] == "openai"
+        assert captured[0]["primary_model"] == "gpt-4o-2024-08-06"
+        assert captured[0]["sdk_max_retries"] == 0
+        assert captured[0]["retry_on_timeout"] is False
+
+    def test_dialogue_act_provider_with_different_provider_builds_that_provider(self):
+        """Regression: agent.provider=openai with a Claude NLU model must build an
+        Anthropic provider for the NLU call, not an OpenAI one with a Claude model.
         """
         cfg = {
             "agent": self._agent_block(),  # agent.provider=openai, primary_model=gpt-4o
@@ -334,12 +382,12 @@ class TestHelperProviderConstruction:
         }
         with patch("anthropic.Anthropic"), patch("anthropic.AsyncAnthropic"):
             agent = self._build_agent_core(cfg)
-        # Different provider class → different instance (not self._llm).
-        assert agent._nlu_chat_provider is not agent._llm
-        assert type(agent._nlu_chat_provider).__name__ == "AnthropicChatProvider"
-        assert agent._nlu_chat_provider.get_active_model() == "claude-haiku-4-5-20251001"
+        provider = agent._understander._nlu._provider
+        assert provider is not agent._llm
+        assert type(provider).__name__ == "AnthropicChatProvider"
+        assert provider.get_active_model() == "claude-haiku-4-5-20251001"
 
-    def test_helper_with_only_model_override_inherits_agent_provider(self):
+    def test_dialogue_act_provider_with_only_model_override_inherits_agent_provider(self):
         cfg = {
             "agent": self._agent_block(),  # agent.provider=openai
             "preprocessing": {
@@ -347,11 +395,9 @@ class TestHelperProviderConstruction:
                 "nlu_processor": {"model": "gpt-4o-mini-2024-07-18"},
             },
         }
-        with patch("openai.OpenAI"), patch("openai.AsyncOpenAI"):
-            agent = self._build_agent_core(cfg)
-        assert agent._nlu_chat_provider is not agent._llm
-        assert type(agent._nlu_chat_provider).__name__ == "OpenAIChatProvider"
-        assert agent._nlu_chat_provider.get_active_model() == "gpt-4o-mini-2024-07-18"
+        agent, captured = self._build_capturing(cfg)
+        assert captured[0]["provider"] == "openai"
+        assert captured[0]["primary_model"] == "gpt-4o-mini-2024-07-18"
 
 
 def test_raises_on_none_turn_input():
@@ -445,16 +491,17 @@ def test_language_normaliser_skipped_when_disabled():
     agent._language_normaliser.normalise.assert_not_called()
 
 
-def test_nlu_processor_called_with_normalised_input():
+def test_understander_gets_raw_caller_text_not_normalised_input():
+    """Understanding reads the raw caller text, for parity with stream (spec §8)."""
     agent = _make_agent()
     agent._language_normaliser.normalise.return_value = ("kaam chahiye normalised", "hinglish")
     agent.process_turn(_turn_input("kaam chahiye"))
-    call_args = agent._nlu_processor.process.call_args
-    assert call_args[1].get("normalised_input") == "kaam chahiye normalised"
+    ctx = agent._understander.understand.call_args.args[0]
+    assert ctx.segments == ["kaam chahiye"]
 
 
-def test_nlu_processor_called_with_raw_input_when_ln_disabled():
-    """When LN is disabled, NLU receives the raw user message (#313)."""
+def test_understander_gets_raw_caller_text_when_ln_disabled():
+    """When LN is disabled, understanding still receives the raw user message (#313)."""
     config = {
         **VALID_CONFIG,
         "preprocessing": {
@@ -468,8 +515,8 @@ def test_nlu_processor_called_with_raw_input_when_ln_disabled():
     agent = _make_agent()
     agent._config = config
     agent.process_turn(_turn_input("kaam chahiye"))
-    call_args = agent._nlu_processor.process.call_args
-    assert call_args[1].get("normalised_input") == "kaam chahiye"
+    ctx = agent._understander.understand.call_args.args[0]
+    assert ctx.segments == ["kaam chahiye"]
 
 
 def test_manager_run_turn_called_with_ke_context():
@@ -498,8 +545,10 @@ def test_current_subagent_id_written_synchronously():
 
 
 def test_entity_written_synchronously():
-    """Entities extracted by NLU are persisted synchronously before result is returned."""
+    """Understanding writes are persisted synchronously before result is returned."""
     agent = _make_agent(nlu_result=_DEFAULT_NLU)
+    agent._understander = fake_understander(
+        _DEFAULT_NLU, writes=[StateWrite("persistent", "location", "Hubli")])
     agent.process_turn(_turn_input())
     agent._memory.write.assert_any_call(
         SESSION_ID, SESSION_ID, "persistent", "location", "Hubli"
@@ -870,11 +919,11 @@ def _make_agent_with_consent(
         manager_agent=manager,
         learning=learning,
         workflow=_make_workflow(),
+        nlu_chat_provider=_nlu_provider_mock(),
     )
     agent._language_normaliser = MagicMock()
     agent._language_normaliser.normalise.return_value = ("Hello", "english")
-    agent._nlu_processor = MagicMock()
-    agent._nlu_processor.process.return_value = _DEFAULT_NLU
+    agent._understander = fake_understander(_DEFAULT_NLU)
     return agent, memory, trust
 
 
@@ -1269,6 +1318,8 @@ def test_language_switch_to_supported_language_updates_preference():
         nlu_result=_SWITCH_NLU,
         session_data={"current_subagent_id": "market_truth", "language_preference": "hindi"},
     )
+    agent._understander = fake_understander(
+        _SWITCH_NLU, writes=[StateWrite("persistent", "language_preference", "kannada")])
     agent._config = VALID_CONFIG_WITH_LANG
     agent.process_turn(_turn_input("Kannada mein baat karo"))
 
@@ -1427,6 +1478,7 @@ def test_agentcore_init_user_state_enabled_caches_guidance():
         manager_agent=MagicMock(),
         learning=MagicMock(),
         workflow=_make_workflow(),
+        nlu_chat_provider=_nlu_provider_mock(),
     )
 
     assert agent._user_state_enabled is True
@@ -1448,6 +1500,7 @@ def test_agentcore_init_user_state_disabled_empty_cache():
         manager_agent=MagicMock(),
         learning=MagicMock(),
         workflow=_make_workflow(),
+        nlu_chat_provider=_nlu_provider_mock(),
     )
 
     assert agent._user_state_enabled is False
@@ -1513,11 +1566,11 @@ def _make_agent_with_config(config: dict, workflow: MagicMock = None) -> AgentCo
         manager_agent=manager,
         learning=learning,
         workflow=workflow,
+        nlu_chat_provider=_nlu_provider_mock(),
     )
     agent._language_normaliser = MagicMock()
     agent._language_normaliser.normalise.return_value = ("Hello", "english")
-    agent._nlu_processor = MagicMock()
-    agent._nlu_processor.process.return_value = _DEFAULT_NLU
+    agent._understander = fake_understander(_DEFAULT_NLU)
     return agent
 
 
@@ -1788,13 +1841,13 @@ def _make_stream_agent(
         workflow=workflow,
         async_memory=async_memory,
         async_trust=async_trust,
+        nlu_chat_provider=_nlu_provider_mock(),
     )
 
     agent._language_normaliser = MagicMock()
     agent._language_normaliser.normalise.return_value = ("Hello", "english")
 
-    agent._nlu_processor = MagicMock()
-    agent._nlu_processor.process.return_value = nlu_result or _DEFAULT_NLU
+    agent._understander = fake_understander(nlu_result or _DEFAULT_NLU)
 
     return agent
 
@@ -2360,6 +2413,7 @@ def test_init_builds_bootstrap_from_config():
         memory=MagicMock(), trust=MagicMock(), knowledge_engine=MagicMock(),
         tool_registry=MagicMock(), manager_agent=MagicMock(), learning=MagicMock(),
         workflow=_make_workflow(),
+        nlu_chat_provider=_nlu_provider_mock(),
     )
     assert isinstance(built._bootstrap, SessionBootstrap)
 

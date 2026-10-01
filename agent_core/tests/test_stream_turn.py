@@ -29,6 +29,7 @@ from src.chat_provider.types import (
     TokenUsage,
     ToolUseBlock,
 )
+from tests.fakes import fake_understander
 
 
 # ---------------------------------------------------------------------------
@@ -206,9 +207,19 @@ def _make_agent_core(**overrides):
         async_knowledge_engine=async_ke,
         async_gateway=async_gateway,
         async_learning=async_learning,
+        nlu_chat_provider=_nlu_provider_mock(),
     )
     defaults.update(overrides)
-    return AgentCore(**defaults)
+    agent = AgentCore(**defaults)
+    agent._understander = fake_understander()
+    return agent
+
+
+def _nlu_provider_mock() -> MagicMock:
+    """A dedicated-NLU provider stand-in (never called once the understander is faked)."""
+    p = MagicMock()
+    p.capabilities.supports_prompt_cache = False
+    return p
 
 
 async def _collect_events(agent, turn_input):
@@ -235,10 +246,9 @@ class TestStreamTurnBasic:
         # Patch NLU to return a simple result
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("Hello", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
+        agent._understander = fake_understander(NLUResult(
             intent="greeting", entities={}, sentiment="neutral", confidence=0.9
-        )
+        ))
 
         events = await _collect_events(agent, _make_turn_input())
 
@@ -262,10 +272,9 @@ class TestStreamTurnBasic:
         )
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("msg", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
+        agent._understander = fake_understander(NLUResult(
             intent="unknown", entities={}, sentiment="neutral", confidence=0.5
-        )
+        ))
 
         events = await _collect_events(agent, _make_turn_input())
 
@@ -285,10 +294,9 @@ class TestStreamTurnBasic:
         )
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("msg", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
+        agent._understander = fake_understander(NLUResult(
             intent="unknown", entities={}, sentiment="neutral", confidence=0.5
-        )
+        ))
 
         events = await _collect_events(agent, _make_turn_input())
 
@@ -349,10 +357,9 @@ class TestStreamTurnToolUse:
         )
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("msg", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
+        agent._understander = fake_understander(NLUResult(
             intent="search", entities={}, sentiment="neutral", confidence=0.9
-        )
+        ))
 
         events = await _collect_events(agent, _make_turn_input())
 
@@ -392,10 +399,9 @@ class TestStreamTurnToolUse:
         )
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("msg", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
+        agent._understander = fake_understander(NLUResult(
             intent="search", entities={}, sentiment="neutral", confidence=0.9
-        )
+        ))
 
         events = await _collect_events(agent, _make_turn_input())
 
@@ -426,10 +432,9 @@ class TestStreamTurnTrustOutput:
         )
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("msg", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
+        agent._understander = fake_understander(NLUResult(
             intent="greeting", entities={}, sentiment="neutral", confidence=0.9
-        )
+        ))
 
         events = await _collect_events(agent, _make_turn_input())
 
@@ -451,10 +456,9 @@ class TestStreamTurnTrustOutput:
         agent._async_trust.check_output.side_effect = Exception("Connection refused")
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("msg", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
+        agent._understander = fake_understander(NLUResult(
             intent="greeting", entities={}, sentiment="neutral", confidence=0.9
-        )
+        ))
 
         events = await _collect_events(agent, _make_turn_input())
 
@@ -497,10 +501,9 @@ class TestStreamTurnChannelValidation:
         agent._llm.stream = mock_stream
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("Hello", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
+        agent._understander = fake_understander(NLUResult(
             intent="greeting", entities={}, sentiment="neutral", confidence=0.9
-        )
+        ))
 
         # "web" is in the config channels — should not raise
         turn = _make_turn_input(channel="web")
@@ -536,10 +539,9 @@ class TestStreamTurnEndSession:
 
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("bye", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
+        agent._understander = fake_understander(NLUResult(
             intent="termination_intent", entities={}, sentiment="neutral", confidence=0.95
-        )
+        ))
         return agent
 
     @pytest.mark.asyncio
@@ -744,9 +746,9 @@ class TestStreamTurnEndSession:
         assert agent._manager_agent._session_ended_flag is True
 
         # Turn 2 — must NOT inherit the previous flag.
-        agent._nlu_processor.process.return_value = NLUResult(
+        agent._understander = fake_understander(NLUResult(
             intent="greeting", entities={}, sentiment="neutral", confidence=0.9
-        )
+        ))
         events2 = await _collect_events(agent, _make_turn_input())
         done2 = [e for e in events2 if isinstance(e, DoneEvent)][0]
         assert done2.session_ended is False
@@ -792,10 +794,9 @@ class TestStreamTurnRecentToolExchanges:
         )
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("msg", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
+        agent._understander = fake_understander(NLUResult(
             intent="search", entities={}, sentiment="neutral", confidence=0.9
-        )
+        ))
 
         await _collect_events(agent, _make_turn_input())
 
@@ -852,10 +853,9 @@ class TestStreamTurnRecentToolExchanges:
         agent._llm.stream = mock_stream
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("msg", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
+        agent._understander = fake_understander(NLUResult(
             intent="follow_up", entities={}, sentiment="neutral", confidence=0.9
-        )
+        ))
 
         await _collect_events(agent, _make_turn_input(user_message="What was the wage?"))
 
@@ -918,10 +918,9 @@ class TestStreamTurnRecentToolExchanges:
         )
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("msg", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
+        agent._understander = fake_understander(NLUResult(
             intent="search", entities={}, sentiment="neutral", confidence=0.9
-        )
+        ))
 
         await _collect_events(agent, _make_turn_input())
         await asyncio.sleep(0)
@@ -972,10 +971,9 @@ class TestStreamTurnRecentToolExchanges:
         agent._llm.stream = mock_stream
         agent._language_normaliser = MagicMock()
         agent._language_normaliser.normalise.return_value = ("msg", "english")
-        agent._nlu_processor = MagicMock()
-        agent._nlu_processor.process.return_value = NLUResult(
+        agent._understander = fake_understander(NLUResult(
             intent="greeting", entities={}, sentiment="neutral", confidence=0.9
-        )
+        ))
 
         await _collect_events(agent, _make_turn_input())
 
@@ -1109,10 +1107,9 @@ def _tr_agent(rounds, entries=None, gateway_text='{"balance": 5}', remember=Fals
     ))
     agent._language_normaliser = MagicMock()
     agent._language_normaliser.normalise.return_value = ("msg", "english")
-    agent._nlu_processor = MagicMock()
-    agent._nlu_processor.process.return_value = NLUResult(
+    agent._understander = fake_understander(NLUResult(
         intent="search", entities={}, sentiment="neutral", confidence=0.9
-    )
+    ))
     return agent, order, requests
 
 
@@ -1277,9 +1274,8 @@ def _boot_stream_agent(result=None, side_effect=None, **overrides):
     agent._llm.stream = mock_stream
     agent._language_normaliser = MagicMock()
     agent._language_normaliser.normalise.return_value = ("Hello", "english")
-    agent._nlu_processor = MagicMock()
-    agent._nlu_processor.process.return_value = NLUResult(
-        intent="greeting", entities={}, sentiment="neutral", confidence=0.9)
+    agent._understander = fake_understander(NLUResult(
+        intent="greeting", entities={}, sentiment="neutral", confidence=0.9))
     return agent, order
 
 

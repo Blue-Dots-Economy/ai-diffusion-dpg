@@ -7,9 +7,8 @@ Wires all components and executes the turn sequence.
 Design rules enforced here:
 - Trust Layer is called exactly twice per turn (input + output). Neither is skippable.
 - Agent Core holds zero session state between turns.
-- Language Normalisation and NLU Processor run directly in Agent Core (steps 4-5)
-  using the primary LLM wrapper with a model_override to Haiku.
-- NLU receives scoped intent set: current_subagent.valid_intents + workflow.global_intents.
+- Language Normalisation and dialogue-act understanding run directly in Agent
+  Core (steps 4-5); understanding uses its own dedicated NLU provider.
 - SubAgent routing is deterministic: intent + optional session conditions → next_subagent_id.
 - Special handlers (hitl, whatsapp_handoff) bypass LLM inference entirely.
 - Steps 12-13 (memory write, learning emit) run in a daemon thread after TurnResult is returned.
@@ -76,10 +75,10 @@ from src.models import (
     TurnRecord,
     TurnResult,
 )
-from src.preprocessing.nlu_processor import NLUProcessor
 from src.tool_registry import ToolRegistry
 from src.understanding.caller_turn import render_caller_turn
 from src.understanding.config import DialogueActConfig
+from src.understanding.dialogue_act_nlu import DialogueActNLU
 from src.understanding.history import RECENT_TURNS_KEY, append_recent_turn
 from src.understanding.precedence import nlu_owned_values
 from src.understanding.understander import TurnContext, TurnUnderstander, TurnUnderstanderBase
@@ -94,7 +93,7 @@ from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 logger = logging.getLogger(__name__)
 
 # Session key: tool → args_hash of the stored result the caller last heard
-# (NLU dialogue-acts spec §5.2). dialogue_act mode only.
+# (NLU dialogue-acts spec §5.2).
 SERVED_TOOL_RESULTS_KEY = "served_tool_results"
 
 # A ``turn_carryover`` is written by whichever replica ran the interrupted
@@ -190,6 +189,8 @@ class AgentCore(AgentCoreBase):
         manager_agent:    Prompt assembly + tool-use loop handler.
         learning:         Observability Layer interface (async emit).
         workflow:         Pre-parsed and validated AgentWorkflow loaded at startup.
+        nlu_chat_provider: Provider for the dialogue-act NLU call; when None a
+                          dedicated one is built (``_build_dialogue_act_provider``).
     """
 
     def __init__(
@@ -208,6 +209,7 @@ class AgentCore(AgentCoreBase):
         async_knowledge_engine: AsyncKnowledgeEngineBase | None = None,
         async_gateway: AsyncActionGatewayBase | None = None,
         async_learning: AsyncObservabilityLayerBase | None = None,
+        nlu_chat_provider: ChatProviderBase | None = None,
     ) -> None:
         if config is None:
             raise ValueError("config must not be None")
@@ -333,22 +335,13 @@ class AgentCore(AgentCoreBase):
             primary_model=primary_model,
             primary_provider=primary_provider,
         )
-        self._nlu_chat_provider = self._build_helper_provider(
-            block=(self._config.get("preprocessing", {}) or {}).get(
-                "nlu_processor", {}
-            ) or {},
-            primary_model=primary_model,
-            primary_provider=primary_provider,
-        )
 
         self._language_normaliser = LanguageNormaliser(chat_provider=self._lang_chat_provider)
-        self._nlu_processor = NLUProcessor(self._config, chat_provider=self._nlu_chat_provider)
-        # NLU dialogue-acts spec: opt-in mode; None keeps intent mode untouched.
-        self._dialogue_cfg = DialogueActConfig.from_config(self._config)
-        self._understander: TurnUnderstanderBase | None = None
-        if self._dialogue_cfg is not None:
-            self._understander = TurnUnderstander.from_config(
-                self._config, self._workflow, chat_provider=self._build_dialogue_act_provider())
+        # NLU dialogue-acts spec §16: the single understanding path, always on.
+        self._dialogue_cfg: DialogueActConfig = DialogueActConfig.from_config(self._config, require_mode=False)
+        self._understander: TurnUnderstanderBase = TurnUnderstander(
+            self._dialogue_cfg, self._workflow,
+            DialogueActNLU(self._dialogue_cfg, nlu_chat_provider or self._build_dialogue_act_provider()))
 
         # User-state model (GH-139) — cached lookup for per-turn guidance injection.
         usm = (self._config or {}).get("conversation", {}).get("user_state_model", {}) or {}
@@ -592,7 +585,6 @@ class AgentCore(AgentCoreBase):
     def _served_tool_results_update(self, bundle, tool_cache) -> dict | None:
         """Merge this turn's last-served tool entries into the session map (spec §5.2).
 
-        dialogue_act mode only; intent mode never writes the key.
 
         Args:
             bundle: The turn's ContextBundle; ``bundle.session`` is updated
@@ -602,7 +594,7 @@ class AgentCore(AgentCoreBase):
         Returns:
             The merged map to persist, or None when unchanged (nothing to write).
         """
-        if self._understander is None or tool_cache is None:
+        if tool_cache is None:
             return None
         stored = bundle.session.get(SERVED_TOOL_RESULTS_KEY)
         merged = dict(stored) if isinstance(stored, dict) else {}
@@ -616,8 +608,8 @@ class AgentCore(AgentCoreBase):
                                          understanding, raw_text: str) -> None:
         """Apply an understanding's writes and signals (stream path).
 
-        Mirrors the legacy entity loop's bundle updates so routing and the
-        prompt see the values on the same turn.
+        Mirrors each write into the bundle so routing and the prompt see the
+        values on the same turn.
 
         Args:
             session_id: Session id.
@@ -684,8 +676,6 @@ class AgentCore(AgentCoreBase):
         # PoC fallback: use session_id as user_id if caller didn't provide one
         user_id: str = turn_input.user_id or session_id
         turn_id = str(uuid.uuid4())
-        understanding = None  # dialogue_act mode only
-        tool_cache = None
 
         # Attach span attributes and extract trace_id for TurnEvent propagation.
         _span.set_attribute("session_id", session_id)
@@ -747,10 +737,9 @@ class AgentCore(AgentCoreBase):
         # bundle.session (routing, consent gate, opening phrase, pre-NLU args).
         # Logged after STEP 1 so memory-read latency excludes it ([STEP 1b]).
         self._run_session_bootstrap_sync(bundle, session_id, user_id)
-        if self._understander is not None:
-            # Built before NLU so the frame can read stored results (spec §8);
-            # reused at prompt assembly and in the tool loop.
-            tool_cache = TurnToolCache(self._tool_policies, bundle.tool_results, bundle.session)
+        # Built before NLU so the frame can read stored results (spec §8);
+        # reused at prompt assembly and in the tool loop.
+        tool_cache = TurnToolCache(self._tool_policies, bundle.tool_results, bundle.session)
         current_subagent_id: str = (
             bundle.session.get("current_subagent_id")
             or self._workflow.start_subagent_id
@@ -1039,19 +1028,23 @@ class AgentCore(AgentCoreBase):
         # prompt on Turn 1.  The variables normalised_input, turn_language,
         # language_preference, and detected_language are already set above.
 
-        # ── Step 5: NLU Processor ─────────────────────────────────────
-        allowed_intents = self._workflow.nlu_intent_set.get(current_subagent_id, [])
-
-        # Collect existing profile keys (declared + ad-hoc) so the NLU prompt
-        # can instruct the LLM to reuse them instead of inventing synonyms.
-        profile_data = bundle.profile or {}
-        existing_profile_keys: list[str] = [
-            k for k in profile_data if k != "attributes"
-        ]
-        for attr in profile_data.get("attributes", []):
-            attr_key = attr.get("key", "") if isinstance(attr, dict) else ""
-            if attr_key:
-                existing_profile_keys.append(attr_key)
+        # ── Step 5: NLU (dialogue-act understanding) ──────────────────
+        logger.info(
+            "  [STEP 5] NLU  →  understanding  current_subagent_id=%s",
+            current_subagent_id,
+        )
+        t5 = time.time()
+        # Raw caller text, not normalised_input, for parity with stream (spec §8).
+        understanding = self._understander.understand(
+            self._turn_context(bundle, current_subagent_id, [turn_input.user_message], tool_cache))
+        nlu_result = understanding.nlu_result
+        logger.info(
+            "  [STEP 5] NLU Processor  ✓  intent=%s  confidence=%.2f  entities=%s"
+            "  latency=%dms",
+            nlu_result.intent, nlu_result.confidence,
+            list((nlu_result.entities or {}).keys()),  # keys only: values may be PII
+            int((time.time() - t5) * 1000),
+        )
 
         previous_user_state_payload: dict | None = None
         previous_user_state_id: str | None = None
@@ -1062,38 +1055,6 @@ class AgentCore(AgentCoreBase):
                 previous_user_state_id = maybe.get("id")
             if previous_user_state_id is None:
                 previous_user_state_id = self._user_state_default
-
-        logger.info(
-            "  [STEP 5] NLU Processor  →  LLM call (model=%s)"
-            "  current_subagent_id=%s  allowed_intents=%d  current_question=%r"
-            "  existing_profile_keys=%d",
-            self._nlu_chat_provider.get_active_model(), current_subagent_id, len(allowed_intents),
-            current_question[:60] if current_question else "",
-            len(existing_profile_keys),
-        )
-        t5 = time.time()
-        if self._understander is not None:
-            # Raw caller text, not normalised_input, for parity with stream (spec §8).
-            understanding = self._understander.understand(
-                self._turn_context(bundle, current_subagent_id, [turn_input.user_message], tool_cache))
-            nlu_result = understanding.nlu_result
-        else:
-            nlu_result = self._nlu_processor.process(
-                normalised_input=normalised_input,
-                current_question=current_question,
-                current_subagent_id=current_subagent_id,
-                allowed_intents=allowed_intents,
-                existing_profile_keys=existing_profile_keys,
-                previous_user_state=previous_user_state_id,
-            )
-        logger.info(
-            "  [STEP 5] NLU Processor  ✓  intent=%s  confidence=%.2f  entities=%s"
-            "  sentiment=%s  latency=%dms",
-            nlu_result.intent, nlu_result.confidence,
-            list((nlu_result.entities or {}).keys()),  # keys only: values may be PII
-            nlu_result.sentiment,
-            int((time.time() - t5) * 1000),
-        )
 
         user_state_guidance_text = self._handle_user_state_turn(
             session_id=session_id,
@@ -1106,73 +1067,15 @@ class AgentCore(AgentCoreBase):
             span=_span,
         )
         
-        # After NLU: write extracted entities synchronously so routing in Step 6
-        # sees current-turn values, not only last-turn state.
-        # Scope is config-driven — entity_persistence.scope in domain config.
+        # After NLU: apply the understanding's writes synchronously so routing in
+        # Step 6 sees current-turn values, not only last-turn state.
         # DPDP compliance is handled by Memory Layer at flush_session(): all entities
         # are written to Neo4j during the session; if user_storage_mode == "anonymous"
         # the Memory Layer DETACH DELETEs the user graph when the session ends.
-        entity_scope: str = self._config.get("entity_persistence", {}).get("scope", "persistent")
+        # entity_map is read again at prompt assembly (_build_profile_context).
         entity_map: dict = self._config.get("entity_to_profile_field", {})
-        supported_langs: set[str] = {
-            l.lower() for l in self._config.get("preprocessing", {})
-            .get("language_normalisation", {})
-            .get("supported_languages", [])
-        }
-        if understanding is not None:
-            self._apply_understanding_sync(session_id, user_id, bundle, understanding,
-                                           turn_input.user_message)
-        else:
-            for entity_key, entity_val in (nlu_result.entities or {}).items():
-                profile_field = entity_map.get(entity_key, entity_key)
-                # Guard: never persist language_preference with a value outside the
-                # configured supported_languages list. The language_switch_request
-                # branch below (or the unsupported-language response) handles the
-                # user-facing case; skipping here prevents profile pollution.
-                if profile_field == "language_preference" and supported_langs:
-                    if str(entity_val).lower().strip() not in supported_langs:
-                        continue
-                self._write_memory_sync(session_id, user_id, entity_scope, profile_field, entity_val)
-                bundle.session[profile_field] = entity_val
-                # Mirror persistent NLU writes into bundle.profile so the same-turn
-                # prompt assembly sees the fresh value. Without this, profile_context
-                # is sourced from the pre-NLU bundle.profile snapshot and shows the
-                # old value, even though Memgraph already has the new one.
-                if entity_scope == "persistent":
-                    bundle.profile[profile_field] = entity_val
-
-            # Write context graph signal if this intent is configured as a signal-producing intent.
-            # Captures objections, emotions, and constraints for longitudinal analysis.
-            signal_intents: dict = (
-                self._config.get("preprocessing", {})
-                .get("nlu_processor", {})
-                .get("signal_intents", {})
-            )
-            if nlu_result.intent and nlu_result.intent in signal_intents:
-                signal_type = signal_intents[nlu_result.intent]
-                turn_count_for_signal = int(bundle.session.get("turn_count", 0) or 0)
-                try:
-                    self._write_memory_sync(
-                        session_id, user_id, "signal",
-                        "signal",
-                        {
-                            "type": signal_type,
-                            "turn": str(turn_count_for_signal),
-                            "raw": turn_input.user_message,
-                            "journey_id": session_id,
-                        },
-                    )
-                except Exception as _sig_err:
-                    logger.warning(
-                        "orchestrator.signal_write_failed",
-                        extra={
-                            "operation": "orchestrator.signal_write",
-                            "status": "failure",
-                            "session_id": session_id,
-                            "intent": nlu_result.intent,
-                            "error": str(_sig_err),
-                        },
-                    )
+        self._apply_understanding_sync(session_id, user_id, bundle, understanding,
+                                       turn_input.user_message)
 
         # ── Language switch — handle before routing ───────────────────────
         if nlu_result.intent == "language_switch_request":
@@ -1188,8 +1091,8 @@ class AgentCore(AgentCoreBase):
             ).lower().strip()
 
             if requested_lang and requested_lang in supported:
-                # Profile write already happened in the entity loop above for
-                # supported values; mirror into bundle.session and flip the
+                # Profile write already happened via the understanding's
+                # writes above (enum-normalised slot); mirror into bundle.session and flip the
                 # active detected_language for this turn's prompt.
                 bundle.session["language_preference"] = requested_lang
                 detected_language = requested_lang
@@ -1315,46 +1218,6 @@ class AgentCore(AgentCoreBase):
         # Check for resumption signal from Memory Layer
         is_resumption = bundle.session.get("was_adopted", False)
 
-        # ── Step 6b: Assemble guardrail constraints (pre-LLM) ─────────
-        guardrail_constraints: dict | None = None
-        if nlu_result.active_risks:
-            try:
-                guardrail_constraints = self._trust.assemble_constraints(
-                    session_id=session_id,
-                    workflow_step=next_subagent_id,
-                    active_risks=nlu_result.active_risks,
-                    user_segment=bundle.profile.get("user_segment"),
-                )
-                logger.info(
-                    "orchestrator.guardrails_assembled",
-                    extra={
-                        "operation": "orchestrator.assemble_constraints",
-                        "status": "success",
-                        "session_id": session_id,
-                        "active_risks": nlu_result.active_risks,
-                        "constraints_count": len(guardrail_constraints.get("prompt_constraints", [])),
-                        "latency_ms": 0,
-                    },
-                )
-            except Exception as e:
-                logger.error(
-                    "orchestrator.assemble_constraints_failed",
-                    extra={
-                        "operation": "orchestrator.assemble_constraints",
-                        "status": "failure",
-                        "session_id": session_id,
-                        "error": f"{type(e).__name__}: {e}",
-                    },
-                )
-                return self._blocked_response(
-                    session_id, None, start, None, turn_id,
-                    intent="guardrail_unavailable",
-                    user_id=user_id,
-                    user_message=turn_input.user_message,
-                )
-
-        if tool_cache is None:
-            tool_cache = TurnToolCache(self._tool_policies, bundle.tool_results, bundle.session)
         system = self._manager_agent.build_system_prompt(
             agent_system_prompt=self._workflow.agent_system_prompt,
             subagent_system_prompt=next_subagent.system_prompt,
@@ -1363,7 +1226,6 @@ class AgentCore(AgentCoreBase):
             profile=profile_context,
             channel_config=channel_config,
             is_resumption=is_resumption,
-            guardrail_constraints=guardrail_constraints,
             user_state_guidance=user_state_guidance_text,
             session_end_eval_prompt=(
                 self._session_end_eval_prompt if self._session_end_eval_enabled else None
@@ -1652,12 +1514,11 @@ class AgentCore(AgentCoreBase):
         )
         self._write_memory_sync(session_id, user_id, "session", "current_question", cq_value)
         bundle.session["current_question"] = cq_value
-        if self._understander is not None:
-            entries = append_recent_turn(bundle.session.get(RECENT_TURNS_KEY), caller=turn_input.user_message,
-                                         bot=final_text, interrupted=False,
-                                         history_turns=self._dialogue_cfg.history_turns)
-            self._write_memory_sync(session_id, user_id, "session", RECENT_TURNS_KEY, entries)
-            bundle.session[RECENT_TURNS_KEY] = entries
+        entries = append_recent_turn(bundle.session.get(RECENT_TURNS_KEY), caller=turn_input.user_message,
+                                     bot=final_text, interrupted=False,
+                                     history_turns=self._dialogue_cfg.history_turns)
+        self._write_memory_sync(session_id, user_id, "session", RECENT_TURNS_KEY, entries)
+        bundle.session[RECENT_TURNS_KEY] = entries
 
         latency_ms = int((time.time() - start) * 1000)
         logger.info(
@@ -1935,7 +1796,7 @@ class AgentCore(AgentCoreBase):
         """Session, then profile, then NLU-owned session values (NLU dialogue-acts spec §6.5).
 
         Identical to the previous inline merge when no SlotWriter provenance
-        exists (intent mode).
+        exists.
 
         Args:
             bundle: The turn's ContextBundle.
@@ -3401,7 +3262,7 @@ class AgentCore(AgentCoreBase):
         was interrupted before its own fold ran, any existing carry-over is
         appended to rather than overwritten. One Memory Layer read serves both.
         Also writes ``current_question`` from the sentences actually emitted
-        (``record.spoken``), and in dialogue_act mode a ``recent_turns`` entry
+        (``record.spoken``), and a ``recent_turns`` entry
         marked interrupted (NLU dialogue-acts spec §6.9). Never raises.
 
         Args:
@@ -3460,13 +3321,12 @@ class AgentCore(AgentCoreBase):
                     session_id, user_id, "session", "current_question",
                     self._sanitize_current_question(prev=session_state.get("current_question", "") or "",
                                                     new=heard, session_id=session_id))
-                if self._understander is not None:
-                    await self._async_memory.write(
-                        session_id, user_id, "session", RECENT_TURNS_KEY,
-                        append_recent_turn(session_state.get(RECENT_TURNS_KEY),
-                                           caller=" ".join(s for s in record.segments if s) or user_message,
-                                           bot=heard, interrupted=True,
-                                           history_turns=self._dialogue_cfg.history_turns))
+                await self._async_memory.write(
+                    session_id, user_id, "session", RECENT_TURNS_KEY,
+                    append_recent_turn(session_state.get(RECENT_TURNS_KEY),
+                                       caller=" ".join(s for s in record.segments if s) or user_message,
+                                       bot=heard, interrupted=True,
+                                       history_turns=self._dialogue_cfg.history_turns))
             logger.info(
                 "orchestrator.interrupted_persist",
                 extra={"operation": "orchestrator.persist_interrupted", "status": "success",
@@ -3781,10 +3641,9 @@ class AgentCore(AgentCoreBase):
             # Runs after the STEP 1 log/signal so memory-read latency excludes
             # it; the bootstrap reports its own latency ([STEP 1b]).
             await self._run_session_bootstrap_async(bundle, session_id, user_id)
-            if self._understander is not None:
-                # Built before NLU so the frame can read stored results (spec §8);
-                # reused at prompt assembly and in the tool loop.
-                tool_cache = TurnToolCache(self._tool_policies, bundle.tool_results, bundle.session)
+            # Built before NLU so the frame can read stored results (spec §8);
+            # reused at prompt assembly and in the tool loop.
+            tool_cache = TurnToolCache(self._tool_policies, bundle.tool_results, bundle.session)
             current_subagent_id: str = (
                 bundle.session.get("current_subagent_id")
                 or self._workflow.start_subagent_id
@@ -3808,25 +3667,6 @@ class AgentCore(AgentCoreBase):
             # discarded. That's one wasted LLM call per session; every
             # subsequent turn halves its lang-norm+NLU latency.
 
-            # Pre-compute NLU arguments so both coroutines can fire immediately.
-            pre_allowed_intents = self._workflow.nlu_intent_set.get(current_subagent_id, [])
-            pre_profile_data = bundle.profile or {}
-            pre_existing_profile_keys: list[str] = [k for k in pre_profile_data if k != "attributes"]
-            for _attr in pre_profile_data.get("attributes", []):
-                _attr_key = _attr.get("key", "") if isinstance(_attr, dict) else ""
-                if _attr_key:
-                    pre_existing_profile_keys.append(_attr_key)
-
-            pre_previous_user_state_payload: dict | None = None
-            pre_previous_user_state_id: str | None = None
-            if self._user_state_enabled:
-                _maybe = bundle.session.get("user_state")
-                if isinstance(_maybe, dict):
-                    pre_previous_user_state_payload = _maybe
-                    pre_previous_user_state_id = _maybe.get("id")
-                if pre_previous_user_state_id is None:
-                    pre_previous_user_state_id = self._user_state_default
-
             _ln_cfg_s = (
                 self._config.get("preprocessing", {})
                 .get("language_normalisation", {})
@@ -3839,52 +3679,20 @@ class AgentCore(AgentCoreBase):
             t45 = time.time()
             yield _stamp(SignalEvent(stage="nlu", status="start"))
 
-            if self._understander is not None:
-                _ctx = self._turn_context(bundle, current_subagent_id,
-                                          list(record.segments) or [turn_input.user_message], tool_cache)
-                if _ln_enabled_s:
-                    (normalised_input, turn_language), understanding = await asyncio.gather(
-                        asyncio.to_thread(self._language_normaliser.normalise, turn_input.user_message, self._config),
-                        asyncio.to_thread(self._understander.understand, _ctx),
-                    )
-                else:
-                    normalised_input, turn_language = turn_input.user_message, ""
-                    understanding = await asyncio.to_thread(self._understander.understand, _ctx)
-                early_nlu_result = understanding.nlu_result
-            elif _ln_enabled_s:
+            _ctx = self._turn_context(bundle, current_subagent_id,
+                                      list(record.segments) or [turn_input.user_message], tool_cache)
+            if _ln_enabled_s:
                 # asyncio.to_thread offloads each sync provider.call() onto the
-                # default thread pool so the two LLM round-trips overlap in wall
-                # clock. They never race on shared state — each receives its own
-                # ChatResponse.
-                (normalised_input, turn_language), early_nlu_result = await asyncio.gather(
-                    asyncio.to_thread(
-                        self._language_normaliser.normalise,
-                        turn_input.user_message,
-                        self._config,
-                    ),
-                    asyncio.to_thread(
-                        self._nlu_processor.process,
-                        turn_input.user_message,
-                        current_question,
-                        current_subagent_id,
-                        pre_allowed_intents,
-                        pre_existing_profile_keys,
-                        pre_previous_user_state_id,
-                    ),
+                # default thread pool so the two LLM round-trips overlap in wall clock.
+                (normalised_input, turn_language), understanding = await asyncio.gather(
+                    asyncio.to_thread(self._language_normaliser.normalise, turn_input.user_message, self._config),
+                    asyncio.to_thread(self._understander.understand, _ctx),
                 )
             else:
                 # LN disabled (#313): skip the leading LLM call; main LLM mirrors language.
-                normalised_input = turn_input.user_message
-                turn_language = ""
-                early_nlu_result = await asyncio.to_thread(
-                    self._nlu_processor.process,
-                    turn_input.user_message,
-                    current_question,
-                    current_subagent_id,
-                    pre_allowed_intents,
-                    pre_existing_profile_keys,
-                    pre_previous_user_state_id,
-                )
+                normalised_input, turn_language = turn_input.user_message, ""
+                understanding = await asyncio.to_thread(self._understander.understand, _ctx)
+            early_nlu_result = understanding.nlu_result
             logger.info(
                 "  [STEP 4+5] Lang-Norm + NLU  ✓  detected=%s  intent=%s  total_latency=%dms",
                 turn_language or "—",
@@ -4000,21 +3808,10 @@ class AgentCore(AgentCoreBase):
                         normalised_input = pending_norm or pending_msg
                         await self._async_memory.write(session_id, user_id, "session", "pending_user_message", "")
                         await self._async_memory.write(session_id, user_id, "session", "pending_normalised_input", "")
-                        if self._understander is not None:
-                            understanding = await asyncio.to_thread(
-                                self._understander.understand,
-                                self._turn_context(bundle, current_subagent_id, [pending_msg], tool_cache))
-                            early_nlu_result = understanding.nlu_result
-                        else:
-                            early_nlu_result = await asyncio.to_thread(
-                                self._nlu_processor.process,
-                                pending_msg,
-                                current_question,
-                                current_subagent_id,
-                                pre_allowed_intents,
-                                pre_existing_profile_keys,
-                                pre_previous_user_state_id,
-                            )
+                        understanding = await asyncio.to_thread(
+                            self._understander.understand,
+                            self._turn_context(bundle, current_subagent_id, [pending_msg], tool_cache))
+                        early_nlu_result = understanding.nlu_result
                         logger.info(
                             "orchestrator.consent_gate",
                             extra={
@@ -4145,16 +3942,8 @@ class AgentCore(AgentCoreBase):
                 yield _stamp(DoneEvent(turn_id=turn_id, was_escalated=True, latency_ms=int((time.time() - start) * 1000)))
                 return
 
-            # ── Step 5: NLU Processor (result from parallel gather) ─────
+            # ── Step 5: NLU (result from parallel gather) ───────────────
             # GH-151 #2: NLU already ran in parallel with lang-norm above.
-            # Promote its pre-computed inputs to the names the rest of the
-            # function expects, so the downstream handlers (user-state,
-            # entity writes, language-switch routing) need no further change.
-            allowed_intents = pre_allowed_intents
-            profile_data = pre_profile_data
-            existing_profile_keys = pre_existing_profile_keys
-            stream_previous_user_state_payload = pre_previous_user_state_payload
-            stream_previous_user_state_id = pre_previous_user_state_id
             nlu_result = early_nlu_result
             yield _stamp(SignalEvent(stage="nlu", status="complete"))
             logger.info(
@@ -4201,6 +3990,16 @@ class AgentCore(AgentCoreBase):
                     yield ev
                 return
 
+            stream_previous_user_state_payload: dict | None = None
+            stream_previous_user_state_id: str | None = None
+            if self._user_state_enabled:
+                _maybe = bundle.session.get("user_state")
+                if isinstance(_maybe, dict):
+                    stream_previous_user_state_payload = _maybe
+                    stream_previous_user_state_id = _maybe.get("id")
+                if stream_previous_user_state_id is None:
+                    stream_previous_user_state_id = self._user_state_default
+
             stream_user_state_guidance_text = self._handle_user_state_turn(
                 session_id=session_id,
                 user_id=user_id,
@@ -4212,31 +4011,11 @@ class AgentCore(AgentCoreBase):
                 span=otel_trace.get_current_span(),
             )
 
-            # Write entities
-            entity_scope: str = self._config.get("entity_persistence", {}).get("scope", "persistent")
+            # Apply the understanding's writes; entity_map is read again at
+            # prompt assembly (_build_profile_context).
             entity_map: dict = self._config.get("entity_to_profile_field", {})
-            supported_langs: set[str] = {
-                l.lower() for l in self._config.get("preprocessing", {})
-                .get("language_normalisation", {})
-                .get("supported_languages", [])
-            }
-            if understanding is not None:
-                await self._apply_understanding_async(session_id, user_id, bundle, understanding,
-                                                      turn_input.user_message)
-            else:
-                for entity_key, entity_val in (nlu_result.entities or {}).items():
-                    profile_field = entity_map.get(entity_key, entity_key)
-                    # Guard: never persist language_preference with a value outside
-                    # the configured supported_languages list (mirrors sync path).
-                    if profile_field == "language_preference" and supported_langs:
-                        if str(entity_val).lower().strip() not in supported_langs:
-                            continue
-                    await self._async_memory.write(session_id, user_id, entity_scope, profile_field, entity_val)
-                    bundle.session[profile_field] = entity_val
-                    # Mirror persistent NLU writes into bundle.profile (see same-turn
-                    # overlay rationale in the sync path above).
-                    if entity_scope == "persistent":
-                        bundle.profile[profile_field] = entity_val
+            await self._apply_understanding_async(session_id, user_id, bundle, understanding,
+                                                  turn_input.user_message)
 
             # ── Language switch — handle before routing ───────────────
             if nlu_result.intent == "language_switch_request":
@@ -4252,8 +4031,8 @@ class AgentCore(AgentCoreBase):
                 ).lower().strip()
 
                 if requested_lang and requested_lang in supported:
-                    # Profile write already happened in the entity loop above
-                    # for supported values; mirror into bundle.session and flip
+                    # Profile write already happened via the understanding's
+                    # writes above (enum-normalised slot); mirror into bundle.session and flip
                     # the active detected_language for this turn's prompt.
                     bundle.session["language_preference"] = requested_lang
                     detected_language = requested_lang
@@ -4386,26 +4165,6 @@ class AgentCore(AgentCoreBase):
             final_language = profile_context.get("language_preference", detected_language)
             is_resumption = bundle.session.get("was_adopted", False)
 
-            # Step 6b: Assemble guardrail constraints
-            guardrail_constraints: dict | None = None
-            if nlu_result.active_risks:
-                try:
-                    guardrail_constraints = await self._async_trust.assemble_constraints(
-                        session_id=session_id,
-                        workflow_step=next_subagent_id,
-                        active_risks=nlu_result.active_risks,
-                        user_segment=bundle.profile.get("user_segment"),
-                    )
-                except Exception:
-                    blocked_text = self._config.get("conversation", {}).get(
-                        "blocked_message", "I'm unable to help with that request."
-                    )
-                    yield _stamp(SentenceEvent(text=blocked_text, sentence_index=0))
-                    yield _stamp(DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000)))
-                    return
-
-            if tool_cache is None:
-                tool_cache = TurnToolCache(self._tool_policies, bundle.tool_results, bundle.session)
             system = self._manager_agent.build_system_prompt(
                 agent_system_prompt=self._workflow.agent_system_prompt,
                 subagent_system_prompt=next_subagent.system_prompt,
@@ -4414,7 +4173,6 @@ class AgentCore(AgentCoreBase):
                 profile=profile_context,
                 channel_config=channel_config,
                 is_resumption=is_resumption,
-                guardrail_constraints=guardrail_constraints,
                 user_state_guidance=stream_user_state_guidance_text,
                 session_end_eval_prompt=(
                     self._session_end_eval_prompt if self._session_end_eval_enabled else None
@@ -5080,13 +4838,12 @@ class AgentCore(AgentCoreBase):
                     session_id, user_id, "session", "current_question", stream_cq_value
                 )
             )
-            if self._understander is not None:
-                asyncio.create_task(self._async_memory.write(
-                    session_id, user_id, "session", RECENT_TURNS_KEY,
-                    append_recent_turn(bundle.session.get(RECENT_TURNS_KEY),
-                                       caller=" ".join(record.segments or [turn_input.user_message]),
-                                       bot=full_response_text, interrupted=False,
-                                       history_turns=self._dialogue_cfg.history_turns)))
+            asyncio.create_task(self._async_memory.write(
+                session_id, user_id, "session", RECENT_TURNS_KEY,
+                append_recent_turn(bundle.session.get(RECENT_TURNS_KEY),
+                                   caller=" ".join(record.segments or [turn_input.user_message]),
+                                   bot=full_response_text, interrupted=False,
+                                   history_turns=self._dialogue_cfg.history_turns)))
 
             # #193: persist captured tool exchanges (capped) so the next
             # turn can replay them as real tool_use/tool_result messages.
