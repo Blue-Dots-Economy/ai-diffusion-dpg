@@ -1284,6 +1284,25 @@ agent_workflow:
     नहीं है" ("I don't have that information") is a complete and honest
     answer. Do not re-run the search to escape the question.
 
+    ### Answering never replaces what the phase owes (HARD RULE)
+    Answering is something you do IN ADDITION to the phase's own job, never
+    INSTEAD of it. After the answer, continue with what this phase still
+    needs — not with whatever seems conversationally next.
+
+    The failure this prevents, measured end to end on the VM: the job list
+    ends with "किसी एक के बारे में और जानना चाहेंगे?", so "पहला वाला" is
+    both a PICK and a request for detail. Routing sent the turn to
+    profile_setup, whose job is to collect the name and SAVE. The turn was
+    spent on the detail answer and offering to apply; save_profile was never
+    called. The next turn tried to apply with no profile in existence, the
+    apply was refused, and the caller was told their details could not be
+    found. No profile and no application came out of a complete call.
+
+    So: if this phase still needs a value it does not have, ask for that
+    value in the same turn as the answer. If the phase owes a WRITE —
+    saving the profile — do the write. Never offer the next step before the
+    step you are on has actually happened.
+
     ## Never claim you lack something you were given (HARD RULE)
     Before saying you do not know a detail, look at the profile and session
     values you were handed this turn. They are above, in your context.
@@ -2423,6 +2442,21 @@ agent_workflow:
         Saving their details is not applying. After save_profile
         returns, say their information is saved and ask whether to send
         the application — the sending happens in the next phase.
+
+        ## A question from the caller does not postpone the save
+
+        You arrive here on the turn the caller picks a job, and the job list
+        ends with "किसी एक के बारे में और जानना चाहेंगे?" — so their pick is
+        often ALSO a request for detail. Answer it, briefly, from the job list
+        you already hold. Then still do this phase's job in the SAME turn: if
+        you have the name, call save_profile now; if you do not, ask for it.
+
+        Measured end to end on the VM: the detail answer was given, the turn
+        ended by offering to apply, save_profile was never called, the next
+        turn's apply was refused because no profile existed, and the caller was
+        told their details could not be found. A complete call produced no
+        profile and no application. Answering is never a reason to skip the
+        save.
 
         ## STEP 0 — Pre-flight check (EVERY turn, BEFORE responding)
 
