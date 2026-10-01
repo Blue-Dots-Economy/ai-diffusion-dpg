@@ -899,3 +899,46 @@ def test_global_tools_validated_against_registry(loader):
     config["agent_workflow"]["global_tools"] = ["ghost_tool"]
     with pytest.raises(ConfigurationError, match="ghost_tool"):
         loader.load(config, registry)
+
+
+# ---------------------------------------------------------------------------
+# Pending questions and dialogue_act intent set
+# ---------------------------------------------------------------------------
+
+from src.workflow_loader import OptionsFrom, PendingQuestion  # noqa: E402
+
+
+def _with_pending(cfg: dict) -> dict:
+    start = cfg["agent_workflow"]["subagents"][0]
+    start["pending"] = [
+        {"id": "consent", "expects": "हाँ/नहीं",
+         "when": [{"field": "consent_response", "operator": "in", "value": [None, ""]}]},
+        {"id": "select_job", "options_from": {"tool": "fetch_jobs", "fields": ["role", "company"],
+                                              "id_field": "item_id"},
+         "resolves_to": "selected_job_item_id"},
+    ]
+    return cfg
+
+
+def test_pending_questions_are_parsed_in_order():
+    wf = AgentWorkflowLoader().load(_with_pending(_minimal_config()), _make_tool_registry())
+    start = wf.subagents[wf.start_subagent_id]
+    assert [p.id for p in start.pending] == ["consent", "select_job"]
+    assert start.pending[0].when[0].operator == "in"
+    assert start.pending[1].options_from == OptionsFrom("fetch_jobs", ("role", "company"), "item_id")
+    assert start.pending[1].resolves_to == "selected_job_item_id"
+
+
+def test_pending_defaults_to_empty():
+    wf = AgentWorkflowLoader().load(_minimal_config(), _make_tool_registry())
+    assert all(s.pending == [] for s in wf.subagents.values())
+
+
+def test_dialogue_act_mode_needs_no_nlu_intents_and_skips_valid_intents_check():
+    cfg = _minimal_config()
+    nlu = cfg["preprocessing"]["nlu_processor"]
+    nlu["mode"] = "dialogue_act"
+    nlu["intents"] = []
+    nlu["act_intents"] = [{"acts": ["affirm"], "intent": "apply_now"}]
+    cfg["agent_workflow"]["subagents"][0]["valid_intents"] = ["legacy_only_intent"]
+    AgentWorkflowLoader().load(cfg, _make_tool_registry())   # must not raise

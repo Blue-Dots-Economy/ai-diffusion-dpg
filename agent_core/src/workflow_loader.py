@@ -77,6 +77,40 @@ class RoutingRule:
     session_writes: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class OptionsFrom:
+    """Cached tool whose latest result lists the options a pending question offers.
+
+    Attributes:
+        tool: Connector name with a Spec A cache policy.
+        fields: Row fields rendered for each option, in order.
+        id_field: Row field holding the option's id (e.g. ``item_id``).
+    """
+
+    tool: str
+    fields: tuple[str, ...]
+    id_field: str
+
+
+@dataclass(frozen=True)
+class PendingQuestion:
+    """What a subagent may be waiting for (NLU dialogue-acts spec §7.2).
+
+    Attributes:
+        id: Pending-question id referenced by NLU config.
+        expects: Short description rendered into the NLU frame.
+        when: Conditions that make this the pending question; empty = always.
+        options_from: Source of offered options, or None.
+        resolves_to: State key that receives the resolved option id.
+    """
+
+    id: str
+    expects: str = ""
+    when: tuple[RoutingCondition, ...] = ()
+    options_from: OptionsFrom | None = None
+    resolves_to: str | None = None
+
+
 @dataclass
 class SubAgent:
     """
@@ -95,6 +129,7 @@ class SubAgent:
         output_format:    JSON schema for structured output validation, or None.
         routing:          Routing rules emitted from this subagent.
         opening_phrase:   Optional opening phrase spoken/displayed when entering this subagent.
+        pending:          Questions this subagent may be waiting on (dialogue_act NLU mode).
     """
 
     id: str
@@ -109,6 +144,7 @@ class SubAgent:
     output_format: dict | None
     routing: list[RoutingRule]
     opening_phrase: str = ""
+    pending: list["PendingQuestion"] = field(default_factory=list)
 
 
 @dataclass
@@ -269,7 +305,10 @@ class AgentWorkflowLoader:
         # ------------------------------------------------------------------
         # Collect NLU intents from preprocessing config
         # ------------------------------------------------------------------
-        all_nlu_intents: set[str] = self._load_nlu_intents(config)
+        nlu_cfg = (config.get("preprocessing") or {}).get("nlu_processor") or {}
+        dialogue_act = nlu_cfg.get("mode") == "dialogue_act"
+        all_nlu_intents: set[str] = (
+            self._dialogue_act_intents(nlu_cfg) if dialogue_act else self._load_nlu_intents(config))
 
         # ------------------------------------------------------------------
         # Run all 7 validation rules
@@ -283,7 +322,8 @@ class AgentWorkflowLoader:
         }
         self._validate_tool_names(subagents, tool_registry, internal_tool_names)
         self._validate_global_tool_names(global_tools_raw, tool_registry, internal_tool_names)
-        self._validate_subagent_intents(subagents, all_nlu_intents)
+        if not dialogue_act:
+            self._validate_subagent_intents(subagents, all_nlu_intents)
         self._validate_global_intents_not_in_subagents(subagents, global_intents)
         self._validate_terminal_routing(subagents)
         self._validate_nonterminal_routing(subagents)
@@ -493,6 +533,21 @@ class AgentWorkflowLoader:
             for r in routing_raw
         ]
 
+        pending: list[PendingQuestion] = []
+        for i, raw_p in enumerate(raw.get("pending") or []):
+            ctx = f"subagent '{subagent_id}'.pending[{i}]"
+            pid = (raw_p or {}).get("id")
+            if not pid:
+                raise ConfigurationError(f"{ctx}: missing required 'id'")
+            when = tuple(self._parse_routing_condition(c, context=f"{ctx}.when[{j}]")
+                         for j, c in enumerate(raw_p.get("when") or []))
+            of_raw = raw_p.get("options_from")
+            options_from = (OptionsFrom(tool=of_raw["tool"], fields=tuple(of_raw.get("fields") or ()),
+                                        id_field=of_raw["id_field"]) if of_raw else None)
+            pending.append(PendingQuestion(id=pid, expects=str(raw_p.get("expects", "") or ""),
+                                           when=when, options_from=options_from,
+                                           resolves_to=raw_p.get("resolves_to") or None))
+
         return SubAgent(
             id=subagent_id,
             name=name,
@@ -506,6 +561,7 @@ class AgentWorkflowLoader:
             output_format=output_format,
             routing=routing,
             opening_phrase=opening_phrase,
+            pending=pending,
         )
 
     # ------------------------------------------------------------------
@@ -708,6 +764,19 @@ class AgentWorkflowLoader:
     # ------------------------------------------------------------------
     # Private pre-computation helpers
     # ------------------------------------------------------------------
+
+    def _dialogue_act_intents(self, nlu_cfg: dict) -> set[str]:
+        """Intents dialogue_act mode can produce: act_intents rows, any_input, off-track.
+
+        Args:
+            nlu_cfg: ``preprocessing.nlu_processor`` dict.
+
+        Returns:
+            Set of producible intent names.
+        """
+        rows = nlu_cfg.get("act_intents") or []
+        off = ((nlu_cfg.get("off_track") or {}).get("intent")) or "off_track"
+        return {r.get("intent") for r in rows if r.get("intent")} | {"any_input", off}
 
     def _load_nlu_intents(self, config: dict) -> set[str]:
         """
