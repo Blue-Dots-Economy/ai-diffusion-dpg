@@ -78,6 +78,7 @@ from src.models import (
 )
 from src.preprocessing.nlu_processor import NLUProcessor
 from src.tool_registry import ToolRegistry
+from src.understanding.precedence import nlu_owned_values
 from src.tool_results import ToolResultPolicies, TurnToolCache, augment_tool_definitions
 from src.remember import RememberTool
 from src.session_bootstrap import SessionBootstrap
@@ -386,7 +387,8 @@ class AgentCore(AgentCoreBase):
         session-init copy outranked a fresh "25" in Memgraph because the
         empty-check did not catch "0"). ``agent.prompt_session_fields`` names
         further session fields, e.g. ones written by session_mapping, that the
-        prompt may read (session-bootstrap spec section 5.4).
+        prompt may read (session-bootstrap spec section 5.4). NLU-owned values
+        (slot_provenance) win; see NLU dialogue-acts spec §6.5.
 
         Args:
             bundle: Context bundle with ``profile`` and ``session`` mappings.
@@ -400,6 +402,7 @@ class AgentCore(AgentCoreBase):
         for k, v in bundle.session.items():
             if k in overlay and v not in (None, "", "[]") and not profile_context.get(k):
                 profile_context[k] = v
+        profile_context.update(nlu_owned_values(bundle.session))
         return profile_context
 
     def _remember_on_saved(self, bundle, turn_session_values: dict | None = None):
@@ -1103,9 +1106,7 @@ class AgentCore(AgentCoreBase):
             nlu_result.intent, current_subagent_id,
         )
         # Merge profile into session for routing evaluations
-        routing_state = dict(bundle.session)
-        if bundle.profile:
-            routing_state.update(bundle.profile)
+        routing_state = self._routing_state(bundle)
 
         next_subagent_id, matched_rule = self._resolve_next_subagent(
             current_subagent=current_subagent,
@@ -1737,6 +1738,8 @@ class AgentCore(AgentCoreBase):
         session first would send ``0``, which the participant API rejects as
         ``U18_NOT_ALLOWED`` — making the agent tell an adult they are a minor.
 
+        NLU-owned values (slot_provenance) win; see NLU dialogue-acts spec §6.5.
+
         Args:
             bundle: The turn's ContextBundle.
 
@@ -1761,7 +1764,27 @@ class AgentCore(AgentCoreBase):
                 if val in (None, "", [], 0, "0"):
                     continue
                 values[key] = val
+        values.update(nlu_owned_values(getattr(bundle, "session", None)))
         return values
+
+    @staticmethod
+    def _routing_state(bundle) -> dict:
+        """Session, then profile, then NLU-owned session values (NLU dialogue-acts spec §6.5).
+
+        Identical to the previous inline merge when no SlotWriter provenance
+        exists (intent mode).
+
+        Args:
+            bundle: The turn's ContextBundle.
+
+        Returns:
+            Merged state for routing and pending resolution.
+        """
+        state = dict(bundle.session or {})
+        if bundle.profile:
+            state.update(bundle.profile)
+        state.update(nlu_owned_values(bundle.session))
+        return state
 
     def _evaluate_condition(self, condition: RoutingCondition, session: dict) -> bool:
         """
@@ -4061,9 +4084,7 @@ class AgentCore(AgentCoreBase):
             )
             t6 = time.time()
             yield _stamp(SignalEvent(stage="routing", status="start"))
-            routing_state = dict(bundle.session)
-            if bundle.profile:
-                routing_state.update(bundle.profile)
+            routing_state = self._routing_state(bundle)
 
             next_subagent_id, matched_rule = self._resolve_next_subagent(
                 current_subagent=current_subagent,
