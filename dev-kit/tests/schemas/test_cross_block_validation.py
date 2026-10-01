@@ -500,7 +500,7 @@ from dev_kit.schemas.cross_block_validation import _dialogue_act_session_mapping
 def _ac_da(resolves_to="selected_job_item_id"):
     return {
         "entity_to_profile_field": {"consent": "consent_response"},
-        "preprocessing": {"nlu_processor": {"mode": "dialogue_act", "slots": {"consent": {}, "trade": {}}}},
+        "preprocessing": {"nlu_processor": {"slots": {"consent": {}, "trade": {}}}},
         "agent_workflow": {"subagents": [{"id": "job_match", "pending": [
             {"id": "select_job", "resolves_to": resolves_to,
              "options_from": {"tool": "fetch_jobs", "fields": ["role"], "id_field": "item_id"}}]}]},
@@ -522,8 +522,5 @@ def test_session_mapping_collision_with_resolves_to():
     assert any("selected_job_item_id" in e for e in errs)
 
 
-def test_no_collision_and_intent_mode_skipped():
+def test_no_collision():
     assert _dialogue_act_session_mapping_rules(_ac_da(), _ag("stored_trade")) == []
-    ac = _ac_da()
-    ac["preprocessing"]["nlu_processor"]["mode"] = "intent"
-    assert _dialogue_act_session_mapping_rules(ac, _ag("consent_response")) == []

@@ -2,12 +2,12 @@
 from src.understanding.config import DialogueActConfig
 
 
-def _cfg(mode="dialogue_act"):
+def _cfg():
     return {
         "entity_to_profile_field": {"consent": "consent_response"},
         "entity_persistence": {"scope": "session"},
         "preprocessing": {"nlu_processor": {
-            "mode": mode, "timeout_ms": 2000, "history_turns": 3,
+            "timeout_ms": 2000, "history_turns": 3,
             "slots": {"consent": {"type": "enum", "values": ["granted", "declined"],
                                   "accept_when_pending": ["consent"]},
                       "age": {"type": "int", "min": 14, "max": 80}},
@@ -20,9 +20,9 @@ def _cfg(mode="dialogue_act"):
     }
 
 
-def test_from_config_none_in_intent_mode():
-    assert DialogueActConfig.from_config(_cfg("intent")) is None
-    assert DialogueActConfig.from_config({}) is None
+def test_from_config_always_returns_a_config():
+    c = DialogueActConfig.from_config({})
+    assert c is not None and c.slots == {} and c.act_intents == ()
 
 
 def test_from_config_parses_everything():

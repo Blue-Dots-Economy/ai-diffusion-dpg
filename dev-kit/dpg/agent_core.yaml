@@ -7,7 +7,6 @@ server:
 
 preprocessing:
   nlu_processor:
-    mode: intent
     timeout_ms: 2500
     retry_attempts: 2
     history_turns: 2

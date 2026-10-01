@@ -338,7 +338,7 @@ class AgentCore(AgentCoreBase):
 
         self._language_normaliser = LanguageNormaliser(chat_provider=self._lang_chat_provider)
         # NLU dialogue-acts spec §16: the single understanding path, always on.
-        self._dialogue_cfg: DialogueActConfig = DialogueActConfig.from_config(self._config, require_mode=False)
+        self._dialogue_cfg: DialogueActConfig = DialogueActConfig.from_config(self._config)
         self._understander: TurnUnderstanderBase = TurnUnderstander(
             self._dialogue_cfg, self._workflow,
             DialogueActNLU(self._dialogue_cfg, nlu_chat_provider or self._build_dialogue_act_provider()))

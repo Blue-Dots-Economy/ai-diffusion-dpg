@@ -49,7 +49,7 @@ class GateItem:
 
 @dataclass(frozen=True)
 class DialogueActConfig:
-    """Parsed ``preprocessing.nlu_processor`` for dialogue_act mode.
+    """Parsed ``preprocessing.nlu_processor`` for the dialogue-act NLU.
 
     ``user_states`` / ``user_state_default`` / ``user_state_threshold`` come
     from ``conversation.user_state_model`` (empty, ``""`` and 0.4 when the
@@ -77,21 +77,16 @@ class DialogueActConfig:
     user_state_threshold: float = 0.4
 
     @classmethod
-    def from_config(cls, config: dict | None, *, require_mode: bool = True) -> "DialogueActConfig | None":
-        """Parse the merged config; None unless ``mode == "dialogue_act"``.
+    def from_config(cls, config: dict | None) -> "DialogueActConfig":
+        """Parse the merged config's ``preprocessing.nlu_processor`` block.
 
         Args:
             config: Full merged agent_core config (already schema-validated).
-            require_mode: When False, skip the mode check and always parse
-                (the orchestrator's single understanding path). Transitional;
-                removed with the ``mode`` key.
 
         Returns:
-            The parsed config, or None in intent mode when ``require_mode``.
+            The parsed config; missing blocks fall back to empty/default values.
         """
         nlu: dict[str, Any] = ((config or {}).get("preprocessing") or {}).get("nlu_processor") or {}
-        if require_mode and nlu.get("mode") != "dialogue_act":
-            return None
         slots = {
             name: SlotSpec(
                 name=name, type=s.get("type", "string"), values=tuple(s.get("values") or ()),

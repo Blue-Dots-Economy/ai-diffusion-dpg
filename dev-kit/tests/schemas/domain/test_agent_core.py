@@ -211,28 +211,22 @@ def test_language_normalisation_provider_openai_with_anthropic_model_rejected():
 # -- NLUProcessorSection -----------------------------------------------------
 
 def test_nlu_processor_minimal():
-    n = NLUProcessorSection(model=_ANTHROPIC_PRIMARY, intents=["greet"])
-    assert n.confidence_threshold == 0.5
+    n = NLUProcessorSection(model=_ANTHROPIC_PRIMARY)
     assert n.user_state_confidence_threshold == 0.4
+    assert n.slots == {} and n.act_intents == []
 
 
-def test_nlu_processor_intents_required_min_1():
-    """workflow_loader rejects empty intents list."""
+def test_nlu_processor_user_state_confidence_threshold_range():
+    NLUProcessorSection(model=_ANTHROPIC_PRIMARY, user_state_confidence_threshold=0.0)
+    NLUProcessorSection(model=_ANTHROPIC_PRIMARY, user_state_confidence_threshold=1.0)
     with pytest.raises(ValidationError):
-        NLUProcessorSection(model=_ANTHROPIC_PRIMARY, intents=[])
-
-
-def test_nlu_processor_confidence_threshold_range():
-    NLUProcessorSection(model=_ANTHROPIC_PRIMARY, intents=["x"], confidence_threshold=0.0)
-    NLUProcessorSection(model=_ANTHROPIC_PRIMARY, intents=["x"], confidence_threshold=1.0)
-    with pytest.raises(ValidationError):
-        NLUProcessorSection(model=_ANTHROPIC_PRIMARY, intents=["x"], confidence_threshold=1.1)
+        NLUProcessorSection(model=_ANTHROPIC_PRIMARY, user_state_confidence_threshold=1.1)
 
 
 def test_nlu_processor_provider_validation():
-    NLUProcessorSection(model=_ANTHROPIC_PRIMARY, intents=["x"], provider="anthropic")
+    NLUProcessorSection(model=_ANTHROPIC_PRIMARY, provider="anthropic")
     with pytest.raises(ValidationError, match="not valid for provider"):
-        NLUProcessorSection(model=_OPENAI_PRIMARY, intents=["x"], provider="anthropic")
+        NLUProcessorSection(model=_OPENAI_PRIMARY, provider="anthropic")
 
 
 # -- PreprocessingSection ----------------------------------------------------
@@ -240,16 +234,16 @@ def test_nlu_processor_provider_validation():
 def test_preprocessing_section_full():
     p = PreprocessingSection(
         language_normalisation=LanguageNormalisationSection(**_lang_norm_kwargs()),
-        nlu_processor=NLUProcessorSection(model=_ANTHROPIC_PRIMARY, intents=["x"]),
+        nlu_processor=NLUProcessorSection(model=_ANTHROPIC_PRIMARY),
     )
-    assert p.nlu_processor.confidence_threshold == 0.5
+    assert p.nlu_processor.user_state_confidence_threshold == 0.4
 
 
 def test_preprocessing_section_extra_forbidden():
     with pytest.raises(ValidationError):
         PreprocessingSection(
             language_normalisation=LanguageNormalisationSection(**_lang_norm_kwargs()),
-            nlu_processor=NLUProcessorSection(model=_ANTHROPIC_PRIMARY, intents=["x"]),
+            nlu_processor=NLUProcessorSection(model=_ANTHROPIC_PRIMARY),
             unknown="x",
         )
 
@@ -550,14 +544,6 @@ def test_workflow_global_routing_target_must_be_declared():
         ))
 
 
-def test_workflow_global_intents_must_not_overlap():
-    with pytest.raises(ValidationError, match="both global_intents"):
-        AgentWorkflowSection(**_workflow_kwargs(
-            subagents=[_make_subagent(is_start=True, valid_intents=["help"])],
-            global_intents=["help"],
-        ))
-
-
 def test_workflow_exactly_one_start_no_starts():
     with pytest.raises(ValidationError, match="is_start"):
         AgentWorkflowSection(**_workflow_kwargs(
@@ -729,20 +715,15 @@ def test_session_bootstrap_rejects_bad_shapes(payload, match):
         DOMAIN_SECTION_SCHEMAS[("agent_core", "session_bootstrap")].model_validate(payload)
 
 
-def test_nlu_section_dialogue_act_needs_no_intents():
-    s = NLUProcessorSection(mode="dialogue_act", slots={"age": {"type": "int", "min": 14, "max": 80}},
+def test_nlu_section_accepts_dialogue_act_blocks():
+    s = NLUProcessorSection(slots={"age": {"type": "int", "min": 14, "max": 80}},
                             act_intents=[{"acts": ["affirm"], "intent": "apply_now"}])
-    assert s.mode == "dialogue_act" and s.intents == []
-
-
-def test_nlu_section_intent_mode_still_requires_intents():
-    with pytest.raises(ValidationError, match="intents"):
-        NLUProcessorSection(mode="intent", intents=[])
+    assert s.slots["age"].max == 80 and s.act_intents[0].intent == "apply_now"
 
 
 def test_nlu_section_rejects_unknown_act():
     with pytest.raises(ValidationError, match="unknown act"):
-        NLUProcessorSection(mode="dialogue_act", act_intents=[{"acts": ["shout"], "intent": "x"}])
+        NLUProcessorSection(act_intents=[{"acts": ["shout"], "intent": "x"}])
 
 
 def test_subagent_accepts_pending():
@@ -751,3 +732,24 @@ def test_subagent_accepts_pending():
                             "options_from": {"tool": "fetch_jobs", "fields": ["role"], "id_field": "item_id"},
                             "resolves_to": "selected_job_item_id"}])
     assert sa.pending[0].options_from.id_field == "item_id"
+
+
+# -- Removed intent-mode keys (NLU single-mode, spec §16) --------------------
+
+@pytest.mark.parametrize("key, value", [
+    ("mode", "dialogue_act"), ("intents", ["greet"]), ("entities", ["name"]),
+    ("domain_instruction", "x"), ("confidence_threshold", 0.5), ("sentiment_classes", ["neutral"]),
+])
+def test_nlu_section_rejects_removed_key(key, value):
+    with pytest.raises(ValidationError, match=key):
+        NLUProcessorSection(**{key: value})
+
+
+def test_subagent_rejects_valid_intents():
+    with pytest.raises(ValidationError, match="valid_intents"):
+        _make_subagent(is_start=True, valid_intents=["help"])
+
+
+def test_workflow_rejects_global_intents():
+    with pytest.raises(ValidationError, match="global_intents"):
+        AgentWorkflowSection(**_workflow_kwargs(global_intents=["help"]))

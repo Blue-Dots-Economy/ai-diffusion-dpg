@@ -78,7 +78,7 @@ def test_dotted_section_path_uses_top_level():
             "default_language": "english",
             "supported_languages": ["english"],
          },
-         "nlu_processor": {"model": "claude-sonnet-4-6", "intents": ["greet"]}},
+         "nlu_processor": {"model": "claude-sonnet-4-6"}},
     )
     assert err is None
 

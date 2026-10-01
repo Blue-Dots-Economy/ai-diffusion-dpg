@@ -12,8 +12,7 @@ CFG = {
     "conversation": {"user_state_model": {"enabled": True, "default_state": "fog", "states": [
         {"id": "fog", "signals": ["पता नहीं"], "guidance": "Be gentle.\nMore."},
         {"id": "orientation", "signals": ["बताइए"], "guidance": "Give options."}]}},
-    # "mode" is still required until Task 7 removes the mode check; Task 7 drops it here.
-    "preprocessing": {"nlu_processor": {"mode": "dialogue_act", "user_state_confidence_threshold": 0.5,
+    "preprocessing": {"nlu_processor": {"user_state_confidence_threshold": 0.5,
                                         "slots": {"trade": {"type": "string"}}}},
 }
 WF = SimpleNamespace(subagents={"s": SimpleNamespace(pending=[])})
@@ -30,7 +29,7 @@ def test_config_and_schema_include_user_state_when_enabled():
 
 
 def test_schema_has_no_user_state_when_disabled():
-    c = DialogueActConfig.from_config({"preprocessing": {"nlu_processor": {"mode": "dialogue_act"}}})
+    c = DialogueActConfig.from_config({"preprocessing": {"nlu_processor": {}}})
     assert c.user_states == () and "user_state" not in build_output_schema(c)["properties"]
 
 

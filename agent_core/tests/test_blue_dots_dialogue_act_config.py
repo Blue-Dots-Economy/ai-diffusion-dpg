@@ -1,4 +1,4 @@
-"""The Blue Dots domain config validates in both NLU modes; pending questions resolve as designed."""
+"""The Blue Dots domain config validates; pending questions resolve as designed."""
 from pathlib import Path
 
 import pytest
@@ -13,22 +13,15 @@ from src.workflow_loader import AgentWorkflowLoader
 BLUE_DOTS = Path(__file__).resolve().parents[2] / "dev-kit" / "configs" / "blue-dots"
 
 
-def _load(mode):
-    cfg = load_merged_config(BLUE_DOTS, mode)
+def _load():
+    cfg = load_merged_config(BLUE_DOTS)
     MergedConfig.validate_full(cfg)
     wf = AgentWorkflowLoader().load(config=cfg, tool_registry=ToolRegistry(cfg, OfflineGateway(cfg)))
     return cfg, wf
 
 
-def test_intent_mode_still_loads_and_is_the_default():
-    cfg, _ = _load("intent")
-    import yaml
-    raw = yaml.safe_load((BLUE_DOTS / "agent_core.yaml").read_text(encoding="utf-8"))
-    assert raw["preprocessing"]["nlu_processor"]["mode"] == "intent"
-
-
-def test_dialogue_act_mode_loads():
-    cfg, _ = _load("dialogue_act")
+def test_blue_dots_config_loads():
+    cfg, _ = _load()
     da = DialogueActConfig.from_config(cfg)
     assert {"consent_response", "age", "trade", "location", "name"} <= set(da.slots)
     assert da.slots["age"].min == 5 and da.slots["age"].max == 99
@@ -47,13 +40,13 @@ def test_dialogue_act_mode_loads():
     ("apply_confirm", {"applications_submitted": 1}, "closing_offer"),
 ])
 def test_pending_resolution(step, state, expected):
-    _, wf = _load("dialogue_act")
+    _, wf = _load()
     p = PendingResolver(wf).resolve(step, state)
     assert (p.id if p else None) == expected
 
 
 def test_off_track_rule_precedes_catch_all_everywhere():
-    _, wf = _load("dialogue_act")
+    _, wf = _load()
     for sid, sub in wf.subagents.items():
         if sub.is_terminal or not sub.routing:
             continue
@@ -99,7 +92,7 @@ def test_blue_dots_journey_routes_end_to_end():
         ("apply_confirm", R("affirm"), {"applications_submitted": 1}),           # apply_job mapping
         ("apply_confirm", R("acknowledge"), {}),
     ]
-    cfg, wf = _load("dialogue_act")
+    cfg, wf = _load()
     und = TurnUnderstander(DialogueActConfig.from_config(cfg), wf, _Scripted([r for _, r, _ in script]))
     agent = _make_agent_core(workflow=wf)
     state, sid, trail = dict(seeds), "opening", []
@@ -134,7 +127,7 @@ def _understand_once(step, state, result):
         def classify(self, user_message):
             return result, None, 1
 
-    cfg, wf = _load("dialogue_act")
+    cfg, wf = _load()
     und = TurnUnderstander(DialogueActConfig.from_config(cfg), wf, _One())
     return und.understand(TurnContext(subagent_id=step, state=dict(state), session=dict(state),
                                       segments=["x"], recent=[]))
@@ -154,7 +147,7 @@ def test_age_given_with_consent_is_accepted():
 
 def test_termination_rule_follows_off_track_and_comments_say_so():
     """M4: termination_intent is the first rule after off_track; the comments match the order."""
-    _, wf = _load("dialogue_act")
+    _, wf = _load()
     for sid, sub in wf.subagents.items():
         intents = [r.intent for r in (sub.routing or [])]
         if "off_track" in intents and "termination_intent" in intents:

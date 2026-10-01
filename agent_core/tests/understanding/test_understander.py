@@ -12,7 +12,7 @@ CONFIG = {
     "entity_to_profile_field": {"consent": "consent_response"},
     "entity_persistence": {"scope": "session"},
     "preprocessing": {"nlu_processor": {
-        "mode": "dialogue_act", "topics": ["salary", "search"], "signals": ["pay_disappointment"],
+        "topics": ["salary", "search"], "signals": ["pay_disappointment"],
         "slots": {"consent": {"type": "enum", "values": ["granted", "declined"], "accept_when_pending": ["consent"]},
                   "age": {"type": "int", "min": 14, "max": 80, "accept_when_pending": ["age"]},
                   "trade": {"type": "string", "normalise": "title"}},
@@ -125,8 +125,8 @@ def test_understand_never_raises():
     assert u.fallback_reason == "exception" and u.nlu_result.intent == "any_input"
 
 
-def test_from_config_none_in_intent_mode():
-    assert TurnUnderstander.from_config({}, WF, chat_provider=MagicMock()) is None
+def test_from_config_always_builds_an_understander():
+    assert isinstance(TurnUnderstander.from_config({}, WF, chat_provider=MagicMock()), TurnUnderstander)
 
 
 def test_telemetry_failure_never_raises_and_keeps_understanding(monkeypatch):

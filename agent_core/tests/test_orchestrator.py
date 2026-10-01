@@ -159,7 +159,6 @@ def _make_workflow(
     wf.subagents = subagents
     wf.global_routing = global_routing or []
     wf.default_fallback_subagent_id = subagent_id
-    wf.nlu_intent_set = {subagent_id: ["market_truth_query"]}
     wf.tool_defs = {}
     wf.agent_system_prompt = ""
     return wf
@@ -605,7 +604,6 @@ def test_termination_intent_routed_via_global_routing():
         extra_subagents={"ended": ended_sa},
     )
     wf.default_fallback_subagent_id = "greeting"
-    wf.nlu_intent_set = {"greeting": ["termination_intent"]}
 
     agent = _make_agent(
         nlu_result=_TERMINATION_NLU,

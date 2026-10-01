@@ -144,9 +144,9 @@ class NLUResult:
     Produced before the Knowledge Engine call and passed as parameters to KE's retrieve().
     """
 
-    intent: str                              # classified intent label from config intents list
-    entities: dict[str, Any]                 # extracted entity key→value pairs
-    confidence: float                        # 0.0–1.0; below threshold triggers early exit
+    intent: str                              # routing intent derived from act_intents (or any_input / off_track)
+    entities: dict[str, Any]                 # accepted slots keyed by state key
+    confidence: float                        # 1.0 for a derived intent, 0.0 for a fallback result
     user_state: UserStateClassification | None = None   # classified user mental state (GH-139); None when model disabled
 
 

@@ -44,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
         print("GATE PASS" if not fails else "GATE FAIL\n- " + "\n- ".join(fails))
         return 0 if not fails else 1
 
-    config = load_merged_config(args.config, args.mode)
+    config = load_merged_config(args.config)
     MergedConfig.validate_full(config)
     workflow = AgentWorkflowLoader().load(config=config, tool_registry=ToolRegistry(config, OfflineGateway(config)))
     cases = load_cases(args.cases)

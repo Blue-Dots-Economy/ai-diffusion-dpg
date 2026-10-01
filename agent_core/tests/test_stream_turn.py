@@ -122,13 +122,11 @@ def _make_workflow():
         routing=[],
         tools=[],
         special_handler=None,
-        valid_intents=["greeting"],
         output_format=None,
     )
     wf = MagicMock(spec=AgentWorkflow)
     wf.start_subagent_id = "start"
     wf.subagents = {"start": sub}
-    wf.nlu_intent_set = {"start": ["greeting"]}
     wf.tool_defs = {"start": []}
     wf.global_routing = []
     wf.default_fallback_subagent_id = "start"

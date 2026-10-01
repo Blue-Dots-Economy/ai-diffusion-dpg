@@ -420,46 +420,25 @@ class NLUProcessorConfig(BaseModel):
         description="Per-helper provider override. Lets a deployment run primary chat on one provider while keeping NLU on another. None → inherit agent.provider.",
     )
     model: str = Field(default="", description="Claude model ID for NLU classification. Empty = use agent.primary_model.")
-    confidence_threshold: float = Field(default=0.5, description="Float 0-1. Intents below this are treated as unknown")
     user_state_confidence_threshold: float = Field(
         default=0.4,
         description="Below this confidence, user-state classification stays sticky (previous state retained). Conversational agents only.",
     )
     history_turns: int = Field(default=2)
-    domain_instruction: str = Field(
-        default="",
-        description="Domain-specific instruction prepended to the NLU classification prompt",
-    )
-    intents: list[str] = Field(default_factory=list, description="List of intent identifiers for this domain, e.g. greeting, profile_answer, apply_now")
-    entities: list[str] = Field(default_factory=list, description="List of entity identifiers to extract, e.g. name, location, trade_or_stream")
-    sentiment_classes: list[str] = Field(
-        default=["neutral", "positive", "distressed"],
-        description="Sentiment classes to classify, e.g. [neutral, positive, distressed]",
-    )
     signal_intents: dict[str, str] = Field(
         default_factory=dict,
         description="Optional map of intent → signal_type written to the ContextGraph Signal node, e.g. {pay_disappointment: objection}",
     )
-    mode: Literal["intent", "dialogue_act"] = Field(
-        default="intent", description="NLU contract: 'intent' (per-subagent intents) or 'dialogue_act'"
-    )
     timeout_ms: int = Field(default=2500, gt=0, description="dialogue_act NLU call timeout in ms")
     retry_attempts: int = Field(default=2, ge=1, description="dialogue_act NLU total attempts")
-    topics: list[str] = Field(default_factory=list, description="Topics for 'ask' / 'request_change' acts (dialogue_act)")
-    signals: list[str] = Field(default_factory=list, description="Signal names NLU may emit (dialogue_act)")
-    slots: dict[str, NLUSlotConfig] = Field(default_factory=dict, description="Caller-stated values to extract (dialogue_act)")
-    known_fields: list[str] = Field(default_factory=list, description="State fields shown to NLU in the frame (dialogue_act)")
-    examples: list[NLUExampleConfig] = Field(default_factory=list, description="Few-shot examples for the NLU prompt (dialogue_act)")
-    act_intents: list[ActIntentRuleConfig] = Field(default_factory=list, description="Ordered (acts, pending, relation, topic) → intent table (dialogue_act)")
-    termination_gate: TerminationGateConfig = Field(default_factory=TerminationGateConfig, description="When a gated act-intent row may fire (dialogue_act)")
-    off_track: OffTrackConfig = Field(default_factory=OffTrackConfig, description="Off-track threshold and recovery intent (dialogue_act)")
-
-    @model_validator(mode="after")
-    def intents_required_in_intent_mode(self) -> "NLUProcessorConfig":
-        """workflow_loader rejects an empty intents list in intent mode only."""
-        if self.mode == "intent" and not self.intents:
-            raise ValueError("intents must be non-empty in intent mode")
-        return self
+    topics: list[str] = Field(default_factory=list, description="Topics for 'ask' / 'request_change' acts")
+    signals: list[str] = Field(default_factory=list, description="Signal names NLU may emit")
+    slots: dict[str, NLUSlotConfig] = Field(default_factory=dict, description="Caller-stated values to extract")
+    known_fields: list[str] = Field(default_factory=list, description="State fields shown to NLU in the frame")
+    examples: list[NLUExampleConfig] = Field(default_factory=list, description="Few-shot examples for the NLU prompt")
+    act_intents: list[ActIntentRuleConfig] = Field(default_factory=list, description="Ordered (acts, pending, relation, topic) → intent table")
+    termination_gate: TerminationGateConfig = Field(default_factory=TerminationGateConfig, description="When a gated act-intent row may fire")
+    off_track: OffTrackConfig = Field(default_factory=OffTrackConfig, description="Off-track threshold and recovery intent")
 
 
 class PreprocessingConfig(BaseModel):
@@ -565,11 +544,6 @@ class SubAgentSchema(BaseModel):
                     "'hitl' bypasses the LLM and returns hitl.response_message. "
                     "'whatsapp_handoff' triggers a channel handoff.",
     )
-    valid_intents: list[str] = Field(
-        default=[],
-        description="Intents this subagent handles. Must be declared in preprocessing.nlu_processor.intents. "
-                    "Must not overlap with agent_workflow.global_intents.",
-    )
     tools: list[str] = Field(
         default=[],
         description="Tool names available in this subagent. Each name must match a connector in "
@@ -591,7 +565,7 @@ class SubAgentSchema(BaseModel):
     )
     pending: list[PendingQuestionConfig] = Field(
         default_factory=list,
-        description="Questions this subagent may be waiting on (dialogue_act NLU mode).",
+        description="Questions this subagent may be waiting on (dialogue-act NLU).",
     )
 
 
@@ -604,14 +578,9 @@ class AgentWorkflowConfig(BaseModel):
         default="",
         description="Top-level system prompt for the orchestrating LLM. Injected on every turn.",
     )
-    global_intents: list[str] = Field(
-        default=[],
-        description="Intents handled globally before subagent routing. "
-                    "Must not appear in any subagent's valid_intents.",
-    )
     global_routing: list[RoutingRuleSchema] = Field(
         default=[],
-        description="Routing rules applied globally when a global_intent fires",
+        description="Routing rules applied before subagent routing (e.g. termination_intent → ended)",
     )
     global_tools: list[str] = Field(
         default_factory=list,

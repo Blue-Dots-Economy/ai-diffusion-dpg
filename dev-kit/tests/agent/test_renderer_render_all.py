@@ -147,51 +147,6 @@ class TestRenderAllEmptyBlock:
 
 
 class TestRenderAllAgentCoreCleanups:
-    def test_missing_intents_synced_in_written_file(self, tmp_path: Path) -> None:
-        """render_all auto-adds missing workflow intents to the NLU list."""
-        acc = empty_accumulator()
-        acc["agent_core"] = {
-            "agent": {"primary_model": "claude-haiku-4-5"},
-            "preprocessing": {"nlu_processor": {"intents": ["greeting"]}},
-            "agent_workflow": {
-                "subagents": [
-                    {
-                        "id": "start",
-                        "is_start": True,
-                        "valid_intents": ["greeting", "report_problem"],
-                    }
-                ],
-                "global_intents": ["end_session"],
-                "workflow_id": "test",
-                "version": "1.0",
-            },
-        }
-        render_all(tmp_path, acc, _intake())
-        written = yaml.safe_load((tmp_path / "agent_core.yaml").read_text())
-        intents = written["preprocessing"]["nlu_processor"]["intents"]
-        assert "report_problem" in intents
-        assert "end_session" in intents
-        assert "greeting" in intents
-
-    def test_other_sentinel_not_written(self, tmp_path: Path) -> None:
-        """'other' catch-all never appears in the written NLU intents list."""
-        acc = empty_accumulator()
-        acc["agent_core"] = {
-            "agent": {"primary_model": "claude-haiku-4-5"},
-            "preprocessing": {"nlu_processor": {"intents": ["greeting"]}},
-            "agent_workflow": {
-                "subagents": [
-                    {"id": "sa", "is_start": True, "valid_intents": ["greeting", "other"]}
-                ],
-                "global_intents": ["other"],
-                "workflow_id": "t",
-                "version": "1.0",
-            },
-        }
-        render_all(tmp_path, acc, _intake())
-        written = yaml.safe_load((tmp_path / "agent_core.yaml").read_text())
-        assert "other" not in written["preprocessing"]["nlu_processor"]["intents"]
-
     def test_non_agent_core_block_not_modified(self, tmp_path: Path) -> None:
         """Intent sync does not apply to blocks other than agent_core."""
         acc = empty_accumulator()

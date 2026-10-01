@@ -16,8 +16,8 @@ def render_caller_turn(u: TurnUnderstanding | None) -> str:
     """Render the <caller_turn> body, or "" when there is nothing to say.
 
     Args:
-        u: This turn's understanding; None or a dialogue-less (intent-mode)
-            result renders nothing.
+        u: This turn's understanding; None or a dialogue-less result
+            renders nothing.
 
     Returns:
         Newline-joined lines; empty lines are omitted.

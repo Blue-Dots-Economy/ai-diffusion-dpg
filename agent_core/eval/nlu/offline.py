@@ -58,12 +58,11 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return out
 
 
-def load_merged_config(domain_dir: str | Path, mode: str) -> dict:
-    """agent_core/config/dpg.yaml deep-merged with ``<domain_dir>/agent_core.yaml``; mode forced.
+def load_merged_config(domain_dir: str | Path) -> dict:
+    """agent_core/config/dpg.yaml deep-merged with ``<domain_dir>/agent_core.yaml``.
 
     Args:
         domain_dir: Directory holding the domain's agent_core.yaml.
-        mode: ``intent`` or ``dialogue_act``.
 
     Returns:
         Merged config dict.
@@ -72,5 +71,4 @@ def load_merged_config(domain_dir: str | Path, mode: str) -> dict:
     dpg = yaml.safe_load((root / "config" / "dpg.yaml").read_text(encoding="utf-8")) or {}
     domain = yaml.safe_load((Path(domain_dir) / "agent_core.yaml").read_text(encoding="utf-8")) or {}
     merged = _deep_merge(dpg, domain)
-    merged.setdefault("preprocessing", {}).setdefault("nlu_processor", {})["mode"] = mode
     return merged

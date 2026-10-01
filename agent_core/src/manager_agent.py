@@ -625,7 +625,7 @@ class ManagerAgent:
             <resumption>          resumption note (first turn after adoption)
             <known_profile>       profile grounding
             <known_facts>         stored tool results rendered for grounding
-            <caller_turn>         NLU conclusion for this turn (dialogue_act mode)
+            <caller_turn>         NLU conclusion for this turn (dialogue-act NLU)
             <active_guardrails>   guardrail constraints + required disclosures
 
         Empty inputs elide their section entirely; empty tiers are not

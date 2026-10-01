@@ -4,7 +4,7 @@ Validates the operator-edited ``dev-kit/dpg/agent_core.yaml``. This module also
 defines the shared ``ServerConfig`` and ``OtelConfig`` types reused by the other
 DPG schemas in this package.
 """
-from typing import Literal, Optional
+from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from dev_kit.schemas.enums import ProviderField
@@ -137,7 +137,7 @@ class ChannelsDpg(BaseModel):
 
 
 class OffTrackDpg(BaseModel):
-    """Off-track threshold and recovery intent defaults (dialogue_act NLU mode)."""
+    """Off-track threshold and recovery intent defaults (dialogue-act NLU)."""
 
     model_config = ConfigDict(extra="forbid")
     threshold: int = Field(default=3, ge=1)
@@ -148,7 +148,6 @@ class NLUProcessorDpg(BaseModel):
     """Framework defaults for ``preprocessing.nlu_processor`` (domain fields live in the domain half)."""
 
     model_config = ConfigDict(extra="forbid")
-    mode: Literal["intent", "dialogue_act"] = "intent"
     timeout_ms: int = Field(default=2500, gt=0)
     retry_attempts: int = Field(default=2, ge=1)
     history_turns: int = Field(default=2, ge=0)

@@ -378,7 +378,6 @@ class TestSubAgentSchema:
         assert s.is_start is False
         assert s.is_terminal is False
         assert s.special_handler is None
-        assert s.valid_intents == []
         assert s.tools == []
         assert s.routing == []
 
@@ -430,9 +429,8 @@ class TestAgentWorkflowConfig:
         with pytest.raises(ValidationError):
             AgentWorkflowConfig(**data)
 
-    def test_global_intents_default_empty(self):
+    def test_global_routing_default_empty(self):
         wf = AgentWorkflowConfig(**self._make_minimal_workflow())
-        assert wf.global_intents == []
         assert wf.global_routing == []
         assert wf.default_fallback_subagent_id == ""
 
@@ -614,3 +612,24 @@ class TestWebChannelConfigMode:
     def test_invalid_mode_raises(self):
         with pytest.raises(ValidationError):
             WebChannelConfig(mode="partial")
+
+
+class TestRemovedIntentModeKeys:
+    """The flat schema mirror drops the intent-mode keys (NLU single-mode, spec §16)."""
+
+    @pytest.mark.parametrize("key", ["mode", "intents", "entities", "domain_instruction",
+                                     "confidence_threshold", "sentiment_classes"])
+    def test_nlu_processor_has_no_removed_key(self, key):
+        from dev_kit.schema import NLUProcessorConfig
+        assert key not in NLUProcessorConfig.model_fields
+
+    def test_subagent_has_no_valid_intents(self):
+        assert "valid_intents" not in SubAgentSchema.model_fields
+
+    def test_workflow_has_no_global_intents(self):
+        assert "global_intents" not in AgentWorkflowConfig.model_fields
+
+    def test_dpg_nlu_defaults_reject_mode(self):
+        from dev_kit.schemas.dpg.agent_core import NLUProcessorDpg
+        with pytest.raises(ValidationError, match="mode"):
+            NLUProcessorDpg(mode="intent")

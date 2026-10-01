@@ -281,19 +281,11 @@ class OffTrackConfig(BaseModel):
 
 
 class NLUProcessorSection(BaseModel):
-    """NLU classifier helper config. provider=None inherits agent.provider; intents must be non-empty in intent mode."""
+    """Dialogue-act NLU helper config. provider=None inherits agent.provider (spec §16: no intent mode)."""
     model_config = ConfigDict(extra="forbid")
     provider: Optional[ProviderField] = None   # None → inherit agent.provider at runtime
     model: str = ""   # empty allowed — helper inherits agent.primary_model at runtime
-    confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     user_state_confidence_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
-    domain_instruction: str = ""
-    mode: Literal["intent", "dialogue_act"] = "intent"
-    intents: list[str] = Field(default_factory=list)   # required only in intent mode (validator)
-    entities: list[str] = Field(default_factory=list)
-    sentiment_classes: list[str] = Field(
-        default_factory=lambda: ["neutral", "positive", "distressed", "frustrated"]
-    )
     signal_intents: dict[str, str] = Field(default_factory=dict)
     timeout_ms: int = Field(default=2500, gt=0)
     retry_attempts: int = Field(default=2, ge=1)
@@ -306,13 +298,6 @@ class NLUProcessorSection(BaseModel):
     act_intents: list[ActIntentRuleConfig] = Field(default_factory=list)
     termination_gate: TerminationGateConfig = Field(default_factory=TerminationGateConfig)
     off_track: OffTrackConfig = Field(default_factory=OffTrackConfig)
-
-    @model_validator(mode="after")
-    def intents_required_in_intent_mode(self) -> "NLUProcessorSection":
-        """workflow_loader rejects an empty intents list in intent mode only."""
-        if self.mode == "intent" and not self.intents:
-            raise ValueError("intents must be non-empty in intent mode")
-        return self
 
     @model_validator(mode="after")
     def model_must_match_helper_provider(self) -> "NLUProcessorSection":
@@ -741,7 +726,6 @@ class SubAgent(BaseModel):
     is_start: bool = False
     is_terminal: bool = False
     special_handler: Optional[SpecialHandler] = None
-    valid_intents: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
     system_prompt: str = Field(..., min_length=1)
     opening_phrase: str = Field(..., min_length=1)   # required for all subagents
@@ -752,7 +736,7 @@ class SubAgent(BaseModel):
 
 
 class AgentWorkflowSection(BaseModel):
-    """Top-level workflow definition: subagents, routing, fallback. 4 cross-field validators enforce graph integrity."""
+    """Top-level workflow definition: subagents, routing, fallback. 3 cross-field validators enforce graph integrity."""
     model_config = ConfigDict(extra="forbid")
     # workflow_id allows hyphens — runtime workflow_loader does not enforce a
     # pattern beyond non-empty (e.g. youth-schemes-agent uses hyphens).
@@ -761,7 +745,6 @@ class AgentWorkflowSection(BaseModel):
     # agent_system_prompt min_length=1 — runtime accepts any non-empty string.
     agent_system_prompt: str = Field(..., min_length=1)
     subagents: list[SubAgent] = Field(..., min_length=1)
-    global_intents: list[str] = Field(default_factory=list)
     global_tools: list[str] = Field(default_factory=list)
     global_routing: list[RoutingRule] = Field(default_factory=list)
     default_fallback_subagent_id: str = Field(..., min_length=1)
@@ -793,19 +776,6 @@ class AgentWorkflowSection(BaseModel):
                 raise ValueError(
                     f"global_routing intent '{rule.intent}' targets unknown subagent "
                     f"'{rule.next_subagent_id}'"
-                )
-        return self
-
-    @model_validator(mode="after")
-    def global_intents_must_not_overlap_subagent_intents(self) -> "AgentWorkflowSection":
-        """An intent cannot appear in both global_intents and any subagent's valid_intents — runtime crashes on overlap."""
-        global_set = set(self.global_intents)
-        for sa in self.subagents:
-            overlap = global_set & set(sa.valid_intents)
-            if overlap:
-                raise ValueError(
-                    f"Intents {sorted(overlap)} appear in both global_intents and "
-                    f"subagent '{sa.id}' valid_intents — runtime crashes on overlap"
                 )
         return self
 

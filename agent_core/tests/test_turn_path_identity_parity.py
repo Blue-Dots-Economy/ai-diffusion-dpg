@@ -404,7 +404,7 @@ _GREETING = NLUResult(intent="greeting", entities={}, confidence=0.9)
 
 def _sub(sid, routing=(), is_start=False, opening_phrase=""):
     return SubAgent(id=sid, name=sid, description=sid, is_start=is_start, is_terminal=False,
-                    special_handler=None, valid_intents=["greeting"], tools=[],
+                    special_handler=None, tools=[],
                     system_prompt=f"{sid} prompt", output_format=None, routing=list(routing),
                     opening_phrase=opening_phrase)
 
@@ -417,7 +417,6 @@ def _opening_workflow():
     wf = MagicMock(spec=AgentWorkflow)
     wf.start_subagent_id = "opening"
     wf.subagents = subs
-    wf.nlu_intent_set = {k: ["greeting"] for k in subs}
     wf.tool_defs = {k: [] for k in subs}
     wf.global_routing = []
     wf.default_fallback_subagent_id = "opening"

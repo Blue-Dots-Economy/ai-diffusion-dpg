@@ -9,7 +9,7 @@ from src.understanding.models import ACTS
 
 def _cfg():
     return DialogueActConfig.from_config({"preprocessing": {"nlu_processor": {
-        "mode": "dialogue_act", "topics": ["salary"], "signals": ["pay_disappointment"],
+        "topics": ["salary"], "signals": ["pay_disappointment"],
         "slots": {"age": {"type": "int", "min": 14, "max": 80, "description": "उम्र"},
                   "consent": {"type": "enum", "values": ["granted", "declined"]},
                   "trade": {"type": "string", "normalise": "title"}},
@@ -50,7 +50,7 @@ def test_schema_is_strict_compatible():
 
 
 def test_schema_with_no_topics_or_signals():
-    cfg = DialogueActConfig.from_config({"preprocessing": {"nlu_processor": {"mode": "dialogue_act"}}})
+    cfg = DialogueActConfig.from_config({"preprocessing": {"nlu_processor": {}}})
     schema = build_output_schema(cfg)
     assert schema["properties"]["topic"] == {"type": "null"}
     assert schema["properties"]["signals"]["items"] == {"type": "string"}

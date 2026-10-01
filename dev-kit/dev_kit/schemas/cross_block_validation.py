@@ -243,7 +243,7 @@ def _tool_result_session_mapping_rules(ac: dict, ag: dict) -> list[str]:
 
 
 def _dialogue_act_session_mapping_rules(ac: dict, ag: dict) -> list[str]:
-    """Reject dialogue_act state keys that a connector session_mapping also writes.
+    """Reject dialogue-act NLU state keys that a connector session_mapping also writes.
 
     NLU slots (mapped through ``entity_to_profile_field``) and pending
     ``resolves_to`` keys are written by Agent Core's SlotWriter; a
@@ -255,11 +255,9 @@ def _dialogue_act_session_mapping_rules(ac: dict, ag: dict) -> list[str]:
         ag: The action_gateway block.
 
     Returns:
-        One error per colliding key; empty in intent mode.
+        One error per colliding key.
     """
     nlu = ((ac.get("preprocessing") or {}).get("nlu_processor")) or {}
-    if nlu.get("mode") != "dialogue_act":
-        return []
     emap = ac.get("entity_to_profile_field") or {}
     keys = {emap.get(n, n) for n in (nlu.get("slots") or {})}
     for s in ((ac.get("agent_workflow") or {}).get("subagents")) or []:

@@ -23,7 +23,7 @@ MAX_ACTS = 3
 
 @dataclass(frozen=True)
 class DialogueActResult:
-    """Validated NLU output in dialogue_act mode.
+    """Validated dialogue-act NLU output.
 
     Attributes:
         acts: 1–3 acts, in the order the caller performed them.
@@ -165,9 +165,9 @@ class StateWrite:
 class TurnUnderstanding:
     """Everything the turn learned from the caller (spec §8).
 
-    ``nlu_result`` is what routing consumes, in both modes. ``dialogue`` is
-    None in intent mode. ``writes`` and ``signals`` are applied by the
-    orchestrator.
+    ``nlu_result`` is what routing consumes. ``dialogue`` is None when no
+    dialogue-act result exists for the turn. ``writes`` and ``signals`` are
+    applied by the orchestrator.
     """
 
     nlu_result: NLUResult

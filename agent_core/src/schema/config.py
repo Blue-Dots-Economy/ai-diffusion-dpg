@@ -592,29 +592,25 @@ class OffTrackConfig(BaseModel):
 
 
 class NLUProcessorConfig(BaseModel):
-    """NLU intent + entity + sentiment classifier."""
+    """Dialogue-act NLU: acts, relation, slots and signals per caller turn.
+
+    The routing intent is derived in code from ``act_intents``; there is no
+    intent list, entity list or free-text domain instruction (spec §16).
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     # Per-helper provider override — see LanguageNormalisationConfig.provider.
     provider: Literal["anthropic", "openai", "ollama", "google"] | None = None
     model: str = ""
-    confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     user_state_confidence_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
-    domain_instruction: str = ""
-    intents: list[str] = Field(default_factory=list)
-    entities: list[str] = Field(default_factory=list)
-    sentiment_classes: list[str] = Field(
-        default_factory=lambda: ["neutral", "positive", "distressed", "frustrated"]
-    )
     signal_intents: dict[str, str] = Field(default_factory=dict)
     # GH-218: opt-in INFO log with the full parsed NLU response JSON and the
     # final composed user message. Off by default because the values can
     # carry PII (entity values, message text). Turn on for triage windows.
     log_raw_response: bool = False
     log_raw_response_max_chars: int = Field(default=2000, ge=0)
-    mode: Literal["intent", "dialogue_act"] = "intent"
-    # dialogue_act mode only (NLU dialogue-acts spec §7.1, §9.1).
+    # NLU dialogue-acts spec §7.1, §9.1.
     timeout_ms: int = Field(default=2500, gt=0)
     retry_attempts: int = Field(default=2, ge=1)
     history_turns: int = Field(default=2, ge=0)
@@ -716,7 +712,6 @@ class SubAgent(BaseModel):
     is_terminal: bool = False
     opening_phrase: str = ""
     special_handler: Optional[SpecialHandler] = None
-    valid_intents: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
     system_prompt: str = ""
     output_format: Optional[dict[str, Any]] = None
@@ -732,7 +727,6 @@ class AgentWorkflowConfig(BaseModel):
     workflow_id: str = ""
     version: str = "1.0.0"
     agent_system_prompt: str = ""
-    global_intents: list[str] = Field(default_factory=list)
     global_routing: list[RoutingRule] = Field(default_factory=list)
     default_fallback_subagent_id: str = ""
     global_tools: list[str] = Field(default_factory=list)
@@ -1032,10 +1026,7 @@ class MergedConfig(BaseModel):
 
     @model_validator(mode="after")
     def _check_dialogue_act_rules(self) -> "MergedConfig":
-        """Cross-check dialogue_act NLU config against the workflow and connectors.
-
-        Skipped entirely in ``intent`` mode, so a domain can author the
-        dialogue_act blocks before switching.
+        """Cross-check the dialogue-act NLU config against the workflow and connectors.
 
         Returns:
             The validated config.
@@ -1046,8 +1037,6 @@ class MergedConfig(BaseModel):
                 or a state key colliding with a ``memory_tool`` field.
         """
         nlu = self.preprocessing.nlu_processor
-        if nlu.mode != "dialogue_act":
-            return self
         wf = self.agent_workflow
         declared = {p.id for s in wf.subagents for p in s.pending}
 
@@ -1073,7 +1062,7 @@ class MergedConfig(BaseModel):
                 raise ValueError(
                     f"preprocessing.nlu_processor.act_intents[{i}]: intent '{row.intent}' "
                     f"is not used by any routing rule")
-        if nlu.off_track.intent not in routed:
+        if wf.subagents and nlu.off_track.intent not in routed:
             raise ValueError(
                 f"preprocessing.nlu_processor.off_track.intent '{nlu.off_track.intent}' "
                 f"is not used by any routing rule")

@@ -107,8 +107,8 @@ class TurnUnderstander(TurnUnderstanderBase):
         return self._cfg
 
     @classmethod
-    def from_config(cls, config: dict, workflow: Any, chat_provider: Any) -> "TurnUnderstander | None":
-        """Build from the merged config; None in intent mode.
+    def from_config(cls, config: dict, workflow: Any, chat_provider: Any) -> "TurnUnderstander":
+        """Build from the merged config.
 
         Args:
             config: Merged agent_core config.
@@ -116,11 +116,9 @@ class TurnUnderstander(TurnUnderstanderBase):
             chat_provider: Dedicated NLU provider (orchestrator builds it, §9.1).
 
         Returns:
-            A TurnUnderstander, or None unless ``mode == "dialogue_act"``.
+            A TurnUnderstander (always; the dialogue-act NLU is the only NLU).
         """
         cfg = DialogueActConfig.from_config(config)
-        if cfg is None:
-            return None
         return cls(cfg, workflow, DialogueActNLU(cfg, chat_provider))
 
     def understand(self, ctx: TurnContext) -> TurnUnderstanding:
