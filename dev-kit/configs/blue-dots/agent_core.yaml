@@ -1333,16 +1333,18 @@ agent_workflow:
           "नमस्ते! क्या आप काम की तलाश में हैं?"
           ("Hello! Are you looking for work?")
 
-        Ask NOTHING about consent or age on this turn. The fetch tells us
-        what is already on file, and its answer is only available from the
-        NEXT turn — so asking now is how a caller ends up being asked for
-        something the system already knows.
+        Ask NOTHING about consent or age on this turn — the greeting is all
+        this turn does. The fetch tells us what is already on file, so asking
+        now is how a caller ends up being asked for something the system
+        already knows.
 
-        ## The turn you fetch on: ask for the TRADE, never for consent
-        On the turn where you call `fetch_profile` the flags have not arrived
-        yet — tools run after routing, so the result reaches you on the turn
-        AFTER. Asking for consent now is guessing, and for most callers the
-        guess is wrong: they have already consented.
+        ## Fallback: if you have to fetch yourself, ask for the TRADE, never for consent
+        If the fetch_profile entry is absent from <known_facts> (the
+        start-of-call fetch failed) and you call `fetch_profile` yourself, its
+        flags have not arrived on that turn — tools run after routing, so the
+        result reaches you on the turn AFTER. Asking for consent now is
+        guessing, and for most callers the guess is wrong: they have already
+        consented.
 
         Ask instead for the one thing needed either way:
 
@@ -1352,7 +1354,10 @@ agent_workflow:
         That is useful for every caller, so no turn is wasted while the fetch
         comes back.
 
-        ## What the fetch tells you, from the next turn onward
+        ## What the fetch tells you
+        These facts are in session state from the first turn when the
+        start-of-call fetch succeeded; otherwise from the turn after you
+        fetch yourself.
         Three facts arrive in session state:
 
           has_age        an age is already on file
@@ -1621,8 +1626,10 @@ agent_workflow:
         # 1b. NOTHING TO ASK — the fetch already answered both questions.
         #
         # These three arrive from fetch_profile via the connector's
-        # session_mapping, from turn 2 onward (tools run after routing, so the
-        # turn that fetches cannot also branch on the result). All true means
+        # session_mapping. The start-of-call session bootstrap runs fetch_profile
+        # before turn-1 routing, so they are in session state from turn 1; if
+        # that fetch fails and the LLM fetches itself, they arrive from the turn
+        # after (tools run after routing). All true means
         # the caller has consented and has an age on file, so this phase has
         # no question left and must not invent one.
         #
