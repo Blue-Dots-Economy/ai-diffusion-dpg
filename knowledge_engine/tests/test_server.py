@@ -181,12 +181,16 @@ def test_retrieve_emits_ke_span():
 # ---------------------------------------------------------------------------
 
 class TestUploadRouterRegistered:
+    # These assert against the OpenAPI schema rather than ``app.routes``. Newer
+    # FastAPI (0.142) no longer flattens an included router into ``app.routes``;
+    # it appends a lazy ``_IncludedRouter`` that has no ``.path``, so iterating
+    # ``r.path`` over ``app.routes`` raises AttributeError. The schema is the
+    # public contract and is unaffected by how routers are stored internally.
+
     def test_upload_endpoint_exists(self, client):
         """Verify /upload endpoint is registered on the FastAPI app."""
-        routes = [r.path for r in client.app.routes]
-        assert "/upload" in routes
+        assert "/upload" in client.app.openapi()["paths"]
 
     def test_upload_job_endpoint_exists(self, client):
         """Verify /upload/job/{job_id} endpoint is registered on the FastAPI app."""
-        routes = [r.path for r in client.app.routes]
-        assert "/upload/job/{job_id}" in routes
+        assert "/upload/job/{job_id}" in client.app.openapi()["paths"]

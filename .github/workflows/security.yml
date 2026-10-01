@@ -1,0 +1,82 @@
+# Security scanning (Sec-Audit A2 — Blue-Dots-Economy/signals-dpg#300)
+#
+# Thin caller. All scanning logic lives once in bluedots-automation so the
+# in-scope repos can't drift apart; see that repo's
+# .github/workflows/security-scan.yml and docs/operations/security-scanning-a2*.md.
+#
+# What runs here (language: python, no image-refs, gitleaks on):
+#   * trivy-fs    — Dockerfile/IaC misconfig + filesystem secret detection ->
+#                   SARIF. Dependency CVEs are thin for now: every service
+#                   declares its deps in a pyproject.toml with NO lock file
+#                   committed, and Trivy resolves Python versions from a lock
+#                   (uv.lock / poetry.lock / requirements.txt), not from
+#                   pyproject alone. Commit lock files and this becomes real
+#                   dependency coverage with no change here.
+#   * deps-audit  — `uv-secure`, which reads uv.lock. There are none in the tree
+#                   today, so it is effectively a no-op; it warns rather than
+#                   fails, so it cannot redden the build in the meantime.
+#   * image-scan  — SKIPPED: no image-refs passed. NOTE this differs from the
+#                   other repos for a reason worth fixing: there the service
+#                   images are Trivy-scanned inside the build workflow against
+#                   the freshly-built artifact, but build-images.yaml here has
+#                   no scan step, so these images are currently published
+#                   unscanned. Adding the scan there is the right fix — passing
+#                   image-refs here would scan them only after publication.
+#   * gitleaks    — ON, and it replaces the repo's own secret-scan.yaml, which
+#                   is deleted in the same change. The two were equivalent in
+#                   every respect that matters: same gitleaks image BY DIGEST
+#                   (sha256:c00b6bd0…), same full history (fetch-depth: 0),
+#                   same `persist-credentials: false`, same SARIF category
+#                   ("gitleaks") — so existing alerts carry over rather than
+#                   being orphaned under a new category. Running both would
+#                   have scanned the same history twice for one result.
+#
+# Report-only (`block: false`): findings land in Security > Code scanning and the
+# job still passes. Green means "the scan ran", NOT "nothing found".
+#
+# CAVEAT, and the one behaviour this change does not preserve: the deleted
+# secret-scan.yaml failed the job on ANY finding, unconditionally. Here gitleaks
+# runs with `--exit-code ${{ inputs.block && '1' || '0' }}`, so under
+# `block: false` a leaked secret is REPORTED, not blocked. `block` is a single
+# switch covering trivy-fs as well, so secret-blocking cannot be re-enabled on
+# its own through this interface. Flipping it to true would restore the old
+# secret posture and additionally make trivy-fs fail on HIGH/CRITICAL — which is
+# viable here (this repo had 0 open code-scanning alerts when the caller landed)
+# but diverges from the other four repos, which all run block: false.
+#
+# Triggers differ from the other repos because the branch model does: there is
+# no develop or feature integration branch here, so pull_request is unfiltered
+# and push is main-only — the same shape secret-scan.yaml already uses.
+#
+# Pinned to the same reusable-workflow SHA as signals-dpg, aggregator-dpg,
+# signals-search and notification-service, so the five move together.
+
+name: security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Monthly sweep: new CVEs get published against code nobody has touched.
+  schedule:
+    - cron: "0 3 1 * *"
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    # Declared here as well as in the reusable workflow: a called workflow cannot
+    # escalate beyond what the caller grants, so without security-events: write
+    # the SARIF upload fails with a 403 on repos whose default token is read-only.
+    permissions:
+      contents: read
+      security-events: write
+      packages: read
+    uses: Blue-Dots-Economy/bluedots-automation/.github/workflows/security-scan.yml@d6a39c5b22be14b4b4aeaa78fc1d86c1f67bb555  # feature 2026-09-25 -- repin to @main once promoted
+    with:
+      language: python
+      run-gitleaks: true
+      block: false
