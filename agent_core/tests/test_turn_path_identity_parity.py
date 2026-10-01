@@ -501,3 +501,56 @@ async def test_bootstrap_failure_leaves_routing_unchanged_on_both_paths():
     """A failed bootstrap (success=False) writes no flags; routing stays in opening."""
     assert await _stream_bootstrap_route(None) == ["opening"]
     assert _sync_bootstrap_route(None) == ["opening"]
+
+
+# ── dialogue_act mode: both paths apply one understanding identically ───────
+
+from src.understanding.history import RECENT_TURNS_KEY  # noqa: E402
+from src.understanding.models import DialogueActResult, StateWrite, TurnUnderstanding  # noqa: E402
+
+_DA_U = TurnUnderstanding(
+    nlu_result=NLUResult(intent="any_input", entities={"age": 25}, sentiment="neutral", confidence=1.0),
+    dialogue=DialogueActResult(acts=("provide_info",), relation="answers_pending"),
+    pending_id="age", writes=[StateWrite("session", "age", 25), StateWrite("session", "slot_provenance", ["age"])])
+
+
+def _da(agent):
+    """Switch an agent into dialogue_act mode with a canned understanding."""
+    agent._understander = MagicMock()
+    agent._understander.understand.return_value = _DA_U
+    agent._dialogue_cfg = MagicMock(history_turns=2, signal_types={})
+    agent._nlu_processor = MagicMock()
+    return agent
+
+
+async def test_both_paths_apply_identical_understanding():
+    """Parity: dialogue_act mode writes, frames and prompts the same on both paths,
+    and both send the raw caller text to NLU (legacy NLU is never called)."""
+    # opening_phrase_emitted: past the sync canned-greeting gate, so turn 1 reaches NLU.
+    sync_agent = _da(_make_agent(session_data={"current_subagent_id": "market_truth",
+                                               "opening_phrase_emitted": True}))
+    sync_agent.process_turn(_turn_input("Hello"))
+    sync_writes = {(c.args[2], c.args[3]): c.args[4] for c in sync_agent._memory.write.call_args_list}
+    sync_ctx = sync_agent._understander.understand.call_args.args[0]
+    sync_prompt = sync_agent._manager_agent.build_system_prompt.call_args.kwargs["caller_turn"]
+
+    stream_agent = _da(_make_agent_core())
+
+    async def mock_stream(*args, **kwargs):
+        yield "ok. "
+
+    stream_agent._llm.stream = mock_stream
+    await _collect_events(stream_agent, _make_turn_input(user_message="Hello"))
+    # The recent-turns write is fire-and-forget (create_task), so read call_args_list.
+    stream_writes = {(c.args[2], c.args[3]): c.args[4] for c in stream_agent._async_memory.write.call_args_list}
+    stream_ctx = stream_agent._understander.understand.call_args.args[0]
+    stream_prompt = stream_agent._manager_agent.build_system_prompt.call_args.kwargs["caller_turn"]
+
+    for key in (("session", "age"), ("session", "slot_provenance")):
+        assert sync_writes[key] == stream_writes[key]
+    assert ("session", RECENT_TURNS_KEY) in sync_writes and ("session", RECENT_TURNS_KEY) in stream_writes
+    assert sync_ctx.segments == stream_ctx.segments == ["Hello"]   # raw caller text on both paths
+    assert sync_ctx.tool_cache is not None and stream_ctx.tool_cache is not None
+    assert sync_prompt == stream_prompt != ""
+    sync_agent._nlu_processor.process.assert_not_called()
+    stream_agent._nlu_processor.process.assert_not_called()
