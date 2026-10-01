@@ -543,3 +543,52 @@ def test_user_ttl_cap_is_configurable():
     cfg = _with([{"name": "fetch_profile", "cache": {"scope": "user", "ttl_seconds": 90000}}], [],
                 tool_results={"max_user_ttl_seconds": 100000})
     MergedConfig.validate_full(cfg)
+
+
+# ---------------------------------------------------------------------------
+# Session bootstrap
+# ---------------------------------------------------------------------------
+
+
+import copy
+
+
+def _boot(steps=None, read=None, write=None, **agent):
+    cfg = copy.deepcopy(_minimal_valid_config())
+    cfg.setdefault("connectors", {})
+    cfg["connectors"]["read"] = read if read is not None else [{"name": "fetch_profile"}]
+    cfg["connectors"]["write"] = write or []
+    if steps is not None:
+        cfg["session_bootstrap"] = {"steps": steps}
+    if agent:
+        cfg.setdefault("agent", {}).update(agent)
+    return cfg
+
+
+def test_valid_bootstrap_and_prompt_session_fields():
+    cfg = _boot([{"type": "tool", "tool": "fetch_profile"}],
+                prompt_session_fields=["profile_item_id", "stored_trade"])
+    m = MergedConfig.validate_full(cfg)
+    assert m.session_bootstrap.timeout_ms == 1500
+    assert m.session_bootstrap.steps[0].args == {} and m.session_bootstrap.steps[0].requires_consent is False
+    assert m.agent.prompt_session_fields == ["profile_item_id", "stored_trade"]
+
+
+def test_no_bootstrap_is_default():
+    assert MergedConfig.validate_full(_boot()).session_bootstrap is None
+
+
+@pytest.mark.parametrize("cfg,match", [
+    pytest.param(_boot([{"type": "tool", "tool": "save_profile"}], write=[{"name": "save_profile"}]),
+                 "is not a read connector", id="write-connector"),
+    pytest.param(_boot([{"type": "tool", "tool": "ghost"}]), "is not a read connector", id="unknown-connector"),
+    pytest.param(_boot([{"type": "set", "tool": "fetch_profile"}]), "type", id="bad-type"),
+    pytest.param(_boot([]), "at least 1", id="no-steps"),
+    pytest.param({**_boot([{"type": "tool", "tool": "fetch_profile"}]),
+                  "session_bootstrap": {"timeout_ms": 0, "steps": [{"type": "tool", "tool": "fetch_profile"}]}},
+                 "greater than 0", id="zero-timeout"),
+    pytest.param(_boot([{"type": "tool", "tool": "fetch_profile", "extra": 1}]), "extra", id="extra-key"),
+])
+def test_invalid_bootstrap_rejected(cfg, match):
+    with pytest.raises(ValidationError, match=match):
+        MergedConfig.validate_full(cfg)
