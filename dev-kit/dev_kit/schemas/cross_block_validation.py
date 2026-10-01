@@ -187,6 +187,21 @@ def _tool_result_memory_rules(ac: dict, ml: dict) -> list[str]:
     return errors
 
 
+def _session_bootstrap_rules(ac: dict, ml: dict) -> list[str]:
+    """Cross-block rules for session bootstrap and prompt_session_fields (agent_core ↔ memory_layer)."""
+    errors: list[str] = []
+    schema = (((ml.get("state") or {}).get("session") or {}).get("schema")) or {}
+    for f in ((ac.get("agent") or {}).get("prompt_session_fields")) or []:
+        if f not in schema:
+            errors.append(f"agent.prompt_session_fields: '{f}' is not a declared session field")
+    read = {c.get("name") for c in ((ac.get("connectors") or {}).get("read") or []) if isinstance(c, dict)}
+    for i, s in enumerate(((ac.get("session_bootstrap") or {}).get("steps")) or []):
+        tool = (s or {}).get("tool") if isinstance(s, dict) else None
+        if tool not in read:
+            errors.append(f"session_bootstrap.steps[{i}]: '{tool}' is not a read connector")
+    return errors
+
+
 def _tool_result_session_mapping_rules(ac: dict, ag: dict) -> list[str]:
     """Reject user-scope caching of a connector whose tool declares ``session_mapping``.
 
@@ -485,6 +500,7 @@ def validate_cross_block(
     if applicable_after("tools"):
         errors.extend(_tool_result_memory_rules(ac, blocks.get("memory_layer") or {}))
         errors.extend(_tool_result_agent_rules(ac))
+        errors.extend(_session_bootstrap_rules(ac, blocks.get("memory_layer") or {}))
         # 13c. User-scope cache is unsafe where the tool declares session_mapping.
         errors.extend(_tool_result_session_mapping_rules(ac, blocks.get("action_gateway") or {}))
 
