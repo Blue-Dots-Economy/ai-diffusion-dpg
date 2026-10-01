@@ -206,7 +206,7 @@ def _wire_basic_nlu(agent):
     agent._language_normaliser = MagicMock()
     agent._language_normaliser.normalise.return_value = ("msg", "english")
     agent._understander = fake_understander(NLUResult(
-        intent="greeting", entities={}, sentiment="neutral", confidence=0.9
+        intent="greeting", entities={}, confidence=0.9
     ))
 
 

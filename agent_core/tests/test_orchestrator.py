@@ -101,19 +101,16 @@ ESCALATE = TrustCheckResult(passed=False, action="escalate", reason="escalation 
 _DEFAULT_NLU = NLUResult(
     intent="market_truth_query",
     entities={"location": "Hubli"},
-    sentiment="neutral",
     confidence=0.9,
 )
 _UNKNOWN_NLU = NLUResult(
     intent="unknown",
     entities={},
-    sentiment="neutral",
     confidence=0.2,
 )
 _TERMINATION_NLU = NLUResult(
     intent="termination_intent",
     entities={},
-    sentiment="neutral",
     confidence=0.95,
 )
 
@@ -586,7 +583,7 @@ def test_unknown_intent_falls_through_to_llm():
 
 def test_low_confidence_valid_intent_still_calls_llm():
     """Low confidence alone does NOT skip the LLM when intent is known."""
-    low_valid = NLUResult(intent="market_truth_query", entities={}, sentiment="neutral", confidence=0.3)
+    low_valid = NLUResult(intent="market_truth_query", entities={}, confidence=0.3)
     agent = _make_agent(nlu_result=low_valid)
     agent.process_turn(_turn_input())
     agent._llm.call.assert_called_once()
@@ -1135,7 +1132,6 @@ async def test_termination_short_circuit_below_threshold_falls_through():
     low_conf = NLUResult(
         intent="termination_intent",
         entities={},
-        sentiment="neutral",
         confidence=0.4,
     )
     agent = _make_stream_agent(
@@ -1284,14 +1280,12 @@ def test_language_preference_set_from_detection_on_first_turn():
 _SWITCH_NLU = NLUResult(
     intent="language_switch_request",
     entities={"language_preference": "kannada"},
-    sentiment="neutral",
     confidence=0.95,
 )
 
 _SWITCH_UNSUPPORTED_NLU = NLUResult(
     intent="language_switch_request",
     entities={"language_preference": "french"},
-    sentiment="neutral",
     confidence=0.95,
 )
 

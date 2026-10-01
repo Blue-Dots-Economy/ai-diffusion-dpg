@@ -61,7 +61,6 @@ def make_context(
         detected_language="hinglish",
         intent=intent,
         entities=entities or {},
-        sentiment="neutral",
         confidence=0.85,
         retrieval_chunks=[],
         always_include_chunks=[],

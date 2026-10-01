@@ -39,7 +39,7 @@ def _tool_agent(rounds: int = 1):
     )
     agent._language_normaliser = type("N", (), {"normalise": lambda self, *a, **k: ("msg", "english")})()
     agent._understander = fake_understander(NLUResult(
-        intent="search", entities={}, sentiment="neutral", confidence=0.9))
+        intent="search", entities={}, confidence=0.9))
     agent._tool_registry.get_route.return_value = None
     return agent
 

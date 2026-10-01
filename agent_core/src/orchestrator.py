@@ -1355,7 +1355,6 @@ class AgentCore(AgentCoreBase):
             "session": bundle.session,
             "intent": nlu_result.intent,
             "entities": nlu_result.entities,
-            "sentiment": nlu_result.sentiment,
             "confidence": nlu_result.confidence,
             "normalised_input": normalised_input,
             "detected_language": detected_language,
@@ -3571,7 +3570,7 @@ class AgentCore(AgentCoreBase):
         model_used = ""
         trust_input = TrustCheckResult(passed=True, action="allow")
         trust_output = TrustCheckResult(passed=True, action="allow")
-        nlu_result = NLUResult(intent="unknown", entities={}, sentiment="neutral", confidence=0.0)
+        nlu_result = NLUResult(intent="unknown", entities={}, confidence=0.0)
         understanding = None
         tool_cache = None
         all_tool_calls: list[ToolCall] = []
@@ -4366,7 +4365,6 @@ class AgentCore(AgentCoreBase):
                     "session": bundle.session,
                     "intent": nlu_result.intent,
                     "entities": nlu_result.entities,
-                    "sentiment": nlu_result.sentiment,
                     "confidence": nlu_result.confidence,
                     "normalised_input": normalised_input,
                     "detected_language": detected_language,

@@ -29,7 +29,6 @@ class KnowledgeEngineBase(ABC):
         session: dict,
         intent: str = "unknown",
         entities: Optional[dict[str, Any]] = None,
-        sentiment: str = "neutral",
         confidence: float = 0.0,
         normalised_input: str = "",
         detected_language: str = "",
@@ -49,9 +48,8 @@ class KnowledgeEngineBase(ABC):
             user_message:      Raw user message text.
             profile:           UserProfile dict from ContextBundle.
             session:           Session state dict from ContextBundle.
-            intent:            Classified intent from NLU Processor.
-            entities:          Extracted entities dict from NLU Processor.
-            sentiment:         Sentiment class from NLU Processor.
+            intent:            Classified intent from the dialogue-act understanding step.
+            entities:          Extracted entities dict from the understanding step.
             confidence:        NLU confidence score 0.0-1.0.
             normalised_input:  Cleaned text from Language Normaliser.
             detected_language: Language detected by Language Normaliser.

@@ -118,7 +118,7 @@ async def test_stream_path_forwards_user_id_to_gateway():
     agent._language_normaliser = MagicMock()
     agent._language_normaliser.normalise.return_value = ("msg", "english")
     agent._understander = fake_understander(NLUResult(
-        intent="search", entities={}, sentiment="neutral", confidence=0.9
+        intent="search", entities={}, confidence=0.9
     ))
 
     await _collect_events(agent, _make_turn_input(user_id=USER_ID))
@@ -169,7 +169,7 @@ async def test_both_paths_forward_identical_identity():
     stream_agent._language_normaliser = MagicMock()
     stream_agent._language_normaliser.normalise.return_value = ("msg", "english")
     stream_agent._understander = fake_understander(NLUResult(
-        intent="search", entities={}, sentiment="neutral", confidence=0.9
+        intent="search", entities={}, confidence=0.9
     ))
     await _collect_events(stream_agent, _make_turn_input(user_id=USER_ID))
 
@@ -399,7 +399,7 @@ _BOOT_CONFIG = {
 _FLAGS = {"user_terms": True, "user_privacy": True, "has_age": True}
 _OPENING_PHRASE = "Welcome to Blue Dots. Shall we begin?"
 _NEW_CALLER = {"has_age": False}            # user_terms / user_privacy absent
-_GREETING = NLUResult(intent="greeting", entities={}, sentiment="neutral", confidence=0.9)
+_GREETING = NLUResult(intent="greeting", entities={}, confidence=0.9)
 
 
 def _sub(sid, routing=(), is_start=False, opening_phrase=""):
@@ -507,7 +507,7 @@ from src.understanding.history import RECENT_TURNS_KEY  # noqa: E402
 from src.understanding.models import DialogueActResult, StateWrite, TurnUnderstanding  # noqa: E402
 
 _DA_U = TurnUnderstanding(
-    nlu_result=NLUResult(intent="any_input", entities={"age": 25}, sentiment="neutral", confidence=1.0),
+    nlu_result=NLUResult(intent="any_input", entities={"age": 25}, confidence=1.0),
     dialogue=DialogueActResult(acts=("provide_info",), relation="answers_pending"),
     pending_id="age", writes=[StateWrite("session", "age", 25), StateWrite("session", "slot_provenance", ["age"])])
 
@@ -611,8 +611,7 @@ def test_sync_nlu_log_prints_entity_keys_not_values(caplog):
     """M1: the sync [STEP 5] ✓ line logs entity keys only (no PII), like the stream path."""
     import logging
     agent = _make_agent(session_data={"current_subagent_id": "market_truth", "opening_phrase_emitted": True},
-                        nlu_result=NLUResult(intent="any_input", entities={"name": "Ramesh Kumar"},
-                                             sentiment="neutral", confidence=0.9))
+                        nlu_result=NLUResult(intent="any_input", entities={"name": "Ramesh Kumar"}, confidence=0.9))
     with caplog.at_level(logging.INFO, logger="src.orchestrator"):
         agent.process_turn(_turn_input("मेरा नाम Ramesh Kumar है"))
     lines = [r.getMessage() for r in caplog.records if "[STEP 5] NLU Processor  ✓" in r.getMessage()]

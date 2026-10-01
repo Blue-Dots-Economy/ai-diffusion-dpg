@@ -13,7 +13,7 @@ pytestmark = pytest.mark.asyncio
 
 def _understanding(intent="any_input", writes=(), signals=()):
     return TurnUnderstanding(
-        nlu_result=NLUResult(intent=intent, entities={}, sentiment="neutral", confidence=1.0),
+        nlu_result=NLUResult(intent=intent, entities={}, confidence=1.0),
         dialogue=DialogueActResult(acts=("provide_info",), relation="answers_pending"),
         pending_id="age", writes=list(writes), signals=list(signals))
 
@@ -114,8 +114,7 @@ async def test_interrupted_turn_before_fold_records_user_message_as_caller():
 
 def _lang_understanding(value):
     return TurnUnderstanding(
-        nlu_result=NLUResult(intent="language_switch_request", entities={"language_preference": value},
-                             sentiment="neutral", confidence=1.0),
+        nlu_result=NLUResult(intent="language_switch_request", entities={"language_preference": value}, confidence=1.0),
         dialogue=DialogueActResult(acts=("request_change",), relation="new_topic", topic="language"),
         pending_id=None, writes=[], signals=[])
 

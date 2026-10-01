@@ -161,7 +161,7 @@ class TurnUnderstander(TurnUnderstanderBase):
     @staticmethod
     def _fallback(dialogue: DialogueActResult, pending: Any, reason: str) -> TurnUnderstanding:
         return TurnUnderstanding(
-            nlu_result=NLUResult(intent="any_input", entities={}, sentiment="neutral", confidence=0.0),
+            nlu_result=NLUResult(intent="any_input", entities={}, confidence=0.0),
             dialogue=dialogue, pending_id=getattr(pending, "id", None), fallback_reason=reason)
 
     def _post(self, dialogue: DialogueActResult, pending: Any, rows: list[dict],
@@ -196,7 +196,7 @@ class TurnUnderstander(TurnUnderstanderBase):
                 chosen = ctx.previous_user_state or cfg.user_state_default
             user_state = UserStateClassification(id=chosen, confidence=conf)
         u = TurnUnderstanding(
-            nlu_result=NLUResult(intent=intent, entities=entities, sentiment="neutral", confidence=1.0,
+            nlu_result=NLUResult(intent=intent, entities=entities, confidence=1.0,
                                  user_state=user_state),
             dialogue=dialogue, pending_id=pid, resolved=resolved, unresolved=unresolved,
             accepted_slots=accepted, updates=updates, rejected_slots=rejected + not_pending,

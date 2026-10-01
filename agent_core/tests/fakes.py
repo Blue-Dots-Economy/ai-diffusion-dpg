@@ -22,7 +22,7 @@ def fake_understander(nlu_result: NLUResult | None = None, *, writes: Sequence[S
     """
     u = MagicMock()
     u.understand.return_value = TurnUnderstanding(
-        nlu_result=nlu_result or NLUResult(intent="any_input", entities={}, confidence=1.0, sentiment="neutral"),
+        nlu_result=nlu_result or NLUResult(intent="any_input", entities={}, confidence=1.0),
         dialogue=DialogueActResult(acts=("other",), relation="unclear"),
         writes=list(writes), signals=list(signals))
     return u

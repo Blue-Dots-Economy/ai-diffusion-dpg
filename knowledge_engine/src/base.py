@@ -92,9 +92,8 @@ class KEContext:
     Fields pre-populated from Agent Core NLU results:
         normalised_input    — cleaned text from Language Normalisation
         detected_language   — "hindi" | "kannada" | "english" | "hinglish"
-        intent              — classified intent label from NLU Processor
+        intent              — classified intent label from Agent Core understanding
         entities            — extracted entities dict; Block 1 (Glossary) normalises values
-        sentiment           — sentiment class from NLU Processor
         confidence          — NLU confidence score 0.0–1.0
 
     Mutable fields (enriched by blocks in order):
@@ -108,7 +107,6 @@ class KEContext:
     detected_language: str
     intent: str
     entities: dict[str, Any]
-    sentiment: str
     confidence: float
     retrieval_chunks: list[dict]
     always_include_chunks: list[dict]
@@ -185,7 +183,6 @@ class KnowledgeEngineBase(ABC):
         session: dict,
         intent: str = "unknown",
         entities: Optional[dict] = None,
-        sentiment: str = "neutral",
         confidence: float = 0.0,
         normalised_input: str = "",
         detected_language: str = "",

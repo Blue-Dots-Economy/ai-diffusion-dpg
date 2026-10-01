@@ -4,7 +4,7 @@ from src.understanding.caller_turn import render_caller_turn
 from src.understanding.models import (DialogueActResult, ResolvedReference, SlotRejection, SlotUpdate,
                                       TurnUnderstanding, UnresolvedReference)
 
-NR = NLUResult(intent="job_pick", entities={}, sentiment="neutral", confidence=1.0)
+NR = NLUResult(intent="job_pick", entities={}, confidence=1.0)
 
 
 def test_full_render():

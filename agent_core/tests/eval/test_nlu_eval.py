@@ -34,7 +34,7 @@ def test_predict_dialogue_act_uses_offered_rows_and_reports_resolution():
                                "expect": {"intent": "job_pick", "option_id": "j1", "terminate": False}})
     und = MagicMock()
     und.understand.return_value = TurnUnderstanding(
-        nlu_result=NLUResult("job_pick", {}, "neutral", 1.0),
+        nlu_result=NLUResult("job_pick", {}, 1.0),
         dialogue=DialogueActResult(acts=("select",), relation="answers_pending"), pending_id="select_job",
         resolved=ResolvedReference(1, "j1", "Welder", "item_id"), latency_ms=900)
     pred = predict_dialogue_act(case, und)
@@ -47,14 +47,14 @@ def test_predict_dialogue_act_uses_offered_rows_and_reports_resolution():
 def test_predict_intent_maps_unrouted_intents_and_termination():
     case = EvalCase.from_dict(CASE)
     nlu = MagicMock()
-    nlu.process.return_value = NLUResult("termination_intent", {"trade": "welder"}, "neutral", 0.95)
+    nlu.process.return_value = NLUResult("termination_intent", {"trade": "welder"}, 0.95)
     wf = MagicMock(nlu_intent_set={"apply_confirm": ["any_input", "termination_intent"]})
     pred = predict_intent(case, nlu, wf, entity_map={}, routed={"termination_intent", "apply_now"},
                           resolves_to="selected_job_item_id")
     assert pred.intent == "termination_intent" and pred.terminate is True and pred.slots == {"trade": "welder"}
     kwargs = nlu.process.call_args.kwargs
     assert kwargs["current_question"] == "आवेदन भेज दिया है।" and kwargs["normalised_input"] == "ठीक है धन्यवाद"
-    nlu.process.return_value = NLUResult("profile_answer", {}, "neutral", 0.9)
+    nlu.process.return_value = NLUResult("profile_answer", {}, 0.9)
     assert predict_intent(case, nlu, wf, {}, {"apply_now"}, "x").intent == "any_input"
 
 
