@@ -605,6 +605,7 @@ class ManagerAgent:
         user_state_guidance: str | None = None,
         session_end_eval_prompt: str | None = None,
         known_facts: str = "",
+        caller_turn: str = "",
     ) -> SystemPrompt:
         """Build a neutral SystemPrompt with TextBlock entries for one LLM call.
 
@@ -624,6 +625,7 @@ class ManagerAgent:
             <resumption>          resumption note (first turn after adoption)
             <known_profile>       profile grounding
             <known_facts>         stored tool results rendered for grounding
+            <caller_turn>         NLU conclusion for this turn (dialogue_act mode)
             <active_guardrails>   guardrail constraints + required disclosures
 
         Empty inputs elide their section entirely; empty tiers are not
@@ -649,6 +651,8 @@ class ManagerAgent:
             known_facts:            Rendered stored tool results (from
                                     ``TurnToolCache.render_known_facts``); empty
                                     elides the ``<known_facts>`` section.
+            caller_turn:            Rendered NLU conclusion (``render_caller_turn``);
+                                    empty elides ``<caller_turn>``.
 
         Returns:
             Neutral SystemPrompt with TextBlock entries; the Anthropic provider
@@ -741,6 +745,7 @@ class ManagerAgent:
             xml("resumption", resumption_note),
             xml("known_profile", profile_body),
             xml("known_facts", known_facts),
+            xml("caller_turn", caller_turn),
             xml("active_guardrails", guardrails_body),
         ])
 

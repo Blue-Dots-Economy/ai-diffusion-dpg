@@ -1266,3 +1266,20 @@ def test_build_system_prompt_renders_known_facts():
     prompt = agent.build_system_prompt("persona", "", "english", "web", {}, known_facts="- t — x")
     assert "<known_facts>" in _flat(prompt) and "- t — x" in _flat(prompt)
     assert "<known_facts>" not in _flat(agent.build_system_prompt("persona", "", "english", "web", {}))
+
+
+def test_caller_turn_rendered_after_known_facts_in_tier3():
+    agent = _make_manager_for_prompt()
+    sp = agent.build_system_prompt(agent_system_prompt="a", subagent_system_prompt="b",
+                                   detected_language="hindi", channel="voice", profile={},
+                                   known_facts="F1", caller_turn="acts: affirm")
+    tier3 = sp.blocks[-1].text
+    assert "<caller_turn>" in tier3 and tier3.index("known_facts") < tier3.index("caller_turn")
+    assert sp.blocks[-1].cache_hint is None
+
+
+def test_caller_turn_absent_by_default():
+    agent = _make_manager_for_prompt()
+    sp = agent.build_system_prompt(agent_system_prompt="a", subagent_system_prompt="b",
+                                   detected_language="hindi", channel="voice", profile={})
+    assert all("<caller_turn>" not in b.text for b in sp.blocks)
