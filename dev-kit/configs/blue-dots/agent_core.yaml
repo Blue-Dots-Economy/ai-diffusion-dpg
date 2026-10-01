@@ -264,6 +264,11 @@ conversation:
   output_blocked_message: "माफ़ कीजिए, जवाब देने में दिक्कत आ रही है। क्या आप दोबारा पूछ सकते हैं?"
   unknown_intent_message: "माफ़ कीजिए, मैं ठीक से सुन नहीं पाई। क्या आप दोबारा कह सकते हैं?"
   termination_message: "ब्लू डॉट्स इस्तेमाल करने के लिए धन्यवाद। आपका दिन शुभ हो।"
+  # Spoken only when a turn produced no text at all, after the orchestrator's
+  # empty-completion retry has already failed twice. On a phone line the
+  # alternative is silence, which a caller cannot tell apart from a dropped
+  # call. Asks them to repeat rather than pretending anything was understood.
+  empty_response_message: "माफ़ कीजिए, मैं ठीक से सुन नहीं पाई। क्या आप दोबारा बता सकते हैं?"
   unsupported_language_message: >
     माफ़ कीजिए, मैं सिर्फ़ हिंदी या अंग्रेज़ी में मदद कर सकती हूँ।
     क्या आप इनमें से किसी एक भाषा में बात कर सकते हैं?

@@ -170,8 +170,22 @@ tools:
               textSearch: "{query_text}"
             pagination:
               limit: 5
-              offset: 0
+              # Optional. A placeholder whose value is absent drops the field,
+              # and the API treats a missing offset as 0 (verified), so a first
+              # search needs no offset at all and "और नौकरियाँ दिखाइए" can ask
+              # for the next page instead of re-reading the same one.
+              offset: "{offset}"
         params:
+          - name: offset
+            source: agent
+            type: integer
+            required: false
+            description: >
+              How many results to skip. OMIT on a first search. When the caller
+              asks for more jobs ("और नौकरियाँ दिखाइए", "और दिखाइए", "कुछ और
+              है?"), pass the number you have ALREADY read out to them, so the
+              next page continues rather than repeating. Re-running the same
+              search with no offset returns the same jobs again.
           - name: query_text
             source: agent
             type: string

@@ -4332,20 +4332,60 @@ class AgentCore(AgentCoreBase):
                 # this loop is what writes the reply, and skipping it would end the
                 # call in silence. Any other tool in the round still needs its
                 # result read back, so the skip requires end_session to be alone.
-                _skip_final_pass = (
-                    bool(all_tool_calls)
-                    and all(tc.tool_name == "end_session" for tc in all_tool_calls)
-                    and bool(
-                        sentence_index
-                        or token_buffer.strip()
-                        or full_response_text.strip()
-                        or _trust_batcher.has_pending
-                    )
+                _only_end_session = bool(all_tool_calls) and all(
+                    tc.tool_name == "end_session" for tc in all_tool_calls
                 )
+                _closing_text_exists = bool(
+                    sentence_index
+                    or token_buffer.strip()
+                    or full_response_text.strip()
+                    or _trust_batcher.has_pending
+                )
+                _skip_final_pass = _only_end_session
+
+                # The model is told to speak its closing line alongside the
+                # tool call, and in practice never does — across every
+                # end_session observed on the VM it came back as
+                # stop_reason=tool_use with no text at all. Rather than spend a
+                # round trip letting it write a goodbye we already have in
+                # config, speak the configured one. It is the same string
+                # #204's short-circuit uses, so a call ends identically whether
+                # NLU caught the goodbye or the model did.
+                if _only_end_session and not _closing_text_exists:
+                    _canned = (self._config.get("conversation", {}) or {}).get(
+                        "termination_message", ""
+                    ) or ""
+                    _canned = self._translate_consent_message(
+                        _canned, detected_language,
+                    )
+                    if _canned:
+                        logger.info(
+                            "  [STEP 8] LLM Stream Call #2  ⏭  skipped — spoke the "
+                            "configured termination_message instead"
+                        )
+                        full_response_text += _canned + " "
+                        yield _stamp(SentenceEvent(
+                            text=_canned, sentence_index=sentence_index,
+                        ))
+                        sentence_index += 1
+                    else:
+                        # Nothing configured to fall back on: the second pass is
+                        # the only thing that can produce a reply, so make it
+                        # rather than hang up on the caller in silence.
+                        _skip_final_pass = False
+                        logger.warning(
+                            "orchestrator.stream_end_session_no_canned_line",
+                            extra={
+                                "operation": "orchestrator.stream_turn",
+                                "status": "fallback",
+                                "session_id": session_id,
+                            },
+                        )
+
                 if _skip_final_pass:
                     logger.info(
                         "  [STEP 8] LLM Stream Call #2  ⏭  skipped — end_session was "
-                        "the only tool and the closing text is already written"
+                        "the only tool of the round"
                     )
                 else:
                     logger.info(
@@ -4606,6 +4646,38 @@ class AgentCore(AgentCoreBase):
                 if _trust_batcher.was_escalated:
                     break
             full_response_text = full_response_text.rstrip()
+
+            # A turn that reaches here with nothing to say leaves the caller
+            # listening to silence on a phone line, with no way to tell whether
+            # the bot is thinking or the call is dead. The empty-completion
+            # retry above already had two attempts; this is the backstop for
+            # when both came back empty.
+            #
+            # An escalated turn is deliberately withheld content, not an empty
+            # one — Trust Layer speaks its own refusal, so leave it alone.
+            if not sentence_index and not was_escalated:
+                _empty_line = (self._config.get("conversation", {}) or {}).get(
+                    "empty_response_message", ""
+                ) or ""
+                _empty_line = self._translate_consent_message(
+                    _empty_line, detected_language,
+                )
+                logger.warning(
+                    "orchestrator.stream_empty_turn",
+                    extra={
+                        "operation": "orchestrator.stream_turn",
+                        "status": "degraded",
+                        "session_id": session_id,
+                        "subagent_id": current_subagent_id,
+                        "recovered": bool(_empty_line),
+                    },
+                )
+                if _empty_line:
+                    full_response_text = _empty_line
+                    yield _stamp(SentenceEvent(
+                        text=_empty_line, sentence_index=sentence_index,
+                    ))
+                    sentence_index += 1
 
             # ── Step 11: Write current_question ────────────────────────
             # GH-151 #5: fire-and-forget. The next turn reads context_bundle,
