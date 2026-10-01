@@ -363,26 +363,17 @@ conversation:
       them the whole journey and they have to redial.
     fail_action: "none"
 
-# Framework `remember` tool: lets the model record which profile the caller
-# chose. Remembered values are written to session state (scope: session), NOT
-# to <known_facts>; a redial (new session) sees them only if Memory Layer
-# adopts the prior session's state. profile_item_id
-# must equal an item_id that really appeared in a fetch_profile/save_profile
-# result. No prompt currently calls `remember`; the block stays declared so it
-# can be switched on without a schema change. apply_job's profile_item_id is
-# NOT sourced from session.
-memory_tool:
-  name: remember
-  fields:
-    # Declared but not used by any prompt for now: profile_item_id is set
-    # from the live item by fetch_profile's session_mapping.
-    profile_item_id:
-      scope: session
-      description: "item_id of the profile the caller chose to use or update"
-      grounded_in: [fetch_profile, save_profile]
-    profile_action:
-      scope: session
-      description: "use_existing | create_new | update_existing, as the caller chose"
+# Framework `remember` tool: deliberately NOT enabled for blue-dots.
+#
+# Declaring `memory_tool` offers `remember` to the model alongside every tool
+# list, prompt or no prompt. Measured on a local run (2026-10-01): the model
+# called it unprompted, nothing grounded the value so every call was rejected,
+# and on the streaming path it retried until the tool-round cap — an 8.9 s turn
+# whose reply never listed the jobs. profile_item_id is already set from the
+# live item by fetch_profile's session_mapping, so nothing needs it yet.
+#
+# To enable later: declare `memory_tool` (fields + grounded_in, see
+# dev-kit/dpg/agent_core.yaml) together with the prompt that calls it.
 
 # Connector descriptions seen by the LLM when picking a tool. The full
 # adapter + path config lives in action_gateway.yaml; this block adds the
