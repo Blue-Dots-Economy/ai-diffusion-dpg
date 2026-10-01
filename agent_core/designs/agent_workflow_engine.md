@@ -140,8 +140,8 @@ agent_workflow:
    At turn time, the active tool list is a single dict lookup — no registry filtering per request.
    Example: { "commitment": [<onest_apply_def>, <counsellor_schedule_def>], "greeting": [] }
 
-   Both structures are stored as class-level attributes on AgentCore (not per-session).
-   They are safe for concurrent request access because they are read-only after startup.
+   This structure is stored as a class-level attribute on AgentCore (not per-session).
+   It is safe for concurrent request access because it is read-only after startup.
 
 ### Per-Turn Execution (modifications to existing 12-step sequence)
 

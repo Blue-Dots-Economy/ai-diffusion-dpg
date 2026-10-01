@@ -76,9 +76,9 @@ The framework assembles AI-powered voice/chat systems from **7 standardised DPG 
 Reach Layer (input)
   → Agent Core: read state ← Memory Layer
   → Agent Core: consent gate (if ask_for_consent: true in config)
-  → Agent Core: dialogue-act NLU (internal): pending question → frame → strict NLU → post-processing; caller text enters the LLM as <caller_turn>
   → Agent Core: input safety check → Trust Layer /check/input
   → Agent Core: Language Normalisation (internal)
+  → Agent Core: dialogue-act NLU (internal): pending question → frame → strict NLU → post-processing; the structured understanding (acts, relation, resolved option, slot updates, signals) is rendered into the LLM prompt as <caller_turn>
   → Agent Core: POST /assemble_constraints → Trust Layer
   → Agent Core: Manager Agent selects subagent + tools, builds system prompt
   → Agent Core: LLM call #1

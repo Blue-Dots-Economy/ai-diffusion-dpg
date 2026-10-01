@@ -97,7 +97,7 @@ Sole orchestrator and sole LLM caller. Stateless between turns.
 - Consent gate: if `ask_for_consent: true` in config and `user_storage_mode` not yet set, deliver scripted consent prompt (turn 1) or evaluate response via Trust Layer `/consent/verify` and write `user_storage_mode` to Memory Layer (turn 2).
 - Input safety check via Trust Layer (mandatory).
 - Language Normalisation (internal — `preprocessing/language_normaliser.py`).
-- Dialogue-act NLU (internal — `understanding/`, `TurnUnderstander`). Resolves the pending question from the session, builds a frame (`pending`, `known_fields`, `recent_turns`), makes one strict-schema LLM call returning dialogue acts and typed slots, then post-processing derives the routing intent from the `act_intents` table and `SlotWriter` plans the session writes. `NLUResult` (intent, entities, confidence — 1.0 derived, 0.0 fallback — and optional `user_state`) is the routing contract. The caller's utterance reaches the main LLM wrapped in `<caller_turn>`.
+- Dialogue-act NLU (internal — `understanding/`, `TurnUnderstander`). Resolves the pending question from the session, builds a frame (`pending`, `known_fields`, `recent_turns`), makes one strict-schema LLM call returning dialogue acts and typed slots, then post-processing derives the routing intent from the `act_intents` table and `SlotWriter` plans the session writes. `NLUResult` (intent, entities, confidence — 1.0 derived, 0.0 fallback — and optional `user_state`) is the routing contract. A structured summary of the understanding (acts, relation, resolved option, slot updates, signals) is rendered into the main LLM's prompt as `<caller_turn>`.
 - Pre-LLM guardrail assembly via Trust Layer `/assemble_constraints` — returns prompt constraints, required disclosures, and action gates.
 - Manager Agent routing: select active subagent and tool list based on `current_subagent_id` + NLU intent, following routing rules defined in `dev-kit/configs/<domain>/agent_core.yaml`.
 - Assemble retrieval context via Knowledge Engine (passes NLU results + session state in body).
@@ -452,9 +452,6 @@ Agent Core: consent gate                                  [only if ask_for_conse
   │  user_storage_mode=None, prior turn exists → POST /consent/verify → write user_storage_mode → continue
   │  user_storage_mode set → skip
   ▼
-Agent Core: dialogue-act NLU (internal)                   [pending question → frame → strict NLU call → post-processing]
-  │                                                       [→ NLUResult(intent, entities, confidence), session writes, <caller_turn>]
-  ▼
 Agent Core: POST /check/input → Trust Layer               [MANDATORY]
   │
   ▼ (block → TurnResponse(blocked_input_message))
@@ -462,6 +459,9 @@ Agent Core: POST /check/input → Trust Layer               [MANDATORY]
   ▼ (allow → continue)
 Agent Core: Language Normalisation (internal)             [dialect, code-switching, transliteration]
   │
+  ▼
+Agent Core: dialogue-act NLU (internal)                   [pending question → frame → strict NLU call → post-processing]
+  │                                                       [→ NLUResult(intent, entities, confidence), session writes, <caller_turn>]
   ▼
 Agent Core: POST /assemble_constraints → Trust Layer      [guardrail constraints for the active policy pack]
   │  returns: prompt_constraints, required_disclosures, action_gates, refusal_templates

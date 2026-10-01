@@ -127,7 +127,8 @@ Both `process_turn()` and `stream_turn()` run the same 13-step sequence:
 4.  Dialogue-act NLU            TurnUnderstander — pending question + known fields form the
                                 frame; one strict-schema LLM call returns dialogue acts and
                                 typed slots; post-processing derives the routing intent and
-                                the session writes. Caller text reaches the main LLM as
+                                the session writes. A structured summary of the
+                                understanding is rendered into the main LLM prompt as
                                 <caller_turn>
 5.  Routing                     Deterministic — NLU result + session conditions select subagent
 6.  Assemble constraints        Trust Layer.assemble_constraints
@@ -301,7 +302,7 @@ LLM → tool → LLM loop. Both sync and async variants. Used by `process_turn()
 Runs before NLU. Detects dialect, normalises code-switching (Hindi/Kannada/English), and transliterates Romanised Indic text. Currently only the `internal` provider (LLM-based normalisation via a haiku model) is implemented.
 
 **`understanding/` — TurnUnderstander (the single, dialogue-act NLU)**
-Understands each turn in the context of the question the agent just asked. It resolves the session's pending question, builds a frame (`pending`, `known_fields`, `recent_turns`), makes one strict-schema LLM call that returns dialogue acts and typed slots, and post-processes the result: the routing intent is derived from the `act_intents` table (`NLUResult.confidence` is 1.0 for a derived intent, 0.0 for a fallback) and `SlotWriter` plans the session writes. When `conversation.user_state_model` is enabled the same call also returns `user_state`. The caller's utterance reaches the main LLM wrapped in `<caller_turn>`, with `recent_turns` and `served_tool_results` for context. Uses a dedicated NLU provider instance. There is no other NLU mode; see `docs/superpowers/specs/2026-10-01-nlu-dialogue-acts-design.md` §16.
+Understands each turn in the context of the question the agent just asked. It resolves the session's pending question, builds a frame (`pending`, `known_fields`, `recent_turns`, `served_tool_results`), makes one strict-schema LLM call that returns dialogue acts and typed slots, and post-processes the result: the routing intent is derived from the `act_intents` table (`NLUResult.confidence` is 1.0 for a derived intent, 0.0 for a fallback) and `SlotWriter` plans the session writes. When `conversation.user_state_model` is enabled the same call also returns `user_state`. A structured summary of the understanding (acts, relation, resolved option, slot updates, signals) is rendered into the main LLM's prompt as `<caller_turn>`. Uses a dedicated NLU provider instance. There is no other NLU mode; see `docs/superpowers/specs/2026-10-01-nlu-dialogue-acts-design.md` §16.
 
 **`tool_registry.py` — ToolRegistry**
 Loads tool definitions from config at startup and routes tool calls by name. Tracks which tools require consent (`write` and `identity` connector types).
@@ -334,7 +335,7 @@ Config is loaded at startup from two YAML files: `config/dpg.yaml` (framework de
 | `conversation.blocked_message` | Returned when input is blocked by Trust Layer |
 | `conversation.escalation_message` | Returned when input triggers escalation |
 | `conversation.output_blocked_message` | Returned when LLM output is blocked |
-| `conversation.unknown_intent_message` | Returned on low-confidence NLU result |
+| `conversation.unknown_intent_message` | Fallback reply when a subagent declares an unknown `special_handler` |
 | `connectors.read[]` / `write[]` / `identity[]` / `internal[]` | Tool definitions |
 
 ### Preprocessing
