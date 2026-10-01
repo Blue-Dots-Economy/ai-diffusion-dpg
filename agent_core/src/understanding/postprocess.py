@@ -18,6 +18,9 @@ from src.understanding.models import DialogueActResult, ResolvedReference, SlotR
 from src.workflow_loader import PendingQuestion
 
 _DIGITS = re.compile(r"^\s*\d+\s*$")
+# C0/C1 controls (incl. \r \n \t) and Unicode line/paragraph separators, with
+# surrounding whitespace: a value must not forge new lines in <caller_turn>.
+_CONTROL_RUN = re.compile(r"\s*[\x00-\x1f\x7f-\x9f\u2028\u2029]+\s*")
 
 
 def _normalise_one(spec: SlotSpec, value: Any) -> tuple[Any, str | None]:
@@ -44,7 +47,7 @@ def _normalise_one(spec: SlotSpec, value: Any) -> tuple[Any, str | None]:
         return number, None
     if spec.type == "enum":
         return (value, None) if value in spec.values else (None, "not_in_enum")
-    text = str(value).strip()
+    text = _CONTROL_RUN.sub(" ", str(value)).strip()
     if not text:
         return None, "empty"
     if spec.normalise == "title":
