@@ -159,7 +159,7 @@ class ObservabilityConfig(BaseModel):
     invalid config raises, never at request time.
 
     Args:
-        domain: Domain identifier (e.g. "kkb").
+        domain: Domain identifier (e.g. "blue-dots").
         otel: OTel exporter and sampling settings.
         outcomes: Domain outcome lifecycle and metric definitions.
         sli: SLI thresholds.

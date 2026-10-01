@@ -48,4 +48,4 @@ tools:
     namespace: ""              # Optional. Prefix for discovered tool names (defaults to tool id).
 
 observability:
-  domain: ""  # Required. Domain identifier (e.g. "kkb", "farmer_friendly").
+  domain: ""  # Required. Domain identifier (e.g. "blue-dots", "farmer_friendly").

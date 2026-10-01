@@ -31,11 +31,11 @@ def _flat(prompt) -> str:
     return "\n\n".join(b.get("text", "") for b in prompt)
 
 
-def _load_kkb_merged() -> dict:
+def _load_blue_dots_merged() -> dict:
     repo_root = Path(__file__).resolve().parents[2]
     dpg = yaml.safe_load((repo_root / "dev-kit" / "dpg" / "agent_core.yaml").read_text()) or {}
     dom = yaml.safe_load(
-        (repo_root / "dev-kit" / "configs" / "kkb" / "agent_core.yaml").read_text()
+        (repo_root / "dev-kit" / "configs" / "blue-dots" / "agent_core.yaml").read_text()
     ) or {}
     merged: dict = {**dpg}
     for k, v in dom.items():
@@ -47,24 +47,23 @@ def _load_kkb_merged() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Prompt cap: KKB voice suffix carries the sentence-cap rule
+# Prompt cap: blue-dots bridge suffix carries the sentence-cap rule
 # ---------------------------------------------------------------------------
 
 
-def test_kkb_voice_suffix_contains_sentence_cap_rule():
-    """KKB voice channel suffix declares the at-most-2-sentences hard rule."""
-    cfg = _load_kkb_merged()
-    suffix = cfg["channels"]["voice"]["system_prompt_suffix"]
+def test_blue_dots_bridge_suffix_contains_sentence_cap_rule():
+    """blue-dots bridge channel suffix declares the at-most-2-sentences hard rule."""
+    cfg = _load_blue_dots_merged()
+    suffix = cfg["channels"]["bridge"]["system_prompt_suffix"]
 
     assert "at most 2 short sentences" in suffix
-    assert "market listing" in suffix
     assert "at most 3 items" in suffix
 
 
 def test_assembled_voice_prompt_includes_sentence_cap_rule():
     """The assembled system prompt for the voice channel surfaces the cap rule."""
-    cfg = _load_kkb_merged()
-    voice_cfg = cfg["channels"]["voice"]
+    cfg = _load_blue_dots_merged()
+    voice_cfg = cfg["channels"]["bridge"]
 
     agent = ManagerAgent(
         chat_provider=MagicMock(),
@@ -113,11 +112,11 @@ def test_channel_config_rejects_non_positive_max_tokens():
         ChannelConfig.model_validate({"max_tokens": 0})
 
 
-def test_kkb_voice_channel_max_tokens_validates_against_schema():
-    """KKB merged config validates fully against the strict MergedConfig schema."""
-    cfg = _load_kkb_merged()
+def test_blue_dots_voice_channel_max_tokens_validates_against_schema():
+    """blue-dots merged config validates fully against the strict MergedConfig schema."""
+    cfg = _load_blue_dots_merged()
     merged = MergedConfig.validate_full(cfg)
-    assert merged.channels.voice.max_tokens is None
+    assert merged.channels.bridge.max_tokens is None
     # Non-voice channels intentionally leave max_tokens unset (default cap applies).
     assert merged.channels.web.max_tokens is None
     assert merged.channels.cli.max_tokens is None

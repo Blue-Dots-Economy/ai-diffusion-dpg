@@ -82,7 +82,7 @@ def _minimal_valid_config() -> dict:
         },
         "hitl": {"response_message": "connecting you"},
         "agent_workflow": {
-            "workflow_id": "kkb",
+            "workflow_id": "blue-dots",
             "version": "1.0.0",
             "agent_system_prompt": "You are KKB.",
             "subagents": [
@@ -120,7 +120,7 @@ def _minimal_valid_config() -> dict:
         "trust_client": {"endpoint": "http://trust:8003", "timeout_ms": 2000},
         "learning_client": {"endpoint": "http://obs:8004", "timeout_ms": 2000},
         "action_gateway_client": {"endpoint": "http://ag:9999", "timeout_ms": 5000},
-        "observability": {"domain": "kkb"},
+        "observability": {"domain": "blue-dots"},
     }
 
 
@@ -429,7 +429,7 @@ class TestAgentProviderAndFeatures:
             (repo_root / "dev-kit" / "dpg" / "agent_core.yaml").read_text()
         ) or {}
         domain = yaml.safe_load(
-            (repo_root / "dev-kit" / "configs" / "kkb" / "agent_core.yaml").read_text()
+            (repo_root / "dev-kit" / "configs" / "blue-dots" / "agent_core.yaml").read_text()
         ) or {}
         merged: dict = {**dpg}
         for k, v in domain.items():

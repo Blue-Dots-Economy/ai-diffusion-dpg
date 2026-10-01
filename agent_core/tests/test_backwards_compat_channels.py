@@ -29,14 +29,14 @@ def _load_merged_domain_config(domain: str) -> dict:
     return merged
 
 
-def test_kkb_has_top_level_channels():
-    cfg = _load_merged_domain_config("kkb")
+def test_blue_dots_has_top_level_channels():
+    cfg = _load_merged_domain_config("blue-dots")
     assert "channels" in cfg
     assert "channels" not in cfg.get("agent", {})
     assert "channels" not in cfg.get("reach_layer", {})
 
 
-def test_kkb_nlu_processor_instantiates():
-    cfg = _load_merged_domain_config("kkb")
+def test_blue_dots_nlu_processor_instantiates():
+    cfg = _load_merged_domain_config("blue-dots")
     p = NLUProcessor(cfg, chat_provider=_mock_provider())
     assert p is not None

@@ -37,7 +37,7 @@ def _minimal_valid_config() -> dict:
                     "endpoint": "http://memory_layer:8002",
                     "timeout_s": 10.0,
                 },
-                "observability": {"domain": "kkb"},
+                "observability": {"domain": "blue-dots"},
             },
             "channels": {
                 "cli": {
@@ -88,7 +88,7 @@ def _minimal_valid_config() -> dict:
 
 def test_accepts_valid_full_config():
     cfg = MergedConfig.validate_full(_minimal_valid_config())
-    assert cfg.reach_layer.common.observability.domain == "kkb"
+    assert cfg.reach_layer.common.observability.domain == "blue-dots"
     assert cfg.reach_layer.channels.cli.assembly_mode == AssemblyMode.session
     assert cfg.reach_layer.channels.web.server.port == 8005
     assert cfg.reach_layer.channels.web.auth.cookie_samesite == CookieSameSite.lax
@@ -223,12 +223,12 @@ def test_rejects_none_input():
         MergedConfig.validate_full(None)
 
 
-def test_real_merged_dpg_and_kkb_validates():
+def test_real_merged_dpg_and_blue_dots_validates():
     """End-to-end: load the actual dev-kit yamls, merge, and validate."""
     import yaml
     repo_root = Path(__file__).resolve().parents[3]
     dpg = yaml.safe_load((repo_root / "dev-kit/dpg/reach_layer.yaml").read_text()) or {}
-    kkb = yaml.safe_load((repo_root / "dev-kit/configs/kkb/reach_layer.yaml").read_text()) or {}
+    blue_dots_cfg = yaml.safe_load((repo_root / "dev-kit/configs/blue-dots/reach_layer.yaml").read_text()) or {}
 
     def _merge(a, b):
         r = a.copy()
@@ -239,10 +239,10 @@ def test_real_merged_dpg_and_kkb_validates():
                 r[k] = v
         return r
 
-    cfg = MergedConfig.validate_full(_merge(dpg, kkb))
-    assert cfg.reach_layer.channels.cli.prompt == "You: "
-    assert cfg.reach_layer.channels.web.ui.app_name == "Kaam Ki Baat"
-    assert cfg.reach_layer.channels.voice.raya.stt_language == "hi"
+    cfg = MergedConfig.validate_full(_merge(dpg, blue_dots_cfg))
+    assert cfg.reach_layer.common.observability.domain == "blue_dot"
+    assert cfg.reach_layer.channels.bridge.terminal_word == "धन्यवाद"
+    assert cfg.reach_layer.channels.bridge.hangup_tool_name == "end_conversation"
 
 
 def test_enum_exports_are_usable():

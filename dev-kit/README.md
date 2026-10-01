@@ -76,7 +76,7 @@ dev-kit/
 │   ├── observability_layer.yaml
 │   └── reach_layer.yaml
 ├── configs/
-│   └── kkb/                      # KKB domain overrides (reference domain)
+│   └── blue-dots/                # blue-dots domain overrides (reference domain)
 │       ├── agent_core.yaml       # Models, intents (40+), entities (20+), subagent graph (10 subagents), connectors
 │       ├── knowledge_engine.yaml # Glossary (8 mappings), RAG sources (5 docs), intent filters
 │       ├── memory_layer.yaml     # 24 UserProfile declared fields, journey schema, TTLs, merge rules, reengagement
@@ -140,7 +140,7 @@ Each YAML file configures one DPG block. The table below lists the key sections 
 ## Adding a New Domain
 
 1. Create `dev-kit/configs/<new-domain>/`.
-2. Add one YAML file per DPG block (copy from `dev-kit/configs/kkb/` as a starting point).
+2. Add one YAML file per DPG block (copy from `dev-kit/configs/blue-dots/` as a starting point).
 3. Override only the values that differ from the framework defaults in `dev-kit/dpg/`.
 4. Point `DOMAIN` to `<new-domain>` in your environment or Docker compose file.
 5. Validate: `python -m dev_kit.loader validate --domain <new-domain>`

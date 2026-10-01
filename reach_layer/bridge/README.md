@@ -203,6 +203,6 @@ bridge surfaces faithfully as a normal turn response, not a crash) or, on at
 least one observed run, narrates a success message without calling the tool
 at all. **Do not trust the assistant's own "submitted" reply as evidence** —
 confirm independently via the Action Gateway log
-(`~/.config/kkb/ai-diffusion-local/logs/action_gateway.log`, look for
+(`~/.config/blue-dots/ai-diffusion-local/logs/action_gateway.log`, look for
 `tool=apply_job` and its HTTP status) and, ideally, the resulting Signals
 action record.

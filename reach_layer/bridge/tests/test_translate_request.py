@@ -189,7 +189,7 @@ def _call_body(call_id=None, phone="919900112233"):
     meta = {"caller_phone": phone}
     if call_id is not None:
         meta["call_id"] = call_id
-    return {"model": "kkb",
+    return {"model": "blue-dots",
             "messages": [{"role": "user", "content": "नमस्ते"}],
             "metadata": meta}
 

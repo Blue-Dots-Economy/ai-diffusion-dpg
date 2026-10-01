@@ -58,7 +58,7 @@ def _minimal_valid_config() -> dict:
                 }
             ]
         },
-        "observability": {"domain": "kkb"},
+        "observability": {"domain": "blue-dots"},
     }
 
 

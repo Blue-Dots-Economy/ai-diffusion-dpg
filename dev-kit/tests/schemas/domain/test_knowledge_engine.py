@@ -212,4 +212,4 @@ def test_observability_domain_must_be_non_empty():
 
 def test_observability_extra_forbidden():
     with pytest.raises(ValidationError):
-        ObservabilitySection(domain="kkb", typo_field="x")
+        ObservabilitySection(domain="blue-dots", typo_field="x")

@@ -11,7 +11,7 @@ def _intake(**overrides):
         is_multi_turn=False, needs_persistent_user_data=False, is_companion_style=False,
         needs_consent=False, has_hitl=False,
         selected_channels=["web"], default_language="english", supported_languages=["english"],
-        domain_description="A pilot project", project_name="kkb",
+        domain_description="A pilot project", project_name="blue-dots",
     )
     base.update(overrides)
     return IntakeState(**base)

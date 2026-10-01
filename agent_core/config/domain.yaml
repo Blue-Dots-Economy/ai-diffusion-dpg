@@ -147,4 +147,4 @@ agent_workflow:
 #       confidence_threshold: 0.75
 
 observability:
-  domain: ""  # Required. Domain identifier (e.g. "kkb", "farmer_friendly").
+  domain: ""  # Required. Domain identifier (e.g. "blue-dots", "farmer_friendly").

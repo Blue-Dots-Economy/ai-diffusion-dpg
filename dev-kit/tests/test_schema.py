@@ -546,56 +546,56 @@ class TestMemoryLayerConfig:
 
 
 # ===========================================================================
-# Integration: load KKB domain configs via loader and validate
+# Integration: load blue-dots domain configs via loader and validate
 # ===========================================================================
 
 
 class TestLoaderIntegration:
-    def test_load_agent_core_kkb(self):
-        cfg = load_agent_core("kkb")
+    def test_load_agent_core_blue_dots(self):
+        cfg = load_agent_core("blue-dots")
         assert cfg.agent.primary_model != ""
         assert cfg.agent.fallback_model != ""
         assert len(cfg.agent_workflow.subagents) >= 1
 
-    def test_kkb_workflow_has_exactly_one_start(self):
-        cfg = load_agent_core("kkb")
+    def test_blue_dots_workflow_has_exactly_one_start(self):
+        cfg = load_agent_core("blue-dots")
         start_agents = [s for s in cfg.agent_workflow.subagents if s.is_start]
         assert len(start_agents) == 1
 
-    def test_kkb_agent_ask_for_consent_is_bool(self):
-        cfg = load_agent_core("kkb")
+    def test_blue_dots_agent_ask_for_consent_is_bool(self):
+        cfg = load_agent_core("blue-dots")
         assert isinstance(cfg.agent.ask_for_consent, bool)
 
-    def test_load_trust_layer_kkb(self):
-        cfg = load_trust_layer("kkb")
-        assert "kkb_advisory_jobs" in cfg.trust.policy_packs
-        assert cfg.trust.policy_pack == "kkb_advisory_jobs"
+    def test_load_trust_layer_blue_dots(self):
+        cfg = load_trust_layer("blue-dots")
+        assert "blue_dots_advisory_jobs" in cfg.trust.policy_packs
+        assert cfg.trust.policy_pack == "blue_dots_advisory_jobs"
         assert len(cfg.trust.input_rules.blocked_phrases) > 0
         assert cfg.trust.input_rules.blocked_input_message != ""
         assert cfg.trust.output_rules.output_blocked_message != ""
         assert cfg.trust.consent.consent_phrases != []
         assert cfg.trust.hitl is not None
 
-    def test_load_observability_layer_kkb(self):
-        cfg = load_observability_layer("kkb")
-        assert cfg.observability.domain == "kkb"
+    def test_load_observability_layer_blue_dots(self):
+        cfg = load_observability_layer("blue-dots")
+        assert cfg.observability.domain == "blue_dot"
         assert len(cfg.observability.outcomes.lifecycle) > 0
         assert len(cfg.observability.outcomes.metrics) > 0
         assert cfg.observability.sli.turn_latency_p99_ms == 1200
 
-    def test_kkb_policy_pack_guardrails_validate(self):
-        cfg = load_trust_layer("kkb")
-        pack = cfg.trust.policy_packs["kkb_advisory_jobs"]
+    def test_blue_dots_policy_pack_guardrails_validate(self):
+        cfg = load_trust_layer("blue-dots")
+        pack = cfg.trust.policy_packs["blue_dots_advisory_jobs"]
         assert "false_certainty" in pack.guardrails
         gr = pack.guardrails["false_certainty"]
         assert gr.severity == "blocker"
         assert gr.failure_mode == "block"
         assert len(gr.prompt_constraints) > 0
 
-    def test_kkb_internal_connector_present(self):
-        cfg = load_agent_core("kkb")
+    def test_blue_dots_internal_connector_present(self):
+        cfg = load_agent_core("blue-dots")
         internal_names = [c.name for c in cfg.connectors.internal]
-        assert "knowledge_retrieval" in internal_names
+        assert internal_names == []  # blue-dots does not use the knowledge engine
 
 
 class TestWebChannelConfigMode:

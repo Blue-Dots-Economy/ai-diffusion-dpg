@@ -3,7 +3,7 @@ MergedConfig — strict schema for the Memory Layer merged runtime config.
 
 Merged config = dev-kit/dpg/memory_layer.yaml (framework defaults + Redis/
                 Memgraph connection settings) deep-merged with a domain YAML
-                (e.g. dev-kit/configs/kkb/memory_layer.yaml).
+                (e.g. dev-kit/configs/blue-dots/memory_layer.yaml).
 
 Every model sets ``extra="forbid"``: unknown keys at any nesting level
 fail at startup with a pydantic ValidationError, not at first request.

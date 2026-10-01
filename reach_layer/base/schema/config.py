@@ -3,7 +3,7 @@ MergedConfig — strict schema for the Reach Layer merged runtime config.
 
 Merged config = dev-kit/dpg/reach_layer.yaml (framework defaults, infra
                 ports / endpoints / adapter keys) deep-merged with a
-                domain YAML (e.g. dev-kit/configs/kkb/reach_layer.yaml,
+                domain YAML (e.g. dev-kit/configs/blue-dots/reach_layer.yaml,
                 which carries UI strings, voice language, SSO policy).
 
 Every model sets ``extra="forbid"``: unknown keys at any nesting level

@@ -9,7 +9,7 @@ def test_web_channel_config_validates():
     """A valid web channel config should parse without errors."""
     data = {
         "reach_layer": {
-            "common": {"observability": {"domain": "kkb"}},
+            "common": {"observability": {"domain": "blue-dots"}},
             "channels": {
                 "web": {
                     "auth": {"enabled": False, "google_client_id": "", "cookie_secure": False},

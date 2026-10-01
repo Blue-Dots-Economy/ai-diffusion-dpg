@@ -13,7 +13,7 @@
 4. [Runtime Turn Sequence](#4-runtime-turn-sequence)
 5. [Module Interaction Rules](#5-module-interaction-rules)
 6. [Configuration Architecture](#6-configuration-architecture)
-7. [KKB Domain — User Journey Model](#7-kkb-domain--user-journey-model)
+7. [blue-dots Domain — User Journey Model](#7-blue-dots-domain--user-journey-model)
 8. [Implementation Status](#8-implementation-status)
 9. [Stub Replacement Guide](#9-stub-replacement-guide)
 10. [Out of Scope](#10-out-of-scope)
@@ -571,7 +571,7 @@ dev-kit/
 │   ├── knowledge_engine.yaml
 │   └── ...
 ├── configs/
-│   └── kkb/                      # KKB domain overrides
+│   └── blue-dots/                # blue-dots domain overrides
 │       ├── agent_core.yaml       # primary_model, fallback_model, intents, connectors
 │       ├── knowledge_engine.yaml # glossary mappings, RAG sources, intent filters
 │       ├── memory_layer.yaml     # graph schema (profile_graph_relations), merge rules
@@ -603,7 +603,7 @@ Model names, persona text, tool definitions, guardrail rules, intent definitions
 
 ---
 
-## 7. KKB Domain — User Journey Model
+## 7. blue-dots Domain — User Journey Model
 
 This section describes the KKB-specific conversation design implemented in the domain config. It is not part of the DPG framework itself — a different domain would configure a different journey.
 
@@ -633,7 +633,7 @@ A caller is always in one of five states. Detecting the correct state is the sys
 
 ### Subagent Graph (KKB)
 
-Conversation flow is defined as a directed graph of subagents in `dev-kit/configs/kkb/agent_core.yaml`. Each subagent has its own system prompt, tool list, valid intents, and routing rules. The orchestrator tracks `current_subagent_id` in session state and advances it on each turn based on NLU intent + routing conditions.
+Conversation flow is defined as a directed graph of subagents in `dev-kit/configs/blue-dots/agent_core.yaml`. Each subagent has its own system prompt, tool list, valid intents, and routing rules. The orchestrator tracks `current_subagent_id` in session state and advances it on each turn based on NLU intent + routing conditions.
 
 | Subagent ID | Entry Condition | Tools | Terminal |
 |---|---|---|---|

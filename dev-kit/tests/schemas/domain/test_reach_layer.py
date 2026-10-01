@@ -201,8 +201,8 @@ def test_common_observability_domain_required():
 
 
 def test_common_section_full():
-    c = CommonSection(observability=CommonObservabilityConfig(domain="kkb"))
-    assert c.observability.domain == "kkb"
+    c = CommonSection(observability=CommonObservabilityConfig(domain="blue-dots"))
+    assert c.observability.domain == "blue-dots"
 
 
 # -- ReachLayerSection -------------------------------------------------------
@@ -220,7 +220,7 @@ def test_reach_layer_section_full():
             web=WebChannelSection(ui=WebUiConfig(app_name="KKB")),
             voice=_voice_channel(),
         ),
-        common=CommonSection(observability=CommonObservabilityConfig(domain="kkb")),
+        common=CommonSection(observability=CommonObservabilityConfig(domain="blue-dots")),
     )
     assert r.channels.web is not None
     assert r.channels.voice is not None

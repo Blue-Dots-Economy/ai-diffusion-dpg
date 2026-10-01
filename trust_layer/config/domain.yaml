@@ -39,7 +39,7 @@ trust:
     notification_webhook: null # Optional. Webhook URL notified when an HITL case is queued.
 
 observability:
-  domain: ""  # Required. Domain identifier (e.g. "kkb", "farmer_friendly").
+  domain: ""  # Required. Domain identifier (e.g. "blue-dots", "farmer_friendly").
 
 # (GH-137) Pre-response dignity check — Conversational agents only.
 # Set enabled: true when agent_type is conversational.

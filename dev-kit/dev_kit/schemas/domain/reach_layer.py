@@ -38,7 +38,7 @@ class WebUiConfig(BaseModel):
 class WebAuthConfig(BaseModel):
     """Web channel auth toggle (Google SSO etc.). Mirrors runtime WebAuthConfig.
 
-    Domains may override individual fields (kkb sets cookie_secure=False for
+    Domains may override individual fields (blue-dots sets cookie_secure=False for
     local dev); session cookie name + TTL stay framework defaults.
     """
     model_config = ConfigDict(extra="forbid")

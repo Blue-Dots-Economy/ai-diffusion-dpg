@@ -3,7 +3,7 @@ MergedConfig — strict schema for the Agent Core merged runtime config.
 
 Merged config = dev-kit/dpg/agent_core.yaml (framework defaults)
                 deep-merged with a domain YAML
-                (e.g. dev-kit/configs/kkb/agent_core.yaml).
+                (e.g. dev-kit/configs/blue-dots/agent_core.yaml).
 
 Every model sets ``extra="forbid"``: unknown keys at any nesting level
 fail at startup with a pydantic ValidationError, not at first request.

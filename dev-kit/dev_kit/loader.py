@@ -12,11 +12,11 @@ For each DPG service, the loader:
 
 Usage as a library:
     from dev_kit.loader import load_agent_core
-    config = load_agent_core("kkb")
+    config = load_agent_core("blue-dots")
 
 Usage as a CLI (validate or build merged YAML):
-    python -m dev_kit.loader validate --domain kkb
-    python -m dev_kit.loader build   --domain kkb --output /tmp/merged/
+    python -m dev_kit.loader validate --domain blue-dots
+    python -m dev_kit.loader build   --domain blue-dots --output /tmp/merged/
 """
 
 from __future__ import annotations
@@ -79,7 +79,7 @@ def _load_and_merge(domain: str, service: str) -> dict[str, Any]:
     """Load and merge DPG defaults and domain config for a given service.
 
     Args:
-        domain: Domain name, e.g. "kkb".
+        domain: Domain name, e.g. "blue-dots".
         service: Service name, e.g. "agent_core".
 
     Returns:
@@ -168,7 +168,7 @@ def validate_all(domain: str) -> dict[str, bool]:
     """Validate all 7 service configs for a domain.
 
     Args:
-        domain: Domain name, e.g. "kkb".
+        domain: Domain name, e.g. "blue-dots".
 
     Returns:
         Dict of {service_name: True/False} — True means valid. Prints
@@ -190,7 +190,7 @@ def build_all(domain: str, output_dir: Path) -> None:
     """Merge DPG defaults and domain values for all 7 services and write merged YAML files.
 
     Args:
-        domain: Domain name, e.g. "kkb".
+        domain: Domain name, e.g. "blue-dots".
         output_dir: Directory to write merged YAML files into.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -271,14 +271,14 @@ def _cli() -> None:
 
     # validate
     val = sub.add_parser("validate", help="Validate all service configs for a domain.")
-    val.add_argument("--domain", required=True, help="Domain name (e.g. kkb)")
+    val.add_argument("--domain", required=True, help="Domain name (e.g. blue-dots)")
 
     # build
     build = sub.add_parser(
         "build",
         help="Merge DPG defaults + domain configs and write merged YAML files.",
     )
-    build.add_argument("--domain", required=True, help="Domain name (e.g. kkb)")
+    build.add_argument("--domain", required=True, help="Domain name (e.g. blue-dots)")
     build.add_argument(
         "--output",
         required=True,

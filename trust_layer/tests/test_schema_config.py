@@ -55,7 +55,7 @@ def _minimal_valid_config() -> dict:
             "questions": ["q1", "q2"],
             "fail_action": "rewrite",
         },
-        "observability": {"domain": "kkb"},
+        "observability": {"domain": "blue-dots"},
     }
 
 

@@ -608,7 +608,7 @@ def test_observability_section_domain_pattern():
     `workflow_id` / `collection_name` fields.
     """
     # Both separator styles must round-trip.
-    ObservabilitySection(domain="kkb")
+    ObservabilitySection(domain="blue-dots")
     ObservabilitySection(domain="employ-voice-bot")
     ObservabilitySection(domain="go-guide")
     ObservabilitySection(domain="go_guide")          # underscore — newly accepted
