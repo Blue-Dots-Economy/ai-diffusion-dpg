@@ -1,6 +1,8 @@
 """Tests for Agent Core MergedConfig strict schema validation."""
 from __future__ import annotations
 
+import copy
+
 import pytest
 from pydantic import ValidationError
 
@@ -550,14 +552,13 @@ def test_user_ttl_cap_is_configurable():
 # ---------------------------------------------------------------------------
 
 
-import copy
-
-
-def _boot(steps=None, read=None, write=None, **agent):
+def _boot(steps=None, read=None, write=None, identity=None, **agent):
     cfg = copy.deepcopy(_minimal_valid_config())
     cfg.setdefault("connectors", {})
     cfg["connectors"]["read"] = read if read is not None else [{"name": "fetch_profile"}]
     cfg["connectors"]["write"] = write or []
+    if identity is not None:
+        cfg["connectors"]["identity"] = identity
     if steps is not None:
         cfg["session_bootstrap"] = {"steps": steps}
     if agent:
@@ -582,12 +583,14 @@ def test_no_bootstrap_is_default():
     pytest.param(_boot([{"type": "tool", "tool": "save_profile"}], write=[{"name": "save_profile"}]),
                  "is not a read connector", id="write-connector"),
     pytest.param(_boot([{"type": "tool", "tool": "ghost"}]), "is not a read connector", id="unknown-connector"),
-    pytest.param(_boot([{"type": "set", "tool": "fetch_profile"}]), "type", id="bad-type"),
+    pytest.param(_boot([{"type": "tool", "tool": "verify_me"}], identity=[{"name": "verify_me"}]),
+                 "is not a read connector", id="identity-connector"),
+    pytest.param(_boot([{"type": "set", "tool": "fetch_profile"}]), "Input should be 'tool'", id="bad-type"),
     pytest.param(_boot([]), "at least 1", id="no-steps"),
     pytest.param({**_boot([{"type": "tool", "tool": "fetch_profile"}]),
                   "session_bootstrap": {"timeout_ms": 0, "steps": [{"type": "tool", "tool": "fetch_profile"}]}},
                  "greater than 0", id="zero-timeout"),
-    pytest.param(_boot([{"type": "tool", "tool": "fetch_profile", "extra": 1}]), "extra", id="extra-key"),
+    pytest.param(_boot([{"type": "tool", "tool": "fetch_profile", "extra": 1}]), "Extra inputs are not permitted", id="extra-key"),
 ])
 def test_invalid_bootstrap_rejected(cfg, match):
     with pytest.raises(ValidationError, match=match):
