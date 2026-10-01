@@ -128,6 +128,7 @@ class AsyncActionGatewayHttpClient(AsyncActionGatewayBase):
                 success=data.get("success", True),
                 result_text=data.get("result_text", ""),
                 session_values=data.get("session_values") or {},
+                projected=bool(data.get("projected", False)),
                 error=data.get("error"),
             )
 

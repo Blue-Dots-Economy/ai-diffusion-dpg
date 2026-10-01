@@ -355,3 +355,106 @@ def test_recording_s3_backend_without_bucket_fails():
     })
     errors = validate_cross_block(blocks, selected_channels=[])
     assert any("bucket" in e for e in errors)
+
+
+# -- tool-result persistence (agent_core <-> memory_layer) --------------------
+
+_TR_ML = {"state": {"session": {"ttl_minutes": 60, "schema": {
+    "trade": {"type": "string"}, "profile_item_id": {"type": "string"}}},
+    "persistent": {"graph": {"subnodes": {"UserProfile": {"declared_fields": ["name"]}}}}}}
+
+
+def _tr_ac(read=None, memory_tool=None):
+    ac = {"connectors": {"read": read or [], "write": []}}
+    if memory_tool:
+        ac["memory_tool"] = memory_tool
+    return ac
+
+
+def _tr_errs(ac, ml=_TR_ML):
+    return [e for e in validate_cross_block({"agent_core": ac, "memory_layer": ml}, [])
+            if "tool" in e or "memory_tool" in e or "vary_on" in e or "ttl_seconds" in e]
+
+
+def test_valid_tool_result_config_has_no_errors():
+    ac = _tr_ac([{"name": "fetch_jobs", "cache": {"scope": "session", "ttl_seconds": 600, "vary_on": ["trade"]}}],
+                {"fields": {"profile_item_id": {"scope": "session"}, "name": {"scope": "persistent"}}})
+    assert _tr_errs(ac) == []
+
+
+def test_session_ttl_over_session_lifetime():
+    ac = _tr_ac([{"name": "fetch_jobs", "cache": {"scope": "session", "ttl_seconds": 7200}}])
+    assert any("ttl_seconds" in e for e in _tr_errs(ac))
+
+
+def test_undeclared_vary_on_and_memory_fields():
+    ac = _tr_ac([{"name": "fetch_jobs", "cache": {"scope": "session", "ttl_seconds": 60, "vary_on": ["ghost"]}}],
+                {"fields": {"nope": {"scope": "session"}, "nada": {"scope": "persistent"}}})
+    errs = _tr_errs(ac)
+    assert any("vary_on" in e for e in errs)
+    assert sum("memory_tool" in e for e in errs) == 2
+
+
+def _tr_agent_errs(ac):
+    return [e for e in validate_cross_block({"agent_core": ac, "memory_layer": _TR_ML}, [])
+            if "user-scope" in e or "collides" in e or "grounded_in" in e or "not a number" in e]
+
+
+def test_user_ttl_over_cap_default_and_configured():
+    read = [{"name": "r", "cache": {"scope": "user", "ttl_seconds": 90000}}]
+    assert any("user-scope ttl_seconds 90000 exceeds tool_results.max_user_ttl_seconds 86400" in e
+               for e in _tr_agent_errs(_tr_ac(read)))
+    ac = _tr_ac(read)
+    ac["tool_results"] = {"max_user_ttl_seconds": 100000}
+    assert _tr_agent_errs(ac) == []
+
+
+def test_memory_tool_name_collides_with_connector():
+    ac = _tr_ac([{"name": "remember"}], {"fields": {"name": {"scope": "persistent"}}})
+    assert any("memory_tool.name 'remember' collides with a connector" in e for e in _tr_agent_errs(ac))
+    ac = _tr_ac([{"name": "r"}], {"name": "remember", "fields": {"name": {"scope": "persistent"}}})
+    assert _tr_agent_errs(ac) == []
+
+
+def test_grounded_in_must_name_a_connector():
+    mt = {"fields": {"name": {"scope": "persistent", "grounded_in": ["ghost", "r"]}}}
+    errs = _tr_agent_errs(_tr_ac([{"name": "r"}], mt))
+    assert errs == ["memory_tool.fields.name.grounded_in: unknown connector 'ghost'"]
+
+
+def test_non_numeric_ttl_yields_error_not_exception():
+    ac = _tr_ac([{"name": "r", "cache": {"scope": "user", "ttl_seconds": "abc"}}])
+    assert any("not a number" in e for e in _tr_agent_errs(ac))
+    ml = {"state": {"session": {"ttl_minutes": "x"}}}
+    errs = validate_cross_block({"agent_core": _tr_ac(), "memory_layer": ml}, [])
+    assert any("ttl_minutes" in e and "not a number" in e for e in errs)
+
+
+# -- R20: user-scope cache vs action_gateway session_mapping ------------------
+
+def _sm_errs(scope, session_mapping):
+    response = {"max_size_chars": 4000}
+    if session_mapping:
+        response["session_mapping"] = [{"source": "a.b", "target": "trade"}]
+    blocks = {
+        "agent_core": _tr_ac([{"name": "fetch_profile",
+                               "cache": {"scope": scope, "ttl_seconds": 600}}]),
+        "memory_layer": _TR_ML,
+        "action_gateway": {"tools": [{"id": "fetch_profile", "type": "rest_api",
+                                      "response": response}]},
+    }
+    return [e for e in validate_cross_block(blocks, []) if "session_mapping" in e]
+
+
+def test_user_scope_cache_with_session_mapping_is_flagged():
+    errs = _sm_errs("user", True)
+    assert len(errs) == 1
+    assert "fetch_profile" in errs[0] and "scope: session" in errs[0]
+
+
+def test_session_scope_cache_with_session_mapping_passes():
+    assert _sm_errs("session", True) == []
+
+
+def test_user_scope_cache_without_session_mapping_passes():
+    assert _sm_errs("user", False) == []

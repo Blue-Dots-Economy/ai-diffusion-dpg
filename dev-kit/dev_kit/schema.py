@@ -110,6 +110,14 @@ class ConnectorDef(BaseModel):
         default_factory=InvocationRulesConfig,
         description="LLM invocation contract for this connector (GH-137)",
     )
+    cache: Optional[dict] = Field(
+        default=None,
+        description="Tool-result cache rule (scope, ttl_seconds, keep, vary_on); read connectors only",
+    )
+    invalidates: list[str] = Field(
+        default_factory=list,
+        description="Read connector names whose cached results this write connector invalidates",
+    )
 
 
 class InternalConnectorDef(BaseModel):
@@ -632,6 +640,12 @@ class AgentCoreConfig(BaseModel):
         default_factory=dict,
         description="Maps NLU entity names to UserProfile declared_fields in the Memory Layer. "
                     "e.g. {trade_or_stream: trade_or_stream, location: location}",
+    )
+    tool_results: Optional[dict] = Field(
+        default=None, description="Global tool-result persistence limits (max_user_ttl_seconds)"
+    )
+    memory_tool: Optional[dict] = Field(
+        default=None, description="Framework `remember` tool config (name, fields)"
     )
     hitl: HitlConfig | None = Field(
         default=None,

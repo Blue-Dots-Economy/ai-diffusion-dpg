@@ -105,6 +105,7 @@ Other blocks may call each other directly **only under the approved scopes liste
 | Caller | Callee | Purpose |
 |---|---|---|
 | Agent Core | Memory Layer | Read state at turn start; write state after response (async) |
+| Agent Core | Memory Layer | `POST /tool_results/apply` — persist/invalidate cached tool results (config-driven `cache` / `invalidates`; needs `TOOL_RESULT_KEY_SECRET`) |
 | Agent Core | Trust Layer | Check input; check output; assemble constraints; consent verify |
 | Agent Core | Knowledge Engine | `POST /retrieve` — ranked chunks, called only via the `knowledge_retrieval` internal tool |
 | Agent Core | Action Gateway | Execute LLM-requested external tool calls |
@@ -122,7 +123,7 @@ Other blocks may call each other directly **only under the approved scopes liste
 
 | Caller | Callee | Purpose |
 |---|---|---|
-| Action Gateway | Knowledge Engine, Memory Layer | Cache layer for tool results (#18) |
+| Action Gateway | Knowledge Engine | None currently planned. The tool-result cache (#18) shipped as Agent Core to Memory Layer (see above) |
 
 ### Key design decisions
 

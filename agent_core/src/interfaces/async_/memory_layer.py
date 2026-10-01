@@ -59,3 +59,32 @@ class AsyncMemoryLayerBase(ABC):
     @abstractmethod
     async def get_chat_history(self, session_id: str) -> list[dict]:
         """Async version of MemoryLayerBase.get_chat_history(). See sync interface for full docs."""
+
+    @abstractmethod
+    async def apply_tool_results(self, session_id: str, user_id: str, batch: dict) -> None:
+        """Async version of MemoryLayerBase.apply_tool_results(). See sync interface for full docs.
+
+        Args:
+            session_id: Session owner.
+            user_id: User owner.
+            batch: ``{"invalidate": [tool, ...], "puts": [entry, ...]}``.
+
+        Never raises; failures are logged.
+        """
+
+    @abstractmethod
+    async def write_strict(self, session_id: str, user_id: str, scope: str, key: str,
+                     value: Any) -> tuple[bool, str]:
+        """Async version of MemoryLayerBase.write_strict(). See sync interface for full docs.
+
+        Args:
+            session_id: Session owner.
+            user_id: User owner.
+            scope: ``session`` or ``user``.
+            key: Field key.
+            value: Field value.
+
+        Returns:
+            ``(accepted, reason)``. ``(False, "memory layer unavailable")`` on
+            transport failure. Never raises.
+        """

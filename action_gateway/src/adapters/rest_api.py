@@ -891,6 +891,7 @@ class RestApiAdapter(ToolAdapter):
             success=True,
             result_text=result_text,
             session_values=session_values,
+            projected=projected is not None,
         )
 
     def health_check(self) -> bool:

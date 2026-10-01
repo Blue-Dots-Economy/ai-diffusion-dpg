@@ -79,6 +79,7 @@ class ToolResult(BaseModel):
             Empty unless the connector declares one. Routing reads session
             state, so this is the only path by which a workflow can branch on
             something a tool returned.
+        projected: True when a response.projection shaped result_text. Agent Core only stores projected results.
     """
 
     tool_use_id: str
@@ -88,6 +89,7 @@ class ToolResult(BaseModel):
     result_text: str = ""
     error: Optional[str] = None
     session_values: dict = Field(default_factory=dict)
+    projected: bool = False
 
 
 class ExecuteRequest(BaseModel):
@@ -127,6 +129,7 @@ class ExecuteResponse(BaseModel):
         error: Error message on failure; None on success.
         session_values: Values the connector's ``session_mapping`` lifted out
             of the response, for Agent Core to write to session state.
+        projected: True when a response.projection shaped result_text. Agent Core only stores projected results.
     """
 
     tool_use_id: str
@@ -136,6 +139,7 @@ class ExecuteResponse(BaseModel):
     result_text: str = ""
     error: Optional[str] = None
     session_values: dict = Field(default_factory=dict)
+    projected: bool = False
 
 
 class ToolsResponse(BaseModel):

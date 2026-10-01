@@ -470,3 +470,76 @@ def test_entity_persistence_rejects_an_unknown_key():
     from src.schema.config import MergedConfig
     with pytest.raises(ValidationError):
         MergedConfig(entity_persistence={"scope": "session", "ttl": 60})
+
+
+# ---------------------------------------------------------------------------
+# Tool-result persistence: cache / invalidates / tool_results / memory_tool
+# ---------------------------------------------------------------------------
+
+
+def _with(conn_read=None, conn_write=None, **top):
+    cfg = _minimal_valid_config()
+    cfg.setdefault("connectors", {})
+    cfg["connectors"]["read"] = conn_read or []
+    cfg["connectors"]["write"] = conn_write or []
+    cfg.update(top)
+    return cfg
+
+
+_READ = {"name": "fetch_profile", "cache": {"scope": "user", "ttl_seconds": 1800, "keep": ["items"]}}
+_WRITE = {"name": "save_profile", "invalidates": ["fetch_profile"]}
+_MT = {"name": "remember", "fields": {"profile_item_id": {
+    "scope": "session", "grounded_in": ["fetch_profile", "save_profile"]}}}
+
+
+def test_valid_cache_invalidates_memory_tool():
+    MergedConfig.validate_full(_with([_READ], [_WRITE], memory_tool=_MT))
+
+
+_INVALID_CASES = [
+    pytest.param(
+        _with([], [{"name": "save_profile", "cache": {"scope": "user", "ttl_seconds": 60}}]),
+        "only allowed on read connectors", id="cache-on-write"),
+    pytest.param(
+        {**_with([]), "connectors": {"identity": [{"name": "who", "cache": {"scope": "user", "ttl_seconds": 60}}]}},
+        "only allowed on read connectors", id="cache-on-identity"),
+    pytest.param(
+        _with([{"name": "fetch_profile", "invalidates": ["x"]}], []),
+        "only allowed on write connectors", id="invalidates-on-read"),
+    pytest.param(
+        {**_with([]), "connectors": {"identity": [{"name": "who", "invalidates": ["x"]}]}},
+        "only allowed on write connectors", id="invalidates-on-identity"),
+    pytest.param(
+        _with([_READ], [{"name": "save_profile", "invalidates": ["nope"]}]),
+        "invalidates unknown read connector 'nope'", id="invalidates-unknown-target"),
+    pytest.param(
+        _with([{"name": "fetch_profile", "cache": {"scope": "user", "ttl_seconds": 90000}}], []),
+        "exceeds tool_results.max_user_ttl_seconds", id="user-ttl-over-cap"),
+    pytest.param(
+        _with([{"name": "fetch_profile", "cache": {"scope": "agent", "ttl_seconds": 60}}], []),
+        "Input should be 'session' or 'user'", id="bad-cache-scope"),
+    pytest.param(
+        _with([{"name": "fetch_profile", "cache": {"scope": "user", "ttl_seconds": 0}}], []),
+        "greater than 0", id="zero-ttl"),
+    pytest.param(
+        _with([_READ], [_WRITE], memory_tool={"fields": {"f": {"scope": "session", "grounded_in": ["ghost"]}}}),
+        "unknown connector 'ghost'", id="grounded-in-unknown"),
+    pytest.param(
+        _with([_READ], [_WRITE], memory_tool={"name": "fetch_profile", "fields": {"f": {"scope": "session"}}}),
+        "collides with a connector", id="memory-tool-name-collision"),
+    pytest.param(
+        _with([_READ], [_WRITE], memory_tool={"fields": {}}),
+        "at least 1 item", id="memory-tool-no-fields"),
+]
+
+
+@pytest.mark.parametrize("cfg,match", _INVALID_CASES)
+def test_invalid_tool_result_configs_rejected(cfg, match):
+    with pytest.raises(ValidationError, match=match):
+        MergedConfig.validate_full(cfg)
+
+
+def test_user_ttl_cap_is_configurable():
+    cfg = _with([{"name": "fetch_profile", "cache": {"scope": "user", "ttl_seconds": 90000}}], [],
+                tool_results={"max_user_ttl_seconds": 100000})
+    MergedConfig.validate_full(cfg)

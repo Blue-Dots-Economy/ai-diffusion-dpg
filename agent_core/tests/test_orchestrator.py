@@ -36,6 +36,7 @@ import pytest
 from unittest.mock import MagicMock, AsyncMock, ANY, patch
 
 from src.orchestrator import AgentCore
+from src.tool_results import ToolResultPolicies, TurnToolCache, args_hash
 from src.models import (
     ContextBundle,
     NLUResult,
@@ -45,6 +46,8 @@ from src.models import (
     SignalEvent,
     SentenceEvent,
     DoneEvent,
+    ToolCall,
+    ToolResult,
 )
 from src.chat_provider.base import ChatProviderBase
 from src.chat_provider.types import (
@@ -2136,3 +2139,141 @@ def test_both_streaming_tool_sites_apply_the_grounding_guard():
         f"{executes} streaming execution site(s) but only {caps} cap check(s) — "
         "a capped tool must not slip through a site that forgot to count it"
     )
+
+
+# ---------------------------------------------------------------------------
+# Tool-result persistence (sync path)
+# ---------------------------------------------------------------------------
+
+_POL = ToolResultPolicies.from_config({"connectors": {"read": [
+    {"name": "get_balance", "cache": {"scope": "session", "ttl_seconds": 600}}]}})
+
+
+def _entry():
+    return {"tool": "get_balance", "args_hash": args_hash({"account": "12345"}),
+            "data": {"balance": 100}, "fetched_at": time.time(), "expires_at": 9e12,
+            "origin": "turn", "scope": "session"}
+
+
+def _make_cached_agent():
+    agent = _make_agent()
+    agent._tool_policies = _POL
+    agent._memory.context_bundle.return_value = ContextBundle(
+        session={"current_subagent_id": "market_truth"}, profile={}, journey=None,
+        tool_results=[_entry()],
+    )
+    return agent
+
+
+def test_process_turn_passes_tool_cache_and_known_facts():
+    agent = _make_cached_agent()
+    agent.process_turn(_turn_input())
+    assert isinstance(agent._manager_agent.run_turn.call_args.kwargs["tool_cache"], TurnToolCache)
+    assert "get_balance" in agent._manager_agent.build_system_prompt.call_args.kwargs["known_facts"]
+
+
+def test_process_turn_persists_pending_tool_results_once():
+    agent = _make_cached_agent()
+    live = ToolResult(tool_use_id="tu_1", tool_name="get_balance", result={}, success=True,
+                      result_text='{"balance": 5}', projected=True)
+    tc = ToolCall(tool_name="get_balance", tool_use_id="tu_1", input_params={"account": "999"})
+
+    def _run_turn(*args, **kwargs):
+        kwargs["tool_cache"].after_call(tc, live)
+        return ("ok", [tc], [live])
+
+    agent._manager_agent.run_turn.side_effect = _run_turn
+    agent.process_turn(_turn_input())
+    agent._memory.apply_tool_results.assert_called_once()
+    sid, uid, batch = agent._memory.apply_tool_results.call_args.args
+    assert sid == SESSION_ID and batch["puts"]
+
+
+def test_process_turn_skips_apply_when_nothing_pending():
+    agent = _make_cached_agent()
+    agent.process_turn(_turn_input())
+    agent._memory.apply_tool_results.assert_not_called()
+
+
+def test_process_turn_apply_failure_logs_exception_class_only(caplog):
+    agent = _make_cached_agent()
+    live = ToolResult(tool_use_id="tu_1", tool_name="get_balance", result={}, success=True,
+                      result_text='{"balance": 5}', projected=True)
+    tc = ToolCall(tool_name="get_balance", tool_use_id="tu_1", input_params={"account": "999"})
+
+    def _run_turn(*args, **kwargs):
+        kwargs["tool_cache"].after_call(tc, live)
+        return ("ok", [tc], [live])
+
+    agent._manager_agent.run_turn.side_effect = _run_turn
+    agent._memory.apply_tool_results.side_effect = RuntimeError("secret detail")
+    agent.process_turn(_turn_input())
+    errs = [r for r in caplog.records if r.message == "orchestrator.apply_tool_results_error"]
+    assert errs and errs[0].error == "RuntimeError"
+
+
+def test_process_turn_persists_invalidation_when_run_turn_raises():
+    """A write that completed before the turn failed must still invalidate the cache."""
+    agent = _make_cached_agent()
+    agent._tool_policies = ToolResultPolicies.from_config({"connectors": {
+        "read": [{"name": "get_balance", "cache": {"scope": "session", "ttl_seconds": 600}}],
+        "write": [{"name": "transfer", "invalidates": ["get_balance"]}]}})
+    tc = ToolCall(tool_name="transfer", tool_use_id="tu_w", input_params={})
+    done = ToolResult(tool_use_id="tu_w", tool_name="transfer", result={}, success=True,
+                      result_text="{}")
+
+    def _run_turn(*args, **kwargs):
+        kwargs["tool_cache"].after_call(tc, done)
+        raise RuntimeError("follow-up LLM call failed")
+
+    agent._manager_agent.run_turn.side_effect = _run_turn
+    with pytest.raises(RuntimeError, match="follow-up LLM call failed"):
+        agent.process_turn(_turn_input())
+    agent._memory.apply_tool_results.assert_called_once()
+    sid, _uid, batch = agent._memory.apply_tool_results.call_args.args
+    assert sid == SESSION_ID and batch["invalidate"] == ["get_balance"]
+
+
+def test_process_turn_run_turn_error_survives_apply_failure():
+    """If persisting fails too, the original run_turn exception still propagates."""
+    agent = _make_cached_agent()
+    agent._tool_policies = ToolResultPolicies.from_config({"connectors": {
+        "read": [{"name": "get_balance", "cache": {"scope": "session", "ttl_seconds": 600}}],
+        "write": [{"name": "transfer", "invalidates": ["get_balance"]}]}})
+    tc = ToolCall(tool_name="transfer", tool_use_id="tu_w", input_params={})
+    done = ToolResult(tool_use_id="tu_w", tool_name="transfer", result={}, success=True,
+                      result_text="{}")
+
+    def _run_turn(*args, **kwargs):
+        kwargs["tool_cache"].after_call(tc, done)
+        raise RuntimeError("follow-up LLM call failed")
+
+    agent._manager_agent.run_turn.side_effect = _run_turn
+    agent._memory.apply_tool_results.side_effect = ConnectionError("down")
+    with pytest.raises(RuntimeError, match="follow-up LLM call failed"):
+        agent.process_turn(_turn_input())
+
+
+def test_sync_remember_value_visible_to_later_session_params_in_same_turn():
+    """A session-scope remember must reach the ManagerAgent's per-turn session values."""
+    from src.remember import RememberTool
+    agent = _make_cached_agent()
+    agent._remember = RememberTool.from_config({"memory_tool": {"name": "remember", "fields": {
+        "profile_action": {"scope": "session"}}}})
+    agent._memory.write_strict.return_value = (True, "")
+    seen = {}
+
+    def _run_turn(*args, **kwargs):
+        # ManagerAgent._reset_turn_flags installs the per-turn dict first.
+        agent._manager_agent._session_values = dict(kwargs["session_values"])
+        r = kwargs["remember_handler"](ToolCall(
+            tool_name="remember", tool_use_id="tu_r",
+            input_params={"field": "profile_action", "value": "use_existing"}), [])
+        seen["ok"] = r.success
+        seen["values"] = dict(agent._manager_agent._session_values)
+        return ("ok", [], [])
+
+    agent._manager_agent.run_turn.side_effect = _run_turn
+    agent.process_turn(_turn_input())
+    assert seen["ok"] is True
+    assert seen["values"]["profile_action"] == "use_existing"

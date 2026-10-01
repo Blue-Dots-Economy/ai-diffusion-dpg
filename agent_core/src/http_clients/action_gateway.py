@@ -128,6 +128,7 @@ class ActionGatewayHttpClient(ActionGatewayBase):
                 success=data.get("success", False),
                 result_text=data.get("result_text", ""),
                 session_values=data.get("session_values") or {},
+                projected=bool(data.get("projected", False)),
                 error=data.get("error"),
             )
         except httpx.TimeoutException:

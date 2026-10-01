@@ -77,6 +77,8 @@ from src.models import (
 )
 from src.preprocessing.nlu_processor import NLUProcessor
 from src.tool_registry import ToolRegistry
+from src.tool_results import ToolResultPolicies, TurnToolCache, augment_tool_definitions
+from src.remember import RememberTool
 from src.turn_policy import TurnPolicy, resolve_turn_policy
 from src.workflow_loader import AgentWorkflow, RoutingCondition, RoutingRule, SubAgent
 from opentelemetry import trace as otel_trace
@@ -361,6 +363,77 @@ class AgentCore(AgentCoreBase):
                         "error": f"{type(e).__name__}: {e}",
                     },
                 )
+
+        # Tool-result persistence: per-tool cache/invalidate policies and the
+        # optional framework ``remember`` tool, both derived from config.
+        self._tool_policies = ToolResultPolicies.from_config(config)
+        self._remember = RememberTool.from_config(config)
+
+    def _remember_on_saved(self, bundle, turn_session_values: dict | None = None):
+        """Build the callback that mirrors a remembered value into the bundle.
+
+        Args:
+            bundle: This turn's context bundle.
+            turn_session_values: The sync path's per-turn ``source: session``
+                lookup (``ManagerAgent._session_values``). run_turn copies it
+                once at the start of the turn, so without a refresh a value
+                remembered mid-turn would be invisible to later tool calls in
+                the same turn. The streaming path rebuilds its lookup from the
+                bundle per call and passes None.
+
+        Returns:
+            Callable ``(scope, key, value) -> None`` that writes into
+            ``bundle.session`` for session scope, else ``bundle.profile``,
+            and for session scope refreshes ``turn_session_values``.
+        """
+        def _on_saved(scope: str, key: str, value) -> None:
+            (bundle.session if scope == "session" else bundle.profile)[key] = value
+            if scope == "session" and isinstance(turn_session_values, dict):
+                # Rebuild with the same precedence and filtering the turn
+                # started with (profile over session, seeded defaults dropped).
+                turn_session_values.update(self._tool_session_values(bundle))
+        return _on_saved
+
+    def _persist_tool_cache_sync(self, session_id: str, user_id: str, tool_cache) -> None:
+        """Send the sync turn's pending tool-result changes to Memory Layer.
+
+        Args:
+            session_id: Session the turn belongs to.
+            user_id: Caller identity, for user-scoped entries.
+            tool_cache: This turn's ``TurnToolCache``; drained when it has
+                pending puts or invalidations, otherwise left untouched.
+
+        Never raises: a Memory Layer failure is logged (exception class only)
+        so it cannot mask the turn's own outcome or exception.
+        """
+        if not tool_cache.has_pending():
+            return
+        try:
+            self._memory.apply_tool_results(session_id, user_id, tool_cache.drain_batch())
+        except Exception as e:
+            logger.error("orchestrator.apply_tool_results_error", extra={
+                "operation": "orchestrator.process_turn", "status": "failure",
+                "session_id": session_id, "error": type(e).__name__})
+
+    async def _persist_tool_cache(self, session_id: str, user_id: str, tool_cache) -> None:
+        """Send pending tool-result changes now; a streaming turn may be interrupted later.
+
+        Args:
+            session_id: Session the turn belongs to.
+            user_id: Caller identity, for user-scoped entries.
+            tool_cache: This turn's ``TurnToolCache``; drained when it has
+                pending puts or invalidations, otherwise left untouched.
+
+        Never raises: a Memory Layer failure is logged and the turn continues.
+        """
+        if not tool_cache.has_pending():
+            return
+        try:
+            await self._async_memory.apply_tool_results(session_id, user_id, tool_cache.drain_batch())
+        except Exception as e:
+            logger.error("orchestrator.apply_tool_results_error", extra={
+                "operation": "orchestrator.stream_turn", "status": "failure",
+                "session_id": session_id, "error": type(e).__name__})
 
     # ------------------------------------------------------------------
     # Public interface — single entry point
@@ -1107,6 +1180,7 @@ class AgentCore(AgentCoreBase):
                     user_message=turn_input.user_message,
                 )
 
+        tool_cache = TurnToolCache(self._tool_policies, bundle.tool_results, bundle.session)
         system = self._manager_agent.build_system_prompt(
             agent_system_prompt=self._workflow.agent_system_prompt,
             subagent_system_prompt=next_subagent.system_prompt,
@@ -1120,6 +1194,7 @@ class AgentCore(AgentCoreBase):
             session_end_eval_prompt=(
                 self._session_end_eval_prompt if self._session_end_eval_enabled else None
             ),
+            known_facts=tool_cache.render_known_facts(),
         )
 
         # Clear resumption flag in session so it only affects the first turn
@@ -1136,6 +1211,7 @@ class AgentCore(AgentCoreBase):
         # blind to results it has already fetched.
         _prior_exchanges, _max_items, _max_chars = self._prepend_tool_replay(
             messages, bundle, session_id, "orchestrator.process_turn",
+            skip_tools=tool_cache.fresh_tools(),
         )
 
         if not messages:
@@ -1166,6 +1242,10 @@ class AgentCore(AgentCoreBase):
 
         # ── Step 8: LLM call #1 with scoped tools ────────────────────
         active_tools = self._workflow.resolve_tools_for(next_subagent_id)
+        active_tools = augment_tool_definitions(
+            active_tools, self._tool_policies,
+            self._remember.definition() if self._remember else None,
+        )
         output_format = next_subagent.output_format
         primary_model = self._llm.get_active_model()
         primary_provider = self._config.get("agent", {}).get("provider", "anthropic")
@@ -1244,24 +1324,41 @@ class AgentCore(AgentCoreBase):
             "detected_language": detected_language,
         }
         t9 = time.time()
-        final_text, tool_calls, tool_results = self._manager_agent.run_turn(
-            messages=messages,
-            session_id=session_id,
-            initial_response=llm_response,
-            system=system,
-            active_tools=active_tools,
-            ke_context=ke_context,
-            # Without this the sync /process_turn path drops the caller's
-            # identity, so connectors that template {user_id} into a path or
-            # body (get_profile, update_profile) silently receive an empty
-            # string. stream_turn already forwarded it; this brings the two
-            # paths in line.
-            user_id=user_id,
-            # Same reasoning, for connector params declared ``source: session``:
-            # the framework supplies what it already knows rather than asking
-            # the model to reproduce it.
-            session_values=self._tool_session_values(bundle),
-        )
+        # A write can complete before a later step of the turn raises (e.g.
+        # the follow-up LLM call). Its invalidation must still reach Memory
+        # Layer, or the next turn serves the pre-write result. The finally
+        # sends whatever is pending; the original exception propagates.
+        try:
+            final_text, tool_calls, tool_results = self._manager_agent.run_turn(
+                messages=messages,
+                session_id=session_id,
+                initial_response=llm_response,
+                system=system,
+                active_tools=active_tools,
+                ke_context=ke_context,
+                # Without this the sync /process_turn path drops the caller's
+                # identity, so connectors that template {user_id} into a path or
+                # body (get_profile, update_profile) silently receive an empty
+                # string. stream_turn already forwarded it; this brings the two
+                # paths in line.
+                user_id=user_id,
+                # Same reasoning, for connector params declared ``source: session``:
+                # the framework supplies what it already knows rather than asking
+                # the model to reproduce it.
+                session_values=self._tool_session_values(bundle),
+                tool_cache=tool_cache,
+                remember_name=self._remember.name if self._remember else "",
+                remember_handler=(
+                    (lambda _tc, _msgs: self._remember.handle(
+                        _tc, _msgs, tool_cache.stored_results_by_tool(),
+                        lambda scope, key, value: self._memory.write_strict(session_id, user_id, scope, key, value),
+                        self._remember_on_saved(
+                            bundle, getattr(self._manager_agent, "_session_values", None)),
+                    )) if self._remember else None
+                ),
+            )
+        finally:
+            self._persist_tool_cache_sync(session_id, user_id, tool_cache)
 
         # Persist anything a connector's session_mapping lifted out of a
         # response. The sync path runs its tools inside Manager Agent, which
@@ -1993,6 +2090,7 @@ class AgentCore(AgentCoreBase):
     def _build_tool_exchange_messages(
         exchanges: list[dict],
         undelivered_note: str = "",
+        skip_tools: frozenset | set = frozenset(),
     ) -> list[Message]:
         """Convert persisted tool exchange records into neutral Message objects.
 
@@ -2006,6 +2104,9 @@ class AgentCore(AgentCoreBase):
                 ``_capture_tool_exchange``. Malformed entries are skipped.
             undelivered_note: Appended on its own line to every tool result of
                 an exchange marked ``delivered: false``; empty disables.
+            skip_tools: Tool names whose uses and results are dropped pairwise
+                (a fresh stored result supersedes the replayed one). An
+                exchange left with no uses or no results is dropped entirely.
 
         Returns:
             Flat list of ``Message`` objects ready to prepend to a turn's
@@ -2019,6 +2120,13 @@ class AgentCore(AgentCoreBase):
                 continue
             uses = ex.get("tool_uses") or []
             results = ex.get("tool_results") or []
+            if skip_tools:
+                names = {u.get("id", ""): u.get("name", "") for u in uses if isinstance(u, dict)}
+                uses = [u for u in uses if not (isinstance(u, dict) and u.get("name") in skip_tools)]
+                results = [
+                    r for r in results
+                    if not (isinstance(r, dict) and names.get(r.get("tool_use_id", "")) in skip_tools)
+                ]
             if not uses or not results:
                 continue
             use_blocks: list[ToolUseBlock] = []
@@ -2076,6 +2184,7 @@ class AgentCore(AgentCoreBase):
         session_id: str,
         operation: str,
         undelivered_note: str = "",
+        skip_tools: frozenset | set = frozenset(),
     ) -> tuple[list[dict], int, int]:
         """Prepend the previous turn's tool exchanges to this turn's messages.
 
@@ -2094,6 +2203,8 @@ class AgentCore(AgentCoreBase):
             operation: Caller name for the log entry.
             undelivered_note: Note appended to replayed tool results of
                 exchanges marked ``delivered: false``; empty disables.
+            skip_tools: Tool names to omit from the replay because a fresh
+                stored result already covers them.
 
         Returns:
             ``(prior_exchanges, max_items, max_chars)`` for the caller to pass
@@ -2105,7 +2216,9 @@ class AgentCore(AgentCoreBase):
             raw = []
         prior: list[dict] = list(raw)
         if max_items > 0 and prior:
-            replay = self._build_tool_exchange_messages(prior[-max_items:], undelivered_note)
+            replay = self._build_tool_exchange_messages(
+                prior[-max_items:], undelivered_note, skip_tools,
+            )
             if replay:
                 messages[:0] = replay
                 logger.info(
@@ -2115,6 +2228,7 @@ class AgentCore(AgentCoreBase):
                         "status": "success",
                         "session_id": session_id,
                         "replayed_exchanges": len(replay) // 2,
+                        "skipped_tools": sorted(skip_tools),
                     },
                 )
         return prior, max_items, max_chars
@@ -4002,6 +4116,7 @@ class AgentCore(AgentCoreBase):
                     yield _stamp(DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000)))
                     return
 
+            tool_cache = TurnToolCache(self._tool_policies, bundle.tool_results, bundle.session)
             system = self._manager_agent.build_system_prompt(
                 agent_system_prompt=self._workflow.agent_system_prompt,
                 subagent_system_prompt=next_subagent.system_prompt,
@@ -4015,6 +4130,7 @@ class AgentCore(AgentCoreBase):
                 session_end_eval_prompt=(
                     self._session_end_eval_prompt if self._session_end_eval_enabled else None
                 ),
+                known_facts=tool_cache.render_known_facts(),
             )
 
             if is_resumption:
@@ -4030,6 +4146,7 @@ class AgentCore(AgentCoreBase):
             _prior_exchanges, _max_items, _max_chars = self._prepend_tool_replay(
                 messages, bundle, session_id, "orchestrator.stream_turn",
                 undelivered_note=self._turn_policy(turn_input.channel).undelivered_note,
+                skip_tools=tool_cache.fresh_tools(),
             )
 
             # Tool exchanges captured during *this* turn's tool rounds; persisted
@@ -4048,6 +4165,10 @@ class AgentCore(AgentCoreBase):
 
             # ── Step 8: LLM streaming ──────────────────────────────────
             active_tools = self._workflow.resolve_tools_for(next_subagent_id)
+            active_tools = augment_tool_definitions(
+                active_tools, self._tool_policies,
+                self._remember.definition() if self._remember else None,
+            )
             sentence_index = 0
             token_buffer = ""
             primary_model = self._llm.get_active_model()
@@ -4247,8 +4368,11 @@ class AgentCore(AgentCoreBase):
                         _caps = getattr(self._manager_agent, "_tool_call_caps", None)
                         _caps = _caps if isinstance(_caps, dict) else {}
                         _used = _turn_tool_counts.get(tc.tool_name, 0)
+                        # remember is never capped nor grounding-checked.
+                        _is_remember = (self._remember is not None
+                                        and tc.tool_name == self._remember.name)
                         _refusal = ""
-                        if over_call_cap(_caps.get(tc.tool_name), _used):
+                        if not _is_remember and over_call_cap(_caps.get(tc.tool_name), _used):
                             logger.warning(
                                 "orchestrator.stream_tool_call_cap tool=%s used=%s",
                                 tc.tool_name, _used,
@@ -4258,11 +4382,12 @@ class AgentCore(AgentCoreBase):
                                 f"effect cannot be undone. One per turn. If the caller meant "
                                 f"a different one, ask which, and call it on the next turn."
                             )
-                        else:
+                        elif not _is_remember:
                             _ung = ungrounded_params(
                                 (getattr(self._manager_agent, "_grounded_params", {}) or {})
                                 .get(tc.tool_name) or {},
                                 tc, messages,
+                                stored_results=tool_cache.stored_results_by_tool(),
                             )
                             if _ung:
                                 logger.warning(
@@ -4277,19 +4402,34 @@ class AgentCore(AgentCoreBase):
                                     f"the user chose, and call this tool again."
                                 )
 
-                        if _refusal:
+                        if _is_remember:
+                            # Framework tool: validated state write, never
+                            # capped, grounding-refused or sent to the gateway.
+                            tool_result = await self._remember.handle_async(
+                                tc, messages, tool_cache.stored_results_by_tool(),
+                                lambda scope, key, value: self._async_memory.write_strict(
+                                    session_id, user_id, scope, key, value),
+                                self._remember_on_saved(bundle),
+                            )
+                        elif _refusal:
                             tool_result = refusal_result(
                                 tc.tool_name, tc.tool_use_id, _refusal,
                             )
+                        elif (_hit := tool_cache.lookup(tc)) is not None:
+                            tool_result = _hit
                         else:
                             _turn_tool_counts[tc.tool_name] = _used + 1
                             tool_result = await self._async_gateway.execute(
-                                tc, session_id, user_id,
+                                tool_cache.prepare(tc), session_id, user_id,
                                 session_values=self._tool_session_values(bundle),
                             )
                             await self._write_mapped_session_values(
                                 session_id, user_id, tool_result, bundle,
                             )
+                            tool_cache.after_call(tc, tool_result)
+                            # Persist now: a streaming turn may be stopped
+                            # before it completes.
+                            await self._persist_tool_cache(session_id, user_id, tool_cache)
                     else:
                         # Fallback: no async gateway — cannot execute tools in streaming mode
                         logger.error(
@@ -4491,8 +4631,12 @@ class AgentCore(AgentCoreBase):
                                 _caps2 = getattr(self._manager_agent, "_tool_call_caps", None)
                                 _caps2 = _caps2 if isinstance(_caps2, dict) else {}
                                 _used2 = _turn_tool_counts.get(tc.tool_name, 0)
+                                _is_remember2 = (self._remember is not None
+                                                 and tc.tool_name == self._remember.name)
                                 _refusal2 = ""
-                                if over_call_cap(_caps2.get(tc.tool_name), _used2):
+                                if not _is_remember2 and over_call_cap(
+                                    _caps2.get(tc.tool_name), _used2,
+                                ):
                                     logger.warning(
                                         "orchestrator.stream_tool_call_cap tool=%s used=%s",
                                         tc.tool_name, _used2,
@@ -4503,11 +4647,12 @@ class AgentCore(AgentCoreBase):
                                         f"caller meant a different one, ask which, and call it "
                                         f"on the next turn."
                                     )
-                                else:
+                                elif not _is_remember2:
                                     _ung2 = ungrounded_params(
                                         (getattr(self._manager_agent, "_grounded_params", {}) or {})
                                         .get(tc.tool_name) or {},
                                         tc, messages,
+                                        stored_results=tool_cache.stored_results_by_tool(),
                                     )
                                     if _ung2:
                                         logger.warning(
@@ -4523,18 +4668,31 @@ class AgentCore(AgentCoreBase):
                                             f"tool again."
                                         )
 
-                                if _refusal2:
+                                if _is_remember2:
+                                    tool_result = await self._remember.handle_async(
+                                        tc, messages, tool_cache.stored_results_by_tool(),
+                                        lambda scope, key, value: self._async_memory.write_strict(
+                                            session_id, user_id, scope, key, value),
+                                        self._remember_on_saved(bundle),
+                                    )
+                                elif _refusal2:
                                     tool_result = refusal_result(
                                         tc.tool_name, tc.tool_use_id, _refusal2,
                                     )
+                                elif (_hit2 := tool_cache.lookup(tc)) is not None:
+                                    tool_result = _hit2
                                 else:
                                     _turn_tool_counts[tc.tool_name] = _used2 + 1
                                     tool_result = await self._async_gateway.execute(
-                                        tc, session_id, user_id,
+                                        tool_cache.prepare(tc), session_id, user_id,
                                         session_values=self._tool_session_values(bundle),
                                     )
                                     await self._write_mapped_session_values(
                                         session_id, user_id, tool_result, bundle,
+                                    )
+                                    tool_cache.after_call(tc, tool_result)
+                                    await self._persist_tool_cache(
+                                        session_id, user_id, tool_cache,
                                     )
                             else:
                                 break
