@@ -2,8 +2,9 @@
 
 **Date:** 2026-10-01
 **Status:** Draft, awaiting review
-**Baseline:** `deploy/voicera-vm`. All file and function references are against that branch. This work reaches `main` when that branch is promoted.
-**Related:** Spec A — Tool-Result Persistence (`2026-09-30-tool-result-persistence-design.md`). Spec B — Session Bootstrap. Spec D — Main-LLM context and Blue Dots prompts (to follow). Spec E — Deterministic turn actions (to follow; depends on this spec).
+**Baseline:** `deploy/voicera-vm` at `9efa8cc` (Spec A #421 and Spec B #424 merged). All file and function references are against that branch. This work reaches `main` when that branch is promoted.
+**Builds on:** Spec A — Tool-Result Persistence (`2026-09-30-tool-result-persistence-design.md`, merged as #421). Spec B — Session Bootstrap (`2026-10-01-session-bootstrap-design.md`, merged as #424). This spec makes one small extension to Spec A's `TurnToolCache` (§8).
+**Followed by:** Spec D — Main-LLM context and Blue Dots prompts. Spec E — Deterministic turn actions (depends on this spec).
 
 ## 1. Problem
 
@@ -28,6 +29,8 @@ It never sees:
 - the subagent's purpose, or what answer the bot is waiting for.
 
 The class docstring says recent session history is injected. It is not.
+
+Specs A and B improved what the **main** LLM sees: stored tool results in `<known_facts>`, and `agent.prompt_session_fields` rendered into `<known_profile>`. Spec B also puts the bootstrap `fetch_profile` result into session state before NLU runs on turn 1. None of that reaches NLU. It still gets only the four lines above.
 
 ### 1.2 What goes wrong with the output
 
@@ -80,7 +83,11 @@ NLU reuses the main agent's chat provider when the model matches: `timeout_ms: 1
 | `entity_to_profile_field` | domain `agent_core.yaml` | Maps slot names to state keys. Reused. |
 | `ChatRequest.output_format` (`json_schema`, strict) | `chat_provider/types.py`; OpenAI native `response_format`, Anthropic tool-coercion | The NLU output contract (§5.3). Already implemented for `call()`. |
 | `build_chat_provider`, `_build_helper_provider` | `chat_provider/__init__.py`, `orchestrator.py` | Builds the dedicated NLU client (§9.1). |
-| Spec A tool-result store and `<known_facts>` | Memory Layer Redis, `ContextBundle.tool_results` | Source of the `offered` options (§5.2) and of the resolver's IDs (§6.3). |
+| Spec A store, `TurnToolCache`, `<known_facts>` | Memory Layer Redis; `agent_core/src/tool_results.py` | Source of the `offered` options (§5.2) and of the resolver's IDs (§6.3). Entries are keyed by `(tool, args_hash)` and carry `fetched_at`. Only tools with a `cache` policy are stored. |
+| Grounding over stored results | `ungrounded_params(..., stored_results=tool_cache.stored_results_by_tool())` | A resolved ID comes from a stored entry, so `grounded_params` already accepts it. Nothing is added here. |
+| Spec B `session_bootstrap` | `agent_core/src/session_bootstrap.py`; runs right after the memory read on both paths | Its `session_mapping` values (e.g. `has_age`, `user_terms`, `stored_trade`) are in session **before** NLU on turn 1, so the pending question and `known` are accurate from the first turn. |
+| `_profile_context` overlay, `agent.prompt_session_fields` | `orchestrator.py` | Builds `<known_profile>`. §6.5 changes its precedence for NLU-written slots only. |
+| `remember` (Spec A §8) | `agent_core/src/remember.py` | Not used by this spec. Blue Dots leaves it off (unprompted calls, ungrounded rejections). §6.3 writes the caller's choice deterministically instead. |
 | `recent_tool_exchanges`, `current_question` | session state | `current_question` stays for `intent` mode. `recent_turns` is new (§7.5). |
 | `log_raw_response` | NLU config | Extended to capture eval cases (§10.2). |
 
@@ -134,8 +141,8 @@ bot: <last reply>
 ```
 
 - `pending`: the resolved pending question's id and its `expects` text (§7.2). When no candidate matches, it is `none`.
-- `offered`: present only when the pending question declares `options_from`. Rows come from Spec A's stored result for that tool, in stored order, with the configured display fields. Numbering starts at 1. It is capped at the number of rows the tool projection returns.
-- `known`: values for `known_fields` only. Session wins over profile for these keys (§6.5). Values are rendered as stored.
+- `offered`: present only when the pending question declares `options_from`. Rows come from the **latest** unexpired Spec A entry for that tool (highest `fetched_at`; a new search replaces the previous list), in stored order, with the configured display fields. Numbering starts at 1. It is capped at the number of rows the tool projection returns. The tool must have a `cache` policy (§7.3).
+- `known`: values for `known_fields` only, read from the same overlay as `<known_profile>` with §6.5 precedence. `known_fields` may name session fields written by `session_mapping` (e.g. `stored_trade`, `stored_location`), so NLU can understand a "हाँ" to "shall I use your saved details?". Values are rendered as stored.
 - `recent`: the last `history_turns` exchanges from `recent_turns` (§7.5). An interrupted bot reply is marked `[interrupted]`. When a reply exceeds the per-entry cap, the **tail** is kept, because the question is at the end.
 - `caller_now`: the utterance. When #411 folds carried-over segments into the turn, each segment is listed on its own line, and all but the last are marked `[interrupted]`. Today the fold joins them with spaces and no marker.
 
@@ -185,7 +192,7 @@ A slot with `accept_when_pending` is kept only if the resolved pending id is in 
 
 ### 6.3 Resolve the reference
 
-If `reference.option` is set and the pending question has `options_from`, the option number is mapped to the row's `id_field` (e.g. `item_id`) in the same stored result that rendered `offered`. The result is `resolved: {option, id, label}`, or `unresolved: {option, reason}` when the option is out of range or the stored result has expired. The resolved ID is written to the pending question's `resolves_to` state key (e.g. `selected_job_item_id`) and is added to the grounding sources for `grounded_params` for this turn.
+If `reference.option` is set and the pending question has `options_from`, the option number is mapped to the row's `id_field` (e.g. `item_id`) in the same stored entry that rendered `offered`. The result is `resolved: {option, id, label}`, or `unresolved: {option, reason}` when the option is out of range or the entry has expired. The resolved ID is written to the pending question's `resolves_to` state key (e.g. `selected_job_item_id`). It needs no extra grounding: it comes from a stored entry, and `ungrounded_params` already checks against `stored_results_by_tool()`.
 
 **Dependency on Spec D:** the bot must present options in stored order. Today the job-match prompt re-ranks the first batch by salary before speaking, so spoken order and stored order can differ.
 
@@ -204,7 +211,7 @@ The derived intent is placed in the `NLUResult.intent` routing already consumes.
 - Only configured slot keys are written, via `entity_to_profile_field`, at the configured `entity_persistence.scope`.
 - `null` slots are never written.
 - A value that differs from the stored one is overwritten, with the old and new values logged as hashes.
-- For configured slot keys, **session wins over the stored profile** in routing state, in the main-LLM profile overlay, and in `_tool_session_values`. Today the stored profile wins, which hides a spoken correction until the profile is saved. Other keys keep today's precedence.
+- **A value written by `SlotWriter` this session wins over the stored profile**, in routing state, in `_profile_context` (`<known_profile>`) and in `_tool_session_values`. Today the stored profile always wins, which hides a spoken correction until the profile is saved. The rule is provenance-based: `SlotWriter` records each key it writes in a `slot_provenance` session list, and only those keys get session precedence. Any other session copy keeps today's profile-first rule. That preserves the guard documented on `_profile_context` against the age-stuck-at-0 leak, where a stale session `"0"` outranked a fresh profile `25`. `SlotWriter` itself can never write such a value, because invalid and `null` slots are dropped (§6.1).
 - `extras` are written as a single `nlu_extras` session map, which routing never reads.
 - `signals` are appended to a `signals` session list and emitted to observability on both paths.
 
@@ -305,15 +312,16 @@ In `dialogue_act` mode, the `intents`, `entities`, `domain_instruction`, `confid
       resolves_to: selected_job_item_id
 ```
 
-Candidates are evaluated in order, against the same merged state routing uses (§6.5 precedence), with the existing `_evaluate_condition`. The first match is the pending question. An entry with no `when` always matches. Resolution runs **before** NLU, on the subagent the caller is currently in. `valid_intents` is not used in this mode.
+Candidates are evaluated in order, against the same merged state routing uses (§6.5 precedence), with the existing `_evaluate_condition`. The first match is the pending question. An entry with no `when` always matches. Resolution runs **before** NLU, on the subagent the caller is currently in, and **after** Spec B's bootstrap. On turn 1 a returning caller's `has_age`, `user_terms` and `user_privacy` are therefore already set, and consent and age are not pending for them. `valid_intents` is not used in this mode.
 
 ### 7.3 Startup validation (`dialogue_act` mode)
 
 Startup fails if:
 - an `act_intents` intent is not used by any routing rule, global routing rule or the off-track route;
 - an `accept_when_pending`, `examples[].pending` or `termination_gate` pending id is not declared by any subagent;
-- an `options_from.tool` is not configured for storage in Spec A's store;
-- `resolves_to` or a slot's mapped state key collides with a key that a connector `session_mapping` writes;
+- an `options_from.tool` has no `cache` policy, so Spec A never stores its results;
+- an `options_from.id_field` or `fields` entry is not kept by that tool's `cache.keep` (when `keep` is set);
+- `resolves_to` or a slot's mapped state key collides with a key that a connector `session_mapping` writes, or with a `memory_tool` (`remember`) field;
 - the rendered system prompt varies by subagent. This is a guard for the caching goal.
 
 ### 7.4 Runtime ↔ dev-kit sync
@@ -330,6 +338,7 @@ The same PR updates, per `.claude/rules/runtime-devkit-sync.md`:
 | Key | Type | Written by |
 |---|---|---|
 | `recent_turns` | list, capped at `history_turns × 2` | end of turn (§6.9) |
+| `slot_provenance` | list of state keys | §6.5 |
 | `off_track_count` | int | §6.6 |
 | `signals` | list | §6.5 |
 | `nlu_extras` | map | §6.5 |
@@ -352,12 +361,16 @@ class TurnUnderstanding(BaseModel):
 
 In `intent` mode, `understand_turn()` calls `NLUProcessor.process()` exactly as today, and the result's `dialogue` is `None`. Behaviour is unchanged.
 
+**Turn order.** Today `TurnToolCache` is built at prompt assembly, after NLU (`orchestrator.py`, both paths). In `dialogue_act` mode it is built once, right after Spec B's bootstrap and before `understand_turn()`, and the same instance is reused for prompt assembly and the tool loop. The resulting per-turn order is: memory read → session bootstrap → `TurnToolCache` → pending resolution → NLU → post-processing → routing → prompt (with `<known_facts>` and `<caller_turn>`) → LLM. In `intent` mode the cache keeps its current construction point.
+
+**Spec A extension.** `TurnToolCache.latest_entry(tool) -> dict | None` returns the fresh entry with the highest `fetched_at` for a tool, using the same normalised entry shape as `after_call`. `FrameBuilder` and the resolver use it. An entry stored earlier in the same turn (e.g. by the bootstrap) is included.
+
 New units under `agent_core/src/preprocessing/understanding/`, each behind an ABC per `.claude/rules/base-class-pattern.md`:
 
 | File | Unit | Depends on |
 |---|---|---|
 | `pending.py` | `PendingResolver`: subagent + state → pending question | workflow config, `_evaluate_condition` (moved to a shared module) |
-| `frame.py` | `FrameBuilder`: renders the §5.2 user message | pending, Spec A stored results, `recent_turns` |
+| `frame.py` | `FrameBuilder`: renders the §5.2 user message | pending, `TurnToolCache.latest_entry`, `_profile_context`, `recent_turns` |
 | `dialogue_act_nlu.py` | `DialogueActNLU`: static prompt, schema, the call | dedicated chat provider |
 | `postprocess.py` | normalise, accept, resolve, derive, off-track, gate (§6.1–6.4, 6.6–6.7) | config, stored results |
 | `slot_writer.py` | `SlotWriter` (§6.5) | Memory Layer client |
@@ -503,23 +516,25 @@ All with a mocked provider, meeting the coverage rule in `.claude/rules/testing-
 - **#411 interrupted turns:** an interrupted turn commits routing and entry counts before it aborts. Its successor can therefore resolve `pending` from a subagent the caller never heard, and entry-count backstops advance twice. This is reported to #411's owner. This spec does not fix it, and §6.9's `current_question` fix does not depend on it.
 - **Background speech:** NLU cannot tell a background speaker from the caller. Such turns appear as `unrelated` or `unclear`, and the off-track counter bounds them.
 - **Option order:** resolution is correct only if the bot reads options in stored order. That is a Spec D dependency (§6.3).
-- **Spec A dependency:** without Spec A's store, `offered` and the resolver are unavailable, and `select` falls back to today's behaviour. This spec is useful without Spec A but reaches full accuracy only with it.
+- **Stored options must be configured:** `offered` and the resolver work only for tools with a Spec A `cache` policy. Blue Dots caches only `fetch_profile` today, so the rollout adds one for `fetch_jobs` (§14). Without it, `select` falls back to today's behaviour.
+- **Spec A R17:** a cache hit does not replay `session_mapping`. This spec reads entries directly and never depends on that replay.
 - **One-model assumption:** the latency goal assumes the NLU model stays `gpt-4.1-mini`. A model change needs a fresh harness run.
 
 ## 14. Blue Dots rollout (config only, separate commit)
 
 1. The code merges with Blue Dots still on `intent` mode.
-2. Author the Blue Dots `dialogue_act` config:
-   - slots, known fields and examples;
+2. Add a Spec A `cache` policy for `fetch_jobs` (session scope; `keep` covering `item_id`, role, company and locality; a TTL bounded by the call length). Searches with different arguments are stored as separate entries, and the latest one is the offered list.
+3. Author the Blue Dots `dialogue_act` config:
+   - slots, known fields (including `stored_trade` and `stored_location`) and examples;
    - `act_intents` for the current routing intents;
    - `pending` for `opening`, `profile_resolve`, `job_match`, `profile_setup` and `apply_confirm`;
    - an `off_track` recovery route that replaces `clarification`'s self-loop.
-3. Run the harness on both modes and check the §11.5 gate.
-4. Switch `mode: dialogue_act` in its own commit, then compare VM calls with the 28 Sep and 30 Sep baselines.
+4. Run the harness on both modes and check the §11.5 gate.
+5. Switch `mode: dialogue_act` in its own commit, then compare VM calls with the 28 Sep and 30 Sep baselines.
 
 ## 15. Relationship to other specs
 
-- **Spec A (Tool-Result Persistence):** supplies the stored results that `offered` and the resolver read. `<caller_turn>` sits next to `<known_facts>`. The resolved ID joins the grounding sources.
-- **Spec B (Session Bootstrap):** a bootstrap `fetch_profile` fills `known` from the first turn, and its `session_mapping` values are covered by the §7.3 collision check.
+- **Spec A (Tool-Result Persistence, merged):** supplies the stored entries that `offered` and the resolver read. This spec adds `TurnToolCache.latest_entry` and builds the cache before NLU in `dialogue_act` mode. `<caller_turn>` sits next to `<known_facts>`. Grounding of the resolved ID is unchanged Spec A behaviour. `remember` is not used.
+- **Spec B (Session Bootstrap, merged):** runs before pending resolution and NLU, so turn 1's frame already reflects the caller's profile flags and stored values. Its `session_mapping` keys are covered by the §7.3 collision check.
 - **Spec D (Main-LLM context and prompts):** consumes `<caller_turn>`. Owns option order, conversation history for the main LLM, the dead `tts_rules`, and prompts that reference state the model cannot see.
-- **Spec E (Deterministic turn actions):** uses `TurnUnderstanding` to skip the main LLM, or to pre-dispatch a tool, for specific (act, pending) pairs. Each pair is enabled once its precision in §11.4 clears Spec E's bar. Built on Spec B's step runner.
+- **Spec E (Deterministic turn actions):** uses `TurnUnderstanding` to skip the main LLM, or to pre-dispatch a tool, for specific (act, pending) pairs. Each pair is enabled once its precision in §11.4 clears Spec E's bar. Built on Spec B's step runner. Spec B v1 supports literal `args` only, so Spec E has to add argument binding from slots and session values, e.g. `fetch_jobs(query_text=<trade> <location>)`.
