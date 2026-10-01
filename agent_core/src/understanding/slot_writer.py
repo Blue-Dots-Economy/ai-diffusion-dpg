@@ -35,6 +35,8 @@ def plan_writes(*, accepted: dict, cfg: DialogueActConfig, state: dict, session:
 
     Returns:
         (writes, updates) — updates list only changes over a non-seed value.
+        Provenance is recorded only for session-scope writes; a persistent
+        write lands in the profile, which already wins profile-first.
     """
     writes: list[StateWrite] = []
     updates: list[SlotUpdate] = []
@@ -48,7 +50,7 @@ def plan_writes(*, accepted: dict, cfg: DialogueActConfig, state: dict, session:
         writes.append(StateWrite(cfg.entity_scope, key, value))
         if old not in _SEEDS:
             updates.append(SlotUpdate(key, old, value))
-        if key not in provenance:
+        if cfg.entity_scope == "session" and key not in provenance:
             provenance.append(key)
             added = True
     if added:

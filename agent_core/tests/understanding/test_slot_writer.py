@@ -66,3 +66,13 @@ def test_nlu_owned_values_skips_seeds_and_unlisted():
     assert nlu_owned_values(s) == {"trade": "Welder"}
     assert nlu_owned_values({}) == {}
     assert nlu_owned_values({PROVENANCE_KEY: "bad"}) == {}
+
+
+def test_persistent_scope_writes_value_without_provenance():
+    cfg = DialogueActConfig.from_config({
+        "entity_persistence": {"scope": "persistent"},
+        "preprocessing": {"nlu_processor": {"mode": "dialogue_act", "slots": {
+            "trade": {"type": "string"}}}}})
+    writes, _ = _plan(cfg=cfg, accepted={"trade": "Welder"})
+    assert StateWrite("persistent", "trade", "Welder") in writes
+    assert not any(w.key == PROVENANCE_KEY for w in writes)
