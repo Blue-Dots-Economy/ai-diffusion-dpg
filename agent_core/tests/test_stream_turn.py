@@ -1339,3 +1339,41 @@ class TestStreamSessionBootstrap:
         agent._bootstrap.run_async = AsyncMock(side_effect=RuntimeError("bug"))
         events = await _collect_events(agent, _make_turn_input())
         assert isinstance(events[-1], DoneEvent) and events[-1].turn_status == "completed"
+
+
+class TestStreamSessionBootstrapOrdering:
+
+    @pytest.mark.asyncio
+    async def test_stream_memory_read_complete_and_step1_log_precede_bootstrap(self):
+        """Memory-read latency/signal exclude the bootstrap (ruling R7)."""
+        import logging
+        from tests.test_orchestrator import _OrderHandler
+
+        agent, order = _boot_stream_agent()
+        log = logging.getLogger("src.orchestrator")
+        handler, prev = _OrderHandler(order), log.level
+        log.addHandler(handler)
+        log.setLevel(logging.INFO)
+        try:
+            events = []
+            async for ev in agent.stream_turn(_make_turn_input()):
+                if isinstance(ev, SignalEvent) and ev.stage == "memory_read" and ev.status == "complete":
+                    order.append("memory_read_complete")
+                events.append(ev)
+        finally:
+            log.removeHandler(handler)
+            log.setLevel(prev)
+        assert order.index("memory_read_complete") < order.index("bootstrap_execute")
+        assert order.index("step1_logged") < order.index("bootstrap_execute") < order.index("llm")
+
+    @pytest.mark.asyncio
+    async def test_stream_bootstrap_skipped_without_gateway_logs_debug(self, caplog):
+        import logging
+        agent, _order = _boot_stream_agent()
+        agent._async_gateway = None
+        with caplog.at_level(logging.DEBUG, logger="src.orchestrator"):
+            await agent._run_session_bootstrap_async(
+                ContextBundle(session={}, profile={}), "sess-1", "user-1")
+        recs = [r for r in caplog.records if r.message == "orchestrator.session_bootstrap_skipped"]
+        assert len(recs) == 1 and recs[0].levelno == logging.DEBUG
+        assert not hasattr(recs[0], "session_id")

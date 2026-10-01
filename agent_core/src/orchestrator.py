@@ -594,21 +594,22 @@ class AgentCore(AgentCoreBase):
             adopt=not turn_input.fresh,
             caller_agent_id=getattr(turn_input, "caller_agent_id", None),
         )
+        logger.info(
+            "  [STEP 1] Memory context_bundle  ✓  current_subagent_id=%s"
+            "  is_returning=%s  latency=%dms",
+            bundle.session.get("current_subagent_id") or self._workflow.start_subagent_id,
+            bundle.session.get("is_returning", False),
+            int((time.time() - t1) * 1000),
+        )
         # Session bootstrap: on the session's first turn, before anything reads
         # bundle.session (routing, consent gate, opening phrase, pre-NLU args).
+        # Logged after STEP 1 so memory-read latency excludes it ([STEP 1b]).
         self._run_session_bootstrap_sync(bundle, session_id, user_id)
         current_subagent_id: str = (
             bundle.session.get("current_subagent_id")
             or self._workflow.start_subagent_id
         )
         current_question: str = bundle.session.get("current_question", "")
-        logger.info(
-            "  [STEP 1] Memory context_bundle  ✓  current_subagent_id=%s"
-            "  is_returning=%s  latency=%dms",
-            current_subagent_id,
-            bundle.session.get("is_returning", False),
-            int((time.time() - t1) * 1000),
-        )
 
         # ── Step 4: Language Normalisation ───────────────────────────
         # Runs before the consent gate so the detected language is available
@@ -1663,6 +1664,9 @@ class AgentCore(AgentCoreBase):
         try:
             gateway = getattr(self._manager_agent, "_gateway", None)
             if gateway is None:
+                logger.debug("orchestrator.session_bootstrap_skipped", extra={
+                    "operation": "orchestrator.process_turn", "status": "skipped",
+                    "reason": "no_gateway"})
                 return
             self._bootstrap.run_sync(
                 bundle,
@@ -1688,7 +1692,12 @@ class AgentCore(AgentCoreBase):
             session_id: Session identifier.
             user_id:    User identifier.
         """
-        if self._bootstrap is None or not self._bootstrap.needed(bundle) or not self._async_gateway:
+        if self._bootstrap is None or not self._bootstrap.needed(bundle):
+            return
+        if not self._async_gateway:
+            logger.debug("orchestrator.session_bootstrap_skipped", extra={
+                "operation": "orchestrator.stream_turn", "status": "skipped",
+                "reason": "no_gateway"})
             return
         try:
             async def _exec(tc):
@@ -3578,26 +3587,28 @@ class AgentCore(AgentCoreBase):
             t1 = time.time()
             yield _stamp(SignalEvent(stage="memory_read", status="start"))
             bundle = await self._async_memory.context_bundle(session_id, user_id, adopt=not turn_input.fresh)
+            yield _stamp(SignalEvent(stage="memory_read", status="complete"))
+            logger.info(
+                "  [STEP 1] Memory context_bundle  ✓  current_subagent_id=%s"
+                "  is_returning=%s  latency=%dms",
+                bundle.session.get("current_subagent_id") or self._workflow.start_subagent_id,
+                bundle.session.get("is_returning", False),
+                int((time.time() - t1) * 1000),
+            )
+            if _aborted():
+                return
             # Session bootstrap: first turn only, before routing and carry-over.
+            # Runs after the STEP 1 log/signal so memory-read latency excludes
+            # it; the bootstrap reports its own latency ([STEP 1b]).
             await self._run_session_bootstrap_async(bundle, session_id, user_id)
             current_subagent_id: str = (
                 bundle.session.get("current_subagent_id")
                 or self._workflow.start_subagent_id
             )
             current_question: str = bundle.session.get("current_question", "")
-            yield _stamp(SignalEvent(stage="memory_read", status="complete"))
-            if _aborted():
-                return
             # Spec §4.6: fold an interrupted predecessor's utterances into this
             # turn before NLU and the input trust check see the message.
             turn_input = await self._fold_carryover(turn_input, bundle, record, user_id)
-            logger.info(
-                "  [STEP 1] Memory context_bundle  ✓  current_subagent_id=%s"
-                "  is_returning=%s  latency=%dms",
-                current_subagent_id,
-                bundle.session.get("is_returning", False),
-                int((time.time() - t1) * 1000),
-            )
 
             # ── Step 4 + Step 5 (parallel): lang-norm + NLU ─────────────
             # GH-151 #2: language_normalisation and NLU were previously run

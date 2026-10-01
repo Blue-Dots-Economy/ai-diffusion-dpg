@@ -2416,3 +2416,43 @@ def test_sync_bootstrap_run_error_is_contained():
     agent._bootstrap.run_sync.side_effect = RuntimeError("bug")
     result = agent.process_turn(_turn_input())
     assert isinstance(result, TurnResult) and result.response_text == "Final response."
+
+
+class _OrderHandler(__import__("logging").Handler):
+    """Appends a marker to ``order`` when the STEP 1 completion line is logged."""
+
+    def __init__(self, order):
+        super().__init__()
+        self._order = order
+
+    def emit(self, record):
+        if "[STEP 1] Memory context_bundle  ✓" in record.getMessage():
+            self._order.append("step1_logged")
+
+
+def test_sync_step1_log_precedes_bootstrap():
+    """Memory-read latency excludes the bootstrap (ruling R7)."""
+    import logging
+    agent, order = _boot_agent()
+    log = logging.getLogger("src.orchestrator")
+    handler, prev = _OrderHandler(order), log.level
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+    try:
+        agent.process_turn(_turn_input())
+    finally:
+        log.removeHandler(handler)
+        log.setLevel(prev)
+    assert order.index("step1_logged") < order.index("bootstrap_execute") < order.index("run_turn")
+
+
+def test_sync_bootstrap_skipped_without_gateway_logs_debug(caplog):
+    import logging
+    agent, _order = _boot_agent()
+    agent._manager_agent = MagicMock(spec=[])            # no _gateway attribute
+    with caplog.at_level(logging.DEBUG, logger="src.orchestrator"):
+        agent._run_session_bootstrap_sync(ContextBundle(session={}, profile={}, journey=None),
+                                          SESSION_ID, "u1")
+    recs = [r for r in caplog.records if r.message == "orchestrator.session_bootstrap_skipped"]
+    assert len(recs) == 1 and recs[0].levelno == logging.DEBUG
+    assert not hasattr(recs[0], "session_id")
