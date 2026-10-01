@@ -25,7 +25,7 @@ from src.understanding.models import DialogueActResult, TurnUnderstanding
 from src.understanding.pending import PendingResolver, PendingResolverBase
 from src.understanding.postprocess import (accept_slots, derive_intent, gate_passes, next_off_track,
                                            normalise_slots, resolve_reference)
-from src.understanding.slot_writer import plan_writes
+from src.understanding.slot_writer import plan_writes, stored_off_track_count
 
 logger = logging.getLogger(__name__)
 _counters: dict[str, Any] = {}
@@ -156,7 +156,7 @@ class TurnUnderstander(TurnUnderstanderBase):
         resolved, unresolved = resolve_reference(dialogue.option, pending, rows)
         gate_ok = gate_passes(cfg, pid, ctx.state)
         intent, rule = derive_intent(dialogue, pid, cfg, gate_ok=gate_ok, resolved=resolved is not None)
-        count, tripped = next_off_track(int(ctx.session.get("off_track_count") or 0), dialogue.relation,
+        count, tripped = next_off_track(stored_off_track_count(ctx.session), dialogue.relation,
                                         cfg, is_fallback=False)
         if tripped and not (rule is not None and rule.gated):
             intent = cfg.off_track_intent

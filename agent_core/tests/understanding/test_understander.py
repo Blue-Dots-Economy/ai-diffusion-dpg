@@ -154,3 +154,29 @@ def test_understanding_error_log_carries_latency(caplog):
         und.understand(_ctx("opening"))
     recs = [r for r in caplog.records if r.getMessage() == "nlu.understanding_error"]
     assert recs and isinstance(recs[0].latency_ms, int)
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("bad", ["abc", "2.0", [1], {}, True])
+@pytest.mark.parametrize("relation, expected", [("answers_pending", 0), ("unrelated", 1)])
+def test_corrupt_off_track_count_is_healed_not_fallback(bad, relation, expected):
+    """F2: an unparseable off_track_count counts as 0 and the healed int is written."""
+    und, _ = _u(DialogueActResult(acts=("affirm",), relation=relation,
+                                  slots={"consent": None, "age": None, "trade": None}))
+    u = und.understand(_ctx("job_match", session={"off_track_count": bad}))
+    assert u.fallback_reason is None
+    writes = [w for w in u.writes if w.key == "off_track_count"]
+    assert writes == [StateWrite("session", "off_track_count", expected)]
+    assert type(writes[0].value) is int
+
+
+def test_corrupt_nlu_extras_is_replaced_with_dict():
+    """F2: a non-dict nlu_extras counts as {} and the extras are written as a dict."""
+    und, _ = _u(DialogueActResult(acts=("provide_info",), relation="answers_other",
+                                  slots={"consent": None, "age": None, "trade": None},
+                                  extras=(("tool", "drill"),)))
+    u = und.understand(_ctx("job_match", session={"nlu_extras": "x"}))
+    assert u.fallback_reason is None
+    assert StateWrite("session", "nlu_extras", {"tool": "drill"}) in u.writes
