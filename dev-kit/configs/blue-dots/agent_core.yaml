@@ -617,7 +617,11 @@ connectors:
         grounded_params:
           job_item_id: [fetch_jobs]
           profile_item_id: [fetch_profile, save_profile]
-          acting_as_user_id: [fetch_profile, save_profile]
+          # acting_as_user_id is NOT listed: it is `source: session` now, so
+          # the adapter injects it and it never appears in the schema the
+          # model sees (get_tool_definitions keeps only source=agent params).
+          # A param the model cannot supply cannot be invented, and guarding
+          # it only risked refusing a value the adapter was about to replace.
         must_not_substitute: >
           Never submit without an explicit yes/confirm in the most
           recent user turn.
