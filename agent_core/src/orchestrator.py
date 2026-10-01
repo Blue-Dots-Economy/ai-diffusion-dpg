@@ -2729,6 +2729,7 @@ class AgentCore(AgentCoreBase):
         stamp,
         message: str | None = None,
         subagent_id: str | None = None,
+        end_session: bool = True,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Skip the LLM and emit a canned closing line (#204).
 
@@ -2739,6 +2740,10 @@ class AgentCore(AgentCoreBase):
                 so a phase that ends the call for a REASON states that reason.
             subagent_id: the phase to record for this turn. Defaults to
                 ``ended``.
+            end_session: whether this closes the call. True for a goodbye or a
+                terminal phase. **False** when a mid-conversation phase simply
+                speaks a fixed line — the caller still has to answer it, and
+                hanging up on them would be the opposite of the intent.
 
         Pulls ``conversation.termination_message`` from config, translates it
         to the user's detected language using the same helper as the consent
@@ -2830,7 +2835,7 @@ class AgentCore(AgentCoreBase):
         yield stamp(DoneEvent(
             turn_id=turn_id,
             turn_status="completed",
-            session_ended=True,
+            session_ended=end_session,
             was_escalated=False,
             was_tool_used=False,
             model_used="none",
@@ -4212,6 +4217,53 @@ class AgentCore(AgentCoreBase):
                 matched_rule.intent if matched_rule else "—",
                 int((time.time() - t6) * 1000),
             )
+
+            # ── Step 6a: a phase whose reply is one fixed sentence ─────
+            # See SubAgent.fixed_opening. Three conditions, all required:
+            # first entry to the phase, every named session field present,
+            # and the caller's own turn carried no entities — if they named a
+            # trade or city themselves, their words win and the model handles
+            # it as before.
+            _sa = self._workflow.subagents.get(next_subagent_id)
+            _tmpl = (getattr(_sa, "fixed_opening", "") or "").strip()
+            if _tmpl:
+                _requires = list(getattr(_sa, "fixed_opening_requires", []) or [])
+                _counts = bundle.session.get("subagent_entry_count") or {}
+                _first_entry = int(
+                    (_counts or {}).get(next_subagent_id, 0) or 0
+                ) <= 1
+                _vals = {
+                    k: str(bundle.session.get(k) or "").strip() for k in _requires
+                }
+                _have_all = bool(_requires) and all(_vals.values())
+                _caller_said_something = bool(nlu_result.entities or {})
+                if _first_entry and _have_all and not _caller_said_something:
+                    try:
+                        _line = _tmpl.format(**_vals).strip()
+                    except (KeyError, IndexError):
+                        logger.warning(
+                            "orchestrator.fixed_opening_placeholder_missing",
+                            extra={"operation": "orchestrator.stream_turn",
+                                   "status": "skipped",
+                                   "subagent_id": next_subagent_id},
+                        )
+                        _line = ""
+                    if _line:
+                        logger.info(
+                            "  [STEP 7] Prompt Assembly  ⏭  skipped — %s speaks its "
+                            "fixed opening", next_subagent_id,
+                        )
+                        async for ev in self._stream_termination_short_circuit(
+                            session_id=session_id, user_id=user_id, turn_id=turn_id,
+                            turn_input=turn_input, detected_language=detected_language,
+                            nlu_result=nlu_result, bundle=bundle,
+                            trust_input=trust_input, trust_output=trust_output,
+                            start=start, stamp=_stamp,
+                            message=_line, subagent_id=next_subagent_id,
+                            end_session=False,
+                        ):
+                            yield ev
+                        return
 
             # ── Step 6b: terminal phases speak fixed copy, not generated text ──
             # A terminal subagent has no tools and a verified opening_phrase.

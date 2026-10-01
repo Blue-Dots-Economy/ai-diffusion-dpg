@@ -511,6 +511,79 @@ class TestStreamTurnChannelValidation:
 
 
 
+class TestFixedOpening:
+    """A phase whose Path-A reply is one fixed sentence built from session
+    values speaks it verbatim. Generating it lost it: a returning caller was
+    asked for their trade in 2 of 3 runs despite stored_trade being in the
+    prompt."""
+
+    def _agent(self, session, entities=None):
+        agent = _make_agent_core()
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("x", "english")
+        agent._nlu_processor = MagicMock()
+        agent._nlu_processor.process.return_value = NLUResult(
+            intent="any_input", entities=entities or {},
+            sentiment="neutral", confidence=0.9,
+        )
+        for sa in agent._workflow.subagents.values():
+            sa.fixed_opening = "I found your details — {stored_trade} in {stored_location}."
+            sa.fixed_opening_requires = ["stored_trade", "stored_location"]
+        sess = {"current_subagent_id": "start"}
+        sess.update(session)
+        agent._async_memory.context_bundle.return_value = ContextBundle(
+            session=sess, profile={},
+        )
+        return agent
+
+    @pytest.mark.asyncio
+    async def test_speaks_it_verbatim_without_the_model(self):
+        agent = self._agent({"stored_trade": "Welder", "stored_location": "Ghaziabad"})
+
+        async def must_not_run(*a, **k):
+            raise AssertionError("the model must not be called")
+            yield  # pragma: no cover
+
+        agent._llm.stream = must_not_run
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "Welder in Ghaziabad" in spoken
+        done = [e for e in events if isinstance(e, DoneEvent)]
+        assert len(done) == 1
+        assert done[0].session_ended is False, (
+            "speaking a mid-conversation line must NOT hang up on the caller"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_callers_own_words_win(self):
+        """If they named a trade themselves, the model handles the turn."""
+        agent = self._agent(
+            {"stored_trade": "Welder", "stored_location": "Ghaziabad"},
+            entities={"trade": "Plumber"},
+        )
+
+        async def mock_stream(*a, **k):
+            yield "Plumber it is."
+
+        agent._llm.stream = mock_stream
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "Plumber it is." in spoken
+        assert "I found your details" not in spoken
+
+    @pytest.mark.asyncio
+    async def test_a_missing_value_falls_back_to_the_model(self):
+        agent = self._agent({"stored_trade": "Welder", "stored_location": ""})
+
+        async def mock_stream(*a, **k):
+            yield "Which city?"
+
+        agent._llm.stream = mock_stream
+        events = await _collect_events(agent, _make_turn_input())
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        assert "Which city?" in spoken
+
+
 class TestTerminalPhaseFixedCopy:
     """A terminal subagent has no tools and verified copy. The model must not
     be asked to paraphrase it — doing so told a 16-year-old that applications
