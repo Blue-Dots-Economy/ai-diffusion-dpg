@@ -577,6 +577,23 @@ class SubAgent(BaseModel):
     tools: list[str] = Field(default_factory=list)
     system_prompt: str = ""
     output_format: Optional[dict[str, Any]] = None
+    # Speak `fixed_opening` verbatim, without calling the model, on the FIRST
+    # turn that routes here when every field in `fixed_opening_requires` is
+    # present in session AND the caller's own turn carried no entities.
+    #
+    # For a phase whose job is one fixed sentence built from values already in
+    # hand, generating that sentence adds nothing and loses it intermittently:
+    # blue-dots' profile_resolve is meant to offer a returning caller their
+    # saved trade and city, and instead asked for the trade in 2 of 3 runs,
+    # because the values arrive under the names `stored_trade` /
+    # `stored_location` and the model did not connect them to the question it
+    # was about to ask.
+    #
+    # The entity guard is what keeps the caller in charge: if they named a
+    # trade or city in the same breath, their words must win, so the model
+    # handles that turn as before.
+    fixed_opening: str = ""
+    fixed_opening_requires: list[str] = Field(default_factory=list)
     routing: list[RoutingRule] = Field(default_factory=list)
 
 

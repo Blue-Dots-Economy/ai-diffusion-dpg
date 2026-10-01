@@ -401,6 +401,37 @@ class AgentCore(AgentCoreBase):
                 profile_context[k] = v
         return profile_context
 
+    def _session_grounded_values(self, bundle, spec: dict) -> dict[str, list[str]]:
+        """Values for grounded params that session_mapping lifted from a tool.
+
+        A param named in ``grounded_params`` is often also a session field — it
+        is written there by the producing connector's ``session_mapping``. Those
+        copies came from the upstream result, so they ground the call, and they
+        outlive the tool-result cache.
+
+        That difference is the point. ``save_profile`` invalidates the cached
+        ``fetch_profile`` because the profile has just changed, which is
+        correct. Without this, the NEXT turn's ``apply_job`` had no evidence
+        for ``profile_item_id`` and was refused — so a returning caller could
+        never apply (measured on the VM against UAT).
+
+        Args:
+            bundle: This turn's context bundle.
+            spec: The tool's ``grounded_params`` map.
+
+        Returns:
+            Param name → the session value for it, when present and non-empty.
+        """
+        out: dict[str, list[str]] = {}
+        if not spec:
+            return out
+        session = getattr(bundle, "session", None) or {}
+        for name in spec:
+            v = session.get(name)
+            if isinstance(v, str) and v:
+                out[name] = [v]
+        return out
+
     def _remember_on_saved(self, bundle, turn_session_values: dict | None = None):
         """Build the callback that mirrors a remembered value into the bundle.
 
@@ -2698,6 +2729,7 @@ class AgentCore(AgentCoreBase):
         stamp,
         message: str | None = None,
         subagent_id: str | None = None,
+        end_session: bool = True,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Skip the LLM and emit a canned closing line (#204).
 
@@ -2708,6 +2740,10 @@ class AgentCore(AgentCoreBase):
                 so a phase that ends the call for a REASON states that reason.
             subagent_id: the phase to record for this turn. Defaults to
                 ``ended``.
+            end_session: whether this closes the call. True for a goodbye or a
+                terminal phase. **False** when a mid-conversation phase simply
+                speaks a fixed line — the caller still has to answer it, and
+                hanging up on them would be the opposite of the intent.
 
         Pulls ``conversation.termination_message`` from config, translates it
         to the user's detected language using the same helper as the consent
@@ -2799,7 +2835,7 @@ class AgentCore(AgentCoreBase):
         yield stamp(DoneEvent(
             turn_id=turn_id,
             turn_status="completed",
-            session_ended=True,
+            session_ended=end_session,
             was_escalated=False,
             was_tool_used=False,
             model_used="none",
@@ -4182,6 +4218,53 @@ class AgentCore(AgentCoreBase):
                 int((time.time() - t6) * 1000),
             )
 
+            # ── Step 6a: a phase whose reply is one fixed sentence ─────
+            # See SubAgent.fixed_opening. Three conditions, all required:
+            # first entry to the phase, every named session field present,
+            # and the caller's own turn carried no entities — if they named a
+            # trade or city themselves, their words win and the model handles
+            # it as before.
+            _sa = self._workflow.subagents.get(next_subagent_id)
+            _tmpl = (getattr(_sa, "fixed_opening", "") or "").strip()
+            if _tmpl:
+                _requires = list(getattr(_sa, "fixed_opening_requires", []) or [])
+                _counts = bundle.session.get("subagent_entry_count") or {}
+                _first_entry = int(
+                    (_counts or {}).get(next_subagent_id, 0) or 0
+                ) <= 1
+                _vals = {
+                    k: str(bundle.session.get(k) or "").strip() for k in _requires
+                }
+                _have_all = bool(_requires) and all(_vals.values())
+                _caller_said_something = bool(nlu_result.entities or {})
+                if _first_entry and _have_all and not _caller_said_something:
+                    try:
+                        _line = _tmpl.format(**_vals).strip()
+                    except (KeyError, IndexError):
+                        logger.warning(
+                            "orchestrator.fixed_opening_placeholder_missing",
+                            extra={"operation": "orchestrator.stream_turn",
+                                   "status": "skipped",
+                                   "subagent_id": next_subagent_id},
+                        )
+                        _line = ""
+                    if _line:
+                        logger.info(
+                            "  [STEP 7] Prompt Assembly  ⏭  skipped — %s speaks its "
+                            "fixed opening", next_subagent_id,
+                        )
+                        async for ev in self._stream_termination_short_circuit(
+                            session_id=session_id, user_id=user_id, turn_id=turn_id,
+                            turn_input=turn_input, detected_language=detected_language,
+                            nlu_result=nlu_result, bundle=bundle,
+                            trust_input=trust_input, trust_output=trust_output,
+                            start=start, stamp=_stamp,
+                            message=_line, subagent_id=next_subagent_id,
+                            end_session=False,
+                        ):
+                            yield ev
+                        return
+
             # ── Step 6b: terminal phases speak fixed copy, not generated text ──
             # A terminal subagent has no tools and a verified opening_phrase.
             # There is nothing for the model to decide, and asking it to
@@ -4522,11 +4605,15 @@ class AgentCore(AgentCoreBase):
                                 f"a different one, ask which, and call it on the next turn."
                             )
                         elif not _is_remember:
+                            _spec = (
+                                getattr(self._manager_agent, "_grounded_params", {}) or {}
+                            ).get(tc.tool_name) or {}
                             _ung = ungrounded_params(
-                                (getattr(self._manager_agent, "_grounded_params", {}) or {})
-                                .get(tc.tool_name) or {},
-                                tc, messages,
+                                _spec, tc, messages,
                                 stored_results=tool_cache.stored_results_by_tool(),
+                                session_grounded=self._session_grounded_values(
+                                    bundle, _spec,
+                                ),
                             )
                             if _ung:
                                 logger.warning(
@@ -4844,11 +4931,15 @@ class AgentCore(AgentCoreBase):
                                         f"on the next turn."
                                     )
                                 elif not _is_remember2:
+                                    _spec2 = (
+                                        getattr(self._manager_agent, "_grounded_params", {}) or {}
+                                    ).get(tc.tool_name) or {}
                                     _ung2 = ungrounded_params(
-                                        (getattr(self._manager_agent, "_grounded_params", {}) or {})
-                                        .get(tc.tool_name) or {},
-                                        tc, messages,
+                                        _spec2, tc, messages,
                                         stored_results=tool_cache.stored_results_by_tool(),
+                                        session_grounded=self._session_grounded_values(
+                                            bundle, _spec2,
+                                        ),
                                     )
                                     if _ung2:
                                         logger.warning(

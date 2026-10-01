@@ -617,7 +617,11 @@ connectors:
         grounded_params:
           job_item_id: [fetch_jobs]
           profile_item_id: [fetch_profile, save_profile]
-          acting_as_user_id: [fetch_profile, save_profile]
+          # acting_as_user_id is NOT listed: it is `source: session` now, so
+          # the adapter injects it and it never appears in the schema the
+          # model sees (get_tool_definitions keeps only source=agent params).
+          # A param the model cannot supply cannot be invented, and guarding
+          # it only risked refusing a value the adapter was about to replace.
         must_not_substitute: >
           Never submit without an explicit yes/confirm in the most
           recent user turn.
@@ -1954,6 +1958,19 @@ agent_workflow:
       # greeted. The trade question is the right default because it is what
       # Path B asks first, and a caller who does have a stored profile is
       # offered it by the prompt on the same turn.
+      # Path A is one fixed sentence built from values already in session,
+      # so it is spoken verbatim rather than generated. Measured: the model
+      # asked a returning caller for their trade in 2 of 3 runs even with
+      # stored_trade in <known_profile> — the values arrive under the names
+      # `stored_trade` / `stored_location`, and it did not connect them to the
+      # question it was about to ask.
+      #
+      # Only on the FIRST turn into this phase, only when both values are
+      # present, and only when the caller's own turn carried no entities — if
+      # they name a trade or city themselves their words win, and the model
+      # handles that turn as before (Path B, below).
+      fixed_opening: "मुझे आपकी जानकारी मिली — {stored_location} में {stored_trade}। क्या इन्हीं से नौकरियाँ ढूंढूँ?"
+      fixed_opening_requires: [stored_trade, stored_location]
       opening_phrase: >
         आप किस काम या ट्रेड में नौकरी ढूंढ रहे हैं?
 

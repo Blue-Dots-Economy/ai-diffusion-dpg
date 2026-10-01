@@ -538,14 +538,25 @@ tools:
               The chosen profile's item_id — from fetch_profile (use_existing
               path) or save_profile's response (create_new / update_existing).
           - name: acting_as_user_id
-            source: agent
+            # SESSION, not agent. Both producers write this field via their
+            # own session_mapping — fetch_profile and save_profile each map
+            # `user_id` to `acting_as_user_id` — so the value is always on
+            # hand and the model never has to recall it.
+            #
+            # It used to be agent-supplied, and the model got it wrong on
+            # every returning-caller apply measured against UAT: once by
+            # copying profile_item_id into it, then by inventing a
+            # well-formed UUID outright. The grounding guard caught each one
+            # and refused the apply, so the caller could not apply at all.
+            # Asking a model to echo a 36-character identifier from many
+            # turns back is the exact failure that guard was written for;
+            # the fix is to stop asking.
+            source: session
             type: string
             required: true
             description: >
-              The seeker's user UUID. From fetch_profile's
-              source_item_owner field (use_existing) or save_profile's
-              user_id (create_new / update_existing). The upstream rejects
-              the apply without it.
+              The seeker's user UUID. Injected from session state by the
+              adapter — do NOT supply it.
           - name: job_item_id
             source: agent
             type: string
