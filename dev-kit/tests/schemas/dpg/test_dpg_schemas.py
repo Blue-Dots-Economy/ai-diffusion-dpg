@@ -223,6 +223,45 @@ def test_reach_layer_dpg_vad_bounds():
         ReachLayerDpgConfig.model_validate(base)
 
 
+def test_reach_layer_dpg_bridge_channel_accepted():
+    """Regression: the bridge channel (#369) was added to dpg/reach_layer.yaml and
+    the domain mirror but not to this schema, so the shipped YAML was rejected
+    and the deploy wizard could not save it."""
+    base = _reach_minimal_dict()
+    base["reach_layer"]["channels"]["bridge"] = {
+        "enabled": True,
+        "assembly_mode": "direct",
+        "server": {"host": "0.0.0.0", "port": 8008},
+        "agent_core_url": "http://agent_core:8000",
+        "timeout_s": 60.0,
+        "terminal_word": "",
+    }
+    cfg = ReachLayerDpgConfig.model_validate(base)
+    assert cfg.reach_layer.channels.bridge.server.port == 8008
+
+
+def test_reach_layer_dpg_bridge_is_optional():
+    """Every channel is optional at runtime, so omitting bridge must validate."""
+    cfg = ReachLayerDpgConfig.model_validate(_reach_minimal_dict())
+    assert cfg.reach_layer.channels.bridge is None
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"bogus": 1},                              # extra="forbid"
+        {"server": {"host": "h", "port": 0}},      # port must be 1..65535
+        {"server": {"host": "h", "port": 70000}},
+        {"timeout_s": 0},                          # must be > 0
+    ],
+)
+def test_reach_layer_dpg_bridge_rejects_invalid(override):
+    base = _reach_minimal_dict()
+    base["reach_layer"]["channels"]["bridge"] = override
+    with pytest.raises(ValidationError):
+        ReachLayerDpgConfig.model_validate(base)
+
+
 # -- observability_layer DPG -------------------------------------------------
 
 def _obs_minimal_dict():
