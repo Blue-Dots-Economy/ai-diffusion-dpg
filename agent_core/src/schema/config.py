@@ -609,7 +609,6 @@ class NLUProcessorConfig(BaseModel):
     # final composed user message. Off by default because the values can
     # carry PII (entity values, message text). Turn on for triage windows.
     log_raw_response: bool = False
-    log_raw_response_max_chars: int = Field(default=2000, ge=0)
     # NLU dialogue-acts spec §7.1, §9.1.
     timeout_ms: int = Field(default=2500, gt=0)
     retry_attempts: int = Field(default=2, ge=1)

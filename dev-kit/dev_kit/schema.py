@@ -433,9 +433,6 @@ class NLUProcessorConfig(BaseModel):
         default=False,
         description="Opt-in INFO log of the parsed NLU response and composed user message. Off by default (may carry PII).",
     )
-    log_raw_response_max_chars: int = Field(
-        default=2000, ge=0, description="Truncation limit for the log_raw_response log line.",
-    )
     signal_intents: dict[str, str] = Field(
         default_factory=dict,
         description="Optional map of signal name → signal_type written to the ContextGraph Signal node, e.g. {pay_disappointment: objection}",

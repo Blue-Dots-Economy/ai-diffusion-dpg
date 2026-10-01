@@ -655,7 +655,7 @@ class TestRemovedIntentModeKeys:
 
 
 class TestLogRawResponseKeys:
-    """Runtime NLUProcessorConfig accepts log_raw_response(_max_chars); every dev-kit mirror must too."""
+    """Runtime NLUProcessorConfig accepts log_raw_response; every dev-kit mirror must too."""
 
     @staticmethod
     def _models():
@@ -665,17 +665,15 @@ class TestLogRawResponseKeys:
         return [NLUProcessorConfig, NLUProcessorSection, NLUProcessorDpg]
 
     @pytest.mark.parametrize("idx", [0, 1, 2], ids=["flat", "domain", "dpg"])
-    def test_accepts_both_keys(self, idx):
+    def test_accepts_key(self, idx):
         model = self._models()[idx]
-        m = model(log_raw_response=True, log_raw_response_max_chars=500)
+        m = model(log_raw_response=True)
         assert m.log_raw_response is True
-        assert m.log_raw_response_max_chars == 500
         d = model()
         assert d.log_raw_response is False
-        assert d.log_raw_response_max_chars == 2000
 
     @pytest.mark.parametrize("idx", [0, 1, 2], ids=["flat", "domain", "dpg"])
-    def test_rejects_negative_max_chars(self, idx):
+    def test_rejects_removed_max_chars(self, idx):
         model = self._models()[idx]
         with pytest.raises(ValidationError, match="log_raw_response_max_chars"):
-            model(log_raw_response_max_chars=-1)
+            model(log_raw_response_max_chars=500)

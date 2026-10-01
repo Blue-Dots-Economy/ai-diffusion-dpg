@@ -723,6 +723,8 @@ def _set_nlu(key, value):
     pytest.param(_set_nlu("domain_instruction", "x"), "domain_instruction", id="nlu.domain_instruction"),
     pytest.param(_set_nlu("confidence_threshold", 0.5), "confidence_threshold", id="nlu.confidence_threshold"),
     pytest.param(_set_nlu("sentiment_classes", ["neutral"]), "sentiment_classes", id="nlu.sentiment_classes"),
+    pytest.param(_set_nlu("log_raw_response_max_chars", 500), "log_raw_response_max_chars",
+                 id="nlu.log_raw_response_max_chars"),
     pytest.param(lambda c: c["agent_workflow"]["subagents"][0].update(valid_intents=["apply_now"]),
                  "valid_intents", id="subagent.valid_intents"),
     pytest.param(lambda c: c["agent_workflow"].update(global_intents=["termination_intent"]),
