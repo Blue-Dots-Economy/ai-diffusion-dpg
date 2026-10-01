@@ -2,7 +2,7 @@
 
 Per-block Pydantic schemas can only see one block's data. Many real
 runtime constraints span two or more blocks (e.g. ``intent_filters``
-keys must reference real NLU intents in ``agent_core``). Those rules
+keys must name a routing intent the ``agent_core`` NLU can derive). Those rules
 live here so they can run from two places:
 
 1. Inside the LLM tool loop, on every ``set_phase`` advance, so the
@@ -275,6 +275,110 @@ def _dialogue_act_session_mapping_rules(ac: dict, ag: dict) -> list[str]:
     return errors
 
 
+_FRAMEWORK_HANDLED_INTENTS: frozenset[str] = frozenset({"language_switch_request"})
+"""Mirrors runtime ``_FRAMEWORK_HANDLED_INTENTS``: derived but never routed."""
+
+_DEFAULT_OFF_TRACK_INTENT = "off_track"
+_ANY_INPUT_INTENT = "any_input"
+
+
+def _nlu_block(ac: dict) -> dict:
+    nlu = (ac.get("preprocessing") or {}).get("nlu_processor") or {}
+    return nlu if isinstance(nlu, dict) else {}
+
+
+def _off_track_intent(nlu: dict) -> str:
+    off_track = nlu.get("off_track") or {}
+    if isinstance(off_track, dict) and off_track.get("intent"):
+        return str(off_track["intent"])
+    return _DEFAULT_OFF_TRACK_INTENT
+
+
+def _act_intent_rows(nlu: dict) -> list[dict]:
+    return [r for r in (nlu.get("act_intents") or []) if isinstance(r, dict)]
+
+
+def _dialogue_act_routing_rules(ac: dict) -> list[str]:
+    """Mirror runtime ``MergedConfig._check_dialogue_act_rules`` routing checks.
+
+    Every ``act_intents`` intent must be used by a subagent routing rule or
+    by ``agent_workflow.global_routing`` (``language_switch_request`` is
+    framework-handled), and the off-track intent must be routed whenever
+    the workflow has subagents. Messages match the runtime, prefixed with
+    ``agent_core.``.
+
+    Args:
+        ac: The ``agent_core`` block dict.
+
+    Returns:
+        One error string per violation; empty when consistent.
+    """
+    nlu = _nlu_block(ac)
+    workflow = ac.get("agent_workflow") or {}
+    subagents = [s for s in (workflow.get("subagents") or []) if isinstance(s, dict)]
+    routed: set[str] = {
+        r.get("intent")
+        for s in subagents
+        for r in (s.get("routing") or [])
+        if isinstance(r, dict)
+    } | {r.get("intent") for r in (workflow.get("global_routing") or []) if isinstance(r, dict)}
+
+    errors: list[str] = []
+    for i, row in enumerate(_act_intent_rows(nlu)):
+        intent = row.get("intent")
+        if intent and intent not in routed and intent not in _FRAMEWORK_HANDLED_INTENTS:
+            errors.append(
+                f"agent_core.preprocessing.nlu_processor.act_intents[{i}]: intent '{intent}' "
+                f"is not used by any routing rule"
+            )
+    off_track = _off_track_intent(nlu)
+    if subagents and off_track not in routed:
+        errors.append(
+            f"agent_core.preprocessing.nlu_processor.off_track.intent '{off_track}' "
+            f"is not used by any routing rule"
+        )
+    return errors
+
+
+def _intent_filter_rules(ac: dict, ke: dict) -> list[str]:
+    """Check KE ``intent_filters`` keys against the routing intent set the NLU can derive.
+
+    The routing intent on a turn is an ``act_intents`` intent, ``any_input``,
+    the off-track intent or ``language_switch_request``; a filter keyed on
+    anything else never matches. Self-guards until ``act_intents`` is
+    authored (it is hand-written in ``agent_core.yaml`` for now, spec §16).
+
+    Args:
+        ac: The ``agent_core`` block dict.
+        ke: The ``knowledge_engine`` block dict.
+
+    Returns:
+        One error string per unknown key; empty when consistent.
+    """
+    nlu = _nlu_block(ac)
+    rows = _act_intent_rows(nlu)
+    if not rows:
+        return []
+    intent_filters = (
+        ((ke.get("knowledge") or {}).get("blocks") or {})
+        .get("static_knowledge_base", {})
+        .get("intent_filters") or {}
+    )
+    derivable = (
+        {r["intent"] for r in rows if r.get("intent")}
+        | {_ANY_INPUT_INTENT, _off_track_intent(nlu)}
+        | _FRAMEWORK_HANDLED_INTENTS
+    )
+    return [
+        f"knowledge_engine.intent_filters key '{key}' is not an intent the NLU can derive "
+        f"(an agent_core.preprocessing.nlu_processor.act_intents row intent, '{_ANY_INPUT_INTENT}', "
+        f"the off-track intent or 'language_switch_request'). Queries for this key never "
+        f"match; rename it or remove it. Known: {sorted(derivable)}"
+        for key in intent_filters
+        if key not in derivable
+    ]
+
+
 def validate_cross_block(
     blocks: dict[str, dict],
     selected_channels: Iterable[str],
@@ -328,18 +432,12 @@ def validate_cross_block(
 
     workflow = ac.get("agent_workflow") or {}
     global_tools: list[str] = workflow.get("global_tools") or []
-    global_intents: set[str] = set(workflow.get("global_intents") or [])
 
     declared_subagent_ids: set[str] = {
         sa["id"]
         for sa in (workflow.get("subagents") or [])
         if isinstance(sa, dict) and sa.get("id")
     }
-    all_subagent_intents: set[str] = set()
-    for sa in workflow.get("subagents") or []:
-        if isinstance(sa, dict):
-            for intent in sa.get("valid_intents") or []:
-                all_subagent_intents.add(intent)
 
     # 1. Tool names in global_tools exist in connectors (skip MCP-namespaced).
     # Tied to the workflow phase — global_tools is populated there.
@@ -351,7 +449,7 @@ def validate_cross_block(
                     f"in any connectors.* list. Declared connectors: {sorted(declared_connectors)}"
                 )
 
-    # 2 & 3. Per-subagent tool names must be declared; global vs subagent intents must not overlap.
+    # 2. Per-subagent tool names must be declared.
     if applicable_after("workflow"):
         for sa in workflow.get("subagents") or []:
             if not isinstance(sa, dict):
@@ -363,12 +461,11 @@ def validate_cross_block(
                         f"agent_core.agent_workflow.subagents[{sa_id}].tools: '{tool}' is not "
                         f"declared in any connectors.* list. Declared connectors: {sorted(declared_connectors)}"
                     )
-        overlap = global_intents & all_subagent_intents
-        if overlap:
-            errors.append(
-                f"agent_core: intents {sorted(overlap)} appear in both global_intents and a "
-                f"subagent's valid_intents. Agent Core crashes at startup if there is any overlap."
-            )
+
+    # 3. Every act_intents row intent and the off-track intent must be routed
+    # (mirrors the runtime _check_dialogue_act_rules). Tied to the workflow phase.
+    if applicable_after("workflow"):
+        errors.extend(_dialogue_act_routing_rules(ac))
 
     # 4. knowledge_retrieval must be in connectors.internal (not connectors.read).
     # Tied to tools phase (when connectors.internal is populated) but only
@@ -391,25 +488,10 @@ def validate_cross_block(
                 "in connectors.internal. Add it under connectors.internal with route: knowledge_engine."
             )
 
-    # 5. intent_filters keys must be in NLU intents.
+    # 5. intent_filters keys must name a routing intent the NLU can derive.
     # Tied to the knowledge phase (intent_filters is configured there).
-    nlu_intents: set[str] = set(
-        (ac.get("preprocessing") or {}).get("nlu_processor", {}).get("intents") or []
-    )
-    intent_filters: dict = (
-        (ke.get("knowledge") or {})
-        .get("blocks", {})
-        .get("static_knowledge_base", {})
-        .get("intent_filters") or {}
-    )
     if applicable_after("knowledge"):
-        for intent_key in intent_filters:
-            if intent_key not in nlu_intents:
-                errors.append(
-                    f"knowledge_engine.intent_filters key '{intent_key}' is not declared in "
-                    f"agent_core.preprocessing.nlu_processor.intents. Queries for this intent "
-                    f"will bypass the filter. Add '{intent_key}' to the NLU intents list."
-                )
+        errors.extend(_intent_filter_rules(ac, ke))
 
     # 6. Voice selected → reach_layer.channels.voice fully configured.
     # Tied to the reach phase — the voice channel is configured there.
@@ -607,27 +689,5 @@ def validate_cross_block(
     # 16. Recording cross-block rules (tied to the reach phase).
     if applicable_after("reach"):
         errors.extend(_validate_recording(rl))
-
-    # 15. Every intent referenced by the workflow MUST already be declared in
-    # nlu_processor.intents. Without this check, the renderer silently unions
-    # subagent valid_intents into the NLU intents list — which means new
-    # intents enter the config without the user ever approving them.
-    # Tied to the workflow phase.
-    if applicable_after("workflow") and workflow:
-        workflow_intents: set[str] = set(global_intents) | all_subagent_intents
-        workflow_intents.discard("other")
-        workflow_intents.discard("*")
-        missing_from_nlu = workflow_intents - nlu_intents
-        if missing_from_nlu:
-            errors.append(
-                f"agent_core.agent_workflow references intents {sorted(missing_from_nlu)} "
-                f"that are NOT declared in agent_core.preprocessing.nlu_processor.intents. "
-                f"NLU intents are signed off by the user in the language phase; introducing "
-                f"new ones in the workflow phase is silent expansion. If you genuinely need "
-                f"a new intent, ask the user first, then add it to "
-                f"preprocessing.nlu_processor.intents AND the subagent's valid_intents in "
-                f"the same response. Otherwise, rename the subagent intent to match an "
-                f"existing NLU intent."
-            )
 
     return errors

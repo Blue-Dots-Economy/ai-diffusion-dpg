@@ -121,3 +121,11 @@ def test_knowledge_has_kb_false_note():
     assert "did not flag" in result.lower() or "no kb is needed" in result.lower()
     assert "has_kb=true" not in result
     assert "has_kb=false" not in result
+
+
+def test_knowledge_prompt_ties_intent_filters_to_act_intents() -> None:
+    import re
+    result = build([], "", "", _intake(has_kb=True))
+    assert "nlu_processor.intents" not in result
+    assert re.search(r"\bintents\b", result, re.IGNORECASE) is None
+    assert "act_intents" in result

@@ -104,8 +104,11 @@ FIELD_RULES: dict[str, FieldRule] = {
         category="chat",
         phase="knowledge",
         applies_if="has_kb",
-        invalidated_by=["has_kb", "agent_core.preprocessing.nlu_processor.intents"],
-        description="Open map: intent → list of doc_types. Keys must subset nlu_processor.intents.",
+        invalidated_by=["has_kb", "agent_core.preprocessing.nlu_processor.act_intents"],
+        description=(
+            "Open map: routing intent → list of doc_types. Keys must be an act_intents "
+            "intent, any_input, the off-track intent or language_switch_request."
+        ),
         pydantic_class="StaticKnowledgeBaseSection",
     ),
 

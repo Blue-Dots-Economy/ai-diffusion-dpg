@@ -321,3 +321,16 @@ class TestReachLayerWrap:
             f"load_block_from_file must unwrap; got {loaded!r}"
         )
         assert loaded["common"]["observability"]["domain"] == "tour_pal"
+
+
+def test_render_does_not_seed_nlu_intents() -> None:
+    """NLU single-mode (spec §16): the renderer writes no NLU intent list."""
+    from dev_kit.agent import renderer
+    assert not hasattr(renderer, "_sync_agent_core_intents")
+    acc = empty_accumulator()
+    acc["agent_core"] = {"agent_workflow": {"subagents": [
+        {"id": "main", "is_start": True, "is_terminal": False,
+         "routing": [{"intent": "booking", "next_subagent_id": "main"}]},
+    ]}}
+    data = renderer._prepare_block_data("agent_core", acc)
+    assert "intents" not in (data.get("preprocessing") or {}).get("nlu_processor", {})

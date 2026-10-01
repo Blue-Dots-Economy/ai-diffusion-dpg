@@ -629,6 +629,12 @@ class TestRemovedIntentModeKeys:
     def test_workflow_has_no_global_intents(self):
         assert "global_intents" not in AgentWorkflowConfig.model_fields
 
+    @pytest.mark.parametrize("key", ["mode", "intents", "entities", "domain_instruction"])
+    def test_nlu_processor_rejects_removed_key(self, key):
+        from dev_kit.schema import NLUProcessorConfig
+        with pytest.raises(ValidationError, match=key):
+            NLUProcessorConfig(**{key: "x"})
+
     def test_dpg_nlu_defaults_reject_mode(self):
         from dev_kit.schemas.dpg.agent_core import NLUProcessorDpg
         with pytest.raises(ValidationError, match="mode"):

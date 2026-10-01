@@ -415,6 +415,10 @@ class OffTrackConfig(BaseModel):
 
 
 class NLUProcessorConfig(BaseModel):
+    """Dialogue-act NLU settings (mirrors runtime ``NLUProcessorConfig``, spec §16)."""
+
+    model_config = {"extra": "forbid"}
+
     provider: Literal["anthropic", "openai", "ollama", "google"] | None = Field(
         default=None,
         description="Per-helper provider override. Lets a deployment run primary chat on one provider while keeping NLU on another. None → inherit agent.provider.",
@@ -427,7 +431,7 @@ class NLUProcessorConfig(BaseModel):
     history_turns: int = Field(default=2)
     signal_intents: dict[str, str] = Field(
         default_factory=dict,
-        description="Optional map of intent → signal_type written to the ContextGraph Signal node, e.g. {pay_disappointment: objection}",
+        description="Optional map of signal name → signal_type written to the ContextGraph Signal node, e.g. {pay_disappointment: objection}",
     )
     timeout_ms: int = Field(default=2500, gt=0, description="dialogue_act NLU call timeout in ms")
     retry_attempts: int = Field(default=2, ge=1, description="dialogue_act NLU total attempts")

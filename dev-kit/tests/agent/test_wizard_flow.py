@@ -66,11 +66,6 @@ _TEST_VALUES: dict[str, Any] = {
     "agent_core.preprocessing.language_normalisation.model": "claude-sonnet-4-6",
     "agent_core.preprocessing.nlu_processor.provider": "anthropic",
     "agent_core.preprocessing.nlu_processor.model": "claude-sonnet-4-6",
-    "agent_core.preprocessing.nlu_processor.domain_instruction": (
-        "Classify user intents."
-    ),
-    "agent_core.preprocessing.nlu_processor.intents": ["greeting", "question"],
-    "agent_core.preprocessing.nlu_processor.entities": ["topic"],
     "agent_core.hitl.response_message": "An agent will join shortly.",
     "agent_core.channels.web.system_prompt_suffix": "Web suffix.",
     # ---- agent_core: knowledge phase (knowledge_retrieval connector) ----
@@ -414,7 +409,7 @@ def test_wizard_multi_turn_api_advances_and_populates(tmp_path: Path) -> None:
 
     Verifies the pipeline still runs when has_external_tools=True. The tools
     phase has chat fields gated by has_external_tools, so the accumulator
-    must surface at least some agent_core content (NLU intents/entities,
+    must surface at least some agent_core content (models,
     conversation messages).
     """
     intake_fields = _intake_multi_turn_api()
