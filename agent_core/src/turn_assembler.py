@@ -207,7 +207,7 @@ class TurnAssembler(TurnAssemblerBase):
             config: Full agent_core config dict. Turn assembler reads defaults from
                     config["reach_layer"]["turn_assembler"] and per-channel overrides
                     from config["reach_layer"]["channels"][<name>]["turn_assembler"].
-            workflow: AgentWorkflow instance for intent scoping.
+            workflow: AgentWorkflow instance, used only to emit opening phrases.
             async_memory: AsyncMemoryLayerBase for fetching context_bundle on first segment.
             clock: Monotonic seconds source; injectable for tests.
 

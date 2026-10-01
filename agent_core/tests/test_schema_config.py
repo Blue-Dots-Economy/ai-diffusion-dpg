@@ -233,7 +233,7 @@ def test_rejects_non_positive_timeout():
 
 def test_rejects_out_of_range_confidence():
     config = _minimal_valid_config()
-    config["preprocessing"]["nlu_processor"]["confidence_threshold"] = 1.5
+    config["preprocessing"]["nlu_processor"]["user_state_confidence_threshold"] = 1.5
     with pytest.raises(ValidationError):
         MergedConfig.validate_full(config)
 

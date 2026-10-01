@@ -235,3 +235,30 @@ def test_understanding_log_carries_no_slot_values_or_caller_text(caplog):
     for secret in ("Ramesh", "plumbersecret", "Plumbersecret", "150", "granted", caller):
         assert secret not in blob, secret
     assert "trade" in blob                                    # keys are logged
+
+
+def _eval_case_record(caplog, cfg_extra, text):
+    import logging
+    import copy
+    cfg = copy.deepcopy(CONFIG)
+    cfg["preprocessing"]["nlu_processor"].update(cfg_extra)
+    nlu = MagicMock()
+    nlu.classify.return_value = (DialogueActResult(acts=("provide_info",), relation="answers_other",
+                                                   slots={"consent": None, "age": None, "trade": None}), None, 7)
+    und = TurnUnderstander(DialogueActConfig.from_config(cfg), WF, nlu)
+    with caplog.at_level(logging.INFO, logger="src.understanding.understander"):
+        und.understand(_ctx("job_match", segments=(text,)))
+    return [r for r in caplog.records if r.getMessage() == "nlu.eval_case"]
+
+
+def test_eval_case_truncated_to_log_raw_response_max_chars(caplog):
+    recs = _eval_case_record(caplog, {"log_raw_response": True, "log_raw_response_max_chars": 50}, "x" * 500)
+    assert len(recs) == 1 and len(recs[0].case) == 50
+
+
+def test_eval_case_default_cap_is_2000_and_zero_means_unlimited(caplog):
+    recs = _eval_case_record(caplog, {"log_raw_response": True}, "x" * 5000)
+    assert len(recs[0].case) == 2000
+    caplog.clear()
+    recs = _eval_case_record(caplog, {"log_raw_response": True, "log_raw_response_max_chars": 0}, "x" * 5000)
+    assert len(recs[0].case) > 5000

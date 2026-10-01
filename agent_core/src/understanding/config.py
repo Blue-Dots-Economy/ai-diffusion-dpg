@@ -72,6 +72,7 @@ class DialogueActConfig:
     entity_scope: str
     signal_types: dict[str, str]
     log_raw_response: bool = False
+    log_raw_response_max_chars: int = 2000
     user_states: tuple[dict, ...] = ()
     user_state_default: str = ""
     user_state_threshold: float = 0.4
@@ -127,6 +128,7 @@ class DialogueActConfig:
             entity_scope=str(((config or {}).get("entity_persistence") or {}).get("scope", "persistent")),
             signal_types=dict(nlu.get("signal_intents") or {}),
             log_raw_response=bool(nlu.get("log_raw_response", False)),
+            log_raw_response_max_chars=int(nlu.get("log_raw_response_max_chars", 2000)),
             user_states=tuple(dict(s) for s in usm.get("states") or []) if usm_on else (),
             user_state_default=str(usm.get("default_state", "")) if usm_on else "",
             user_state_threshold=float(nlu.get("user_state_confidence_threshold", 0.4)) if usm_on else 0.4,

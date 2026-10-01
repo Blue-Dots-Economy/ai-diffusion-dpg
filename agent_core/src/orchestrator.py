@@ -582,20 +582,18 @@ class AgentCore(AgentCoreBase):
                            tool_cache=tool_cache, served=dict(served) if isinstance(served, dict) else {},
                            previous_user_state=prev_us)
 
-    def _served_tool_results_update(self, bundle, tool_cache) -> dict | None:
+    def _served_tool_results_update(self, bundle, tool_cache: TurnToolCache) -> dict | None:
         """Merge this turn's last-served tool entries into the session map (spec §5.2).
 
 
         Args:
             bundle: The turn's ContextBundle; ``bundle.session`` is updated
                 when the map changes.
-            tool_cache: This turn's TurnToolCache, or None.
+            tool_cache: This turn's TurnToolCache.
 
         Returns:
             The merged map to persist, or None when unchanged (nothing to write).
         """
-        if tool_cache is None:
-            return None
         stored = bundle.session.get(SERVED_TOOL_RESULTS_KEY)
         merged = dict(stored) if isinstance(stored, dict) else {}
         merged.update(tool_cache.served())

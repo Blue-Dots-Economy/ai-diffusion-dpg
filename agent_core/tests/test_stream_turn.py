@@ -1371,3 +1371,37 @@ class TestStreamSessionBootstrapOrdering:
         recs = [r for r in caplog.records if r.message == "orchestrator.session_bootstrap_skipped"]
         assert len(recs) == 1 and recs[0].levelno == logging.DEBUG
         assert not hasattr(recs[0], "session_id")
+
+
+class TestStreamUserState:
+
+    @pytest.mark.asyncio
+    async def test_stream_turn_resolves_and_persists_user_state(self):
+        """user_state_model enabled: the understander's user_state is resolved and written on the stream path."""
+        from src.models import UserStateClassification
+        agent = _make_agent_core()
+        agent._config["conversation"]["user_state_model"] = {
+            "enabled": True, "default_state": "fog",
+            "states": [{"id": "fog", "label": "Fog", "guidance": "g1"},
+                       {"id": "aware", "label": "Aware", "guidance": "g2"}],
+        }
+        agent._user_state_enabled = True
+        agent._user_state_default = "fog"
+        agent._understander = fake_understander(NLUResult(
+            intent="any_input", entities={}, confidence=1.0,
+            user_state=UserStateClassification(id="aware", confidence=0.9)))
+
+        async def mock_stream(*args, **kwargs):
+            yield "Hello. "
+
+        agent._llm.stream = mock_stream
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("Hello", "english")
+
+        await _collect_events(agent, _make_turn_input())
+
+        ctx = agent._understander.understand.call_args.args[0]
+        assert ctx.previous_user_state == "fog"
+        writes = [c.args for c in agent._memory.write.call_args_list if c.args[3] == "user_state"]
+        assert len(writes) == 1
+        assert writes[0][2] == "session" and writes[0][4]["id"] == "aware"

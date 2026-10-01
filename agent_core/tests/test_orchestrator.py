@@ -84,9 +84,7 @@ VALID_CONFIG = {
         "output_blocked_message": "Output blocked.",
     },
     "preprocessing": {
-        "nlu_processor": {
-            "confidence_threshold": 0.5,
-        },
+        "nlu_processor": {},
         "language_normalisation": {
             "default_language": "hindi",
         },
@@ -2502,3 +2500,46 @@ def test_sync_bootstrap_skipped_without_gateway_logs_debug(caplog):
     recs = [r for r in caplog.records if r.message == "orchestrator.session_bootstrap_skipped"]
     assert len(recs) == 1 and recs[0].levelno == logging.DEBUG
     assert not hasattr(recs[0], "session_id")
+
+
+# ── User-state resolution through the turn path (single-mode NLU) ────────────
+
+def _usm_agent(user_state=None, session=None) -> AgentCore:
+    """An agent with user_state_model enabled and a fake understander returning ``user_state``."""
+    agent = _make_agent_with_config(_make_usm_config(enabled=True))
+    agent._memory.context_bundle.return_value = ContextBundle(
+        session={"current_subagent_id": "market_truth", **(session or {})}, profile={}, journey=None)
+    agent._understander = fake_understander(NLUResult(
+        intent="any_input", entities={}, confidence=1.0, user_state=user_state))
+    return agent
+
+
+def test_turn_context_previous_user_state_prefers_session_id():
+    agent = _usm_agent()
+    bundle = ContextBundle(session={"user_state": {"id": "aware"}}, profile={}, journey=None)
+    ctx = agent._turn_context(bundle, "market_truth", ["hi"], MagicMock())
+    assert ctx.previous_user_state == "aware"
+
+
+def test_turn_context_previous_user_state_falls_back_to_default():
+    agent = _usm_agent()
+    bundle = ContextBundle(session={}, profile={}, journey=None)
+    assert agent._turn_context(bundle, "market_truth", ["hi"], MagicMock()).previous_user_state == "fog"
+
+
+def test_turn_context_previous_user_state_none_when_model_disabled():
+    agent = _make_agent()
+    bundle = ContextBundle(session={}, profile={}, journey=None)
+    assert agent._turn_context(bundle, "market_truth", ["hi"], MagicMock()).previous_user_state is None
+
+
+def test_sync_turn_resolves_and_persists_user_state():
+    from src.models import UserStateClassification
+    agent = _usm_agent(UserStateClassification(id="aware", confidence=0.9))
+    agent.process_turn(_turn_input())
+    ctx = agent._understander.understand.call_args.args[0]
+    assert ctx.previous_user_state == "fog"
+    writes = [c.args for c in agent._memory.write.call_args_list if c.args[3] == "user_state"]
+    assert len(writes) == 1
+    scope, payload = writes[0][2], writes[0][4]
+    assert scope == "session" and payload["id"] == "aware" and payload["confidence"] == 0.9

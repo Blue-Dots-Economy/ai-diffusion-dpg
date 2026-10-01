@@ -245,7 +245,9 @@ class TurnUnderstander(TurnUnderstanderBase):
         for r in u.rejected_slots:
             events.add(1, {"event": f"slot_rejected:{r.reason}"})
         if self._cfg.log_raw_response:
+            case = json.dumps({"step": ctx.subagent_id, "pending": u.pending_id, "frame": message,
+                               "output": d.__dict__ if d else None}, ensure_ascii=False, default=str)
+            cap = self._cfg.log_raw_response_max_chars
             logger.info("nlu.eval_case", extra={
                 "operation": "turn_understander.eval_capture", "status": "success",
-                "case": json.dumps({"step": ctx.subagent_id, "pending": u.pending_id, "frame": message,
-                                    "output": d.__dict__ if d else None}, ensure_ascii=False, default=str)})
+                "case": case if cap == 0 else case[:cap]})
