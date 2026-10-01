@@ -23,13 +23,12 @@ def _pct(values: list[int], q: float) -> int:
     return s[min(len(s) - 1, int(round(q * (len(s) - 1))))]
 
 
-def score(cases: list[EvalCase], preds: dict[str, list[Prediction]], mode: str) -> dict:
+def score(cases: list[EvalCase], preds: dict[str, list[Prediction]]) -> dict:
     """Score predictions (one list per case, one entry per repeat).
 
     Args:
         cases: The cases.
         preds: case id → predictions.
-        mode: ``intent`` or ``dialogue_act`` (acts/relation/topic scored only for the latter).
 
     Returns:
         Report dict: fields, tags (incl. per-tag termination_fp and apply_fp), confusion, termination_false_positives,
@@ -66,16 +65,15 @@ def score(cases: list[EvalCase], preds: dict[str, list[Prediction]], mode: str) 
                     tags[t]["slot"].append(slot_ok)
             if "option_id" in exp:
                 fields["option"].append(int(p.option_id == exp["option_id"]))
-            if mode == "dialogue_act":
-                for key, attr in (("acts", "acts"), ("relation", "relation"), ("topic", "topic"),
-                                  ("pending", "pending")):
-                    if key in exp:
-                        got = list(p.acts) if key == "acts" else getattr(p, attr)
-                        fields[key].append(int(got == exp[key]))
-                # Decision precision, not act-label precision: the derived intent is
-                # correct among predictions carrying this act under this pending.
-                for act in p.acts:
-                    prec[f"{act}|{p.pending or 'none'}"].append(ok)
+            for key, attr in (("acts", "acts"), ("relation", "relation"), ("topic", "topic"),
+                              ("pending", "pending")):
+                if key in exp:
+                    got = list(p.acts) if key == "acts" else getattr(p, attr)
+                    fields[key].append(int(got == exp[key]))
+            # Decision precision, not act-label precision: the derived intent is
+            # correct among predictions carrying this act under this pending.
+            for act in p.acts:
+                prec[f"{act}|{p.pending or 'none'}"].append(ok)
             # An application the caller did not ask for (e.g. apply on a thank-you).
             apply_fp = int(p.intent == _APPLY_INTENT and exp["intent"] != _APPLY_INTENT)
             for t in case.tags:
@@ -83,7 +81,7 @@ def score(cases: list[EvalCase], preds: dict[str, list[Prediction]], mode: str) 
                 tags[t]["fp"].append(fp)
                 tags[t]["apply_fp"].append(apply_fp)
     return {
-        "mode": mode, "cases": len(cases), "runs": total,
+        "cases": len(cases), "runs": total,
         "fields": {k: {"accuracy": round(sum(v) / len(v), 4), "n": len(v)} for k, v in fields.items()},
         "tags": {t: {"intent_accuracy": round(sum(d["intent"]) / len(d["intent"]), 4) if d["intent"] else None,
                      "slot_accuracy": round(sum(d["slot"]) / len(d["slot"]), 4) if d["slot"] else None,
