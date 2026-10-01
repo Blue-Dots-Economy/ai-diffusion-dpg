@@ -11,9 +11,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from src.understanding.config import DialogueActConfig, SlotSpec
+from src.conditions import evaluate_condition
+from src.understanding.config import ActIntentRule, DialogueActConfig, SlotSpec
 from src.understanding.frame import option_label
-from src.understanding.models import ResolvedReference, SlotRejection, UnresolvedReference
+from src.understanding.models import DialogueActResult, ResolvedReference, SlotRejection, UnresolvedReference
 from src.workflow_loader import PendingQuestion
 
 _DIGITS = re.compile(r"^\s*\d+\s*$")
@@ -128,3 +129,86 @@ def resolve_reference(option: int | None, pending: PendingQuestion | None,
         return None, UnresolvedReference(option=option, offered=len(rows), reason="missing_id")
     return ResolvedReference(option=option, id=str(row_id), label=option_label(row, of.fields),
                              id_field=of.id_field), None
+
+
+_OFF_TRACK_RELATIONS = ("unrelated", "unclear")
+
+
+def gate_passes(cfg: DialogueActConfig, pending_id: str | None, state: dict) -> bool:
+    """True when any termination-gate item holds (spec §6.7).
+
+    Args:
+        cfg: Parsed config.
+        pending_id: Resolved pending id, or None.
+        state: Merged routing state.
+
+    Returns:
+        True if a gated row may fire this turn.
+    """
+    for item in cfg.gate:
+        if item.pending is not None:
+            if pending_id == item.pending:
+                return True
+        elif item.condition is not None and evaluate_condition(item.condition, state or {}):
+            return True
+    return False
+
+
+def derive_intent(dialogue: DialogueActResult, pending_id: str | None, cfg: DialogueActConfig, *,
+                  gate_ok: bool, resolved: bool) -> tuple[str, ActIntentRule | None]:
+    """First matching act_intents row → routing intent (spec §6.4).
+
+    A row matches when the turn's acts contain all of the row's acts, and the
+    row's pending / relation / topic (each optional) equal the turn's. A row
+    containing ``select`` also needs a resolved reference; a gated row needs
+    ``gate_ok``. Unmatched turns are ``any_input``.
+
+    Args:
+        dialogue: Validated NLU result.
+        pending_id: Resolved pending id, or None.
+        cfg: Parsed config.
+        gate_ok: Result of :func:`gate_passes`.
+        resolved: Whether the option reference resolved.
+
+    Returns:
+        (intent, matched rule or None).
+    """
+    acts = set(dialogue.acts)
+    for rule in cfg.act_intents:
+        if rule.acts and not set(rule.acts) <= acts:
+            continue
+        if rule.pending is not None and rule.pending != pending_id:
+            continue
+        if rule.relation is not None and rule.relation != dialogue.relation:
+            continue
+        if rule.topic is not None and rule.topic != dialogue.topic:
+            continue
+        if "select" in rule.acts and not resolved:
+            continue
+        if rule.gated and not gate_ok:
+            continue
+        return rule.intent, rule
+    return "any_input", None
+
+
+def next_off_track(prev: int, relation: str, cfg: DialogueActConfig, *,
+                   is_fallback: bool) -> tuple[int, bool]:
+    """Advance the consecutive off-track counter (spec §6.6).
+
+    Args:
+        prev: Current ``off_track_count``.
+        relation: This turn's relation.
+        cfg: Parsed config.
+        is_fallback: True when NLU failed (a system failure never counts).
+
+    Returns:
+        (new count, tripped) — tripped when the count reaches the threshold.
+    """
+    if is_fallback:
+        return prev, False
+    if relation == "answers_pending":
+        return 0, False
+    if relation in _OFF_TRACK_RELATIONS:
+        count = prev + 1
+        return count, count >= cfg.off_track_threshold
+    return prev, False
