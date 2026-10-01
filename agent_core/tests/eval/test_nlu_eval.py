@@ -76,6 +76,8 @@ def test_gate_reports_each_failed_condition():
     worse["latency_ms"]["p50"] = 1100
     fails = gate(base, worse)
     assert len(fails) == 3 and any("p50" in f for f in fails)
+    lat = next(f for f in fails if "p50" in f)
+    assert "baseline" in lat and "intent" not in lat
     assert gate(base, base) == []
 
 

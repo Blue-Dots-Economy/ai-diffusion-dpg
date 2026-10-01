@@ -1,5 +1,5 @@
 # agent_core/eval/nlu/score.py
-"""Scoring and the §11.5 switch-over gate for the NLU replay harness."""
+"""Scoring and the gate for the NLU replay harness."""
 from __future__ import annotations
 
 from collections import defaultdict
@@ -97,12 +97,12 @@ def score(cases: list[EvalCase], preds: dict[str, list[Prediction]]) -> dict:
     }
 
 
-def gate(intent_report: dict, da_report: dict) -> list[str]:
-    """§11.5 switch-over gate; returns one message per failed condition (empty = pass).
+def gate(baseline: dict, candidate: dict) -> list[str]:
+    """Compare a candidate report against a baseline report; returns one message per failed condition (empty = pass).
 
     Args:
-        intent_report: ``score`` output for intent mode.
-        da_report: ``score`` output for dialogue_act mode on the same cases.
+        baseline: ``score`` output for the baseline run.
+        candidate: ``score`` output for the candidate run on the same cases.
 
     Returns:
         Failure messages.
@@ -113,18 +113,18 @@ def gate(intent_report: dict, da_report: dict) -> list[str]:
         return (rep.get("fields", {}).get(field) or {}).get("accuracy", 0.0)
 
     for field in ("intent", "slots"):
-        if acc(da_report, field) < acc(intent_report, field):
-            fails.append(f"{field} accuracy {acc(da_report, field)} < intent mode {acc(intent_report, field)}")
+        if acc(candidate, field) < acc(baseline, field):
+            fails.append(f"{field} accuracy {acc(candidate, field)} < baseline {acc(baseline, field)}")
     for tag in _GATED_TAGS:
         for fld in ("intent_accuracy", "slot_accuracy"):
-            old = (intent_report.get("tags", {}).get(tag) or {}).get(fld)
-            new = (da_report.get("tags", {}).get(tag) or {}).get(fld)
+            old = (baseline.get("tags", {}).get(tag) or {}).get(fld)
+            new = (candidate.get("tags", {}).get(tag) or {}).get(fld)
             if old is not None and (new is None or new < old):
                 fails.append(f"tag '{tag}' {fld} regressed: {new} < {old}")
-    if (da_report.get("tags", {}).get("acknowledge") or {}).get("termination_fp", 0) > 0:
+    if (candidate.get("tags", {}).get("acknowledge") or {}).get("termination_fp", 0) > 0:
         fails.append("termination false positives on acknowledge cases")
-    if (da_report.get("tags", {}).get("acknowledge") or {}).get("apply_fp", 0) > 0:
+    if (candidate.get("tags", {}).get("acknowledge") or {}).get("apply_fp", 0) > 0:
         fails.append("apply_now false positives on acknowledge cases")
-    if da_report["latency_ms"]["p50"] > intent_report["latency_ms"]["p50"] + 50:
-        fails.append(f"p50 {da_report['latency_ms']['p50']} ms > intent-mode p50 + 50 ms")
+    if candidate["latency_ms"]["p50"] > baseline["latency_ms"]["p50"] + 50:
+        fails.append(f"candidate p50 {candidate['latency_ms']['p50']} ms > baseline p50 + 50 ms")
     return fails
