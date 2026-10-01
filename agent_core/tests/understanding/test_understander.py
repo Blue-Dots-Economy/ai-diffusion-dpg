@@ -127,3 +127,30 @@ def test_understand_never_raises():
 
 def test_from_config_none_in_intent_mode():
     assert TurnUnderstander.from_config({}, WF, chat_provider=MagicMock()) is None
+
+
+def test_telemetry_failure_never_raises_and_keeps_understanding(monkeypatch):
+    """F1: a failing counter / log in _finish must not turn a good understanding into a raise or fallback."""
+    import src.understanding.understander as mod
+
+    def _boom(*a, **k):
+        raise RuntimeError("otel down")
+
+    monkeypatch.setattr(mod, "_counter", _boom)
+    und, _ = _u(DialogueActResult(acts=("affirm",), relation="answers_pending",
+                                  slots={"consent": "granted", "age": None, "trade": None}))
+    u = und.understand(_ctx("opening"))
+    assert u.fallback_reason is None
+    assert StateWrite("session", "consent_response", "granted") in u.writes
+
+
+def test_understanding_error_log_carries_latency(caplog):
+    """F1: the nlu.understanding_error record carries latency_ms."""
+    import logging
+    nlu = MagicMock()
+    nlu.classify.side_effect = RuntimeError("boom")
+    und = TurnUnderstander(DialogueActConfig.from_config(CONFIG), WF, nlu)
+    with caplog.at_level(logging.ERROR, logger="src.understanding.understander"):
+        und.understand(_ctx("opening"))
+    recs = [r for r in caplog.records if r.getMessage() == "nlu.understanding_error"]
+    assert recs and isinstance(recs[0].latency_ms, int)

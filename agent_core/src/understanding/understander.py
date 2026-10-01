@@ -135,8 +135,9 @@ class TurnUnderstander(TurnUnderstanderBase):
             u = self._post(dialogue, pending, rows, ctx)
             return self._finish(u, ctx, message, start)
         except Exception as e:  # noqa: BLE001 — never raise into the turn
-            logger.error("nlu.understanding_error", extra={"operation": "turn_understander.understand",
-                                                          "status": "failure", "error": type(e).__name__})
+            logger.error("nlu.understanding_error", extra={
+                "operation": "turn_understander.understand", "status": "failure",
+                "error": type(e).__name__, "latency_ms": int((time.time() - start) * 1000)})
             return self._finish(self._fallback(DialogueActResult.fallback(), pending, "exception"),
                                 ctx, message, start)
 
@@ -177,7 +178,17 @@ class TurnUnderstander(TurnUnderstanderBase):
         return u
 
     def _finish(self, u: TurnUnderstanding, ctx: TurnContext, message: str, start: float) -> TurnUnderstanding:
+        """Stamp latency and emit telemetry; telemetry failures never change ``u`` or raise."""
         u.latency_ms = int((time.time() - start) * 1000)
+        try:
+            self._emit(u, ctx, message)
+        except Exception as e:  # noqa: BLE001 — telemetry must never break a turn
+            logger.warning("nlu.telemetry_error", extra={"operation": "turn_understander.telemetry",
+                                                          "status": "failure", "error": type(e).__name__})
+        return u
+
+    def _emit(self, u: TurnUnderstanding, ctx: TurnContext, message: str) -> None:
+        """Log the PII-free summary, bump OTel counters and (opt-in) capture the eval case."""
         d = u.dialogue
         extra = {
             "operation": "turn_understander.understand",
@@ -213,4 +224,3 @@ class TurnUnderstander(TurnUnderstanderBase):
                 "operation": "turn_understander.eval_capture", "status": "success",
                 "case": json.dumps({"step": ctx.subagent_id, "pending": u.pending_id, "frame": message,
                                     "output": d.__dict__ if d else None}, ensure_ascii=False, default=str)})
-        return u
