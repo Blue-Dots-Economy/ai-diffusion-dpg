@@ -160,7 +160,7 @@ Sent as `ChatRequest.output_format` with `strict: true`, and generated from conf
   "slots": { "consent": null, "age": null, "trade": null, "location": null, "name": null },
   "reference": { "option": 1, "spoken": "पहले वाला" },
   "signals": [],
-  "extras": {}
+  "extras": []
 }
 ```
 
@@ -169,7 +169,7 @@ Sent as `ChatRequest.output_format` with `strict: true`, and generated from conf
 - `slots`: every configured slot key, each nullable, typed per config (enum, integer or string).
 - `reference`: `option` is an integer or `null`; `spoken` is the caller's words or `null`.
 - `signals`: items from the domain's `signals` list (today's `signal_intents` keys).
-- `extras`: free-form string map for ad-hoc details. Written under a namespaced key that routing never reads (§6.5).
+- `extras`: ad-hoc details as a list of `{key, value}` string pairs. A list, not a free-form map, because strict structured output requires every object to declare its keys (`additionalProperties: false`, all keys `required`; optional values are typed nullable). Written under a namespaced key that routing never reads (§6.5).
 
 Removed compared with `intent` mode: `sentiment` (read by nothing) and the self-reported `confidence`.
 
