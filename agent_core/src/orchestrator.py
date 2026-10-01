@@ -78,7 +78,11 @@ from src.models import (
 )
 from src.preprocessing.nlu_processor import NLUProcessor
 from src.tool_registry import ToolRegistry
+from src.understanding.caller_turn import render_caller_turn
+from src.understanding.config import DialogueActConfig
+from src.understanding.history import RECENT_TURNS_KEY, append_recent_turn
 from src.understanding.precedence import nlu_owned_values
+from src.understanding.understander import TurnContext, TurnUnderstander, TurnUnderstanderBase
 from src.tool_results import ToolResultPolicies, TurnToolCache, augment_tool_definitions
 from src.remember import RememberTool
 from src.session_bootstrap import SessionBootstrap
@@ -335,6 +339,12 @@ class AgentCore(AgentCoreBase):
 
         self._language_normaliser = LanguageNormaliser(chat_provider=self._lang_chat_provider)
         self._nlu_processor = NLUProcessor(self._config, chat_provider=self._nlu_chat_provider)
+        # NLU dialogue-acts spec: opt-in mode; None keeps intent mode untouched.
+        self._dialogue_cfg = DialogueActConfig.from_config(self._config)
+        self._understander: TurnUnderstanderBase | None = None
+        if self._dialogue_cfg is not None:
+            self._understander = TurnUnderstander.from_config(
+                self._config, self._workflow, chat_provider=self._build_dialogue_act_provider())
 
         # User-state model (GH-139) — cached lookup for per-turn guidance injection.
         usm = (self._config or {}).get("conversation", {}).get("user_state_model", {}) or {}
@@ -532,6 +542,74 @@ class AgentCore(AgentCoreBase):
             "provider": helper_provider,
             "primary_model": helper_model,
         })
+
+    def _build_dialogue_act_provider(self) -> ChatProviderBase:
+        """Dedicated NLU provider: own timeout, no retry after a timeout, no SDK retries (spec §9.1).
+
+        Always a new instance, even when the model matches the main agent's, so
+        the main LLM's timeout/retry policy is unaffected.
+
+        Returns:
+            A ChatProviderBase for the dialogue-act NLU call.
+        """
+        agent_cfg = dict(self._config.get("agent", {}) or {})
+        nlu = (self._config.get("preprocessing", {}) or {}).get("nlu_processor", {}) or {}
+        return build_chat_provider({
+            **agent_cfg,
+            "provider": nlu.get("provider") or agent_cfg.get("provider", "anthropic"),
+            "primary_model": nlu.get("model") or agent_cfg.get("primary_model", ""),
+            "timeout_ms": self._dialogue_cfg.timeout_ms,
+            "retry_attempts": self._dialogue_cfg.retry_attempts,
+            "sdk_max_retries": 0,
+            "retry_on_timeout": False,
+        })
+
+    def _turn_context(self, bundle, subagent_id: str, segments: list[str], tool_cache) -> TurnContext:
+        """Build the understanding inputs from the bundle (both paths).
+
+        Args:
+            bundle: The turn's ContextBundle (after bootstrap).
+            subagent_id: Current subagent, before routing.
+            segments: Utterances this turn answers.
+            tool_cache: This turn's TurnToolCache.
+
+        Returns:
+            TurnContext.
+        """
+        session = dict(bundle.session or {})
+        return TurnContext(subagent_id=subagent_id, state=self._routing_state(bundle), session=session,
+                           segments=[s for s in segments if s], recent=list(session.get(RECENT_TURNS_KEY) or []),
+                           tool_cache=tool_cache)
+
+    async def _apply_understanding_async(self, session_id: str, user_id: str, bundle,
+                                         understanding, raw_text: str) -> None:
+        """Apply an understanding's writes and signals (stream path).
+
+        Mirrors the legacy entity loop's bundle updates so routing and the
+        prompt see the values on the same turn.
+
+        Args:
+            session_id: Session id.
+            user_id: User id.
+            bundle: The turn's ContextBundle (mutated).
+            understanding: This turn's TurnUnderstanding.
+            raw_text: Caller text, for the Signal node payload.
+        """
+        for w in understanding.writes:
+            await self._async_memory.write(session_id, user_id, w.scope, w.key, w.value)
+            bundle.session[w.key] = w.value
+            if w.scope == "persistent":
+                bundle.profile[w.key] = w.value
+        turn = str(int(bundle.session.get("turn_count", 0) or 0))
+        for name in understanding.signals:
+            try:
+                await self._async_memory.write(session_id, user_id, "signal", "signal", {
+                    "type": self._dialogue_cfg.signal_types.get(name, name), "turn": turn,
+                    "raw": raw_text, "journey_id": session_id})
+            except Exception as e:  # noqa: BLE001 — a signal never breaks the turn
+                logger.warning("orchestrator.signal_write_failed", extra={
+                    "operation": "orchestrator.apply_understanding", "status": "failure",
+                    "session_id": session_id, "error": type(e).__name__})
 
     def _process_turn_inner(self, turn_input: TurnInput, _span: otel_trace.Span) -> TurnResult:
         """Execute the instrumented turn body inside the orchestrator.turn span.
@@ -3235,7 +3313,9 @@ class AgentCore(AgentCoreBase):
         ``record.max_items``. Utterances go to ``turn_carryover``. If the turn
         was interrupted before its own fold ran, any existing carry-over is
         appended to rather than overwritten. One Memory Layer read serves both.
-        Never raises.
+        Also writes ``current_question`` from the sentences actually emitted
+        (``record.spoken``), and in dialogue_act mode a ``recent_turns`` entry
+        marked interrupted (NLU dialogue-acts spec §6.9). Never raises.
 
         Args:
             session_id: Session identifier.
@@ -3250,7 +3330,7 @@ class AgentCore(AgentCoreBase):
             write_exchanges = bool(exchanges) and record.max_items > 0
             append_carry = carry is not None and not record.fold_ran
             session_state: dict = {}
-            if write_exchanges or append_carry:
+            if write_exchanges or append_carry or record.spoken:
                 try:
                     bundle = await self._async_memory.context_bundle(session_id, user_id)
                     session_state = bundle.session if isinstance(
@@ -3285,6 +3365,18 @@ class AgentCore(AgentCoreBase):
                 await self._async_memory.write(
                     session_id, user_id, "session", "turn_carryover", carry,
                 )
+            if record.spoken:
+                heard = " ".join(s.strip() for s in record.spoken if s.strip())
+                await self._async_memory.write(
+                    session_id, user_id, "session", "current_question",
+                    self._sanitize_current_question(prev=session_state.get("current_question", "") or "",
+                                                    new=heard, session_id=session_id))
+                if self._understander is not None:
+                    await self._async_memory.write(
+                        session_id, user_id, "session", RECENT_TURNS_KEY,
+                        append_recent_turn(session_state.get(RECENT_TURNS_KEY),
+                                           caller=" ".join(record.segments), bot=heard, interrupted=True,
+                                           history_turns=self._dialogue_cfg.history_turns))
             logger.info(
                 "orchestrator.interrupted_persist",
                 extra={"operation": "orchestrator.persist_interrupted", "status": "success",
@@ -3520,6 +3612,8 @@ class AgentCore(AgentCoreBase):
                 _mark("first_sentence_ms")
             if hasattr(ev, "turn_id"):
                 ev.turn_id = turn_id
+            if isinstance(ev, SentenceEvent) and getattr(ev, "text", ""):
+                record.spoken.append(ev.text)
             return ev
 
         was_escalated = False
@@ -3528,6 +3622,8 @@ class AgentCore(AgentCoreBase):
         trust_input = TrustCheckResult(passed=True, action="allow")
         trust_output = TrustCheckResult(passed=True, action="allow")
         nlu_result = NLUResult(intent="unknown", entities={}, sentiment="neutral", confidence=0.0)
+        understanding = None
+        tool_cache = None
         all_tool_calls: list[ToolCall] = []
         full_response_text = ""
         # GH-191: Track end_session locally for the streaming path. The sync
@@ -3595,6 +3691,10 @@ class AgentCore(AgentCoreBase):
             # Runs after the STEP 1 log/signal so memory-read latency excludes
             # it; the bootstrap reports its own latency ([STEP 1b]).
             await self._run_session_bootstrap_async(bundle, session_id, user_id)
+            if self._understander is not None:
+                # Built before NLU so the frame can read stored results (spec §8);
+                # reused at prompt assembly and in the tool loop.
+                tool_cache = TurnToolCache(self._tool_policies, bundle.tool_results, bundle.session)
             current_subagent_id: str = (
                 bundle.session.get("current_subagent_id")
                 or self._workflow.start_subagent_id
@@ -3649,7 +3749,19 @@ class AgentCore(AgentCoreBase):
             t45 = time.time()
             yield _stamp(SignalEvent(stage="nlu", status="start"))
 
-            if _ln_enabled_s:
+            if self._understander is not None:
+                _ctx = self._turn_context(bundle, current_subagent_id,
+                                          list(record.segments) or [turn_input.user_message], tool_cache)
+                if _ln_enabled_s:
+                    (normalised_input, turn_language), understanding = await asyncio.gather(
+                        asyncio.to_thread(self._language_normaliser.normalise, turn_input.user_message, self._config),
+                        asyncio.to_thread(self._understander.understand, _ctx),
+                    )
+                else:
+                    normalised_input, turn_language = turn_input.user_message, ""
+                    understanding = await asyncio.to_thread(self._understander.understand, _ctx)
+                early_nlu_result = understanding.nlu_result
+            elif _ln_enabled_s:
                 # asyncio.to_thread offloads each sync provider.call() onto the
                 # default thread pool so the two LLM round-trips overlap in wall
                 # clock. They never race on shared state — each receives its own
@@ -3798,15 +3910,21 @@ class AgentCore(AgentCoreBase):
                         normalised_input = pending_norm or pending_msg
                         await self._async_memory.write(session_id, user_id, "session", "pending_user_message", "")
                         await self._async_memory.write(session_id, user_id, "session", "pending_normalised_input", "")
-                        early_nlu_result = await asyncio.to_thread(
-                            self._nlu_processor.process,
-                            pending_msg,
-                            current_question,
-                            current_subagent_id,
-                            pre_allowed_intents,
-                            pre_existing_profile_keys,
-                            pre_previous_user_state_id,
-                        )
+                        if self._understander is not None:
+                            understanding = await asyncio.to_thread(
+                                self._understander.understand,
+                                self._turn_context(bundle, current_subagent_id, [pending_msg], tool_cache))
+                            early_nlu_result = understanding.nlu_result
+                        else:
+                            early_nlu_result = await asyncio.to_thread(
+                                self._nlu_processor.process,
+                                pending_msg,
+                                current_question,
+                                current_subagent_id,
+                                pre_allowed_intents,
+                                pre_existing_profile_keys,
+                                pre_previous_user_state_id,
+                            )
                         logger.info(
                             "orchestrator.consent_gate",
                             extra={
@@ -4012,19 +4130,23 @@ class AgentCore(AgentCoreBase):
                 .get("language_normalisation", {})
                 .get("supported_languages", [])
             }
-            for entity_key, entity_val in (nlu_result.entities or {}).items():
-                profile_field = entity_map.get(entity_key, entity_key)
-                # Guard: never persist language_preference with a value outside
-                # the configured supported_languages list (mirrors sync path).
-                if profile_field == "language_preference" and supported_langs:
-                    if str(entity_val).lower().strip() not in supported_langs:
-                        continue
-                await self._async_memory.write(session_id, user_id, entity_scope, profile_field, entity_val)
-                bundle.session[profile_field] = entity_val
-                # Mirror persistent NLU writes into bundle.profile (see same-turn
-                # overlay rationale in the sync path above).
-                if entity_scope == "persistent":
-                    bundle.profile[profile_field] = entity_val
+            if understanding is not None:
+                await self._apply_understanding_async(session_id, user_id, bundle, understanding,
+                                                      turn_input.user_message)
+            else:
+                for entity_key, entity_val in (nlu_result.entities or {}).items():
+                    profile_field = entity_map.get(entity_key, entity_key)
+                    # Guard: never persist language_preference with a value outside
+                    # the configured supported_languages list (mirrors sync path).
+                    if profile_field == "language_preference" and supported_langs:
+                        if str(entity_val).lower().strip() not in supported_langs:
+                            continue
+                    await self._async_memory.write(session_id, user_id, entity_scope, profile_field, entity_val)
+                    bundle.session[profile_field] = entity_val
+                    # Mirror persistent NLU writes into bundle.profile (see same-turn
+                    # overlay rationale in the sync path above).
+                    if entity_scope == "persistent":
+                        bundle.profile[profile_field] = entity_val
 
             # ── Language switch — handle before routing ───────────────
             if nlu_result.intent == "language_switch_request":
@@ -4192,7 +4314,8 @@ class AgentCore(AgentCoreBase):
                     yield _stamp(DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000)))
                     return
 
-            tool_cache = TurnToolCache(self._tool_policies, bundle.tool_results, bundle.session)
+            if tool_cache is None:
+                tool_cache = TurnToolCache(self._tool_policies, bundle.tool_results, bundle.session)
             system = self._manager_agent.build_system_prompt(
                 agent_system_prompt=self._workflow.agent_system_prompt,
                 subagent_system_prompt=next_subagent.system_prompt,
@@ -4207,6 +4330,7 @@ class AgentCore(AgentCoreBase):
                     self._session_end_eval_prompt if self._session_end_eval_enabled else None
                 ),
                 known_facts=tool_cache.render_known_facts(),
+                caller_turn=render_caller_turn(understanding),
             )
 
             if is_resumption:
@@ -4866,6 +4990,13 @@ class AgentCore(AgentCoreBase):
                     session_id, user_id, "session", "current_question", stream_cq_value
                 )
             )
+            if self._understander is not None:
+                asyncio.create_task(self._async_memory.write(
+                    session_id, user_id, "session", RECENT_TURNS_KEY,
+                    append_recent_turn(bundle.session.get(RECENT_TURNS_KEY),
+                                       caller=" ".join(record.segments or [turn_input.user_message]),
+                                       bot=full_response_text, interrupted=False,
+                                       history_turns=self._dialogue_cfg.history_turns)))
 
             # #193: persist captured tool exchanges (capped) so the next
             # turn can replay them as real tool_use/tool_result messages.

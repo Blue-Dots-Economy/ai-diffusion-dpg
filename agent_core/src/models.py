@@ -341,6 +341,8 @@ class TurnRecord:
         write_carryover: False when policy says an interruption must not carry
             the utterances forward (``on_new_input: replace``).
         persist_task: Background task persisting an interrupted turn, if any.
+        spoken: Sentences emitted to the caller so far (for interrupted-turn
+            persistence).
     """
 
     captured_exchanges: list[dict] = field(default_factory=list)
@@ -351,6 +353,7 @@ class TurnRecord:
     last_stage: str = ""
     write_carryover: bool = True
     persist_task: Optional["asyncio.Task"] = None
+    spoken: list[str] = field(default_factory=list)
 
 
 StreamEvent = Union[SignalEvent, SentenceEvent, DoneEvent]
