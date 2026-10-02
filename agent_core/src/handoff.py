@@ -11,6 +11,8 @@ def _cap(v: object) -> str:
 
 
 def _recent(raw: object, n: int) -> list[dict]:
+    if n <= 0:
+        return []
     try:
         turns = json.loads(raw) if isinstance(raw, str) else (raw or [])
     except (ValueError, TypeError):
@@ -26,7 +28,8 @@ def build_handoff_payload(*, ticket_hint: str, use_case: str, session: dict, pho
     """Handoff JSON for the webhook. ``ticket_hint`` is unused by Agent Core (Trust assigns the ticket)."""
     apps = []
     if str(session.get("last_application_id") or ""):
-        apps.append({"application_id": _cap(session.get("last_application_id")), "status": "submitted"})
+        apps.append({"application_id": _cap(session.get("last_application_id")),
+                     "job_item_id": _cap(session.get("selected_job_item_id")), "status": "submitted"})
     return {
         "use_case": use_case, "reason": "human_request", "created_at": now_iso, "call_id": call_id,
         "caller": {"phone": phone, "name": _cap(session.get("name")),

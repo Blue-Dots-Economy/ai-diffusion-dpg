@@ -275,7 +275,7 @@ def _dialogue_act_session_mapping_rules(ac: dict, ag: dict) -> list[str]:
     return errors
 
 
-_FRAMEWORK_HANDLED_INTENTS: frozenset[str] = frozenset({"language_switch_request"})
+_FRAMEWORK_HANDLED_INTENTS: frozenset[str] = frozenset({"language_switch_request", "human_request"})
 """Mirrors runtime ``_FRAMEWORK_HANDLED_INTENTS``: derived but never routed."""
 
 _DEFAULT_OFF_TRACK_INTENT = "off_track"

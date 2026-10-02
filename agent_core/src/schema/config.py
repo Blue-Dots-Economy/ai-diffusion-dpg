@@ -493,7 +493,7 @@ class LanguageNormalisationConfig(BaseModel):
 
 
 # Intents the orchestrator acts on itself (not via a workflow routing rule).
-_FRAMEWORK_HANDLED_INTENTS = frozenset({"language_switch_request"})
+_FRAMEWORK_HANDLED_INTENTS = frozenset({"language_switch_request", "human_request"})
 
 _DIALOGUE_ACTS: tuple[str, ...] = (
     "affirm", "deny", "acknowledge", "provide_info", "correct", "select",

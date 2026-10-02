@@ -57,3 +57,18 @@ def test_choose_line():
     assert choose_handoff_line({"queued": False}, LINES, already=False) == ("F", "failed")
     assert choose_handoff_line(None, LINES, already=False) == ("F", "failed")
     assert choose_handoff_line(None, LINES, already=True) == ("A", "already")
+
+
+def test_payload_application_carries_application_and_job_ids():
+    p = build_handoff_payload(ticket_hint="", use_case="u", phone="91", call_id="", last_caller_turn="",
+                              session={"last_application_id": "a-1", "selected_job_item_id": "job-9"},
+                              summary_turns=6, now_iso="t")
+    assert p["context"]["applications"] == [
+        {"application_id": "a-1", "job_item_id": "job-9", "status": "submitted"}]
+
+
+def test_payload_summary_empty_when_no_turns_requested():
+    turns = [{"caller": "hi", "bot": "hello"}]
+    p = build_handoff_payload(ticket_hint="", use_case="u", session={"recent_turns": turns}, phone="91",
+                              call_id="", last_caller_turn="", summary_turns=0, now_iso="t")
+    assert p["summary"] == []

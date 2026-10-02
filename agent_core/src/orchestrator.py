@@ -25,12 +25,14 @@ import threading
 import time
 import uuid
 from collections.abc import AsyncGenerator
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from src.base import AgentCoreBase
 from src.chat_provider import build_chat_provider
 from src.chat_provider.base import ChatProviderBase, ToolUseRequested, ProviderAPIError, SAFE_MESSAGES, DEFAULT_SAFE_MESSAGE
 from src.conditions import evaluate_condition
+from src.handoff import build_handoff_payload, choose_handoff_line
 from src.chat_provider.types import (
     ChatRequest,
     ChatResponse,
@@ -1180,6 +1182,43 @@ class AgentCore(AgentCoreBase):
                     session_id=session_id,
                     turn_id=turn_id,
                     response_text=msg,
+                    was_escalated=False,
+                    latency_ms=latency_ms,
+                )
+
+        # ── Human handoff — a fixed line, no LLM (identity/handoff §4) ──
+        if nlu_result.intent == "human_request":
+            handoff_line = self._handle_human_request_sync(
+                session_id, user_id, bundle, turn_input, turn_id=turn_id)
+            if handoff_line is not None:
+                self._write_memory_sync(session_id, user_id, "session", "current_subagent_id", "handoff")
+                bundle.session["current_subagent_id"] = "handoff"
+                latency_ms = int((time.time() - start) * 1000)
+                turn_event = TurnEvent(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_text=handoff_line,
+                    tool_calls=[],
+                    trust_input_result=trust_input,
+                    trust_output_result=TrustCheckResult(passed=True, action="allow"),
+                    model_used="",
+                    intent=nlu_result.intent,
+                    input_tokens=0,
+                    output_tokens=0,
+                    latency_ms=latency_ms,
+                    timestamp_ms=int(time.time() * 1000),
+                    trace_id=self._current_trace_id(),
+                )
+                threading.Thread(
+                    target=self._post_turn,
+                    args=(session_id, user_id, turn_id, handoff_line, turn_input.user_message,
+                          turn_event, False, ""),
+                    daemon=True,
+                ).start()
+                return TurnResult(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_text=handoff_line,
                     was_escalated=False,
                     latency_ms=latency_ms,
                 )
@@ -2725,6 +2764,133 @@ class AgentCore(AgentCoreBase):
             )
 
     # ------------------------------------------------------------------
+    # Private: human handoff (identity/handoff spec §4)
+    # ------------------------------------------------------------------
+
+    def _handoff_lines(self) -> dict | None:
+        """The configured handoff lines when handoff is on and the workflow has a ``handoff`` phase."""
+        identity = self._config.get("identity") or {}
+        handoff = self._config.get("handoff") or {}
+        if (identity.get("human_handoff") != "request" or not handoff.get("lines")
+                or "handoff" not in self._workflow.subagents):
+            return None
+        return handoff["lines"]
+
+    def _handoff_prepare(self, session_id: str, user_id: str, bundle, turn_input) -> tuple[bool, dict, str]:
+        """(already, payload, current_subagent_id) for a handoff turn; no payload when already delivered."""
+        current = bundle.session.get("current_subagent_id") or self._workflow.start_subagent_id
+        already = bundle.session.get("handoff_status") == "delivered"
+        payload = {} if already else build_handoff_payload(
+            ticket_hint="",
+            use_case=self._config.get("observability", {}).get("domain", "unknown"),
+            session=bundle.session, phone=user_id, call_id=session_id,
+            last_caller_turn=turn_input.user_message,
+            summary_turns=int((self._config.get("handoff") or {}).get("summary_turns", 6)),
+            now_iso=datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        )
+        return already, payload, current
+
+    @staticmethod
+    def _handoff_writes(bundle, current: str, outcome: str, result: dict | None) -> dict:
+        """Session fields a handoff turn records (mirrored into bundle.session); next-turn routing reads them."""
+        writes: dict = {}
+        # A repeat request from inside the handoff phase keeps the original return target.
+        if current != "handoff":
+            writes["close_return_to"] = current
+        if outcome != "already":
+            writes["handoff_status"] = outcome
+            writes["handoff_ticket_id"] = str((result or {}).get("ticket_id") or "")
+        bundle.session.update(writes)
+        return writes
+
+    @staticmethod
+    def _handoff_log(session_id: str, outcome: str, result: dict | None, latency_ms: int) -> dict:
+        """Log the outcome (never the payload) and return the signal body fields."""
+        fields = {
+            "ticket_id": str((result or {}).get("ticket_id") or ""),
+            "outcome": outcome,
+            "reason": str((result or {}).get("reason") or ("error" if result is None else "unknown")),
+            "latency_ms": latency_ms,
+        }
+        logger.info("orchestrator.handoff", extra={
+            "operation": "orchestrator.handoff",
+            "status": "success" if outcome == "delivered" else "failure",
+            "session_id": session_id, **fields,
+        })
+        return fields
+
+    async def _handle_human_request_async(self, session_id: str, user_id: str, bundle, turn_input,
+                                          *, turn_id: str = "") -> str | None:
+        """Escalate a ``human_request`` to Trust; return the line to speak, or None when handoff is off.
+
+        At most one delivered handoff per call: after ``delivered`` the
+        ``already`` line is returned and nothing is sent; after ``failed`` a
+        new request tries again. Any exception counts as failed.
+        """
+        lines = self._handoff_lines()
+        if lines is None:
+            return None
+        already, payload, current = self._handoff_prepare(session_id, user_id, bundle, turn_input)
+        result: dict | None = None
+        latency_ms = 0
+        if not already:
+            t0 = time.time()
+            try:
+                result = await self._async_trust.escalate(
+                    session_id, "human_request", turn_input.user_message, current, handoff=payload)
+            except Exception:  # noqa: BLE001 — a handoff failure must never fail the turn
+                result = None
+            latency_ms = int((time.time() - t0) * 1000)
+        line, outcome = choose_handoff_line(result, lines, already)
+        writes = self._handoff_writes(bundle, current, outcome, result)
+        await asyncio.gather(*(self._async_memory.write(session_id, user_id, "session", k, v)
+                               for k, v in writes.items()), return_exceptions=True)
+        if not already:
+            fields = self._handoff_log(session_id, outcome, result, latency_ms)
+            if self._async_learning:
+                try:
+                    await self._async_learning.emit_signal("handoff", {
+                        "session_id": session_id, "turn_id": turn_id,
+                        "timestamp_ms": int(time.time() * 1000), **fields})
+                except Exception:  # noqa: BLE001
+                    logger.warning("orchestrator.handoff_signal_failed", extra={
+                        "operation": "orchestrator.handoff", "status": "skipped",
+                        "session_id": session_id})
+        return line
+
+    def _handle_human_request_sync(self, session_id: str, user_id: str, bundle, turn_input,
+                                   *, turn_id: str = "") -> str | None:
+        """Sync twin of :meth:`_handle_human_request_async` (process_turn path)."""
+        lines = self._handoff_lines()
+        if lines is None:
+            return None
+        already, payload, current = self._handoff_prepare(session_id, user_id, bundle, turn_input)
+        result: dict | None = None
+        latency_ms = 0
+        if not already:
+            t0 = time.time()
+            try:
+                result = self._trust.escalate(
+                    session_id, "human_request", turn_input.user_message, current, handoff=payload)
+            except Exception:  # noqa: BLE001 — a handoff failure must never fail the turn
+                result = None
+            latency_ms = int((time.time() - t0) * 1000)
+        line, outcome = choose_handoff_line(result, lines, already)
+        for k, v in self._handoff_writes(bundle, current, outcome, result).items():
+            self._write_memory_sync(session_id, user_id, "session", k, v)
+        if not already:
+            fields = self._handoff_log(session_id, outcome, result, latency_ms)
+            try:
+                self._learning.emit_signal("handoff", {
+                    "session_id": session_id, "turn_id": turn_id,
+                    "timestamp_ms": int(time.time() * 1000), **fields})
+            except Exception:  # noqa: BLE001
+                logger.warning("orchestrator.handoff_signal_failed", extra={
+                    "operation": "orchestrator.handoff", "status": "skipped",
+                    "session_id": session_id})
+        return line
+
+    # ------------------------------------------------------------------
     # Private: consent translation helper
     # ------------------------------------------------------------------
 
@@ -4110,6 +4276,23 @@ class AgentCore(AgentCoreBase):
                     )
                     yield _stamp(SentenceEvent(text=msg, sentence_index=0))
                     yield _stamp(DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000)))
+                    return
+
+            # ── Human handoff — a fixed line, no LLM (identity/handoff §4) ──
+            if nlu_result.intent == "human_request":
+                handoff_line = await self._handle_human_request_async(
+                    session_id, user_id, bundle, turn_input, turn_id=turn_id)
+                if handoff_line is not None:
+                    async for ev in self._stream_termination_short_circuit(
+                        session_id=session_id, user_id=user_id, turn_id=turn_id,
+                        turn_input=turn_input, detected_language=detected_language,
+                        nlu_result=nlu_result, bundle=bundle,
+                        trust_input=trust_input, trust_output=trust_output,
+                        start=start, stamp=_stamp,
+                        message=handoff_line, subagent_id="handoff",
+                        end_session=False,
+                    ):
+                        yield ev
                     return
 
             # ── Step 6: Routing ────────────────────────────────────────
