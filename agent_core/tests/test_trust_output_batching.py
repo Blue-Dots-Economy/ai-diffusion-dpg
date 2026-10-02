@@ -356,6 +356,112 @@ class TestStreamTurnBatching:
         assert agent._async_trust.check_output.await_count == 1
 
 
+class TestStreamTurnFinalAddRelease:
+    """The last sentence of a reply has no trailing whitespace, so it reaches
+    the batcher through the turn-end ``add`` rather than during the stream.
+    When that ``add`` itself triggers a flush (size or time), the sentences it
+    releases must still be spoken — otherwise a reply whose sentence count is
+    a multiple of ``max_sentences`` loses its final batch, and a 3-sentence
+    reply is replaced by ``empty_response_message``.
+    """
+
+    @staticmethod
+    def _agent(max_sentences=3, max_interval_ms=10_000):
+        agent = _make_agent_core()
+        _enable_batching(
+            agent, max_sentences=max_sentences, max_interval_ms=max_interval_ms,
+        )
+        _wire_basic_nlu(agent)
+        agent._config["conversation"] = {
+            "empty_response_message": "माफ़ कीजिए, दोबारा बताइए।"
+        }
+        agent._async_trust.check_output = AsyncMock(
+            return_value=TrustCheckResult(passed=True, action="allow")
+        )
+        return agent
+
+    @pytest.mark.asyncio
+    async def test_three_sentence_reply_is_spoken_in_full(self):
+        agent = self._agent(max_sentences=3)
+
+        async def mock_stream(*args, **kwargs):
+            yield "एक। "
+            yield "दो। "
+            yield "तीन?"
+
+        agent._llm.stream = mock_stream
+
+        events = await _collect_events(agent, _make_turn_input())
+        texts = [e.text for e in events if isinstance(e, SentenceEvent)]
+        assert texts == ["एक।", "दो।", "तीन?"], texts
+        assert [e.sentence_index for e in events if isinstance(e, SentenceEvent)] == [0, 1, 2]
+
+    @pytest.mark.asyncio
+    async def test_six_sentence_reply_is_spoken_in_full(self):
+        agent = self._agent(max_sentences=3)
+
+        async def mock_stream(*args, **kwargs):
+            for i in range(5):
+                yield f"Sentence {i}. "
+            yield "Sentence 5."
+
+        agent._llm.stream = mock_stream
+
+        events = await _collect_events(agent, _make_turn_input())
+        texts = [e.text for e in events if isinstance(e, SentenceEvent)]
+        assert texts == [f"Sentence {i}." for i in range(6)], texts
+        assert agent._async_trust.check_output.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_time_triggered_flush_on_final_add_is_spoken(self):
+        agent = self._agent(max_sentences=10, max_interval_ms=500)
+
+        clock = {"t": 0.0}
+        import src.orchestrator as orch_mod
+
+        original_monotonic = orch_mod.time.monotonic
+        orch_mod.time.monotonic = lambda: clock["t"]
+        try:
+            async def mock_stream(*args, **kwargs):
+                clock["t"] = 0.0
+                yield "Sentence one. "
+                yield "Sentence two."
+                # Advance past the 500 ms threshold only after the last
+                # token, so the in-stream tick never fires and the turn-end
+                # add of the unterminated "Sentence two." is what flushes.
+                clock["t"] = 0.6
+
+            agent._llm.stream = mock_stream
+            events = await _collect_events(agent, _make_turn_input())
+        finally:
+            orch_mod.time.monotonic = original_monotonic
+
+        texts = [e.text for e in events if isinstance(e, SentenceEvent)]
+        assert texts == ["Sentence one.", "Sentence two."], texts
+        assert agent._async_trust.check_output.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_empty_turn_log_records_dropped_sentence_count(self, caplog):
+        """``stream_empty_turn`` carries a count (never the text) of sentences
+        the model produced that did not reach the caller."""
+        import logging
+
+        agent = self._agent(max_sentences=3)
+
+        async def mock_stream(*args, **kwargs):
+            return
+            yield  # pragma: no cover - generator marker
+
+        agent._llm.stream = mock_stream
+
+        with caplog.at_level(logging.WARNING, logger="src.orchestrator"):
+            await _collect_events(agent, _make_turn_input())
+
+        recs = [r for r in caplog.records if r.message == "orchestrator.stream_empty_turn"]
+        assert len(recs) == 1
+        assert recs[0].dropped_sentences == 0
+
+
 class TestStreamEmptyCompletionRetry:
     """stream_turn retries once when the model returns nothing at all.
 

@@ -44,3 +44,28 @@ def test_unknown_operator_is_false():
 def test_all_conditions_empty_is_true():
     assert all_conditions([], {})
     assert not all_conditions([C("a", "eq", 1), C("b", "eq", 2)], {"a": 1, "b": 3})
+
+
+def test_contains_str_value():
+    cond = C("current_question", "contains", "आवेदन भेज दूँ")
+    assert evaluate_condition(cond, {"current_question": "क्या मैं इस नौकरी के लिए आवेदन भेज दूँ?"})
+    assert not evaluate_condition(cond, {"current_question": "इसके बारे में और बात करें?"})
+
+
+def test_contains_list_value_matches_any():
+    cond = C("current_question", "contains", ["आवेदन भेज दूँ", "आवेदन कर दूँ"])
+    assert evaluate_condition(cond, {"current_question": "क्या मैं इसके लिए आवेदन कर दूँ?"})
+    assert not evaluate_condition(cond, {"current_question": "किसी एक के बारे में और जानना चाहेंगे?"})
+    assert not evaluate_condition(C("q", "contains", []), {"q": "anything"})
+
+
+def test_contains_missing_or_none_field_is_false():
+    cond = C("current_question", "contains", "x")
+    assert not evaluate_condition(cond, {})
+    assert not evaluate_condition(cond, {"current_question": None})
+    assert not evaluate_condition(C("q", "contains", ""), {})
+
+
+def test_contains_non_str_field_is_stringified():
+    assert evaluate_condition(C("n", "contains", "12"), {"n": 3120})
+    assert not evaluate_condition(C("n", "contains", "9"), {"n": 3120})

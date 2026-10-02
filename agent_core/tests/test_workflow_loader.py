@@ -806,6 +806,23 @@ def test_pending_questions_are_parsed_in_order():
     assert start.pending[1].resolves_to == "selected_job_item_id"
 
 
+def test_contains_operator_accepted_in_routing_and_pending():
+    cfg = _minimal_config(routing=[
+        {"intent": "greeting", "next_subagent_id": "end",
+         "conditions": [{"field": "current_question", "operator": "contains", "value": "x"}]},
+        {"intent": "*", "next_subagent_id": "end"},
+    ])
+    cfg["agent_workflow"]["subagents"][0]["pending"] = [
+        {"id": "submit_confirm", "expects": "हाँ/ना",
+         "when": [{"field": "current_question", "operator": "contains", "value": ["a", "b"]}]},
+    ]
+    wf = AgentWorkflowLoader().load(cfg, _make_tool_registry())
+    start = wf.subagents[wf.start_subagent_id]
+    assert start.routing[0].conditions[0].operator == "contains"
+    assert start.pending[0].when[0].operator == "contains"
+    assert start.pending[0].when[0].value == ["a", "b"]
+
+
 def test_pending_defaults_to_empty():
     wf = AgentWorkflowLoader().load(_minimal_config(), _make_tool_registry())
     assert all(s.pending == [] for s in wf.subagents.values())

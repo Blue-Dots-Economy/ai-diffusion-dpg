@@ -415,7 +415,12 @@ def test_routing_condition_typed():
 
 def test_routing_condition_invalid_operator():
     with pytest.raises(ValidationError):
-        RoutingCondition(field="x", operator="contains", value="y")
+        RoutingCondition(field="x", operator="startswith", value="y")
+
+
+def test_routing_condition_contains_accepted():
+    c = RoutingCondition(field="current_question", operator="contains", value=["a", "b"])
+    assert c.operator.value == "contains"
 
 
 # -- RoutingRule + session_writes scalar validator ---------------------------

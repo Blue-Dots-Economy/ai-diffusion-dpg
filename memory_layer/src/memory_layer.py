@@ -781,9 +781,23 @@ class MemoryLayer:
         return {"session_id": session_id, "turns": turns}
 
     def _coerce_session_types(self, session_data: dict[str, Any]) -> dict[str, Any]:
-        """Coerce Redis strings back to native Python types (bool, dict, list)."""
+        """Coerce Redis strings back to native Python types (bool, int, dict, list).
+
+        A field the session schema declares ``type: int`` comes back as an int
+        when its stored string parses as one. Without this the seeded ``"0"``
+        never equals the ``0`` that routing and pending conditions compare
+        against. Undeclared fields, empty strings and non-integer strings are
+        left as stored.
+        """
         data = dict(session_data)
         for key, val in data.items():
+            fdef = self._schema.get(key)
+            if isinstance(val, str) and isinstance(fdef, dict) and fdef.get("type") == "int":
+                try:
+                    data[key] = int(val)
+                except ValueError:
+                    pass
+                continue
             if val == "true":
                 data[key] = True
             elif val == "false":

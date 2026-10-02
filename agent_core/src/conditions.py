@@ -20,8 +20,11 @@ def evaluate_condition(condition: Any, state: dict) -> bool:
     ``subagent_entry_count.<id>`` convention).
 
     Args:
-        condition: Object with ``field``, ``operator`` (eq | not_eq | in | lt | gt)
-            and ``value`` attributes.
+        condition: Object with ``field``, ``operator``
+            (eq | not_eq | in | lt | gt | contains) and ``value`` attributes.
+            ``contains`` holds when ``str(field value)`` contains ``value`` (a
+            str) or ANY of ``value`` (a list of str); a missing or None field
+            value is False.
         state: Merged session/profile state.
 
     Returns:
@@ -44,6 +47,12 @@ def evaluate_condition(condition: Any, state: dict) -> bool:
         return value != cond_val
     if op == "in":
         return value in (cond_val if isinstance(cond_val, list) else [cond_val])
+    if op == "contains":
+        if value is None:
+            return False
+        haystack = str(value)
+        needles = cond_val if isinstance(cond_val, list) else [cond_val]
+        return any(isinstance(n, str) and n in haystack for n in needles)
     if op in ("lt", "gt"):
         try:
             left, right = float(value or 0), float(cond_val)

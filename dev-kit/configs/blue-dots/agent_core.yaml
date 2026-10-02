@@ -698,8 +698,15 @@ preprocessing:
     known_fields: [consent_response, age, trade, location, name, stored_trade, stored_location]
     examples:
       - { pending: closing_offer, caller: "ठीक है धन्यवाद", out: { acts: [acknowledge], relation: answers_pending } }
+      - { pending: close_confirm, caller: "हाँ जी", out: { acts: [affirm], relation: answers_pending } }
+      - { pending: close_confirm, caller: "ठीक है", out: { acts: [affirm], relation: answers_pending } }
+      - { pending: close_confirm, caller: "ठीक है धन्यवाद", out: { acts: [affirm], relation: answers_pending } }
+      - { pending: close_confirm, caller: "हाँ ठीक है", out: { acts: [affirm], relation: answers_pending } }
+      - { pending: close_confirm, caller: "नहीं, अभी बात करनी है", out: { acts: [deny], relation: answers_pending } }
       - { pending: submit_confirm, caller: "ठीक है धन्यवाद", out: { acts: [affirm], relation: answers_pending } }
       - { pending: submit_confirm, caller: "धन्यवाद", out: { acts: [acknowledge], relation: unclear } }
+      - { pending: submit_confirm, caller: "ओके धन्यवाद", out: { acts: [affirm], relation: answers_pending } }
+      - { pending: submit_confirm, caller: "अच्छा ठीक है, धन्यवाद", out: { acts: [affirm], relation: answers_pending } }
       - { pending: submit_confirm, caller: "नहीं नहीं, दूसरा वाला", out: { acts: [correct, select], relation: answers_pending, reference: { option: 2, spoken: "दूसरा वाला" } } }
       - { pending: submit_confirm, caller: "और कोई नौकरी है क्या", out: { acts: [request_change], relation: new_topic, topic: search } }
       - { pending: location, caller: "आसपास कहीं भी", out: { acts: [provide_info], relation: answers_pending } }
@@ -720,15 +727,30 @@ preprocessing:
       - { acts: [select], pending: select_job, intent: job_pick }
       - { acts: [select], pending: submit_confirm, intent: job_pick }
       - { acts: [affirm], pending: submit_confirm, relation: answers_pending, intent: apply_now }
+      # "नहीं, कोई दूसरी दिखाइए" refuses this job and asks for another: explore, not a bare decline.
+      - { acts: [deny, request_change], pending: submit_confirm, intent: explore_more }
       - { acts: [deny], pending: submit_confirm, relation: answers_pending, intent: decline }
       - { acts: [request_change], topic: search, intent: explore_more }
       - { acts: [ask], topic: search, intent: explore_more }
       - { acts: [request_change], topic: language, intent: language_switch_request }
       - { acts: [close], intent: termination_intent, gated: true }
+      # Same close when the gate refuses it: derive_intent skips the gated row
+      # above and lands here, so routing can ask confirm_close's one question
+      # instead of letting the phase write a goodbye that never hangs up.
+      - { acts: [close], intent: termination_blocked }
+      # An affirm that also asks / requests something is not a bare yes: keep the
+      # call (close_declined, routed back by confirm_close) before the confirming rows below. relation answers_pending
+      # and unclear cover a bare "ठीक है" the model mis-labels; new_topic and
+      # answers_other never confirm.
+      - { acts: [affirm, ask], pending: close_confirm, intent: close_declined }
+      - { acts: [affirm, request_change], pending: close_confirm, intent: close_declined }
+      - { acts: [affirm], pending: close_confirm, relation: answers_pending, intent: termination_intent, gated: true }
+      - { acts: [affirm], pending: close_confirm, relation: unclear, intent: termination_intent, gated: true }
       - { acts: [deny], pending: closing_offer, intent: termination_intent, gated: true }
     termination_gate:
       any_of:
         - { pending: closing_offer }
+        - { pending: close_confirm }
         - { field: applications_submitted, operator: gt, value: 0 }
 
 # NLU entities are CALL-scoped working state, not durable identity.
@@ -838,6 +860,8 @@ agent_workflow:
 
     Use instead:
       "आपकी जानकारी सेव हो गई।"      ("Your information is saved.")
+        — only after a save_profile result in THIS turn says it saved;
+        see "Never announce a write before its result exists".
       "आपकी जानकारी में बेंगलुरु है।" ("Your information has Bengaluru.")
 
     ## Never stay silent (HARD RULE — applies to EVERY response)
@@ -1555,7 +1579,9 @@ agent_workflow:
           expects: "उम्र, साल में"
           when:
             - { field: has_age, operator: not_eq, value: true }
-            - { field: age, operator: in, value: [null, "", 0] }
+            # "0" too: the seed as Memory Layer stored it, if a copy reaches
+            # here without its int coercion (same seeds as slot_writer).
+            - { field: age, operator: in, value: [null, "", 0, "0"] }
       routing:
         # off_track (spec §6.6): stay here after repeated
         # off-script turns; never coincides with termination_intent.
@@ -1571,6 +1597,14 @@ agent_workflow:
           # so the call never ended.
         - intent: termination_intent
           next_subagent_id: ended
+        # A goodbye the termination gate refused (nothing applied yet) is
+        # confirmed in confirm_close; once that was asked, the next one ends.
+        - intent: termination_blocked
+          conditions: [{ field: subagent_entry_count.confirm_close, operator: gt, value: 0 }]
+          next_subagent_id: ended
+        - intent: termination_blocked
+          next_subagent_id: confirm_close
+          session_writes: { close_return_to: opening }
         # Order matters — first match wins.
         #
         # Two different kinds of state are read here, and the difference
@@ -2007,6 +2041,14 @@ agent_workflow:
           next_subagent_id: profile_resolve
         - intent: termination_intent
           next_subagent_id: ended
+        # A goodbye the termination gate refused (nothing applied yet) is
+        # confirmed in confirm_close; once that was asked, the next one ends.
+        - intent: termination_blocked
+          conditions: [{ field: subagent_entry_count.confirm_close, operator: gt, value: 0 }]
+          next_subagent_id: ended
+        - intent: termination_blocked
+          next_subagent_id: confirm_close
+          session_writes: { close_return_to: profile_resolve }
         - intent: decline
           conditions:
             - field: subagent_entry_count.profile_resolve
@@ -2269,6 +2311,22 @@ agent_workflow:
         old results.
 
       pending:
+        # #439: after describing one job this phase asks the submit question
+        # itself ("क्या मैं इस नौकरी के लिए आवेदन भेज दूँ?"). Under select_job a
+        # "हाँ, भेज दीजिए" maps to no act_intents row, derives any_input, stays
+        # here with no apply tool, and the model announces an application that
+        # was never made. Keyed on the bot's last reply so a bare yes to this
+        # phase's OTHER question ("इसके बारे में और बात करें?") stays select_job
+        # and never applies — apply_confirm submits on entry, irreversibly.
+        # Both ँ and ं spellings occur in replies; the list covered all 30 apply
+        # questions job_match asked across the M2/M3/D-fix voice-bench runs.
+        - id: submit_confirm
+          when: [{ field: current_question, operator: contains, value: ["आवेदन भेज दूँ", "आवेदन कर दूँ", "आवेदन करूँ", "आवेदन भेजूँ", "अप्लाई कर दूँ", "अप्लाई करूँ",
+                                                                     "आवेदन भेज दूं", "आवेदन कर दूं", "आवेदन करूं", "आवेदन भेजूं", "अप्लाई कर दूं", "अप्लाई करूं",
+                                                                     "आवेदन करना चाहेंगे", "अप्लाई करना चाहेंगे"] }]
+          expects: "इस नौकरी के लिए आवेदन भेजने की हाँ/ना, या कोई दूसरी नौकरी"
+          options_from: { tool: fetch_jobs, fields: [role, company], id_field: item_id }
+          resolves_to: selected_job_item_id
         - id: select_job
           expects: "offered jobs में से एक, या दूसरी search"
           options_from: { tool: fetch_jobs, fields: [role, company], id_field: item_id }
@@ -2288,6 +2346,14 @@ agent_workflow:
           # so the call never ended.
         - intent: termination_intent
           next_subagent_id: ended
+        # A goodbye the termination gate refused (nothing applied yet) is
+        # confirmed in confirm_close; once that was asked, the next one ends.
+        - intent: termination_blocked
+          conditions: [{ field: subagent_entry_count.confirm_close, operator: gt, value: 0 }]
+          next_subagent_id: ended
+        - intent: termination_blocked
+          next_subagent_id: confirm_close
+          session_writes: { close_return_to: job_match }
         - intent: explore_more
           next_subagent_id: job_match
         # A pick goes straight to applying. The deep-dive phase that used to
@@ -2526,6 +2592,14 @@ agent_workflow:
           # so the call never ended.
         - intent: termination_intent
           next_subagent_id: ended
+        # A goodbye the termination gate refused (nothing applied yet) is
+        # confirmed in confirm_close; once that was asked, the next one ends.
+        - intent: termination_blocked
+          conditions: [{ field: subagent_entry_count.confirm_close, operator: gt, value: 0 }]
+          next_subagent_id: ended
+        - intent: termination_blocked
+          next_subagent_id: confirm_close
+          session_writes: { close_return_to: profile_setup }
         # decline intent intentionally NOT routed to job_match here —
         # mid-profile-collection a "No" is overwhelmingly an STT
         # misrecognition of a one-word answer (e.g. "Mo" → "No"),
@@ -3011,6 +3085,14 @@ agent_workflow:
           # so the call never ended.
         - intent: termination_intent
           next_subagent_id: ended
+        # A goodbye the termination gate refused (nothing applied yet) is
+        # confirmed in confirm_close; once that was asked, the next one ends.
+        - intent: termination_blocked
+          conditions: [{ field: subagent_entry_count.confirm_close, operator: gt, value: 0 }]
+          next_subagent_id: ended
+        - intent: termination_blocked
+          next_subagent_id: confirm_close
+          session_writes: { close_return_to: apply_confirm }
         # No usable profile — go back to the phase that can make one.
         #
         # This phase can no longer create profiles (save_profile was removed
@@ -3058,6 +3140,61 @@ agent_workflow:
           next_subagent_id: ended
         - intent: "*"
           next_subagent_id: apply_confirm
+    # ─────────────────────────────────────────────────────────────
+    # confirm_close — the caller sounded like they were leaving before
+    # anything was applied for ("अभी व्यस्त हूँ, बाद में बात करेंगे").
+    #
+    # The termination gate does not let that close end the call on its own
+    # (a misread thank-you would hang up mid-journey), and no earlier phase
+    # has end_session. Without this phase the model wrote its own goodbye
+    # and the call stayed open until the caller hung up. One fixed question;
+    # "हाँ" (or another close) passes the gate via `pending: close_confirm`
+    # and ends in `ended`; anything else returns to the phase recorded in
+    # close_return_to by the rule that routed here. Asked at most once per
+    # call: each phase's termination_blocked rule ends outright once
+    # subagent_entry_count.confirm_close > 0.
+    - id: confirm_close
+      name: Confirm Close
+      description: Ask once whether to end the call before anything is done.
+      is_start: false
+      is_terminal: false
+      opening_phrase: "क्या मैं कॉल यहीं ख़त्म करूँ?"
+      special_handler: null
+      tools: []
+      # fixed_opening needs at least one required field; close_return_to is
+      # written by the very rule that routes here, so it is always present.
+      fixed_opening: "क्या मैं कॉल यहीं ख़त्म करूँ?"
+      fixed_opening_requires: [close_return_to]
+      system_prompt: |
+        The caller sounded like they want to end the call. Ask exactly this
+        one sentence and nothing else: "क्या मैं कॉल यहीं ख़त्म करूँ?"
+        Do not say goodbye yet. Do not call any tool.
+      pending:
+        - id: close_confirm
+          expects: "हाँ = कॉल ख़त्म करें / नहीं = बात जारी रखें"
+      routing:
+        # off_track (spec §6.6): stay here after repeated
+        # off-script turns; never coincides with termination_intent.
+        - intent: off_track
+          next_subagent_id: confirm_close
+        - intent: termination_intent
+          next_subagent_id: ended
+        # Yes-but-also-asking (close_declined): back to the phase like any other non-confirming answer.
+        - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: opening }], next_subagent_id: opening }
+        - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: profile_resolve }], next_subagent_id: profile_resolve }
+        - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: job_match }], next_subagent_id: job_match }
+        - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: profile_setup }], next_subagent_id: profile_setup }
+        - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
+        - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: clarification }], next_subagent_id: clarification }
+        # Any other answer ("नहीं", a question, a detail): back to where the caller was.
+        - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: opening }], next_subagent_id: opening }
+        - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: profile_resolve }], next_subagent_id: profile_resolve }
+        - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: job_match }], next_subagent_id: job_match }
+        - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: profile_setup }], next_subagent_id: profile_setup }
+        - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
+        - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: clarification }], next_subagent_id: clarification }
+        - intent: "*"
+          next_subagent_id: opening
     - id: ended
       name: Session Ended
       description: Graceful session termination.
@@ -3099,6 +3236,14 @@ agent_workflow:
           # so the call never ended.
         - intent: termination_intent
           next_subagent_id: ended
+        # A goodbye the termination gate refused (nothing applied yet) is
+        # confirmed in confirm_close; once that was asked, the next one ends.
+        - intent: termination_blocked
+          conditions: [{ field: subagent_entry_count.confirm_close, operator: gt, value: 0 }]
+          next_subagent_id: ended
+        - intent: termination_blocked
+          next_subagent_id: confirm_close
+          session_writes: { close_return_to: clarification }
         - intent: "*"
           next_subagent_id: clarification
 

@@ -780,3 +780,30 @@ def test_delete_user_erases_tool_results_even_if_graph_delete_fails():
     stores["user"].delete_user.side_effect = RuntimeError("graph down")
     layer.delete_user("u1")
     stores["tool_results"].delete_owner.assert_called_once_with("user", "u1")
+
+
+# ---------------------------------------------------------------------------
+# _coerce_session_types — declared int fields
+# ---------------------------------------------------------------------------
+
+def test_context_bundle_coerces_declared_int_fields_to_int():
+    # Redis stores every session value as a string. A declared int field must
+    # come back as an int, so a seeded "0" compares equal to 0 in routing and
+    # pending conditions.
+    layer, stores = _make_layer()
+    stores["redis"].session_exists.return_value = True
+    stores["redis"].get_session.return_value = {"count": "0", "trade": "24", "loop_count": "3"}
+    stores["user"].get_profile.return_value = {}
+
+    session = layer.context_bundle("sess-1", "user-1")["session"]
+
+    assert session["count"] == 0 and isinstance(session["count"], int)
+    # Not declared int: left as stored.
+    assert session["trade"] == "24"
+    assert session["loop_count"] == "3"
+
+
+@pytest.mark.parametrize("raw, expected", [("24", 24), ("-3", -3), ("", ""), ("abc", "abc"), ("2.5", "2.5")])
+def test_coerce_session_types_int_field_values(raw, expected):
+    layer, _ = _make_layer()
+    assert layer._coerce_session_types({"count": raw})["count"] == expected

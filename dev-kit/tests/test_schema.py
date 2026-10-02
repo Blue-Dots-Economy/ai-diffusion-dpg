@@ -329,7 +329,7 @@ class TestAuditObsConfig:
 
 class TestRoutingConditionSchema:
     def test_all_valid_operators_accepted(self):
-        for op in ("eq", "not_eq", "in", "lt", "gt"):
+        for op in ("eq", "not_eq", "in", "lt", "gt", "contains"):
             rc = RoutingConditionSchema(field="some_field", operator=op, value="x")
             assert rc.operator == op
 
@@ -677,3 +677,9 @@ class TestLogRawResponseKeys:
         model = self._models()[idx]
         with pytest.raises(ValidationError, match="log_raw_response_max_chars"):
             model(log_raw_response_max_chars=500)
+
+
+def test_termination_gate_item_accepts_contains():
+    from dev_kit.schema import TerminationGateItem
+    item = TerminationGateItem(field="current_question", operator="contains", value=["a"])
+    assert item.operator == "contains"

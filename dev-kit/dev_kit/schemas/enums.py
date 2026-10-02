@@ -183,6 +183,7 @@ class RoutingOperator(str, Enum):
     gt = "gt"
     lt = "lt"
     in_ = "in"
+    contains = "contains"
 
 
 class InternalRoute(str, Enum):

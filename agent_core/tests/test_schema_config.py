@@ -277,7 +277,7 @@ def test_signal_intents_accepts_domain_keys():
 
 
 def test_routing_condition_all_operators_accepted():
-    for op in ["eq", "not_eq", "gt", "lt", "in"]:
+    for op in ["eq", "not_eq", "gt", "lt", "in", "contains"]:
         cfg = MergedConfig.validate_full({
             "agent_workflow": {
                 "global_routing": [{"intent": "off_track", "next_subagent_id": "s"}],

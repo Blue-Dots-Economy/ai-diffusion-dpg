@@ -37,6 +37,7 @@ class RoutingOperator(str, Enum):
     gt = "gt"
     lt = "lt"
     in_ = "in"
+    contains = "contains"
 
 
 class SpecialHandler(str, Enum):
