@@ -84,6 +84,9 @@ def test_reach_prompt_covers_voice_output_contract_terminal_word_and_filler() ->
 
     # Output contract — config path plus the canonical keys.
     assert "tts_rules" not in result
+    # The wizard never authors the bridge channel.
+    assert "channels.bridge" not in result
+    assert "voice, bridge" not in result
     assert "agent_core, section=channels.voice.output_contract" in result
     for key in ("default_language", "script", "numbers", "rules",
                 "rewrite_digits", "strip_markdown"):

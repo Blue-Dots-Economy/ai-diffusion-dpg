@@ -212,7 +212,7 @@ One block, built by `ConversationStateRenderer` from the session, the profile, t
 phase: job_match
 waiting for: select_job — offered jobs में से एक, या दूसरी search
 collected (do not ask again): name=अजय सिंह · age=28 · trade=Welder · location=Bengaluru
-offered (read in this order): 1 Welder, Flipkart · 2 Welder, Titan · 3 Welder, Bosch
+offered (read in this order): 1. Welder · Flipkart; 2. Welder · Titan; 3. Welder · Bosch
 status: applications_submitted=0
 ```
 

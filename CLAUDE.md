@@ -96,7 +96,7 @@ Two execution paths: `POST /process_turn` (sync JSON, fire-and-wait; web/CLI/MCP
 
 ### Module interaction rules
 
-**Agent Core is the only turn-time orchestrator and the only LLM caller.** Every per-turn step (memory read → trust input → NLU → constraint assembly → prompt build → LLM → tool routing → trust output → deliver) runs inside Agent Core. The user only initiates a turn through Reach Layer → Agent Core.
+**Agent Core is the only turn-time orchestrator and the only LLM caller.** Every per-turn step (memory read → trust input → NLU → constraint assembly → prompt build → LLM → tool routing → output guard → trust output → deliver) runs inside Agent Core. The user only initiates a turn through Reach Layer → Agent Core.
 
 Other blocks may call each other directly **only under the approved scopes listed below**. New cross-block calls require an architecture-level decision; do not introduce them ad hoc.
 

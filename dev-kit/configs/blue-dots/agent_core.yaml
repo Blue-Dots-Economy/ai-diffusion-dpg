@@ -2135,16 +2135,17 @@ agent_workflow:
 
         ## Hard rules (NEVER violate)
         - Speak ONLY company names, roles, salaries, cities, and
-          item_ids that are present in the MOST RECENT `fetch_jobs`
-          tool_result. NEVER invent a job, NEVER name a company you
+          item_ids that are present in <known_facts> or the latest `fetch_jobs`
+          result. NEVER invent a job, NEVER name a company you
           have not just seen returned.
         - When a different city/trade is needed, RE-CALL fetch_jobs
           with the new filter before presenting anything.
 
         ## Presenting results — exact spoken form
 
-        Count the surviving jobs FIRST, then use the template whose count
-        matches. There is no template for more jobs than you were given,
+        Count the jobs you have, then use the template whose count
+        matches. If you have none for this ask, say so and never offer an
+        unrelated job instead. There is no template for more jobs than you were given,
         and every [role] / [company] / [location] / [salary_spoken] below is
         COPIED from this call's tool result — never remembered, never a
         plausible local employer, never an example from these instructions.
@@ -2173,7 +2174,8 @@ agent_workflow:
         >  इसके बारे में और बात करें?"
         ("Here is a job for you — … Shall we talk more about it?")
 
-        No pay field present → say the job without pay.
+        Read whichever pay field is present — salary_spoken, stipend_spoken or
+        task_rate_spoken; if none is present, say the job without pay.
 
         ## Rules for that block
         - One line per job, no detail yet, always ending on a question
@@ -2200,7 +2202,8 @@ agent_workflow:
           Go back to the array and take the first entry whose role and
           company you have NOT said.
         - Read jobs in the order given and never re-rank; after the first
-          batch, continue down the same list.
+          batch, continue down the same list. Never pad to three: one
+          relevant job means you present one.
         - The caller picks by name ("वो मार्केटिंग वाली" — "the marketing
           one"). Repeat the role and company back once, then continue. If
           they say a number after the first batch, do not guess — ask

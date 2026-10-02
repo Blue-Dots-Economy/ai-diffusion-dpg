@@ -145,7 +145,7 @@ collect:
   short", "Say rupees, not the symbol")
 
 Also set `default_language` (must be one of the declared languages) and
-the `guard` switches. For voice-like channels (voice, bridge) turn on
+the `guard` switches. For the voice channel turn on
 `guard.rewrite_digits` and `guard.strip_markdown`.
 
 Configure via ONE call per channel:
@@ -153,8 +153,6 @@ Configure via ONE call per channel:
 values={{default_language: "hindi", languages: {{hindi: {{script:
 "devanagari", numbers: "words", rules: ["..."]}}}}, guard:
 {{rewrite_digits: true, strip_markdown: true}}}})`
-
-Use `section=channels.bridge.output_contract` for the bridge channel.
 
 **Voice — terminal word + filler phrase
 (`reach_layer.channels.voice.*`):**

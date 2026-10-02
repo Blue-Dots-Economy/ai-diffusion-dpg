@@ -159,8 +159,8 @@ class CurrentQuestionConfig(BaseModel):
     The orchestrator persists every turn's bot response under ``current_question``
     so the next turn can show the LLM the previous prompt context. Pre-#200
     turn pile-ups occasionally fed concatenated multi-turn responses into this
-    field, which then poisoned the next turn's prompt as
-    ``[Last question asked: <bot_response_1> ... <bot_response_2> ...]``.
+    field, which then poisoned the next turn's prompt with a
+    run of concatenated bot responses.
 
     The cap and the concat detector are defense-in-depth: #200's cancel-and-fold
     removes the source of the concatenation, but if it ever reappears upstream

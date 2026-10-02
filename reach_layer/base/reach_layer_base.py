@@ -297,7 +297,7 @@ class ReachLayerBase(ABC):
             params.append(f"user_id={quote(user_id, safe='')}")
         # Include channel so Agent Core creates the session buffer with the
         # correct channel identity from the first turn (per-channel
-        # system_prompt_suffix / tts_rules / turn_assembler timing).
+        # system_prompt_suffix / output_contract / turn_assembler timing).
         if self._channel_name:
             params.append(f"channel={quote(self._channel_name, safe='')}")
         if params:

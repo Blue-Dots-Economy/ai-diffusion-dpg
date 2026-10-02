@@ -1,7 +1,7 @@
 """Phase prompt builder: language.
 
 Configures LLM provider/models, language normalisation, the NLU model,
-conversation messages, and (for voice agents) TTS rules and terminal word.
+conversation messages, and (for voice agents) the output contract and terminal word.
 Part of the dev-kit deterministic wizard's phase-prompt system.
 
 See design §6 of
@@ -104,7 +104,7 @@ def build(
     # (the GoGuide regression). Tell the LLM explicitly to skip these
     # here.
     voice_groups = """
-**Voice TTS rules, terminal word, and filler phrase:**
+**Voice output contract, terminal word, and filler phrase:**
 
 These fields belong to the REACH phase, not this one. Do NOT propose,
 ask about, or call `update_config` for any of the following in the
@@ -116,8 +116,8 @@ re-asked there, wasting turns if you write them now:
 - `reach_layer.channels.voice.filler_phrase`
 - `reach_layer.channels.voice.filler_threshold_ms`
 
-If the user proactively brings up voice TTS during the language phase,
-acknowledge briefly ("voice TTS settings come up in a later step") and
+If the user proactively brings up the voice output contract during the language phase,
+acknowledge briefly ("voice output-contract settings come up in a later step") and
 move on — do not draft a proposal.
 """
 
@@ -158,7 +158,7 @@ the user has to read through.
 
 You are configuring the agent's LLM provider and models, language
 normalisation, NLU classifier, conversation messages, and — for voice
-agents — TTS normalisation rules and terminal word.
+agents — the output contract and terminal word.
 
 **Already set on the project-creation form — do NOT ask the user about
 these. Just record them via the appropriate `update_config` calls below.**
