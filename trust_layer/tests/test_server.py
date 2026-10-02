@@ -311,13 +311,30 @@ def test_escalate_returns_ticket():
 
 
 def test_escalate_passes_handoff_and_returns_delivery():
-    from orchestrator import TrustLayer
-    client = TestClient(create_app(TrustLayer(FULL_CONFIG)))
+    from unittest.mock import MagicMock
+    mock_trust = MagicMock()
+    mock_trust.escalate.return_value = {
+        "queued": True, "delivered": False, "reason": "log_only",
+        "ticket_id": "TKT-1", "holding_message": "h",
+    }
+    client = TestClient(create_app(mock_trust))
     r = client.post("/escalate", json={"session_id": "s1", "escalation_reason": "human_request",
                                        "user_message": "m", "workflow_step": "job_match",
                                        "handoff": {"ticket_hint": 1}})
     body = r.json()
     assert r.status_code == 200 and body["delivered"] is False and body["reason"] == "log_only"
+    mock_trust.escalate.assert_called_once_with("s1", "human_request", "m", "job_match", {"ticket_hint": 1})
+
+
+def test_escalate_exception_reports_not_delivered_error():
+    from unittest.mock import MagicMock
+    mock_trust = MagicMock()
+    mock_trust.escalate.side_effect = RuntimeError("boom")
+    r = TestClient(create_app(mock_trust)).post("/escalate", json={
+        "session_id": "s1", "escalation_reason": "r", "user_message": "m", "workflow_step": "ready"})
+    body = r.json()
+    assert r.status_code == 200
+    assert body["queued"] is False and body["delivered"] is False and body["reason"] == "error"
 
 
 # ── New endpoint error-path (fail-closed) tests ─────────────────────────────

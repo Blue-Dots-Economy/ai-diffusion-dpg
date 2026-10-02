@@ -87,4 +87,6 @@ def test_payload_is_never_logged(caplog):
     caplog.set_level("DEBUG")
     HiTLBlock(_cfg("log")).escalate("s1", "human_request", "msg", "job_match",
                                     handoff={"caller": {"phone": "919900001000"}})
+    assert caplog.records
     assert "919900001000" not in caplog.text
+    assert all("919900001000" not in str(r.__dict__) for r in caplog.records)

@@ -4,21 +4,32 @@ trust_layer/src/blocks/hitl.py
 HiTLBlock — Human-in-the-Loop escalation queue.
 
 Queue backend is configurable via trust.hitl.queue_backend:
-  "log"     — writes structured JSON to the Python logger (default)
-  "redis"   — reserved for future implementation
-  "webhook" — reserved for future implementation
+  "log"     — implemented (default). Writes structured JSON to the Python
+              logger; queued=True but delivered=False, reason="log_only".
+  "webhook" — implemented. Signed HTTPS POST of the handoff payload (see
+              hitl_webhook.py; env HITL_WEBHOOK_URL / HITL_WEBHOOK_SECRET).
+              delivered=True only on a 2xx response.
+  "redis"   — not implemented; returns queued=False, delivered=False,
+              reason="unsupported_backend".
 
 Returns a ticket_id and holding_message to Agent Core. Agent Core writes
 the session escalation state to Memory Layer after receiving this response.
+The handoff payload, webhook URL and secret are never logged.
 
 Config section: trust.hitl
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import time
 import uuid
+
+import httpx
+
+from .hitl_webhook import deliver_webhook, webhook_settings
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +42,9 @@ class HiTLBlock:
         config: Full config dict containing trust.hitl section.
     """
 
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict, http_client: httpx.Client | None = None) -> None:
         start = time.time()
+        self._http = http_client
         hitl_cfg = (config or {}).get("trust", {}).get("hitl", {})
         self._queue_backend: str = hitl_cfg.get("queue_backend", "log")
         self._holding_message: str = hitl_cfg.get("holding_message", "")
@@ -124,6 +136,13 @@ class HiTLBlock:
                 },
             )
             return True, False, "log_only"
+        if self._queue_backend == "webhook":
+            url, secret, _ = webhook_settings(os.environ)
+            if not url or not secret:
+                return False, False, "misconfigured"
+            body = json.dumps({"ticket_id": ticket_id, **(handoff or {})}, ensure_ascii=False).encode("utf-8")
+            delivered, reason = deliver_webhook(body, url=url, secret=secret, client=self._http)
+            return True, delivered, reason
         logger.warning(
             "hitl_block.unsupported_backend",
             extra={
