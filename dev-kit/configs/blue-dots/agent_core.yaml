@@ -705,6 +705,8 @@ preprocessing:
       - { pending: close_confirm, caller: "नहीं, अभी बात करनी है", out: { acts: [deny], relation: answers_pending } }
       - { pending: submit_confirm, caller: "ठीक है धन्यवाद", out: { acts: [affirm], relation: answers_pending } }
       - { pending: submit_confirm, caller: "धन्यवाद", out: { acts: [acknowledge], relation: unclear } }
+      - { pending: submit_confirm, caller: "ओके धन्यवाद", out: { acts: [affirm], relation: answers_pending } }
+      - { pending: submit_confirm, caller: "अच्छा ठीक है, धन्यवाद", out: { acts: [affirm], relation: answers_pending } }
       - { pending: submit_confirm, caller: "नहीं नहीं, दूसरा वाला", out: { acts: [correct, select], relation: answers_pending, reference: { option: 2, spoken: "दूसरा वाला" } } }
       - { pending: submit_confirm, caller: "और कोई नौकरी है क्या", out: { acts: [request_change], relation: new_topic, topic: search } }
       - { pending: location, caller: "आसपास कहीं भी", out: { acts: [provide_info], relation: answers_pending } }
