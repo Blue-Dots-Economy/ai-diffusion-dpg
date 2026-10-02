@@ -1078,10 +1078,11 @@ class MergedConfig(BaseModel):
             for i, step in enumerate(self.session_bootstrap.steps):
                 if step.tool not in read_names:
                     raise ValueError(f"session_bootstrap.steps[{i}]: '{step.tool}' is not a read connector")
-        if self.identity and self.identity.human_handoff == "request":
-            if self.handoff is None or not any(s.id == "handoff" for s in self.agent_workflow.subagents):
-                raise ValueError(
-                    "identity.human_handoff=request needs a handoff block and a 'handoff' subagent")
+        if (self.identity and self.identity.human_handoff == "request"
+                and (self.handoff is None
+                     or not any(s.id == "handoff" for s in self.agent_workflow.subagents))):
+            raise ValueError(
+                "identity.human_handoff=request needs a handoff block and a 'handoff' subagent")
         return self
 
     @model_validator(mode="after")

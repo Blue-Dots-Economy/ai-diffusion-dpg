@@ -813,7 +813,7 @@ class HitlSection(BaseModel):
 # -- agent_core.identity / agent_core.handoff --------------------------------
 
 class IdentitySection(BaseModel):
-    """agent_core.identity — mirrors runtime ``IdentityConfig``."""
+    """agent_core.identity — mirrors runtime ``IdentityConfig``. YAML-authored, not wizard-authored, in v1."""
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1)
     kind: Literal["ai_assistant"] = "ai_assistant"
@@ -832,7 +832,7 @@ class HandoffLinesSection(BaseModel):
 
 
 class HandoffSection(BaseModel):
-    """agent_core.handoff — mirrors runtime ``HandoffConfig``."""
+    """agent_core.handoff — mirrors runtime ``HandoffConfig``. YAML-authored, not wizard-authored, in v1."""
     model_config = ConfigDict(extra="forbid")
     lines: HandoffLinesSection
     summary_turns: int = Field(default=6, ge=1, le=20)
