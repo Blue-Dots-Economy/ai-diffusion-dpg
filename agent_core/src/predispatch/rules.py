@@ -15,7 +15,7 @@ from typing import Any, Callable
 from src.conditions import evaluate_condition
 
 _PLACEHOLDER = re.compile(r"\{([A-Za-z0-9_]+(?:\|[A-Za-z0-9_]+)*)\}")
-_UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+_UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 _MISSING = "skipped_missing_arg"
 _INVALID = "skipped_invalid_arg"
 
@@ -28,8 +28,9 @@ def is_empty(value: Any) -> bool:
     """Seeded-empty values never count as a bound argument (same set as ``_tool_session_values``)."""
     if isinstance(value, bool):
         return False
-    return value is None or value == "" or value == [] or value == "0" or (
-        isinstance(value, (int, float)) and value == 0)
+    if isinstance(value, str):
+        return value in ("", "0") or not value.strip()
+    return value is None or value == [] or (isinstance(value, (int, float)) and value == 0)
 
 
 def _apply_table(value: Any, spec: Any, tables: dict) -> Any:
@@ -47,15 +48,26 @@ def _apply_table(value: Any, spec: Any, tables: dict) -> Any:
 
 
 def _bind(arg: dict, session: dict, tables: dict) -> Any:
-    """Return the bound value, or None when missing."""
+    """Return the bound value, or None when missing. Raises _Invalid if reject check fails."""
     if "template" in arg:
         norm = arg.get("normalise") if isinstance(arg.get("normalise"), dict) else {}
+        reject = arg.get("reject")
 
         def sub(m: re.Match) -> str:
             keys = m.group(1).split("|")
             for k in keys:
                 if not is_empty(session.get(k)):
-                    return str(_apply_table(session[k], norm.get(keys[0]), tables))
+                    val = session[k]
+                    # Check reject on the chosen placeholder value
+                    if reject:
+                        reject_list = tables.get(reject) if isinstance(reject, str) else None
+                        if reject_list is None:
+                            raise _Invalid(k)  # reject table missing
+                        if not isinstance(reject_list, (list, tuple)):
+                            raise _Invalid(k)  # reject not a list/tuple
+                        if str(val).strip().lower() in {str(r).lower() for r in reject_list}:
+                            raise _Invalid(k)  # value is rejected
+                    return str(_apply_table(val, norm.get(keys[0]), tables))
             raise KeyError(keys[0])
 
         try:
@@ -63,7 +75,8 @@ def _bind(arg: dict, session: dict, tables: dict) -> Any:
         except KeyError:
             return None
     if arg.get("from") == "literal":
-        return arg.get("value")
+        value = arg.get("value")
+        return _apply_table(value, arg.get("normalise"), tables)
     value = session.get(arg.get("key", ""))
     if is_empty(value):
         return None
@@ -72,19 +85,36 @@ def _bind(arg: dict, session: dict, tables: dict) -> Any:
 
 def _validate(name: str, value: Any, prop: dict, arg: dict, tables: dict) -> Any:
     reject = tables.get(arg.get("reject")) if arg.get("reject") else None
+    if arg.get("reject"):
+        if reject is None or not isinstance(reject, (list, tuple)):
+            raise _Invalid(name)
     if isinstance(reject, (list, tuple)) and str(value).strip().lower() in {str(r).lower() for r in reject}:
         raise _Invalid(name)
     typ = prop.get("type")
+    # Type coercion
     if typ == "string" and isinstance(value, (int, float)) and not isinstance(value, bool):
         value = str(value)
     elif typ == "integer" and not isinstance(value, int):
-        if isinstance(value, str) and value.strip().isdigit():
+        if isinstance(value, str) and value.strip().isdecimal():
             value = int(value.strip())
         else:
             raise _Invalid(name)
+    # Type validation after coercion
+    if typ == "string" and not isinstance(value, str):
+        raise _Invalid(name)
+    if typ == "integer" and not isinstance(value, int):
+        raise _Invalid(name)
+    if typ == "number" and not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise _Invalid(name)
+    if typ == "boolean" and not isinstance(value, bool):
+        raise _Invalid(name)
+    if typ == "array" and not isinstance(value, list):
+        raise _Invalid(name)
+    if typ == "object" and not isinstance(value, dict):
+        raise _Invalid(name)
     if "enum" in prop and value not in prop["enum"]:
         raise _Invalid(name)
-    if prop.get("format") == "uuid" and not (isinstance(value, str) and _UUID.match(value)):
+    if prop.get("format") == "uuid" and not (isinstance(value, str) and _UUID.fullmatch(value)):
         raise _Invalid(name)
     return value
 
@@ -105,7 +135,10 @@ def resolve_args(rule: dict, session: dict, tables: dict, tool_schema: dict | No
     required = set((tool_schema or {}).get("required") or []) if tool_schema else None
     out: dict = {}
     for name, arg in (rule.get("args") or {}).items():
-        value = _bind(arg, session, tables)
+        try:
+            value = _bind(arg, session, tables)
+        except _Invalid:
+            return None, _INVALID
         if value is None or is_empty(value):
             if required is None or name in required:
                 return None, _MISSING
@@ -160,17 +193,24 @@ def select(rules: list[dict], *, intent: str, state: dict, session: dict, tables
     Returns:
         Selection.
     """
-    try:
-        first_skip: str | None = None
-        for rule in rules or []:
+    first_skip: str | None = None
+    for rule in rules or []:
+        try:
             if not _gates_hold(rule, intent, state):
                 continue
             tool = rule["tool"]
             is_write = tool in write_tools
             enabled = rule.get("enabled")
-            if enabled is False or (enabled is None and is_write):
-                first_skip = first_skip or "disabled"
-                continue
+            # Write tools must be strictly enabled (enabled is True)
+            if is_write:
+                if enabled is not True:
+                    first_skip = first_skip or "disabled"
+                    continue
+            else:
+                # Read tools: enabled is False → disabled, None or True → eligible
+                if enabled is False:
+                    first_skip = first_skip or "disabled"
+                    continue
             if rule.get("unless_fresh") and has_fresh(tool):
                 first_skip = first_skip or "skipped_fresh"
                 continue
@@ -179,6 +219,6 @@ def select(rules: list[dict], *, intent: str, state: dict, session: dict, tables
                 first_skip = first_skip or why
                 continue
             return Selection(tool=tool, args=args, outcome="fired", is_write=is_write)
-        return Selection(tool=None, outcome=first_skip)
-    except Exception:  # noqa: BLE001 — never raise into the turn
-        return Selection(tool=None, outcome="error")
+        except Exception:  # noqa: BLE001 — never raise into the turn
+            first_skip = first_skip or "error"
+    return Selection(tool=None, outcome=first_skip)

@@ -105,3 +105,104 @@ def test_no_matching_rule_no_outcome():
 def test_select_never_raises_on_bad_rule():
     s = _sel([{"tool": "fetch_jobs", "when": [{"field": None}], "args": "nonsense"}])
     assert s.tool is None and s.outcome == "error"
+
+
+def test_reject_fails_open_missing_table():
+    """Missing reject table should return skipped_invalid_arg."""
+    rule = {"tool": "save_profile", "args": {
+        "name": {"from": "session", "key": "name", "reject": "missing_table"}}}
+    assert resolve_args(rule, {"name": "test"}, TABLES, PROFILE_SCHEMA) == (None, "skipped_invalid_arg")
+
+
+def test_reject_on_template():
+    """Reject check on template placeholder values."""
+    rule = {"tool": "fetch_jobs", "args": {
+        "query_text": {"template": "{trade|stored_trade} jobs", "reject": "name_placeholders"}}}
+    # "N/A" matches entry "n/a" (case-insensitive)
+    assert resolve_args(rule, {"trade": "N/A"}, TABLES, JOBS_SCHEMA) == (None, "skipped_invalid_arg")
+    # Valid value should pass
+    args, _ = resolve_args(rule, {"trade": "Welder"}, TABLES, JOBS_SCHEMA)
+    assert args == {"query_text": "Welder jobs"}
+
+
+def test_write_rule_enabled_strict():
+    """Write rules fire only when enabled is True."""
+    # Write rule with enabled=True should fire
+    rule_true = {"tool": "apply_job", "enabled": True,
+                 "args": {"profile_item_id": {"from": "session", "key": "p"}, "job_item_id": {"from": "session", "key": "j"}}}
+    s = _sel([rule_true], session={"p": "p1", "j": UUID})
+    assert (s.tool, s.outcome) == ("apply_job", "fired")
+
+    # Write rule with enabled=0 should be disabled
+    rule_0 = {"tool": "apply_job", "enabled": 0,
+              "args": {"profile_item_id": {"from": "session", "key": "p"}, "job_item_id": {"from": "session", "key": "j"}}}
+    s = _sel([rule_0], session={"p": "p1", "j": UUID})
+    assert (s.tool, s.outcome) == (None, "disabled")
+
+    # Write rule with enabled="false" should be disabled
+    rule_str = {"tool": "apply_job", "enabled": "false",
+                "args": {"profile_item_id": {"from": "session", "key": "p"}, "job_item_id": {"from": "session", "key": "j"}}}
+    s = _sel([rule_str], session={"p": "p1", "j": UUID})
+    assert (s.tool, s.outcome) == (None, "disabled")
+
+    # Write rule with enabled="" should be disabled
+    rule_empty = {"tool": "apply_job", "enabled": "",
+                  "args": {"profile_item_id": {"from": "session", "key": "p"}, "job_item_id": {"from": "session", "key": "j"}}}
+    s = _sel([rule_empty], session={"p": "p1", "j": UUID})
+    assert (s.tool, s.outcome) == (None, "disabled")
+
+    # Write rule with enabled=None should be disabled (default)
+    rule_none = {"tool": "apply_job", "enabled": None,
+                 "args": {"profile_item_id": {"from": "session", "key": "p"}, "job_item_id": {"from": "session", "key": "j"}}}
+    s = _sel([rule_none], session={"p": "p1", "j": UUID})
+    assert (s.tool, s.outcome) == (None, "disabled")
+
+
+def test_literal_with_normalise():
+    """Literal values should be normalised."""
+    rule = {"tool": "save_profile", "args": {
+        "name": {"from": "literal", "value": "John"},
+        "gender": {"from": "literal", "value": "male", "normalise": {"male": "Male", "female": "Female"}}}}
+    args, _ = resolve_args(rule, {}, TABLES, PROFILE_SCHEMA)
+    assert args == {"name": "John", "gender": "Male"}
+
+
+def test_type_validation_after_coercion():
+    """Type validation should reject invalid types after coercion."""
+    # List bound to string should be invalid
+    rule_list = {"tool": "t", "args": {"a": {"from": "session", "key": "val"}}}
+    schema = {"properties": {"a": {"type": "string"}}, "required": ["a"]}
+    assert resolve_args(rule_list, {"val": [1, 2]}, TABLES, schema) == (None, "skipped_invalid_arg")
+
+    # True bound to integer should be invalid
+    rule_bool = {"tool": "t", "args": {"a": {"from": "session", "key": "val"}}}
+    schema = {"properties": {"a": {"type": "integer"}}, "required": ["a"]}
+    assert resolve_args(rule_bool, {"val": True}, TABLES, schema) == (None, "skipped_invalid_arg")
+
+
+def test_uuid_with_trailing_newline_invalid():
+    """UUID validation should reject trailing whitespace."""
+    rule = {"tool": "apply_job", "args": {
+        "profile_item_id": {"from": "session", "key": "p"},
+        "job_item_id": {"from": "session", "key": "j"}}}
+    # UUID with trailing newline
+    invalid_uuid = UUID + "\n"
+    assert resolve_args(rule, {"p": "p1", "j": invalid_uuid}, TABLES, APPLY_SCHEMA) == (None, "skipped_invalid_arg")
+
+
+def test_is_empty_whitespace_only():
+    """Whitespace-only strings should be treated as empty."""
+    assert is_empty("   ")
+    assert is_empty("\t")
+    assert is_empty("\n")
+    assert not is_empty("x")
+
+
+def test_select_second_rule_when_first_fails():
+    """If first rule raises, loop continues to later rules."""
+    first_rule = {"tool": "fetch_jobs", "when": [{"field": None}], "args": "nonsense"}
+    second_rule = {"tool": "apply_job", "enabled": True,
+                   "args": {"profile_item_id": {"from": "session", "key": "p"},
+                            "job_item_id": {"from": "session", "key": "j"}}}
+    s = _sel([first_rule, second_rule], session={"p": "p1", "j": UUID})
+    assert (s.tool, s.outcome) == ("apply_job", "fired")
