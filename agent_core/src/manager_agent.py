@@ -28,6 +28,7 @@ from src.chat_provider.types import (
     ToolResultBlock,
     ToolUseBlock,
 )
+from src.context.state import is_collected as _is_collected
 from src.exceptions import ConsentRequiredError
 from src.identity import render_identity
 from src.interfaces.action_gateway import ActionGatewayBase
@@ -60,45 +61,6 @@ def zero_seed_fields(slots: dict | None) -> frozenset[str]:
         if get("type", None) == "int" and isinstance(low, (int, float)) and low > 0:
             names.add(str(name))
     return frozenset(names)
-
-
-def _is_collected(
-    value: object, field: str = "", zero_seeds: frozenset[str] = frozenset()
-) -> bool:
-    """Whether a profile value counts as something the caller has told us.
-
-    The previous check listed the empty sentinels explicitly — ``None``,
-    ``""``, ``[]``, ``"[]"`` — which covers every string field, since those
-    default to ``""``. It does not cover ``age``, the one integer field,
-    whose unset default is ``0``.
-
-    A zero therefore rendered under "Already collected — do NOT ask for any
-    of these fields again", so the agent never asked the caller's age and
-    sent ``age=0`` to the profile API, which rejects it as under-18.
-
-    The string ``"0"`` is the same seed for the int fields in ``zero_seeds``
-    (a copy that skipped Memory Layer's int coercion still reads ``"0"``). For
-    any other field it is a real value, e.g. ``experience_years`` of zero.
-
-    Args:
-        value: A profile field value.
-        field: The field's name.
-        zero_seeds: Fields for which ``"0"`` is the unset seed.
-
-    Returns:
-        True when the value should be shown to the LLM as already collected.
-    """
-    if isinstance(value, bool):
-        return value
-    if value in (None, "", "[]"):
-        return False
-    if value == "0" and field in zero_seeds:
-        return False
-    if isinstance(value, (int, float)):
-        return value != 0
-    if isinstance(value, (list, tuple, dict, set)):
-        return len(value) > 0
-    return bool(value)
 
 
 def over_call_cap(cap: int | None, used: int) -> bool:

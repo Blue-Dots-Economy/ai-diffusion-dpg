@@ -20,7 +20,7 @@ from typing import Any
 from src.models import NLUResult, UserStateClassification
 from src.understanding.config import DialogueActConfig
 from src.understanding.dialogue_act_nlu import DialogueActNLU, DialogueActNLUBase
-from src.understanding.frame import FrameBuilder, FrameBuilderBase, offered_rows
+from src.understanding.frame import FrameBuilder, FrameBuilderBase, offered_entry, offered_rows
 from src.understanding.models import DialogueActResult, TurnUnderstanding
 from src.understanding.pending import PendingResolver, PendingResolverBase
 from src.understanding.postprocess import (accept_slots, derive_intent, gate_passes, next_off_track,
@@ -67,12 +67,7 @@ class TurnContext:
 
 def _offered_entry(ctx: TurnContext, tool: str) -> dict | None:
     """The entry on offer: the last-served one when still fresh, else the newest (spec §5.2)."""
-    h = ctx.served.get(tool) if isinstance(ctx.served, dict) else None
-    if isinstance(h, str) and h:
-        e = ctx.tool_cache.entry(tool, h)
-        if e is not None:
-            return e
-    return ctx.tool_cache.latest_entry(tool)
+    return offered_entry(ctx.served, ctx.tool_cache, tool)
 
 
 class TurnUnderstanderBase(ABC):
