@@ -9,7 +9,7 @@ import math
 from collections import defaultdict
 
 from eval.voice_bench import SUITE_VERSION
-from eval.voice_bench.checks import turn_latencies
+from eval.voice_bench.checks import turn_latencies_by_kind
 from eval.voice_bench.records import VERDICT_STATUSES, CallRecord
 from eval.voice_bench.suite import TCS
 
@@ -17,7 +17,10 @@ CALL_TCS = [tc for tc in TCS if TCS[tc].method != "nlu"]   # TC01..TC21
 _COMPARE_KEYS = ("suite_version", "seed_version", "judge_model")
 _EXCERPTS_PER_TC = 3
 _LAT_ROWS = (("p50", "p50"), ("p90", "p90"), ("p95", "p95"), ("max", "max"), (">3s", "over3s"), (">5s", "over5s"))
-_SPLITS = (("all", "all turns"), ("non_tool", "non-tool turns"), ("tool", "tool turns"))
+_SPLITS = (("all", "all turns"), ("non_tool", "non-tool turns"),
+           ("tool_no_search", "tool turns without search"), ("search", "search turns (fetch_jobs)"))
+_SEARCH_CAPTION = ("Search turns include a query embedding on a locally CPU-emulated TEI (amd64 on Apple Silicon); "
+                   "production is faster. Compare across milestones only — all milestones ran on the same backend.")
 _OUT_OF_SCOPE = ("STT and TTS quality: opening-line intelligibility, pitch, level, ASR mishearings, speaking rate "
                  "and barge-in timing (these need audio)")
 
@@ -37,15 +40,17 @@ def _lat(values: list[int]) -> dict:
 
 
 def _latency(records: list[CallRecord], which: int) -> dict:
-    split: dict[str, list[int]] = {"all": [], "non_tool": [], "tool": []}
+    split: dict[str, list[int]] = {"all": [], "non_tool": [], "tool_no_search": [], "search": []}
     for rec in records:
-        for row in turn_latencies(rec):
-            v, is_tool = row[which], row[2]
+        for row in turn_latencies_by_kind(rec):
+            v, kind = row[which], row[2]
             if v is None:
                 continue
             split["all"].append(v)
-            split["tool" if is_tool else "non_tool"].append(v)
-    return {k: _lat(v) for k, v in split.items()}
+            split[kind].append(v)
+    out = {k: _lat(v) for k, v in split.items()}
+    out["tool"] = _lat(split["tool_no_search"] + split["search"])   # back-compat: any tool turn
+    return out
 
 
 def _silent_replies(records: list[CallRecord]) -> dict:
@@ -144,9 +149,9 @@ def _table(head: list[str], rows: list[list[str]]) -> list[str]:
 def _latency_section(summaries: list[dict], key: str, title: str) -> list[str]:
     out = [f"## Latency ({title}, ms)", ""]
     for split, caption in _SPLITS:
-        out.append(f"**{caption}**" + (" — tool turns hit local emulated TEI; compare like for like"
-                                       if split == "tool" else ""))
-        out.append("")
+        out += [f"**{caption}**", ""]
+        if split == "search":
+            out += [f"_{_SEARCH_CAPTION}_", ""]
         head = ["metric"] + [f"{s['target']} (n={s[key][split]['n']})" for s in summaries]
         rows = [[label] + [_fmt(s[key][split][k]) for s in summaries] for label, k in _LAT_ROWS]
         out += _table(head, rows) + [""]
@@ -229,7 +234,7 @@ def render_markdown(summaries: list[dict]) -> str:
             "- **Latency boundary (spec §7):** latency is our share of the caller's wait, from the bridge request to "
             "its first streamed content. Field figures also include STT, turn detection, TTS and the phone network "
             "both ways, so their targets are a ceiling for ours.",
-            "- **Tool turns** run against a local, emulated TEI; latency claims rest on non-tool turns.",
+            "- Headline latency claims rest on non-tool turns and tool turns without search.",
             f"- **Out of scope:** {_OUT_OF_SCOPE}.",
             "- Pass rate = pass / (pass + fail + unscored + error); n/a is excluded. Every figure shows its n.",
             "- Latency includes turns from calls that were re-run after a persona break.",

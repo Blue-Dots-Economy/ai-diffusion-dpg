@@ -447,3 +447,23 @@ def test_silent_replies_counted_and_rendered():
     s = summarise([r, h], {"name": "M3"})
     assert s["silent_replies"] == {"n_turns": 4, "silent": 2}
     assert "silent replies: 2 of 4 turns" in render_markdown([s])
+
+
+def test_latency_buckets_non_tool_tool_no_search_and_search():
+    def tap(path, method="GET"):
+        return [TapEntry(1, method, path, "", {}, 200, {}, "signals")]
+    turns = [TurnRecord(i, "a", "ठीक", None, ms, ms, ms + 100, {}, t, {"llm_calls": 1}, False, None)
+             for i, (ms, t) in enumerate([(500, []), (1500, tap("/api/v1/admin/participant")),
+                                          (4000, tap("/v1/search", "POST"))])]
+    rec = CallRecord("M3", "8b39427", "T01", 0, "919900001000", 1, 1, "gpt-4.1", "gpt-4.1",
+                     [Leg("c", turns, "bot")], 1, False, None, verdicts={})
+    s = summarise([rec], {"name": "M3"})
+    for key in ("latency", "latency_reply"):
+        assert [s[key][k]["n"] for k in ("all", "non_tool", "tool_no_search", "search", "tool")] == [3, 1, 1, 1, 2]
+    assert s["latency"]["search"]["max"] == 4000 and s["latency"]["tool_no_search"]["max"] == 1500
+    md = render_markdown([s])
+    for h in ("**non-tool turns**", "**tool turns without search**", "**search turns (fetch_jobs)**"):
+        assert h in md
+    assert "CPU-emulated TEI (amd64 on Apple Silicon)" in md
+    assert "Headline latency claims rest on non-tool turns and tool turns without search." in md
+    assert "tool turns hit local emulated TEI" not in md

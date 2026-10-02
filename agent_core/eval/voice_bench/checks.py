@@ -80,6 +80,19 @@ def turn_latencies(rec: CallRecord) -> list[tuple[int | None, int | None, bool]]
     return [(t.t_first_content_ms, t.t_first_reply_ms, t.is_tool_turn) for t in _turns(rec)]
 
 
+def turn_kind(t) -> str:
+    """Latency bucket: ``search`` (>=1 fetch_jobs tap entry), else ``tool_no_search`` (any other tool), else ``non_tool``."""
+    tools = {e.tool for e in t.tap}
+    if "fetch_jobs" in tools:
+        return "search"
+    return "tool_no_search" if tools - {"other"} else "non_tool"
+
+
+def turn_latencies_by_kind(rec: CallRecord) -> list[tuple[int | None, int | None, str]]:
+    """(first_content, first_reply, kind) per turn, kind per :func:`turn_kind`."""
+    return [(t.t_first_content_ms, t.t_first_reply_ms, turn_kind(t)) for t in _turns(rec)]
+
+
 def _tc02(ctx: CheckCtx) -> Verdict:
     timed = [t for t in _turns(ctx.rec) if t.t_first_content_ms is not None]
     if not timed:
