@@ -283,7 +283,9 @@ def test_up_unmasks_location_writes_override_and_waits_for_health(tmp_path):
     assert args[:2] == ["docker", "compose"] and "--profile" in args and "--build" in args
     assert args[-7:] == ["postgres", "redis", "signals-bootstrap", "signals-api", "tei-embeddings",
                          "signals-search-api", "signals-search-worker"]
-    assert "http://signals/health" in hits and "http://search/health" in hits
+    # Signals-DPG serves /health/ready (not /health which returns 404), search serves /health
+    assert "http://signals/health/ready" in hits and "http://search/health" in hits
+    assert "http://signals/health" not in hits
 
 
 def test_seed_refuses_when_provider_items_already_exist(tmp_path):
@@ -326,6 +328,38 @@ def test_down_removes_volumes_only_on_request(tmp_path):
     (a1, _), (a2, _) = run.calls
     assert a1[:2] == ["docker", "compose"] and a1[-1] == "down" and "-v" not in a1
     assert a2[-2:] == ["down", "-v"]
+
+
+def test_up_polls_signals_health_ready_not_health_which_returns_404(tmp_path):
+    """Verify that up() polls /health/ready for Signals (not /health which returns 404).
+
+    If up() polled /health, the request would timeout since Signals returns 404 (only /health/ready
+    probes Postgres+Redis). This test verifies the correct endpoint is polled.
+    """
+    sd, run = _signals_tree(tmp_path), FakeRun()
+    hits = []
+
+    def h(req):
+        hits.append(str(req.url))
+        url = str(req.url)
+        # Signals /health returns 404; /health/ready returns 200
+        if url == "http://signals/health":
+            return httpx.Response(404)
+        # Search /health returns 200
+        elif url == "http://search/health":
+            return httpx.Response(200)
+        # Signals /health/ready returns 200 (the correct endpoint)
+        elif url == "http://signals/health/ready":
+            return httpx.Response(200)
+        else:
+            return httpx.Response(404)
+
+    b = _backend(tmp_path, run, httpx.Client(transport=httpx.MockTransport(h)), signals_dir=sd)
+    b.up()
+    # Confirm that /health/ready was polled (not /health)
+    assert "http://signals/health/ready" in hits
+    assert "http://signals/health" not in hits
+    assert "http://search/health" in hits
 
 
 # ---- U1-U3: the Blue Dots UP-Ghaziabad schema ------------------------------------------------------------------

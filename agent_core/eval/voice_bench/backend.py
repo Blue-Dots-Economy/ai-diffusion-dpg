@@ -110,8 +110,10 @@ class Backend:
         self._write_network_json()
         self._write_override()
         self._check(self._compose() + ["up", "-d", "--build", *_SERVICES], "docker compose up")
-        for url in (self.cfg.signals_url, self.cfg.search_url):
-            self._wait_health(url.rstrip("/") + "/health")
+        # Signals-DPG serves /health/ready (probes Postgres+Redis), not /health (returns 404)
+        self._wait_health(self.cfg.signals_url.rstrip("/") + "/health/ready")
+        # signals-search serves /health (no probes needed)
+        self._wait_health(self.cfg.search_url.rstrip("/") + "/health")
 
     def down(self, volumes: bool = False) -> None:
         """Stop the stack.
