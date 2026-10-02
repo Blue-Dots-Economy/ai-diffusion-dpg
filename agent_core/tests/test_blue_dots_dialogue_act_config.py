@@ -196,3 +196,123 @@ def test_eval_case_pending_matches_the_resolver(cases_file):
         if (p.id if p else None) != c.expect["pending"]:
             wrong[c.id] = p.id if p else None
     assert wrong == {}
+
+
+# ── D3: a goodbye before anything is done is confirmed once, then ends ──────
+
+def _route(step, state, result):
+    """Understand one scripted turn in ``step`` and route it; returns (intent, next, rule, state)."""
+    from tests.test_stream_turn import _make_agent_core
+    u = _understand_once(step, state, result)
+    state = dict(state)
+    for w in u.writes:
+        state[w.key] = w.value
+    _, wf = _load()
+    agent = _make_agent_core(workflow=wf)
+    nxt, rule = agent._resolve_next_subagent(current_subagent=wf.subagents[step], nlu_result=u.nlu_result,
+                                             session=state)
+    state.update(rule.session_writes if rule else {})
+    counts = dict(state.get("subagent_entry_count") or {})
+    counts[nxt] = counts.get(nxt, 0) + 1
+    state["subagent_entry_count"] = counts
+    return u.nlu_result.intent, nxt, rule, state
+
+
+_CALL = {"opening_phrase_emitted": True, "consent_response": "granted", "consent_given": True,
+         "has_age": "false", "age": 0, "applications_submitted": 0, "profile_item_id": ""}
+
+
+def _close():
+    from src.understanding.models import DialogueActResult
+    return DialogueActResult(acts=("close",), relation="new_topic")
+
+
+def _act(act):
+    from src.understanding.models import DialogueActResult
+    return DialogueActResult(acts=(act,), relation="answers_pending")
+
+
+def test_blocked_close_is_visible_to_routing():
+    """'अभी व्यस्त हूँ, बाद में बात करेंगे' in opening, nothing applied: not a silent any_input."""
+    u = _understand_once("opening", _CALL, _close())
+    assert u.gate_blocked
+    assert u.nlu_result.intent == "termination_blocked"
+
+
+def test_blocked_close_routes_to_confirm_close():
+    intent, nxt, rule, state = _route("opening", _CALL, _close())
+    assert (intent, nxt) == ("termination_blocked", "confirm_close")
+    assert state["close_return_to"] == "opening"
+    _, wf = _load()
+    sub = wf.subagents["confirm_close"]
+    assert not sub.is_terminal
+    assert sub.fixed_opening == "क्या मैं कॉल यहीं ख़त्म करूँ?"
+    assert PendingResolver(wf).resolve("confirm_close", state).id == "close_confirm"
+
+
+@pytest.mark.parametrize("answer", [_act("affirm"), _close()])
+def test_confirmed_close_ends_the_call(answer):
+    _, _, _, state = _route("opening", _CALL, _close())
+    intent, nxt, _, _ = _route("confirm_close", state, answer)
+    _, wf = _load()
+    assert intent == "termination_intent"
+    assert nxt == "ended" and wf.subagents[nxt].is_terminal
+
+
+@pytest.mark.parametrize("step", ["opening", "profile_resolve", "job_match", "profile_setup",
+                                  "apply_confirm", "clarification"])
+def test_deny_returns_to_the_phase_and_a_second_close_ends(step):
+    _, nxt, _, state = _route(step, _CALL, _close())
+    assert nxt == "confirm_close"
+    intent, nxt, _, state = _route("confirm_close", state, _act("deny"))
+    assert intent != "termination_intent" and nxt == step
+    intent, nxt, _, _ = _route(step, state, _close())
+    assert (intent, nxt) == ("termination_blocked", "ended")
+
+
+def test_other_content_on_confirm_returns_to_the_phase():
+    from src.understanding.models import DialogueActResult
+    _, _, _, state = _route("job_match", _CALL, _close())
+    _, nxt, _, _ = _route("confirm_close", state,
+                          DialogueActResult(acts=("ask",), relation="new_topic", topic="salary"))
+    assert nxt == "job_match"
+
+
+def test_close_after_an_application_still_ends_directly():
+    state = {**_CALL, "applications_submitted": 1, "profile_item_id": "p1"}
+    intent, nxt, _, _ = _route("apply_confirm", state, _close())
+    assert (intent, nxt) == ("termination_intent", "ended")
+
+
+@pytest.mark.asyncio
+async def test_confirm_then_end_over_stream_turn():
+    """Stream path: the blocked close speaks the fixed question and stays open; 'हाँ' then ends."""
+    from unittest.mock import MagicMock
+
+    from src.models import ContextBundle, DoneEvent, NLUResult, SentenceEvent
+    from tests.fakes import fake_understander
+    from tests.test_stream_turn import _collect_events, _make_agent_core, _make_turn_input
+
+    async def must_not_run(*a, **k):
+        raise AssertionError("the model must not be called")
+        yield  # pragma: no cover
+
+    async def turn(current, intent, extra=None):
+        _, wf = _load()
+        agent = _make_agent_core(workflow=wf)
+        agent._language_normaliser = MagicMock()
+        agent._language_normaliser.normalise.return_value = ("x", "hindi")
+        agent._understander = fake_understander(NLUResult(intent=intent, entities={}, confidence=1.0))
+        agent._llm.stream = must_not_run
+        agent._async_memory.context_bundle.return_value = ContextBundle(
+            session={**_CALL, "current_subagent_id": current, **(extra or {})}, profile={})
+        events = await _collect_events(agent, _make_turn_input(channel="voice"))
+        spoken = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
+        done = [e for e in events if isinstance(e, DoneEvent)]
+        return spoken, done[-1].session_ended
+
+    spoken, ended = await turn("opening", "termination_blocked")
+    assert spoken == "क्या मैं कॉल यहीं ख़त्म करूँ?" and ended is False
+    spoken, ended = await turn("confirm_close", "termination_intent",
+                               {"close_return_to": "opening", "subagent_entry_count": {"confirm_close": 1}})
+    assert ended is True
