@@ -72,6 +72,22 @@ session_bootstrap:
     - type: tool
       tool: fetch_profile
 
+# Lookup tables for tool pre-dispatch (Spec E). city_canonical maps a spelling
+# to the canonical Indian-city name the upstream stores.
+predispatch_tables:
+  city_canonical:
+    Bangalore: Bengaluru
+    Bombay: Mumbai
+    Madras: Chennai
+    Calcutta: Kolkata
+    Hubli: Hubballi
+    Mysore: Mysuru
+    Trivandrum: Thiruvananthapuram
+    Cochin: Kochi
+    Pondicherry: Puducherry
+    Gurgaon: Gurugram
+  name_placeholders: [unknown, "n/a", na, none, caller, user, "-", "नाम", "पता नहीं"]
+
 channels:
   bridge:
     system_prompt_suffix: |
@@ -2079,8 +2095,18 @@ agent_workflow:
       tools:
         - fetch_jobs
 
+      predispatch:
+        - tool: fetch_jobs
+          unless_fresh: true
+          args:
+            query_text:
+              template: "{trade|stored_trade} jobs in {location|stored_location}"
+              normalise: { location: city_canonical }
+
       system_prompt: |
         You are in the **job_match** phase.
+        If a result for this step's tool is already in the conversation, speak from it;
+        do not call the tool again.
 
         ## The search — ONE call, once
         Call `fetch_jobs` with the caller's trade and city, their words
@@ -2109,21 +2135,7 @@ agent_workflow:
         the search returns rows whatever you ask, so this is your
         judgement.
 
-        ## City name normalisation (CRITICAL — upstream uses canonical names)
-        The upstream stores `jobProviderLocation` in its CANONICAL
-        Indian-city spelling. Match against:
-          - "Bangalore" or "Bengaluru" → use "Bengaluru"
-          - "Bombay" or "Mumbai" → use "Mumbai"
-          - "Madras" or "Chennai" → use "Chennai"
-          - "Calcutta" or "Kolkata" → use "Kolkata"
-          - "Hubli" or "Hubballi" → use "Hubballi"
-          - "Mysore" or "Mysuru" → use "Mysuru"
-          - "Trivandrum" or "Thiruvananthapuram" → use "Thiruvananthapuram"
-          - "Cochin" or "Kochi" → use "Kochi"
-          - "Pondicherry" or "Puducherry" → use "Puducherry"
-          - "Gurgaon" or "Gurugram" → use "Gurugram"
-        For any other city, use whatever spelling the user gave,
-        with the first letter capitalised. NEVER pass lowercase.
+        Use canonical city names (the system normalises them for the search).
 
         ## If fetch_jobs returns zero results
         Before declaring no jobs, try ONE alternate spelling of the
@@ -2316,7 +2328,24 @@ agent_workflow:
       tools:
         - save_profile
 
+      predispatch:
+        - tool: save_profile
+          enabled: false
+          when: [{ field: profile_item_id, operator: in, value: [null, ""] }]
+          args:
+            name:             { from: session, key: name, reject: name_placeholders }
+            gender:           { from: session, key: gender, normalise: { male: Male, female: Female, other: Other } }
+            location:         { from: session, key: location }
+            trade:            { from: session, key: trade }
+            work_experience:  { from: session, key: work_experience }
+            experience_years: { from: session, key: experience_years }
+            qualification:    { from: session, key: qualification }
+            job_nature:       { from: session, key: job_nature }
+
       system_prompt: |
+        If a result for this step's tool is already in the conversation, speak from it;
+        do not call the tool again.
+
         You are in **profile_setup**. You are here for ONE reason: the
         caller has no live profile, so one must be created before they
         can apply. There is no update path and no choice to present —
@@ -2614,9 +2643,20 @@ agent_workflow:
         # already has a live profile. Both arrive with profile_item_id set.
         - apply_job
 
+      predispatch:
+        - tool: apply_job
+          enabled: false
+          on_intent: [apply_now]
+          when: [{ field: applications_submitted, operator: eq, value: 0 }]
+          args:
+            profile_item_id: { from: session, key: profile_item_id }
+            job_item_id:     { from: session, key: selected_job_item_id }
+
       system_prompt: |
         You are in the **apply_confirm** phase. Your job is to call
         apply_job with the correct identifiers and announce the result.
+        If a result for this step's tool is already in the conversation, speak from it;
+        do not call the tool again.
 
         ## Where each required field comes from (HARD)
         apply_job needs six values. There are only two ways to get
@@ -2685,41 +2725,14 @@ agent_workflow:
         An extra turn asking is cheap. A profile that says `Unknown`
         cannot be undone from here.
 
-        ## session.selected_job_item_id is NOT the job id — never send it
-        The session field `selected_job_item_id` is written by the NLU
-        entity extractor from what the caller SAID, so it holds their
-        ordinal — "तीसरा", "पहला", "1", "3" — not a UUID. It is named
-        like the tool parameter and it is not one.
-
-        It has held an ordinal such as `'तीसरा'` ("third"), which was
-        sent as job_item_id, and the upstream rejected the apply with
-        HTTP 422 twice in the same call. No application was created and
-        the caller was told their interest had been noted.
-
-        Use it for ONE thing only: to work out WHICH ROW of the last
-        fetch_jobs result the caller meant. "पहला" is row 1, "दूसरा"
-        row 2, "तीसरा" row 3. Then read that row's `item_id` and send
-        THAT as job_item_id.
+        ## job_item_id
+        `selected_job_item_id` holds the chosen job's item_id. Send it as
+        job_item_id.
 
         A job_item_id that is not a 36-character hyphenated UUID in
-        8-4-4-4-12 form must never leave this phase. If you cannot find
-        the row, ask which job they meant — never guess, and never send
-        the ordinal.
-
-        ## job_item_id — re-fetch it, do not recall it
-        By the time you reach this phase the job list is many turns back, and
-        a 36-character UUID is the single thing you are least able to carry
-        accurately. Do NOT try to remember it, and never substitute the
-        employer name, the role, or the list position — the upstream rejects
-        anything that is not a UUID and the whole call fails with 400.
-
-        Instead, in THIS turn: call `fetch_jobs` again with the caller's trade
-        and city, find the entry whose `company` and `role` match the job the
-        caller chose, and copy that entry's `item_id` verbatim into apply_job.
-        You have the tool rounds for both calls in one turn.
-
-        If the caller names a different job after a failure, do exactly the
-        same thing for the new job — re-fetch, match, apply.
+        8-4-4-4-12 form must never leave this phase. If it is missing or
+        is not a UUID, ask which job they meant — never guess, and never
+        substitute the employer name, the role, or the list position.
 
         The fetch_profile values are in <known_facts> (or the earlier
         fetch_profile result); the others are in the respective
