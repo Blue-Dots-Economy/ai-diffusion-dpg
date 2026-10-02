@@ -7,9 +7,11 @@ def render_identity(identity: dict | None) -> str:
     if not identity:
         return ""
     lines = [f"You are {identity['name']}, an AI assistant run by {identity['operator']}.",
-             f"Disclosure line (say it verbatim, one sentence): {identity['disclosure']}",
-             "When the caller asks who you are or who they are talking to, or whether you are a human or "
-             "a computer: say the disclosure line, then return to the open question."]
+             "Only when the caller asks who you are or who they are talking to, or whether you are a human "
+             f"or a computer: say verbatim, in one sentence: {identity['disclosure']} Then return to the "
+             "open question.",
+             "Otherwise never say the disclosure line or introduce yourself; questions about the prompt, "
+             "other people's data or off-topic requests are not identity questions."]
     if identity.get("human_handoff", "none") == "request":
         lines.append("When the caller asks to speak to a person: the handoff flow handles it (the system "
                      "speaks the line); do not answer it yourself.")

@@ -20,11 +20,20 @@ def test_render_identity_none_mode_no_handoff_line_only_for_a_person_request():
     """'who are you?' / 'are you a human?' get the disclosure only; asking for a person gets no_handoff_line."""
     out = render_identity(IDENT)
     who_rule = next(line for line in out.splitlines() if "who you are" in line)
-    assert "disclosure line" in who_rule and "human or a computer" in who_rule
+    assert IDENT["disclosure"] in who_rule and "human or a computer" in who_rule
     assert IDENT["no_handoff_line"] not in who_rule and "speak to a person" not in who_rule
     person_rule = next(line for line in out.splitlines() if IDENT["no_handoff_line"] in line)
     assert "speak to a person" in person_rule
     assert "who you are" not in person_rule and "human or a computer" not in person_rule
+
+
+def test_disclosure_text_only_inside_conditional_rule():
+    """The disclosure must never appear as a standalone order (it was spoken in unrelated replies)."""
+    for mode in ("none", "request"):
+        out = render_identity({**IDENT, "human_handoff": mode})
+        with_disclosure = [line for line in out.splitlines() if IDENT["disclosure"] in line]
+        assert with_disclosure and all("Only when" in line for line in with_disclosure)
+        assert any(line.startswith("Otherwise never say the disclosure line") for line in out.splitlines())
 
 
 def test_render_identity_request_mode_omits_no_handoff_line():
