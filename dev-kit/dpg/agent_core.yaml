@@ -117,8 +117,8 @@ trust_client:
   endpoint: "http://trust_layer:8003"
   timeout_ms: 2000
   # POST /escalate gets its own, longer timeout (the Trust Layer may wait on the
-  # HiTL webhook, ~4 s nominal). /escalate is never retried, so a timeout here
-  # cannot produce a duplicate handoff.
+  # HiTL webhook, ~4 s nominal). /escalate is not retried automatically; see the
+  # handoff pending marker (handoff_status=pending) for duplicate protection.
   escalate_timeout_ms: 8000
   # GH-196 — Batch per-sentence Trust Layer /check/output calls during streaming.
   # Sentences are buffered and submitted as a single concatenated check whenever

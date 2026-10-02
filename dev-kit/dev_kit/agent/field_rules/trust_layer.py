@@ -134,7 +134,7 @@ FIELD_RULES: dict[str, FieldRule] = {
         category="deploy",
         applies_if="has_hitl",
         invalidated_by=["has_hitl"],
-        description="Webhook URL for HiTL notifications (deploy form; conditional on queue_backend).",
+        description="Unused (deprecated). The HiTL webhook URL comes from the HITL_WEBHOOK_URL env var, not config.",
         pydantic_class="TrustSection",
     ),
 

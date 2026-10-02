@@ -922,7 +922,7 @@ class HitlTrustConfig(BaseModel):
 
     queue_backend: str = Field(default="log", description="Backend for queuing HITL requests: log, redis, or webhook")
     holding_message: str = Field(default="", description="Message shown to user while waiting for a human agent")
-    notification_webhook: str | None = Field(default=None, description="Webhook URL notified when an HITL case is queued")
+    notification_webhook: str | None = Field(default=None, description="Unused (deprecated); the webhook URL comes from the HITL_WEBHOOK_URL env var")
 
 
 class TrustConfig(BaseModel):

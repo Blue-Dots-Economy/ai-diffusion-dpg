@@ -88,6 +88,8 @@ This is a deterministic, non-terminal phase: a fixed line chosen by code and no 
    - "हाँ, ख़त्म करो" ends the call through the existing termination path.
    - Anything else returns the caller to the phase they were in before the handoff (`handoff_return_to`, stored on entry).
 4. **`failed` and `already`** return to the previous phase on the next turn, with no pending.
+5. **Pending marker.** Before calling escalate, Agent Core writes `handoff_status=pending` and `handoff_pending_at` (epoch ms). A second `human_request` while a handoff is pending and less than 30 s old gets the `already` line and sends nothing; an older pending marker allows a new escalate. On the stream path, escalate and its result writes run as one shielded background task, so a cancelled turn still records the result. A pending handoff is not delivered: it never arms the `close_confirm` question (`handoff_line` is `pending` until the result lands).
+6. **Per call.** `handoff_status`, `handoff_line`, `handoff_ticket_id` and `handoff_pending_at` are not carried into a new call that adopts the session; an adopted `handoff` phase resumes `close_return_to`, else the workflow start phase.
 
 All three lines are config (`handoff.lines.{delivered,failed,already}`), so the LLM never phrases the promise.
 
@@ -121,13 +123,15 @@ Agent Core builds the payload from session state only. Nothing in it is free-for
 
 `summary` holds the last N exchanges (`handoff.summary_turns`, default 6), each capped at 300 characters.
 
+**Receivers should dedupe on `call_id` + `ticket_id`.** Agent Core does not retry escalate, and the pending marker (§4.2) blocks a second request within 30 s, but a request after that window, or a Trust-side retry whose first attempt landed late, can still reach the receiver twice.
+
 ### 5.3 Webhook backend
 
 This replaces the `TODO(GH-hitl)` webhook branch.
 - **Selection:** `trust.hitl.queue_backend: webhook`.
 - **URL:** from env `HITL_WEBHOOK_URL`, not YAML, so each deployment sets its own. A missing URL or a non-HTTPS URL gives `delivered=false, reason=misconfigured`. Plain HTTP is allowed only when `HITL_WEBHOOK_ALLOW_HTTP=1`, for local tests.
 - **Signing:** an HMAC-SHA256 signature of the raw body, sent as the header `X-Handoff-Signature: sha256=<hex>`. The secret comes from env `HITL_WEBHOOK_SECRET`. Without a secret, nothing is sent and the result is `delivered=false, reason=misconfigured`.
-- **Timeout and retry:** a 3 s timeout, with one retry on a timeout or 5xx.
+- **Timeout and retry:** each attempt times out at 3 s, with one retry on a timeout or 5xx, all within a 4 s total deadline (the retry gets only the time left). Agent Core's escalate call has its own 8 s timeout (`trust_client.escalate_timeout_ms`) and is never retried.
 - **Result:** a 2xx response gives `delivered=true`. Anything else gives `delivered=false` with `reason` set to one of `timeout`, `http_<code>` or `error`.
 - **`log` backend:** it stays the default, logs as today, and returns `delivered=false, reason=log_only`. The bot then uses the `failed` line, because logging is not a handoff.
 - **Unsupported backends** (`redis`, or unknown) return `queued=false, delivered=false`. This fixes the false `queued=True`.
@@ -183,5 +187,5 @@ The env vars are documented in the deploy env examples. The default `trust_layer
 ## 9. Risks
 
 - **NLU over-triggering `human_request`** ("मुझे किसी से पूछना है"). Mitigation: eval cases and a precision check before switching Blue Dots to `request`.
-- **Webhook latency adds to the handoff turn.** It is bounded at about 6 s worst case (3 s plus one retry). A spoken status line covers it, as with tool turns.
+- **Webhook latency adds to the handoff turn.** The webhook is bounded by a 4 s total deadline (each attempt at most 3 s); Agent Core's escalate call times out at 8 s with no retry. While it waits, the stream path emits a `tool_start` signal for `request_human`, so the bridge speaks its `tool_status_phrases` hold line, as with tool turns.
 - **Who operates the webhook receiver** is a Blue Dots product decision. Until one exists, Blue Dots keeps `human_handoff: none`, and callers get the honest no-handoff line.

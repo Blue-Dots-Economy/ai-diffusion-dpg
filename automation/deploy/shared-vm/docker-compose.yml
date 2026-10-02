@@ -496,7 +496,13 @@ services:
   trust_layer:
     image: ghcr.io/blue-dots-economy/ai-diffusion-dpg/trust-layer:${DPG_IMAGE_TAG:?set DPG_IMAGE_TAG in .env}
     container_name: dpg_trust_layer
-    environment: [CONFIG_FOLDER=/app/config, "LOG_LEVEL=${LOG_LEVEL:-INFO}"]
+    environment:
+      - CONFIG_FOLDER=/app/config
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # Human handoff webhook (queue_backend: webhook). Empty = not delivered.
+      - HITL_WEBHOOK_URL=${HITL_WEBHOOK_URL:-}
+      - HITL_WEBHOOK_SECRET=${HITL_WEBHOOK_SECRET:-}
+      - HITL_WEBHOOK_ALLOW_HTTP=${HITL_WEBHOOK_ALLOW_HTTP:-}
     volumes:
       - ../../../dev-kit/dpg/trust_layer.yaml:/app/config/dpg.yaml:ro
       - ../../../dev-kit/configs/${DOMAIN:-blue-dots}/trust_layer.yaml:/app/config/trust_layer.yaml:ro
