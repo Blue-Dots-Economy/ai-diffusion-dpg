@@ -727,6 +727,8 @@ preprocessing:
       - { acts: [select], pending: select_job, intent: job_pick }
       - { acts: [select], pending: submit_confirm, intent: job_pick }
       - { acts: [affirm], pending: submit_confirm, relation: answers_pending, intent: apply_now }
+      # "नहीं, कोई दूसरी दिखाइए" refuses this job and asks for another: explore, not a bare decline.
+      - { acts: [deny, request_change], pending: submit_confirm, intent: explore_more }
       - { acts: [deny], pending: submit_confirm, relation: answers_pending, intent: decline }
       - { acts: [request_change], topic: search, intent: explore_more }
       - { acts: [ask], topic: search, intent: explore_more }
@@ -2316,8 +2318,12 @@ agent_workflow:
         # was never made. Keyed on the bot's last reply so a bare yes to this
         # phase's OTHER question ("इसके बारे में और बात करें?") stays select_job
         # and never applies — apply_confirm submits on entry, irreversibly.
+        # Both ँ and ं spellings occur in replies; the list covered all 30 apply
+        # questions job_match asked across the M2/M3/D-fix voice-bench runs.
         - id: submit_confirm
-          when: [{ field: current_question, operator: contains, value: ["आवेदन भेज दूँ", "आवेदन कर दूँ", "आवेदन करूँ", "आवेदन भेजूँ", "अप्लाई कर दूँ", "अप्लाई करूँ"] }]
+          when: [{ field: current_question, operator: contains, value: ["आवेदन भेज दूँ", "आवेदन कर दूँ", "आवेदन करूँ", "आवेदन भेजूँ", "अप्लाई कर दूँ", "अप्लाई करूँ",
+                                                                     "आवेदन भेज दूं", "आवेदन कर दूं", "आवेदन करूं", "आवेदन भेजूं", "अप्लाई कर दूं", "अप्लाई करूं",
+                                                                     "आवेदन करना चाहेंगे", "अप्लाई करना चाहेंगे"] }]
           expects: "इस नौकरी के लिए आवेदन भेजने की हाँ/ना, या कोई दूसरी नौकरी"
           options_from: { tool: fetch_jobs, fields: [role, company], id_field: item_id }
           resolves_to: selected_job_item_id

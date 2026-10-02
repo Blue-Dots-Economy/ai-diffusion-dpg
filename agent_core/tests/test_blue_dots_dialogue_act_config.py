@@ -380,6 +380,9 @@ _JOB_APPLY_Q = [
     "टाइटन में वेल्डर की नौकरी है। क्या मैं इस नौकरी के लिए आवेदन करूँ?",
     "क्या मैं इस नौकरी के लिए आपका आवेदन भेज दूँ?",
     "क्या मैं इसी नौकरी के लिए आवेदन कर दूँ?",
+    # Same words with anusvara (ं) instead of chandrabindu (ँ); both occur in bench replies.
+    "क्या मैं इस नौकरी के लिए आवेदन भेज दूं?",
+    "क्या आप इस नौकरी के लिए आवेदन करना चाहेंगे?",
 ]
 _JOB_MORE_Q = "आपके लिए यह जॉब है — वेल्डर, फ्लिपकार्ट, बेंगलुरु, सैलरी पंद्रह हज़ार। इसके बारे में और बात करें?"
 _JOB_CALL = {**_CALL, "trade": "Welder", "location": "Bengaluru"}
@@ -413,3 +416,12 @@ def test_no_to_job_match_apply_question_stays_in_job_match():
     state = {**_JOB_CALL, "profile_item_id": "p1", "current_question": _JOB_APPLY_Q[0]}
     intent, nxt, _, _ = _route("job_match", state, _act("deny"))
     assert (intent, nxt) == ("decline", "job_match")
+
+
+def test_no_plus_another_job_on_the_apply_question_explores():
+    """"नहीं, कोई दूसरी दिखाइए" is [deny, request_change]: show more jobs, not a bare decline."""
+    state = {**_JOB_CALL, "profile_item_id": "p1", "current_question": _JOB_APPLY_Q[0]}
+    from src.understanding.models import DialogueActResult
+    turn = DialogueActResult(acts=("deny", "request_change"), relation="answers_pending", topic="search")
+    intent, nxt, _, _ = _route("job_match", state, turn)
+    assert (intent, nxt) == ("explore_more", "job_match")
