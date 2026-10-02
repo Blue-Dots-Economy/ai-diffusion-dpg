@@ -838,6 +838,8 @@ agent_workflow:
 
     Use instead:
       "आपकी जानकारी सेव हो गई।"      ("Your information is saved.")
+        — only after a save_profile result in THIS turn says it saved;
+        see "Never announce a write before its result exists".
       "आपकी जानकारी में बेंगलुरु है।" ("Your information has Bengaluru.")
 
     ## Never stay silent (HARD RULE — applies to EVERY response)
@@ -1555,7 +1557,9 @@ agent_workflow:
           expects: "उम्र, साल में"
           when:
             - { field: has_age, operator: not_eq, value: true }
-            - { field: age, operator: in, value: [null, "", 0] }
+            # "0" too: the seed as Memory Layer stored it, if a copy reaches
+            # here without its int coercion (same seeds as slot_writer).
+            - { field: age, operator: in, value: [null, "", 0, "0"] }
       routing:
         # off_track (spec §6.6): stay here after repeated
         # off-script turns; never coincides with termination_intent.

@@ -51,6 +51,10 @@ def _is_collected(value: object) -> bool:
     of these fields again", so the agent never asked the caller's age and
     sent ``age=0`` to the profile API, which rejects it as under-18.
 
+    The string ``"0"`` is the same seed: Memory Layer stores session values
+    as strings, and a copy that skipped its int coercion still reads ``"0"``.
+    This matches the seed set in ``understanding/slot_writer.py``.
+
     Args:
         value: A profile field value.
 
@@ -59,7 +63,7 @@ def _is_collected(value: object) -> bool:
     """
     if isinstance(value, bool):
         return value
-    if value in (None, "", "[]"):
+    if value in (None, "", "[]", "0"):
         return False
     if isinstance(value, (int, float)):
         return value != 0

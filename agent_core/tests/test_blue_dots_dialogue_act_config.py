@@ -31,6 +31,10 @@ def test_blue_dots_config_loads():
     ("opening", {}, "consent"),
     ("opening", {"consent_response": "granted"}, "age"),
     ("opening", {"consent_given": True, "has_age": True}, None),
+    # Live shape: Memory Layer seeds int age and has returned it as "0".
+    ("opening", {"opening_phrase_emitted": True, "consent_response": "granted", "consent_given": True,
+                 "has_age": "false", "age": "0"}, "age"),
+    ("opening", {"consent_response": "granted", "consent_given": True, "age": 0}, "age"),
     ("profile_resolve", {"profile_item_id": "p1", "subagent_entry_count": {"profile_resolve": 1}},
      "use_saved_details"),
     ("profile_resolve", {"profile_item_id": "p1", "subagent_entry_count": {"profile_resolve": 2}}, "trade"),
@@ -172,3 +176,23 @@ def test_language_switch_unsupported_value_is_rejected():
         acts=("request_change",), relation="new_topic", topic="language",
         slots={"language_preference": "tamil"}))
     assert "language_preference" not in u.nlu_result.entities
+
+
+@pytest.mark.parametrize("cases_file", ["scenarios.jsonl", "synthetic.jsonl"])
+def test_eval_case_pending_matches_the_resolver(cases_file):
+    """An eval case's expected pending is what the real resolver gives its state.
+
+    The live session carries the seeded age as the string "0" (sc-D1-*); the
+    resolver returned None for it, so the age slot was dropped as not_pending.
+    """
+    from eval.nlu.cases import load_cases
+    _, wf = _load()
+    path = Path(__file__).resolve().parents[1] / "eval" / "nlu" / "cases" / cases_file
+    wrong = {}
+    for c in load_cases(path):
+        if "pending" not in c.expect:
+            continue
+        p = PendingResolver(wf).resolve(c.step, c.state)
+        if (p.id if p else None) != c.expect["pending"]:
+            wrong[c.id] = p.id if p else None
+    assert wrong == {}

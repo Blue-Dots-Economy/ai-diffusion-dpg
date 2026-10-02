@@ -912,6 +912,12 @@ class TestIsCollected:
         from src.manager_agent import _is_collected
         assert _is_collected(24) is True
 
+    def test_string_zero_seed_is_not_collected(self):
+        """Memory Layer returned the seeded int as the string "0"."""
+        from src.manager_agent import _is_collected
+        assert _is_collected("0") is False
+        assert _is_collected("24") is True
+
     def test_empty_string_fields_stay_uncollected(self):
         from src.manager_agent import _is_collected
         for empty in (None, "", "[]", [], {}):
