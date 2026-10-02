@@ -164,10 +164,9 @@ def spoken_pay(fmt: str, values: list, unit: str, language: str) -> str | None:
         nums = [_to_int(v) for v in values[:2]]
     except ValueError:
         return None
-    present = [n for n in nums if n is not None]
+    # Zero bounds mean "no bound given" for pay; drop them before range checks.
+    present = [n for n in nums if n]
     if not present:
-        return None
-    if all(n == 0 for n in present):
         return None
     joiner = RANGE_JOINER[language]
     if len(present) == 2 and present[0] > present[1]:

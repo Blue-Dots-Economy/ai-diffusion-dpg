@@ -210,3 +210,24 @@ async def test_explicit_hindi_preference_wins_over_script():
     agent = _blue_dots_agent(["It pays 25000. "], preference="hindi")
     spoken = _spoken(await _collect_events(agent, _make_turn_input(channel="cli")))
     assert "twenty-five" not in spoken and "पच्चीस हज़ार" in spoken
+
+
+def test_guard_survives_unhashable_preference():
+    from src.orchestrator import AgentCore
+    bundle = MagicMock()
+    bundle.session = {}
+    guarded, _counts, lang = AgentCore._make_output_guard(
+        {"output_contract": _CONTRACT}, {"language_preference": ["hindi"]}, bundle)
+    assert lang == "hindi"
+    assert _WORDS in guarded("सैलरी 27620 है।")
+
+
+def test_sync_guard_is_per_sentence_by_script():
+    agent = _make_agent(manager_text="It pays 25000. सैलरी 27620 है।")
+    _set_contract(agent)
+    agent._config = {**agent._config, "preprocessing": {
+        **agent._config["preprocessing"], "language_normalisation": {"enabled": False}}}
+    agent._language_normaliser.normalise.return_value = ("Hello", "hindi")
+    text = agent.process_turn(_turn_input()).response_text
+    assert "twenty-five thousand" in text and _WORDS in text
+    assert not any(ch.isdigit() for ch in text)

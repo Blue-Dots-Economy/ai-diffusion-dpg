@@ -224,7 +224,9 @@ HOW_TO_READ_CONTEXT = """\
 - <recent> is the last exchanges. "(caller heard only)" marks a reply they did
   not hear in full: do not repeat what they heard; finish what they did not.
 - <state> is where the call stands. Never ask for a value under "collected".
-  Read offered options in the order listed and never re-rank them."""
+  "offered" is what the caller heard before this turn; a tool result returned
+  in this turn replaces it, so read the new result in its given order. Read
+  offered options in the order listed and never re-rank them."""
 
 
 class ManagerAgent:

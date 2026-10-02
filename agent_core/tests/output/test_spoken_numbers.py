@@ -114,3 +114,9 @@ def test_zero_pay_returns_none(values):
     """Zero pay is junk data and should return None."""
     assert spoken_pay("range_thousands", values, "per_month", "hindi") is None
     assert spoken_pay("amount", values, "per_month", "english") is None
+
+
+@pytest.mark.parametrize("values", [[0, 5000], [5000, 0]])
+def test_zero_bound_is_dropped_either_order(values):
+    """A zero bound means 'no bound': speak the other one alone."""
+    assert spoken_pay("range_thousands", values, "per_month", "hindi") == "करीब पाँच हज़ार रुपये महीना"

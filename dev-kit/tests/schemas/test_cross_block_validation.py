@@ -536,3 +536,54 @@ def test_handoff_request_needs_block_and_phase():
                           "agent_workflow": {"subagents": [{"id": "opening"}]}})  # no handoff phase
     assert _handoff_errs({"identity": {"human_handoff": "none"}}) == []           # off: nothing required
     assert _handoff_errs({}) == []
+
+
+# --- Output-contract language cross-check (mirrors runtime MergedConfig) ---
+
+def _contract_blocks(languages: dict, supported=("english", "hindi"), default="hindi") -> dict:
+    blocks = _empty_blocks()
+    blocks["agent_core"] = {
+        "preprocessing": {"language_normalisation": {
+            "supported_languages": list(supported), "default_language": default}},
+        "channels": {"voice": {"output_contract": {"default_language": "hindi", "languages": languages}}},
+    }
+    return blocks
+
+
+_HI = {"script": "devanagari", "numbers": "words"}
+_EN = {"script": "latin", "numbers": "words"}
+
+
+def test_contract_missing_supported_language_rejected():
+    errs = validate_cross_block(_contract_blocks({"hindi": _HI}), selected_channels=["voice"])
+    assert any("lacks languages ['english']" in e for e in errs)
+
+
+def test_contract_numbers_words_for_kannada_rejected():
+    blocks = _contract_blocks({"hindi": _HI, "kannada": _HI}, supported=("hindi", "kannada"))
+    errs = validate_cross_block(blocks, selected_channels=["voice"])
+    assert any("languages.kannada: numbers=words" in e for e in errs)
+
+
+def test_spoken_with_unsupported_default_language_rejected():
+    blocks = _contract_blocks({"hindi": _HI, "kannada": {"script": "any"}},
+                              supported=("hindi", "kannada"), default="kannada")
+    blocks["agent_core"]["connectors"] = {"read": [{"name": "fetch_jobs",
+                                                    "result_shaping": {"spoken": {"salary_spoken": {}}}}]}
+    errs = validate_cross_block(blocks, selected_channels=["voice"])
+    assert any("result_shaping.spoken" in e and "'kannada'" in e for e in errs)
+
+
+def test_blue_dots_merged_config_passes_output_rules():
+    from pathlib import Path
+
+    import yaml
+
+    cfg = yaml.safe_load((Path(__file__).resolve().parents[2] / "configs" / "blue-dots"
+                          / "agent_core.yaml").read_text(encoding="utf-8"))
+    blocks = _empty_blocks()
+    blocks["agent_core"] = cfg
+    from dev_kit.schemas.cross_block_validation import _output_contract_rules
+    assert _output_contract_rules(cfg) == []
+    assert not [e for e in validate_cross_block(blocks, selected_channels=["bridge"])
+                if "output_contract" in e or "result_shaping" in e]

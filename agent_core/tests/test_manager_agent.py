@@ -1282,3 +1282,8 @@ def test_run_turn_does_not_shape_cache_hits():
     cache = TurnToolCache(_POL, [_entry()], {})
     m.run_turn(list(MESSAGES), SESSION_ID, _tool_response(tc), tool_cache=cache, result_shaper=shaper)
     shaper.assert_not_called()
+
+
+def test_tier1_says_new_tool_result_replaces_offered():
+    t1 = _prompt().blocks[0].text
+    assert "a tool result returned\n  in this turn replaces it" in t1

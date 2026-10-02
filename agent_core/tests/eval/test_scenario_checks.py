@@ -45,3 +45,10 @@ def test_order_no_marker_is_skipped():
 
 def test_foreign_script_words():
     assert foreign_script_words("QUESS CORP में जॉब") == 2
+
+
+def test_marker_does_not_match_inside_longer_number_word():
+    markers = ["तीस हज़ार रुपये", "पंद्रह हज़ार रुपये"]
+    # "पैंतीस हज़ार रुपये" contains "तीस हज़ार रुपये" but is a different pay.
+    assert run_checks("दूसरा पैंतीस हज़ार रुपये", {"offered_markers": markers})["first_job_is_option_1"] is None
+    assert run_checks("पहला, तीस हज़ार रुपये", {"offered_markers": markers})["first_job_is_option_1"] is True

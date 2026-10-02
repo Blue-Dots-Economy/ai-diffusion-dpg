@@ -94,7 +94,7 @@ def build(
     # not have to guess or compute it.
     project_slug = _project_slug(getattr(intake_state, "project_name", ""))
 
-    # Voice TTS / terminal_word / filler_phrase live in the REACH phase per
+    # Voice output contract / terminal_word / filler_phrase live in the REACH phase per
     # FIELD_RULES (`phase="reach"` on every entry under
     # `channels.voice.output_contract`, `terminal_word`, `filler_phrase`,
     # `filler_threshold_ms`). The language phase MUST NOT propose or write

@@ -465,11 +465,19 @@ class AgentCore(AgentCoreBase):
         contract = (channel_config or {}).get("output_contract")
         guard = OutputGuard(contract)
         preference = profile_context.get("language_preference") or bundle.session.get("language_preference")
-        language = contract_language(contract, preference)
+        default_language = str((contract or {}).get("default_language") or "") if isinstance(contract, dict) else ""
+        try:
+            language = contract_language(contract, preference)
+        except Exception:  # noqa: BLE001 — e.g. an unhashable preference
+            language = default_language
         counts = {"digits_rewritten": 0, "foreign_script_words": 0}
 
         def guarded(text: str) -> str:
-            r = guard.apply(text, sentence_language(text, contract, preference))
+            try:
+                lang = sentence_language(text, contract, preference)
+            except Exception:  # noqa: BLE001 — never raise into the turn
+                lang = default_language
+            r = guard.apply(text, lang)
             counts["digits_rewritten"] += r.digits_rewritten
             counts["foreign_script_words"] += r.foreign_script_words
             return r.text
@@ -1621,7 +1629,7 @@ class AgentCore(AgentCoreBase):
         )
         t10 = time.time()
         if final_text:
-            final_text = _guarded(final_text)
+            final_text = _guard_per_sentence(final_text, _guarded)
         record_output_guard(turn_input.channel, _guard_lang,
                             _guard_counts["digits_rewritten"], _guard_counts["foreign_script_words"])
         trust_output = self._trust.check_output(session_id, final_text)
@@ -5865,6 +5873,32 @@ class _TrustOutputBatcher:
                 },
             )
             return batch
+
+
+_SENTENCE_SPLIT_KEEP_RE = re.compile("(" + _SENTENCE_SPLIT_RE.pattern + ")")
+
+
+def _guard_per_sentence(text: str, guarded) -> str:
+    """Guard ``text`` one sentence at a time, as the stream path does.
+
+    Args:
+        text: Full model reply.
+        guarded: Per-sentence guard callable (may return "" to drop a sentence).
+
+    Returns:
+        The guarded sentences re-joined with their original separators.
+    """
+    parts = _SENTENCE_SPLIT_KEEP_RE.split(text)
+    out: list[str] = []
+    for i in range(0, len(parts), 2):
+        sentence = parts[i]
+        g = guarded(sentence) if sentence.strip() else sentence
+        if not g.strip():
+            continue
+        if out:
+            out.append(parts[i - 1] if i else " ")
+        out.append(g)
+    return "".join(out)
 
 
 def _split_sentences(buffer: str) -> tuple[list[str], str]:

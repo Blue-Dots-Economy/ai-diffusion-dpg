@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 _DEV_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
 _LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
 _LINE_MARKERS = re.compile(r"(?m)^\s*(?:#{1,6}\s+|[-*•]\s+|\d+[.)]\s+)")
+_MARKER_ONLY = re.compile(r"\s*(?:#{1,6}|[-*•]|\d+[.)])\s*")
 _EMPHASIS = re.compile(r"\*\*|__|\*|`+")
 _PHONE = re.compile(r"(?<![\d.,])\d(?: ?\d){6,}(?![\d.,])")
 _NUM = r"(?:\d{1,3}(?:,\d{2,3})+|\d+)(?:\.\d+)?"
@@ -85,6 +86,8 @@ class OutputGuard:
             name, entry = self._language_entry(language)
             out, rewritten = text, 0
             if self._strip:
+                if _MARKER_ONLY.fullmatch(out):
+                    return GuardResult(text="")  # a bare list marker is not speech
                 out = _LINK.sub(r"\1", out)
                 out = _LINE_MARKERS.sub("", out)
                 out = _EMPHASIS.sub("", out)

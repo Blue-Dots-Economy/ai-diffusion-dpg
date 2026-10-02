@@ -33,6 +33,21 @@ def _announces_count(reply: str) -> bool:
     return False
 
 
+_WORD_CHAR_BEFORE = re.compile(r"[A-Za-z\u0900-\u097F]")
+
+
+def _find_marker(reply: str, marker: str) -> int:
+    """Index of ``marker`` in ``reply`` not preceded by a letter or matra, else -1."""
+    start = 0
+    while True:
+        pos = reply.find(marker, start)
+        if pos < 0:
+            return -1
+        if pos == 0 or not _WORD_CHAR_BEFORE.match(reply[pos - 1]):
+            return pos
+        start = pos + 1
+
+
 def first_job_order(reply: str, markers: list[str | None]) -> bool | None:
     """Whether the reply reads offered rows in stored order, keyed on spoken-pay markers.
 
@@ -53,7 +68,7 @@ def first_job_order(reply: str, markers: list[str | None]) -> bool | None:
         if not m or m in seen:
             continue
         seen.add(m)
-        pos = reply.find(m)
+        pos = _find_marker(reply, m)
         if pos >= 0:
             found.append((idx, pos))
     if not found:

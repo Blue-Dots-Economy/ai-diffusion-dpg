@@ -151,8 +151,12 @@ the `guard` switches. For the voice channel turn on
 Configure via ONE call per channel:
 `update_config(block=agent_core, section=channels.voice.output_contract,
 values={{default_language: "hindi", languages: {{hindi: {{script:
-"devanagari", numbers: "words", rules: ["..."]}}}}, guard:
+"devanagari", numbers: "words", rules: ["..."]}}, english: {{script:
+"latin", numbers: "words", rules: ["..."]}}}}, guard:
 {{rewrite_digits: true, strip_markdown: true}}}})`
+(one `languages` entry per language in
+`language_normalisation.supported_languages`; `numbers: words` only for
+hindi or english)
 
 **Voice — terminal word + filler phrase
 (`reach_layer.channels.voice.*`):**
@@ -187,7 +191,7 @@ update_config(path="reach_layer.channels.voice.filler_threshold_ms", value=null)
     else:
         voice_note = """
 **Voice channel:** Not selected — skip all voice-specific configuration
-(TTS rules, Raya voice, terminal_word, filler_phrase). Do NOT ask about
+(output contract, Raya voice, terminal_word, filler_phrase). Do NOT ask about
 them.
 """
 

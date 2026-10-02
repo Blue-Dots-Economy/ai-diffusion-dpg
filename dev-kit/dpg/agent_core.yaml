@@ -87,7 +87,7 @@ agent:
 #       description: "item_id of the profile the caller chose"
 #       grounded_in: [fetch_profile, save_profile]
 
-# Session fields rendered into the LLM's <known_profile> (empty values and keys
+# Session fields rendered into the LLM's <state> collected (empty values and keys
 # already present are skipped). Spec: docs/superpowers/specs/2026-10-01-session-bootstrap-design.md
 # agent:
 #   prompt_session_fields: [profile_item_id, stored_trade, stored_location]

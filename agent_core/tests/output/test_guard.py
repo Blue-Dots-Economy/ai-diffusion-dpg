@@ -78,3 +78,8 @@ def test_never_raises(g, monkeypatch):
     monkeypatch.setattr(mod, "number_words", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
     r = g.apply("सैलरी 27 है", "hindi")
     assert r.text == "सैलरी 27 है" and r.digits_rewritten == 0
+
+
+@pytest.mark.parametrize("marker", ["1.", "2)", "-", "•", "* ", "12.  ", "#"])
+def test_bare_list_marker_sentence_is_dropped(g, marker):
+    assert g.apply(marker, "hindi").text == ""
