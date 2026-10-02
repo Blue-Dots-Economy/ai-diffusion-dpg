@@ -135,6 +135,7 @@ class SubAgent:
                           field in fixed_opening_requires is present in session
                           and the caller's own turn carried no entities.
         fixed_opening_requires: Session field names the template substitutes.
+        predispatch:      Raw pre-dispatch rule dicts in config order (Spec E).
     """
 
     id: str
@@ -151,6 +152,7 @@ class SubAgent:
     pending: list["PendingQuestion"] = field(default_factory=list)
     fixed_opening: str = ""
     fixed_opening_requires: list[str] = field(default_factory=list)
+    predispatch: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -547,6 +549,7 @@ class AgentWorkflowLoader:
             pending=pending,
             fixed_opening=str(raw.get("fixed_opening", "") or ""),
             fixed_opening_requires=list(raw.get("fixed_opening_requires", []) or []),
+            predispatch=[dict(r) for r in (raw.get("predispatch") or []) if isinstance(r, dict)],
         )
 
     # ------------------------------------------------------------------

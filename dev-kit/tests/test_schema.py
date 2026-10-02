@@ -733,3 +733,37 @@ class TestSpecDFlatRejects:
     def test_output_contract_default_language_must_be_declared(self):
         bad = {**_SPEC_D_CONTRACT, "default_language": "english"}
         assert validate_partial("agent_core", {"channels": {"voice": {"output_contract": bad}}}) != []
+
+
+# ===========================================================================
+# Spec E: tool pre-dispatch
+# ===========================================================================
+
+_PD_RULE = {"tool": "search_jobs", "args": {"q": {"template": "{trade} jobs", "normalise": {"trade": "t"}}}}
+
+
+class TestSpecEFlatSchema:
+    def test_predispatch_accepted(self):
+        data = {"agent_workflow": {"workflow_id": "w", "version": "1.0.0", "agent_system_prompt": "x",
+                                   "default_fallback_subagent_id": "a",
+                                   "subagents": [{"id": "a", "name": "A", "system_prompt": "p",
+                                                  "opening_phrase": "hi", "is_start": True,
+                                                  "predispatch": [_PD_RULE]}]},
+                "predispatch_tables": {"t": {"a": "b"}}, "agent": {"predispatch_timeout_ms": 900}}
+        assert validate_partial("agent_core", data) == []
+
+    def test_subagent_schema_validates_through_mirror(self):
+        assert SubAgentSchema(id="a", predispatch=[_PD_RULE]).predispatch == [_PD_RULE]
+        for bad in ({"tool": "t", "args": {"a": {"from": "session", "key": "k", "template": "x"}}},
+                    {"tool": "t", "args": {"a": {"from": "session"}}},
+                    {"tool": "t", "bogus": 1}):
+            with pytest.raises(ValidationError):
+                SubAgentSchema(id="a", predispatch=[bad])
+
+    def test_agent_config_timeout(self):
+        assert AgentConfig.model_fields["predispatch_timeout_ms"].default == 1500
+        for bad in (0, -1):
+            assert validate_partial("agent_core", {"agent": {"predispatch_timeout_ms": bad}}) != []
+
+    def test_predispatch_tables_shape_rejected(self):
+        assert validate_partial("agent_core", {"predispatch_tables": {"t": "x"}}) != []

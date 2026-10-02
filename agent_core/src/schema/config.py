@@ -19,7 +19,7 @@ Belongs to the Agent Core DPG block.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, List, Literal, Optional
+from typing import Any, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -213,6 +213,7 @@ class AgentConfig(BaseModel):
     provider: Literal["anthropic", "openai", "ollama", "google"] = "anthropic"
     features: FeaturesConfig = Field(default_factory=FeaturesConfig)
     timeout_ms: int = Field(default=10000, gt=0)
+    predispatch_timeout_ms: int = Field(default=1500, gt=0)
     prompt_session_fields: list[str] = Field(default_factory=list)
     """Session fields rendered into <state> collected (session-bootstrap spec §5.4)."""
     # Spec D §6.2: how many past exchanges the main LLM sees in <recent>; 0 omits it.
@@ -751,6 +752,50 @@ class PendingQuestionConfig(BaseModel):
         return self
 
 
+class PredispatchArg(BaseModel):
+    """One argument binding for a pre-dispatched tool call (Spec E §3.2)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
+
+    from_: Optional[Literal["session", "literal"]] = Field(default=None, alias="from")
+    key: Optional[str] = None
+    value: Any = None
+    template: Optional[str] = None
+    normalise: Optional[Union[str, dict[str, Any]]] = None
+    reject: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _one_source(self) -> "PredispatchArg":
+        if (self.from_ is None) == (self.template is None):
+            raise ValueError("predispatch arg needs exactly one of 'from' or 'template'")
+        if self.from_ == "session" and not self.key:
+            raise ValueError("predispatch arg 'from: session' needs 'key'")
+        if self.from_ == "literal" and self.value is None:
+            raise ValueError("predispatch arg 'from: literal' needs 'value'")
+        if self.template is not None and not self.template.strip():
+            raise ValueError("predispatch arg 'template' must be non-empty")
+        if self.from_ == "literal" and self.key is not None:
+            raise ValueError("predispatch arg 'from: literal' must not set 'key'")
+        if self.from_ == "session" and self.value is not None:
+            raise ValueError("predispatch arg 'from: session' must not set 'value'")
+        if self.template is not None and (self.key is not None or self.value is not None):
+            raise ValueError("predispatch arg 'template' must not set 'key' or 'value'")
+        return self
+
+
+class PredispatchRule(BaseModel):
+    """Run a tool before the main LLM when NLU + session determine it (Spec E §3)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tool: str = Field(min_length=1)
+    enabled: Optional[bool] = None
+    on_intent: list[str] = Field(default_factory=list)
+    when: list[RoutingCondition] = Field(default_factory=list)
+    unless_fresh: bool = False
+    args: dict[str, PredispatchArg] = Field(default_factory=dict)
+
+
 class SubAgent(BaseModel):
     """One subagent node in the workflow graph."""
 
@@ -785,6 +830,7 @@ class SubAgent(BaseModel):
     fixed_opening_requires: list[str] = Field(default_factory=list)
     routing: list[RoutingRule] = Field(default_factory=list)
     pending: list[PendingQuestionConfig] = Field(default_factory=list)
+    predispatch: list[PredispatchRule] = Field(default_factory=list)
 
 
 class AgentWorkflowConfig(BaseModel):
@@ -1080,6 +1126,7 @@ class MergedConfig(BaseModel):
     entity_to_profile_field: dict[str, str] = Field(default_factory=dict)
     hitl: HitlResponseConfig = Field(default_factory=HitlResponseConfig)
     agent_workflow: AgentWorkflowConfig = Field(default_factory=AgentWorkflowConfig)
+    predispatch_tables: dict[str, Union[dict[str, str], list[str]]] = Field(default_factory=dict)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     reach_layer: ReachLayerDefaultsConfig = Field(default_factory=ReachLayerDefaultsConfig)
 
@@ -1240,6 +1287,46 @@ class MergedConfig(BaseModel):
                     raise ValueError(f"connectors.{group}[{c.name}].result_shaping.spoken renders in "
                                      f"language_normalisation.default_language '{default_lang}', which has "
                                      f"no spoken-number converter (have {sorted(converters)})")
+        return self
+
+    @model_validator(mode="after")
+    def _check_predispatch_rules(self) -> "MergedConfig":
+        """Spec E §4: tools declared, writes explicit, normalise/reject tables exist, intents producible."""
+        conns = getattr(self, "connectors", None)
+        groups = {g: {c.name for c in (getattr(conns, g, None) or [])} for g in ("read", "write", "identity")}
+        known = set().union(*groups.values())
+        writes = groups["write"] | groups["identity"]
+        tables = set(self.predispatch_tables or {})
+        builtins = {"title", "lower"}
+        nlu = getattr(getattr(self, "preprocessing", None), "nlu_processor", None)
+        producible = {r.intent for r in (getattr(nlu, "act_intents", None) or [])} | set(_FRAMEWORK_HANDLED_INTENTS)
+        wf = getattr(self, "agent_workflow", None)
+        global_tools = set(getattr(wf, "global_tools", None) or [])
+        for sa in (getattr(wf, "subagents", None) or []):
+            for i, rule in enumerate(sa.predispatch):
+                where = f"agent_workflow.subagents[{sa.id}].predispatch[{i}]"
+                if rule.tool not in known:
+                    raise ValueError(f"{where}: tool '{rule.tool}' is not a declared connector")
+                if (sa.tools or global_tools) and rule.tool not in sa.tools and rule.tool not in global_tools:
+                    raise ValueError(f"{where}: tool '{rule.tool}' is not in the subagent's tools or global_tools")
+                if rule.tool in writes and rule.enabled is None:
+                    raise ValueError(f"{where}: '{rule.tool}' is a write tool; set 'enabled' explicitly")
+                for intent in rule.on_intent:
+                    if intent not in producible:
+                        raise ValueError(f"{where}: on_intent '{intent}' is not produced by any act_intents row")
+                for name, arg in rule.args.items():
+                    names = []
+                    if arg.template is not None:
+                        if arg.normalise is not None and not isinstance(arg.normalise, dict):
+                            raise ValueError(f"{where}.args.{name}: normalise on a template must be a dict")
+                        names += [v for v in (arg.normalise or {}).values() if isinstance(v, str)]
+                    elif isinstance(arg.normalise, str):
+                        names.append(arg.normalise)
+                    if arg.reject:
+                        names.append(arg.reject)
+                    for n in names:
+                        if n not in tables and n not in builtins:
+                            raise ValueError(f"{where}.args.{name}: unknown table '{n}'")
         return self
 
     @classmethod

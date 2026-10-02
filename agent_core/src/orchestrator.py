@@ -57,13 +57,10 @@ from src.interfaces.reach_layer import ReachLayerBase
 from src.interfaces.trust_layer import TrustLayerBase
 from src.http_clients.trust_layer import TrustLayerConstraintError
 from src.preprocessing.language_normalisation import LanguageNormaliser
-from src.manager_agent import (
-    ManagerAgent,
-    over_call_cap,
-    refusal_result,
-    ungrounded_params,
-    zero_seed_fields,
-)
+from src.manager_agent import ManagerAgent, zero_seed_fields
+from src.tool_guard import check_tool_call
+from src.predispatch.rules import Selection, select
+from src.predispatch.runner import PREDISPATCH_ID, PredispatchResult, run_async, run_sync
 from src.models import (
     DoneEvent,
     NLUResult,
@@ -88,7 +85,7 @@ from src.output.contract import contract_language, sentence_language
 from src.output.guard import OutputGuard
 from src.understanding.frame import offered_entry, offered_rows
 from src.understanding.pending import PendingResolver
-from src.chat_provider.metrics import record_output_guard
+from src.chat_provider.metrics import record_output_guard, record_predispatch
 from src.understanding.precedence import nlu_owned_values
 from src.understanding.understander import TurnContext, TurnUnderstander, TurnUnderstanderBase
 from src.tool_results import ToolResultPolicies, TurnToolCache, augment_tool_definitions
@@ -410,6 +407,42 @@ class AgentCore(AgentCoreBase):
         self._remember = RememberTool.from_config(config)
         self._prompt_session_fields: list[str] = list(
             ((config.get("agent") or {}).get("prompt_session_fields")) or [])
+        self._init_predispatch(config)
+
+    def _init_predispatch(self, config: dict) -> None:
+        """Read the pre-dispatch inputs and check rule args are agent params (Spec E §4, plan ruling 5).
+
+        Args:
+            config: The merged domain config dict.
+
+        Raises:
+            ValueError: A rule binds an argument key that is not a property of
+                the tool's input schema. Skipped when the gateway tool list is
+                empty (no schema to check against, e.g. in tests).
+        """
+        self._predispatch_tables: dict = dict(config.get("predispatch_tables") or {})
+        self._predispatch_timeout_s: float = int(
+            (config.get("agent") or {}).get("predispatch_timeout_ms", 1500)) / 1000
+        conns = config.get("connectors") or {}
+        self._write_tools: set[str] = {
+            c["name"] for g in ("write", "identity") for c in (conns.get(g) or [])
+            if isinstance(c, dict) and c.get("name")}
+        try:
+            defs = self._tool_registry.get_tool_definitions()
+        except Exception:  # noqa: BLE001 — a mocked/partial registry has no schemas
+            defs = []
+        self._tool_schemas: dict[str, dict] = {
+            d["name"]: d.get("input_schema") or {} for d in (defs if isinstance(defs, list) else [])
+            if isinstance(d, dict) and d.get("name")}
+        for sa in (getattr(self._workflow, "subagents", None) or {}).values():
+            rules = getattr(sa, "predispatch", None)
+            for i, rule in enumerate(rules if isinstance(rules, list) else []):
+                props = (self._tool_schemas.get(rule.get("tool")) or {}).get("properties") or {}
+                unknown = [k for k in (rule.get("args") or {}) if k not in props]
+                if props and unknown:
+                    raise ValueError(
+                        f"subagents[{sa.id}].predispatch[{i}]: args {unknown} are not agent "
+                        f"parameters of '{rule.get('tool')}'")
 
     def _build_profile_context(self, bundle, entity_map: dict) -> dict:
         """Profile facts for <state> collected: profile, NLU-mapped session fields, listed session fields.
@@ -488,6 +521,29 @@ class AgentCore(AgentCoreBase):
             return r.text
 
         return guarded, counts, language
+
+    async def _stream_consent_ok(self, session_id: str, tc) -> bool | None:
+        """Consent decision for a streaming tool call (pre-dispatch only).
+
+        Not used for model-initiated calls: Blue Dots does not record consent
+        in the Trust Layer ConsentStore (it records it through NLU and routing
+        ``session_writes``), so enforcing ``check_consent`` there would refuse
+        every live write. Model calls keep their historical behaviour and pass
+        ``consent_ok=None`` to the guard.
+
+        Args:
+            session_id: Session identifier.
+            tc: The pending ToolCall.
+
+        Returns:
+            None when the tool needs no consent, else whether it is granted
+            (False when no trust client is available).
+        """
+        if not self._tool_registry.requires_consent(tc.tool_name):
+            return None
+        if not self._async_trust:
+            return False
+        return bool(await self._async_trust.check_consent(session_id, tc.tool_name))
 
     def _session_grounded_values(self, bundle, spec: dict) -> dict[str, list[str]]:
         """Values for grounded params that session_mapping lifted from a tool.
@@ -585,6 +641,339 @@ class AgentCore(AgentCoreBase):
             logger.error("orchestrator.apply_tool_results_error", extra={
                 "operation": "orchestrator.stream_turn", "status": "failure",
                 "session_id": session_id, "error": type(e).__name__})
+
+    # ------------------------------------------------------------------
+    # Pre-dispatch (Spec E §5): determined tool calls before the main LLM
+    # ------------------------------------------------------------------
+
+    def _select_predispatch(self, bundle, subagent_id: str, intent: str, tool_cache) -> Selection:
+        """The turn's pre-dispatch selection for the post-routing subagent (Spec E §3.3).
+
+        Arguments bind from ``_tool_session_values``: session values with
+        seeded empties dropped, profile layered over them, and values the NLU
+        wrote this turn on top — so a correction made this turn wins.
+
+        Args:
+            bundle: This turn's context bundle, after this turn's writes.
+            subagent_id: The routed subagent.
+            intent: This turn's routing intent.
+            tool_cache: This turn's TurnToolCache.
+
+        Returns:
+            Selection (never raises).
+        """
+        sa = self._workflow.subagents.get(subagent_id)
+        rules = getattr(sa, "predispatch", None)
+        return select(rules if isinstance(rules, list) else [], intent=intent,
+                      state=self._routing_state(bundle), session=self._tool_session_values(bundle),
+                      tables=self._predispatch_tables, tool_schemas=self._tool_schemas,
+                      write_tools=self._write_tools,
+                      has_fresh=lambda t: tool_cache.latest_entry(t) is not None)
+
+    def _predispatch_guard(self, tc, bundle, tool_cache, counts: dict, consent_ok: bool | None):
+        """The shared guard (consent, cap, grounding, cache) for a pre-dispatch call.
+
+        Args:
+            tc: The pre-dispatch ToolCall.
+            bundle: This turn's context bundle.
+            tool_cache: This turn's TurnToolCache.
+            counts: The turn's per-tool live-call counts (shared with model calls).
+            consent_ok: The path's consent decision (None = not required).
+
+        Returns:
+            GuardVerdict.
+        """
+        grounded = getattr(self._manager_agent, "_grounded_params", None)
+        caps = getattr(self._manager_agent, "_tool_call_caps", None)
+        spec = (grounded if isinstance(grounded, dict) else {}).get(tc.tool_name) or {}
+        return check_tool_call(
+            tc, cap=(caps if isinstance(caps, dict) else {}).get(tc.tool_name),
+            used=counts.get(tc.tool_name, 0), grounded_spec=spec, messages=[],
+            stored_results=tool_cache.stored_results_by_tool(),
+            session_grounded=self._session_grounded_values(bundle, spec),
+            consent_ok=consent_ok, cache_lookup=tool_cache.lookup)
+
+    @staticmethod
+    def _predispatch_error(operation: str, session_id: str, e: Exception) -> PredispatchResult:
+        """Log an internal pre-dispatch failure (type only) and treat it as did-not-fire."""
+        logger.warning("orchestrator.predispatch_error", extra={
+            "operation": operation, "status": "failure", "session_id": session_id,
+            "error": type(e).__name__})
+        return PredispatchResult("error")
+
+    def _offered_tools(self, subagent_id: str):
+        """The tool definitions this turn's main-LLM calls start from (before pre-dispatch removal)."""
+        return augment_tool_definitions(
+            self._workflow.resolve_tools_for(subagent_id), self._tool_policies,
+            self._remember.definition() if self._remember else None,
+        )
+
+    def _count_live_call(self, tc, counts: dict):
+        """Apply the per-turn count rule to a pre-dispatch's live call.
+
+        A write counts BEFORE it leaves, so a timed-out or raising write has
+        used the cap up; a read counts only once it has succeeded.
+
+        Args:
+            tc: The pre-dispatch ToolCall.
+            counts: The turn's ``_turn_tool_counts`` (mutated).
+
+        Returns:
+            Callback to run with the gateway result.
+        """
+        def bump() -> None:
+            counts[tc.tool_name] = counts.get(tc.tool_name, 0) + 1
+
+        if tc.tool_name in self._write_tools:
+            bump()
+            return lambda _r: None
+        return lambda r: bump() if getattr(r, "success", False) else None
+
+    async def _predispatch_async(self, bundle, subagent_id: str, intent: str, tool_cache,
+                                 session_id: str, user_id: str, counts: dict) -> PredispatchResult:
+        """Stream path: select, guard and execute the turn's pre-dispatch under its budget.
+
+        The live execute mirrors the stream tool loop (gateway, shape, map
+        session values, cache, persist). See :meth:`_count_live_call` for how
+        it counts toward the per-turn cap.
+
+        Args:
+            bundle: This turn's context bundle.
+            subagent_id: The routed subagent.
+            intent: This turn's routing intent.
+            tool_cache: This turn's TurnToolCache.
+            session_id: Session id.
+            user_id: Caller identity.
+            counts: The turn's ``_turn_tool_counts``.
+
+        Returns:
+            PredispatchResult; never raises.
+        """
+        try:
+            if not self._async_gateway:
+                return PredispatchResult(None)
+            sel = self._select_predispatch(bundle, subagent_id, intent, tool_cache)
+
+            async def _guard(tc):
+                return self._predispatch_guard(tc, bundle, tool_cache, counts,
+                                               await self._stream_consent_ok(session_id, tc))
+
+            async def _execute(tc):
+                on_result = self._count_live_call(tc, counts)
+                r = await self._async_gateway.execute(
+                    tool_cache.prepare(tc), session_id, user_id,
+                    session_values=self._tool_session_values(bundle))
+                on_result(r)
+                r = self._result_shaper.shape(r)
+                await self._write_mapped_session_values(session_id, user_id, r, bundle)
+                tool_cache.after_call(tc, r)
+                await self._persist_tool_cache(session_id, user_id, tool_cache)
+                return r
+
+            pd = await run_async(sel, guard=_guard, execute=_execute,
+                                 timeout_s=self._predispatch_timeout_s)
+            return self._label(pd, sel)
+        except Exception as e:  # noqa: BLE001 — pre-dispatch never raises into the turn
+            return self._predispatch_error("orchestrator.stream_turn", session_id, e)
+
+    def _predispatch_sync(self, bundle, subagent_id: str, intent: str, tool_cache,
+                          session_id: str, user_id: str, counts: dict) -> PredispatchResult:
+        """Sync path twin of :meth:`_predispatch_async`; budget is the gateway's own timeout.
+
+        Consent is checked through ``trust.check_consent`` so a pre-dispatched
+        write is consent-gated as ``ManagerAgent._execute_tool`` would gate it.
+        Mapped session values are written at once, with the same helper the
+        sync path uses for run_turn's results.
+
+        Returns:
+            PredispatchResult; never raises.
+        """
+        try:
+            gateway = getattr(self._manager_agent, "_gateway", None)
+            if gateway is None:
+                return PredispatchResult(None)
+            sel = self._select_predispatch(bundle, subagent_id, intent, tool_cache)
+
+            def _guard(tc):
+                consent = None
+                if self._tool_registry.requires_consent(tc.tool_name):
+                    # No trust client refuses, as _stream_consent_ok does.
+                    consent = bool(self._trust is not None
+                                   and self._trust.check_consent(session_id, tc.tool_name))
+                return self._predispatch_guard(tc, bundle, tool_cache, counts, consent)
+
+            def _execute(tc):
+                on_result = self._count_live_call(tc, counts)
+                r = gateway.execute(tool_cache.prepare(tc), session_id, user_id,
+                                    session_values=self._tool_session_values(bundle))
+                on_result(r)
+                r = self._result_shaper.shape(r)
+                self._write_tool_session_values_sync(session_id, user_id, [r], bundle)
+                tool_cache.after_call(tc, r)
+                self._persist_tool_cache_sync(session_id, user_id, tool_cache)
+                return r
+
+            return self._label(run_sync(sel, guard=_guard, execute=_execute), sel)
+        except Exception as e:  # noqa: BLE001 — pre-dispatch never raises into the turn
+            return self._predispatch_error("orchestrator.process_turn", session_id, e)
+
+    @staticmethod
+    def _label(pd: PredispatchResult, sel: Selection) -> PredispatchResult:
+        """Name the skipped rule's tool on a skip outcome (metric/log label only)."""
+        if pd.tool is None and getattr(sel, "considered_tool", None):
+            return dataclasses.replace(pd, tool=sel.considered_tool)
+        return pd
+
+    def _write_tool_session_values_sync(self, session_id: str, user_id: str,
+                                        tool_results, bundle) -> None:
+        """Persist ``session_values`` a connector's session_mapping lifted (sync path).
+
+        Args:
+            session_id: Session receiving the writes.
+            user_id: Owning user.
+            tool_results: ToolResults whose ``session_values`` to write.
+            bundle: Live context bundle, updated so the same turn sees them.
+        """
+        for tr in tool_results or []:
+            for key, val in (getattr(tr, "session_values", None) or {}).items():
+                self._write_memory_sync(session_id, user_id, "session", key, val)
+                bundle.session[key] = val
+
+    def _predispatch_ledger(self, pd: PredispatchResult, turn_id: str):
+        """The turn's record of an injected pre-dispatch, built as soon as it ran.
+
+        Built before any early exit so an exit after a fired write still keeps
+        the exchange, the post-tool hook and the audit. The exchange is stored
+        for replay under a turn-unique id, so a replayed pre-dispatch never
+        shares ``PREDISPATCH_ID`` with the next turn's own.
+
+        Args:
+            pd: The runner's result.
+            turn_id: This turn's id.
+
+        Returns:
+            ``(results, exchanges, calls)``: empty lists unless ``pd.inject``.
+        """
+        if not (pd.inject and pd.tool_result is not None and pd.tool_call is not None):
+            return [], [], []
+        replay_id = f"{PREDISPATCH_ID}-{turn_id}"
+        ex = self._capture_tool_exchange(
+            [dataclasses.replace(pd.tool_call, tool_use_id=replay_id)],
+            [{"type": "tool_result", "tool_use_id": replay_id,
+              "content": self._predispatch_content(pd.tool_result)}],
+            self._recent_tool_exchanges_caps()[1])
+        return [pd.tool_result], ([ex] if ex is not None else []), [pd.tool_call]
+
+    @staticmethod
+    def _predispatch_content(r) -> str:
+        return r.result_text or (r.error if not r.success else "") or str(r.result)
+
+    def _inject_predispatch(self, pd: PredispatchResult, messages: list, active_tools):
+        """Add the synthetic pair after the utterance and settle this turn's tool list.
+
+        The list ends on a user tool_result, the shape the model sees after
+        calling the tool itself. A tool the outcome removes leaves the list.
+        When it is the only tool offered, the definitions stay (a request
+        carrying tool_use/tool_result blocks must define tools) and every
+        main-LLM call this turn sends ``tool_choice="none"`` instead, when the
+        provider supports forcing a choice. A provider without that keeps the
+        tool offered under ``"auto"``; the per-turn cap and the turn cache are
+        then what stop a repeat.
+
+        Returns:
+            ``(tools, tool_choice)`` for every main-LLM call this turn.
+        """
+        if pd.inject and pd.tool_result is not None and pd.tool_call is not None:
+            r = pd.tool_result
+            messages.append(Message(role="assistant", content=[ToolUseBlock(
+                tool_use_id=PREDISPATCH_ID, tool_name=pd.tool,
+                input=dict(pd.tool_call.input_params or {}))]))
+            messages.append(Message(role="user", content=[ToolResultBlock(
+                tool_use_id=PREDISPATCH_ID, content=AgentCore._predispatch_content(r),
+                is_error=not r.success)]))
+        if not (pd.remove_tool and active_tools):
+            return active_tools, "auto"
+        remaining = [t for t in active_tools if t.get("name") != pd.tool]
+        if remaining:
+            return remaining, "auto"
+        caps = getattr(self._llm, "capabilities", None)
+        if getattr(caps, "supports_force_tool_choice", False) is True:
+            return active_tools, "none"
+        return active_tools, "auto"
+
+    def _post_applied_target(self, tool_results) -> bool:
+        """apply_job succeeded and the workflow has a post_applied phase (domain-agnostic no-op otherwise)."""
+        return "post_applied" in self._workflow.subagents and any(
+            getattr(tr, "tool_name", None) == "apply_job" and getattr(tr, "success", False)
+            for tr in tool_results or [])
+
+    @staticmethod
+    def _log_post_applied(session_id: str) -> None:
+        logger.info("orchestrator.post_applied_transition", extra={
+            "operation": "orchestrator.post_tool_hook", "status": "success",
+            "session_id": session_id, "trigger_tool": "apply_job"})
+
+    def _post_applied_hook_sync(self, session_id: str, user_id: str, bundle, tool_results) -> None:
+        """Move the session to post_applied for the NEXT turn after a successful apply_job."""
+        if self._post_applied_target(tool_results):
+            self._write_memory_sync(session_id, user_id, "session", "current_subagent_id", "post_applied")
+            bundle.session["current_subagent_id"] = "post_applied"
+            self._log_post_applied(session_id)
+
+    async def _post_applied_hook_async(self, session_id: str, user_id: str, bundle, tool_results) -> None:
+        """Stream twin of :meth:`_post_applied_hook_sync`."""
+        if self._post_applied_target(tool_results):
+            await self._write_memory_async(session_id, user_id, "session", "current_subagent_id", "post_applied")
+            bundle.session["current_subagent_id"] = "post_applied"
+            self._log_post_applied(session_id)
+
+    def _settle_predispatch_sync(self, session_id: str, user_id: str, bundle, tool_cache,
+                                 prior: list, pd_exchanges: list, max_items: int) -> None:
+        """Early-exit persistence for a sync turn that ran a pre-dispatch.
+
+        The normal end of turn merges the exchange with the model's rounds; an
+        exit before that (no messages, LLM error) still records what ran.
+        """
+        if not pd_exchanges:
+            return
+        capped = self._merge_tool_exchanges(prior, pd_exchanges, max_items)
+        if capped is not None:
+            bundle.session["recent_tool_exchanges"] = capped
+            self._write_memory_sync(session_id, user_id, "session", "recent_tool_exchanges", capped)
+        served = self._served_tool_results_update(bundle, tool_cache)
+        if served is not None:
+            self._write_memory_sync(session_id, user_id, "session", SERVED_TOOL_RESULTS_KEY, served)
+
+    async def _settle_predispatch_stream(self, session_id: str, user_id: str, bundle, tool_cache,
+                                         prior: list, pd_exchanges: list, max_items: int) -> None:
+        """Stream twin of :meth:`_settle_predispatch_sync`, for an early exit that still completes.
+
+        Exits that do not complete (abort, error) need nothing here: the
+        exchange is already on ``record.captured_exchanges``, which the
+        interrupted-turn persist writes.
+        """
+        if not pd_exchanges:
+            return
+        capped = self._merge_tool_exchanges(prior, pd_exchanges, max_items)
+        if capped is not None:
+            bundle.session["recent_tool_exchanges"] = capped
+            await self._write_memory_async(session_id, user_id, "session", "recent_tool_exchanges", capped)
+        served = self._served_tool_results_update(bundle, tool_cache)
+        if served is not None:
+            await self._write_memory_async(session_id, user_id, "session", SERVED_TOOL_RESULTS_KEY, served)
+
+    @staticmethod
+    def _record_predispatch(pd: PredispatchResult, operation: str, session_id: str) -> None:
+        """Count and log a pre-dispatch outcome: tool, outcome, ms and arg keys only."""
+        if pd.outcome is None:
+            return
+        record_predispatch(pd.tool, pd.outcome)
+        status = ("success" if pd.outcome in ("fired", "cache_hit")
+                  else "failure" if pd.outcome in ("failed", "timeout", "error") else "skipped")
+        logger.info("orchestrator.predispatch", extra={
+            "operation": operation, "status": status, "session_id": session_id,
+            "tool": pd.tool, "outcome": pd.outcome, "ms": pd.ms,
+            "arg_keys": sorted((pd.tool_call.input_params or {}) if pd.tool_call else {})})
 
     # ------------------------------------------------------------------
     # Public interface — single entry point
@@ -1345,6 +1734,20 @@ class AgentCore(AgentCoreBase):
             subagent_entry_count[next_subagent_id],
         )
 
+        # ── Step 6c: pre-dispatch (Spec E §5) ────────────────────────
+        # A determined tool call runs now, after routing and before the
+        # prompt, so its result is in the turn cache when <known_facts> and
+        # <state> render. Per-TURN tool-call counts start here and are handed
+        # to run_turn, so the pre-dispatch counts toward the caps.
+        _turn_tool_counts: dict[str, int] = {}
+        _offered = self._offered_tools(next_subagent_id)
+        _pd = self._predispatch_sync(bundle, next_subagent_id, nlu_result.intent, tool_cache,
+                                     session_id, user_id, _turn_tool_counts)
+        self._record_predispatch(_pd, "orchestrator.process_turn", session_id)
+        # Recorded now, before any early exit: what ran stays recorded.
+        _pd_results, _pd_exchanges, _pd_calls = self._predispatch_ledger(_pd, turn_id)
+        self._post_applied_hook_sync(session_id, user_id, bundle, _pd_results)
+
         # ── Step 7: Prompt assembly via ManagerAgent ──────────────────
         next_subagent: SubAgent = self._workflow.subagents[next_subagent_id]
         logger.info(
@@ -1405,29 +1808,27 @@ class AgentCore(AgentCoreBase):
                     "session_id": session_id,
                 },
             )
+            self._settle_predispatch_sync(session_id, user_id, bundle, tool_cache,
+                                          _prior_exchanges, _pd_exchanges, _max_items)
             return self._build_result(
                 session_id=session_id,
                 user_id=user_id,
                 response_text="",
                 was_escalated=False,
-                was_tool_used=False,
+                was_tool_used=bool(_pd_calls),
                 model_used="",
                 latency_ms=int((time.time() - start) * 1000),
                 turn_input=turn_input,
                 turn_id=turn_id,
                 intent=nlu_result.intent,
-                tool_calls=[],
+                tool_calls=list(_pd_calls),
                 trust_input=trust_input,
                 trust_output=TrustCheckResult(passed=True, action="allow"),
                 trace_id=_trace_id,
             )
 
         # ── Step 8: LLM call #1 with scoped tools ────────────────────
-        active_tools = self._workflow.resolve_tools_for(next_subagent_id)
-        active_tools = augment_tool_definitions(
-            active_tools, self._tool_policies,
-            self._remember.definition() if self._remember else None,
-        )
+        active_tools, _tool_choice = self._inject_predispatch(_pd, messages, _offered)
         output_format = next_subagent.output_format
         primary_model = self._llm.get_active_model()
         primary_provider = self._config.get("agent", {}).get("provider", "anthropic")
@@ -1446,6 +1847,7 @@ class AgentCore(AgentCoreBase):
             messages=messages,
             system=system,
             tools=_legacy_tools_to_neutral(active_tools),
+            tool_choice=_tool_choice,
             output_format=neutral_of,
         )
         llm_response = self._llm.call(request)
@@ -1468,18 +1870,20 @@ class AgentCore(AgentCoreBase):
                 },
             )
             latency_ms = int((time.time() - start) * 1000)
+            self._settle_predispatch_sync(session_id, user_id, bundle, tool_cache,
+                                          _prior_exchanges, _pd_exchanges, _max_items)
             return self._build_result(
                 session_id=session_id,
                 user_id=user_id,
                 response_text="",
                 was_escalated=False,
-                was_tool_used=False,
+                was_tool_used=bool(_pd_calls),
                 model_used=llm_response.model_used,
                 latency_ms=latency_ms,
                 turn_input=turn_input,
                 turn_id=turn_id,
                 intent=nlu_result.intent,
-                tool_calls=[],
+                tool_calls=list(_pd_calls),
                 trust_input=trust_input,
                 trust_output=TrustCheckResult(passed=True, action="allow"),
                 trace_id=_trace_id,
@@ -1517,6 +1921,7 @@ class AgentCore(AgentCoreBase):
                 initial_response=llm_response,
                 system=system,
                 active_tools=active_tools,
+                tool_choice=_tool_choice,
                 ke_context=ke_context,
                 # Without this the sync /process_turn path drops the caller's
                 # identity, so connectors that template {user_id} into a path or
@@ -1528,6 +1933,15 @@ class AgentCore(AgentCoreBase):
                 # the framework supplies what it already knows rather than asking
                 # the model to reproduce it.
                 session_values=self._tool_session_values(bundle),
+                turn_tool_counts=_turn_tool_counts,
+                session_grounded=self._session_grounded_values(
+                    bundle,
+                    {
+                        _p: None
+                        for _spec in (getattr(self._manager_agent, "_grounded_params", {}) or {}).values()
+                        for _p in (_spec or {})
+                    },
+                ),
                 tool_cache=tool_cache,
                 remember_name=self._remember.name if self._remember else "",
                 remember_handler=(
@@ -1550,11 +1964,9 @@ class AgentCore(AgentCoreBase):
         # holds no Memory Layer client, so the write lands here — the same
         # split the streaming path makes for its own tool loop. Without this
         # the mechanism silently does nothing on /process_turn, which is the
-        # path the bridge actually uses.
-        for _tr in tool_results or []:
-            for _k, _v in (getattr(_tr, "session_values", None) or {}).items():
-                self._write_memory_sync(session_id, user_id, "session", _k, _v)
-                bundle.session[_k] = _v
+        # path the bridge actually uses. (A pre-dispatch's values were
+        # written when it ran, so only run_turn's results are written here.)
+        self._write_tool_session_values_sync(session_id, user_id, tool_results, bundle)
 
         # #193: persist this turn's tool exchanges so the next turn can
         # replay them. run_turn returns ToolResult objects; _capture_tool_exchange
@@ -1572,8 +1984,12 @@ class AgentCore(AgentCoreBase):
             _max_chars,
         )
         _capped = self._merge_tool_exchanges(
-            _prior_exchanges, [_captured] if _captured else [], _max_items,
+            _prior_exchanges, _pd_exchanges + ([_captured] if _captured else []), _max_items,
         )
+        # From here on the pre-dispatch counts as a call the turn made
+        # (was_tool_used, audit), as if the model had called it. Its post-tool
+        # hook already ran at Step 6c; the hook below sees run_turn's results.
+        tool_calls = [*_pd_calls, *(tool_calls or [])]
         if _capped is not None:
             bundle.session["recent_tool_exchanges"] = _capped
             self._write_memory_sync(
@@ -1608,24 +2024,7 @@ class AgentCore(AgentCoreBase):
         # subagent's system prompt — that is intentional.
         # Guard ensures the framework stays domain-agnostic: other domains that
         # do not define a post_applied subagent get a no-op.
-        if tool_results and "post_applied" in self._workflow.subagents:
-            for tr in tool_results:
-                if getattr(tr, "tool_name", None) == "apply_job" and getattr(tr, "success", False):
-                    self._write_memory_sync(
-                        session_id, user_id, "session",
-                        "current_subagent_id", "post_applied",
-                    )
-                    bundle.session["current_subagent_id"] = "post_applied"
-                    logger.info(
-                        "orchestrator.post_applied_transition",
-                        extra={
-                            "operation": "orchestrator.post_tool_hook",
-                            "status": "success",
-                            "session_id": session_id,
-                            "trigger_tool": "apply_job",
-                        },
-                    )
-                    break
+        self._post_applied_hook_sync(session_id, user_id, bundle, tool_results)
 
         # ── Step 10: Trust check on output ────────────────────────────
         logger.info(
@@ -1702,6 +2101,9 @@ class AgentCore(AgentCoreBase):
             error_message=llm_response.error_message,
         )
 
+        # Spec E §10: main-LLM calls = the initial call + run_turn's follow-ups.
+        _followups = getattr(self._manager_agent, "last_llm_calls", 0)
+        _llm_calls = 1 + (_followups if isinstance(_followups, int) else 0)
         logger.info(
             "orchestrator.turn_complete",
             extra={
@@ -1713,16 +2115,22 @@ class AgentCore(AgentCoreBase):
                 "tool_used": bool(tool_calls),
                 "intent": nlu_result.intent,
                 "next_subagent_id": next_subagent_id,
+                "llm_calls": _llm_calls,
+                "predispatch_tool": _pd.tool,
+                "predispatch_outcome": _pd.outcome,
+                "predispatch_ms": _pd.ms,
             },
         )
         logger.info(
             "\n═══════════════════════════════════════════════════════════════\n"
             "  TURN COMPLETE  session=%s  intent=%s  tool_used=%s\n"
             "  model=%s  total_latency=%dms  next_subagent=%s\n"
+            "  llm_calls=%s  predispatch_tool=%s  predispatch_outcome=%s  predispatch_ms=%s\n"
             "  response: %r\n"
             "═══════════════════════════════════════════════════════════════",
             session_id, nlu_result.intent, bool(tool_calls),
             llm_response.model_used, latency_ms, next_subagent_id,
+            _llm_calls, _pd.tool, _pd.outcome, _pd.ms,
             final_text[:200],
         )
 
@@ -3414,8 +3822,27 @@ class AgentCore(AgentCoreBase):
                     "session_id": session_id,
                     "key": key,
                     "error": str(e),
+                    "error_type": type(e).__name__,
                 },
             )
+
+    async def _write_memory_async(self, session_id: str, user_id: str, scope: str,
+                                  key: str, value: Any) -> None:
+        """Stream twin of :meth:`_write_memory_sync`: a failed write is logged (type only), never raised.
+
+        Args:
+            session_id: Session identifier.
+            user_id:    User identifier.
+            scope:      Memory scope — "session" or "persistent".
+            key:        Field key to write.
+            value:      Value to store.
+        """
+        try:
+            await self._async_memory.write(session_id, user_id, scope, key, value)
+        except Exception as e:  # noqa: BLE001 — a memory error must not end the turn
+            logger.error("orchestrator.async_write_failed", extra={
+                "operation": "orchestrator._write_memory_async", "status": "failure",
+                "session_id": session_id, "key": key, "error_type": type(e).__name__})
 
     # ------------------------------------------------------------------
     # Private: user-state model helper (GH-139)
@@ -4670,6 +5097,28 @@ class AgentCore(AgentCoreBase):
                     yield ev
                 return
 
+            # ── Step 6c: pre-dispatch (Spec E §5) ──────────────────────
+            # Runs after routing and before the prompt, so its result is in
+            # the turn cache when <known_facts> and <state> render. Per-TURN
+            # tool-call counts start here: a capped tool cannot slip through
+            # by being requested again in a later round, and the pre-dispatch
+            # itself counts toward the cap.
+            _turn_tool_counts: dict[str, int] = {}
+            _offered = self._offered_tools(next_subagent_id)
+            _pd = await self._predispatch_async(
+                bundle, next_subagent_id, nlu_result.intent, tool_cache,
+                session_id, user_id, _turn_tool_counts)
+            self._record_predispatch(_pd, "orchestrator.stream_turn", session_id)
+            # Recorded now, before any early exit. An abort or error from here
+            # on persists record.captured_exchanges (interrupted-turn persist).
+            _pd_results, _pd_exchanges, _pd_tool_calls = self._predispatch_ledger(_pd, turn_id)
+            if _pd_exchanges:
+                record.captured_exchanges.extend(_pd_exchanges)
+                record.max_items = self._recent_tool_exchanges_caps()[0]
+            if _pd_tool_calls:
+                was_tool_used = True
+            await self._post_applied_hook_async(session_id, user_id, bundle, _pd_results)
+
             # ── Step 7: Prompt assembly ────────────────────────────────
             logger.info(
                 "  [STEP 7] Prompt Assembly  →  subagent=%s  language=%s",
@@ -4725,6 +5174,10 @@ class AgentCore(AgentCoreBase):
             _captured_exchanges_this_turn: list[dict] = record.captured_exchanges
 
             if not messages:
+                # Completes, so the interrupted-turn persist will not run.
+                await self._settle_predispatch_stream(
+                    session_id, user_id, bundle, tool_cache, _prior_exchanges,
+                    _pd_exchanges, _max_items)
                 yield _stamp(DoneEvent(turn_id=turn_id, latency_ms=int((time.time() - start) * 1000)))
                 return
 
@@ -4732,11 +5185,9 @@ class AgentCore(AgentCoreBase):
                 return
 
             # ── Step 8: LLM streaming ──────────────────────────────────
-            active_tools = self._workflow.resolve_tools_for(next_subagent_id)
-            active_tools = augment_tool_definitions(
-                active_tools, self._tool_policies,
-                self._remember.definition() if self._remember else None,
-            )
+            # The filtered list is the one every main-LLM call of this turn uses.
+            active_tools, _tool_choice = self._inject_predispatch(_pd, messages, _offered)
+            _llm_calls = 0
             sentence_index = 0
             token_buffer = ""
             primary_model = self._llm.get_active_model()
@@ -4770,6 +5221,7 @@ class AgentCore(AgentCoreBase):
                     messages=messages,
                     system=system,
                     tools=_legacy_tools_to_neutral(active_tools) if active_tools else [],
+                    tool_choice=_tool_choice,
                     max_tokens=channel_max_tokens or 4096,
                 )
                 # GH-244: the model sometimes returns a COMPLETELY empty
@@ -4786,6 +5238,7 @@ class AgentCore(AgentCoreBase):
                 # response. A tool call leaves via ToolUseRequested and never
                 # reaches the check.
                 for _empty_attempt in range(2):
+                    _llm_calls += 1
                     async for token in self._llm.stream(request, abort_event=abort_event):
                         if _aborted():
                             return
@@ -4854,11 +5307,6 @@ class AgentCore(AgentCoreBase):
                 )
 
             except ToolUseRequested as e:
-                # Per-TURN tool-call counts. Declared here, outside the tool
-                # rounds below, so a capped tool cannot slip through by being
-                # requested again in a later round of the same turn.
-                _turn_tool_counts: dict[str, int] = {}
-
                 # ── Step 9: Tool use ───────────────────────────────────
                 was_tool_used = True
                 all_tool_calls = [
@@ -4926,12 +5374,13 @@ class AgentCore(AgentCoreBase):
                             tc, _ke_context,
                         )
                     elif self._async_gateway:
-                        # Two guards, one decision. Both refuse BEFORE the call
-                        # leaves us, because both protect writes that cannot be
-                        # taken back.
-                        #   cap        — the model acted on every row of a list
+                        # One decision (tool_guard.check_tool_call): consent, then
+                        # the per-turn cap, then grounding, then the stored-result
+                        # cache. All refuse BEFORE the call leaves us, because
+                        # they protect writes that cannot be taken back.
+                        #   cap        - the model acted on every row of a list
                         #                it was shown (5 applies from one pick)
-                        #   grounding  — it supplied an id no tool returned
+                        #   grounding  - it supplied an id no tool returned
                         # stream_turn has its own tool loop and never calls
                         # ManagerAgent.run_turn, so the sync path's guards do
                         # not cover the path a voice client actually uses.
@@ -4941,41 +5390,6 @@ class AgentCore(AgentCoreBase):
                         # remember is never capped nor grounding-checked.
                         _is_remember = (self._remember is not None
                                         and tc.tool_name == self._remember.name)
-                        _refusal = ""
-                        if not _is_remember and over_call_cap(_caps.get(tc.tool_name), _used):
-                            logger.warning(
-                                "orchestrator.stream_tool_call_cap tool=%s used=%s",
-                                tc.tool_name, _used,
-                            )
-                            _refusal = (
-                                f"Refused: {tc.tool_name} has already run this turn and its "
-                                f"effect cannot be undone. One per turn. If the caller meant "
-                                f"a different one, ask which, and call it on the next turn."
-                            )
-                        elif not _is_remember:
-                            _spec = (
-                                getattr(self._manager_agent, "_grounded_params", {}) or {}
-                            ).get(tc.tool_name) or {}
-                            _ung = ungrounded_params(
-                                _spec, tc, messages,
-                                stored_results=tool_cache.stored_results_by_tool(),
-                                session_grounded=self._session_grounded_values(
-                                    bundle, _spec,
-                                ),
-                            )
-                            if _ung:
-                                logger.warning(
-                                    "orchestrator.stream_ungrounded_param tool=%s params=%s",
-                                    tc.tool_name, sorted(_ung),
-                                )
-                                _refusal = (
-                                    f"Refused: {', '.join(sorted(_ung))} did not come from "
-                                    f"any tool result in this conversation, so the value was "
-                                    f"invented. Do not guess an identifier. Re-read the most "
-                                    f"recent tool result, copy the exact value for the item "
-                                    f"the user chose, and call this tool again."
-                                )
-
                         if _is_remember:
                             # Framework tool: validated state write, never
                             # capped, grounding-refused or sent to the gateway.
@@ -4985,26 +5399,37 @@ class AgentCore(AgentCoreBase):
                                     session_id, user_id, scope, key, value),
                                 self._remember_on_saved(bundle),
                             )
-                        elif _refusal:
-                            tool_result = refusal_result(
-                                tc.tool_name, tc.tool_use_id, _refusal,
-                            )
-                        elif (_hit := tool_cache.lookup(tc)) is not None:
-                            tool_result = _hit
                         else:
-                            _turn_tool_counts[tc.tool_name] = _used + 1
-                            tool_result = await self._async_gateway.execute(
-                                tool_cache.prepare(tc), session_id, user_id,
-                                session_values=self._tool_session_values(bundle),
+                            _spec = (
+                                getattr(self._manager_agent, "_grounded_params", {}) or {}
+                            ).get(tc.tool_name) or {}
+                            _verdict = check_tool_call(
+                                tc,
+                                cap=_caps.get(tc.tool_name),
+                                used=_used,
+                                grounded_spec=_spec,
+                                messages=messages,
+                                stored_results=tool_cache.stored_results_by_tool(),
+                                session_grounded=self._session_grounded_values(bundle, _spec),
+                                consent_ok=None,
+                                cache_lookup=tool_cache.lookup,
                             )
-                            tool_result = self._result_shaper.shape(tool_result)
-                            await self._write_mapped_session_values(
-                                session_id, user_id, tool_result, bundle,
-                            )
-                            tool_cache.after_call(tc, tool_result)
-                            # Persist now: a streaming turn may be stopped
-                            # before it completes.
-                            await self._persist_tool_cache(session_id, user_id, tool_cache)
+                            if _verdict.kind != "go":
+                                tool_result = _verdict.result
+                            else:
+                                _turn_tool_counts[tc.tool_name] = _used + 1
+                                tool_result = await self._async_gateway.execute(
+                                    tool_cache.prepare(tc), session_id, user_id,
+                                    session_values=self._tool_session_values(bundle),
+                                )
+                                tool_result = self._result_shaper.shape(tool_result)
+                                await self._write_mapped_session_values(
+                                    session_id, user_id, tool_result, bundle,
+                                )
+                                tool_cache.after_call(tc, tool_result)
+                                # Persist now: a streaming turn may be stopped
+                                # before it completes.
+                                await self._persist_tool_cache(session_id, user_id, tool_cache)
                     else:
                         # Fallback: no async gateway — cannot execute tools in streaming mode
                         logger.error(
@@ -5166,8 +5591,10 @@ class AgentCore(AgentCoreBase):
                             messages=messages,
                             system=system,
                             tools=_legacy_tools_to_neutral(active_tools) if active_tools else [],
+                            tool_choice=_tool_choice,
                             max_tokens=channel_max_tokens or 4096,
                         )
+                        _llm_calls += 1
                         async for token in self._llm.stream(request, abort_event=abort_event):
                             if _aborted():
                                 return
@@ -5258,8 +5685,8 @@ class AgentCore(AgentCoreBase):
                                 )
                             elif self._async_gateway:
                                 # Second streaming execution site (nested tool
-                                # rounds). Both guards, same as the first, and
-                                # the cap shares _turn_tool_counts with it —
+                                # rounds). Same decision as the first, and
+                                # the cap shares _turn_tool_counts with it -
                                 # counted per TURN precisely so a capped tool
                                 # cannot slip through by being requested again
                                 # in a later round of the same turn.
@@ -5268,45 +5695,6 @@ class AgentCore(AgentCoreBase):
                                 _used2 = _turn_tool_counts.get(tc.tool_name, 0)
                                 _is_remember2 = (self._remember is not None
                                                  and tc.tool_name == self._remember.name)
-                                _refusal2 = ""
-                                if not _is_remember2 and over_call_cap(
-                                    _caps2.get(tc.tool_name), _used2,
-                                ):
-                                    logger.warning(
-                                        "orchestrator.stream_tool_call_cap tool=%s used=%s",
-                                        tc.tool_name, _used2,
-                                    )
-                                    _refusal2 = (
-                                        f"Refused: {tc.tool_name} has already run this turn and "
-                                        f"its effect cannot be undone. One per turn. If the "
-                                        f"caller meant a different one, ask which, and call it "
-                                        f"on the next turn."
-                                    )
-                                elif not _is_remember2:
-                                    _spec2 = (
-                                        getattr(self._manager_agent, "_grounded_params", {}) or {}
-                                    ).get(tc.tool_name) or {}
-                                    _ung2 = ungrounded_params(
-                                        _spec2, tc, messages,
-                                        stored_results=tool_cache.stored_results_by_tool(),
-                                        session_grounded=self._session_grounded_values(
-                                            bundle, _spec2,
-                                        ),
-                                    )
-                                    if _ung2:
-                                        logger.warning(
-                                            "orchestrator.stream_ungrounded_param tool=%s params=%s",
-                                            tc.tool_name, sorted(_ung2),
-                                        )
-                                        _refusal2 = (
-                                            f"Refused: {', '.join(sorted(_ung2))} did not come "
-                                            f"from any tool result in this conversation, so the "
-                                            f"value was invented. Do not guess an identifier. "
-                                            f"Re-read the most recent tool result, copy the exact "
-                                            f"value for the item the user chose, and call this "
-                                            f"tool again."
-                                        )
-
                                 if _is_remember2:
                                     tool_result = await self._remember.handle_async(
                                         tc, messages, tool_cache.stored_results_by_tool(),
@@ -5314,26 +5702,38 @@ class AgentCore(AgentCoreBase):
                                             session_id, user_id, scope, key, value),
                                         self._remember_on_saved(bundle),
                                     )
-                                elif _refusal2:
-                                    tool_result = refusal_result(
-                                        tc.tool_name, tc.tool_use_id, _refusal2,
-                                    )
-                                elif (_hit2 := tool_cache.lookup(tc)) is not None:
-                                    tool_result = _hit2
                                 else:
-                                    _turn_tool_counts[tc.tool_name] = _used2 + 1
-                                    tool_result = await self._async_gateway.execute(
-                                        tool_cache.prepare(tc), session_id, user_id,
-                                        session_values=self._tool_session_values(bundle),
+                                    _spec2 = (
+                                        getattr(self._manager_agent, "_grounded_params", {}) or {}
+                                    ).get(tc.tool_name) or {}
+                                    _verdict2 = check_tool_call(
+                                        tc,
+                                        cap=_caps2.get(tc.tool_name),
+                                        used=_used2,
+                                        grounded_spec=_spec2,
+                                        messages=messages,
+                                        stored_results=tool_cache.stored_results_by_tool(),
+                                        session_grounded=self._session_grounded_values(
+                                            bundle, _spec2),
+                                        consent_ok=None,
+                                        cache_lookup=tool_cache.lookup,
                                     )
-                                    tool_result = self._result_shaper.shape(tool_result)
-                                    await self._write_mapped_session_values(
-                                        session_id, user_id, tool_result, bundle,
-                                    )
-                                    tool_cache.after_call(tc, tool_result)
-                                    await self._persist_tool_cache(
-                                        session_id, user_id, tool_cache,
-                                    )
+                                    if _verdict2.kind != "go":
+                                        tool_result = _verdict2.result
+                                    else:
+                                        _turn_tool_counts[tc.tool_name] = _used2 + 1
+                                        tool_result = await self._async_gateway.execute(
+                                            tool_cache.prepare(tc), session_id, user_id,
+                                            session_values=self._tool_session_values(bundle),
+                                        )
+                                        tool_result = self._result_shaper.shape(tool_result)
+                                        await self._write_mapped_session_values(
+                                            session_id, user_id, tool_result, bundle,
+                                        )
+                                        tool_cache.after_call(tc, tool_result)
+                                        await self._persist_tool_cache(
+                                            session_id, user_id, tool_cache,
+                                        )
                             else:
                                 break
                             _nested_results.append({
@@ -5364,26 +5764,10 @@ class AgentCore(AgentCoreBase):
                 )
 
                 # Post-tool hook: apply_job success → post_applied transition
-                # Mirror of the sync path hook. Guard ensures domain-agnosticism:
-                # workflows without a post_applied subagent get a no-op.
-                if _stream_tool_results and "post_applied" in self._workflow.subagents:
-                    for tr in _stream_tool_results:
-                        if getattr(tr, "tool_name", None) == "apply_job" and getattr(tr, "success", False):
-                            await self._async_memory.write(
-                                session_id, user_id, "session",
-                                "current_subagent_id", "post_applied",
-                            )
-                            bundle.session["current_subagent_id"] = "post_applied"
-                            logger.info(
-                                "orchestrator.post_applied_transition",
-                                extra={
-                                    "operation": "orchestrator.post_tool_hook",
-                                    "status": "success",
-                                    "session_id": session_id,
-                                    "trigger_tool": "apply_job",
-                                },
-                            )
-                            break
+                # Mirror of the sync path hook (a pre-dispatched apply ran it
+                # at Step 6c). Workflows without post_applied get a no-op.
+                await self._post_applied_hook_async(
+                    session_id, user_id, bundle, _stream_tool_results)
 
             # Flush remaining token buffer as a final sentence into the batcher,
             # then drain the batcher in one final Trust call (turn-end flush).
@@ -5547,6 +5931,11 @@ class AgentCore(AgentCoreBase):
                     "sentences_emitted": sentence_index,
                     "digits_rewritten": _guard_counts["digits_rewritten"],
                     "foreign_script_words": _guard_counts["foreign_script_words"],
+                    # Spec E §10.
+                    "llm_calls": _llm_calls,
+                    "predispatch_tool": _pd.tool,
+                    "predispatch_outcome": _pd.outcome,
+                    "predispatch_ms": _pd.ms,
                 },
             )
             record_output_guard(turn_input.channel, _guard_lang,
@@ -5556,12 +5945,14 @@ class AgentCore(AgentCoreBase):
                 "  STREAM TURN COMPLETE  session=%s  intent=%s  tool_used=%s\n"
                 "  model=%s  total_latency=%dms  next_subagent=%s  sentences=%d\n"
                 "  llm_ttft=%sms  first_token=%sms  first_sentence=%sms\n"
+                "  llm_calls=%s  predispatch_tool=%s  predispatch_outcome=%s  predispatch_ms=%s\n"
                 "  response: %r\n"
                 "═══════════════════════════════════════════════════════════════",
                 session_id, nlu_result.intent, was_tool_used,
                 model_used, latency_ms, next_subagent_id, sentence_index,
                 _timings["llm_ttft_ms"], _timings["first_token_ms"],
                 _timings["first_sentence_ms"],
+                _llm_calls, _pd.tool, _pd.outcome, _pd.ms,
                 full_response_text.strip()[:200],
             )
 
@@ -5590,7 +5981,7 @@ class AgentCore(AgentCoreBase):
                     trust_output=trust_output,
                     model_used=model_used,
                     intent=nlu_result.intent,
-                    tool_calls=all_tool_calls,
+                    tool_calls=[*_pd_tool_calls, *all_tool_calls],
                     latency_ms=latency_ms,
                     timestamp_ms=turn_input.timestamp_ms,
                 )

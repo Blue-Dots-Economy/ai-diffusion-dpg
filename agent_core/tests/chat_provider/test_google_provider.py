@@ -196,6 +196,32 @@ def test_to_wire_forced_tool_choice(provider):
     assert fc_config.allowed_function_names == ["search"]
 
 
+def test_to_wire_tool_choice_none_keeps_declarations(provider):
+    """Spec E: "none" sends the declarations with function-calling mode NONE."""
+    req = ChatRequest(
+        messages=[Message(role="user", content=[TextBlock(text="Search")])],
+        tools=[ToolDefinition(
+            name="search",
+            description="Search the web",
+            input_schema={"type": "object", "properties": {}},
+        )],
+        tool_choice="none",
+    )
+    _, kwargs = provider._to_wire(req)
+    assert kwargs["tools"][0].function_declarations[0].name == "search"
+    assert str(kwargs["tool_config"].function_calling_config.mode).endswith("NONE")
+
+
+def test_to_wire_tool_choice_none_without_tools(provider):
+    """No tools: "none" sends neither tools nor a tool_config."""
+    req = ChatRequest(
+        messages=[Message(role="user", content=[TextBlock(text="hi")])],
+        tool_choice="none",
+    )
+    _, kwargs = provider._to_wire(req)
+    assert "tools" not in kwargs and "tool_config" not in kwargs
+
+
 def test_to_wire_tool_result_newline(provider):
     """ToolResultBlock with list content joins with real newline, not literal \\n."""
     req = ChatRequest(

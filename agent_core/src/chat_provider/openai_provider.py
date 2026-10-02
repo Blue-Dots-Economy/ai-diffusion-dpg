@@ -654,8 +654,9 @@ class OpenAIChatProvider(ChatProviderBase):
             "timeout": self._timeout_s,
         }
 
-        # Tools.
-        if request.tools and request.tool_choice != "none":
+        # Tools. "none" still sends the definitions: a request whose messages
+        # carry tool calls/results must define the tools they name.
+        if request.tools:
             wire["tools"] = [self._tool_to_wire(t) for t in request.tools]
             wire["tool_choice"] = self._tool_choice_to_wire(request.tool_choice)
 
@@ -696,13 +697,13 @@ class OpenAIChatProvider(ChatProviderBase):
         """Translate a neutral tool_choice string to the OpenAI wire shape.
 
         Args:
-            choice: One of "auto", "any", or a specific tool name.
+            choice: One of "auto", "any", "none", or a specific tool name.
 
         Returns:
-            "auto", "required", or {"type": "function", "function": {"name": ...}}.
+            "auto", "required", "none", or {"type": "function", "function": {"name": ...}}.
         """
-        if choice == "auto":
-            return "auto"
+        if choice in ("auto", "none"):
+            return choice
         if choice == "any":
             return "required"
         # Named tool.

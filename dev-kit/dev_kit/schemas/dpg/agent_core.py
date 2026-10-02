@@ -81,6 +81,7 @@ class AgentDpgDefaults(BaseModel):
     max_tool_rounds: int = Field(default=3, ge=1, le=20)
     history_turns: int = Field(default=2, ge=0)
     state_fields: list[str] = Field(default_factory=list)
+    predispatch_timeout_ms: int = Field(default=1500, gt=0)
     termination_short_circuit: TerminationShortCircuit = Field(default_factory=TerminationShortCircuit)
     recent_tool_exchanges: RecentToolExchanges = Field(default_factory=RecentToolExchanges)
 

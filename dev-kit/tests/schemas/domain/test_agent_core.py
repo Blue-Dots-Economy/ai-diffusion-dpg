@@ -824,3 +824,58 @@ def test_agent_history_turns_and_state_fields():
     AgentSection(history_turns=2, state_fields=["applications_submitted"], **kw)
     with pytest.raises(ValidationError):
         AgentSection(history_turns=-1, **kw)
+
+
+# -- Spec E: tool pre-dispatch -------------------------------------------------
+
+_PD_RULE = {"tool": "search_jobs", "unless_fresh": True,
+            "args": {"query": {"template": "{trade|stored_trade} jobs in {city}",
+                               "normalise": {"city": "city_canonical"}},
+                     "name": {"from": "session", "key": "name", "reject": "placeholders"},
+                     "limit": {"from": "literal", "value": 5}}}
+
+
+def test_predispatch_rule_accepted():
+    from dev_kit.schemas.domain.agent_core import PredispatchRule
+    r = PredispatchRule.model_validate(_PD_RULE)
+    assert r.args["name"].from_ == "session"
+
+
+@pytest.mark.parametrize("arg", [
+    {"from": "session", "key": "k", "template": "x"},
+    {"from": "session"},
+    {"from": "literal"},
+    {"from": "literal", "value": 1, "key": "k"},
+    {"from": "session", "key": "k", "value": 1},
+    {"template": "x", "key": "k"},
+    {"template": "x", "value": 1},
+    {"template": "  "},
+    {},
+    {"from": "session", "key": "k", "bogus": 1},
+])
+def test_predispatch_arg_rejects_bad_shapes(arg):
+    from dev_kit.schemas.domain.agent_core import PredispatchRule
+    with pytest.raises(ValidationError):
+        PredispatchRule.model_validate({"tool": "t", "args": {"a": arg}})
+
+
+def test_predispatch_rule_rejects_unknown_field_and_empty_tool():
+    from dev_kit.schemas.domain.agent_core import PredispatchRule
+    with pytest.raises(ValidationError):
+        PredispatchRule.model_validate({"tool": "t", "bogus": 1})
+    with pytest.raises(ValidationError):
+        PredispatchRule.model_validate({"tool": ""})
+
+
+def test_predispatch_on_subagent_timeout_and_tables():
+    from dev_kit.schemas.validation import DOMAIN_SECTION_SCHEMAS
+    a = AgentSection(primary_model=_ANTHROPIC_PRIMARY, fallback_model=_ANTHROPIC_FALLBACK,
+                     predispatch_timeout_ms=1200)
+    assert a.predispatch_timeout_ms == 1200
+    with pytest.raises(ValidationError):
+        AgentSection(primary_model=_ANTHROPIC_PRIMARY, fallback_model=_ANTHROPIC_FALLBACK,
+                     predispatch_timeout_ms=0)
+    tables = DOMAIN_SECTION_SCHEMAS[("agent_core", "predispatch_tables")]
+    tables.model_validate({"city_canonical": {"Bangalore": "Bengaluru"}, "placeholders": ["unknown"]})
+    with pytest.raises(ValidationError):
+        tables.model_validate({"t": "not a table"})

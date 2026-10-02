@@ -76,6 +76,10 @@ EXPECTED_PATHS = {
     "agent.state_fields",
     "channels.voice.output_contract",
     "connectors.read.result_shaping",
+    # Spec E
+    "agent.predispatch_timeout_ms",
+    "agent_workflow.subagents.predispatch",
+    "predispatch_tables",
     # Predetermined (catalogue §7.1)
     "agent.ask_for_consent",
     "conversation.user_state_model.enabled",
@@ -164,3 +168,10 @@ def test_no_tts_rules_keys_and_spec_d_keys_present():
                 "channels.voice.output_contract",
                 "connectors.read.result_shaping"):
         assert key in FIELD_RULES
+
+
+def test_spec_e_predispatch_rules_present():
+    from dev_kit.agent.field_rules.agent_core import FIELD_RULES
+    assert FIELD_RULES["agent.predispatch_timeout_ms"].category == "framework_default_only"
+    assert FIELD_RULES["agent_workflow.subagents.predispatch"].auto_answer is True
+    assert FIELD_RULES["predispatch_tables"].auto_answer is True

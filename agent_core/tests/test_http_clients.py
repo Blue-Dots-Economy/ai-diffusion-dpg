@@ -658,3 +658,15 @@ class TestAsyncActionGatewayProjectedFlag:
     async def test_projected_defaults_false(self):
         result = await self._call({"tool_use_id": "tu_1", "result": {}, "success": True})
         assert result.projected is False
+
+
+class TestAsyncActionGatewayTimeout:
+    async def test_timeout_carries_the_sync_clients_tag(self):
+        """Spec E §5.3: a write's only budget is the gateway timeout; both clients tag it alike."""
+        from unittest.mock import AsyncMock
+        from src.http_clients.async_.action_gateway import AsyncActionGatewayHttpClient
+        client = AsyncActionGatewayHttpClient(_BASE_CONFIG)
+        client._client.post = AsyncMock(side_effect=httpx.TimeoutException("timeout"))
+        tc = ToolCall(tool_name="apply_job", tool_use_id="tu_1", input_params={})
+        result = await client.execute(tc, "s1")
+        assert (result.success, result.error) == (False, "gateway_timeout: apply_job")

@@ -2171,16 +2171,13 @@ def test_both_streaming_tool_sites_apply_the_grounding_guard():
     # TurnAssembler change; the pipeline body lives in _stream_turn_impl.
     src = inspect.getsource(AgentCore._stream_turn_impl)
     executes = src.count("self._async_gateway.execute(")
-    guards = src.count("ungrounded_params(")
+    # Cap, grounding, consent and cache are one decision, check_tool_call
+    # (tool_guard); a site that skips it dispatches unguarded.
+    guards = src.count("check_tool_call(")
     assert executes >= 1, "expected gateway execution sites in stream_turn"
     assert guards >= executes, (
-        f"{executes} streaming execution site(s) but only {guards} guard call(s) — "
-        "every site that dispatches a tool must check provenance first"
-    )
-    caps = src.count("over_call_cap(")
-    assert caps >= executes, (
-        f"{executes} streaming execution site(s) but only {caps} cap check(s) — "
-        "a capped tool must not slip through a site that forgot to count it"
+        f"{executes} streaming execution site(s) but only {guards} check_tool_call "
+        "call(s) - every site that dispatches a tool must run the shared guard first"
     )
 
 

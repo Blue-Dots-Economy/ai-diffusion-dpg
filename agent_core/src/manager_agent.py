@@ -308,18 +308,8 @@ class ManagerAgent:
                 self._grounded_params[str(_tool)] = {str(p): [] for p in (_spec or [])}
         # GH-137: Per-turn flag set when the LLM invokes the end_session internal tool.
         self._session_ended_flag: bool = False
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _ungrounded_params(self, tool_call, messages: list,
-                           stored_results: dict[str, list[str]] | None = None) -> set[str]:
-        """Instance wrapper around :func:`ungrounded_params` for this agent's config."""
-        return ungrounded_params(
-            self._grounded_params.get(tool_call.tool_name) or {}, tool_call, messages,
-            stored_results=stored_results,
-        )
+        # Number of self._llm.call invocations the last run_turn made.
+        self.last_llm_calls: int = 0
 
     # ------------------------------------------------------------------
     # Public interface
@@ -332,6 +322,7 @@ class ManagerAgent:
         initial_response: ChatResponse,
         system: SystemPrompt | None = None,
         active_tools: list[dict] | None = None,
+        tool_choice: str = "auto",
         ke_context: dict | None = None,
         user_id: str = "",
         session_values: dict | None = None,
@@ -339,6 +330,8 @@ class ManagerAgent:
         remember_name: str = "",
         remember_handler: Callable[[ToolCall, list], ToolResult] | None = None,
         result_shaper: Callable[[ToolResult], ToolResult] | None = None,
+        turn_tool_counts: dict[str, int] | None = None,
+        session_grounded: dict | None = None,
     ) -> tuple[str, list[ToolCall], list[ToolResult]]:
         """
         Drive the tool-use loop starting from the initial LLM response.
@@ -371,6 +364,9 @@ class ManagerAgent:
                               dict shape). Only these are passed to follow-up LLM calls.
                               If None, falls back to self._registry.get_tool_definitions()
                               for backward compatibility.
+            tool_choice:      ``tool_choice`` for follow-up LLM calls; the
+                              orchestrator passes ``"none"`` when a
+                              pre-dispatch already ran the only offered tool.
             ke_context:       Dict with context required to call the Knowledge Engine
                               when knowledge_retrieval is invoked. Expected fields:
                               session_id, user_message, profile, session, intent,
@@ -386,6 +382,13 @@ class ManagerAgent:
                               Action Gateway. Empty disables.
             remember_handler: Callable ``(tool_call, messages) -> ToolResult``
                               that handles ``remember`` calls.
+            result_shaper:    Optional ``ToolResult -> ToolResult`` applied to live results.
+            turn_tool_counts: Per-turn live-call counts by tool. Pass the dict the
+                              caller created before LLM call 1 so calls made
+                              before this loop (pre-dispatch) count toward the
+                              caps; None starts from empty. Mutated in place.
+            session_grounded: Param name -> session values that ground a
+                              tool's params (see ``ungrounded_params``).
 
         Returns:
             (final_response_text, list_of_all_tool_calls_executed, list_of_all_tool_results)
@@ -406,7 +409,12 @@ class ManagerAgent:
         rounds = 0
         # Per-TURN, not per-round: a capped tool must not slip through by
         # being requested again in a later tool round of the same turn.
-        _turn_tool_counts: dict[str, int] = {}
+        # Imported here: tool_guard imports this module's guard primitives.
+        from src.tool_guard import check_tool_call
+
+        self.last_llm_calls = 0
+        counts: dict[str, int] = turn_tool_counts if turn_tool_counts is not None else {}
+        llm_calls = 0
 
         while current_response.stop_reason == "tool_use" and rounds < self._max_tool_rounds:
             response_tool_calls = [
@@ -477,79 +485,42 @@ class ManagerAgent:
                 # The framework ``remember`` tool is a validated state write,
                 # not an upstream effect: it is never capped nor counted.
                 _is_remember = remember_handler is not None and tool_call.tool_name == remember_name
-                _used = _turn_tool_counts.get(tool_call.tool_name, 0)
-                if not _is_remember and over_call_cap(
-                    self._tool_call_caps.get(tool_call.tool_name), _used,
-                ):
-                    logger.warning(
-                        "manager_agent.tool_call_cap tool=%s used=%s",
-                        tool_call.tool_name, _used,
-                    )
-                    tool_result = refusal_result(
-                        tool_call.tool_name, tool_call.tool_use_id,
-                        f"Refused: {tool_call.tool_name} has already run this turn and its "
-                        f"effect cannot be undone. One per turn. If the caller meant a "
-                        f"different one, ask which, and call it on the next turn.",
-                    )
-                    all_tool_calls.append(tool_call)
-                    all_tool_results.append(tool_result)
-                    assistant_content.append(ToolUseBlock(
-                        tool_use_id=tool_call.tool_use_id,
-                        tool_name=tool_call.tool_name,
-                        input=tool_call.input_params or {},
-                    ))
-                    tool_results_content.append(ToolResultBlock(
-                        tool_use_id=tool_call.tool_use_id,
-                        content=tool_result.result_text,
-                    ))
-                    continue
-
+                _used = counts.get(tool_call.tool_name, 0)
                 if _is_remember:
                     tool_result = remember_handler(tool_call, messages)
+                elif self._registry.get_route(tool_call.tool_name) == "knowledge_engine":
+                    tool_result = self._execute_knowledge_retrieval(tool_call, ke_context)
                 else:
-                    _stored = tool_cache.stored_results_by_tool() if tool_cache else None
-                    _ungrounded = self._ungrounded_params(tool_call, messages, _stored)
-                    if _ungrounded:
-                        # The model supplied an identifier no upstream ever returned.
-                        # Refuse to execute and tell it so — a fabricated id reaches
-                        # the upstream as a well-formed value and comes back as a
-                        # generic "not found", which the model then reports to the
-                        # caller as though the request had merely been redundant.
-                        logger.warning(
-                            "manager_agent.ungrounded_param tool=%s params=%s",
-                            tool_call.tool_name, sorted(_ungrounded),
-                        )
-                        tool_result = ToolResult(
-                            tool_use_id=tool_call.tool_use_id,
-                            tool_name=tool_call.tool_name,
-                            success=False,
-                            result={},
-                            error="UNGROUNDED_PARAMETER",
-                            result_text=(
-                                f"Refused: {', '.join(sorted(_ungrounded))} did not come from "
-                                f"any tool result in this conversation, so the value was "
-                                f"invented. Do not guess an identifier. Re-read the most "
-                                f"recent tool result, copy the exact value for the item the "
-                                f"user chose, and call this tool again."
-                            ),
-                        )
-                    elif self._registry.get_route(tool_call.tool_name) == "knowledge_engine":
-                        tool_result = self._execute_knowledge_retrieval(tool_call, ke_context)
+                    # One decision shared with the streaming loops: cap, then
+                    # grounding (a fabricated id reaches the upstream as a
+                    # well-formed value and comes back as a generic "not
+                    # found"), then the stored-result cache. Consent stays in
+                    # _execute_tool for this path.
+                    verdict = check_tool_call(
+                        tool_call,
+                        cap=self._tool_call_caps.get(tool_call.tool_name),
+                        used=_used,
+                        grounded_spec=self._grounded_params.get(tool_call.tool_name) or {},
+                        messages=messages,
+                        stored_results=tool_cache.stored_results_by_tool() if tool_cache else None,
+                        session_grounded=session_grounded,
+                        consent_ok=None,
+                        cache_lookup=tool_cache.lookup if tool_cache else (lambda _tc: None),
+                        ungrounded_error="UNGROUNDED_PARAMETER",
+                    )
+                    if verdict.kind != "go":
+                        tool_result = verdict.result
                     else:
-                        _hit = tool_cache.lookup(tool_call) if tool_cache else None
-                        if _hit is not None:
-                            tool_result = _hit
-                        else:
-                            # Only a live Action Gateway call counts toward the
-                            # per-turn cap: stored results, refusals and
-                            # knowledge retrieval have no upstream effect.
-                            _turn_tool_counts[tool_call.tool_name] = _used + 1
-                            _call = tool_cache.prepare(tool_call) if tool_cache else tool_call
-                            tool_result = self._execute_tool(_call, session_id, user_id)
-                            if result_shaper is not None:
-                                tool_result = result_shaper(tool_result)
-                            if tool_cache:
-                                tool_cache.after_call(tool_call, tool_result)
+                        # Only a live Action Gateway call counts toward the
+                        # per-turn cap: stored results, refusals and
+                        # knowledge retrieval have no upstream effect.
+                        counts[tool_call.tool_name] = _used + 1
+                        _call = tool_cache.prepare(tool_call) if tool_cache else tool_call
+                        tool_result = self._execute_tool(_call, session_id, user_id)
+                        if result_shaper is not None:
+                            tool_result = result_shaper(tool_result)
+                        if tool_cache:
+                            tool_cache.after_call(tool_call, tool_result)
                 all_tool_calls.append(tool_call)
                 all_tool_results.append(tool_result)
 
@@ -593,8 +564,11 @@ class ManagerAgent:
                 messages=messages,
                 system=system,
                 tools=follow_up_tools,
+                tool_choice=tool_choice,
             )
             start = time.time()
+            llm_calls += 1
+            self.last_llm_calls = llm_calls
             current_response = self._llm.call(request)
             if current_response.stop_reason == "error":
                 raise ProviderAPIError(

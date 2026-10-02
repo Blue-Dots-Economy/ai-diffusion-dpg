@@ -6,7 +6,7 @@ Phase prompts inject the relevant subset (see phase→section mapping in design 
 """
 from __future__ import annotations
 from typing import Any, Dict, List, Literal, Optional, Union
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator, model_validator
 
 from dev_kit.schemas.enums import (
     ANTHROPIC_MODELS, OPENAI_MODELS, OLLAMA_MODELS, GOOGLE_MODELS,
@@ -84,6 +84,7 @@ class AgentSection(BaseModel):
     prompt_session_fields: list[str] = Field(default_factory=list)
     history_turns: int = Field(default=2, ge=0)
     state_fields: list[str] = Field(default_factory=list)
+    predispatch_timeout_ms: int = Field(default=1500, gt=0)
 
     # Optional sub-blocks mirrored from runtime AgentConfig. Blue Dots declares
     # termination_short_circuit; current_question and recent_tool_exchanges
@@ -765,6 +766,52 @@ class PendingQuestionConfig(BaseModel):
         return self
 
 
+class PredispatchArg(BaseModel):
+    """One argument binding for a pre-dispatched tool call (Spec E §3.2). Mirrors runtime."""
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    from_: Optional[Literal["session", "literal"]] = Field(default=None, alias="from")
+    key: Optional[str] = None
+    value: Any = None
+    template: Optional[str] = None
+    normalise: Optional[Union[str, Dict[str, Any]]] = None
+    reject: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _one_source(self) -> "PredispatchArg":
+        if (self.from_ is None) == (self.template is None):
+            raise ValueError("predispatch arg needs exactly one of 'from' or 'template'")
+        if self.from_ == "session" and not self.key:
+            raise ValueError("predispatch arg 'from: session' needs 'key'")
+        if self.from_ == "literal" and self.value is None:
+            raise ValueError("predispatch arg 'from: literal' needs 'value'")
+        if self.template is not None and not self.template.strip():
+            raise ValueError("predispatch arg 'template' must be non-empty")
+        if self.from_ == "literal" and self.key is not None:
+            raise ValueError("predispatch arg 'from: literal' must not set 'key'")
+        if self.from_ == "session" and self.value is not None:
+            raise ValueError("predispatch arg 'from: session' must not set 'value'")
+        if self.template is not None and (self.key is not None or self.value is not None):
+            raise ValueError("predispatch arg 'template' must not set 'key' or 'value'")
+        return self
+
+
+class PredispatchRule(BaseModel):
+    """Run a tool before the main LLM when NLU + session determine it (Spec E §3). Mirrors runtime."""
+    model_config = ConfigDict(extra="forbid")
+
+    tool: str = Field(min_length=1)
+    enabled: Optional[bool] = None
+    on_intent: list[str] = Field(default_factory=list)
+    when: list[RoutingCondition] = Field(default_factory=list)
+    unless_fresh: bool = False
+    args: dict[str, PredispatchArg] = Field(default_factory=dict)
+
+
+class PredispatchTablesSection(RootModel[Dict[str, Union[Dict[str, str], List[str]]]]):
+    """agent_core.predispatch_tables — name -> {raw: canonical} map or list of placeholder strings."""
+
+
 class SubAgent(BaseModel):
     """One subagent in the workflow graph.
 
@@ -788,6 +835,7 @@ class SubAgent(BaseModel):
     # every fixed_opening_requires field is in session and the turn had no entities.
     fixed_opening: str = ""
     fixed_opening_requires: list[str] = Field(default_factory=list)
+    predispatch: list[PredispatchRule] = Field(default_factory=list)
     # opening_phrase non-empty enforced by Field(..., min_length=1) above —
     # runtime requires it for ALL subagents (adopted-state callbacks).
 

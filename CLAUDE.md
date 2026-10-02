@@ -81,6 +81,7 @@ Reach Layer (input)
   → Agent Core: dialogue-act NLU (internal): pending question → frame → strict NLU → post-processing; the structured understanding (acts, relation, resolved option, slot updates, signals) is rendered into the LLM prompt as <caller_turn>
   → Agent Core: POST /assemble_constraints → Trust Layer
   → Agent Core: Manager Agent selects subagent + tools, builds system prompt
+  → Agent Core: tool pre-dispatch (optional `predispatch` rule; result handed to LLM call #1; any failure falls back)
   → Agent Core: LLM call #1
   → [tool_use] Agent Core routes by tool name:
         knowledge_retrieval → Knowledge Engine /retrieve (chunks)
