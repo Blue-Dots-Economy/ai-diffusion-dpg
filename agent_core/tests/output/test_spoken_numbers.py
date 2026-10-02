@@ -44,6 +44,16 @@ def test_hindi_round_trips_zero_to_99999():
 
 
 @pytest.mark.parametrize("n,words", [
+    (11, "ग्यारह"), (19, "उन्नीस"), (29, "उनतीस"), (39, "उनतालीस"), (44, "चौवालीस"),
+    (49, "उनचास"), (53, "तिरपन"), (59, "उनसठ"), (63, "तिरसठ"), (67, "सड़सठ"),
+    (69, "उनहत्तर"), (79, "उनासी"), (89, "नवासी"), (98, "अट्ठानवे"), (99, "निन्यानवे"),
+])
+def test_hindi_specific_words(n, words):
+    """Verify specific Hindi words independently (not circular with round-trip test)."""
+    assert integer_words(n, "hindi") == words
+
+
+@pytest.mark.parametrize("n,words", [
     (0, "zero"), (21, "twenty-one"), (100, "one hundred"),
     (27620, "twenty-seven thousand six hundred twenty"), (1000000, "one million"),
 ])
@@ -91,3 +101,16 @@ def test_amount_and_english_units():
     assert spoken_pay("amount", [500], "per_day", "hindi") == "पाँच सौ रुपये दिन का"
     assert spoken_pay("amount", [500, 700], "per_task", "english") == "five hundred to seven hundred rupees per task"
     assert spoken_pay("range_thousands", [25755, 31121], "none", "english") == "twenty-five to thirty-one thousand"
+
+
+@pytest.mark.parametrize("v", ["NaN", "Infinity", float("inf"), "1e9999999", 10**13])
+def test_untrusted_values_return_none(v):
+    """spoken_pay must not raise or hang on untrusted values."""
+    assert spoken_pay("range_thousands", [v, 30000], "none", "hindi") is None
+
+
+@pytest.mark.parametrize("values", [[0], [0, 0]])
+def test_zero_pay_returns_none(values):
+    """Zero pay is junk data and should return None."""
+    assert spoken_pay("range_thousands", values, "per_month", "hindi") is None
+    assert spoken_pay("amount", values, "per_month", "english") is None

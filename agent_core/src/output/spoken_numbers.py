@@ -15,10 +15,10 @@ _HI: tuple[str, ...] = (
     "दस", "ग्यारह", "बारह", "तेरह", "चौदह", "पंद्रह", "सोलह", "सत्रह", "अठारह", "उन्नीस",
     "बीस", "इक्कीस", "बाईस", "तेईस", "चौबीस", "पच्चीस", "छब्बीस", "सत्ताईस", "अट्ठाईस", "उनतीस",
     "तीस", "इकतीस", "बत्तीस", "तैंतीस", "चौंतीस", "पैंतीस", "छत्तीस", "सैंतीस", "अड़तीस", "उनतालीस",
-    "चालीस", "इकतालीस", "बयालीस", "तैंतालीस", "चवालीस", "पैंतालीस", "छियालीस", "सैंतालीस", "अड़तालीस", "उनचास",
-    "पचास", "इक्यावन", "बावन", "तिरेपन", "चौवन", "पचपन", "छप्पन", "सत्तावन", "अट्ठावन", "उनसठ",
-    "साठ", "इकसठ", "बासठ", "तिरेसठ", "चौंसठ", "पैंसठ", "छियासठ", "सड़सठ", "अड़सठ", "उनहत्तर",
-    "सत्तर", "इकहत्तर", "बहत्तर", "तिहत्तर", "चौहत्तर", "पचहत्तर", "छिहत्तर", "सतहत्तर", "अठहत्तर", "उन्यासी",
+    "चालीस", "इकतालीस", "बयालीस", "तैंतालीस", "चौवालीस", "पैंतालीस", "छियालीस", "सैंतालीस", "अड़तालीस", "उनचास",
+    "पचास", "इक्यावन", "बावन", "तिरपन", "चौवन", "पचपन", "छप्पन", "सत्तावन", "अट्ठावन", "उनसठ",
+    "साठ", "इकसठ", "बासठ", "तिरसठ", "चौंसठ", "पैंसठ", "छियासठ", "सड़सठ", "अड़सठ", "उनहत्तर",
+    "सत्तर", "इकहत्तर", "बहत्तर", "तिहत्तर", "चौहत्तर", "पचहत्तर", "छिहत्तर", "सतहत्तर", "अठहत्तर", "उनासी",
     "अस्सी", "इक्यासी", "बयासी", "तिरासी", "चौरासी", "पचासी", "छियासी", "सत्तासी", "अट्ठासी", "नवासी",
     "नब्बे", "इक्यानवे", "बानवे", "तिरानवे", "चौरानवे", "पचानवे", "छियानवे", "सत्तानवे", "अट्ठानवे", "निन्यानवे",
 )
@@ -100,7 +100,7 @@ def digits_one_by_one(digits: str, language: str) -> str:
     Returns:
         Comma-separated digit words.
     """
-    return ", ".join(integer_words(int(d), language) for d in digits if d.isdigit())
+    return ", ".join(integer_words(int(d), language) for d in digits if d.isdecimal())
 
 
 def number_words(text: str, language: str) -> str:
@@ -129,11 +129,15 @@ def _to_int(value: object) -> int | None:
         raise ValueError("bool is not a number")
     try:
         number = Decimal(str(value).replace(",", "").strip())
-    except InvalidOperation as e:
+        if not number.is_finite():
+            raise ValueError("not finite")
+        if number < 0:
+            raise ValueError("negative pay")
+        if number >= Decimal(10**12):
+            raise ValueError("too large")
+        return int(number)
+    except (InvalidOperation, ValueError, OverflowError) as e:
         raise ValueError(f"not a number: {value!r}") from e
-    if number < 0:
-        raise ValueError("negative pay")
-    return int(number)
 
 
 def _with_unit(text: str, unit: str, language: str) -> str:
@@ -162,6 +166,8 @@ def spoken_pay(fmt: str, values: list, unit: str, language: str) -> str | None:
         return None
     present = [n for n in nums if n is not None]
     if not present:
+        return None
+    if all(n == 0 for n in present):
         return None
     joiner = RANGE_JOINER[language]
     if len(present) == 2 and present[0] > present[1]:
