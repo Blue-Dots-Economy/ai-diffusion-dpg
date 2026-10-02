@@ -317,6 +317,8 @@ class AgentCore(AgentCoreBase):
         self._async_knowledge_engine = async_knowledge_engine
         self._async_gateway = async_gateway
         self._async_learning = async_learning
+        # Strong references to fire-and-forget tasks so they are not collected mid-flight.
+        self._bg_tasks: set[asyncio.Task] = set()
 
         # Language Normalisation and NLU run directly in Agent Core.
         # Each helper gets its own ChatProvider — when the configured
@@ -2885,7 +2887,9 @@ class AgentCore(AgentCoreBase):
                                for k, v in writes.items()), return_exceptions=True)
         data = self._handoff_signal(session_id, turn_id, outcome, result, latency_ms)
         if self._async_learning:
-            asyncio.create_task(self._emit_handoff_signal(data))
+            task = asyncio.create_task(self._emit_handoff_signal(data))
+            self._bg_tasks.add(task)
+            task.add_done_callback(self._bg_tasks.discard)
         return line
 
     def _handle_human_request_sync(self, session_id: str, user_id: str, bundle, turn_input,

@@ -235,6 +235,24 @@ async def test_request_from_handoff_phase_reports_the_return_phase():
     assert t.writes["subagent_entry_count"]["handoff"] == 2
 
 
+@pytest.mark.asyncio
+async def test_handoff_signal_task_is_tracked_until_done():
+    t = _Turn()
+    release = asyncio.Event()
+
+    async def slow_emit(*a, **k):
+        await release.wait()
+
+    t.agent._async_learning.emit_signal = AsyncMock(side_effect=slow_emit)
+    await t.stream()
+    assert len(t.agent._bg_tasks) == 1                               # held while pending
+    release.set()
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert t.agent._bg_tasks == set()                                # dropped once done
+    t.agent._async_learning.emit_signal.assert_awaited_once()
+
+
 # ── sync path ─────────────────────────────────────────────────────────────────
 
 def test_sync_human_request_delivered_speaks_line_and_routes():
