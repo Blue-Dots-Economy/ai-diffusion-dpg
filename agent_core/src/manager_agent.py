@@ -312,18 +312,6 @@ class ManagerAgent:
         self.last_llm_calls: int = 0
 
     # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _ungrounded_params(self, tool_call, messages: list,
-                           stored_results: dict[str, list[str]] | None = None) -> set[str]:
-        """Instance wrapper around :func:`ungrounded_params` for this agent's config."""
-        return ungrounded_params(
-            self._grounded_params.get(tool_call.tool_name) or {}, tool_call, messages,
-            stored_results=stored_results,
-        )
-
-    # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
 
@@ -334,6 +322,7 @@ class ManagerAgent:
         initial_response: ChatResponse,
         system: SystemPrompt | None = None,
         active_tools: list[dict] | None = None,
+        tool_choice: str = "auto",
         ke_context: dict | None = None,
         user_id: str = "",
         session_values: dict | None = None,
@@ -375,6 +364,9 @@ class ManagerAgent:
                               dict shape). Only these are passed to follow-up LLM calls.
                               If None, falls back to self._registry.get_tool_definitions()
                               for backward compatibility.
+            tool_choice:      ``tool_choice`` for follow-up LLM calls; the
+                              orchestrator passes ``"none"`` when a
+                              pre-dispatch already ran the only offered tool.
             ke_context:       Dict with context required to call the Knowledge Engine
                               when knowledge_retrieval is invoked. Expected fields:
                               session_id, user_message, profile, session, intent,
@@ -572,6 +564,7 @@ class ManagerAgent:
                 messages=messages,
                 system=system,
                 tools=follow_up_tools,
+                tool_choice=tool_choice,
             )
             start = time.time()
             llm_calls += 1

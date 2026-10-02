@@ -178,17 +178,18 @@ Both `process_turn()` and `stream_turn()` run the same 13-step sequence:
 
 ## Tool pre-dispatch
 
-About half of all turns call a tool, so the main LLM is called twice: once to ask for the tool and once to speak the result. A subagent can declare `predispatch` rules that call the tool itself, after routing and before the main LLM, when the NLU result and the session already determine the call. The result reaches the main LLM's first call as a normal tool exchange, the tool is removed from that call's tool list, and the main LLM still writes every reply. There are no template replies and no added model calls.
+About half of all turns call a tool, so the main LLM is called twice: once to ask for the tool and once to speak the result. A subagent can declare `predispatch` rules that call the tool itself, after routing and before the main LLM, when the NLU result and the session already determine the call. The result reaches the main LLM's first call as a normal tool exchange, the tool is removed from that call's tool list, and the main LLM still writes every reply. When it is the only tool offered (every Blue Dots phase offers one), its definition stays and every main-LLM call this turn sends `tool_choice="none"` instead, on providers whose `supports_force_tool_choice` is true; elsewhere (e.g. ollama) the tool stays offered and the per-turn cap and cache stop a repeat. There are no template replies and no added model calls.
 
 - A rule has `tool`, `enabled`, optional `on_intent` / `when` / `unless_fresh`, and `args` bindings (`from: session`, `from: literal` or `template`, with optional `normalise` and `reject`).
 - It runs once per turn on both the sync and stream paths, and the first rule whose conditions hold and whose arguments resolve wins.
 - It uses the same guards as a model-initiated call: the per-turn cap, grounding, the tool cache, result shaping, session-value mapping and cache persistence.
 - It never changes the turn's routing and never raises into the turn. On any failure, timeout or missing argument the turn falls back to the normal model-driven path.
-- The stream path enforces `agent.predispatch_timeout_ms`. The sync path relies on the gateway's own per-tool timeout.
+- The stream path enforces `agent.predispatch_timeout_ms` for reads. Writes get no asyncio budget on either path (a local cancel cannot undo an applied upstream write), so they run to the gateway's own per-tool timeout, as every sync call does.
+- Outcomes (metric `agent_core.predispatch.outcomes_total` and the `predispatch_outcome` log extra): `fired`, `cache_hit`, `skipped_missing_arg`, `skipped_invalid_arg`, `skipped_fresh`, `disabled`, `refused_guard`, `failed`, `timeout`, `error`. There is no `skipped_only_tool`.
 - Read tools ship enabled. Every write rule ships `enabled: false`, and a write or identity rule without an explicit `enabled` is rejected at startup.
 - The `stream_turn_complete` log carries `llm_calls`, `predispatch_tool`, `predispatch_outcome` and `predispatch_ms`. They hold tool names, outcomes and timings only, never caller text or argument values.
 
-**Consent.** Model-initiated calls keep today's behaviour. Only pre-dispatch checks Trust consent (`trust.check_consent`) for tools that require it. Blue Dots records consent in the session rather than in the Trust Layer, so a Blue Dots write rule would be refused until the consent source is unified. That is why the Blue Dots write rules ship disabled.
+**Consent.** Model-initiated calls keep today's behaviour. Only pre-dispatch checks Trust consent (`trust.check_consent`) for tools that require it. Blue Dots records consent in the session rather than in the Trust Layer, so a Blue Dots write rule would be refused (`refused_guard`) until the consent source is unified. With no trust client, a consent-gated pre-dispatch is refused on both paths. That is why the Blue Dots write rules ship disabled. Enabling any of them also needs the upstream's idempotency confirmed: a timed-out write may have been applied, and a retry must not duplicate it (spec §8).
 
 See `docs/superpowers/specs/2026-10-02-tool-predispatch-design.md`.
 
@@ -368,7 +369,7 @@ Config is loaded at startup from two YAML files: `config/dpg.yaml` (framework de
 | `channels.*.output_contract` | Per-channel spoken-output contract: `default_language`, per-language `script` / `numbers` / `rules`, and the `guard` switches. Replaces the removed per-channel TTS-rules key |
 | `agent.history_turns` | Past exchanges the main LLM sees in `<recent>` (default 2; 0 omits the block) |
 | `agent.state_fields` | Session keys shown as-is on the `<state>` status line |
-| `agent.predispatch_timeout_ms` | Budget for one pre-dispatched tool call on the stream path (default 1500). On timeout the turn falls back to the model-driven call |
+| `agent.predispatch_timeout_ms` | Budget for one pre-dispatched read on the stream path (default 1500). On timeout the turn falls back to the model-driven call. Writes are not budgeted here; they run to the gateway timeout |
 | `predispatch` (per subagent) | Rules that call a tool before the main LLM: `tool`, `enabled`, `on_intent`, `when`, `unless_fresh`, `args`. Write rules need an explicit `enabled` |
 | `predispatch_tables` | Named lookup tables for `normalise` and `reject` (for example `city_canonical`) |
 

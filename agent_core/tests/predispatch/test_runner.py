@@ -69,7 +69,31 @@ async def test_timeout_read_falls_back_write_injects_failure():
         return _res(tc)
     r = await run_async(READ, guard=_go, execute=slow, timeout_s=0.05)
     assert (r.outcome, r.inject, r.remove_tool) == ("timeout", False, False)
-    w = await run_async(WRITE, guard=_go, execute=slow, timeout_s=0.05)
+
+
+@pytest.mark.asyncio
+async def test_write_gets_no_asyncio_budget():
+    """A write runs to completion past ``timeout_s``: a local cancel cannot undo an applied upstream write."""
+    async def slow(tc):
+        await asyncio.sleep(0.15)
+        return _res(tc)
+    w = await run_async(WRITE, guard=_go, execute=slow, timeout_s=0.01)
+    assert (w.outcome, w.inject, w.remove_tool, w.tool_result.success) == ("fired", True, True, True)
+
+
+@pytest.mark.parametrize("path", ["async", "sync"])
+@pytest.mark.asyncio
+async def test_write_gateway_timeout_injects_timeout(path):
+    """The write timeout now comes from the gateway's own timeout result."""
+    def timed_out(tc):
+        return ToolResult(tool_use_id=tc.tool_use_id, tool_name=tc.tool_name, result={}, success=False,
+                          result_text="", error=f"gateway_timeout: {tc.tool_name}")
+    if path == "async":
+        async def ex(tc):
+            return timed_out(tc)
+        w = await run_async(WRITE, guard=_go, execute=ex, timeout_s=1.5)
+    else:
+        w = run_sync(WRITE, guard=lambda tc: GuardVerdict("go"), execute=timed_out)
     assert (w.outcome, w.inject, w.remove_tool, w.tool_result.success) == ("timeout", True, True, False)
 
 

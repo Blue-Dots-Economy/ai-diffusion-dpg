@@ -708,17 +708,6 @@ class AgentCore(AgentCoreBase):
             self._remember.definition() if self._remember else None,
         )
 
-    @staticmethod
-    def _only_offered_tool(sel: Selection, offered) -> bool:
-        """True when removing ``sel.tool`` would leave the main LLM no tools at all.
-
-        A request carrying tool_use/tool_result blocks must still define tools,
-        so such a pre-dispatch is skipped (``skipped_only_tool``) and the turn
-        follows today's path.
-        """
-        names = [t.get("name") for t in (offered or []) if isinstance(t, dict)]
-        return sel.tool is not None and not any(n != sel.tool for n in names)
-
     def _count_live_call(self, tc, counts: dict):
         """Apply the per-turn count rule to a pre-dispatch's live call.
 
@@ -741,8 +730,7 @@ class AgentCore(AgentCoreBase):
         return lambda r: bump() if getattr(r, "success", False) else None
 
     async def _predispatch_async(self, bundle, subagent_id: str, intent: str, tool_cache,
-                                 session_id: str, user_id: str, counts: dict,
-                                 offered) -> PredispatchResult:
+                                 session_id: str, user_id: str, counts: dict) -> PredispatchResult:
         """Stream path: select, guard and execute the turn's pre-dispatch under its budget.
 
         The live execute mirrors the stream tool loop (gateway, shape, map
@@ -757,7 +745,6 @@ class AgentCore(AgentCoreBase):
             session_id: Session id.
             user_id: Caller identity.
             counts: The turn's ``_turn_tool_counts``.
-            offered: This turn's tool definitions (``_offered_tools``).
 
         Returns:
             PredispatchResult; never raises.
@@ -766,8 +753,6 @@ class AgentCore(AgentCoreBase):
             if not self._async_gateway:
                 return PredispatchResult(None)
             sel = self._select_predispatch(bundle, subagent_id, intent, tool_cache)
-            if self._only_offered_tool(sel, offered):
-                return PredispatchResult("skipped_only_tool", tool=sel.tool)
 
             async def _guard(tc):
                 return self._predispatch_guard(tc, bundle, tool_cache, counts,
@@ -792,8 +777,7 @@ class AgentCore(AgentCoreBase):
             return self._predispatch_error("orchestrator.stream_turn", session_id, e)
 
     def _predispatch_sync(self, bundle, subagent_id: str, intent: str, tool_cache,
-                          session_id: str, user_id: str, counts: dict,
-                          offered) -> PredispatchResult:
+                          session_id: str, user_id: str, counts: dict) -> PredispatchResult:
         """Sync path twin of :meth:`_predispatch_async`; budget is the gateway's own timeout.
 
         Consent is checked through ``trust.check_consent`` so a pre-dispatched
@@ -809,13 +793,13 @@ class AgentCore(AgentCoreBase):
             if gateway is None:
                 return PredispatchResult(None)
             sel = self._select_predispatch(bundle, subagent_id, intent, tool_cache)
-            if self._only_offered_tool(sel, offered):
-                return PredispatchResult("skipped_only_tool", tool=sel.tool)
 
             def _guard(tc):
                 consent = None
                 if self._tool_registry.requires_consent(tc.tool_name):
-                    consent = bool(self._trust.check_consent(session_id, tc.tool_name))
+                    # No trust client refuses, as _stream_consent_ok does.
+                    consent = bool(self._trust is not None
+                                   and self._trust.check_consent(session_id, tc.tool_name))
                 return self._predispatch_guard(tc, bundle, tool_cache, counts, consent)
 
             def _execute(tc):
@@ -884,15 +868,20 @@ class AgentCore(AgentCoreBase):
     def _predispatch_content(r) -> str:
         return r.result_text or (r.error if not r.success else "") or str(r.result)
 
-    @staticmethod
-    def _inject_predispatch(pd: PredispatchResult, messages: list, active_tools):
-        """Add the synthetic pair after the utterance and drop the tool from this turn's list.
+    def _inject_predispatch(self, pd: PredispatchResult, messages: list, active_tools):
+        """Add the synthetic pair after the utterance and settle this turn's tool list.
 
         The list ends on a user tool_result, the shape the model sees after
-        calling the tool itself.
+        calling the tool itself. A tool the outcome removes leaves the list.
+        When it is the only tool offered, the definitions stay (a request
+        carrying tool_use/tool_result blocks must define tools) and every
+        main-LLM call this turn sends ``tool_choice="none"`` instead, when the
+        provider supports forcing a choice. A provider without that keeps the
+        tool offered under ``"auto"``; the per-turn cap and the turn cache are
+        then what stop a repeat.
 
         Returns:
-            The tool list for every main-LLM call this turn.
+            ``(tools, tool_choice)`` for every main-LLM call this turn.
         """
         if pd.inject and pd.tool_result is not None and pd.tool_call is not None:
             r = pd.tool_result
@@ -902,9 +891,15 @@ class AgentCore(AgentCoreBase):
             messages.append(Message(role="user", content=[ToolResultBlock(
                 tool_use_id=PREDISPATCH_ID, content=AgentCore._predispatch_content(r),
                 is_error=not r.success)]))
-        if pd.remove_tool and active_tools:
-            active_tools = [t for t in active_tools if t.get("name") != pd.tool]
-        return active_tools
+        if not (pd.remove_tool and active_tools):
+            return active_tools, "auto"
+        remaining = [t for t in active_tools if t.get("name") != pd.tool]
+        if remaining:
+            return remaining, "auto"
+        caps = getattr(self._llm, "capabilities", None)
+        if getattr(caps, "supports_force_tool_choice", False) is True:
+            return active_tools, "none"
+        return active_tools, "auto"
 
     def _post_applied_target(self, tool_results) -> bool:
         """apply_job succeeded and the workflow has a post_applied phase (domain-agnostic no-op otherwise)."""
@@ -928,7 +923,7 @@ class AgentCore(AgentCoreBase):
     async def _post_applied_hook_async(self, session_id: str, user_id: str, bundle, tool_results) -> None:
         """Stream twin of :meth:`_post_applied_hook_sync`."""
         if self._post_applied_target(tool_results):
-            await self._async_memory.write(session_id, user_id, "session", "current_subagent_id", "post_applied")
+            await self._write_memory_async(session_id, user_id, "session", "current_subagent_id", "post_applied")
             bundle.session["current_subagent_id"] = "post_applied"
             self._log_post_applied(session_id)
 
@@ -962,10 +957,10 @@ class AgentCore(AgentCoreBase):
         capped = self._merge_tool_exchanges(prior, pd_exchanges, max_items)
         if capped is not None:
             bundle.session["recent_tool_exchanges"] = capped
-            await self._async_memory.write(session_id, user_id, "session", "recent_tool_exchanges", capped)
+            await self._write_memory_async(session_id, user_id, "session", "recent_tool_exchanges", capped)
         served = self._served_tool_results_update(bundle, tool_cache)
         if served is not None:
-            await self._async_memory.write(session_id, user_id, "session", SERVED_TOOL_RESULTS_KEY, served)
+            await self._write_memory_async(session_id, user_id, "session", SERVED_TOOL_RESULTS_KEY, served)
 
     @staticmethod
     def _record_predispatch(pd: PredispatchResult, operation: str, session_id: str) -> None:
@@ -1747,7 +1742,7 @@ class AgentCore(AgentCoreBase):
         _turn_tool_counts: dict[str, int] = {}
         _offered = self._offered_tools(next_subagent_id)
         _pd = self._predispatch_sync(bundle, next_subagent_id, nlu_result.intent, tool_cache,
-                                     session_id, user_id, _turn_tool_counts, _offered)
+                                     session_id, user_id, _turn_tool_counts)
         self._record_predispatch(_pd, "orchestrator.process_turn", session_id)
         # Recorded now, before any early exit: what ran stays recorded.
         _pd_results, _pd_exchanges, _pd_calls = self._predispatch_ledger(_pd, turn_id)
@@ -1833,7 +1828,7 @@ class AgentCore(AgentCoreBase):
             )
 
         # ── Step 8: LLM call #1 with scoped tools ────────────────────
-        active_tools = self._inject_predispatch(_pd, messages, _offered)
+        active_tools, _tool_choice = self._inject_predispatch(_pd, messages, _offered)
         output_format = next_subagent.output_format
         primary_model = self._llm.get_active_model()
         primary_provider = self._config.get("agent", {}).get("provider", "anthropic")
@@ -1852,6 +1847,7 @@ class AgentCore(AgentCoreBase):
             messages=messages,
             system=system,
             tools=_legacy_tools_to_neutral(active_tools),
+            tool_choice=_tool_choice,
             output_format=neutral_of,
         )
         llm_response = self._llm.call(request)
@@ -1925,6 +1921,7 @@ class AgentCore(AgentCoreBase):
                 initial_response=llm_response,
                 system=system,
                 active_tools=active_tools,
+                tool_choice=_tool_choice,
                 ke_context=ke_context,
                 # Without this the sync /process_turn path drops the caller's
                 # identity, so connectors that template {user_id} into a path or
@@ -3825,8 +3822,27 @@ class AgentCore(AgentCoreBase):
                     "session_id": session_id,
                     "key": key,
                     "error": str(e),
+                    "error_type": type(e).__name__,
                 },
             )
+
+    async def _write_memory_async(self, session_id: str, user_id: str, scope: str,
+                                  key: str, value: Any) -> None:
+        """Stream twin of :meth:`_write_memory_sync`: a failed write is logged (type only), never raised.
+
+        Args:
+            session_id: Session identifier.
+            user_id:    User identifier.
+            scope:      Memory scope — "session" or "persistent".
+            key:        Field key to write.
+            value:      Value to store.
+        """
+        try:
+            await self._async_memory.write(session_id, user_id, scope, key, value)
+        except Exception as e:  # noqa: BLE001 — a memory error must not end the turn
+            logger.error("orchestrator.async_write_failed", extra={
+                "operation": "orchestrator._write_memory_async", "status": "failure",
+                "session_id": session_id, "key": key, "error_type": type(e).__name__})
 
     # ------------------------------------------------------------------
     # Private: user-state model helper (GH-139)
@@ -5091,7 +5107,7 @@ class AgentCore(AgentCoreBase):
             _offered = self._offered_tools(next_subagent_id)
             _pd = await self._predispatch_async(
                 bundle, next_subagent_id, nlu_result.intent, tool_cache,
-                session_id, user_id, _turn_tool_counts, _offered)
+                session_id, user_id, _turn_tool_counts)
             self._record_predispatch(_pd, "orchestrator.stream_turn", session_id)
             # Recorded now, before any early exit. An abort or error from here
             # on persists record.captured_exchanges (interrupted-turn persist).
@@ -5170,7 +5186,7 @@ class AgentCore(AgentCoreBase):
 
             # ── Step 8: LLM streaming ──────────────────────────────────
             # The filtered list is the one every main-LLM call of this turn uses.
-            active_tools = self._inject_predispatch(_pd, messages, _offered)
+            active_tools, _tool_choice = self._inject_predispatch(_pd, messages, _offered)
             _llm_calls = 0
             sentence_index = 0
             token_buffer = ""
@@ -5205,6 +5221,7 @@ class AgentCore(AgentCoreBase):
                     messages=messages,
                     system=system,
                     tools=_legacy_tools_to_neutral(active_tools) if active_tools else [],
+                    tool_choice=_tool_choice,
                     max_tokens=channel_max_tokens or 4096,
                 )
                 # GH-244: the model sometimes returns a COMPLETELY empty
@@ -5574,6 +5591,7 @@ class AgentCore(AgentCoreBase):
                             messages=messages,
                             system=system,
                             tools=_legacy_tools_to_neutral(active_tools) if active_tools else [],
+                            tool_choice=_tool_choice,
                             max_tokens=channel_max_tokens or 4096,
                         )
                         _llm_calls += 1

@@ -20,6 +20,8 @@ from src.tool_guard import GuardVerdict
 
 logger = logging.getLogger(__name__)
 PREDISPATCH_ID = "predispatch-1"
+# ActionGatewayClient's error tag for a call that ran out its per-tool timeout.
+GATEWAY_TIMEOUT_PREFIX = "gateway_timeout"
 
 
 @dataclass(frozen=True)
@@ -61,7 +63,9 @@ def _decide(sel: Selection, tc: ToolCall, kind: str, result: ToolResult | None, 
         return PredispatchResult("cache_hit", sel.tool, tc, result, True, True, ms)
     if result is not None and result.success:
         return PredispatchResult("fired", sel.tool, tc, result, True, True, ms)
-    outcome = "timeout" if kind == "timeout" else "failed"
+    # A gateway-side timeout (the only budget a write has) is a timeout too.
+    gateway_timeout = result is not None and str(result.error or "").startswith(GATEWAY_TIMEOUT_PREFIX)
+    outcome = "timeout" if kind == "timeout" or gateway_timeout else "failed"
     if sel.is_write:
         return PredispatchResult(outcome, sel.tool, tc, result or _failure(tc, outcome), True, True, ms)
     return PredispatchResult(outcome, sel.tool, tc, None, False, False, ms)
@@ -73,13 +77,18 @@ def _call(sel: Selection) -> ToolCall:
 
 async def run_async(sel: Selection, *, guard: Callable[[ToolCall], Awaitable[GuardVerdict]], execute: Callable[[ToolCall], Awaitable[ToolResult]] | None,
                     timeout_s: float) -> PredispatchResult:
-    """Stream path: guard, then execute under ``timeout_s``.
+    """Stream path: guard, then execute; a read runs under ``timeout_s``.
+
+    A write gets no asyncio budget: cancelling it locally cannot stop an
+    upstream that has already applied it, so it runs to the gateway's own
+    per-tool timeout, as on the sync path. A gateway timeout comes back as a
+    failed result and is injected like any write failure.
 
     Args:
         sel: Task 2 selection.
         guard: Async callable returning a GuardVerdict.
         execute: Async live execute (gateway + shape + map + after_call + persist); unused unless the guard says go.
-        timeout_s: Pre-dispatch budget.
+        timeout_s: Pre-dispatch budget for a read.
 
     Returns:
         PredispatchResult (never raises).
@@ -93,10 +102,13 @@ async def run_async(sel: Selection, *, guard: Callable[[ToolCall], Awaitable[Gua
         if verdict.kind != "go":
             return _decide(sel, tc, verdict.kind, verdict.result, start)
         try:
-            try:
-                result = await asyncio.wait_for(execute(tc), timeout=timeout_s)
-            except asyncio.TimeoutError:
-                return _decide(sel, tc, "timeout", None, start)
+            if sel.is_write:
+                result = await execute(tc)
+            else:
+                try:
+                    result = await asyncio.wait_for(execute(tc), timeout=timeout_s)
+                except asyncio.TimeoutError:
+                    return _decide(sel, tc, "timeout", None, start)
         except Exception as e:  # noqa: BLE001 — execute raised; write overrides brief's broad except
             logger.warning("predispatch.error", extra={"operation": "predispatch.run", "status": "failure",
                                                        "tool": sel.tool, "error": type(e).__name__})

@@ -923,40 +923,45 @@ def _call(tool_name: str, params: dict):
     return SimpleNamespace(tool_name=tool_name, input_params=params)
 
 
+def _ungrounded(agent, tool_call, messages):
+    """``ungrounded_params`` under the agent's normalised ``grounded_params`` (as run_turn applies it)."""
+    return ungrounded_params(agent._grounded_params.get(tool_call.tool_name) or {}, tool_call, messages)
+
+
 def test_ungrounded_param_detected_when_value_absent_from_tool_results():
     agent = _grounding_agent({"apply_job": ["job_item_id"]})
     messages = [_tool_result_msg('{"item_id": "038a09fa-6497-4672-b06c-e1cc580e17ff"}')]
     call = _call("apply_job", {"job_item_id": "835d12cf-4a66-4fab-9e42-873e2f4d8b65"})
-    assert agent._ungrounded_params(call, messages) == {"job_item_id"}
+    assert _ungrounded(agent, call, messages) == {"job_item_id"}
 
 
 def test_grounded_param_accepted_when_value_present():
     agent = _grounding_agent({"apply_job": ["job_item_id"]})
     real = "038a09fa-6497-4672-b06c-e1cc580e17ff"
     messages = [_tool_result_msg('{"item_id": "%s"}' % real)]
-    assert agent._ungrounded_params(_call("apply_job", {"job_item_id": real}), messages) == set()
+    assert _ungrounded(agent, _call("apply_job", {"job_item_id": real}), messages) == set()
 
 
 def test_unconfigured_tool_is_never_checked():
     agent = _grounding_agent({"apply_job": ["job_item_id"]})
     messages = [_tool_result_msg("{}")]
     call = _call("fetch_jobs", {"job_item_id": "anything-at-all"})
-    assert agent._ungrounded_params(call, messages) == set()
+    assert _ungrounded(agent, call, messages) == set()
 
 
 def test_missing_or_empty_param_is_not_flagged():
     """Absence is a different failure; this guard only judges supplied values."""
     agent = _grounding_agent({"apply_job": ["job_item_id"]})
     messages = [_tool_result_msg("some prior result")]
-    assert agent._ungrounded_params(_call("apply_job", {}), messages) == set()
-    assert agent._ungrounded_params(_call("apply_job", {"job_item_id": ""}), messages) == set()
+    assert _ungrounded(agent, _call("apply_job", {}), messages) == set()
+    assert _ungrounded(agent, _call("apply_job", {"job_item_id": ""}), messages) == set()
 
 
 def test_no_tool_results_yet_lets_the_call_through():
     """Nothing fetched means nothing can be grounded — do not block a first call."""
     agent = _grounding_agent({"apply_job": ["job_item_id"]})
     call = _call("apply_job", {"job_item_id": "835d12cf-4a66-4fab-9e42-873e2f4d8b65"})
-    assert agent._ungrounded_params(call, []) == set()
+    assert _ungrounded(agent, call, []) == set()
 
 
 def test_all_configured_params_are_checked_independently():
@@ -966,21 +971,21 @@ def test_all_configured_params_are_checked_independently():
         "job_item_id": "835d12cf-4a66-4fab-9e42-873e2f4d8b65",   # invented
         "profile_item_id": "830f6326-d274-4a4f-93fd-dee3c6592d58",  # real
     })
-    assert agent._ungrounded_params(call, messages) == {"job_item_id"}
+    assert _ungrounded(agent, call, messages) == {"job_item_id"}
 
 
 def test_value_grounded_in_any_earlier_message_not_just_the_last():
     agent = _grounding_agent({"apply_job": ["job_item_id"]})
     real = "038a09fa-6497-4672-b06c-e1cc580e17ff"
     messages = [_tool_result_msg(real), _tool_result_msg("unrelated later result")]
-    assert agent._ungrounded_params(_call("apply_job", {"job_item_id": real}), messages) == set()
+    assert _ungrounded(agent, _call("apply_job", {"job_item_id": real}), messages) == set()
 
 
 def test_no_grounded_params_configured_is_a_no_op():
     agent = _grounding_agent(None)
     messages = [_tool_result_msg("{}")]
     call = _call("apply_job", {"job_item_id": "invented"})
-    assert agent._ungrounded_params(call, messages) == set()
+    assert _ungrounded(agent, call, messages) == set()
 
 
 # --- source-aware grounding -------------------------------------------------
@@ -1016,13 +1021,13 @@ def _two_tool_history():
 def test_param_copied_from_the_wrong_tool_is_rejected():
     agent = _grounding_agent({"apply_job": {"job_item_id": ["fetch_jobs"]}})
     call = _call("apply_job", {"job_item_id": PROFILE_ID})
-    assert agent._ungrounded_params(call, _two_tool_history()) == {"job_item_id"}
+    assert _ungrounded(agent, call, _two_tool_history()) == {"job_item_id"}
 
 
 def test_param_from_its_declared_source_is_accepted():
     agent = _grounding_agent({"apply_job": {"job_item_id": ["fetch_jobs"]}})
     call = _call("apply_job", {"job_item_id": JOB_ID})
-    assert agent._ungrounded_params(call, _two_tool_history()) == set()
+    assert _ungrounded(agent, call, _two_tool_history()) == set()
 
 
 def test_any_of_several_declared_sources_grounds_the_value():
@@ -1030,21 +1035,21 @@ def test_any_of_several_declared_sources_grounds_the_value():
         {"apply_job": {"job_item_id": ["fetch_recommended_jobs", "fetch_jobs"]}}
     )
     call = _call("apply_job", {"job_item_id": JOB_ID})
-    assert agent._ungrounded_params(call, _two_tool_history()) == set()
+    assert _ungrounded(agent, call, _two_tool_history()) == set()
 
 
 def test_declared_source_that_never_ran_rejects_the_value():
     """The value cannot have come from a tool that produced no result."""
     agent = _grounding_agent({"apply_job": {"job_item_id": ["fetch_recommended_jobs"]}})
     call = _call("apply_job", {"job_item_id": JOB_ID})
-    assert agent._ungrounded_params(call, _two_tool_history()) == {"job_item_id"}
+    assert _ungrounded(agent, call, _two_tool_history()) == {"job_item_id"}
 
 
 def test_list_form_still_means_any_tool_result():
     """Backwards compatibility: a bare list keeps the original semantics."""
     agent = _grounding_agent({"apply_job": ["job_item_id"]})
     call = _call("apply_job", {"job_item_id": PROFILE_ID})
-    assert agent._ungrounded_params(call, _two_tool_history()) == set()
+    assert _ungrounded(agent, call, _two_tool_history()) == set()
 
 
 def test_stored_result_grounds_value_when_exchange_not_in_messages():

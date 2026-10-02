@@ -132,6 +132,20 @@ class AsyncActionGatewayHttpClient(AsyncActionGatewayBase):
                 error=data.get("error"),
             )
 
+        except httpx.TimeoutException:
+            # Same tag as the sync client, so a timed-out call reads the same on both paths.
+            logger.error(
+                "async_action_gateway.execution_failed",
+                extra={"tool_name": tool_call.tool_name, "error": "timeout"},
+            )
+            return ToolResult(
+                tool_use_id=tool_call.tool_use_id,
+                tool_name=tool_call.tool_name,
+                result={},
+                success=False,
+                result_text="",
+                error=f"gateway_timeout: {tool_call.tool_name}",
+            )
         except Exception as e:
             logger.error(
                 "async_action_gateway.execution_failed",

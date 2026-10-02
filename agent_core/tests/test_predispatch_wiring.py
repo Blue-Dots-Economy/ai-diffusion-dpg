@@ -293,17 +293,21 @@ async def test_predispatched_write_is_never_repeated():
 
 
 @pytest.mark.asyncio
-async def test_write_timeout_consumes_the_cap():
-    async def slow(tc, *a, **k):
-        await asyncio.sleep(0.5)
-        return _gateway_result(tc)
+async def test_write_timeout_consumes_the_cap(caplog):
+    """A write has no asyncio budget; its timeout is the gateway's own (spec §5.3)."""
+    async def timed_out(tc, *a, **k):
+        await asyncio.sleep(0.1)                               # longer than the read budget
+        return ToolResult(tool_use_id=tc.tool_use_id, tool_name=tc.tool_name, result={}, success=False,
+                          result_text="", error=f"gateway_timeout: {tc.tool_name}")
 
     model_apply = [ToolUseBlock(tool_name="apply_job", tool_use_id="tu_1",
                                 input={"profile_item_id": "P-1", "job_item_id": "J-1"})]
-    agent, requests = _agent(APPLY_SESSION, [APPLY_RULE], intent="apply_now", gateway=slow,
-                             rounds=[model_apply], caps={"apply_job": 1}, timeout_s=0.05)
-    await _collect_events(agent, _make_turn_input())
+    agent, requests = _agent(APPLY_SESSION, [APPLY_RULE], intent="apply_now", gateway=timed_out,
+                             rounds=[model_apply], caps={"apply_job": 1}, timeout_s=0.01)
+    with caplog.at_level(logging.INFO, logger="src.orchestrator"):
+        await _collect_events(agent, _make_turn_input())
 
+    assert _complete_extras(caplog, "orchestrator.stream_turn_complete").predispatch_outcome == "timeout"
     assert agent._async_gateway.execute.await_count == 1      # the model's retry was refused
     first = requests[0]
     assert "apply_job" not in _names(first)
@@ -409,17 +413,63 @@ async def test_read_failure_falls_back(caplog):
     assert (r.llm_calls, r.predispatch_outcome) == (2, "failed")
 
 
+def _caps(force: bool):
+    from src.chat_provider.base import Capabilities
+    return Capabilities(supports_tools=True, supports_streaming=True, supports_prompt_cache=False,
+                        supports_image_input=False, supports_audio_input=False,
+                        supports_structured_output=True, supports_force_tool_choice=force)
+
+
 @pytest.mark.asyncio
-async def test_only_offered_tool_is_not_predispatched(caplog):
+async def test_only_offered_tool_fires_and_answers_under_tool_choice_none(caplog):
+    """The only tool stays defined (the pair needs it) and every call sends tool_choice="none"."""
     agent, requests = _agent({"trade": "Welder", "location": "Bengaluru"}, [JOBS_RULE],
-                             tools=[FETCH_DEF])
+                             tools=[FETCH_DEF], fetch_when_offered=True)
+    agent._llm.capabilities = _caps(force=True)
     with caplog.at_level(logging.INFO, logger="src.orchestrator"):
         await _collect_events(agent, _make_turn_input())
 
-    agent._async_gateway.execute.assert_not_awaited()     # nothing ran, nothing counted
-    assert _names(requests[0]) == ["fetch_jobs"] and not _has_pair(requests[0].messages)
+    assert agent._async_gateway.execute.await_count == 1
+    assert len(requests) == 1
+    assert _names(requests[0]) == ["fetch_jobs"] and requests[0].tool_choice == "none"
+    assert _has_pair(requests[0].messages)
     r = _complete_extras(caplog, "orchestrator.stream_turn_complete")
-    assert (r.predispatch_tool, r.predispatch_outcome) == ("fetch_jobs", "skipped_only_tool")
+    assert (r.llm_calls, r.predispatch_tool, r.predispatch_outcome) == (1, "fetch_jobs", "fired")
+
+
+@pytest.mark.asyncio
+async def test_only_offered_tool_without_forced_choice_stays_offered(caplog):
+    """A provider that cannot force a choice (e.g. ollama) keeps the tool under "auto"."""
+    agent, requests = _agent({"trade": "Welder", "location": "Bengaluru"}, [JOBS_RULE],
+                             tools=[FETCH_DEF])
+    agent._llm.capabilities = _caps(force=False)
+    with caplog.at_level(logging.INFO, logger="src.orchestrator"):
+        await _collect_events(agent, _make_turn_input())
+
+    assert _names(requests[0]) == ["fetch_jobs"] and requests[0].tool_choice == "auto"
+    assert _has_pair(requests[0].messages)
+    assert _complete_extras(caplog, "orchestrator.stream_turn_complete").predispatch_outcome == "fired"
+
+
+@pytest.mark.asyncio
+async def test_only_offered_tool_none_reaches_nested_rounds():
+    """tool_choice="none" holds for every main-LLM call of the turn, not only the first."""
+    rounds = [[ToolUseBlock(tool_name="fetch_jobs", tool_use_id="tu_1",
+                            input={"query_text": "Welder jobs in Bengaluru"})]]
+    agent, requests = _agent({"trade": "Welder", "location": "Bengaluru"}, [JOBS_RULE],
+                             tools=[FETCH_DEF], rounds=rounds)
+    agent._llm.capabilities = _caps(force=True)
+    await _collect_events(agent, _make_turn_input())
+
+    assert len(requests) == 2 and [r.tool_choice for r in requests] == ["none", "none"]
+
+
+def test_more_than_one_tool_keeps_removal_and_auto():
+    from src.predispatch.runner import PredispatchResult
+    agent, _requests = _agent({}, [])
+    agent._llm.capabilities = _caps(force=True)
+    pd = PredispatchResult("fired", "fetch_jobs", remove_tool=True)
+    assert agent._inject_predispatch(pd, [], [FETCH_DEF, PROFILE_DEF]) == ([PROFILE_DEF], "auto")
 
 
 @pytest.mark.asyncio
@@ -453,10 +503,10 @@ async def test_abort_during_prompt_build_keeps_predispatched_write():
 # ── sync path ──────────────────────────────────────────────────────────────
 
 def _sync_agent(session, rules, *, intent="any_input", consent=True, post_applied=False,
-                gateway=None, manager=None, caps=None):
+                gateway=None, manager=None, caps=None, tools=None):
     from tests.test_orchestrator import _make_agent
     agent = _make_agent(session_data={"current_subagent_id": "start", **session},
-                        workflow=_workflow(rules, post_applied=post_applied),
+                        workflow=_workflow(rules, post_applied=post_applied, tools=tools),
                         nlu_result=NLUResult(intent=intent, entities={}, confidence=0.9))
     if manager is not None:
         agent._manager_agent = manager
@@ -498,6 +548,56 @@ def test_sync_path_predispatch(caplog):
     assert isinstance(r.predispatch_ms, int)
     banner = next(x.getMessage() for x in caplog.records if "  TURN COMPLETE" in x.getMessage())
     assert "  llm_calls=1  predispatch_tool=fetch_jobs  predispatch_outcome=fired  predispatch_ms=" in banner
+
+
+@pytest.mark.parametrize("force,choice", [(True, "none"), (False, "auto")])
+def test_sync_only_offered_tool_fires(force, choice, caplog):
+    agent, gw = _sync_agent({"trade": "Welder", "location": "Bengaluru"}, [JOBS_RULE], tools=[FETCH_DEF])
+    agent._llm.capabilities = _caps(force=force)
+    with caplog.at_level(logging.INFO, logger="src.orchestrator"):
+        _sync_turn(agent)
+
+    assert gw.execute.call_count == 1 and agent._llm.call.call_count == 1
+    req = agent._llm.call.call_args.args[0]
+    assert _names(req) == ["fetch_jobs"] and req.tool_choice == choice and _has_pair(req.messages)
+    kw = agent._manager_agent.run_turn.call_args.kwargs
+    assert [t["name"] for t in kw["active_tools"]] == ["fetch_jobs"] and kw["tool_choice"] == choice
+    assert _complete_extras(caplog, "orchestrator.turn_complete").predispatch_outcome == "fired"
+
+
+@pytest.mark.asyncio
+async def test_no_trust_client_refuses_a_consent_tool_on_both_paths():
+    """Parity: with no trust client a consent-gated pre-dispatch is refused_guard, sync and stream."""
+    from src.tool_results import TurnToolCache
+    agent, gw = _sync_agent(APPLY_SESSION, [APPLY_RULE], intent="apply_now")
+    agent._trust = None
+    agent._async_trust = None
+    agent._async_gateway = MagicMock()
+    bundle = ContextBundle(session={"current_subagent_id": "start", **APPLY_SESSION}, profile={},
+                           tool_results=[])
+
+    def cache():
+        return TurnToolCache(agent._tool_policies, [], bundle.session)
+
+    sync = agent._predispatch_sync(bundle, "start", "apply_now", cache(), "s1", "u1", {})
+    stream = await agent._predispatch_async(bundle, "start", "apply_now", cache(), "s1", "u1", {})
+    assert (sync.outcome, stream.outcome) == ("refused_guard", "refused_guard")
+    gw.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_memory_error_in_stream_settle_and_hook_is_logged_not_raised(caplog):
+    agent, _requests = _agent({}, [], post_applied=True)
+    agent._async_memory.write = AsyncMock(side_effect=RuntimeError("down"))
+    bundle = ContextBundle(session={}, profile={}, tool_results=[])
+    applied = [ToolResult(tool_use_id="t", tool_name="apply_job", result={}, success=True)]
+    with caplog.at_level(logging.ERROR, logger="src.orchestrator"):
+        await agent._post_applied_hook_async("s1", "u1", bundle, applied)
+        await agent._settle_predispatch_stream(
+            "s1", "u1", bundle, MagicMock(), [], [{"tool_uses": [], "tool_results": []}], 5)
+    recs = [r for r in caplog.records if r.getMessage() == "orchestrator.async_write_failed"]
+    assert len(recs) >= 2 and all(r.error_type == "RuntimeError" for r in recs)   # hook + settle
+    assert bundle.session["current_subagent_id"] == "post_applied"
 
 
 def test_sync_session_values_written_before_run_turn():
