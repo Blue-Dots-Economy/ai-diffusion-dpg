@@ -1,6 +1,6 @@
 """Smoke tests for chat_provider.metrics — instruments are lazy and idempotent."""
 
-from src.chat_provider.metrics import get_metrics, record_call_metrics
+from src.chat_provider.metrics import get_metrics, record_call_metrics, record_predispatch
 from src.chat_provider.types import ChatResponse, TextBlock, TokenUsage
 
 
@@ -51,3 +51,10 @@ def test_record_call_metrics_handles_none_token_fields():
         model="claude-test", call_kind="sync", status="failure",
         latency_ms=10, response=response,
     )
+
+
+def test_record_predispatch_does_not_raise():
+    """Verify record_predispatch never raises, even with various inputs."""
+    record_predispatch("fetch_jobs", "fired")
+    record_predispatch(None, "skipped_fresh")
+    record_predispatch("apply_job", "timeout")

@@ -148,6 +148,7 @@ def record_call_metrics(
 
 
 _SPEC_D_COUNTERS: dict | None = None
+_PREDISPATCH_COUNTER = None
 
 
 def _spec_d_counters() -> dict:
@@ -176,6 +177,18 @@ def _spec_d_counters() -> dict:
     return _SPEC_D_COUNTERS
 
 
+def _predispatch_counter():
+    """Initialise (once) the predispatch outcomes counter."""
+    global _PREDISPATCH_COUNTER
+    if _PREDISPATCH_COUNTER is None:
+        meter = otel_metrics.get_meter(__name__)
+        _PREDISPATCH_COUNTER = meter.create_counter(
+            "agent_core.predispatch.outcomes_total",
+            description="Pre-dispatch outcomes, tagged by tool and outcome.",
+        )
+    return _PREDISPATCH_COUNTER
+
+
 def record_output_guard(channel: str, language: str, digits: int, foreign: int) -> None:
     """Record one turn's output-guard counts. Never raises."""
     try:
@@ -202,4 +215,14 @@ def record_result_shaping_error(tool: str) -> None:
     try:
         _spec_d_counters()["shaping_errors"].add(1, {"tool": tool or ""})
     except Exception:  # noqa: BLE001
+        pass
+
+
+def record_predispatch(tool: str | None, outcome: str) -> None:
+    """Record a predispatch outcome by tool and outcome name. Never raises."""
+    try:
+        counter = _predispatch_counter()
+        if counter is not None:
+            counter.add(1, {"tool": tool or "", "outcome": outcome or ""})
+    except Exception:  # noqa: BLE001 — metrics must never fail a turn
         pass
