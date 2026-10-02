@@ -216,6 +216,7 @@ def _build_app():
         max_tool_rounds=agent_cfg.get("max_tool_rounds", 1),
         grounded_params=grounded_params,
         tool_call_caps=tool_call_caps,
+        identity=config.get("identity"),
         zero_seed_fields=zero_seed_fields(
             ((config.get("preprocessing") or {}).get("nlu_processor") or {}).get("slots")
         ),
