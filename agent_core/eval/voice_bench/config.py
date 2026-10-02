@@ -63,7 +63,9 @@ def _target(d: dict) -> TargetCfg:
     name = d.get("name") or "?"
     if bool(d.get("git_ref")) == bool(d.get("bridge_url")):
         raise ValueError(f"target {name}: set exactly one of git_ref or bridge_url")
-    return TargetCfg(name=name, git_ref=d.get("git_ref"), bridge_url=d.get("bridge_url"),
+    # str(): YAML reads an unquoted all-digit short sha as an int.
+    ref = d.get("git_ref")
+    return TargetCfg(name=name, git_ref=str(ref) if ref else None, bridge_url=d.get("bridge_url"),
                      compose=d.get("compose") or _DEFAULT_COMPOSE,
                      redis_container=d.get("redis_container") or "redis",
                      agent_container=d.get("agent_container", "agent_core"),

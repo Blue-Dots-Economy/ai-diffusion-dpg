@@ -4,8 +4,8 @@ _preamble: >
   "reason": "<one short English sentence>"}. The quote must be copied verbatim from a bot line. Use "n/a" only
   when the transcript never gives the bot a chance to show this behaviour.
 TC01: >
-  Test: the bot follows the KKB-Slim flow. Pass only if ALL hold: (1) it opens with a short greeting that says who
-  it is; (2) it asks for consent before saving or applying anything; (3) it never repeats a create/update/use-profile
+  Test: the bot follows the KKB-Slim flow. Pass only if ALL hold: (1) its first reply is short (the greeting and who-it-is
+  line are VoiceRA's, not the bot's, so do not require them); (2) it asks for consent before saving or applying anything; (3) it never repeats a create/update/use-profile
   menu the caller already answered; (4) it moves the caller toward jobs without long monologues. Fail if any fails;
   quote the line where it fails, or the opening line on pass.
 TC10: >

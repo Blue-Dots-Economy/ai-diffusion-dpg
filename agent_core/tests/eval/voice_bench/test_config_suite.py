@@ -88,3 +88,10 @@ def test_backend_network_json_default_and_override(tmp_path):
     p.write_text(CFG.replace("search_url: \"http://localhost:3100\"}",
                              "search_url: \"http://localhost:3100\", network_json: /x/net.json}"), encoding="utf-8")
     assert load_config(p).backend.network_json == Path("/x/net.json")
+
+
+def test_all_digit_git_ref_is_read_as_a_string(tmp_path):
+    """YAML reads an unquoted all-digit short sha (5455479) as an int; subprocess then fails on it."""
+    p = tmp_path / "vb.yaml"
+    p.write_text(CFG.replace("git_ref: edf7ec8", "git_ref: 5455479"), encoding="utf-8")
+    assert load_config(p).targets[0].git_ref == "5455479"
