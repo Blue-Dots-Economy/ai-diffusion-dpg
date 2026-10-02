@@ -214,14 +214,28 @@ def _asked_fields(reply: str) -> list[str]:
     return [f for f, cues in FIELD_CUES.items() if any(c in reply for c in cues)]
 
 
+def _is_value_known(value) -> bool:
+    """Check if a value represents an actual known field value or a placeholder.
+
+    Placeholders include: None, empty strings, "0", "false", "none", "null", "[]", "{}".
+    Real values are non-empty strings that aren't placeholders.
+    """
+    if value is None:
+        return False
+    if not isinstance(value, str):
+        return True
+    cleaned = value.strip().casefold()
+    return cleaned not in ("", "0", "false", "none", "null", "[]", "{}")
+
+
 def _known(session: dict, field: str) -> bool:
-    return any(session.get(k) for k in SESSION_KEYS[field])
+    return any(_is_value_known(session.get(k)) for k in SESSION_KEYS[field])
 
 
 def _reads_back(reply: str, session: dict, field: str) -> bool:
     """The reply contains the field's known value: a confirmation read-back ("आपका नाम रमेश है, सही है?"), not a re-ask."""
     folded = reply.casefold()
-    return any(isinstance(v, str) and v.strip() and v.strip().casefold() in folded
+    return any(_is_value_known(v) and isinstance(v, str) and v.strip().casefold() in folded
                for v in (session.get(k) for k in SESSION_KEYS[field]))
 
 

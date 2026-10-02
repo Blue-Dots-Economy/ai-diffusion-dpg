@@ -209,3 +209,38 @@ def test_tc05_terminal_word_counts_as_a_goodbye():
     # a goodbye in the text on an earlier turn plus a terminal-word goodbye later = two goodbyes
     two = [T(0, "a", "धन्यवाद, नमस्ते।"), _tw(1, "b", "ठीक है", "धन्यवाद", ended=True)]
     assert v("TC05", rec((two, "bot"))) == "fail"
+
+
+def test_tc09_placeholder_values_not_known():
+    """TC09: placeholder values ("0", "false", empty string, "[]", "{}") are not treated as known."""
+    # age = "0" is a placeholder, bot can ask for age again
+    age_zero = [T(0, "नमस्ते", "ठीक है।", session={"age": "0"}),
+                T(1, "चौबीस", "आपकी उम्र क्या है?", session={"age": "0"})]
+    assert v("TC09", rec((age_zero, "bot"))) == "pass"
+    
+    # age = "24" is a real value, bot should not ask for age again
+    age_real = [T(0, "नमस्ते", "ठीक है।", session={"age": "24"}),
+                T(1, "चौबीस", "आपकी उम्र क्या है?", session={"age": "24"})]
+    assert v("TC09", rec((age_real, "bot"))) == "fail"
+    
+    # has_age = "false" is a placeholder, bot can ask for age
+    has_age_false = [T(0, "नमस्ते", "ठीक है।", session={"has_age": "false"}),
+                     T(1, "चौबीस", "आपकी उम्र क्या है?", session={"has_age": "false"})]
+    assert v("TC09", rec((has_age_false, "bot"))) == "pass"
+    
+    # empty string is a placeholder
+    age_empty = [T(0, "नमस्ते", "ठीक है।", session={"age": ""}),
+                 T(1, "चौबीस", "आपकी उम्र क्या है?", session={"age": ""})]
+    assert v("TC09", rec((age_empty, "bot"))) == "pass"
+    
+    # {} is a placeholder
+    age_empty_obj = [T(0, "नमस्ते", "ठीक है।", session={"age": "{}"}),
+                     T(1, "चौबीस", "आपकी उम्र क्या है?", session={"age": "{}"})]
+    assert v("TC09", rec((age_empty_obj, "bot"))) == "pass"
+    
+    # [] is a placeholder
+    age_empty_array = [T(0, "नमस्ते", "ठीक है।", session={"age": "[]"}),
+                       T(1, "चौबीस", "आपकी उम्र क्या है?", session={"age": "[]"})]
+    assert v("TC09", rec((age_empty_array, "bot"))) == "pass"
+
+
