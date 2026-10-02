@@ -261,13 +261,39 @@ def _trade_names() -> list[str]:
 def _carries_value(caller: str, field: str, places: dict[str, list[str]]) -> bool:
     """The caller line plausibly answered `field` (name is never value-detected)."""
     if field == "age":
-        if re.search(r"\d", caller):
-            return True
-        return any(w in AGE_WORDS or w.endswith(AGE_SUFFIXES) for w in re.findall(r"[\w\u0900-\u097F]+", caller))
+        # Strip punctuation [\u0964\u0965,.?!"'] by replacing with space
+        stripped = re.sub(r"[\u0964\u0965,.?!\"']", " ", caller)
+        tokens = stripped.split()
+
+        # Check if line has an age indicator (1\u20132-digit run or age word token)
+        has_age_indicator = False
+        if re.search(r"\d{1,2}", caller):  # 1\u20132-digit run (check original for actual digits)
+            has_age_indicator = True
+        else:
+            # Check for age word tokens in stripped text
+            for w in tokens:
+                if w in AGE_WORDS or w.endswith(AGE_SUFFIXES):
+                    has_age_indicator = True
+                    break
+
+        if not has_age_indicator:
+            return False
+
+        # Check if line has age context: contains "\u0938\u093E\u0932", "\u0909\u092E\u094D\u0930", "\u0935\u0930\u094D\u0937" OR \u22643 tokens
+        has_age_context = (
+            re.search(r"(\u0938\u093E\u0932|\u0909\u092E\u094D\u0930|\u0935\u0930\u094D\u0937)", caller) is not None
+            or len(tokens) <= 3
+        )
+
+        return has_age_context
     if field == "city":
-        return any(_names_place(caller, aliases) for aliases in places.values())
+        # Strip punctuation before checking city names
+        stripped = re.sub(r"[\u0964\u0965,.?!\"']", " ", caller)
+        return any(_names_place(stripped, aliases) for aliases in places.values())
     if field == "trade":
-        folded = caller.casefold()
+        # Strip punctuation before checking trade names
+        stripped = re.sub(r"[\u0964\u0965,.?!\"']", " ", caller)
+        folded = stripped.casefold()
         return any(n in folded for n in _trade_names())
     return False
 

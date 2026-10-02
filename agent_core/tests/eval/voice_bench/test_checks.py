@@ -262,3 +262,40 @@ def test_tc09_reask_after_caller_answered():
     assert v("TC09", rec((corrected, "bot"))) == "pass"
     word = [live[0], live[1], T(2, "पच्चीस", "ठीक है।", session=z), live[3]]
     assert v("TC09", rec((word, "bot"))) == "fail"
+
+
+def test_tc09_carries_value_punctuation_stripping():
+    """TC09 fix 1: punctuation (danda, comma, period) must be stripped before matching age/city/trade."""
+    # "चौबीस।" with danda should detect as age (≤3 tokens, age word present)
+    z = {"age": "0"}
+    danda = [T(0, "नमस्ते", "आपकी उम्र क्या है?", session=z), T(1, "चौबीस।", "ठीक है।", session=z),
+             T(2, "जी", "आपकी उम्र क्या है?", session=z)]
+    assert v("TC09", rec((danda, "bot"))) == "fail"
+
+    # "लखनऊ।" with danda should detect as city
+    city_danda = [T(0, "हाँ", "आप कहाँ रहते हैं?"), T(1, "लखनऊ।", "ठीक है।"), T(2, "जी", "आपका शहर कौन सा है?")]
+    assert v("TC09", rec((city_danda, "bot"))) == "fail"
+
+
+def test_tc09_carries_value_age_context_required():
+    """TC09 fix 2: standalone small number words or digits count as age only with age-context words or ≤3 tokens."""
+    z = {"age": "0"}
+
+    # "एक मिनट रुकिए, मैं सोचकर बताता हूँ" starts with "एक" but is NOT about age
+    # (no "साल"/"उम्र"/"वर्ष" and more than 3 tokens after punctuation stripping)
+    not_age = [T(0, "नमस्ते", "आपकी उम्र क्या है?", session=z),
+               T(1, "एक मिनट रुकिए, मैं सोचकर बताता हूँ", "ठीक है।", session=z),
+               T(2, "जी", "आपकी उम्र क्या है?", session=z)]
+    assert v("TC09", rec((not_age, "bot"))) == "pass"  # should pass, not re-ask
+
+    # "मेरा नंबर 9876500000 है" has digits but no age context
+    phone = [T(0, "नमस्ते", "आपकी उम्र क्या है?", session=z),
+             T(1, "मेरा नंबर 9876500000 है", "ठीक है।", session=z),
+             T(2, "जी", "आपकी उम्र क्या है?", session=z)]
+    assert v("TC09", rec((phone, "bot"))) == "pass"  # should pass, not re-ask
+
+    # "मेरी उम्र 24 साल है।" has age context words
+    proper_age = [T(0, "नमस्ते", "आपकी उम्र क्या है?", session=z),
+                  T(1, "मेरी उम्र 24 साल है।", "ठीक है।", session=z),
+                  T(2, "जी", "आपकी उम्र क्या है?", session=z)]
+    assert v("TC09", rec((proper_age, "bot"))) == "fail"  # should fail, is re-ask
