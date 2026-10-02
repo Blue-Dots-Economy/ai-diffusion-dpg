@@ -275,7 +275,7 @@ def _dialogue_act_session_mapping_rules(ac: dict, ag: dict) -> list[str]:
     return errors
 
 
-_FRAMEWORK_HANDLED_INTENTS: frozenset[str] = frozenset({"language_switch_request"})
+_FRAMEWORK_HANDLED_INTENTS: frozenset[str] = frozenset({"language_switch_request", "human_request"})
 """Mirrors runtime ``_FRAMEWORK_HANDLED_INTENTS``: derived but never routed."""
 
 _DEFAULT_OFF_TRACK_INTENT = "off_track"
@@ -302,8 +302,8 @@ def _dialogue_act_routing_rules(ac: dict) -> list[str]:
     """Mirror runtime ``MergedConfig._check_dialogue_act_rules`` routing checks.
 
     Every ``act_intents`` intent must be used by a subagent routing rule or
-    by ``agent_workflow.global_routing`` (``language_switch_request`` is
-    framework-handled), and the off-track intent must be routed whenever
+    by ``agent_workflow.global_routing`` (``language_switch_request`` and
+    ``human_request`` are framework-handled), and the off-track intent must be routed whenever
     the workflow has subagents. Messages match the runtime, prefixed with
     ``agent_core.``.
 
@@ -340,11 +340,32 @@ def _dialogue_act_routing_rules(ac: dict) -> list[str]:
     return errors
 
 
+def _handoff_rules(ac: dict) -> list[str]:
+    """``identity.human_handoff: request`` needs a ``handoff`` block and a ``handoff`` subagent.
+
+    Mirrors the runtime ``MergedConfig`` cross-check (identity/handoff spec §7).
+
+    Args:
+        ac: The ``agent_core`` block dict.
+
+    Returns:
+        A one-element error list when the rule fails, else empty.
+    """
+    identity = ac.get("identity") if isinstance(ac.get("identity"), dict) else {}
+    if identity.get("human_handoff") != "request":
+        return []
+    subagents = ((ac.get("agent_workflow") or {}).get("subagents")) or []
+    has_phase = any(isinstance(s, dict) and s.get("id") == "handoff" for s in subagents)
+    if ac.get("handoff") and has_phase:
+        return []
+    return ["agent_core.identity.human_handoff=request needs a handoff block and a 'handoff' subagent"]
+
+
 def _intent_filter_rules(ac: dict, ke: dict) -> list[str]:
     """Check KE ``intent_filters`` keys against the routing intent set the NLU can derive.
 
     The routing intent on a turn is an ``act_intents`` intent, ``any_input``,
-    the off-track intent or ``language_switch_request``; a filter keyed on
+    the off-track intent, ``language_switch_request`` or ``human_request``; a filter keyed on
     anything else never matches. Self-guards until ``act_intents`` is
     authored (it is hand-written in ``agent_core.yaml`` for now, spec §16).
 
@@ -372,7 +393,7 @@ def _intent_filter_rules(ac: dict, ke: dict) -> list[str]:
     return [
         f"knowledge_engine.intent_filters key '{key}' is not an intent the NLU can derive "
         f"(an agent_core.preprocessing.nlu_processor.act_intents row intent, '{_ANY_INPUT_INTENT}', "
-        f"the off-track intent or 'language_switch_request'). Queries for this key never "
+        f"the off-track intent, 'language_switch_request' or 'human_request'). Queries for this key never "
         f"match; rename it or remove it. Known: {sorted(derivable)}"
         for key in intent_filters
         if key not in derivable
@@ -466,6 +487,7 @@ def validate_cross_block(
     # (mirrors the runtime _check_dialogue_act_rules). Tied to the workflow phase.
     if applicable_after("workflow"):
         errors.extend(_dialogue_act_routing_rules(ac))
+        errors.extend(_handoff_rules(ac))
 
     # 4. knowledge_retrieval must be in connectors.internal (not connectors.read).
     # Tied to tools phase (when connectors.internal is populated) but only

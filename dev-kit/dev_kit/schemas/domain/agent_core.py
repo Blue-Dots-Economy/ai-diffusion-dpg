@@ -810,6 +810,34 @@ class HitlSection(BaseModel):
     response_message: str = Field(..., min_length=1)
 
 
+# -- agent_core.identity / agent_core.handoff --------------------------------
+
+class IdentitySection(BaseModel):
+    """agent_core.identity — mirrors runtime ``IdentityConfig``. YAML-authored, not wizard-authored, in v1."""
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1)
+    kind: Literal["ai_assistant"] = "ai_assistant"
+    operator: str = Field(min_length=1)
+    disclosure: str = Field(min_length=1)
+    human_handoff: Literal["none", "request"] = "none"
+    no_handoff_line: str = Field(min_length=1)
+
+
+class HandoffLinesSection(BaseModel):
+    """Spoken handoff outcome lines (mirrors runtime ``HandoffLines``)."""
+    model_config = ConfigDict(extra="forbid")
+    delivered: str = Field(min_length=1)
+    failed: str = Field(min_length=1)
+    already: str = Field(min_length=1)
+
+
+class HandoffSection(BaseModel):
+    """agent_core.handoff — mirrors runtime ``HandoffConfig``. YAML-authored, not wizard-authored, in v1."""
+    model_config = ConfigDict(extra="forbid")
+    lines: HandoffLinesSection
+    summary_turns: int = Field(default=6, ge=1, le=20)
+
+
 # -- agent_core.reach_layer (top-level default turn-assembler) ---------------
 
 class ReachLayerDefaultsSection(BaseModel):

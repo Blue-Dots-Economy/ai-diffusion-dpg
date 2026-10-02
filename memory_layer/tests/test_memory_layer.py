@@ -807,3 +807,39 @@ def test_context_bundle_coerces_declared_int_fields_to_int():
 def test_coerce_session_types_int_field_values(raw, expected):
     layer, _ = _make_layer()
     assert layer._coerce_session_types({"count": raw})["count"] == expected
+
+
+def _adopt(last_state: dict) -> dict:
+    layer, stores = _make_layer()
+    stores["user"].user_exists.return_value = True
+    stores["user"].get_profile.return_value = {}
+    stores["journey"].get_last_journey_summary.return_value = None
+    stores["redis"].session_exists.side_effect = lambda s: s == "old-sess"
+    stores["redis"].get_user_sessions.return_value = {"old-sess": "2024-01-01T10:00:00Z"}
+    stores["redis"].get_session.return_value = last_state
+    return layer.context_bundle("new-sess", "user-1")["session"]
+
+
+def test_context_bundle_adoption_resets_handoff_state():
+    """A new call must not inherit the previous call's handoff cap or markers."""
+    session = _adopt({
+        "handoff_status": "delivered", "handoff_line": "delivered",
+        "handoff_ticket_id": "t-1", "handoff_pending_at": "1700000000000",
+        "current_subagent_id": "job_match", "trade": "welder",
+    })
+    for k in ("handoff_status", "handoff_line", "handoff_ticket_id", "handoff_pending_at"):
+        assert k not in session
+    assert session["current_subagent_id"] == "job_match"
+    assert session["trade"] == "welder"
+
+
+def test_context_bundle_adoption_from_handoff_phase_lands_on_close_return_to():
+    session = _adopt({"current_subagent_id": "handoff", "close_return_to": "job_match",
+                      "handoff_status": "delivered"})
+    assert session["current_subagent_id"] == "job_match"
+
+
+def test_context_bundle_adoption_from_handoff_phase_without_return_uses_start_phase():
+    """No close_return_to: drop the phase so Agent Core falls back to the workflow start."""
+    session = _adopt({"current_subagent_id": "handoff", "handoff_status": "failed"})
+    assert "current_subagent_id" not in session

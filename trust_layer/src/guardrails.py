@@ -21,6 +21,8 @@ import logging
 import re
 import time
 
+from blocks.hitl import HiTLBlock
+
 logger = logging.getLogger(__name__)
 
 
@@ -98,6 +100,8 @@ class BasicTrustLayer:
     def __init__(self, config: dict) -> None:
         if config is None:
             raise ValueError("config must not be None")
+
+        self._hitl = HiTLBlock(config)
 
         trust_cfg = config.get("trust", {})
         input_cfg = trust_cfg.get("input_rules", {})
@@ -258,6 +262,30 @@ class BasicTrustLayer:
             },
         )
         return True
+
+    def escalate(
+        self,
+        session_id: str,
+        escalation_reason: str,
+        user_message: str,
+        workflow_step: str,
+        handoff: dict | None = None,
+    ) -> dict:
+        """Delegate to HiTLBlock.escalate.
+
+        Args:
+            session_id: Unique identifier for the conversation session.
+            escalation_reason: Reason for escalation.
+            user_message: The user's message that triggered escalation.
+            workflow_step: The workflow step at which escalation occurred.
+            handoff: Optional handoff payload.
+
+        Returns:
+            Dict with queued, delivered, reason, ticket_id, and holding_message.
+        """
+        return self._hitl.escalate(
+            session_id, escalation_reason, user_message, workflow_step, handoff
+        )
 
 
 # ---------------------------------------------------------------------------

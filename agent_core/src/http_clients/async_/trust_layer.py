@@ -27,7 +27,13 @@ class AsyncTrustLayerConstraintError(RuntimeError):
     """Raised when async assemble_constraints fails; caller must block the turn."""
 
 
-_ESCALATE_FAILED = {"queued": False, "ticket_id": "", "holding_message": ""}
+_ESCALATE_FAILED = {
+    "queued": False,
+    "delivered": False,
+    "reason": "unreachable",
+    "ticket_id": "",
+    "holding_message": "",
+}
 
 
 class AsyncTrustLayerHttpClient(AsyncTrustLayerBase):
@@ -44,6 +50,7 @@ class AsyncTrustLayerHttpClient(AsyncTrustLayerBase):
         client_cfg = config.get("trust_client", {})
         self._endpoint: str = client_cfg.get("endpoint", "http://localhost:8003")
         self._timeout_s: float = client_cfg.get("timeout_ms", 2000) / 1000
+        self._escalate_timeout_s: float = client_cfg.get("escalate_timeout_ms", 8000) / 1000
         self._client = httpx.AsyncClient(timeout=self._timeout_s)
         logger.info(
             "async_trust_http_client.init",
@@ -275,45 +282,40 @@ class AsyncTrustLayerHttpClient(AsyncTrustLayerBase):
         escalation_reason: str,
         user_message: str,
         workflow_step: str,
+        handoff: dict | None = None,
     ) -> dict:
-        """Call POST /escalate. Returns queued=False on failure."""
+        """Call POST /escalate once. Returns queued=False, delivered=False on failure.
+
+        Not retried (a retry could deliver the handoff twice). Uses
+        ``trust_client.escalate_timeout_ms`` (default 8000), not ``timeout_ms``.
+        """
         if session_id is None:
             raise ValueError("session_id must not be None")
         start = time.time()
-        for attempt in range(2):
-            try:
-                resp = await self._client.post(
-                    f"{self._endpoint}/escalate",
-                    json={
-                        "session_id": session_id,
-                        "escalation_reason": escalation_reason,
-                        "user_message": user_message or "",
-                        "workflow_step": workflow_step,
-                    },
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                logger.info("async_trust_http_client.escalate", extra={
-                    "operation": "async_trust_http_client.escalate", "status": "success",
-                    "session_id": session_id, "ticket_id": data.get("ticket_id"),
-                    "latency_ms": int((time.time() - start) * 1000),
-                })
-                return data
-            except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPStatusError) as e:
-                if attempt == 0:
-                    await asyncio.sleep(0.1)
-                    continue
-                logger.error("async_trust_http_client.escalate_error", extra={
-                    "operation": "async_trust_http_client.escalate", "status": "failure",
-                    "session_id": session_id, "error": f"{type(e).__name__}: {e}",
-                    "latency_ms": int((time.time() - start) * 1000),
-                })
-                return dict(_ESCALATE_FAILED)
-            except Exception as e:
-                logger.error("async_trust_http_client.escalate_error", extra={
-                    "operation": "async_trust_http_client.escalate", "status": "failure",
-                    "session_id": session_id, "error": f"{type(e).__name__}: {e}",
-                    "latency_ms": int((time.time() - start) * 1000),
-                })
-                return dict(_ESCALATE_FAILED)
-        return dict(_ESCALATE_FAILED)
+        try:
+            resp = await self._client.post(
+                f"{self._endpoint}/escalate",
+                json={
+                    "session_id": session_id,
+                    "escalation_reason": escalation_reason,
+                    "user_message": user_message or "",
+                    "workflow_step": workflow_step,
+                    **({"handoff": handoff} if handoff is not None else {}),
+                },
+                timeout=self._escalate_timeout_s,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            logger.info("async_trust_http_client.escalate", extra={
+                "operation": "async_trust_http_client.escalate", "status": "success",
+                "session_id": session_id, "ticket_id": data.get("ticket_id"),
+                "latency_ms": int((time.time() - start) * 1000),
+            })
+            return data
+        except Exception as e:
+            logger.error("async_trust_http_client.escalate_error", extra={
+                "operation": "async_trust_http_client.escalate", "status": "failure",
+                "session_id": session_id, "error": f"{type(e).__name__}: {e}",
+                "latency_ms": int((time.time() - start) * 1000),
+            })
+            return dict(_ESCALATE_FAILED)

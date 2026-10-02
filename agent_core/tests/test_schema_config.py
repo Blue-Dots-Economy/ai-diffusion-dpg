@@ -751,3 +751,50 @@ def test_off_track_intent_must_be_routed_when_a_workflow_exists():
     cfg["agent_workflow"]["subagents"][0]["routing"].pop(0)
     with pytest.raises(ValidationError, match="off_track.intent 'off_track' is not used"):
         MergedConfig.validate_full(cfg)
+
+
+# ---------------------------------------------------------------------------
+# identity + handoff blocks
+# ---------------------------------------------------------------------------
+
+_IDENT = {"name": "ब्लू डॉट्स सहायक", "operator": "Blue Dots",
+          "disclosure": "जी, मैं ब्लू डॉट्स की AI सहायक हूँ।", "no_handoff_line": "अभी कोई इंसान उपलब्ध नहीं है।"}
+_HANDOFF = {"lines": {"delivered": "d", "failed": "f", "already": "a"}}
+
+
+def test_identity_optional_and_defaults():
+    cfg = MergedConfig.validate_full({**_minimal_valid_config(), "identity": _IDENT})
+    assert cfg.identity.human_handoff == "none" and cfg.identity.kind == "ai_assistant"
+    assert MergedConfig.validate_full(_minimal_valid_config()).identity is None
+    assert MergedConfig.validate_full(_minimal_valid_config()).handoff is None
+
+
+def test_identity_rejects_empty_disclosure():
+    with pytest.raises(ValidationError):
+        MergedConfig.validate_full({**_minimal_valid_config(), "identity": {**_IDENT, "disclosure": ""}})
+
+
+def test_request_requires_handoff_block_and_subagent():
+    with pytest.raises(ValidationError, match="human_handoff=request"):
+        MergedConfig.validate_full({**_minimal_valid_config(), "identity": {**_IDENT, "human_handoff": "request"}})
+
+
+def test_request_needs_handoff_subagent_even_with_block():
+    with pytest.raises(ValidationError, match="human_handoff=request"):
+        MergedConfig.validate_full({**_minimal_valid_config(),
+                                    "identity": {**_IDENT, "human_handoff": "request"}, "handoff": _HANDOFF})
+
+
+def test_request_accepted_with_block_and_subagent():
+    base = copy.deepcopy(_minimal_valid_config())
+    wf = base.setdefault("agent_workflow", {})
+    wf["subagents"] = [*wf.get("subagents", []), {"id": "handoff", "name": "Handoff"}]
+    cfg = MergedConfig.validate_full({**base, "identity": {**_IDENT, "human_handoff": "request"},
+                                      "handoff": _HANDOFF})
+    assert cfg.handoff.summary_turns == 6
+
+
+def test_handoff_summary_turns_bounds():
+    for bad in (0, 21):
+        with pytest.raises(ValidationError):
+            MergedConfig.validate_full({**_minimal_valid_config(), "handoff": {**_HANDOFF, "summary_turns": bad}})

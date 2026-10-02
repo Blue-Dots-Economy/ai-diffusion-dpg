@@ -33,7 +33,13 @@ _EMPTY_CONSTRAINTS = {
     "action_gates": {},
     "refusal_templates": {},
 }
-_ESCALATE_FAILED = {"queued": False, "ticket_id": "", "holding_message": ""}
+_ESCALATE_FAILED = {
+    "queued": False,
+    "delivered": False,
+    "reason": "unreachable",
+    "ticket_id": "",
+    "holding_message": "",
+}
 
 
 class TrustLayerHttpClient(TrustLayerBase):
@@ -51,6 +57,7 @@ class TrustLayerHttpClient(TrustLayerBase):
         client_cfg = config.get("trust_client", {})
         self._endpoint: str = client_cfg.get("endpoint", "http://localhost:8003")
         self._timeout_s: float = client_cfg.get("timeout_ms", 2000) / 1000
+        self._escalate_timeout_s: float = client_cfg.get("escalate_timeout_ms", 8000) / 1000
         logger.info(
             "trust_http_client.init",
             extra={
@@ -348,18 +355,24 @@ class TrustLayerHttpClient(TrustLayerBase):
         escalation_reason: str,
         user_message: str,
         workflow_step: str,
+        handoff: dict | None = None,
     ) -> dict:
-        """Call POST /escalate. Returns queued=False on any failure.
+        """Call POST /escalate once. Returns queued=False, delivered=False on any failure.
+
+        Not retried: the Trust Layer may already have delivered the handoff
+        when the call times out, and a retry would deliver it twice. Uses
+        ``trust_client.escalate_timeout_ms`` (default 8000), not ``timeout_ms``.
 
         Args:
             session_id: Active session identifier.
             escalation_reason: Reason code for the escalation.
             user_message: The user message that triggered escalation.
             workflow_step: Current workflow step at time of escalation.
+            handoff: Optional human-handoff payload, forwarded as-is.
 
         Returns:
-            Dict with queued (bool), ticket_id (str), holding_message (str).
-            Returns queued=False structure on failure.
+            Dict with queued, delivered, reason, ticket_id, holding_message.
+            On failure: queued=False, delivered=False, reason="unreachable".
 
         Raises:
             ValueError: If session_id is None.
@@ -367,45 +380,30 @@ class TrustLayerHttpClient(TrustLayerBase):
         if session_id is None:
             raise ValueError("session_id must not be None")
         start = time.time()
-        for attempt in range(2):  # 1 retry
-            try:
-                resp = httpx.post(
-                    f"{self._endpoint}/escalate",
-                    json={
-                        "session_id": session_id,
-                        "escalation_reason": escalation_reason,
-                        "user_message": user_message or "",
-                        "workflow_step": workflow_step,
-                    },
-                    timeout=self._timeout_s,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                logger.info("trust_http_client.escalate", extra={
-                    "operation": "trust_http_client.escalate", "status": "success",
-                    "session_id": session_id, "ticket_id": data.get("ticket_id"),
-                    "latency_ms": int((time.time() - start) * 1000),
-                })
-                return data
-            except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPStatusError) as e:
-                if attempt == 0:
-                    logger.warning("trust_http_client.escalate_retry", extra={
-                        "operation": "trust_http_client.escalate", "status": "retrying",
-                        "session_id": session_id, "error": f"{type(e).__name__}: {e}",
-                    })
-                    time.sleep(0.1)
-                    continue
-                logger.error("trust_http_client.escalate_error", extra={
-                    "operation": "trust_http_client.escalate", "status": "failure",
-                    "session_id": session_id, "error": f"{type(e).__name__}: {e}",
-                    "latency_ms": int((time.time() - start) * 1000),
-                })
-                return dict(_ESCALATE_FAILED)
-            except Exception as e:
-                logger.error("trust_http_client.escalate_error", extra={
-                    "operation": "trust_http_client.escalate", "status": "failure",
-                    "session_id": session_id, "error": f"{type(e).__name__}: {e}",
-                    "latency_ms": int((time.time() - start) * 1000),
-                }, exc_info=True)
-                return dict(_ESCALATE_FAILED)
-        return dict(_ESCALATE_FAILED)  # fail-closed (unreachable but safe)
+        try:
+            resp = httpx.post(
+                f"{self._endpoint}/escalate",
+                json={
+                    "session_id": session_id,
+                    "escalation_reason": escalation_reason,
+                    "user_message": user_message or "",
+                    "workflow_step": workflow_step,
+                    **({"handoff": handoff} if handoff is not None else {}),
+                },
+                timeout=self._escalate_timeout_s,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            logger.info("trust_http_client.escalate", extra={
+                "operation": "trust_http_client.escalate", "status": "success",
+                "session_id": session_id, "ticket_id": data.get("ticket_id"),
+                "latency_ms": int((time.time() - start) * 1000),
+            })
+            return data
+        except Exception as e:
+            logger.error("trust_http_client.escalate_error", extra={
+                "operation": "trust_http_client.escalate", "status": "failure",
+                "session_id": session_id, "error": f"{type(e).__name__}: {e}",
+                "latency_ms": int((time.time() - start) * 1000),
+            })
+            return dict(_ESCALATE_FAILED)

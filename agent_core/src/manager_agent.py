@@ -29,6 +29,7 @@ from src.chat_provider.types import (
     ToolUseBlock,
 )
 from src.exceptions import ConsentRequiredError
+from src.identity import render_identity
 from src.interfaces.action_gateway import ActionGatewayBase
 from src.interfaces.knowledge_engine import KnowledgeEngineBase
 from src.interfaces.trust_layer import TrustLayerBase
@@ -265,6 +266,8 @@ class ManagerAgent:
                           (only those tools' results). Blocks execution when the
                           model supplies an identifier it invented, or one it
                           copied out of a different tool's response.
+        identity:         Use-case identity config dict; renders the tier-1 ``<identity>``
+                          block. None omits the block.
     """
 
     def __init__(
@@ -278,6 +281,7 @@ class ManagerAgent:
         grounded_params: dict[str, list[str]] | None = None,
         tool_call_caps: dict[str, int] | None = None,
         zero_seed_fields: frozenset[str] = frozenset(),
+        identity: dict | None = None,
     ) -> None:
         if chat_provider is None:
             raise ValueError("chat_provider must not be None")
@@ -298,6 +302,8 @@ class ManagerAgent:
         self._max_tool_rounds = max(1, max_tool_rounds)
         # Profile fields for which the string "0" is the unset seed.
         self._zero_seed_fields = frozenset(zero_seed_fields)
+        # Use-case identity config (name/disclosure/handoff mode); None = no <identity> block.
+        self._identity = identity
         # tool name -> params whose value must have appeared in an earlier tool
         # result this conversation. Guards against the model inventing an
         # identifier that is well-formed but refers to nothing.
@@ -735,6 +741,7 @@ class ManagerAgent:
         suffix = (channel_config or {}).get("system_prompt_suffix", "")
         tier1 = join([
             xml("persona", agent_system_prompt),
+            xml("identity", render_identity(self._identity)),
             xml("channel_rules", suffix),
             xml("session_end_policy", session_end_eval_prompt),
         ])

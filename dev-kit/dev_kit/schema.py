@@ -38,6 +38,10 @@ class ClientConfig(BaseModel):
     timeout_ms: int = 5000
 
 
+class TrustClientConfig(ClientConfig):
+    escalate_timeout_ms: int = 8000
+
+
 # ---------------------------------------------------------------------------
 # Agent Core
 # ---------------------------------------------------------------------------
@@ -762,7 +766,7 @@ class AgentCoreConfig(BaseModel):
     connectors: ConnectorsConfig = ConnectorsConfig()
     ke_client: ClientConfig
     memory_client: ClientConfig
-    trust_client: ClientConfig
+    trust_client: TrustClientConfig
     learning_client: ClientConfig
     action_gateway_client: ClientConfig
     preprocessing: PreprocessingConfig
@@ -781,6 +785,8 @@ class AgentCoreConfig(BaseModel):
         default=None, description="Framework `remember` tool config (name, fields)"
     )
     session_bootstrap: Optional[dict] = None
+    identity: Optional[dict] = None
+    handoff: Optional[dict] = None
     hitl: HitlConfig | None = Field(
         default=None,
         description="HITL config. Required if any subagent uses special_handler: hitl.",
@@ -916,7 +922,7 @@ class HitlTrustConfig(BaseModel):
 
     queue_backend: str = Field(default="log", description="Backend for queuing HITL requests: log, redis, or webhook")
     holding_message: str = Field(default="", description="Message shown to user while waiting for a human agent")
-    notification_webhook: str | None = Field(default=None, description="Webhook URL notified when an HITL case is queued")
+    notification_webhook: str | None = Field(default=None, description="Unused (deprecated); the webhook URL comes from the HITL_WEBHOOK_URL env var")
 
 
 class TrustConfig(BaseModel):

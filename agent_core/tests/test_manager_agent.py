@@ -60,6 +60,7 @@ def _make_manager(
     tool_result: ToolResult = None,
     consent_granted: bool = True,
     requires_consent: bool = False,
+    identity: dict | None = None,
 ) -> tuple[ManagerAgent, MagicMock, MagicMock, MagicMock, MagicMock]:
     llm = MagicMock()
     llm.call.side_effect = llm_responses[1:]  # first response is passed directly
@@ -85,6 +86,7 @@ def _make_manager(
         knowledge_engine=ke,
         trust_layer=trust,
         max_tool_rounds=1,
+        identity=identity,
     )
     return agent, llm, registry, gateway, trust
 
@@ -275,8 +277,8 @@ def test_consent_denied_returns_consent_required_tool_result():
 # ---------------------------------------------------------------------------
 
 
-def _make_manager_for_prompt() -> ManagerAgent:
-    agent, *_ = _make_manager([_text_llm_response()])
+def _make_manager_for_prompt(identity: dict | None = None) -> ManagerAgent:
+    agent, *_ = _make_manager([_text_llm_response()], identity=identity)
     return agent
 
 
@@ -769,6 +771,29 @@ def test_build_system_prompt_tier1_has_cache_hint():
     assert "Voice rules." in tier1.text
     assert "<session_end_policy>" in tier1.text
     assert "End eval." in tier1.text
+
+
+_IDENT = {"name": "ब्लू डॉट्स सहायक", "kind": "ai_assistant", "operator": "Blue Dots",
+          "disclosure": "जी, मैं ब्लू डॉट्स की AI सहायक हूँ।", "human_handoff": "none",
+          "no_handoff_line": "अभी इस कॉल पर कोई इंसान उपलब्ध नहीं है।"}
+
+
+def test_tier1_has_identity_block_when_configured():
+    sp = _make_manager_for_prompt(identity=_IDENT).build_system_prompt(
+        "Persona text.", "Subagent text.", "hindi", "cli", {},
+        channel_config={"system_prompt_suffix": "Voice rules."},
+        session_end_eval_prompt="End eval.",
+    )
+    assert "<identity>" in sp.blocks[0].text and _IDENT["disclosure"] in sp.blocks[0].text
+
+
+def test_no_identity_block_when_absent():
+    sp = _make_manager_for_prompt().build_system_prompt(
+        "Persona text.", "Subagent text.", "hindi", "cli", {},
+        channel_config={"system_prompt_suffix": "Voice rules."},
+        session_end_eval_prompt="End eval.",
+    )
+    assert "<identity>" not in _flat(sp)
 
 
 def test_build_system_prompt_tier2_has_cache_hint():

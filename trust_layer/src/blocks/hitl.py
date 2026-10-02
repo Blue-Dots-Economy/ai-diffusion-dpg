@@ -4,21 +4,32 @@ trust_layer/src/blocks/hitl.py
 HiTLBlock — Human-in-the-Loop escalation queue.
 
 Queue backend is configurable via trust.hitl.queue_backend:
-  "log"     — writes structured JSON to the Python logger (default)
-  "redis"   — reserved for future implementation
-  "webhook" — reserved for future implementation
+  "log"     — implemented (default). Writes structured JSON to the Python
+              logger; queued=True but delivered=False, reason="log_only".
+  "webhook" — implemented. Signed HTTPS POST of the handoff payload (see
+              hitl_webhook.py; env HITL_WEBHOOK_URL / HITL_WEBHOOK_SECRET).
+              delivered=True only on a 2xx response.
+  "redis"   — not implemented; returns queued=False, delivered=False,
+              reason="unsupported_backend".
 
 Returns a ticket_id and holding_message to Agent Core. Agent Core writes
 the session escalation state to Memory Layer after receiving this response.
+The handoff payload, webhook URL and secret are never logged.
 
 Config section: trust.hitl
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import time
 import uuid
+
+import httpx
+
+from .hitl_webhook import deliver_webhook, webhook_settings
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +42,9 @@ class HiTLBlock:
         config: Full config dict containing trust.hitl section.
     """
 
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict, http_client: httpx.Client | None = None) -> None:
         start = time.time()
+        self._http = http_client
         hitl_cfg = (config or {}).get("trust", {}).get("hitl", {})
         self._queue_backend: str = hitl_cfg.get("queue_backend", "log")
         self._holding_message: str = hitl_cfg.get("holding_message", "")
@@ -54,6 +66,7 @@ class HiTLBlock:
         escalation_reason: str,
         user_message: str,
         workflow_step: str,
+        handoff: dict | None = None,
     ) -> dict:
         """
         Queue an escalation event and return a ticket ID and holding message.
@@ -63,9 +76,11 @@ class HiTLBlock:
             escalation_reason: Human-readable reason string (e.g. "escalation_topic:suicide").
             user_message: The user's message that triggered escalation.
             workflow_step: Current subagent step at time of escalation.
+            handoff: Optional handoff payload (never logged).
 
         Returns:
-            dict with keys: queued (bool), ticket_id (str), holding_message (str).
+            dict with keys: queued (bool), delivered (bool), reason (str),
+            ticket_id (str), holding_message (str).
         """
         if session_id is None:
             raise ValueError("session_id must not be None")
@@ -73,12 +88,8 @@ class HiTLBlock:
         start = time.time()
         ticket_id = f"TKT-{time.strftime('%Y%m%d')}-{uuid.uuid4().hex[:8].upper()}"
 
-        self._write_to_queue(
-            ticket_id=ticket_id,
-            session_id=session_id,
-            escalation_reason=escalation_reason,
-            user_message=user_message,
-            workflow_step=workflow_step,
+        queued, delivered, reason = self._deliver(
+            ticket_id, session_id, escalation_reason, workflow_step, handoff
         )
 
         logger.info(
@@ -89,25 +100,29 @@ class HiTLBlock:
                 "session_id": session_id,
                 "ticket_id": ticket_id,
                 "escalation_reason": escalation_reason,
+                "delivered": delivered,
+                "reason": reason,
                 "latency_ms": int((time.time() - start) * 1000),
             },
         )
 
         return {
-            "queued": True,
+            "queued": queued,
+            "delivered": delivered,
+            "reason": reason,
             "ticket_id": ticket_id,
             "holding_message": self._holding_message,
         }
 
-    def _write_to_queue(
+    def _deliver(
         self,
         ticket_id: str,
         session_id: str,
         escalation_reason: str,
-        user_message: str,
         workflow_step: str,
-    ) -> None:
-        """Write escalation event to the configured queue backend."""
+        handoff: dict | None,
+    ) -> tuple[bool, bool, str]:
+        """Write to the configured backend. Returns (queued, delivered, reason)."""
         if self._queue_backend == "log":
             logger.warning(
                 "hitl_block.escalation_queued",
@@ -120,17 +135,24 @@ class HiTLBlock:
                     "workflow_step": workflow_step,
                 },
             )
-        else:
-            # TODO(GH-hitl): Implement redis and webhook backends.
-            # Returning queued=True for unsupported backends is a known gap tracked in
-            # the HiTL queue implementation issue. The caller (escalate) returns True
-            # to avoid breaking the turn; a real backend will either deliver or return queued=False.
-            logger.warning(
-                "hitl_block.unsupported_backend",
-                extra={
-                    "operation": "hitl_block.queue_write",
-                    "status": "skipped",
-                    "queue_backend": self._queue_backend,
-                    "ticket_id": ticket_id,
-                },
-            )
+            return True, False, "log_only"
+        if self._queue_backend == "webhook":
+            url, secret, _ = webhook_settings(os.environ)
+            if not url or not secret:
+                return False, False, "misconfigured"
+            try:
+                body = json.dumps({**(handoff or {}), "ticket_id": ticket_id}, ensure_ascii=False).encode("utf-8")
+                delivered, reason = deliver_webhook(body, url=url, secret=secret, client=self._http)
+            except Exception:
+                return True, False, "error"
+            return True, delivered, reason
+        logger.warning(
+            "hitl_block.unsupported_backend",
+            extra={
+                "operation": "hitl_block.queue_write",
+                "status": "skipped",
+                "ticket_id": ticket_id,
+                "backend": self._queue_backend,
+            },
+        )
+        return False, False, "unsupported_backend"

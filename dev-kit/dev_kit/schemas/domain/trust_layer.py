@@ -28,7 +28,8 @@ class HitlConfig(BaseModel):
 
     queue_backend excludes 'memory' — runtime crashes on it.
     Valid backends: log (dev), redis (prod queue), webhook (external HITL).
-    notification_webhook is read but not yet dispatched (GH-36).
+    notification_webhook is unused (deprecated): the webhook backend reads its
+    URL from HITL_WEBHOOK_URL and its secret from HITL_WEBHOOK_SECRET.
     """
     model_config = ConfigDict(extra="forbid")
     holding_message: str = Field(..., min_length=1)

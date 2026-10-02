@@ -520,3 +520,19 @@ def test_intent_filters_check_waits_for_hand_authored_act_intents():
     blocks = _empty_blocks()
     blocks["knowledge_engine"] = _kb_filters({"ask_x": ["doc"]})
     assert validate_cross_block(blocks, selected_channels=[], current_phase="knowledge") == []
+
+
+def _handoff_errs(ac: dict) -> list[str]:
+    return [e for e in validate_cross_block({"agent_core": ac}, []) if "human_handoff" in e]
+
+
+def test_handoff_request_needs_block_and_phase():
+    wf = {"subagents": [{"id": "handoff"}]}
+    on = {"human_handoff": "request"}
+    lines = {"lines": {"delivered": "d", "failed": "f", "already": "a"}}
+    assert _handoff_errs({"identity": on, "handoff": lines, "agent_workflow": wf}) == []
+    assert _handoff_errs({"identity": on, "agent_workflow": wf})                  # no handoff block
+    assert _handoff_errs({"identity": on, "handoff": lines,
+                          "agent_workflow": {"subagents": [{"id": "opening"}]}})  # no handoff phase
+    assert _handoff_errs({"identity": {"human_handoff": "none"}}) == []           # off: nothing required
+    assert _handoff_errs({}) == []

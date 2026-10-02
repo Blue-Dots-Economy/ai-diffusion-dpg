@@ -676,7 +676,9 @@ preprocessing:
       distance_issue: constraint
       counsellor_request: escalation_signal
 
-    topics: [job_details, salary, location, search, profile, process, identity, language, other]
+    # human: the caller wants a person ("इंसान से बात कराओ") — derives human_request below.
+    # identity: who/what the assistant is ("आप कौन हैं?") — answered from the <identity> block.
+    topics: [job_details, salary, location, search, profile, process, identity, human, language, other]
     signals: [pay_disappointment, distance_issue, counsellor_request]
     slots:
       consent_response: { type: enum, values: [granted, declined], accept_when_pending: [consent],
@@ -722,6 +724,16 @@ preprocessing:
       - { pending: select_job, caller: "बाद में बात करते हैं", out: { acts: [close], relation: new_topic } }
       - { pending: select_job, caller: "इंग्लिश में बात करो", out: { acts: [request_change], relation: new_topic, topic: language, slots: { language_preference: english } } }
       - { pending: age, caller: "हिंदी में बोलिए", out: { acts: [request_change], relation: new_topic, topic: language, slots: { language_preference: hindi } } }
+      - { pending: select_job, caller: "इंसान से बात कराओ", out: { acts: [request_change], relation: new_topic, topic: human } }
+      - { pending: select_job, caller: "किसी आदमी से बात करनी है", out: { acts: [request_change], relation: new_topic, topic: human } }
+      - { pending: age, caller: "क्या मैं किसी इंसान से बात कर सकता हूँ?", out: { acts: [ask], relation: new_topic, topic: human } }
+      - { pending: select_job, caller: "क्या आप कंप्यूटर हैं?", out: { acts: [ask], relation: new_topic, topic: identity } }
+      - { pending: age, caller: "आप कौन हैं?", out: { acts: [ask], relation: new_topic, topic: identity } }
+      # "किसी से पूछना है" asks about a topic, not for a person: topic is what they ask about.
+      - { pending: select_job, caller: "मुझे किसी से पूछना है कि सैलरी कब मिलेगी", out: { acts: [ask], relation: new_topic, topic: salary } }
+      # Mentioning someone, or asking whom to contact at the company, is not asking for a person now.
+      - { pending: select_job, caller: "किसी ने मुझे बताया था", out: { acts: [provide_info], relation: unclear } }
+      - { pending: select_job, caller: "कंपनी में किससे बात करनी होगी?", out: { acts: [ask], relation: new_topic, topic: job_details } }
     act_intents:
       - { acts: [deny], pending: consent, relation: answers_pending, intent: decline }
       - { acts: [select], pending: select_job, intent: job_pick }
@@ -733,6 +745,11 @@ preprocessing:
       - { acts: [request_change], topic: search, intent: explore_more }
       - { acts: [ask], topic: search, intent: explore_more }
       - { acts: [request_change], topic: language, intent: language_switch_request }
+      # Asking for a person. The orchestrator handles human_request before routing
+      # (handoff when identity.human_handoff is request; otherwise <identity> answers
+      # with no_handoff_line). The counsellor_request signal stays a signal only.
+      - { acts: [request_change], topic: human, intent: human_request }
+      - { acts: [ask], topic: human, intent: human_request }
       - { acts: [close], intent: termination_intent, gated: true }
       # Same close when the gate refuses it: derive_intent skips the gated row
       # above and lands here, so routing can ask confirm_close's one question
@@ -794,6 +811,25 @@ hitl:
   # Spoken verbatim, like the conversation block above — Hindi for the same reason.
   response_message: "एक काउंसलर चौबीस घंटे के अंदर आपको वापस कॉल करेंगे।"
 
+# Who the assistant is. Rendered into every prompt as <identity>, which carries the
+# disclosure rule ("are you a person or a computer?") and, while human_handoff is
+# none, the no_handoff_line. The persona prose below deliberately carries no name.
+identity:
+  name: "ब्लू डॉट्स सहायक"
+  kind: ai_assistant
+  operator: "Blue Dots"
+  disclosure: "जी, मैं ब्लू डॉट्स की AI सहायक हूँ।"
+  human_handoff: none            # flip to "request" once a handoff receiver exists (HITL_WEBHOOK_URL)
+  no_handoff_line: "अभी इस कॉल पर कोई इंसान उपलब्ध नहीं है — मैं ही आपकी मदद कर सकती हूँ।"
+
+# Spoken verbatim by the framework on a human_request turn (never by the model).
+handoff:
+  summary_turns: 6
+  lines:
+    delivered: "मैंने आपकी बात टीम तक पहुँचा दी है, वे आपसे संपर्क करेंगे। क्या मैं और कुछ मदद करूँ, या कॉल यहीं ख़त्म करूँ?"
+    failed: "अभी मैं आपकी बात आगे नहीं भेज पाई — मैं ही आपकी मदद कर सकती हूँ। आप क्या जानना चाहते हैं?"
+    already: "आपकी बात पहले ही टीम तक पहुँच चुकी है।"
+
 agent_workflow:
   workflow_id: blue_dots_journey
   version: "1.0.0"
@@ -829,8 +865,8 @@ agent_workflow:
   # every later phase reads that one tool_result.
 
   agent_system_prompt: |
-    You are the Blue Dots voice assistant — a warm, calm, conversational voice guide for
-    job seekers in India. Your job is to help the caller find a job and
+    You are a warm, calm, conversational voice guide for job seekers in
+    India; who you are is stated in <identity>. Your job is to help the caller find a job and
     submit an application, end to end, in a single phone call.
 
     ## NEVER ask the caller for their phone number (HARD RULE)
@@ -1118,12 +1154,6 @@ agent_workflow:
     ("That's understandable.") Never "डोंट वरी" ("don't worry"), never
     "सब ठीक हो जाएगा" ("everything will be fine"), never "घबराइए मत"
     ("don't panic").
-
-    **"Are you a real person or a computer?"** Answer honestly in one
-    short line, then return to what you were doing. Never deny being an
-    AI and never dodge the question:
-      "जी, मैं एक AI असिस्टेंट हूँ — आपकी मदद के लिए।"
-        — "Yes, I'm an AI assistant — here to help you."
 
     **Do-not-call request.** Comply at once, no persuasion, no final
     pitch: "बिल्कुल। अब हमारी तरफ़ से कॉल नहीं आएगा."
@@ -3177,6 +3207,63 @@ agent_workflow:
         # off-script turns; never coincides with termination_intent.
         - intent: off_track
           next_subagent_id: confirm_close
+        - intent: termination_intent
+          next_subagent_id: ended
+        # Yes-but-also-asking (close_declined): back to the phase like any other non-confirming answer.
+        - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: opening }], next_subagent_id: opening }
+        - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: profile_resolve }], next_subagent_id: profile_resolve }
+        - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: job_match }], next_subagent_id: job_match }
+        - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: profile_setup }], next_subagent_id: profile_setup }
+        - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
+        - { intent: close_declined, conditions: [{ field: close_return_to, operator: eq, value: clarification }], next_subagent_id: clarification }
+        # Any other answer ("नहीं", a question, a detail): back to where the caller was.
+        - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: opening }], next_subagent_id: opening }
+        - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: profile_resolve }], next_subagent_id: profile_resolve }
+        - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: job_match }], next_subagent_id: job_match }
+        - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: profile_setup }], next_subagent_id: profile_setup }
+        - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: apply_confirm }], next_subagent_id: apply_confirm }
+        - { intent: "*", conditions: [{ field: close_return_to, operator: eq, value: clarification }], next_subagent_id: clarification }
+        - intent: "*"
+          next_subagent_id: opening
+    # ─────────────────────────────────────────────────────────────
+    # handoff — the caller asked for a person. The framework handles that
+    # human_request turn itself (before routing): it escalates, writes
+    # handoff_status / close_return_to, routes here and speaks a configured
+    # handoff line verbatim, so this phase has no fixed_opening. Its job is the
+    # NEXT turn: the delivered line ends with "…या कॉल यहीं ख़त्म करूँ?", so after
+    # it this phase declares the same close_confirm pending as confirm_close (the
+    # close_confirm act-intent rows apply) and routes the same way: "हाँ" ends,
+    # anything else returns to close_return_to. Reached only when identity.human_handoff is request.
+    - id: handoff
+      name: Human Handoff
+      description: After a handoff line, confirm ending the call or return to the phase.
+      is_start: false
+      is_terminal: false
+      # Required by the schema, never spoken: the framework speaks the
+      # configured handoff line on the turn that routes here.
+      opening_phrase: "क्या मैं और कुछ मदद करूँ, या कॉल यहीं ख़त्म करूँ?"
+      special_handler: null
+      tools: []
+      system_prompt: |
+        The caller asked to speak to a person and has just been told what
+        happened to that request. Do not promise a callback time and do not
+        repeat the handoff line. If they want to continue, help with what
+        they ask. Do not call any tool.
+      # Only the delivered line asks the close question. After the failed line
+      # ("…आप क्या जानना चाहते हैं?") or the already line a "हाँ" is not a
+      # goodbye, so nothing is pending and the answer goes back to
+      # close_return_to. handoff_line is the line spoken on the handoff turn
+      # (handoff_status stays "delivered" on an already turn).
+      pending:
+        - id: close_confirm
+          expects: "हाँ = कॉल ख़त्म करें / नहीं = बात जारी रखें"
+          when:
+            - { field: handoff_line, operator: eq, value: delivered }
+      routing:
+        # off_track (spec §6.6): stay here after repeated
+        # off-script turns; never coincides with termination_intent.
+        - intent: off_track
+          next_subagent_id: handoff
         - intent: termination_intent
           next_subagent_id: ended
         # Yes-but-also-asking (close_declined): back to the phase like any other non-confirming answer.

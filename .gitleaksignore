@@ -1,2 +1,4 @@
 # False positive: a made-up OPENAI_API_KEY in a redaction test (voice-bench, #435).
 5cb22c450c432e3293070f095454fe17a06e2f9f:agent_core/tests/eval/voice_bench/test_stack.py:generic-api-key:79
+# Same key again: the #435 squash-merge commit on deploy/voicera-vm.
+0d3e3d75a330a8c75d82418fde7a44a05834daad:agent_core/tests/eval/voice_bench/test_stack.py:generic-api-key:79
