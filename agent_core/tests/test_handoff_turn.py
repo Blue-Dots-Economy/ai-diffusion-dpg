@@ -5,7 +5,9 @@ Built from the real Blue Dots workflow plus a test override that enables handoff
 """
 from __future__ import annotations
 
+import asyncio
 import copy
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -45,16 +47,12 @@ def _workflow(with_handoff: bool):
     return AgentWorkflowLoader().load(config=cfg, tool_registry=ToolRegistry(cfg, OfflineGateway(cfg)))
 
 
-async def _must_not_stream(*a, **k):
-    raise AssertionError("the model must not be called")
-    yield  # pragma: no cover
-
-
 class _Turn:
     """One orchestrator over the real workflow; records escalate calls and session writes."""
 
     def __init__(self, *, with_handoff: bool = True, identity: dict | None = IDENTITY,
-                 handoff: dict | None = HANDOFF, workflow_handoff: bool | None = None):
+                 handoff: dict | None = HANDOFF, workflow_handoff: bool | None = None,
+                 language: str = "hindi"):
         self.agent = _make_agent_core(workflow=_workflow(with_handoff if workflow_handoff is None
                                                          else workflow_handoff))
         a = self.agent
@@ -65,9 +63,11 @@ class _Turn:
         if handoff is not None:
             a._config["handoff"] = handoff
         a._language_normaliser = MagicMock()
-        a._language_normaliser.normalise.return_value = (ASK, "hindi")
+        a._language_normaliser.normalise.return_value = (ASK, language)
         a._understander = fake_understander(NLUResult(intent="human_request", entities={}, confidence=1.0))
-        a._llm.call = MagicMock(side_effect=AssertionError("the model must not be called"))
+        # Recorded, not raised: a swallowed exception must not hide a model call.
+        a._llm.call = MagicMock()
+        self.llm_streams: list = []
         self.escalate_result: dict = {"queued": True, "delivered": True, "reason": "delivered",
                                       "ticket_id": "TKT-1"}
         self.escalate_raises: Exception | None = None
@@ -86,13 +86,24 @@ class _Turn:
     def _record_write(self, session_id, user_id, scope, key, value):
         self.writes[key] = value
 
-    async def stream(self, llm=_must_not_stream):
+    @property
+    def llm_calls(self) -> int:
+        return len(self.llm_streams) + self.agent._llm.call.call_count
+
+    async def _recording_stream(self, *a, **k):
+        self.llm_streams.append(k)
+        return
+        yield  # pragma: no cover
+
+    async def stream(self, llm=None):
         a = self.agent
-        a._llm.stream = llm
+        a._llm.stream = llm or self._recording_stream
         a._async_trust.escalate = AsyncMock(side_effect=self._escalate)
         a._async_memory.write = AsyncMock(side_effect=self._record_write)
         a._async_memory.context_bundle.return_value = ContextBundle(session=dict(self.session), profile={})
         events = await _collect_events(a, _make_turn_input(channel="voice", user_message=ASK))
+        for _ in range(3):                                           # let fire-and-forget tasks run
+            await asyncio.sleep(0)
         text = " ".join(e.text for e in events if isinstance(e, SentenceEvent))
         return text, [e for e in events if isinstance(e, DoneEvent)][-1]
 
@@ -127,6 +138,8 @@ async def test_human_request_delivered_speaks_line_and_routes():
     assert kind == "handoff" and data["outcome"] == "delivered" and data["ticket_id"] == "TKT-1"
     assert {"session_id", "turn_id", "timestamp_ms", "reason", "latency_ms"} <= set(data)
     assert "handoff" not in data and "summary" not in data          # never the payload
+    assert t.writes["subagent_entry_count"]["handoff"] == 1
+    assert t.llm_calls == 0
 
 
 @pytest.mark.asyncio
@@ -139,12 +152,16 @@ async def test_human_request_failed_when_trust_unreachable():
 
 
 @pytest.mark.asyncio
-async def test_human_request_exception_is_failed_not_error():
+async def test_human_request_exception_is_failed_not_error(caplog):
     t = _Turn()
-    t.escalate_raises = RuntimeError("boom")
-    text, done = await t.stream()
+    t.escalate_raises = RuntimeError("secret-https://hooks.example/abc")
+    with caplog.at_level(logging.DEBUG):
+        text, done = await t.stream()
     assert text == HANDOFF_LINES["failed"] and done.error_type in (None, "")
     assert t.writes["handoff_status"] == "failed"
+    assert "hooks.example" not in caplog.text                        # exception type only
+    failed = [r for r in caplog.records if r.getMessage() == "orchestrator.handoff_escalate_failed"]
+    assert failed and failed[0].error == "RuntimeError"
 
 
 @pytest.mark.asyncio
@@ -155,6 +172,8 @@ async def test_second_request_after_delivery_is_already_and_no_new_escalation():
     assert text == HANDOFF_LINES["already"] and t.escalate_calls == []
     assert t.writes["close_return_to"] == "job_match" and t.writes["current_subagent_id"] == "handoff"
     assert "handoff_status" not in t.writes and done.session_ended is False
+    kind, data = t.agent._async_learning.emit_signal.await_args.args
+    assert kind == "handoff" and data["outcome"] == "already" and data["reason"] == "already"
 
 
 @pytest.mark.asyncio
@@ -177,12 +196,43 @@ async def _llm_reply(*a, **k):
     {"identity": {**IDENTITY, "human_handoff": "none"}},                   # handoff off
     {"handoff": None, "workflow_handoff": False, "identity": IDENTITY},    # no handoff block / phase
     {"workflow_handoff": False},                                           # no `handoff` phase
+    {"handoff": None},                                                     # phase present, no block
 ])
 async def test_handoff_disabled_does_not_escalate(kwargs):
     t = _Turn(**kwargs)
     text, _ = await t.stream(llm=_llm_reply)
     assert t.escalate_calls == [] and text not in HANDOFF_LINES.values()
     assert "handoff_status" not in t.writes and t.writes.get("current_subagent_id") != "handoff"
+
+
+@pytest.mark.asyncio
+async def test_non_default_language_speaks_configured_line_verbatim():
+    t = _Turn(language="english")                                    # default_language is hindi
+    text, _ = await t.stream()
+    assert text == HANDOFF_LINES["delivered"] and t.llm_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_request_from_confirm_close_keeps_the_real_return_phase():
+    t = _Turn()
+    t.session.update(current_subagent_id="confirm_close", close_return_to="job_match")
+    text, _ = await t.stream()
+    assert text == HANDOFF_LINES["delivered"]
+    assert "close_return_to" not in t.writes                         # still job_match
+    assert t.escalate_calls[0]["workflow_step"] == "job_match"
+    assert t.escalate_calls[0]["handoff"]["context"]["step"] == "job_match"
+
+
+@pytest.mark.asyncio
+async def test_request_from_handoff_phase_reports_the_return_phase():
+    t = _Turn()
+    t.session.update(current_subagent_id="handoff", close_return_to="profile_setup",
+                     handoff_status="failed", subagent_entry_count={"handoff": 1})
+    await t.stream()
+    assert "close_return_to" not in t.writes
+    assert t.escalate_calls[0]["workflow_step"] == "profile_setup"
+    assert t.escalate_calls[0]["handoff"]["context"]["step"] == "profile_setup"
+    assert t.writes["subagent_entry_count"]["handoff"] == 2
 
 
 # ── sync path ─────────────────────────────────────────────────────────────────
@@ -205,6 +255,28 @@ def test_sync_human_request_exception_is_failed():
     result = t.sync()
     assert result.response_text == HANDOFF_LINES["failed"] and result.error_type in (None, "")
     assert t.writes["handoff_status"] == "failed"
+
+
+def test_sync_human_request_failed_when_trust_unreachable():
+    t = _Turn()
+    t.escalate_result = {"queued": False}
+    result = t.sync()
+    assert result.response_text == HANDOFF_LINES["failed"] and t.writes["handoff_status"] == "failed"
+    assert t.writes["current_subagent_id"] == "handoff"
+
+
+def test_sync_second_request_after_failure_retries():
+    t = _Turn()
+    t.session["handoff_status"] = "failed"
+    t.escalate_result = {"queued": True, "delivered": True, "reason": "delivered", "ticket_id": "TKT-2"}
+    result = t.sync()
+    assert result.response_text == HANDOFF_LINES["delivered"] and len(t.escalate_calls) == 1
+    assert t.writes["handoff_ticket_id"] == "TKT-2"
+
+
+def test_sync_non_default_language_speaks_configured_line_verbatim():
+    t = _Turn(language="english")
+    assert t.sync().response_text == HANDOFF_LINES["delivered"] and t.llm_calls == 0
 
 
 def test_sync_second_request_after_delivery_is_already():

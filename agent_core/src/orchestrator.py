@@ -2776,48 +2776,85 @@ class AgentCore(AgentCoreBase):
             return None
         return handoff["lines"]
 
+    def _is_return_phase(self, subagent_id: str) -> bool:
+        """A phase that sends the caller back via ``close_return_to`` (``handoff``, or one asking close_confirm)."""
+        if subagent_id == "handoff":
+            return True
+        sa = self._workflow.subagents.get(subagent_id)
+        return any(getattr(p, "id", "") == "close_confirm" for p in (getattr(sa, "pending", None) or []))
+
     def _handoff_prepare(self, session_id: str, user_id: str, bundle, turn_input) -> tuple[bool, dict, str]:
-        """(already, payload, current_subagent_id) for a handoff turn; no payload when already delivered."""
+        """(already, payload, step) for a handoff turn; no payload when already delivered.
+
+        ``step`` is the phase the caller was really in: inside a return phase
+        it is ``close_return_to``, so the handoff never points back at itself.
+        """
         current = bundle.session.get("current_subagent_id") or self._workflow.start_subagent_id
+        step = (bundle.session.get("close_return_to") or current) if self._is_return_phase(current) else current
         already = bundle.session.get("handoff_status") == "delivered"
         payload = {} if already else build_handoff_payload(
             ticket_hint="",
             use_case=self._config.get("observability", {}).get("domain", "unknown"),
-            session=bundle.session, phone=user_id, call_id=session_id,
+            session={**bundle.session, "current_subagent_id": step}, phone=user_id, call_id=session_id,
             last_caller_turn=turn_input.user_message,
             summary_turns=int((self._config.get("handoff") or {}).get("summary_turns", 6)),
             now_iso=datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         )
-        return already, payload, current
+        return already, payload, step
 
-    @staticmethod
-    def _handoff_writes(bundle, current: str, outcome: str, result: dict | None) -> dict:
+    def _handoff_writes(self, bundle, outcome: str, result: dict | None) -> dict:
         """Session fields a handoff turn records (mirrored into bundle.session); next-turn routing reads them."""
+        current = bundle.session.get("current_subagent_id") or self._workflow.start_subagent_id
         writes: dict = {}
-        # A repeat request from inside the handoff phase keeps the original return target.
-        if current != "handoff":
+        # Inside a return phase close_return_to already names the real phase; keep it.
+        if not self._is_return_phase(current):
             writes["close_return_to"] = current
         if outcome != "already":
             writes["handoff_status"] = outcome
             writes["handoff_ticket_id"] = str((result or {}).get("ticket_id") or "")
+        raw_counts = bundle.session.get("subagent_entry_count")
+        counts = dict(raw_counts) if isinstance(raw_counts, dict) else {}
+        counts["handoff"] = int(counts.get("handoff", 0) or 0) + 1
+        writes["subagent_entry_count"] = counts
         bundle.session.update(writes)
         return writes
 
     @staticmethod
-    def _handoff_log(session_id: str, outcome: str, result: dict | None, latency_ms: int) -> dict:
-        """Log the outcome (never the payload) and return the signal body fields."""
+    def _handoff_escalate_failed(session_id: str, exc: Exception) -> None:
+        """Log an escalate exception by type only (the message could carry the payload or URL)."""
+        logger.warning("orchestrator.handoff_escalate_failed", extra={
+            "operation": "orchestrator.handoff", "status": "failure",
+            "session_id": session_id, "error": type(exc).__name__,
+        })
+
+    @staticmethod
+    def _handoff_signal(session_id: str, turn_id: str, outcome: str, result: dict | None,
+                        latency_ms: int) -> dict:
+        """Log the outcome (never the payload) and return the ``handoff`` signal body."""
+        if outcome == "already":
+            reason = "already"
+        else:
+            reason = str((result or {}).get("reason") or ("error" if result is None else "unknown"))
         fields = {
             "ticket_id": str((result or {}).get("ticket_id") or ""),
-            "outcome": outcome,
-            "reason": str((result or {}).get("reason") or ("error" if result is None else "unknown")),
-            "latency_ms": latency_ms,
+            "outcome": outcome, "reason": reason, "latency_ms": latency_ms,
         }
         logger.info("orchestrator.handoff", extra={
             "operation": "orchestrator.handoff",
-            "status": "success" if outcome == "delivered" else "failure",
+            "status": "failure" if outcome == "failed" else "success",
             "session_id": session_id, **fields,
         })
-        return fields
+        return {"session_id": session_id, "turn_id": turn_id,
+                "timestamp_ms": int(time.time() * 1000), **fields}
+
+    async def _emit_handoff_signal(self, data: dict) -> None:
+        """Fire-and-forget body for the stream path's ``handoff`` signal."""
+        try:
+            await self._async_learning.emit_signal("handoff", data)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("orchestrator.handoff_signal_failed", extra={
+                "operation": "orchestrator.handoff", "status": "skipped",
+                "session_id": data.get("session_id"), "error": type(exc).__name__})
 
     async def _handle_human_request_async(self, session_id: str, user_id: str, bundle, turn_input,
                                           *, turn_id: str = "") -> str | None:
@@ -2830,32 +2867,25 @@ class AgentCore(AgentCoreBase):
         lines = self._handoff_lines()
         if lines is None:
             return None
-        already, payload, current = self._handoff_prepare(session_id, user_id, bundle, turn_input)
+        already, payload, step = self._handoff_prepare(session_id, user_id, bundle, turn_input)
         result: dict | None = None
         latency_ms = 0
         if not already:
             t0 = time.time()
             try:
                 result = await self._async_trust.escalate(
-                    session_id, "human_request", turn_input.user_message, current, handoff=payload)
-            except Exception:  # noqa: BLE001 — a handoff failure must never fail the turn
+                    session_id, "human_request", turn_input.user_message, step, handoff=payload)
+            except Exception as exc:  # noqa: BLE001 — a handoff failure must never fail the turn
+                self._handoff_escalate_failed(session_id, exc)
                 result = None
             latency_ms = int((time.time() - t0) * 1000)
         line, outcome = choose_handoff_line(result, lines, already)
-        writes = self._handoff_writes(bundle, current, outcome, result)
+        writes = self._handoff_writes(bundle, outcome, result)
         await asyncio.gather(*(self._async_memory.write(session_id, user_id, "session", k, v)
                                for k, v in writes.items()), return_exceptions=True)
-        if not already:
-            fields = self._handoff_log(session_id, outcome, result, latency_ms)
-            if self._async_learning:
-                try:
-                    await self._async_learning.emit_signal("handoff", {
-                        "session_id": session_id, "turn_id": turn_id,
-                        "timestamp_ms": int(time.time() * 1000), **fields})
-                except Exception:  # noqa: BLE001
-                    logger.warning("orchestrator.handoff_signal_failed", extra={
-                        "operation": "orchestrator.handoff", "status": "skipped",
-                        "session_id": session_id})
+        data = self._handoff_signal(session_id, turn_id, outcome, result, latency_ms)
+        if self._async_learning:
+            asyncio.create_task(self._emit_handoff_signal(data))
         return line
 
     def _handle_human_request_sync(self, session_id: str, user_id: str, bundle, turn_input,
@@ -2864,30 +2894,28 @@ class AgentCore(AgentCoreBase):
         lines = self._handoff_lines()
         if lines is None:
             return None
-        already, payload, current = self._handoff_prepare(session_id, user_id, bundle, turn_input)
+        already, payload, step = self._handoff_prepare(session_id, user_id, bundle, turn_input)
         result: dict | None = None
         latency_ms = 0
         if not already:
             t0 = time.time()
             try:
                 result = self._trust.escalate(
-                    session_id, "human_request", turn_input.user_message, current, handoff=payload)
-            except Exception:  # noqa: BLE001 — a handoff failure must never fail the turn
+                    session_id, "human_request", turn_input.user_message, step, handoff=payload)
+            except Exception as exc:  # noqa: BLE001 — a handoff failure must never fail the turn
+                self._handoff_escalate_failed(session_id, exc)
                 result = None
             latency_ms = int((time.time() - t0) * 1000)
         line, outcome = choose_handoff_line(result, lines, already)
-        for k, v in self._handoff_writes(bundle, current, outcome, result).items():
+        for k, v in self._handoff_writes(bundle, outcome, result).items():
             self._write_memory_sync(session_id, user_id, "session", k, v)
-        if not already:
-            fields = self._handoff_log(session_id, outcome, result, latency_ms)
-            try:
-                self._learning.emit_signal("handoff", {
-                    "session_id": session_id, "turn_id": turn_id,
-                    "timestamp_ms": int(time.time() * 1000), **fields})
-            except Exception:  # noqa: BLE001
-                logger.warning("orchestrator.handoff_signal_failed", extra={
-                    "operation": "orchestrator.handoff", "status": "skipped",
-                    "session_id": session_id})
+        data = self._handoff_signal(session_id, turn_id, outcome, result, latency_ms)
+        try:
+            self._learning.emit_signal("handoff", data)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("orchestrator.handoff_signal_failed", extra={
+                "operation": "orchestrator.handoff", "status": "skipped",
+                "session_id": session_id, "error": type(exc).__name__})
         return line
 
     # ------------------------------------------------------------------
@@ -2911,6 +2939,7 @@ class AgentCore(AgentCoreBase):
         message: str | None = None,
         subagent_id: str | None = None,
         end_session: bool = True,
+        translate: bool = True,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Skip the LLM and emit a canned closing line (#204).
 
@@ -2925,6 +2954,10 @@ class AgentCore(AgentCoreBase):
                 terminal phase. **False** when a mid-conversation phase simply
                 speaks a fixed line — the caller still has to answer it, and
                 hanging up on them would be the opposite of the intent.
+            translate: whether to translate ``message`` into the caller's
+                language. **False** for lines that must be spoken verbatim from
+                config (the handoff lines), which the sync path also never
+                translates.
 
         Pulls ``conversation.termination_message`` from config, translates it
         to the user's detected language using the same helper as the consent
@@ -2978,7 +3011,8 @@ class AgentCore(AgentCoreBase):
                 )
             )
 
-        translated = self._translate_consent_message(termination_message, detected_language)
+        translated = (self._translate_consent_message(termination_message, detected_language)
+                      if translate else termination_message)
 
         # Best-effort fan-out of routing writes; parallel with the SentenceEvent
         # so the caller hears the goodbye even if Memory Layer is slow.
@@ -4290,7 +4324,7 @@ class AgentCore(AgentCoreBase):
                         trust_input=trust_input, trust_output=trust_output,
                         start=start, stamp=_stamp,
                         message=handoff_line, subagent_id="handoff",
-                        end_session=False,
+                        end_session=False, translate=False,
                     ):
                         yield ev
                     return
