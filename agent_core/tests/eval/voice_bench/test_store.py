@@ -33,3 +33,21 @@ def test_load_target_and_meta(tmp_path):
     st.write_meta("8b39427", {"name": "M3", "unmeasurable": None})
     assert st.read_meta("8b39427")["name"] == "M3"
     assert st.read_meta("nope") == {}
+
+
+def test_harness_error_record_is_not_a_cache_hit(tmp_path):
+    """I1: a record the harness failed (caller LLM down) is re-run, not treated as done."""
+    st = ResultStore(tmp_path)
+    r = _rec()
+    r.harness_error = "caller_llm_APITimeoutError"
+    st.save(r)
+    assert not st.has("8b39427", "T01", 0)
+    assert st.load("8b39427", "T01", 0).harness_error == "caller_llm_APITimeoutError"
+
+
+def test_non_object_json_is_not_a_cache_hit(tmp_path):
+    st = ResultStore(tmp_path)
+    p = st.path("8b39427", "T01", 0)
+    p.parent.mkdir(parents=True)
+    p.write_text("[1, 2]", encoding="utf-8")
+    assert not st.has("8b39427", "T01", 0)

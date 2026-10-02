@@ -26,14 +26,17 @@ class ResultStore:
         return self._root / target_commit
 
     def has(self, target_commit: str, scenario: str, run: int) -> bool:
-        """True only for a complete, parseable record."""
+        """True only for a complete, parseable record of a call the harness itself did not fail.
+
+        A record with ``harness_error`` (e.g. the caller LLM was down) is not the target's result, so a re-run
+        repeats it.
+        """
         p = self.path(target_commit, scenario, run)
         if not p.exists():
             return False
         try:
-            CallRecord.from_json(p.read_text(encoding="utf-8"))
-            return True
-        except (ValueError, KeyError, TypeError):
+            return CallRecord.from_json(p.read_text(encoding="utf-8")).harness_error is None
+        except (ValueError, KeyError, TypeError, AttributeError):
             return False
 
     def save(self, rec: CallRecord) -> Path:

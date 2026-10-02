@@ -10,6 +10,9 @@ class JsonLLM(Protocol):
     def complete_json(self, system: str, user: str, seed: int) -> dict: ...
 
 
+TIMEOUT_S, MAX_RETRIES = 60.0, 2
+
+
 class OpenAIJsonLLM:
     """OpenAI chat completions in JSON mode.
 
@@ -20,7 +23,8 @@ class OpenAIJsonLLM:
 
     def __init__(self, model: str, temperature: float) -> None:
         from openai import OpenAI
-        self._client, self.model, self._t = OpenAI(), model, temperature
+        self._client = OpenAI(timeout=TIMEOUT_S, max_retries=MAX_RETRIES)
+        self.model, self._t = model, temperature
 
     def complete_json(self, system: str, user: str, seed: int) -> dict:
         """Return the parsed JSON object; {} when the model returns non-JSON."""

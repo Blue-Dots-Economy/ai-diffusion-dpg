@@ -98,11 +98,14 @@ class Tap:
             self._server = None
         self._client.close()
 
-    def take(self, since_ms: int) -> list[TapEntry]:
-        """Remove and return entries recorded at or after since_ms (in arrival order)."""
+    def take(self) -> list[TapEntry]:
+        """Remove and return every entry recorded so far (in arrival order).
+
+        Draining everything (not a time window) means a request that lands between two turns is never lost:
+        the driver attaches it to the next take(), or to the leg's last turn.
+        """
         with self._lock:
-            out = [e for e in self._entries if e.t_ms >= since_ms]
-            self._entries = [e for e in self._entries if e.t_ms < since_ms]
+            out, self._entries = self._entries, []
         return out
 
     def clear(self) -> None:

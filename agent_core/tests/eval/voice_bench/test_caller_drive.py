@@ -34,15 +34,17 @@ class FakeBridge:
 
 
 class FakeTap:
-    def __init__(self):
-        self.entries = []
+    """take() returns the next scripted batch (default []); clear() is counted."""
 
-    def take(self, since_ms):
-        out, self.entries = self.entries, []
-        return out
+    def __init__(self, script=()):
+        self.script, self.clears, self.takes = list(script), 0, 0
+
+    def take(self):
+        self.takes += 1
+        return list(self.script.pop(0)) if self.script else []
 
     def clear(self):
-        self.entries = []
+        self.clears += 1
 
 
 class NoLogs:
@@ -152,13 +154,14 @@ def test_caller_llm_raises_twice_records_error_and_cleans_up():
     llm.raise_on_line = [RuntimeError("a"), RuntimeError("b")]
     cl = []
     rec = drive_call(_deps(FakeBridge([_bt("नमस्ते")] * 2), llm, cl), p, 0, "919900001000", 14, META)
-    assert rec.error == "caller_llm_RuntimeError" and len(cl) == 3
+    assert rec.error is None and rec.harness_error == "caller_llm_RuntimeError" and len(cl) == 3
 
 
 def test_caller_bad_json_error_after_retry():
     p = load_personas()["T01"]
     rec = drive_call(_deps(FakeBridge([_bt("नमस्ते")] * 2), FakeLLM([None, None]), []), p, 0, "919900001000", 14, META)
-    assert rec.attempts == 2 and rec.error == "caller_llm_bad_json" and rec.legs[0].ended_by == "error"
+    assert rec.attempts == 2 and rec.harness_error == "caller_llm_bad_json" and rec.error is None
+    assert rec.legs[0].ended_by == "error"
 
 
 def test_audit_bad_json_treated_as_broken():
@@ -184,3 +187,82 @@ def test_cleanup_runs_when_audit_llm_raises_out_of_drive():
     except RuntimeError:
         pass
     assert len(cl) == 2
+
+
+# ---- final-review fixes ---------------------------------------------------------------------------------------
+from eval.voice_bench.drive import _seed  # noqa: E402
+from eval.voice_bench.records import CallRecord, TapEntry  # noqa: E402
+
+
+def _tap(path):
+    return TapEntry(1, "POST", path, "", {}, 200, {}, "signals")
+
+
+def test_tap_between_turns_and_after_the_last_turn_is_kept():
+    """I2: take() drains everything; late entries land on the next turn, leftovers on the leg's last turn."""
+    p = load_personas()["T01"]
+    a, b, late = _tap("/a"), _tap("/b"), _tap("/late")
+    tap = FakeTap([[a], [b], [late]])          # turn 0, turn 1, end-of-leg leftover
+    deps = _deps(FakeBridge(_ok()), FakeLLM(["रमेश"]), [])
+    deps.tap = tap
+    rec = drive_call(deps, p, 0, "919900001000", 14, META)
+    t0, t1 = rec.legs[0].turns
+    assert t0.tap == [a] and t1.tap == [b, late]
+    assert tap.clears == 1 and tap.takes == 3
+
+
+def test_tap_cleared_at_the_start_of_every_attempt():
+    p = load_personas()["T01"]
+    deps = _deps(FakeBridge([_bt("", error="http_502")] + _ok()), FakeLLM(["रमेश"]), [])
+    deps.tap = FakeTap()
+    drive_call(deps, p, 0, "919900001000", 14, META)
+    assert deps.tap.clears == 2
+
+
+def test_retry_keeps_the_first_attempt_in_prior_legs():
+    """I3: the discarded attempt and its error are kept; the record round-trips them."""
+    p = load_personas()["T01"]
+    rec = drive_call(_deps(FakeBridge([_bt("", error="http_502")] + _ok()), FakeLLM(["रमेश"]), []), p, 0,
+                     "919900001000", 14, META)
+    assert rec.prior_error == "http_502" and len(rec.prior_legs) == 1
+    assert rec.prior_legs[0].ended_by == "error" and rec.legs[0].ended_by == "bot"
+    back = CallRecord.from_json(rec.to_json())
+    assert back.prior_legs == rec.prior_legs and back.prior_error == "http_502"
+
+
+def test_void_rerun_keeps_the_broken_attempt_in_prior_legs():
+    p = load_personas()["T01"]
+    rec = drive_call(_deps(FakeBridge(_ok() * 2), FakeLLM(["(x) रमेश", "रमेश"]), []), p, 0, "919900001000", 14, META)
+    assert rec.void_reason == "rerun_ok" and rec.prior_error is None
+    assert rec.prior_legs[0].turns[1].caller == "(x) रमेश" and rec.legs[0].turns[1].caller == "रमेश"
+
+
+def test_no_retry_means_no_prior_legs():
+    p = load_personas()["T01"]
+    rec = drive_call(_deps(FakeBridge(_ok()), FakeLLM(["रमेश"]), []), p, 0, "919900001000", 14, META)
+    assert rec.prior_legs == [] and rec.prior_error is None and rec.harness_error is None
+
+
+def test_retried_attempt_is_persona_audited():
+    """M5: error → retry whose caller breaks persona → broken_after_retry (no third attempt)."""
+    p = load_personas()["T01"]
+    bridge = FakeBridge([_bt("", error="http_502")] + _ok())
+    rec = drive_call(_deps(bridge, FakeLLM(["(हँसते हुए) रमेश"]), []), p, 0, "919900001000", 14, META)
+    assert rec.attempts == 2 and rec.error is None
+    assert rec.voided and rec.void_reason == "broken_after_retry" and bridge.turns == []
+
+
+def test_reattempt_caller_seed_includes_attempt_index():
+    """M6: attempt 0 keeps the paired seed; the re-run uses a different one."""
+    p = load_personas()["T01"]
+    llm = FakeLLM(["(x) रमेश", "रमेश"])
+    drive_call(_deps(FakeBridge(_ok() * 2), llm, []), p, 0, "919900001000", 14, META)
+    seeds = [seed for system, _, seed in llm.calls if "audit a simulated caller" not in system]
+    assert seeds[0] == _seed("T01", 0, 0, 1) and seeds[1] != seeds[0]
+
+
+def test_terminal_word_is_recorded_on_the_turn():
+    p = load_personas()["T01"]
+    bye = BridgeTurn("आपका दिन शुभ हो।", None, 800, 800, 1200, True, None, "Thank you")
+    rec = drive_call(_deps(FakeBridge([_bt("नमस्ते"), bye]), FakeLLM(["बस"]), []), p, 0, "919900001000", 14, META)
+    assert rec.legs[0].turns[1].terminal_word == "Thank you" and rec.legs[0].turns[0].terminal_word is None

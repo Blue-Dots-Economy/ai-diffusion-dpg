@@ -34,3 +34,21 @@ def test_call_record_roundtrip_keeps_devanagari_and_verdicts():
 def test_verdict_status_validated():
     with pytest.raises(ValueError):
         Verdict("ok")
+
+
+def test_new_fields_round_trip_and_old_records_still_load():
+    t = _turn(0, "आपका दिन शुभ हो।")
+    t.terminal_word = "धन्यवाद"
+    rec = CallRecord(target="M3", target_commit="c", scenario="T01", run=0, phone="919900001000", suite_version=1,
+                     seed_version=1, caller_model="m", judge_model="m", legs=[Leg("b", [t], "bot")], attempts=2,
+                     voided=False, error=None, harness_error="caller_llm_bad_json",
+                     prior_legs=[Leg("a", [_turn(0, "x")], "error")], prior_error="http_502")
+    back = CallRecord.from_json(rec.to_json())
+    assert back == rec and back.legs[0].turns[0].terminal_word == "धन्यवाद"
+    import json
+    d = json.loads(rec.to_json())
+    for k in ("harness_error", "prior_legs", "prior_error"):
+        d.pop(k)
+    d["legs"][0]["turns"][0].pop("terminal_word")
+    old = CallRecord.from_json(json.dumps(d))
+    assert old.harness_error is None and old.prior_legs == [] and old.legs[0].turns[0].terminal_word is None

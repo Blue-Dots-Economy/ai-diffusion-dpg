@@ -57,6 +57,7 @@ class TurnRecord:
     banner: dict
     session_ended: bool
     error: str | None
+    terminal_word: str | None = None  # M0 "Thank you" / M1+ "धन्यवाद" stripped from the end of `reply`
 
     @property
     def is_tool_turn(self) -> bool:
@@ -90,6 +91,9 @@ class CallRecord:
     verdicts: dict[str, Verdict] = field(default_factory=dict)
     started_at: str = ""
     void_reason: str | None = None
+    harness_error: str | None = None   # the harness (caller LLM), not the target, failed; never a cache hit
+    prior_legs: list[Leg] = field(default_factory=list)   # the discarded first attempt (retry or void re-run)
+    prior_error: str | None = None     # that attempt's error, if it was retried because of one
 
     def to_json(self) -> str:
         """Serialise (Devanagari kept as-is)."""
@@ -99,11 +103,15 @@ class CallRecord:
     def from_json(cls, s: str) -> "CallRecord":
         """Inverse of to_json."""
         d = json.loads(s)
-        legs = [Leg(call_id=lg["call_id"], ended_by=lg["ended_by"], error=lg.get("error"),
-                    turns=[TurnRecord(**{**t, "tap": [TapEntry(**x) for x in t["tap"]]}) for t in lg["turns"]])
-                for lg in d.pop("legs")]
+        legs = [_leg(lg) for lg in d.pop("legs")]
+        prior = [_leg(lg) for lg in d.pop("prior_legs", None) or []]
         verdicts = {k: Verdict(**v) for k, v in d.pop("verdicts").items()}
-        return cls(legs=legs, verdicts=verdicts, **d)
+        return cls(legs=legs, verdicts=verdicts, prior_legs=prior, **d)
+
+
+def _leg(lg: dict) -> Leg:
+    return Leg(call_id=lg["call_id"], ended_by=lg["ended_by"], error=lg.get("error"),
+               turns=[TurnRecord(**{**t, "tap": [TapEntry(**x) for x in t["tap"]]}) for t in lg["turns"]])
 
 
 def bot_replies(rec: CallRecord) -> list[str]:

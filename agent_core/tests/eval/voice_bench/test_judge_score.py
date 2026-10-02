@@ -95,3 +95,33 @@ def test_user_message_multi_leg_and_truncated_tool_log():
     assert "[L1 t0] आप: नमस्ते" in llm.users[0]
     log = json.loads(llm.users[0].split("Tool log:\n")[1])
     assert len(log) == 1 and len(log[0]["resp_body"]) == 1500
+
+
+def test_harness_error_scores_every_tc_error_with_harness_reason():
+    """I1: a caller-LLM failure is the harness's: every TC is error 'harness: <code>', never 'bridge: ...'."""
+    r = _rec()
+    r.harness_error = "caller_llm_RateLimitError"
+    v = score_call(r, P["T05"], LLM({"verdict": "pass", "quote": "इंसान नहीं", "reason": "ok"}), {}, False)
+    assert {x.status for x in v.values()} == {"error"}
+    assert {x.reason for x in v.values()} == {"harness: caller_llm_RateLimitError"}
+
+
+def test_broken_after_retry_is_unscored():
+    """M5: a retried attempt that broke persona is unscored, like broken_twice."""
+    v = score_call(_rec(void_reason="broken_after_retry"), P["T05"], LLM({}), {}, False)
+    assert {x.status for x in v.values()} == {"unscored"}
+
+
+def test_openai_client_has_explicit_timeout_and_retries(monkeypatch):
+    """M11: the OpenAI client is built with timeout=60s and max_retries=2."""
+    import openai
+
+    from eval.voice_bench.llm import OpenAIJsonLLM
+    seen = {}
+
+    class Fake:
+        def __init__(self, **kw):
+            seen.update(kw)
+    monkeypatch.setattr(openai, "OpenAI", Fake)
+    OpenAIJsonLLM("gpt-4.1", 0)
+    assert seen == {"timeout": 60.0, "max_retries": 2}

@@ -49,10 +49,33 @@ def test_hangup_tool_call_marks_session_end():
 def test_m0_terminal_word_marks_session_end():
     cl = _client(_sse(_c({"content": "आपका दिन शुभ हो।"}), _c({"content": " Thank you"}), _c({}, "stop")))
     t = cl.turn("बस", "919900001000", "c")
-    assert t.session_ended and t.reply.endswith("Thank you")
+    assert t.session_ended and t.reply == "आपका दिन शुभ हो।" and t.terminal_word == "Thank you"
 
 
 def test_http_error_and_truncated_stream_are_errors_not_raises():
     assert _client(b'{"error": {}}', status=502).turn("x", "919900001000", "c").error == "http_502"
     t = _client(_sse(_c({"content": "आधा"}), done=False)).turn("x", "919900001000", "c")
     assert t.error == "stream_truncated" and t.reply == "आधा"
+
+
+def test_non_object_sse_json_is_a_turn_error_not_a_raise():
+    """M1: `data: [1, 2]` would raise AttributeError on .get(); it must come back as a turn error."""
+    t = _client(b"data: [1, 2]\n\ndata: [DONE]\n\n").turn("x", "919900001000", "c")
+    assert t.error == "transport_AttributeError" and not t.session_ended
+
+
+def test_non_httpx_transport_exception_is_a_turn_error():
+    def boom(req):
+        raise RuntimeError("socket weirdness")
+    cl = BridgeClient("http://bridge", [], ["धन्यवाद"], transport=httpx.MockTransport(boom))
+    t = cl.turn("x", "919900001000", "c")
+    assert t.error == "transport_RuntimeError" and t.reply == ""
+
+
+def test_m1_terminal_word_after_hangup_is_stripped_from_reply():
+    """M9: M1+ appends "धन्यवाद" to the ending turn; it is recorded, not left in the reply."""
+    cl = _client(_sse(_c({"content": "आपका दिन शुभ हो।"}), _c({"content": "धन्यवाद"}), _c({}, "tool_calls")))
+    t = cl.turn("बस", "919900001000", "c")
+    assert t.session_ended and t.reply == "आपका दिन शुभ हो।" and t.terminal_word == "धन्यवाद"
+    plain = _client(_sse(_c({"content": "धन्यवाद, आपका नाम?"}), _c({}, "stop"))).turn("x", "919900001000", "c")
+    assert plain.terminal_word is None and plain.reply == "धन्यवाद, आपका नाम?" and not plain.session_ended

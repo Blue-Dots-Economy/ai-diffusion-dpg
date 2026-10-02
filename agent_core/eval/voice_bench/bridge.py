@@ -20,6 +20,7 @@ class BridgeTurn:
     t_total_ms: int | None
     session_ended: bool
     error: str | None
+    terminal_word: str | None = None   # trailing terminal word removed from `reply` (M0 "Thank you", M1+ "धन्यवाद")
 
 
 class BridgeClient:
@@ -87,8 +88,9 @@ class BridgeClient:
                     if t_reply is None:
                         t_reply = ms()
                     parts.append(content.strip())
-        except (httpx.HTTPError, ValueError) as e:
+        except Exception as e:  # noqa: BLE001 - never raise: any failure is this turn's error (class name only)
             return BridgeTurn(" ".join(parts), status, t_content, t_reply, ms(), False, f"transport_{type(e).__name__}")
-        reply = " ".join(parts)
-        ended = hangup or (bool(parts) and parts[-1] in self._terminal)
-        return BridgeTurn(reply, status, t_content, t_reply, ms(), ended, None if done else "stream_truncated")
+        terminal = parts.pop() if parts and parts[-1] in self._terminal else None
+        ended = hangup or terminal is not None
+        return BridgeTurn(" ".join(parts), status, t_content, t_reply, ms(), ended,
+                          None if done else "stream_truncated", terminal)

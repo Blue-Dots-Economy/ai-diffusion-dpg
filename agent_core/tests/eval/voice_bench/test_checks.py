@@ -151,3 +151,61 @@ def test_goodbye_detection():
                 "आपका दिन शुभ हो, धन्यवाद।", "thank you"):
         assert _is_goodbye(yes), yes
     assert not _is_goodbye("धन्यवाद, अब मैं आपके लिए नौकरी खोजती हूँ।")
+
+
+# ---- final-review fixes ---------------------------------------------------------------------------------------
+from eval.voice_bench.checks import _apply_outcome  # noqa: E402
+
+
+def test_tc09_confirmation_readback_is_not_a_reask():
+    """M2: a reply carrying the known session value is a read-back, not "asking name again"."""
+    confirm = [T(0, "रमेश", "ठीक है।", session={"name": "रमेश"}),
+               T(1, "हाँ", "आपका नाम रमेश है, सही है?", session={"name": "रमेश"})]
+    assert v("TC09", rec((confirm, "bot"))) == "pass"
+    latin = [T(0, "Ramesh", "ठीक है।", session={"user_name": "Ramesh"}),
+             T(1, "हाँ", "आपका नाम ramesh है ना?", session={"user_name": "Ramesh"})]
+    assert v("TC09", rec((latin, "bot"))) == "pass"
+    reask = [T(0, "रमेश", "ठीक है।", session={"name": "रमेश"}),
+             T(1, "हाँ", "आपका नाम क्या है?", session={"name": "रमेश"})]
+    assert v("TC09", rec((reask, "bot"))) == "fail"
+
+
+def test_apply_outcome_already_only_from_409_or_error_fields():
+    """M3: "already" anywhere in a 2xx body (e.g. a job title) is not an already-applied outcome."""
+    assert _apply_outcome(200, {"summary": {"succeeded": 1}, "results": [{"title": "already hiring"}]}) == "success"
+    assert _apply_outcome(201, {"note": "you already know this employer"}) == "success"
+    assert _apply_outcome(409, {"error": "ACTION_LIMIT_REACHED"}) == "already"
+    assert _apply_outcome(422, {"error": "ACTION_LIMIT_REACHED",
+                                "message": "An active request already exists between these two profiles."}) == "already"
+    assert _apply_outcome(400, {"error": {"code": "ALREADY_APPLIED", "message": "x"}}) == "already"
+    assert _apply_outcome(500, {"error": "INTERNAL", "message": "boom", "detail": "already"}) == "error"
+    assert _apply_outcome(500, "already broken") == "error"
+    bulk = {"summary": {"total": 1, "succeeded": 0, "failed": 1},
+            "results": [{"status": "error", "message": "Already applied to this job"}]}
+    assert _apply_outcome(207, bulk) == "already"
+    assert _apply_outcome(207, {**bulk, "summary": {"succeeded": 1}}) == "success"
+
+
+def test_tc21_success_body_mentioning_already_needs_a_confirmation():
+    body = {"summary": {"succeeded": 1}, "results": [{"job": "Already Hiring Pvt Ltd"}]}
+    ok = [T(0, "हाँ", "आपका आवेदन भेज दिया है।", tap=[apply_tap(200, body)])]
+    assert v("TC21", rec((ok, "bot"))) == "pass"
+    wrong = [T(0, "हाँ", "आप पहले ही आवेदन कर चुके हैं।", tap=[apply_tap(200, body)])]
+    assert v("TC21", rec((wrong, "bot"))) == "fail"
+
+
+def _tw(i, caller, reply, word, ended=False):
+    t = T(i, caller, reply, ended=ended)
+    t.terminal_word = word
+    return t
+
+
+def test_tc05_terminal_word_counts_as_a_goodbye():
+    """M9: the bridge strips the terminal word from the reply; TC05 still sees that turn as a goodbye."""
+    assert v("TC05", rec(([T(0, "a", "ठीक है।"), _tw(1, "बस", "आपका दिन शुभ हो", "धन्यवाद", ended=True)], "bot"))) \
+        == "pass"
+    # caller had to hang up after the bot's terminal-word goodbye: the bot never released the line
+    assert v("TC05", rec(([T(0, "a", "ठीक है।"), _tw(1, "बस", "", "Thank you")], "caller"))) == "fail"
+    # a goodbye in the text on an earlier turn plus a terminal-word goodbye later = two goodbyes
+    two = [T(0, "a", "धन्यवाद, नमस्ते।"), _tw(1, "b", "ठीक है", "धन्यवाद", ended=True)]
+    assert v("TC05", rec((two, "bot"))) == "fail"

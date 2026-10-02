@@ -8,15 +8,18 @@ from eval.voice_bench.records import CallRecord, Verdict
 from eval.voice_bench.suite import Persona, applicable_tcs
 
 JUDGED = ("TC01", "TC10", "TC12", "TC14", "TC16", "TC17")
+UNSCORED_VOIDS = {"broken_twice": "persona broken twice", "broken_after_retry": "persona broken after retry"}
 
 
 def score_call(rec: CallRecord, persona: Persona, judge_llm, places: dict, no_idle_handling: bool) -> dict[str, Verdict]:
     """Score every applicable TC; store into rec.verdicts and return it."""
     tcs = applicable_tcs(persona)
-    if rec.error:
+    if rec.harness_error:
+        out = {tc: Verdict("error", reason=f"harness: {rec.harness_error}") for tc in tcs}
+    elif rec.error:
         out = {tc: Verdict("error", reason=f"bridge: {rec.error}") for tc in tcs}
-    elif rec.void_reason == "broken_twice":
-        out = {tc: Verdict("unscored", reason="persona broken twice") for tc in tcs}
+    elif rec.void_reason in UNSCORED_VOIDS:
+        out = {tc: Verdict("unscored", reason=UNSCORED_VOIDS[rec.void_reason]) for tc in tcs}
     else:
         ctx = CheckCtx(rec, persona, places, no_idle_handling)
         out = {}

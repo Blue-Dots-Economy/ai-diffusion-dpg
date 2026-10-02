@@ -28,11 +28,11 @@ def test_tap_routes_records_and_strips_secrets():
         assert r1.json()["path"] == "/v1/search" and r2.status_code == 200
         assert seen[0] == ("http://search.local:3100/v1/search", "sk_secret")
         assert seen[1][0].startswith("http://signals.local:2742/api/v1/admin/participant?phone_number=")
-        entries = tap.take(0)
+        entries = tap.take()
         assert [e.tool for e in entries] == ["fetch_jobs", "fetch_profile"]
         assert entries[0].req_body == {"q": "बिजली"} and entries[0].upstream == "search"
         assert "sk_secret" not in json.dumps([e.__dict__ for e in entries])
-        assert tap.take(0) == []
+        assert tap.take() == []
     finally:
         tap.stop()
 
@@ -47,7 +47,7 @@ def test_tap_records_upstream_failure_as_502():
     try:
         r = httpx.post(f"http://127.0.0.1:{port}/api/v1/action/perform", json={})
         assert r.status_code == 502
-        (e,) = tap.take(0)
+        (e,) = tap.take()
         assert e.status == 502 and e.tool == "apply_job"
     finally:
         tap.stop()

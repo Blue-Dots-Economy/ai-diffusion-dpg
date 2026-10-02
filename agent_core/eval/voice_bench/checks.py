@@ -125,13 +125,18 @@ def _is_goodbye(reply: str) -> bool:
     return bool(m and len(_letter_words(tail[m.end(1):])) <= MAX_WORDS_AFTER_THANKS)
 
 
+def _says_goodbye(t: TurnRecord) -> bool:
+    """A goodbye in the reply text, or the target's terminal word (stripped from the reply by the bridge)."""
+    return t.terminal_word is not None or _is_goodbye(t.reply)
+
+
 def _tc05_leg(lg: Leg) -> Verdict | None:
     if lg.ended_by not in ("bot", "caller"):
         return None
-    replies = [t for t in lg.turns if t.reply]
-    goodbyes = [t for t in replies if _is_goodbye(t.reply)]
+    replies = [t for t in lg.turns if t.reply or t.terminal_word]
+    goodbyes = [t for t in replies if _says_goodbye(t)]
     if lg.ended_by == "caller":
-        if replies and _is_goodbye(replies[-1].reply):
+        if replies and _says_goodbye(replies[-1]):
             return _fail(replies[-1], "caller had to hang up after goodbye; bot never released the line")
         return _fail(replies[-1], "bot did not close") if replies else Verdict("fail", reason="bot did not close")
     if len(goodbyes) > 1:
@@ -213,6 +218,13 @@ def _known(session: dict, field: str) -> bool:
     return any(session.get(k) for k in SESSION_KEYS[field])
 
 
+def _reads_back(reply: str, session: dict, field: str) -> bool:
+    """The reply contains the field's known value: a confirmation read-back ("आपका नाम रमेश है, सही है?"), not a re-ask."""
+    folded = reply.casefold()
+    return any(isinstance(v, str) and v.strip() and v.strip().casefold() in folded
+               for v in (session.get(k) for k in SESSION_KEYS[field]))
+
+
 def _sentences(reply: str) -> set[str]:
     parts = (" ".join(p.split()) for p in re.split(r"[।?!.\n]", reply))
     return {p for p in parts if len(p) >= 25}
@@ -223,8 +235,9 @@ def _tc09_leg(lg: Leg) -> Verdict | None:
     for i, t in enumerate(lg.turns):
         corrected = any(m in t.caller for m in CORRECTION_MARKERS)
         if i > 0 and not corrected:
+            prev = lg.turns[i - 1].session
             for f in _asked_fields(t.reply):
-                if _known(lg.turns[i - 1].session, f):
+                if _known(prev, f) and not _reads_back(t.reply, prev, f):
                     return _fail(t, f"asked {f} again though session already has it")
         for s in _sentences(t.reply):
             if s in seen and seen[s] != i and not REPEAT_REQUEST_RE.search(t.caller):
@@ -327,10 +340,37 @@ def _tc20(ctx: CheckCtx) -> Verdict:
     return _first_fail(ctx, lambda t: "masculine self-reference" if GENDER_RE.search(t.reply) else None)
 
 
+def _says_already(*texts) -> bool:
+    return any(isinstance(x, str) and "already" in x.casefold() for x in texts)
+
+
+def _error_text_already(body) -> bool:
+    """The error body's code/message field says "already" (e.g. {"error": "...", "message": "... already ..."})."""
+    if not isinstance(body, dict):
+        return False
+    err = body.get("error")
+    nested = (err.get("code"), err.get("message")) if isinstance(err, dict) else (err,)
+    return _says_already(body.get("code"), body.get("message"), *nested)
+
+
+def _bulk_already(body) -> bool:
+    """A 2xx bulk body where nothing succeeded and a per-item result says "already"."""
+    if not isinstance(body, dict) or not isinstance(body.get("summary"), dict):
+        return False
+    if body["summary"].get("succeeded") != 0:
+        return False
+    results = body.get("results") if isinstance(body.get("results"), list) else []
+    return any(isinstance(r, dict) and _says_already(r.get("status"), r.get("message")) for r in results)
+
+
 def _apply_outcome(status: int, body) -> str:
-    if status == 409 or "already" in _dump(body):
+    """already: HTTP 409, or a non-2xx whose error code/message says so, or a 2xx bulk body with 0 succeeded and an
+    "already" result. Other 2xx are success ("already" elsewhere in a success body, e.g. a job title, does not count)."""
+    if status == 409:
         return "already"
-    return "success" if _ok(status) else "error"
+    if _ok(status):
+        return "already" if _bulk_already(body) else "success"
+    return "already" if _error_text_already(body) else "error"
 
 
 def _tc21_leg(lg: Leg) -> Verdict | None:
