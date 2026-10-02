@@ -88,6 +88,7 @@ class CallRecord:
     error: str | None
     verdicts: dict[str, Verdict] = field(default_factory=dict)
     started_at: str = ""
+    void_reason: str | None = None
 
     def to_json(self) -> str:
         """Serialise (Devanagari kept as-is)."""
