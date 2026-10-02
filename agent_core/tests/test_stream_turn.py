@@ -1742,3 +1742,28 @@ async def test_stream_turn_still_writes_current_question_after_spec_d():
     asy = [c.args for c in agent._async_memory.write.await_args_list if c.args[3] == "current_question"]
     writes = sync + asy
     assert writes and writes[-1][4] == "क्या मैं इस नौकरी के लिए आवेदन भेज दूँ?"
+
+
+class TestStreamModelCallsIgnoreTrustConsent:
+    """Blue Dots records consent via NLU/session_writes, not the Trust Layer
+    ConsentStore, so model-initiated stream calls must not consult it."""
+
+    async def _run(self, rounds):
+        agent, _order, _requests = _tr_agent(rounds)
+        agent._tool_registry.requires_consent = MagicMock(return_value=True)
+        agent._async_trust.check_consent = AsyncMock(return_value=False)
+        await _collect_events(agent, _make_turn_input())
+        return agent
+
+    def _apply(self, i):
+        return ToolUseBlock(tool_name="apply_job", tool_use_id=f"tu_{i}", input={"job_id": "J"})
+
+    async def test_round_one_apply_reaches_gateway_without_consent_check(self):
+        agent = await self._run([[self._apply(1)]])
+        agent._async_gateway.execute.assert_awaited_once()
+        agent._async_trust.check_consent.assert_not_called()
+
+    async def test_nested_round_apply_reaches_gateway_without_consent_check(self):
+        agent = await self._run([[self._apply(1)], [self._apply(2)]])
+        assert agent._async_gateway.execute.await_count == 2
+        agent._async_trust.check_consent.assert_not_called()

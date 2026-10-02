@@ -30,6 +30,9 @@ class GuardVerdict:
     result: ToolResult | None = None
 
 
+_CONSENT_REASON = "consent_required: the caller has not given consent for this action"
+
+
 def _cap_reason(tool_name: str) -> str:
     return (
         f"Refused: {tool_name} has already run this turn and its "
@@ -84,6 +87,7 @@ def check_tool_call(
         return GuardVerdict("refuse", ToolResult(
             tool_use_id=tc.tool_use_id, tool_name=tc.tool_name,
             result={}, success=False, error="consent_required",
+            result_text=_CONSENT_REASON,
         ))
     if over_call_cap(cap, used):
         logger.warning("tool_guard.tool_call_cap tool=%s used=%s", tc.tool_name, used)

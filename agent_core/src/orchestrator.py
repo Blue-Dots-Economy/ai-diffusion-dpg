@@ -485,7 +485,13 @@ class AgentCore(AgentCoreBase):
         return guarded, counts, language
 
     async def _stream_consent_ok(self, session_id: str, tc) -> bool | None:
-        """Consent decision for a streaming tool call.
+        """Consent decision for a streaming tool call (pre-dispatch only).
+
+        Not used for model-initiated calls: Blue Dots does not record consent
+        in the Trust Layer ConsentStore (it records it through NLU and routing
+        ``session_writes``), so enforcing ``check_consent`` there would refuse
+        every live write. Model calls keep their historical behaviour and pass
+        ``consent_ok=None`` to the guard.
 
         Args:
             session_id: Session identifier.
@@ -4987,7 +4993,7 @@ class AgentCore(AgentCoreBase):
                                 messages=messages,
                                 stored_results=tool_cache.stored_results_by_tool(),
                                 session_grounded=self._session_grounded_values(bundle, _spec),
-                                consent_ok=await self._stream_consent_ok(session_id, tc),
+                                consent_ok=None,
                                 cache_lookup=tool_cache.lookup,
                             )
                             if _verdict.kind != "go":
@@ -5289,7 +5295,7 @@ class AgentCore(AgentCoreBase):
                                         stored_results=tool_cache.stored_results_by_tool(),
                                         session_grounded=self._session_grounded_values(
                                             bundle, _spec2),
-                                        consent_ok=await self._stream_consent_ok(session_id, tc),
+                                        consent_ok=None,
                                         cache_lookup=tool_cache.lookup,
                                     )
                                     if _verdict2.kind != "go":

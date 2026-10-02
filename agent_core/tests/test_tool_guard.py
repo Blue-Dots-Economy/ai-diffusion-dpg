@@ -24,6 +24,8 @@ def test_consent_refusal_first():
     v = check_tool_call(_tc(), **{**BASE, "consent_ok": False, "cap": 1, "used": 1})
     assert v.kind == "refuse" and v.result.error == "consent_required"
     assert v.result.success is False
+    assert v.result.result_text == (
+        "consent_required: the caller has not given consent for this action")
 
 
 def test_consent_granted_falls_through():
