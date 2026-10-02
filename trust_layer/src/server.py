@@ -274,7 +274,7 @@ def create_app(trust: TrustLayer) -> FastAPI:
                 extra={
                     "operation": "server.escalate",
                     "status": "failure",
-                    "error": f"{type(e).__name__}: {e}",
+                    "error": type(e).__name__,
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )

@@ -4,11 +4,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 
 import httpx
 
 TIMEOUT_S = 3.0
+TOTAL_DEADLINE_S = 4.0
 
 # httpx logs every request URL at INFO (httpcore logs the host at DEBUG); the webhook URL is a
 # secret-bearing value, so keep these loggers quiet.
@@ -32,27 +34,37 @@ def webhook_settings(environ: Mapping[str, str]) -> tuple[str | None, str | None
 
 
 def deliver_webhook(body: bytes, *, url: str, secret: str, timeout_s: float = TIMEOUT_S,
-                    client: httpx.Client | None = None) -> tuple[bool, str]:
-    """POST once, retry once on timeout/5xx. Returns (delivered, reason). Never raises."""
-    headers = {"Content-Type": "application/json; charset=utf-8", "X-Handoff-Signature": sign(body, secret)}
-    own = client is None
-    cl = client or httpx.Client(timeout=timeout_s)
+                    client: httpx.Client | None = None,
+                    clock: Callable[[], float] = time.monotonic) -> tuple[bool, str]:
+    """POST once, retry once on timeout/5xx within TOTAL_DEADLINE_S. Returns (delivered, reason). Never raises."""
+    deadline = clock() + TOTAL_DEADLINE_S
     reason = "error"
+    own = client is None
     try:
-        for _attempt in range(2):
-            try:
-                r = cl.post(url, content=body, headers=headers, timeout=timeout_s)
-            except httpx.TimeoutException:
-                reason = "timeout"
-                continue
-            except httpx.HTTPError:
-                return False, "error"
-            if 200 <= r.status_code < 300:
-                return True, "delivered"
-            reason = f"http_{r.status_code}"
-            if r.status_code < 500:
-                return False, reason
-        return False, reason
-    finally:
-        if own:
-            cl.close()
+        headers = {"Content-Type": "application/json; charset=utf-8", "X-Handoff-Signature": sign(body, secret)}
+        cl = client or httpx.Client(timeout=timeout_s)
+        try:
+            for attempt in range(2):
+                remaining = deadline - clock()
+                if attempt and remaining <= 0:
+                    break
+                t = min(timeout_s, remaining) if attempt else timeout_s
+                try:
+                    r = cl.post(url, content=body, headers=headers, timeout=httpx.Timeout(t),
+                                follow_redirects=False)
+                except httpx.TimeoutException:
+                    reason = "timeout"
+                    continue
+                except Exception:
+                    return False, "error"
+                if 200 <= r.status_code < 300:
+                    return True, "delivered"
+                reason = f"http_{r.status_code}"
+                if r.status_code < 500:
+                    return False, reason
+            return False, reason
+        finally:
+            if own:
+                cl.close()
+    except Exception:
+        return False, "error"

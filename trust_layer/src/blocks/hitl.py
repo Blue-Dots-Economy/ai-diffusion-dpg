@@ -140,8 +140,11 @@ class HiTLBlock:
             url, secret, _ = webhook_settings(os.environ)
             if not url or not secret:
                 return False, False, "misconfigured"
-            body = json.dumps({"ticket_id": ticket_id, **(handoff or {})}, ensure_ascii=False).encode("utf-8")
-            delivered, reason = deliver_webhook(body, url=url, secret=secret, client=self._http)
+            try:
+                body = json.dumps({**(handoff or {}), "ticket_id": ticket_id}, ensure_ascii=False).encode("utf-8")
+                delivered, reason = deliver_webhook(body, url=url, secret=secret, client=self._http)
+            except Exception:
+                return True, False, "error"
             return True, delivered, reason
         logger.warning(
             "hitl_block.unsupported_backend",

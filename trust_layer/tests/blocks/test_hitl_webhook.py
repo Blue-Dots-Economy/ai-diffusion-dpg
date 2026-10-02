@@ -105,3 +105,86 @@ def test_webhook_path_never_logs_payload_url_or_secret(monkeypatch, caplog):
     assert caplog.records
     for needle in ("919900001000", "hooks.example.test", "abc123", SECRET):
         assert all(needle not in str(r.__dict__) for r in caplog.records)
+
+
+def test_invalid_url_does_not_raise():
+    assert deliver_webhook(b"{}", url="https://[::1/x", secret="s") == (False, "error")
+
+
+def test_connect_error_is_error_without_retry():
+    calls = []
+
+    def h(req):
+        calls.append(1)
+        raise httpx.ConnectError("nope")
+
+    assert deliver_webhook(BODY, url="https://x/hook", secret=SECRET, client=_client(h)) == (False, "error")
+    assert len(calls) == 1
+
+
+def test_redirect_is_not_followed():
+    calls = []
+
+    def h(req):
+        calls.append(1)
+        return httpx.Response(302, headers={"Location": "https://evil/"})
+
+    assert deliver_webhook(BODY, url="https://x/hook", secret=SECRET, client=_client(h)) == (False, "http_302")
+    assert len(calls) == 1
+
+
+def test_deadline_consumed_blocks_retry():
+    ticks = iter([0.0, 5.0, 5.0, 5.0])
+    calls = []
+
+    def h(req):
+        calls.append(1)
+        raise httpx.ReadTimeout("slow")
+
+    out = deliver_webhook(BODY, url="https://x/hook", secret=SECRET, client=_client(h),
+                          clock=lambda: next(ticks))
+    assert out == (False, "timeout") and len(calls) == 1
+
+
+def test_retry_happens_when_time_remains():
+    calls = []
+
+    def h(req):
+        calls.append(1)
+        raise httpx.ReadTimeout("slow")
+
+    out = deliver_webhook(BODY, url="https://x/hook", secret=SECRET, client=_client(h), clock=lambda: 0.0)
+    assert out == (False, "timeout") and len(calls) == 2
+
+
+def test_block_malformed_url_no_raise_no_url_in_logs(monkeypatch, caplog):
+    caplog.set_level("DEBUG")
+    monkeypatch.setenv("HITL_WEBHOOK_URL", "https://[::1/secretpath")
+    monkeypatch.setenv("HITL_WEBHOOK_SECRET", SECRET)
+    cfg = {"trust": {"hitl": {"queue_backend": "webhook", "holding_message": "h", "notification_webhook": None}}}
+    r = HiTLBlock(cfg).escalate("s1", "human_request", "m", "job_match", handoff={"x": 1})
+    assert r["delivered"] is False and r["reason"] in ("error", "misconfigured")
+    assert all("secretpath" not in str(x.__dict__) for x in caplog.records)
+
+
+def test_block_receiver_500_twice(monkeypatch):
+    monkeypatch.setenv("HITL_WEBHOOK_URL", "https://x/hook")
+    monkeypatch.setenv("HITL_WEBHOOK_SECRET", SECRET)
+    cfg = {"trust": {"hitl": {"queue_backend": "webhook", "holding_message": "h", "notification_webhook": None}}}
+    blk = HiTLBlock(cfg, http_client=_client(lambda req: httpx.Response(500)))
+    r = blk.escalate("s1", "human_request", "m", "job_match", handoff={"x": 1})
+    assert r["queued"] is True and r["delivered"] is False and r["reason"] == "http_500"
+
+
+def test_ticket_id_cannot_be_overridden_by_handoff(monkeypatch):
+    monkeypatch.setenv("HITL_WEBHOOK_URL", "https://x/hook")
+    monkeypatch.setenv("HITL_WEBHOOK_SECRET", SECRET)
+    seen = {}
+
+    def h(req):
+        seen["b"] = json.loads(req.content)
+        return httpx.Response(200)
+
+    cfg = {"trust": {"hitl": {"queue_backend": "webhook", "holding_message": "h", "notification_webhook": None}}}
+    r = HiTLBlock(cfg, http_client=_client(h)).escalate("s1", "r", "m", "w", handoff={"ticket_id": "FAKE"})
+    assert seen["b"]["ticket_id"] == r["ticket_id"]

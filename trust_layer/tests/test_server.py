@@ -432,3 +432,14 @@ def test_check_output_emits_trust_span():
     output_check_span = next(s for s in spans if s.name == "trust.output_check")
     assert output_check_span.attributes.get("session_id") == "s1"
     assert output_check_span.attributes.get("trust.action") is not None
+
+
+def test_escalate_exception_log_has_no_message_text(caplog):
+    from unittest.mock import MagicMock
+    mock_trust = MagicMock()
+    mock_trust.escalate.side_effect = RuntimeError("https://secret.example/path")
+    caplog.set_level("DEBUG")
+    TestClient(create_app(mock_trust)).post("/escalate", json={
+        "session_id": "s1", "escalation_reason": "r", "user_message": "m", "workflow_step": "ready"})
+    assert caplog.records
+    assert all("secret.example" not in str(r.__dict__) for r in caplog.records)
