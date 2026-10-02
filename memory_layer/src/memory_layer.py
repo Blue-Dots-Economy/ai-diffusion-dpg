@@ -42,7 +42,19 @@ _SESSION_LIFECYCLE_FIELDS: frozenset[str] = frozenset({
     # Session bootstrap latch (session-bootstrap spec §5.1): a new call must
     # bootstrap afresh, never inherit "already done" from the call it adopts.
     "bootstrap_done",
+    # Human handoff (identity/handoff spec §4): the one-delivered-handoff cap,
+    # the spoken-line marker and the pending marker are per call. A new call
+    # must be able to ask for a human again.
+    "handoff_status",
+    "handoff_line",
+    "handoff_ticket_id",
+    "handoff_pending_at",
 })
+
+# The handoff phase only answers the current call's request; a new call that
+# adopts it resumes the phase the caller was in (close_return_to), else starts
+# from the workflow's start phase.
+_HANDOFF_SUBAGENT_ID = "handoff"
 
 
 class MemoryLayer:
@@ -240,6 +252,16 @@ class MemoryLayer:
                                 if k in _SESSION_LIFECYCLE_FIELDS:
                                     continue
                                 initial_state[k] = v
+                            if initial_state.get("current_subagent_id") == _HANDOFF_SUBAGENT_ID:
+                                back = str(last_state.get("close_return_to") or "")
+                                default = str(self._schema.get("current_subagent_id", {}).get("default", "") or "")
+                                if back and back != _HANDOFF_SUBAGENT_ID:
+                                    initial_state["current_subagent_id"] = back
+                                elif default and default != _HANDOFF_SUBAGENT_ID:
+                                    initial_state["current_subagent_id"] = default
+                                else:
+                                    # Absent -> Agent Core falls back to the workflow start phase.
+                                    initial_state.pop("current_subagent_id", None)
                             initial_state = self._coerce_session_types(initial_state)
                             initial_state["was_adopted"] = True
                             # Re-assert infrastructure fields that must be fresh for each
