@@ -1,7 +1,7 @@
 """A `human_request` turn hands the caller off via Trust and speaks a fixed line (identity/handoff spec §4).
 
-Built from the real Blue Dots workflow plus a test override that enables handoff and adds a minimal
-`handoff` subagent (Task 7 adds the real one), in the style of test_blue_dots_dialogue_act_config.py.
+Built from the real Blue Dots workflow (which ships a `handoff` phase with human_handoff none) plus a
+test override that enables handoff, in the style of test_blue_dots_dialogue_act_config.py.
 """
 from __future__ import annotations
 
@@ -31,18 +31,18 @@ IDENTITY = {"name": "ब्लू डॉट्स सहायक", "kind": "ai_
             "disclosure": "जी, मैं ब्लू डॉट्स की AI सहायक हूँ।", "human_handoff": "request",
             "no_handoff_line": "अभी इस कॉल पर कोई इंसान उपलब्ध नहीं है।"}
 HANDOFF = {"lines": HANDOFF_LINES, "summary_turns": 6}
-_HANDOFF_SUBAGENT = {
-    "id": "handoff", "name": "Human Handoff", "description": "Fixed handoff line.",
-    "is_start": False, "is_terminal": False, "opening_phrase": HANDOFF_LINES["failed"], "special_handler": None, "tools": [],
-    "system_prompt": "Speak the handoff line.", "routing": [{"intent": "*", "next_subagent_id": "opening"}],
-}
+SHIPPED = load_merged_config(BLUE_DOTS)
 
 
-def _workflow(with_handoff: bool):
-    cfg = copy.deepcopy(load_merged_config(BLUE_DOTS))
-    if with_handoff:
+def _workflow(with_handoff: bool | str):
+    """The real workflow with handoff enabled, with its `handoff` phase removed, or as shipped."""
+    cfg = copy.deepcopy(SHIPPED)
+    if with_handoff == "shipped":
+        pass
+    elif with_handoff:
         cfg["identity"], cfg["handoff"] = IDENTITY, HANDOFF
-        cfg["agent_workflow"]["subagents"].append(copy.deepcopy(_HANDOFF_SUBAGENT))
+    else:
+        cfg["agent_workflow"]["subagents"] = [s for s in cfg["agent_workflow"]["subagents"] if s["id"] != "handoff"]
     MergedConfig.validate_full(cfg)
     return AgentWorkflowLoader().load(config=cfg, tool_registry=ToolRegistry(cfg, OfflineGateway(cfg)))
 
@@ -50,7 +50,7 @@ def _workflow(with_handoff: bool):
 class _Turn:
     """One orchestrator over the real workflow; records escalate calls and session writes."""
 
-    def __init__(self, *, with_handoff: bool = True, identity: dict | None = IDENTITY,
+    def __init__(self, *, with_handoff: bool | str = True, identity: dict | None = IDENTITY,
                  handoff: dict | None = HANDOFF, workflow_handoff: bool | None = None,
                  language: str = "hindi"):
         self.agent = _make_agent_core(workflow=_workflow(with_handoff if workflow_handoff is None
@@ -192,7 +192,9 @@ async def _llm_reply(*a, **k):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kwargs", [
-    {"with_handoff": False, "identity": None, "handoff": None},          # default blue-dots
+    {"with_handoff": False, "identity": None, "handoff": None},          # no identity / handoff at all
+    {"with_handoff": "shipped", "identity": SHIPPED["identity"],           # blue-dots as shipped
+     "handoff": SHIPPED["handoff"]},
     {"identity": {**IDENTITY, "human_handoff": "none"}},                   # handoff off
     {"handoff": None, "workflow_handoff": False, "identity": IDENTITY},    # no handoff block / phase
     {"workflow_handoff": False},                                           # no `handoff` phase

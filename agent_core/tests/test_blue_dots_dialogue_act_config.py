@@ -13,8 +13,11 @@ from src.workflow_loader import AgentWorkflowLoader
 BLUE_DOTS = Path(__file__).resolve().parents[2] / "dev-kit" / "configs" / "blue-dots"
 
 
-def _load():
+def _load(handoff: bool = False):
+    """Merged Blue Dots config + workflow; ``handoff=True`` is the test override enabling human handoff."""
     cfg = load_merged_config(BLUE_DOTS)
+    if handoff:
+        cfg = {**cfg, "identity": {**cfg["identity"], "human_handoff": "request"}}
     MergedConfig.validate_full(cfg)
     wf = AgentWorkflowLoader().load(config=cfg, tool_registry=ToolRegistry(cfg, OfflineGateway(cfg)))
     return cfg, wf
@@ -123,7 +126,7 @@ def test_blue_dots_journey_routes_end_to_end():
 
 
 
-def _understand_once(step, state, result):
+def _understand_once(step, state, result, handoff=False):
     from src.understanding.dialogue_act_nlu import DialogueActNLUBase
     from src.understanding.understander import TurnContext, TurnUnderstander
 
@@ -131,7 +134,7 @@ def _understand_once(step, state, result):
         def classify(self, user_message):
             return result, None, 1
 
-    cfg, wf = _load()
+    cfg, wf = _load(handoff)
     und = TurnUnderstander(DialogueActConfig.from_config(cfg), wf, _One())
     return und.understand(TurnContext(subagent_id=step, state=dict(state), session=dict(state),
                                       segments=["x"], recent=[]))
@@ -200,14 +203,14 @@ def test_eval_case_pending_matches_the_resolver(cases_file):
 
 # ── D3: a goodbye before anything is done is confirmed once, then ends ──────
 
-def _route(step, state, result):
+def _route(step, state, result, handoff=False):
     """Understand one scripted turn in ``step`` and route it; returns (intent, next, rule, state)."""
     from tests.test_stream_turn import _make_agent_core
-    u = _understand_once(step, state, result)
+    u = _understand_once(step, state, result, handoff)
     state = dict(state)
     for w in u.writes:
         state[w.key] = w.value
-    _, wf = _load()
+    _, wf = _load(handoff)
     agent = _make_agent_core(workflow=wf)
     nxt, rule = agent._resolve_next_subagent(current_subagent=wf.subagents[step], nlu_result=u.nlu_result,
                                              session=state)
@@ -425,3 +428,98 @@ def test_no_plus_another_job_on_the_apply_question_explores():
     turn = DialogueActResult(acts=("deny", "request_change"), relation="answers_pending", topic="search")
     intent, nxt, _, _ = _route("job_match", state, turn)
     assert (intent, nxt) == ("explore_more", "job_match")
+
+
+# ── Identity + human handoff (identity/handoff spec §4) ─────────────────────
+
+_RAW = (BLUE_DOTS / "agent_core.yaml").read_text(encoding="utf-8")
+
+
+def test_identity_ships_with_handoff_off():
+    cfg, _ = _load()
+    assert cfg["identity"]["human_handoff"] == "none"
+    assert cfg["identity"]["kind"] == "ai_assistant"
+    assert set(cfg["handoff"]["lines"]) == {"delivered", "failed", "already"}
+
+
+def test_handoff_subagent_declares_close_confirm():
+    for handoff in (False, True):
+        _, wf = _load(handoff)
+        sub = wf.subagents["handoff"]
+        assert not sub.is_terminal and not sub.fixed_opening
+        resolve = PendingResolver(wf).resolve
+        assert resolve("handoff", {"close_return_to": "job_match", "handoff_status": "delivered"}).id == "close_confirm"
+        assert resolve("handoff", {"close_return_to": "job_match", "handoff_status": "failed"}) is None
+
+
+def test_human_request_is_an_act_intent_on_the_human_topic():
+    cfg, _ = _load()
+    nlu = cfg["preprocessing"]["nlu_processor"]
+    assert "human" in nlu["topics"]
+    rows = [r for r in nlu["act_intents"] if r.get("intent") == "human_request"]
+    assert {(tuple(r["acts"]), r.get("topic")) for r in rows} == {(("request_change",), "human"), (("ask",), "human")}
+    assert "counsellor_request" in nlu["signals"]
+
+
+@pytest.mark.parametrize("act", ["request_change", "ask"])
+def test_human_request_derived_from_the_human_topic(act):
+    from src.understanding.models import DialogueActResult
+    u = _understand_once("job_match", _CALL, DialogueActResult(acts=(act,), relation="new_topic", topic="human"))
+    assert u.nlu_result.intent == "human_request"
+
+
+def test_disclosure_and_name_live_only_in_the_identity_block():
+    cfg, _ = _load()
+    assert "जी, मैं एक AI असिस्टेंट हूँ" not in _RAW
+    assert _RAW.count(cfg["identity"]["name"]) == 1
+    prompt = cfg["agent_workflow"]["agent_system_prompt"]
+    assert "Blue Dots voice assistant" not in prompt
+    assert "You are female" in prompt                                   # feminine first person is kept
+
+
+def test_handoff_affirm_ends_the_call():
+    state = {**_CALL, "current_subagent_id": "handoff", "close_return_to": "job_match",
+             "handoff_status": "delivered", "subagent_entry_count": {"handoff": 1}}
+    intent, nxt, _, _ = _route("handoff", state, _act("affirm"), handoff=True)
+    _, wf = _load(True)
+    assert (intent, nxt) == ("termination_intent", "ended") and wf.subagents[nxt].is_terminal
+
+
+@pytest.mark.parametrize("answer", ["deny", "affirm_ask"])
+def test_handoff_deny_or_question_returns_to_the_phase(answer):
+    from src.understanding.models import DialogueActResult
+    result = _act("deny") if answer == "deny" else DialogueActResult(
+        acts=("affirm", "ask"), relation="answers_pending", topic="salary")
+    state = {**_CALL, "current_subagent_id": "handoff", "close_return_to": "job_match",
+             "handoff_status": "delivered", "subagent_entry_count": {"handoff": 1}}
+    intent, nxt, _, _ = _route("handoff", state, result, handoff=True)
+    assert intent != "termination_intent" and nxt == "job_match"
+
+
+def test_affirm_after_a_failed_handoff_does_not_end_the_call():
+    """'हाँ' to the failed line's "आप क्या जानना चाहते हैं?" is not a goodbye."""
+    state = {**_CALL, "current_subagent_id": "handoff", "close_return_to": "job_match",
+             "handoff_status": "failed", "subagent_entry_count": {"handoff": 1}}
+    intent, nxt, _, _ = _route("handoff", state, _act("affirm"), handoff=True)
+    assert intent != "termination_intent" and nxt == "job_match"
+
+
+@pytest.mark.asyncio
+async def test_handoff_affirm_ends_over_stream_turn():
+    """Stream path: 'हाँ' after the handoff line ends the call (session_ended)."""
+    from unittest.mock import MagicMock
+
+    from src.models import ContextBundle, DoneEvent, NLUResult
+    from tests.fakes import fake_understander
+    from tests.test_stream_turn import _collect_events, _make_agent_core, _make_turn_input
+
+    _, wf = _load(True)
+    agent = _make_agent_core(workflow=wf)
+    agent._language_normaliser = MagicMock()
+    agent._language_normaliser.normalise.return_value = ("हाँ", "hindi")
+    agent._understander = fake_understander(NLUResult(intent="termination_intent", entities={}, confidence=1.0))
+    agent._async_memory.context_bundle.return_value = ContextBundle(
+        session={**_CALL, "current_subagent_id": "handoff", "close_return_to": "job_match",
+                 "handoff_status": "delivered", "subagent_entry_count": {"handoff": 1}}, profile={})
+    events = await _collect_events(agent, _make_turn_input(channel="voice"))
+    assert [e for e in events if isinstance(e, DoneEvent)][-1].session_ended is True
