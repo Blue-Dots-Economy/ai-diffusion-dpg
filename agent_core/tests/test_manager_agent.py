@@ -15,6 +15,7 @@ Coverage:
 
 from __future__ import annotations
 
+import dataclasses
 import time
 
 import pytest
@@ -286,23 +287,15 @@ def test_build_system_prompt_includes_persona():
     agent = _make_manager_for_prompt()
     result = _flat(agent.build_system_prompt(
         "You are Blue Dots, a job advisory assistant.",
-        "", "hindi", "cli", {},
+        "", "hindi", "cli",
     ))
     assert "Blue Dots" in result
 
 
 def test_build_system_prompt_includes_detected_language():
     agent = _make_manager_for_prompt()
-    result = _flat(agent.build_system_prompt("", "", "kannada", "cli", {}))
+    result = _flat(agent.build_system_prompt("", "", "kannada", "cli"))
     assert "kannada" in result
-
-
-def test_build_system_prompt_includes_profile_fields():
-    agent = _make_manager_for_prompt()
-    profile = {"trade": "electrician", "location": "Hubli"}
-    result = _flat(agent.build_system_prompt("", "", "hindi", "cli", profile))
-    assert "electrician" in result
-    assert "Hubli" in result
 
 
 def test_build_system_prompt_empty_args_returns_mirror_directive():
@@ -310,7 +303,7 @@ def test_build_system_prompt_empty_args_returns_mirror_directive():
     # the mirror directive (GH-313) is injected so the LLM still receives
     # language guidance even without a prior LN call.
     agent = _make_manager_for_prompt()
-    result = agent.build_system_prompt("", "", "", "", {})
+    result = agent.build_system_prompt("", "", "", "")
     assert isinstance(result, SystemPrompt)
     flat = _flat(result)
     assert "mirror" in flat.lower() or "detect" in flat.lower()
@@ -319,7 +312,7 @@ def test_build_system_prompt_empty_args_returns_mirror_directive():
 def test_build_system_prompt_mirror_directive_when_no_detected_language():
     """Mirror directive is injected when detected_language is empty (#313)."""
     agent = _make_manager_for_prompt()
-    result = _flat(agent.build_system_prompt("", "", "", "cli", {}))
+    result = _flat(agent.build_system_prompt("", "", "", "cli"))
     assert "mirror" in result.lower() or "detect" in result.lower()
 
 
@@ -327,7 +320,7 @@ def test_build_system_prompt_guardrails_in_agent_prompt_included():
     agent = _make_manager_for_prompt()
     result = _flat(agent.build_system_prompt(
         "Stay on employment topics. Escalate distress.",
-        "", "english", "cli", {},
+        "", "english", "cli",
     ))
     assert "employment topics" in result
 
@@ -338,7 +331,7 @@ def test_build_system_prompt_subagent_prompt_included():
     result = _flat(agent.build_system_prompt(
         "You are a domain agent.",
         "## Market truth guidance\nShow ONEST results.",
-        "hindi", "cli", {},
+        "hindi", "cli",
     ))
     assert "Market truth guidance" in result
     assert "Show ONEST results" in result
@@ -347,19 +340,19 @@ def test_build_system_prompt_subagent_prompt_included():
 def test_build_system_prompt_empty_subagent_prompt_adds_no_extra():
     """Empty subagent prompt does not add extra text to output."""
     agent = _make_manager_for_prompt()
-    result = _flat(agent.build_system_prompt("You are a domain agent.", "", "hindi", "cli", {}))
+    result = _flat(agent.build_system_prompt("You are a domain agent.", "", "hindi", "cli"))
     assert "Market truth guidance" not in result
 
 
 def test_build_system_prompt_resumption_flag_injects_resumption_text():
     agent = _make_manager_for_prompt()
-    result = _flat(agent.build_system_prompt("", "", "hindi", "cli", {}, is_resumption=True))
+    result = _flat(agent.build_system_prompt("", "", "hindi", "cli", is_resumption=True))
     assert "resumed" in result.lower() or "returning" in result.lower() or "returned" in result.lower()
 
 
 def test_build_system_prompt_channel_injected():
     agent = _make_manager_for_prompt()
-    result = _flat(agent.build_system_prompt("", "", "", "whatsapp", {}))
+    result = _flat(agent.build_system_prompt("", "", "", "whatsapp"))
     assert "whatsapp" in result
 
 
@@ -372,7 +365,6 @@ def test_build_system_prompt_voice_suffix_appended():
         "Help with jobs.",
         "hindi",
         "voice",
-        {},
         channel_config=channel_config,
     ))
     assert "Respond in 1-2 short spoken sentences. No bullet points." in result
@@ -381,49 +373,23 @@ def test_build_system_prompt_voice_suffix_appended():
 def test_build_system_prompt_empty_suffix_does_not_change_output():
     """Empty system_prompt_suffix leaves the prompt unchanged."""
     agent = _make_manager_for_prompt()
-    baseline = agent.build_system_prompt("You are a domain agent.", "", "hindi", "web", {})
+    baseline = agent.build_system_prompt("You are a domain agent.", "", "hindi", "web")
     result = agent.build_system_prompt(
         "You are a domain agent.",
         "",
         "hindi",
         "web",
-        {},
         channel_config={"system_prompt_suffix": ""},
     )
     assert result == baseline
 
 
-def test_build_system_prompt_suffix_is_after_guardrails():
-    """Suffix (channel_rules) and guardrail constraints both appear in the assembled prompt.
-
-    In the tiered structure, channel_rules live in tier1 (static, ephemeral-cached) and
-    active_guardrails live in tier3 (dynamic). Both sections are present in the flat output.
-    """
-    agent = _make_manager_for_prompt()
-    channel_config = {"system_prompt_suffix": "Keep it short."}
-    guardrails = {
-        "prompt_constraints": ["No financial advice"],
-        "required_disclosures": [],
-    }
-    result = _flat(agent.build_system_prompt(
-        "You are an agent.",
-        "",
-        "hindi",
-        "voice",
-        {},
-        channel_config=channel_config,
-        guardrail_constraints=guardrails,
-    ))
-    assert "Keep it short." in result
-    assert "No financial advice" in result
-
-
 def test_build_system_prompt_none_channel_config_no_suffix():
     """channel_config=None (default) produces the same output as not passing it."""
     agent = _make_manager_for_prompt()
-    without = agent.build_system_prompt("You are an agent.", "", "hindi", "cli", {})
+    without = agent.build_system_prompt("You are an agent.", "", "hindi", "cli")
     with_none = agent.build_system_prompt(
-        "You are an agent.", "", "hindi", "cli", {}, channel_config=None
+        "You are an agent.", "", "hindi", "cli", channel_config=None
     )
     assert without == with_none
 
@@ -450,7 +416,7 @@ def test_build_system_prompt_omits_cache_hint_when_provider_lacks_caching():
     prompt = agent.build_system_prompt(
         agent_system_prompt="You are helpful.",
         subagent_system_prompt="Help with jobs.",
-        detected_language="hindi", channel="cli", profile={},
+        detected_language="hindi", channel="cli",
     )
     for block in prompt.blocks:
         assert block.cache_hint is None
@@ -475,7 +441,7 @@ def test_build_system_prompt_sets_cache_hint_when_provider_supports_caching():
     prompt = agent.build_system_prompt(
         agent_system_prompt="You are helpful.",
         subagent_system_prompt="Help with jobs.",
-        detected_language="hindi", channel="cli", profile={},
+        detected_language="hindi", channel="cli",
     )
     # First two blocks (tier 1 + tier 2) carry cache_hint; tier 3 does not.
     assert prompt.blocks[0].cache_hint == "session"
@@ -489,7 +455,7 @@ def test_build_system_prompt_user_state_guidance_none_no_section():
     agent = _make_manager_for_prompt()
     result = _flat(agent.build_system_prompt(
         agent_system_prompt="A", subagent_system_prompt="B",
-        detected_language="hindi", channel="cli", profile={},
+        detected_language="hindi", channel="cli",
         user_state_guidance=None,
     ))
     assert "<user_state_guidance>" not in result
@@ -500,7 +466,7 @@ def test_build_system_prompt_user_state_guidance_empty_no_section():
     agent = _make_manager_for_prompt()
     result = _flat(agent.build_system_prompt(
         agent_system_prompt="A", subagent_system_prompt="B",
-        detected_language="hindi", channel="cli", profile={},
+        detected_language="hindi", channel="cli",
         user_state_guidance="",
     ))
     assert "<user_state_guidance>" not in result
@@ -511,7 +477,7 @@ def test_build_system_prompt_user_state_guidance_rendered():
     agent = _make_manager_for_prompt()
     result = _flat(agent.build_system_prompt(
         agent_system_prompt="A", subagent_system_prompt="B",
-        detected_language="hindi", channel="cli", profile={},
+        detected_language="hindi", channel="cli",
         user_state_guidance="Orient gently. Surface 2-3 directions.",
     ))
     assert "<user_state_guidance>" in result
@@ -521,20 +487,6 @@ def test_build_system_prompt_user_state_guidance_rendered():
     assert state_idx > subagent_idx
 
 
-def test_build_system_prompt_user_state_guidance_before_guardrails():
-    """user_state_guidance section appears between subagent prompt and guardrail constraints."""
-    agent = _make_manager_for_prompt()
-    result = _flat(agent.build_system_prompt(
-        agent_system_prompt="A", subagent_system_prompt="B",
-        detected_language="hindi", channel="cli", profile={},
-        user_state_guidance="UG",
-        guardrail_constraints={"prompt_constraints": ["C1"], "required_disclosures": []},
-    ))
-    state_idx = result.index("<user_state_guidance>")
-    guardrail_idx = result.index("<active_guardrails>")
-    assert state_idx < guardrail_idx
-
-
 # ---------------------------------------------------------------------------
 # build_messages — E2
 # ---------------------------------------------------------------------------
@@ -542,7 +494,7 @@ def test_build_system_prompt_user_state_guidance_before_guardrails():
 
 def test_build_messages_returns_single_user_message():
     agent = _make_manager_for_prompt()
-    msgs = agent.build_messages("kaam chahiye", "")
+    msgs = agent.build_messages("kaam chahiye")
     assert len(msgs) == 1
     assert msgs[0].role == "user"
     assert isinstance(msgs[0].content[0], TextBlock)
@@ -551,92 +503,9 @@ def test_build_messages_returns_single_user_message():
 def test_build_messages_empty_user_message_returns_resumption_placeholder():
     """Empty user message returns a session resumption placeholder, not an empty list."""
     agent = _make_manager_for_prompt()
-    msgs = agent.build_messages("", "")
+    msgs = agent.build_messages("")
     assert len(msgs) == 1
     assert "Resuming" in msgs[0].content[0].text
-
-
-def test_build_messages_current_question_prepended():
-    agent = _make_manager_for_prompt()
-    msgs = agent.build_messages("welder", "Aap kaun sa kaam karte hain?")
-    content = msgs[0].content[0].text
-    assert "Aap kaun sa kaam karte hain?" in content
-    assert "welder" in content
-
-
-def test_build_messages_no_current_question_no_prefix():
-    agent = _make_manager_for_prompt()
-    msgs = agent.build_messages("hello", "")
-    content = msgs[0].content[0].text
-    assert "Last question asked" not in content
-
-
-# ---------------------------------------------------------------------------
-# Guardrail constraint injection
-# ---------------------------------------------------------------------------
-
-def test_system_prompt_includes_guardrail_constraints():
-    """prompt_constraints are appended to system prompt when guardrail_constraints provided."""
-    manager = _make_manager_for_prompt()
-    constraints = {
-        "prompt_constraints": ["MUST NOT guarantee outcomes"],
-        "required_disclosures": ["Hiring decisions rest with employer"],
-        "action_gates": {},
-        "refusal_templates": {},
-    }
-    result = _flat(manager.build_system_prompt(
-        agent_system_prompt="You are an assistant.",
-        subagent_system_prompt="Help with jobs.",
-        detected_language="hindi",
-        channel="cli",
-        profile={},
-        guardrail_constraints=constraints,
-    ))
-    assert "MUST NOT guarantee outcomes" in result
-    assert "Hiring decisions rest with employer" in result
-    assert "<active_guardrails>" in result
-
-
-def test_system_prompt_empty_guardrails_unchanged():
-    """Empty constraints do not alter the system prompt."""
-    manager = _make_manager_for_prompt()
-    base_prompt = "You are an assistant."
-    empty_constraints = {
-        "prompt_constraints": [],
-        "required_disclosures": [],
-        "action_gates": {},
-        "refusal_templates": {},
-    }
-    result_with_empty = manager.build_system_prompt(
-        agent_system_prompt=base_prompt,
-        subagent_system_prompt="",
-        detected_language="hindi",
-        channel="cli",
-        profile={},
-        guardrail_constraints=empty_constraints,
-    )
-    result_without = manager.build_system_prompt(
-        agent_system_prompt=base_prompt,
-        subagent_system_prompt="",
-        detected_language="hindi",
-        channel="cli",
-        profile={},
-        guardrail_constraints=None,
-    )
-    assert result_with_empty == result_without
-
-
-def test_system_prompt_no_guardrails_backward_compatible():
-    """build_system_prompt works without guardrail_constraints arg (default None)."""
-    manager = _make_manager_for_prompt()
-    result = _flat(manager.build_system_prompt(
-        agent_system_prompt="You are an assistant.",
-        subagent_system_prompt="Help with jobs.",
-        detected_language="hindi",
-        channel="cli",
-        profile={},
-    ))
-    assert "You are an assistant." in result
 
 
 # ---------------------------------------------------------------------------
@@ -652,7 +521,6 @@ def test_build_system_prompt_session_end_eval_prompt_rendered():
         subagent_system_prompt="B",
         detected_language="hindi",
         channel="cli",
-        profile={},
         session_end_eval_prompt="Call end_session when the user says goodbye.",
     ))
     assert "<session_end_policy>" in result
@@ -667,7 +535,6 @@ def test_build_system_prompt_session_end_eval_prompt_none_no_section():
         subagent_system_prompt="B",
         detected_language="hindi",
         channel="cli",
-        profile={},
         session_end_eval_prompt=None,
     ))
     assert "<session_end_policy>" not in result
@@ -682,7 +549,6 @@ def test_build_system_prompt_session_end_eval_empty_string_no_section():
         subagent_system_prompt="B",
         detected_language="hindi",
         channel="cli",
-        profile={},
         session_end_eval_prompt="",
     ))
     assert "<session_end_policy>" not in result
@@ -743,15 +609,16 @@ def test_run_turn_resets_session_ended_flag_each_turn():
 # ── Layered tiers (GH-176) ────────────────────────────────────────────────
 # Contract:
 #   build_system_prompt returns list[dict] — Anthropic content blocks.
-#   Tier 1 (persona + channel_rules + session_end_policy) carries cache_control.
+#   Tier 1 (persona + channel_rules + output_contract + how_to_read_context + session_end_policy)
+#          carries cache_control.
 #   Tier 2 (subagent + user_state_guidance) carries cache_control.
-#   Tier 3 (channel_context + resumption + known_profile + active_guardrails) no cache_control.
+#   Tier 3 (channel_context + resumption + state + recent + known_facts + caller_turn) no cache_control.
 #   Each populated section is wrapped in a single XML tag; empty inputs elide sections.
 
 
 def test_build_system_prompt_returns_system_prompt():
     agent = _make_manager_for_prompt()
-    result = agent.build_system_prompt("Persona.", "Subagent.", "hindi", "cli", {})
+    result = agent.build_system_prompt("Persona.", "Subagent.", "hindi", "cli")
     assert isinstance(result, SystemPrompt)
     assert all(isinstance(b, TextBlock) for b in result.blocks)
 
@@ -759,7 +626,7 @@ def test_build_system_prompt_returns_system_prompt():
 def test_build_system_prompt_tier1_has_cache_hint():
     agent = _make_manager_for_prompt()
     result = agent.build_system_prompt(
-        "Persona text.", "Subagent text.", "hindi", "cli", {},
+        "Persona text.", "Subagent text.", "hindi", "cli",
         channel_config={"system_prompt_suffix": "Voice rules."},
         session_end_eval_prompt="End eval.",
     )
@@ -780,7 +647,7 @@ _IDENT = {"name": "ब्लू डॉट्स सहायक", "kind": "ai_as
 
 def test_tier1_has_identity_block_when_configured():
     sp = _make_manager_for_prompt(identity=_IDENT).build_system_prompt(
-        "Persona text.", "Subagent text.", "hindi", "cli", {},
+        "Persona text.", "Subagent text.", "hindi", "cli",
         channel_config={"system_prompt_suffix": "Voice rules."},
         session_end_eval_prompt="End eval.",
     )
@@ -789,7 +656,7 @@ def test_tier1_has_identity_block_when_configured():
 
 def test_no_identity_block_when_absent():
     sp = _make_manager_for_prompt().build_system_prompt(
-        "Persona text.", "Subagent text.", "hindi", "cli", {},
+        "Persona text.", "Subagent text.", "hindi", "cli",
         channel_config={"system_prompt_suffix": "Voice rules."},
         session_end_eval_prompt="End eval.",
     )
@@ -799,7 +666,7 @@ def test_no_identity_block_when_absent():
 def test_build_system_prompt_tier2_has_cache_hint():
     agent = _make_manager_for_prompt()
     result = agent.build_system_prompt(
-        "Persona.", "Subagent body.", "hindi", "cli", {},
+        "Persona.", "Subagent body.", "hindi", "cli",
         user_state_guidance="User-state body.",
     )
     # tier 2 is second block when tier 1 is present
@@ -814,22 +681,19 @@ def test_build_system_prompt_tier2_has_cache_hint():
 def test_build_system_prompt_tier3_has_no_cache_hint():
     agent = _make_manager_for_prompt()
     result = agent.build_system_prompt(
-        "P.", "S.", "hindi", "cli", {"name": "Rahul"},
-        guardrail_constraints={"prompt_constraints": ["Be honest."]},
+        "P.", "S.", "hindi", "cli", state="phase: job_match",
     )
-    # tier 3 is the last block; it exists because profile is non-empty
+    # tier 3 is the last block; it exists because state is non-empty
     tier3 = result.blocks[-1]
     assert tier3.cache_hint is None
-    assert "<known_profile>" in tier3.text
-    assert "Rahul" in tier3.text
-    assert "<active_guardrails>" in tier3.text
-    assert "Be honest." in tier3.text
+    assert "<state>" in tier3.text
+    assert "phase: job_match" in tier3.text
 
 
 def test_build_system_prompt_elides_empty_sections():
     agent = _make_manager_for_prompt()
-    # persona + mirror directive (GH-313) — no channel suffix, no subagent, no profile, no guardrails
-    result = agent.build_system_prompt("Persona only.", "", "", "", {})
+    # persona + mirror directive (GH-313) — no channel suffix, no subagent, no state
+    result = agent.build_system_prompt("Persona only.", "", "", "")
     flat = _flat(result)
     assert "Persona only." in flat
     assert "<channel_rules>" not in flat
@@ -838,7 +702,7 @@ def test_build_system_prompt_elides_empty_sections():
 
 def test_build_system_prompt_resumption_lives_in_tier3():
     agent = _make_manager_for_prompt()
-    result = agent.build_system_prompt("P.", "S.", "hindi", "cli", {}, is_resumption=True)
+    result = agent.build_system_prompt("P.", "S.", "hindi", "cli", is_resumption=True)
     tier3 = result.blocks[-1]
     assert tier3.cache_hint is None
     assert "<resumption>" in tier3.text
@@ -846,7 +710,7 @@ def test_build_system_prompt_resumption_lives_in_tier3():
 
 def test_build_system_prompt_channel_context_lives_in_tier3():
     agent = _make_manager_for_prompt()
-    result = agent.build_system_prompt("P.", "S.", "hindi", "cli", {})
+    result = agent.build_system_prompt("P.", "S.", "hindi", "cli")
     tier3 = result.blocks[-1]
     assert tier3.cache_hint is None
     assert "<channel_context>" in tier3.text
@@ -857,17 +721,19 @@ def test_build_system_prompt_channel_context_lives_in_tier3():
 def test_build_system_prompt_xml_tags_are_balanced():
     agent = _make_manager_for_prompt()
     result = agent.build_system_prompt(
-        "P.", "S.", "hindi", "cli", {"name": "Rahul"},
-        channel_config={"system_prompt_suffix": "Voice."},
+        "P.", "S.", "hindi", "cli",
         session_end_eval_prompt="End.",
         user_state_guidance="State.",
         is_resumption=True,
-        guardrail_constraints={"prompt_constraints": ["x"], "required_disclosures": ["y"]},
+        state="s", recent="r", known_facts="f", caller_turn="c",
+        channel_config={"system_prompt_suffix": "Voice.", "output_contract": _CONTRACT},
     )
     full_text = "\n".join(b.text for b in result.blocks)
     for tag in ("persona", "channel_rules", "session_end_policy",
                 "subagent", "user_state_guidance",
-                "channel_context", "resumption", "known_profile", "active_guardrails"):
+                "output_contract", "how_to_read_context",
+                "channel_context", "resumption", "state", "recent", "known_facts",
+                "caller_turn"):
         assert f"<{tag}>" in full_text, f"missing <{tag}>"
         assert f"</{tag}>" in full_text, f"missing </{tag}>"
 
@@ -930,16 +796,16 @@ class TestIsCollected:
     """
 
     def test_zero_age_is_not_collected(self):
-        from src.manager_agent import _is_collected
+        from src.context.state import is_collected as _is_collected
         assert _is_collected(0) is False
 
     def test_a_real_age_is_collected(self):
-        from src.manager_agent import _is_collected
+        from src.context.state import is_collected as _is_collected
         assert _is_collected(24) is True
 
     def test_string_zero_is_a_seed_only_for_declared_zero_seed_fields(self):
         """"0" is the unset seed of an int field, but a real value for others."""
-        from src.manager_agent import _is_collected
+        from src.context.state import is_collected as _is_collected
         seeds = frozenset({"age"})
         assert _is_collected("0", "age", seeds) is False
         assert _is_collected(0, "age", seeds) is False
@@ -956,83 +822,33 @@ class TestIsCollected:
         }
         assert zero_seed_fields(slots) == frozenset({"age"})
 
-    def test_prompt_lists_zero_experience_years_but_not_zero_age(self):
-        from unittest.mock import MagicMock
-        from src.manager_agent import ManagerAgent
-        agent = ManagerAgent(
-            chat_provider=MagicMock(), tool_registry=MagicMock(),
-            action_gateway=MagicMock(), knowledge_engine=MagicMock(),
-            trust_layer=MagicMock(), zero_seed_fields=frozenset({"age"}),
+    def test_state_lists_zero_experience_years_but_not_zero_age(self):
+        """<state> replaced <known_profile> (Spec D); the "0" age backstop must
+        survive the move."""
+        from src.context.state import render_state
+        text = render_state(
+            phase="profile", pending=None,
+            collected={"experience_years": "0", "age": "0"},
+            offered=[], status={}, zero_seeds=frozenset({"age"}),
         )
-        prompt = agent.build_system_prompt(
-            agent_system_prompt="a", subagent_system_prompt="s",
-            detected_language="hindi", channel="web",
-            profile={"experience_years": "0", "age": "0"}, channel_config={},
-        )
-        text = prompt.text if hasattr(prompt, "text") else str(prompt)
-        assert "experience_years: 0" in text
-        assert "age: 0" not in text
+        assert "experience_years=0" in text
+        assert "age=0" not in text
 
     def test_empty_string_fields_stay_uncollected(self):
-        from src.manager_agent import _is_collected
+        from src.context.state import is_collected as _is_collected
         for empty in (None, "", "[]", [], {}):
             assert _is_collected(empty) is False, empty
 
     def test_populated_values_stay_collected(self):
-        from src.manager_agent import _is_collected
+        from src.context.state import is_collected as _is_collected
         for filled in ("Ravi Kumar", "Bengaluru", ["a"], {"k": "v"}, 1):
             assert _is_collected(filled) is True, filled
 
     def test_booleans_are_not_treated_as_numbers(self):
         """False must read as absent, True as present — not as 0 and 1."""
-        from src.manager_agent import _is_collected
+        from src.context.state import is_collected as _is_collected
         assert _is_collected(False) is False
         assert _is_collected(True) is True
-
-    @staticmethod
-    def _agent():
-        from unittest.mock import MagicMock
-        from src.manager_agent import ManagerAgent
-        return ManagerAgent(
-            chat_provider=MagicMock(),
-            tool_registry=MagicMock(),
-            action_gateway=MagicMock(),
-            knowledge_engine=MagicMock(),
-            trust_layer=MagicMock(),
-            max_tool_rounds=1,
-        )
-
-    def test_zero_age_is_absent_from_the_rendered_prompt(self):
-        """The end-to-end shape: a zero age must not reach the LLM."""
-        prompt = self._agent().build_system_prompt(
-            agent_system_prompt="agent",
-            subagent_system_prompt="subagent",
-            detected_language="hindi",
-            channel="web",
-            profile={"name": "Ravi", "age": 0, "location": ""},
-            channel_config={},
-        )
-        text = prompt.text if hasattr(prompt, "text") else str(prompt)
-        assert "age: 0" not in text
-        assert "Ravi" in text
-
-    def test_a_real_age_does_reach_the_prompt(self):
-        """The counterpart: a real age must still be shown as collected.
-
-        orchestrator.py records an earlier defect where a stale 0 outranked a
-        fresh 25; this asserts the fix here does not swing the other way and
-        start hiding genuine ages.
-        """
-        prompt = self._agent().build_system_prompt(
-            agent_system_prompt="agent",
-            subagent_system_prompt="subagent",
-            detected_language="hindi",
-            channel="web",
-            profile={"name": "Ravi", "age": 25},
-            channel_config={},
-        )
-        text = prompt.text if hasattr(prompt, "text") else str(prompt)
-        assert "age: 25" in text
 
 
 class TestToolSessionValues:
@@ -1368,15 +1184,15 @@ def test_run_turn_routes_remember_to_handler():
 
 def test_build_system_prompt_renders_known_facts():
     agent = _make_manager_for_prompt()
-    prompt = agent.build_system_prompt("persona", "", "english", "web", {}, known_facts="- t — x")
+    prompt = agent.build_system_prompt("persona", "", "english", "web", known_facts="- t — x")
     assert "<known_facts>" in _flat(prompt) and "- t — x" in _flat(prompt)
-    assert "<known_facts>" not in _flat(agent.build_system_prompt("persona", "", "english", "web", {}))
+    assert "<known_facts>" not in _flat(agent.build_system_prompt("persona", "", "english", "web"))
 
 
 def test_caller_turn_rendered_after_known_facts_in_tier3():
     agent = _make_manager_for_prompt()
     sp = agent.build_system_prompt(agent_system_prompt="a", subagent_system_prompt="b",
-                                   detected_language="hindi", channel="voice", profile={},
+                                   detected_language="hindi", channel="voice",
                                    known_facts="F1", caller_turn="acts: affirm")
     tier3 = sp.blocks[-1].text
     assert "<caller_turn>" in tier3 and tier3.index("known_facts") < tier3.index("caller_turn")
@@ -1386,5 +1202,88 @@ def test_caller_turn_rendered_after_known_facts_in_tier3():
 def test_caller_turn_absent_by_default():
     agent = _make_manager_for_prompt()
     sp = agent.build_system_prompt(agent_system_prompt="a", subagent_system_prompt="b",
-                                   detected_language="hindi", channel="voice", profile={})
-    assert all("<caller_turn>" not in b.text for b in sp.blocks)
+                                   detected_language="hindi", channel="voice")
+    # Tier 1 mentions <caller_turn> in the how-to-read guide; only tier 3 carries the section.
+    assert "<caller_turn>\n" not in sp.blocks[-1].text
+
+
+# ---------------------------------------------------------------------------
+# Spec D: output contract, context guide, <state>/<recent>, result shaping
+# ---------------------------------------------------------------------------
+
+from src.manager_agent import HOW_TO_READ_CONTEXT  # noqa: E402
+
+_CONTRACT = {"default_language": "hindi",
+             "languages": {"hindi": {"script": "devanagari", "numbers": "words", "rules": ["Devanagari only."]}},
+             "guard": {"rewrite_digits": True}}
+
+
+def _prompt(**kw):
+    m = _make_manager_for_prompt()
+    base = dict(agent_system_prompt="P", subagent_system_prompt="S", detected_language="", channel="bridge",
+                channel_config={"system_prompt_suffix": "SUFFIX", "output_contract": _CONTRACT})
+    base.update(kw)
+    return m.build_system_prompt(**base)
+
+
+def test_tier1_order_includes_contract_and_how_to_read():
+    p = _prompt(session_end_eval_prompt="END")
+    t1 = p.blocks[0].text
+    order = [t1.index(f"<{t}>") for t in ("persona", "channel_rules", "output_contract",
+                                           "how_to_read_context", "session_end_policy")]
+    assert order == sorted(order)
+    assert "- Write in Devanagari script." in t1 and HOW_TO_READ_CONTEXT.strip() in t1
+
+
+def test_tier3_order_state_recent_facts_caller_turn():
+    p = _prompt(state="phase: job_match", recent="caller: a", known_facts="F", caller_turn="acts: select")
+    t3 = p.blocks[-1].text
+    order = [t3.index(f"<{t}>") for t in ("channel_context", "state", "recent", "known_facts", "caller_turn")]
+    assert order == sorted(order)
+    assert "<known_profile>" not in t3 and "<active_guardrails>" not in t3
+
+
+def test_empty_state_and_recent_are_elided():
+    t3 = _prompt().blocks[-1].text
+    assert "<state>" not in t3 and "<recent>" not in t3
+
+
+def test_no_contract_no_block():
+    p = _prompt(channel_config={"system_prompt_suffix": "SUFFIX"})
+    assert "<output_contract>" not in p.blocks[0].text
+
+
+def test_build_messages_is_utterance_only():
+    m = _make_manager_for_prompt()
+    msgs = m.build_messages("नमस्ते")
+    assert len(msgs) == 1 and msgs[0].content[0].text == "नमस्ते"
+    assert m.build_messages("")[0].content[0].text == "[Resuming session...]"
+
+
+def test_run_turn_applies_result_shaper_to_gateway_results():
+    seen = []
+
+    def shaper(tr):
+        seen.append(tr.tool_name)
+        return dataclasses.replace(tr, result_text='[{"shaped": true}]')
+
+    live = ToolResult(tool_use_id="tu_abc", tool_name="get_balance", result={}, success=True,
+                      result_text='[{"a": 1}]', projected=True)
+    tc = _tool_call()
+    m, *_ = _make_manager([_tool_response(tc), _text_response("ok")], tool_result=live)
+    _, _, results = m.run_turn(list(MESSAGES), SESSION_ID, _tool_response(tc), result_shaper=shaper)
+    assert seen == ["get_balance"] and results[0].result_text == '[{"shaped": true}]'
+
+
+def test_run_turn_does_not_shape_cache_hits():
+    tc = _tool_call()
+    m, *_ = _make_manager([_tool_response(tc), _text_response("ok")])
+    shaper = MagicMock(side_effect=lambda r: r)
+    cache = TurnToolCache(_POL, [_entry()], {})
+    m.run_turn(list(MESSAGES), SESSION_ID, _tool_response(tc), tool_cache=cache, result_shaper=shaper)
+    shaper.assert_not_called()
+
+
+def test_tier1_says_new_tool_result_replaces_offered():
+    t1 = _prompt().blocks[0].text
+    assert "a tool result returned\n  in this turn replaces it" in t1

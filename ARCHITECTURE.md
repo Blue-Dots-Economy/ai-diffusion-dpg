@@ -110,7 +110,7 @@ Sole orchestrator and sole LLM caller. Stateless between turns.
 
 **Channel configuration (GH-137).** Per-channel LLM-facing config lives at the
 top-level `channels:` block in `agent_core.yaml`. Each channel declares
-`system_prompt_suffix`, `tts_rules` (voice only), `terminal_word` (voice only),
+`system_prompt_suffix`, `output_contract` (all channels, rendered by the runtime), `terminal_word` (voice only),
 and `turn_assembler` policy. The legacy `agent.channels` and
 `reach_layer.channels` nested paths are removed — domains must use the top-level
 `channels:` block. Reach Layer's own `channels:` block (in `reach_layer.yaml`)

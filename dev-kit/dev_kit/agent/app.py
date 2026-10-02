@@ -2067,6 +2067,10 @@ def pre_deploy_validate(slug: str) -> dict[str, Any]:
 
     all_valid = all(len(errs) == 0 for errs in block_errors.values()) and not invariant_errors
 
+    # Spec D §10: advisory only; warnings never affect ``valid``.
+    from dev_kit.schemas.spoken_copy_lint import lint_spoken_copy
+    warnings: list[str] = lint_spoken_copy(merged.get("agent_core") or {})
+
     issue_count = sum(len(errs) for errs in block_errors.values()) + len(invariant_errors)
     validator = "runtime_baked" if docker_mode else "host_mirror"
     if all_valid:
@@ -2109,6 +2113,7 @@ def pre_deploy_validate(slug: str) -> dict[str, Any]:
         "valid": all_valid,
         "block_errors": block_errors,
         "invariant_errors": invariant_errors,
+        "warnings": warnings,
         "merged_configs": display_merged,
         "validator": validator,
         # Map of {block_name: human-readable reason}. Blocks listed

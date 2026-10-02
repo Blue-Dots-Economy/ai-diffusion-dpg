@@ -2341,14 +2341,6 @@ def test_build_profile_context_does_not_override_existing():
     assert agent._build_profile_context(b, {})["name"] == "Asha"
 
 
-def test_prompt_session_fields_reach_build_system_prompt():
-    agent = _make_agent(session_data={"current_subagent_id": "market_truth", "profile_item_id": "p1"})
-    agent._prompt_session_fields = ["profile_item_id"]
-    agent.process_turn(_turn_input())
-    profile = agent._manager_agent.build_system_prompt.call_args.kwargs["profile"]
-    assert profile["profile_item_id"] == "p1"
-
-
 # ---------------------------------------------------------------------------
 # Session bootstrap wiring (session-bootstrap spec §5) — sync path
 # ---------------------------------------------------------------------------
@@ -2543,3 +2535,91 @@ def test_sync_turn_resolves_and_persists_user_state():
     assert len(writes) == 1
     scope, payload = writes[0][2], writes[0][4]
     assert scope == "session" and payload["id"] == "aware" and payload["confidence"] == 0.9
+
+
+# ---------------------------------------------------------------------------
+# Spec D: <state> / <recent> in the prompt, shaper wiring
+# ---------------------------------------------------------------------------
+
+def test_prompt_gets_state_and_recent():
+    agent = _make_agent(session_data={
+        "current_subagent_id": "market_truth", "applications_submitted": 0,
+        "recent_turns": [{"caller": "हाँ", "bot": "आपकी उम्र?", "interrupted": False}]})
+    agent._state_fields = ["applications_submitted"]
+    agent._agent_history_turns = 2
+    agent.process_turn(_turn_input())
+    kw = agent._manager_agent.build_system_prompt.call_args.kwargs
+    assert kw["recent"] == "caller: हाँ\nbot: आपकी उम्र?"
+    assert kw["state"].startswith("phase: market_truth") and "status: applications_submitted=0" in kw["state"]
+
+
+def test_prompt_session_fields_reach_state():
+    agent = _make_agent(session_data={"current_subagent_id": "market_truth", "profile_item_id": "p1"})
+    agent._prompt_session_fields = ["profile_item_id"]
+    agent.process_turn(_turn_input())
+    assert "profile_item_id=p1" in agent._manager_agent.build_system_prompt.call_args.kwargs["state"]
+
+
+def test_recent_turns_retention_follows_agent_history_turns():
+    agent = _make_agent(session_data={
+        "current_subagent_id": "market_truth",
+        "recent_turns": [{"caller": f"c{i}", "bot": f"b{i}", "interrupted": False} for i in range(3)]})
+    agent._recent_keep = 4
+    agent.process_turn(_turn_input())
+    writes = [c.args[4] for c in agent._memory.write.call_args_list if c.args[3] == "recent_turns"]
+    assert len(writes) == 1 and len(writes[0]) == 4
+
+
+def test_agent_history_turns_config_sets_recent_keep():
+    cfg = {**VALID_CONFIG, "agent": {"history_turns": 4}}
+    agent = AgentCore(config=cfg, chat_provider=MagicMock(spec=ChatProviderBase), memory=MagicMock(),
+                      trust=MagicMock(), knowledge_engine=MagicMock(), tool_registry=MagicMock(),
+                      manager_agent=MagicMock(), learning=MagicMock(), workflow=_make_workflow(),
+                      nlu_chat_provider=_nlu_provider_mock())
+    assert agent._agent_history_turns == 4 and agent._recent_keep == 4
+
+
+def test_process_turn_hands_the_shaper_to_run_turn():
+    agent = _make_agent()
+    agent.process_turn(_turn_input())
+    assert agent._manager_agent.run_turn.call_args.kwargs["result_shaper"] == agent._result_shaper.shape
+
+
+def test_orchestrator_bootstrap_receives_the_shaper():
+    cfg = {**VALID_CONFIG,
+           "connectors": {"read": [{"name": "fetch_profile", "cache": {"scope": "session", "ttl_seconds": 60}}]},
+           "session_bootstrap": {"steps": [{"type": "tool", "tool": "fetch_profile"}]}}
+    agent = AgentCore(config=cfg, chat_provider=MagicMock(spec=ChatProviderBase), memory=MagicMock(),
+                      trust=MagicMock(), knowledge_engine=MagicMock(), tool_registry=MagicMock(),
+                      manager_agent=MagicMock(), learning=MagicMock(), workflow=_make_workflow(),
+                      nlu_chat_provider=_nlu_provider_mock())
+    assert agent._bootstrap is not None
+    assert agent._bootstrap._shape == agent._result_shaper.shape
+
+
+def test_state_phase_is_the_post_routing_subagent():
+    """<state> is built for the subagent the prompt is for, not the one the turn started in."""
+    rule = MagicMock()
+    rule.intent = "termination_intent"
+    rule.next_subagent_id = "ended"
+    rule.condition = None
+    rule.conditions = None
+    rule.session_writes = None
+    wf = _make_workflow(subagent_id="greeting", global_routing=[rule],
+                        extra_subagents={"ended": _make_subagent("ended")})
+    agent = _make_agent(nlu_result=_TERMINATION_NLU, workflow=wf,
+                        session_data={"current_subagent_id": "greeting"})
+    agent.process_turn(_turn_input())
+    state = agent._manager_agent.build_system_prompt.call_args.kwargs["state"]
+    assert state.startswith("phase: ended")
+
+
+def test_sync_turn_still_writes_current_question_after_spec_d():
+    """Spec D dropped the "[Last question asked: …]" prompt line, but
+    current_question must still reach the session each turn: job_match's
+    submit_confirm pending (#439) is keyed on it."""
+    agent = _make_agent(manager_text="क्या मैं इस नौकरी के लिए आवेदन भेज दूँ?")
+    agent.process_turn(_turn_input())
+    writes = [c.args for c in agent._memory.write.call_args_list if c.args[3] == "current_question"]
+    assert writes and writes[-1][2] == "session"
+    assert writes[-1][4] == "क्या मैं इस नौकरी के लिए आवेदन भेज दूँ?"

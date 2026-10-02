@@ -3,6 +3,7 @@ Tests for stream_turn() orchestrator method and sentence splitter.
 """
 
 import asyncio
+import dataclasses
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1426,6 +1427,30 @@ class TestStreamTurnToolResultPersistence:
         assert called == ["search"]
         assert _last_tool_result_texts(requests[2])[0].startswith("(stored result")
 
+    async def test_gateway_result_is_shaped_once(self):
+        agent, _order, requests = _tr_agent(
+            [[ToolUseBlock(tool_name="get_balance", tool_use_id="tu_1", input={"account": "999"})]],
+        )
+        agent._result_shaper = MagicMock()
+        agent._result_shaper.shape.side_effect = lambda r: dataclasses.replace(
+            r, result_text='{"shaped": true}')
+        await _collect_events(agent, _make_turn_input())
+        assert agent._result_shaper.shape.call_count == 1
+        assert _last_tool_result_texts(requests[1])[0] == '{"shaped": true}'
+        sid, uid, batch = agent._async_memory.apply_tool_results.await_args.args
+        assert batch["puts"][0]["data"] == {"shaped": True}
+
+    async def test_cache_hit_is_not_reshaped(self):
+        call = [ToolUseBlock(tool_name="get_balance", tool_use_id="tu_1", input={"account": "999"})]
+        call2 = [ToolUseBlock(tool_name="get_balance", tool_use_id="tu_2", input={"account": "999"})]
+        agent, _order, requests = _tr_agent([call, call2])
+        agent._result_shaper = MagicMock()
+        agent._result_shaper.shape.side_effect = lambda r: r
+        await _collect_events(agent, _make_turn_input())
+        assert agent._async_gateway.execute.await_count == 1
+        assert _last_tool_result_texts(requests[2])[0].startswith("(stored result")
+        assert agent._result_shaper.shape.call_count == 1
+
     async def test_stream_prompt_gets_known_facts_and_augmented_tools(self):
         agent, _order, requests = _tr_agent([], entries=[_tr_entry()], remember=True)
         agent._workflow.resolve_tools_for.return_value = [
@@ -1436,14 +1461,6 @@ class TestStreamTurnToolResultPersistence:
         tools = {t.name: t for t in requests[0].tools}
         assert set(tools) == {"get_balance", "remember"}
         assert "force_refresh" in tools["get_balance"].input_schema["properties"]
-
-    async def test_stream_prompt_session_fields_reach_build_system_prompt(self):
-        agent, _order, _requests = _tr_agent([], entries=[_tr_entry()])
-        agent._prompt_session_fields = ["profile_item_id"]
-        agent._async_memory.context_bundle.return_value.session["profile_item_id"] = "p1"
-        await _collect_events(agent, _make_turn_input())
-        profile = agent._manager_agent.build_system_prompt.call_args.kwargs["profile"]
-        assert profile["profile_item_id"] == "p1"
 
     async def test_stream_replay_skips_tools_with_fresh_stored_results(self):
         prior = {"tool_uses": [{"type": "tool_use", "id": "tu_p", "name": "get_balance",
@@ -1644,3 +1661,84 @@ class TestStreamUserState:
         writes = [c.args for c in agent._memory.write.call_args_list if c.args[3] == "user_state"]
         assert len(writes) == 1
         assert writes[0][2] == "session" and writes[0][4]["id"] == "aware"
+
+
+# ── Spec D: <state> / <recent> reach the prompt; recent_turns retention ─────
+
+async def _stream_prompt_kwargs(agent):
+    async def mock_stream(*args, **kwargs):
+        yield "Ok. "
+
+    agent._llm.stream = mock_stream
+    await _collect_events(agent, _make_turn_input())
+    return agent._manager_agent.build_system_prompt.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_prompt_gets_state_and_recent():
+    agent = _make_agent_core()
+    sess = agent._async_memory.context_bundle.return_value.session
+    sess["recent_turns"] = [{"caller": "हाँ", "bot": "आपकी उम्र?", "interrupted": False}]
+    sess["applications_submitted"] = 0
+    agent._state_fields = ["applications_submitted"]
+    agent._agent_history_turns = 2
+    kw = await _stream_prompt_kwargs(agent)
+    assert kw["recent"] == "caller: हाँ\nbot: आपकी उम्र?"
+    assert kw["state"].startswith("phase: start") and "status: applications_submitted=0" in kw["state"]
+
+
+@pytest.mark.asyncio
+async def test_prompt_session_fields_reach_state():
+    agent = _make_agent_core()
+    agent._async_memory.context_bundle.return_value.session["profile_item_id"] = "p1"
+    agent._prompt_session_fields = ["profile_item_id"]
+    kw = await _stream_prompt_kwargs(agent)
+    assert "profile_item_id=p1" in kw["state"]
+
+
+@pytest.mark.asyncio
+async def test_recent_retention_is_max_of_nlu_and_agent_history_turns():
+    base = _make_agent_core()
+    agent = _make_agent_core(config={**base._config, "agent": {**base._config["agent"], "history_turns": 4}})
+    assert agent._recent_keep == 4 and agent._agent_history_turns == 4
+    prior = [{"caller": f"c{i}", "bot": f"b{i}", "interrupted": False} for i in range(3)]
+    agent._async_memory.context_bundle.return_value.session["recent_turns"] = prior
+    await _stream_prompt_kwargs(agent)
+    await asyncio.sleep(0)   # let the fire-and-forget session write run
+    writes = [c.args[4] for c in agent._async_memory.write.await_args_list if c.args[3] == "recent_turns"]
+    assert len(writes) == 1 and len(writes[0]) == 4 and writes[0][-1]["bot"] == "Ok."
+
+
+@pytest.mark.asyncio
+async def test_state_hides_seeded_string_zero_age_but_lists_zero_experience():
+    """#436 D1 survives Spec D's move of "collected" into <state>: a string "0"
+    for an int slot with a positive minimum (age) is the unset seed, while
+    experience_years accepts 0 as a real answer."""
+    base = _make_agent_core()
+    slots = {"age": {"type": "int", "min": 18, "max": 99},
+             "experience_years": {"type": "int", "min": 0, "max": 60}}
+    agent = _make_agent_core(config={**base._config, "preprocessing": {
+        **(base._config.get("preprocessing") or {}), "nlu_processor": {"slots": slots}}})
+    assert agent._zero_seed_fields == frozenset({"age"})
+    profile = agent._async_memory.context_bundle.return_value.profile
+    profile.update({"age": "0", "experience_years": "0"})
+    kw = await _stream_prompt_kwargs(agent)
+    assert "experience_years=0" in kw["state"]
+    assert "age=0" not in kw["state"]
+
+
+@pytest.mark.asyncio
+async def test_stream_turn_still_writes_current_question_after_spec_d():
+    """See test_orchestrator's sync twin: #439 keys submit_confirm on it."""
+    agent = _make_agent_core()
+
+    async def mock_stream(*args, **kwargs):
+        yield "क्या मैं इस नौकरी के लिए आवेदन भेज दूँ?"
+
+    agent._llm.stream = mock_stream
+    await _collect_events(agent, _make_turn_input())
+    await asyncio.sleep(0)
+    sync = [c.args for c in agent._memory.write.call_args_list if c.args[3] == "current_question"]
+    asy = [c.args for c in agent._async_memory.write.await_args_list if c.args[3] == "current_question"]
+    writes = sync + asy
+    assert writes and writes[-1][4] == "क्या मैं इस नौकरी के लिए आवेदन भेज दूँ?"

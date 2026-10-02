@@ -402,7 +402,7 @@ structured proposal is on the table — readers cannot scan it.
   recognise: `entity_to_profile_field`,
   `signal_intents`, `dignity_check`, `user_state_model`,
   `intent_filters`, `state.session`, `state.persistent`,
-  `user_data_persistence`, `tts_rules`, `terminal_word`,
+  `user_data_persistence`, `output_contract`, `terminal_word`,
   `filler_phrase`, etc. Skip the one-liner for self-explanatory
   labels like `**Primary model:**` or `**Default language:**` —
   those don't need a definition.

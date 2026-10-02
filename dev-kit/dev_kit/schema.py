@@ -122,6 +122,19 @@ class ConnectorDef(BaseModel):
         default_factory=list,
         description="Read connector names whose cached results this write connector invalidates",
     )
+    result_shaping: Optional[dict] = Field(
+        default=None,
+        description="Per-connector result shaping (Spec D §4); validated by the agent_core domain schema",
+    )
+
+    @field_validator("result_shaping")
+    @classmethod
+    def _validate_result_shaping(cls, v: Optional[dict]) -> Optional[dict]:
+        """Reject shapes the runtime rejects; keep the plain dict."""
+        if v is not None:
+            from dev_kit.schemas.domain.agent_core import ResultShapingConfig
+            ResultShapingConfig.model_validate(v)
+        return v
 
 
 class InternalConnectorDef(BaseModel):
@@ -190,6 +203,14 @@ class AgentConfig(BaseModel):
     prompt_session_fields: list[str] = Field(
         default_factory=list,
         description="Session fields rendered into the system prompt when non-empty",
+    )
+    history_turns: int = Field(
+        default=2, ge=0,
+        description="Exchanges shown to the main LLM in <recent>; 0 omits it (Spec D §6.2)",
+    )
+    state_fields: list[str] = Field(
+        default_factory=list,
+        description="Session keys shown on the <state> status line (Spec D §6.3)",
     )
     consent_prompt: str = Field(
         default="",
@@ -637,19 +658,6 @@ class AgentWorkflowConfig(BaseModel):
 # Top-level channel config models (GH-137)
 # ---------------------------------------------------------------------------
 
-class TtsRulesConfig(BaseModel):
-    """TTS formatting rules for a voice channel (GH-137)."""
-
-    numbers: str = Field(default="", description="How to read numeric values aloud")
-    money: str = Field(default="", description="How to read monetary values aloud")
-    dates: str = Field(default="", description="How to read date values aloud")
-    time: str = Field(default="", description="How to read time values aloud")
-    phone: str = Field(default="", description="How to read phone numbers aloud")
-    abbreviations: str = Field(default="", description="How to expand abbreviations aloud")
-    output_script: str = Field(default="", description="Script/language to use for TTS output")
-    english_loanwords: str = Field(default="", description="How to handle English loanwords in TTS")
-
-
 class ChannelTurnAssemblerConfig(BaseModel):
     """Turn-assembler settings for a channel (GH-137)."""
 
@@ -691,13 +699,32 @@ class ChannelConfig(BaseModel):
     keeps voice delivery configuration in one block.
     """
 
+    model_config = {"extra": "forbid"}
+
     system_prompt_suffix: str = Field(
         default="",
         description="Appended to the main system prompt for this channel",
     )
-    tts_rules: TtsRulesConfig | None = Field(
+    output_contract: dict | None = Field(
         default=None,
-        description="TTS formatting rules; non-null for voice channels only",
+        description="Spoken-output contract (Spec D); validated by the agent_core domain schema",
+    )
+    @field_validator("output_contract")
+    @classmethod
+    def _validate_output_contract(cls, v: Optional[dict]) -> Optional[dict]:
+        """Reject shapes the runtime rejects; keep the plain dict."""
+        if v is not None:
+            from dev_kit.schemas.domain.agent_core import OutputContractConfig
+            OutputContractConfig.model_validate(v)
+        return v
+
+    max_tokens: Optional[int] = Field(
+        default=None, gt=0,
+        description="Per-channel max output tokens",
+    )
+    terminal_word: Optional[str] = Field(
+        default=None,
+        description="Word that ends the call/session on this channel",
     )
     turn_assembler: ChannelTurnAssemblerConfig = Field(
         default_factory=ChannelTurnAssemblerConfig,
@@ -714,7 +741,7 @@ class ChannelsTopLevelConfig(BaseModel):
     """
 
     voice: ChannelConfig = Field(
-        default_factory=lambda: ChannelConfig(tts_rules=TtsRulesConfig()),
+        default_factory=ChannelConfig,
         description="Voice channel configuration",
     )
     web: ChannelConfig = Field(

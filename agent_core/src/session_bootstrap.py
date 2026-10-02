@@ -73,15 +73,19 @@ class SessionBootstrap:
         steps: Steps in config order.
         timeout_ms: Budget for the whole bootstrap.
         policies: Tool-result cache policies (Spec A).
+        shape: Optional result shaper applied to each result before it is cached.
     """
 
-    def __init__(self, steps: list[BootstrapStep], timeout_ms: int, policies: ToolResultPolicies) -> None:
+    def __init__(self, steps: list[BootstrapStep], timeout_ms: int, policies: ToolResultPolicies,
+                 shape: Callable[[ToolResult], ToolResult] | None = None) -> None:
+        self._shape = shape
         self._steps = steps
         self._timeout_s = timeout_ms / 1000
         self._policies = policies
 
     @classmethod
-    def from_config(cls, config: dict | None, policies: ToolResultPolicies) -> "SessionBootstrap | None":
+    def from_config(cls, config: dict | None, policies: ToolResultPolicies,
+                    shape: Callable[[ToolResult], ToolResult] | None = None) -> "SessionBootstrap | None":
         """Build from the merged (schema-validated) agent_core config; None when not configured."""
         sb = (config or {}).get("session_bootstrap")
         if not isinstance(sb, dict) or not sb.get("steps"):
@@ -89,7 +93,7 @@ class SessionBootstrap:
         steps = [BootstrapStep(tool=str(s["tool"]), args=dict(s.get("args") or {}),
                                requires_consent=bool(s.get("requires_consent", False)))
                  for s in sb["steps"]]
-        return cls(steps, int(sb.get("timeout_ms", 1500)), policies)
+        return cls(steps, int(sb.get("timeout_ms", 1500)), policies, shape)
 
     def needed(self, bundle) -> bool:
         """True when this session has not been bootstrapped yet."""
@@ -101,6 +105,7 @@ class SessionBootstrap:
     def _apply(self, bundle, cache: TurnToolCache, call: ToolCall, result: ToolResult,
                writes: list) -> str:
         """Fold one successful result into this turn's state; returns the outcome."""
+        result = self._shape(result) if self._shape is not None else result
         if not result.success:
             return "failed"
         for key, value in (result.session_values or {}).items():

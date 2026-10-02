@@ -683,3 +683,53 @@ def test_termination_gate_item_accepts_contains():
     from dev_kit.schema import TerminationGateItem
     item = TerminationGateItem(field="current_question", operator="contains", value=["a"])
     assert item.operator == "contains"
+
+
+# ===========================================================================
+# Spec D: output_contract / result_shaping / history_turns / state_fields
+# ===========================================================================
+
+_SPEC_D_CONTRACT = {
+    "default_language": "hindi",
+    "languages": {"hindi": {"script": "devanagari", "numbers": "words", "rules": ["x"]}},
+    "guard": {"rewrite_digits": True},
+}
+
+
+class TestSpecDFlatSchema:
+    @pytest.mark.parametrize("channel", ["bridge", "voice"])
+    def test_tts_rules_rejected(self, channel):
+        errors = validate_partial(
+            "agent_core", {"channels": {channel: {"tts_rules": {"numbers": "words"}}}})
+        assert any("tts_rules" in e for e in errors)
+
+    @pytest.mark.parametrize("channel", ["bridge", "voice"])
+    def test_output_contract_and_channel_limits_accepted(self, channel):
+        data = {"channels": {channel: {
+            "output_contract": _SPEC_D_CONTRACT, "max_tokens": 200, "terminal_word": "bye"}}}
+        assert validate_partial("agent_core", data) == []
+
+    def test_result_shaping_accepted(self):
+        data = {"connectors": {"read": [{"name": "fetch_jobs", "result_shaping": {
+            "sort": [{"field": "match_score", "order": "desc"}]}}]}}
+        assert validate_partial("agent_core", data) == []
+
+    def test_history_turns_and_state_fields_accepted(self):
+        data = {"agent": {"history_turns": 2, "state_fields": ["applications_submitted"]}}
+        assert validate_partial("agent_core", data) == []
+        assert validate_partial("agent_core", {"agent": {"history_turns": -1}}) != []
+
+
+class TestSpecDFlatRejects:
+    def test_unknown_operator_rejected(self):
+        data = {"connectors": {"read": [{"name": "f", "result_shaping": {
+            "drop_when": [{"field": "a", "operator": "like", "value": "x"}]}}]}}
+        assert validate_partial("agent_core", data) != []
+
+    def test_unknown_result_shaping_key_rejected(self):
+        data = {"connectors": {"read": [{"name": "f", "result_shaping": {"bogus": 1}}]}}
+        assert validate_partial("agent_core", data) != []
+
+    def test_output_contract_default_language_must_be_declared(self):
+        bad = {**_SPEC_D_CONTRACT, "default_language": "english"}
+        assert validate_partial("agent_core", {"channels": {"voice": {"output_contract": bad}}}) != []

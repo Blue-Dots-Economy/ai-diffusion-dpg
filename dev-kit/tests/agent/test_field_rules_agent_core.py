@@ -70,17 +70,12 @@ EXPECTED_PATHS = {
     "entity_to_profile_field",
     "hitl.response_message",
     "channels.voice.system_prompt_suffix",
-    "channels.voice.tts_rules.numbers",
-    "channels.voice.tts_rules.money",
-    "channels.voice.tts_rules.dates",
-    "channels.voice.tts_rules.time",
-    "channels.voice.tts_rules.phone",
-    "channels.voice.tts_rules.abbreviations",
-    "channels.voice.tts_rules.output_script",
-    "channels.voice.tts_rules.english_loanwords",
-    "channels.voice.tts_rules.email",
-    "channels.voice.tts_rules.named_entities",
     "channels.voice.terminal_word",
+    # Spec D
+    "agent.history_turns",
+    "agent.state_fields",
+    "channels.voice.output_contract",
+    "connectors.read.result_shaping",
     # Predetermined (catalogue §7.1)
     "agent.ask_for_consent",
     "conversation.user_state_model.enabled",
@@ -161,3 +156,11 @@ def test_no_rule_is_invalidated_by_a_removed_path():
         for path, rule in AGGREGATED_FIELD_RULES.items()
     }
     assert {p: d for p, d in bad.items() if d} == {}
+
+
+def test_no_tts_rules_keys_and_spec_d_keys_present():
+    assert not [k for k in FIELD_RULES if "tts_rules" in k]
+    for key in ("agent.history_turns", "agent.state_fields",
+                "channels.voice.output_contract",
+                "connectors.read.result_shaping"):
+        assert key in FIELD_RULES

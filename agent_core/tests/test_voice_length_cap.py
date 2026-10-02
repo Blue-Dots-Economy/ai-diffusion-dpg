@@ -77,7 +77,6 @@ def test_assembled_voice_prompt_includes_sentence_cap_rule():
         subagent_system_prompt="Help with jobs.",
         detected_language="hindi",
         channel="voice",
-        profile={},
         channel_config=voice_cfg,
     )
     rendered = _flat(blocks)

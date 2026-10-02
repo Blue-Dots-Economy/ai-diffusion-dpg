@@ -25,7 +25,6 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-from dev_kit.agent.channel_tts import merge_voice_tts_into_suffix, strip_voice_tts_from_suffix
 from dev_kit.agent.intake_state import IntakeState
 from dev_kit.agent.project_state import BLOCKS
 from dev_kit.schemas.validation import validate_partial
@@ -160,7 +159,6 @@ def _prepare_block_data(block: str, accumulator: dict[str, dict]) -> dict[str, A
     # agent_core-specific cleanups.
     if block == "agent_core":
         data = _ensure_subagent_routing(data)
-        data = merge_voice_tts_into_suffix(data)
         agent_cfg = data.get("agent", {})
         if isinstance(agent_cfg.get("max_tool_rounds"), int) and agent_cfg["max_tool_rounds"] < 1:
             agent_cfg["max_tool_rounds"] = 1
@@ -306,10 +304,6 @@ def load_block_from_file(project_path: Path, block: str) -> dict:
     # Strip comment lines
     lines = [line for line in raw.splitlines() if not line.startswith("#")]
     parsed = yaml.safe_load("\n".join(lines)) or {}
-    # Reverse of render-time merge: keep the in-memory suffix free of the
-    # auto-generated TTS block so the author only sees prose they wrote.
-    if block == "agent_core" and isinstance(parsed, dict):
-        parsed = strip_voice_tts_from_suffix(parsed)
     # Reverse of render-time wrap: reach_layer on disk has a top-level
     # `reach_layer:` key; the accumulator stores it flat. Unwrap so a
     # round-trip (render → reload → render) is stable and so the

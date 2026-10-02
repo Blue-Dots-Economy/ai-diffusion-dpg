@@ -23,7 +23,7 @@ from dev_kit.schemas.domain.agent_core import (
     RoutingCondition,
     RoutingRule,
     SubAgent,
-    TtsRulesConfig,
+    OutputContractConfig,
     TurnAssemblerConfig,
     UserStateDefinition,
     UserStateModel,
@@ -323,13 +323,20 @@ def test_user_state_model_enabled_with_states_still_validates_default():
         )
 
 
-# -- TtsRulesConfig ----------------------------------------------------------
+# -- OutputContractConfig ----------------------------------------------------
 
-def test_tts_rules_includes_email_and_named_entities():
-    """Blue Dots has these fields."""
-    t = TtsRulesConfig(email="Spell email", named_entities="Speak entities")
-    assert t.email == "Spell email"
-    assert t.named_entities == "Speak entities"
+def test_output_contract_default_language_must_be_declared():
+    with pytest.raises(ValidationError, match="default_language"):
+        OutputContractConfig(default_language="tamil", languages={"hindi": {"numbers": "words"}})
+
+
+def test_output_contract_parses():
+    c = OutputContractConfig(
+        default_language="hindi",
+        languages={"hindi": {"script": "devanagari", "numbers": "words"}},
+        guard={"rewrite_digits": True},
+    )
+    assert c.languages["hindi"].numbers == "words" and c.guard.rewrite_digits
 
 
 # -- ChannelsSection ---------------------------------------------------------
@@ -784,3 +791,36 @@ def test_handoff_section_accepts_valid_and_bounds():
     assert HandoffSection(**_LINES).summary_turns == 6
     with pytest.raises(ValidationError):
         HandoffSection(**{**_LINES, "summary_turns": 21})
+
+
+# -- Spec D: output_contract / result_shaping / history_turns ------------------
+
+_CONTRACT = {"default_language": "hindi",
+             "languages": {"hindi": {"script": "devanagari", "numbers": "words", "rules": ["x"]}},
+             "guard": {"rewrite_digits": True}}
+
+
+def test_channel_output_contract_accepted_and_tts_rules_rejected():
+    from dev_kit.schemas.domain.agent_core import ChannelEntry
+    ChannelEntry(output_contract=_CONTRACT)
+    with pytest.raises(ValidationError):
+        ChannelEntry(tts_rules={"numbers": "words"})
+    with pytest.raises(ValidationError, match="default_language"):
+        ChannelEntry(output_contract={**_CONTRACT, "default_language": "english"})
+
+
+def test_connector_result_shaping_mirrors_runtime():
+    ConnectorDef(name="fetch_jobs", result_shaping={
+        "drop_when": [{"field": "role", "operator": "contains", "value": "|"}],
+        "sort": [{"field": "match_score", "order": "desc"}],
+        "spoken": {"salary_spoken": {"format": "range_thousands", "from": ["salary_min", "salary_max"]}},
+        "strip_numbers_in": ["location"]})
+    with pytest.raises(ValidationError):
+        ConnectorDef(name="x", result_shaping={"sort": [{"field": "a", "order": "sideways"}]})
+
+
+def test_agent_history_turns_and_state_fields():
+    kw = dict(primary_model=_ANTHROPIC_PRIMARY, fallback_model=_ANTHROPIC_FALLBACK)
+    AgentSection(history_turns=2, state_fields=["applications_submitted"], **kw)
+    with pytest.raises(ValidationError):
+        AgentSection(history_turns=-1, **kw)

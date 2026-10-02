@@ -33,6 +33,25 @@ def option_label(row: dict, fields: tuple[str, ...]) -> str:
     return " · ".join(str(row[f]) for f in fields if row.get(f) not in _EMPTY)
 
 
+def offered_entry(served: dict | None, tool_cache: Any, tool: str) -> dict | None:
+    """The entry on offer: the last-served one when still fresh, else the newest (Spec C §5.2).
+
+    Args:
+        served: Session ``served_tool_results`` (tool → args hash), or None.
+        tool_cache: TurnToolCache (``entry``, ``latest_entry``).
+        tool: Tool name.
+
+    Returns:
+        Cache entry dict, or None.
+    """
+    h = served.get(tool) if isinstance(served, dict) else None
+    if isinstance(h, str) and h:
+        e = tool_cache.entry(tool, h)
+        if e is not None:
+            return e
+    return tool_cache.latest_entry(tool)
+
+
 class FrameBuilderBase(ABC):
     """Interface for rendering the NLU user message."""
 

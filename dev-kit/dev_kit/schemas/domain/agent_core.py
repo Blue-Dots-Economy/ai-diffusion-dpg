@@ -82,6 +82,8 @@ class AgentSection(BaseModel):
     ask_for_consent: bool = False
     consent_prompt: str = ""
     prompt_session_fields: list[str] = Field(default_factory=list)
+    history_turns: int = Field(default=2, ge=0)
+    state_fields: list[str] = Field(default_factory=list)
 
     # Optional sub-blocks mirrored from runtime AgentConfig. Blue Dots declares
     # termination_short_circuit; current_question and recent_tool_exchanges
@@ -402,19 +404,68 @@ class ConversationSection(BaseModel):
 
 # -- agent_core.channels (language, reach phases) ----------------------------
 
-class TtsRulesConfig(BaseModel):
-    """Voice-channel TTS-rendering rules per data type (numbers, dates, etc.)."""
+class OutputLanguageContract(BaseModel):
+    """Mirrors runtime OutputLanguageContract 1:1 (Spec D §3)."""
     model_config = ConfigDict(extra="forbid")
-    numbers: str = ""
-    money: str = ""
-    dates: str = ""
-    time: str = ""
-    phone: str = ""
-    abbreviations: str = ""
-    output_script: str = ""
-    english_loanwords: str = ""
-    email: str = ""               # Blue Dots has this; LLM doesn't generate
-    named_entities: str = ""      # Blue Dots has this; LLM doesn't generate
+    script: Literal["devanagari", "latin", "any"] = "any"
+    numbers: Literal["words", "digits"] = "digits"
+    rules: List[str] = Field(default_factory=list)
+
+
+class OutputGuardConfig(BaseModel):
+    """Mirrors runtime OutputGuardConfig 1:1 (Spec D §5)."""
+    model_config = ConfigDict(extra="forbid")
+    rewrite_digits: bool = False
+    strip_markdown: bool = False
+    count_foreign_script: bool = False
+
+
+class OutputContractConfig(BaseModel):
+    """Mirrors runtime OutputContractConfig 1:1 (Spec D §3)."""
+    model_config = ConfigDict(extra="forbid")
+    default_language: str = Field(min_length=1)
+    languages: Dict[str, OutputLanguageContract] = Field(min_length=1)
+    guard: OutputGuardConfig = Field(default_factory=OutputGuardConfig)
+
+    @model_validator(mode="after")
+    def _default_declared(self) -> "OutputContractConfig":
+        if self.default_language not in self.languages:
+            raise ValueError(f"output_contract.default_language '{self.default_language}' "
+                             f"is not in languages {sorted(self.languages)}")
+        return self
+
+
+class ShapingCondition(BaseModel):
+    """Mirrors runtime ShapingCondition 1:1 (Spec D §4.1)."""
+    model_config = ConfigDict(extra="forbid")
+    field: str = Field(min_length=1)
+    operator: Literal["eq", "not_eq", "in", "lt", "gt", "contains"]
+    value: Any = None
+
+
+class ShapingSort(BaseModel):
+    """Mirrors runtime ShapingSort 1:1."""
+    model_config = ConfigDict(extra="forbid")
+    field: str = Field(min_length=1)
+    order: Literal["asc", "desc"] = "asc"
+
+
+class SpokenFieldConfig(BaseModel):
+    """Mirrors runtime SpokenFieldConfig 1:1."""
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    format: Literal["range_thousands", "amount"]
+    from_: List[str] = Field(alias="from", min_length=1, max_length=2)
+    unit: Literal["none", "per_month", "per_task", "per_day"] = "none"
+
+
+class ResultShapingConfig(BaseModel):
+    """Mirrors runtime ResultShapingConfig 1:1 (Spec D §4)."""
+    model_config = ConfigDict(extra="forbid")
+    list_key: str = ""
+    drop_when: List[ShapingCondition] = Field(default_factory=list)
+    sort: List[ShapingSort] = Field(default_factory=list)
+    spoken: Dict[str, SpokenFieldConfig] = Field(default_factory=dict)
+    strip_numbers_in: List[str] = Field(default_factory=list)
 
 
 class SilenceTriggerConfig(BaseModel):
@@ -470,7 +521,7 @@ class ChannelEntry(BaseModel):
     """One channel-specific entry under agent_core.channels (web/voice/cli)."""
     model_config = ConfigDict(extra="forbid")
     system_prompt_suffix: str = ""
-    tts_rules: Optional[TtsRulesConfig] = None
+    output_contract: Optional[OutputContractConfig] = None
     turn_assembler: Optional[TurnAssemblerConfig] = None
     terminal_word: Optional[str] = None
     max_tokens: Optional[int] = Field(default=None, gt=0)
@@ -569,6 +620,7 @@ class ConnectorDef(BaseModel):
     input_schema: InputSchema = Field(default_factory=InputSchema)
     invocation_rules: InvocationRules = Field(default_factory=InvocationRules)
     cache: Optional[ToolCacheConfig] = None
+    result_shaping: Optional[ResultShapingConfig] = None
     invalidates: list[str] = Field(default_factory=list)
 
 

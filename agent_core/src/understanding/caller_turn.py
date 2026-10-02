@@ -3,7 +3,7 @@ agent_core/src/understanding/caller_turn.py
 
 Renders the <caller_turn> body: NLU's structured conclusion for the main LLM
 (NLU dialogue-acts spec §6.8). Values here reach only the LLM prompt, like
-<known_profile>; never logs.
+<state>; never logs.
 
 Belongs to the Agent Core DPG block.
 """

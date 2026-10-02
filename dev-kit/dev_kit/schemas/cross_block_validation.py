@@ -400,6 +400,60 @@ def _intent_filter_rules(ac: dict, ke: dict) -> list[str]:
     ]
 
 
+_NUMBER_CONVERTERS = ("english", "hindi")  # mirrors runtime MergedConfig._check_output_rules
+_CHANNEL_NAMES = ("voice", "web", "cli", "mcp", "bridge")
+
+
+def _output_contract_rules(ac: dict) -> list[str]:
+    """Output-contract language rules, mirroring ``MergedConfig._check_output_rules``.
+
+    - every ``language_normalisation.supported_languages`` entry needs a contract entry
+    - ``numbers: words`` only for languages with a spoken-number converter
+    - a connector ``result_shaping.spoken`` needs a converter for ``default_language``
+
+    Args:
+        ac: The merged agent_core config dict.
+
+    Returns:
+        List of human-readable error strings, empty when all rules pass.
+    """
+    errors: list[str] = []
+    ln = ((ac.get("preprocessing") or {}).get("language_normalisation")) or {}
+    supported = [x for x in (ln.get("supported_languages") or []) if isinstance(x, str)]
+    default_lang = str(ln.get("default_language") or "")
+    channels = ac.get("channels") or {}
+    for name in _CHANNEL_NAMES:
+        ch = channels.get(name)
+        contract = ch.get("output_contract") if isinstance(ch, dict) else None
+        if not isinstance(contract, dict):
+            continue
+        langs = contract.get("languages") or {}
+        missing = [x for x in supported if x not in langs]
+        if missing:
+            errors.append(
+                f"agent_core.channels.{name}.output_contract lacks languages {missing} "
+                f"listed in language_normalisation.supported_languages"
+            )
+        for lang, entry in langs.items():
+            if (isinstance(entry, dict) and entry.get("numbers") == "words"
+                    and lang not in _NUMBER_CONVERTERS):
+                errors.append(
+                    f"agent_core.channels.{name}.output_contract.languages.{lang}: numbers=words "
+                    f"needs a spoken-number converter (have {list(_NUMBER_CONVERTERS)})"
+                )
+    conns = ac.get("connectors") or {}
+    for group in ("read", "write", "identity"):
+        for c in conns.get(group) or []:
+            rs = c.get("result_shaping") if isinstance(c, dict) else None
+            if isinstance(rs, dict) and rs.get("spoken") and default_lang not in _NUMBER_CONVERTERS:
+                errors.append(
+                    f"agent_core.connectors.{group}[{c.get('name')}].result_shaping.spoken renders in "
+                    f"language_normalisation.default_language '{default_lang}', which has no "
+                    f"spoken-number converter (have {list(_NUMBER_CONVERTERS)})"
+                )
+    return errors
+
+
 def validate_cross_block(
     blocks: dict[str, dict],
     selected_channels: Iterable[str],
@@ -711,5 +765,9 @@ def validate_cross_block(
     # 16. Recording cross-block rules (tied to the reach phase).
     if applicable_after("reach"):
         errors.extend(_validate_recording(rl))
+
+    # 17. Output-contract language cross-check (runtime MergedConfig._check_output_rules).
+    if applicable_after("reach"):
+        errors.extend(_output_contract_rules(ac))
 
     return errors

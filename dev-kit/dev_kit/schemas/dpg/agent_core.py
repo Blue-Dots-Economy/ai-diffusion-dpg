@@ -79,6 +79,8 @@ class AgentDpgDefaults(BaseModel):
     retry_attempts: int = Field(default=2, ge=0, le=5)
     retry_backoff_seconds: list[float] = Field(default_factory=lambda: [0, 0.5, 1.0])
     max_tool_rounds: int = Field(default=3, ge=1, le=20)
+    history_turns: int = Field(default=2, ge=0)
+    state_fields: list[str] = Field(default_factory=list)
     termination_short_circuit: TerminationShortCircuit = Field(default_factory=TerminationShortCircuit)
     recent_tool_exchanges: RecentToolExchanges = Field(default_factory=RecentToolExchanges)
 

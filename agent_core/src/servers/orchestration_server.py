@@ -409,7 +409,7 @@ def create_orchestration_app(
 
             When ``channel`` is supplied, the session buffer is created with
             the correct channel identity so per-channel config (prompt suffix,
-            tts_rules, turn_assembler timing) resolves correctly from the very
+            output_contract, turn_assembler timing) resolves correctly from the very
             first turn. Omit on clients that don't know channel yet — buffer
             falls back to cli default (legacy behaviour).
             """

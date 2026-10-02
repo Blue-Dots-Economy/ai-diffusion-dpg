@@ -115,6 +115,12 @@ agent_core/
 
 ---
 
+## Output contract and guard
+
+Every channel can declare an `output_contract` (`channels.<name>.output_contract`): per language, the script, whether numbers are written in words, and a short list of spoken-style rules. The runtime renders it into the cached first tier of the system prompt (`<output_contract>`, right after `<channel_rules>`), default language first and the other supported languages under "If the conversation is in <language>:". The turn's language is the session's `language_preference`, else `default_language`. Connectors can add `spoken` fields through `result_shaping` (for example `salary_spoken`), so the model reads pay exactly as given and never converts a number itself.
+
+The output guard is the safety net behind that contract. It runs on model-generated sentences only, before the Trust output check on both paths: it strips markdown, rewrites digits to words (phones digit by digit, ranges as "A से B", everything else as a number in words) and counts Latin-script words in a Devanagari reply without rewriting them. It never raises; on an internal error the sentence passes through unchanged. Prompt blocks, in cache order: Tier 1 `<persona>`, `<channel_rules>`, `<output_contract>`, `<how_to_read_context>`, `<session_end_policy>`; Tier 2 `<subagent>`, `<user_state_guidance>`; Tier 3 (dynamic) `<channel_context>`, `<resumption>`, `<state>`, `<recent>`, `<known_facts>`, `<caller_turn>`. See `docs/superpowers/specs/2026-10-01-main-llm-context-design.md` §3, §5 and §6.5.
+
 ## Turn execution sequence
 
 Both `process_turn()` and `stream_turn()` run the same 13-step sequence:
@@ -132,13 +138,16 @@ Both `process_turn()` and `stream_turn()` run the same 13-step sequence:
                                 <caller_turn>
 5.  Routing                     Deterministic — NLU result + session conditions select subagent
 6.  Assemble constraints        Trust Layer.assemble_constraints
-7.  Build system prompt         Subagent prompt + guardrail constraints + required disclosures
+7.  Build system prompt         Tiered blocks: persona, channel rules, output contract (cached);
+                                subagent (cached); <state>, <recent>, <known_facts>,
+                                <caller_turn> (dynamic) — see "Output contract and guard"
 8.  LLM call #1                 ChatProviderBase — call() (sync) or stream() (streaming),
                                 via the configured provider (anthropic, openai, or google)
 9.  Tool-use loop               ManagerAgent — if LLM returns tool_use: route via ToolRegistry;
                                 knowledge_retrieval → KE; all other tools → Action Gateway;
                                 append result, LLM call #2; bounded by max_tool_rounds
-10. Trust check output          Trust Layer — mandatory; blocked sentences → fallback text
+10. Output guard + Trust check  Guard rewrites digits and strips markdown per sentence, then
+                                Trust Layer — mandatory; blocked sentences → fallback text
 11. Return                      process_turn: TurnResult returned; stream_turn: DoneEvent yielded
 
 ── async (after response returned / DoneEvent yielded) ─────────────────────────────
@@ -337,6 +346,10 @@ Config is loaded at startup from two YAML files: `config/dpg.yaml` (framework de
 | `conversation.output_blocked_message` | Returned when LLM output is blocked |
 | `conversation.unknown_intent_message` | Fallback reply when a subagent declares an unknown `special_handler` |
 | `connectors.read[]` / `write[]` / `identity[]` / `internal[]` | Tool definitions |
+| `connectors.*.result_shaping` | Per-tool shaping of the result rows before the model sees them: `drop_when`, `sort`, `spoken` fields (e.g. `salary_spoken`) and `strip_numbers_in` |
+| `channels.*.output_contract` | Per-channel spoken-output contract: `default_language`, per-language `script` / `numbers` / `rules`, and the `guard` switches. Replaces the removed per-channel TTS-rules key |
+| `agent.history_turns` | Past exchanges the main LLM sees in `<recent>` (default 2; 0 omits the block) |
+| `agent.state_fields` | Session keys shown as-is on the `<state>` status line |
 
 ### Preprocessing
 
