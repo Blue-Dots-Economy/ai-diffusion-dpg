@@ -53,7 +53,7 @@ from src.http_clients.trust_layer import TrustLayerHttpClient
 from src.http_clients.observability_layer import ObservabilityLayerHttpClient
 from src.http_clients.action_gateway import ActionGatewayHttpClient
 from src.tool_registry import ToolRegistry
-from src.manager_agent import ManagerAgent
+from src.manager_agent import ManagerAgent, zero_seed_fields
 from src.orchestrator import AgentCore
 from src.workflow_loader import AgentWorkflowLoader
 from src.servers.orchestration_server import create_orchestration_app
@@ -216,6 +216,9 @@ def _build_app():
         max_tool_rounds=agent_cfg.get("max_tool_rounds", 1),
         grounded_params=grounded_params,
         tool_call_caps=tool_call_caps,
+        zero_seed_fields=zero_seed_fields(
+            ((config.get("preprocessing") or {}).get("nlu_processor") or {}).get("slots")
+        ),
     )
 
     # Async clients — required for stream_turn() / session mode

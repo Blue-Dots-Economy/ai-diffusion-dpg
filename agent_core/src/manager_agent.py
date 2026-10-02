@@ -39,7 +39,31 @@ from src.tool_results import TurnToolCache
 logger = logging.getLogger(__name__)
 
 
-def _is_collected(value: object) -> bool:
+def zero_seed_fields(slots: dict | None) -> frozenset[str]:
+    """Names of int slots whose declared minimum rules out a real answer of 0.
+
+    Such a field is seeded with 0 when unset, so a string ``"0"`` for it is the
+    seed. An int slot that accepts 0 (``min: 0``) is not included: ``"0"`` is a
+    real answer there.
+
+    Args:
+        slots: ``preprocessing.nlu_processor.slots`` — name to slot config.
+
+    Returns:
+        The field names for which ``"0"`` means "not told yet".
+    """
+    names: set[str] = set()
+    for name, slot in (slots or {}).items():
+        get = slot.get if isinstance(slot, dict) else lambda k, d=None: getattr(slot, k, d)
+        low = get("min", None)
+        if get("type", None) == "int" and isinstance(low, (int, float)) and low > 0:
+            names.add(str(name))
+    return frozenset(names)
+
+
+def _is_collected(
+    value: object, field: str = "", zero_seeds: frozenset[str] = frozenset()
+) -> bool:
     """Whether a profile value counts as something the caller has told us.
 
     The previous check listed the empty sentinels explicitly — ``None``,
@@ -51,19 +75,23 @@ def _is_collected(value: object) -> bool:
     of these fields again", so the agent never asked the caller's age and
     sent ``age=0`` to the profile API, which rejects it as under-18.
 
-    The string ``"0"`` is the same seed: Memory Layer stores session values
-    as strings, and a copy that skipped its int coercion still reads ``"0"``.
-    This matches the seed set in ``understanding/slot_writer.py``.
+    The string ``"0"`` is the same seed for the int fields in ``zero_seeds``
+    (a copy that skipped Memory Layer's int coercion still reads ``"0"``). For
+    any other field it is a real value, e.g. ``experience_years`` of zero.
 
     Args:
         value: A profile field value.
+        field: The field's name.
+        zero_seeds: Fields for which ``"0"`` is the unset seed.
 
     Returns:
         True when the value should be shown to the LLM as already collected.
     """
     if isinstance(value, bool):
         return value
-    if value in (None, "", "[]", "0"):
+    if value in (None, "", "[]"):
+        return False
+    if value == "0" and field in zero_seeds:
         return False
     if isinstance(value, (int, float)):
         return value != 0
@@ -249,6 +277,7 @@ class ManagerAgent:
         max_tool_rounds: int = 1,
         grounded_params: dict[str, list[str]] | None = None,
         tool_call_caps: dict[str, int] | None = None,
+        zero_seed_fields: frozenset[str] = frozenset(),
     ) -> None:
         if chat_provider is None:
             raise ValueError("chat_provider must not be None")
@@ -267,6 +296,8 @@ class ManagerAgent:
         self._ke = knowledge_engine
         self._trust = trust_layer
         self._max_tool_rounds = max(1, max_tool_rounds)
+        # Profile fields for which the string "0" is the unset seed.
+        self._zero_seed_fields = frozenset(zero_seed_fields)
         # tool name -> params whose value must have appeared in an earlier tool
         # result this conversation. Guards against the model inventing an
         # identifier that is well-formed but refers to nothing.
@@ -743,7 +774,7 @@ class ManagerAgent:
             lines: list[str] = []
             skip_keys = {"attributes", "user_id"}
             for k, v in profile.items():
-                if k not in skip_keys and _is_collected(v):
+                if k not in skip_keys and _is_collected(v, k, self._zero_seed_fields):
                     lines.append(f"  {k}: {v}")
             for attr in profile.get("attributes", []) or []:
                 attr_key = attr.get("key") if isinstance(attr, dict) else None

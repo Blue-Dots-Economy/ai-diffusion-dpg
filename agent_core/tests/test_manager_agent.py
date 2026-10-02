@@ -912,11 +912,41 @@ class TestIsCollected:
         from src.manager_agent import _is_collected
         assert _is_collected(24) is True
 
-    def test_string_zero_seed_is_not_collected(self):
-        """Memory Layer returned the seeded int as the string "0"."""
+    def test_string_zero_is_a_seed_only_for_declared_zero_seed_fields(self):
+        """"0" is the unset seed of an int field, but a real value for others."""
         from src.manager_agent import _is_collected
-        assert _is_collected("0") is False
-        assert _is_collected("24") is True
+        seeds = frozenset({"age"})
+        assert _is_collected("0", "age", seeds) is False
+        assert _is_collected(0, "age", seeds) is False
+        assert _is_collected("24", "age", seeds) is True
+        assert _is_collected("0", "experience_years", seeds) is True
+        assert _is_collected(0, "experience_years", seeds) is False
+
+    def test_zero_seed_fields_come_from_int_slots_with_a_positive_minimum(self):
+        from src.manager_agent import zero_seed_fields
+        slots = {
+            "age": {"type": "int", "min": 5, "max": 99},
+            "experience_years": {"type": "int", "min": 0, "max": 60},
+            "name": {"type": "string"},
+        }
+        assert zero_seed_fields(slots) == frozenset({"age"})
+
+    def test_prompt_lists_zero_experience_years_but_not_zero_age(self):
+        from unittest.mock import MagicMock
+        from src.manager_agent import ManagerAgent
+        agent = ManagerAgent(
+            chat_provider=MagicMock(), tool_registry=MagicMock(),
+            action_gateway=MagicMock(), knowledge_engine=MagicMock(),
+            trust_layer=MagicMock(), zero_seed_fields=frozenset({"age"}),
+        )
+        prompt = agent.build_system_prompt(
+            agent_system_prompt="a", subagent_system_prompt="s",
+            detected_language="hindi", channel="web",
+            profile={"experience_years": "0", "age": "0"}, channel_config={},
+        )
+        text = prompt.text if hasattr(prompt, "text") else str(prompt)
+        assert "experience_years: 0" in text
+        assert "age: 0" not in text
 
     def test_empty_string_fields_stay_uncollected(self):
         from src.manager_agent import _is_collected
