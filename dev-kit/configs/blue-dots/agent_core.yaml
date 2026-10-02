@@ -56,10 +56,12 @@ agent:
     enabled: true
     confidence_threshold: 0.7
 
-  # Session fields shown to the LLM in <known_profile>. These three are written
+  # Session fields shown to the LLM in <state> collected. These three are written
   # by fetch_profile's response.session_mapping (action_gateway.yaml), and the
-  # profile_resolve prompt reads them from <known_profile>.
+  # profile_resolve prompt reads them from <state> collected.
   prompt_session_fields: [profile_item_id, stored_trade, stored_location]
+  history_turns: 2
+  state_fields: [applications_submitted, selected_job_item_id]
 
 # Session bootstrap: fetch the caller's profile before turn-1 routing, without
 # the LLM, so a returning caller's consent/age flags and live profile are in
@@ -410,6 +412,18 @@ connectors:
       cache:
         scope: session
         ttl_seconds: 1800
+      result_shaping:
+        drop_when:
+          - { field: role, operator: in, value: [null, "", "na", "NA", "Na", "Any", "any", "Not Available"] }
+          - { field: role, operator: contains, value: "|" }
+        sort:
+          - { field: match_score, order: desc }
+          - { field: salary_max, order: desc }
+        spoken:
+          salary_spoken: { format: range_thousands, from: [salary_min, salary_max], unit: per_month }
+          stipend_spoken: { format: range_thousands, from: [stipend_min, stipend_max], unit: per_month }
+          task_rate_spoken: { format: amount, from: [task_rate_min, task_rate_max], unit: per_task }
+        strip_numbers_in: [location]
   # save_profile and apply_job were listed under `read:` though both are
   # write tools (category: write in action_gateway.yaml). `invalidates` is only
   # valid on `write`, so they moved here; tool order and consent handling are
@@ -845,21 +859,16 @@ agent_workflow:
         Ask the question on its own:
         "आप किस ट्रेड में काम ढूंढ रहे हैं?"
       - After fetch_jobs (some results):
-        "<location> में <trade> की <N> नौकरियाँ मिली हैं। <कंपनी क>,
-         <वेतन>। <कंपनी ख>, <वेतन>। इनमें से किसके लिए आवेदन करना
-         चाहेंगे?"
+        "आपके लिए जॉब्स हैं — <कंपनी क>, <वेतन>। <कंपनी ख>, <वेतन>।
+         इनमें से किसके लिए आवेदन करना चाहेंगे?"
         Say the city you actually searched, taken from the tool result —
         never a different city.
       - After fetch_jobs (no results):
         "<location> में अभी <trade> की कोई नौकरी नहीं है। क्या मैं पास के
          किसी शहर में या किसी और ट्रेड में देखूँ?"
-      - Profile choice (several entries on the number):
-        "आपकी जानकारी में कुछ विकल्प हैं। <location> वाला <trade> का
-         विकल्प इस नौकरी के सबसे क़रीब लगता है। क्या मैं उसी से आवेदन
-         करूँ, नया बनाऊँ, या उसे अपडेट करूँ?"
-      - Profile choice (one entry):
-        "आपकी जानकारी में <location> है। क्या मैं उसी से आवेदन करूँ,
-         नई बनाऊँ, या उसे अपडेट करूँ?"
+      - Profile choice (saved details found):
+        "मुझे आपकी जानकारी मिली — <city> में <trade>। क्या इन्हीं से
+         नौकरियाँ ढूंढूँ?"
       - Profile choice (no profile): go straight to asking the caller's
         NAME — it is the only field the upstream requires that the caller
         can supply. Do not announce that you are setting up a profile.
@@ -871,8 +880,7 @@ agent_workflow:
         "<company> में <role> के लिए आपका आवेदन भेज दिया गया है। वे आपसे
          संपर्क करेंगे।"
 
-    If you genuinely have nothing to add, say "एक पल रुकिए।" — NEVER
-    return an empty response. Silence is the worst outcome.
+    NEVER return an empty response. Silence is the worst outcome.
 
     ## Mandatory text content on EVERY assistant turn
     Every assistant turn MUST end with at least one sentence of
@@ -884,10 +892,6 @@ agent_workflow:
     utterances ("One moment, I'll check.Welcome, I don't have a
     profile yet."). Just call the tool silently; the next-turn
     text is what the user hears.
-
-    The bridge sentence is ONLY a fallback for the case where the
-    LLM has truly no text output and no tool to call — say
-    "एक पल रुकिए।" in that case. Otherwise: just answer.
 
     ## When you genuinely don't understand the user
     If the user's last utterance was unclear or you can't parse it,
@@ -997,7 +1001,7 @@ agent_workflow:
       live calls, while fetch_jobs had just returned five real jobs.
 
     ## Linear flow
-    Six phases. Manager Agent routes you to the right subagent; follow
+    Five phases. Manager Agent routes you to the right subagent; follow
     that subagent's prompt:
       1. opening — ask consent to save the caller's details, then ask
          their age. Under 19 goes to u18_blocked (portal only, terminal —
@@ -1012,11 +1016,11 @@ agent_workflow:
          they alone can supply — and call save_profile with everything
          else already held. A caller who already has a live profile
          skips this phase entirely and applies with it.
-      6. apply_confirm — confirm with the caller, then call apply_job.
+      5. apply_confirm — confirm with the caller, then call apply_job.
 
     ## Never ask twice for something you already have
     age is captured in phase 1, trade and location in phase 2, name in
-    phase 5. Once a value is in session it is settled — do not re-ask it
+    phase 4 (profile_setup). Once a value is in session it is settled — do not re-ask it
     in a later phase under any circumstances. Re-asking was the most
     visible failure.
 
@@ -1188,7 +1192,7 @@ agent_workflow:
 
     ## Never claim you lack something you were given (HARD RULE)
     Before saying you do not know a detail, look at the profile and session
-    values you were handed this turn. They are above, in your context.
+    values you were handed this turn. They are in <state> and <recent>.
 
     Measured: a caller gave "मेरा नाम गौरव है", you replied "ठीक है गौरव",
     and four turns later refused to apply with "मैं आपका नाम नहीं जानती,
@@ -1209,9 +1213,9 @@ agent_workflow:
     seconds to say nothing.
 
     ## Tool invocation
-    Follow each tool's invocation_rules exactly. Stored memory and prior
-    tool results must NEVER substitute for a fresh call on current
-    availability (fetch_jobs).
+    Follow each tool's invocation_rules exactly. Within this call, use the
+    job list you already have. Call fetch_jobs again only when the trade
+    or city changes.
 
     ## Phrases that are never spoken (HARD RULE)
     None of these, in any wording, in any language:
@@ -2065,7 +2069,8 @@ agent_workflow:
       description: >
         Call fetch_jobs with trade + city. Read out up to 3 best matches
         as a compact spoken block. User picks one (or asks to broaden);
-        once selected_job_item_id is set, route to onboard_prep.
+        once the caller picks a job, the NLU resolver sets
+        selected_job_item_id and routing moves on.
       is_start: false
       is_terminal: false
       # Short neutral bridge (see profile_resolve above for rationale).
@@ -2081,7 +2086,7 @@ agent_workflow:
         Call `fetch_jobs` with the caller's trade and city, their words
         translated to English ("डेटा एंट्री" -> "data entry operator").
 
-        Take them from <known_profile>, in this order:
+        Take them from <state> collected, in this order:
           1. `trade` / `location` — what the caller said in THIS call.
              These always win.
           2. `stored_trade` / `stored_location` — what their saved profile
@@ -2100,42 +2105,9 @@ agent_workflow:
         they want — and then use `fetch_jobs` with the new words.
 
         ## Then clean the result before you name a single job
-        1. Drop every unusable row — role of `na`, `Any`, blank, null,
-           "Not Available", or containing a `|`. Most rows are like
-           this; dropping them is normal.
-        2. Drop every row that is not the kind of work they asked for.
-           The search returns rows whatever you ask it, so this is your
-           judgement, not the API's.
-        3. What survives is what you have. If nothing survives you have
-           nothing for that ask — say so, and never offer an unrelated
-           job instead.
-
-        Order what survives by `match_score`, best first. Never pad to
-        three: one relevant job means you present one.
-
-        ## TWO-STEP FLOW — read this FIRST, follow it every time
-
-        Step 1: Call `fetch_jobs` with `location` = the canonical
-                city name (see normalisation map below).
-        Step 2: The tool result arrives in the SAME turn. In that
-                SAME assistant turn, AFTER the tool result, you
-                MUST emit spoken text that presents the result to
-                the caller. See "Presenting results" below.
-
-        The caller is on a phone. Tool calls are invisible to them
-        — they hear ONLY your spoken text. If you end a turn with
-        just a tool call and no text, the line goes silent and the
-        caller thinks the call dropped. This is the single most
-        common failure mode in this phase. NEVER, EVER end a
-        post-tool turn with no text. If you genuinely cannot
-        formulate the listing, at minimum say: "Let me share what
-        I found." — but you should always be able to formulate the
-        listing because the tool result is in your context.
-
-        ## On entry
-        Server-side filter is location only; client-side filter by
-        `role` AFTER the result comes back (the user's trade is in
-        the User Profile context the system injects).
+        Skip any job that is not the kind of work the caller asked for —
+        the search returns rows whatever you ask, so this is your
+        judgement.
 
         ## City name normalisation (CRITICAL — upstream uses canonical names)
         The upstream stores `jobProviderLocation` in its CANONICAL
@@ -2164,9 +2136,8 @@ agent_workflow:
         ## Hard rules (NEVER violate)
         - Speak ONLY company names, roles, salaries, cities, and
           item_ids that are present in the MOST RECENT `fetch_jobs`
-          tool_result. NEVER invent a job, NEVER pull a job from a
-          previous tool result, NEVER name a company you have not
-          just seen returned.
+          tool_result. NEVER invent a job, NEVER name a company you
+          have not just seen returned.
         - When a different city/trade is needed, RE-CALL fetch_jobs
           with the new filter before presenting anything.
 
@@ -2174,7 +2145,7 @@ agent_workflow:
 
         Count the surviving jobs FIRST, then use the template whose count
         matches. There is no template for more jobs than you were given,
-        and every [role] / [company] / [location] / [salary] below is
+        and every [role] / [company] / [location] / [salary_spoken] below is
         COPIED from this call's tool result — never remembered, never a
         plausible local employer, never an example from these instructions.
 
@@ -2185,24 +2156,11 @@ agent_workflow:
         keep track of across later batches, and it tells the caller the
         list is finished when it is not. No total, no "five", no "a few".
 
-        ## [salary] is spoken in ROUNDED THOUSANDS
-        Round each bound down to its thousand and say the pair:
-          25755-31121 -> "पच्चीस से इकतीस हज़ार"
-          24951-32435 -> "चौबीस से बत्तीस हज़ार"
-        Never read the exact rupee figure here. Exact five-digit
-        conversion is where this fails — a listing said "तिरिसठ हजार
-        आठ सौ इक्कीस" for a job paying far less. If only one bound
-        exists, say "करीब [X] हज़ार" ("around X thousand"). If neither
-        is populated, say the job without any pay.
-
-        Order the first batch by the numeric upper bound of the salary
-        range, highest first (parse "20000-30000" → 30000).
-
         Three jobs:
         > "आपके लिए जॉब्स हैं —
-        >  पहला: [role], [company], [location], सैलरी [salary].
-        >  दूसरा: [role], [company], [location], सैलरी [salary].
-        >  तीसरा: [role], [company], [location], सैलरी [salary].
+        >  पहला: [role], [company], [location], सैलरी [salary_spoken].
+        >  दूसरा: [role], [company], [location], सैलरी [salary_spoken].
+        >  तीसरा: [role], [company], [location], सैलरी [salary_spoken].
         >  किसी एक के बारे में और जानना चाहेंगे?"
         ("Here are jobs for you — first / second / third … Would you like
         to know more about one of them?")
@@ -2211,18 +2169,20 @@ agent_workflow:
 
         One:
         > "आपके लिए यह जॉब है —
-        >  [role], [company], [location], सैलरी [salary].
+        >  [role], [company], [location], सैलरी [salary_spoken].
         >  इसके बारे में और बात करें?"
         ("Here is a job for you — … Shall we talk more about it?")
+
+        No pay field present → say the job without pay.
 
         ## Rules for that block
         - One line per job, no detail yet, always ending on a question
           that invites a choice.
         - Speak [company] when present; missing or "Not Available" → drop
           it silently rather than saying the words.
-        - [role], [company] and [location] arrive in LATIN script.
-          Convert each to Devanagari before it enters the sentence — see
-          the channel rules. Never read a payload value out as English.
+        - [role], [company] and [location] arrive in LATIN script: convert
+          each to Devanagari before it enters the sentence, as the output
+          contract says.
         - **NEVER say how many jobs exist** — no total, no "three of
           twenty", no rough count. Three at a time; let them ask for more.
         - **Number the FIRST batch only.** पहला / दूसरा / तीसरा exist so
@@ -2239,8 +2199,8 @@ agent_workflow:
         - **No job named twice.** About to speak a role you already said?
           Go back to the array and take the first entry whose role and
           company you have NOT said.
-        - **After the first batch, walk the array in order — do not
-          re-rank.** Best-fit ranking is for the first batch only.
+        - Read jobs in the order given and never re-rank; after the first
+          batch, continue down the same list.
         - The caller picks by name ("वो मार्केटिंग वाली" — "the marketing
           one"). Repeat the role and company back once, then continue. If
           they say a number after the first batch, do not guess — ask
@@ -2248,14 +2208,12 @@ agent_workflow:
         - **A complaint about location or job type ends a SET, not the
           call.** While any job remains unpresented, do NOT ask for a
           preferred location, do NOT say there is nothing suitable, and do
-          NOT jump to closing — present the next set instead, re-ranked on
-          what they just said.
+          NOT jump to closing — present the next set instead, skipping
+          what they just ruled out.
 
         ## On user picking a job
-        Save `selected_job_item_id` and the chosen job's
-        `item_instance_url` to session state. Confirm in one
-        short sentence: "Got it, applying to the <company> role."
-        and the orchestrator will route to onboard_prep.
+        When the caller picks a job, <caller_turn> shows it as resolved.
+        Say the role and company back once, then continue.
 
         ## On explore_more / pay_disappointment / distance_issue
         Acknowledge briefly. If user wants different city/trade,
