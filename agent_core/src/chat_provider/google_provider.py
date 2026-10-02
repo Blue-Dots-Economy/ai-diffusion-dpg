@@ -740,7 +740,9 @@ class GoogleChatProvider(ChatProviderBase):
         config_kwargs["max_output_tokens"] = request.max_tokens
 
         # --- Tools -----------------------------------------------------------
-        if request.tools and request.tool_choice != "none":
+        # "none" still sends the declarations (mode NONE): a request whose
+        # contents carry function calls/responses must declare them.
+        if request.tools:
             func_decls = []
             for t in request.tools:
                 func_decls.append(types.FunctionDeclaration(
@@ -759,6 +761,10 @@ class GoogleChatProvider(ChatProviderBase):
             elif request.tool_choice == "any":
                 config_kwargs["tool_config"] = types.ToolConfig(
                     function_calling_config=types.FunctionCallingConfig(mode="ANY")
+                )
+            elif request.tool_choice == "none":
+                config_kwargs["tool_config"] = types.ToolConfig(
+                    function_calling_config=types.FunctionCallingConfig(mode="NONE")
                 )
             else:
                 config_kwargs["tool_config"] = types.ToolConfig(

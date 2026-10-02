@@ -187,12 +187,24 @@ class TestToWire:
         wire = p._to_wire(req)
         assert wire["tool_choice"] == {"type": "tool", "name": "my_tool"}
 
-    def test_tool_choice_none_drops_tools(self):
+    def test_tool_choice_none_keeps_tools(self):
+        # Spec E: "none" sends the tools with {"type": "none"}: Anthropic
+        # rejects tool_use/tool_result blocks in a request with no tools.
         p = _make_provider()
         td = ToolDefinition(name="x", description="d", input_schema={"type": "object"})
         req = ChatRequest(
             messages=[Message(role="user", content=[TextBlock(text="hi")])],
             tools=[td],
+            tool_choice="none",
+        )
+        wire = p._to_wire(req)
+        assert [t["name"] for t in wire["tools"]] == ["x"]
+        assert wire["tool_choice"] == {"type": "none"}
+
+    def test_tool_choice_none_without_tools_sends_neither(self):
+        p = _make_provider()
+        req = ChatRequest(
+            messages=[Message(role="user", content=[TextBlock(text="hi")])],
             tool_choice="none",
         )
         wire = p._to_wire(req)

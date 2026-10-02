@@ -648,7 +648,9 @@ class AnthropicChatProvider(ChatProviderBase):
             )
             forced_tool_name = "respond_with_json"
 
-        if tools and request.tool_choice != "none":
+        # "none" still sends the definitions: a request whose messages carry
+        # tool_use/tool_result blocks must define the tools they name.
+        if tools:
             wire["tools"] = [self._tool_to_wire(t) for t in tools]
 
         # tool_choice mapping
@@ -659,8 +661,8 @@ class AnthropicChatProvider(ChatProviderBase):
         elif choice == "any":
             wire["tool_choice"] = {"type": "any"}
         elif choice == "none":
-            # Already handled above by skipping wire["tools"].
-            pass
+            if "tools" in wire:
+                wire["tool_choice"] = {"type": "none"}
         else:
             # Named tool (either user-forced or synthetic respond_with_json)
             wire["tool_choice"] = {"type": "tool", "name": choice}
