@@ -878,3 +878,69 @@ def test_history_turns_non_negative():
     cfg.setdefault("agent", {})["history_turns"] = -1
     with pytest.raises(ValidationError):
         MergedConfig.validate_full(cfg)
+
+
+# ---------------------------------------------------------------------------
+# Tool pre-dispatch rules (Spec E §3-4)
+# ---------------------------------------------------------------------------
+
+
+def _with_rule(cfg, rule, subagent_index=0):
+    cfg["agent_workflow"]["subagents"][subagent_index]["predispatch"] = [rule]
+    return cfg
+
+
+def _read_tool(cfg):
+    return cfg["connectors"]["read"][0]["name"]
+
+
+def test_predispatch_rule_accepted():
+    cfg = copy.deepcopy(_minimal_valid_config())
+    tool = _read_tool(cfg)
+    cfg["predispatch_tables"] = {"city_canonical": {"Bangalore": "Bengaluru"}, "name_placeholders": ["unknown"]}
+    cfg.setdefault("agent", {})["predispatch_timeout_ms"] = 1200
+    _with_rule(cfg, {"tool": tool, "unless_fresh": True,
+                     "args": {"query_text": {"template": "{trade|stored_trade} jobs in {location}",
+                                             "normalise": {"location": "city_canonical"}}}})
+    MergedConfig.validate_full(cfg)
+
+
+def test_write_rule_needs_explicit_enabled():
+    cfg = copy.deepcopy(_minimal_valid_config())
+    write = cfg["connectors"].setdefault("write", [])
+    if not write:
+        write.append({**copy.deepcopy(cfg["connectors"]["read"][0]), "name": "save_thing"})
+    _with_rule(cfg, {"tool": write[0]["name"], "args": {"x": {"from": "session", "key": "x"}}})
+    with pytest.raises(ValidationError, match="enabled"):
+        MergedConfig.validate_full(cfg)
+    cfg["agent_workflow"]["subagents"][0]["predispatch"][0]["enabled"] = False
+    MergedConfig.validate_full(cfg)
+
+
+def test_unknown_tool_rejected():
+    cfg = _with_rule(copy.deepcopy(_minimal_valid_config()), {"tool": "no_such_tool", "args": {}})
+    with pytest.raises(ValidationError, match="no_such_tool"):
+        MergedConfig.validate_full(cfg)
+
+
+def test_arg_binding_shapes():
+    cfg = copy.deepcopy(_minimal_valid_config())
+    tool = _read_tool(cfg)
+    for bad in ({"from": "session"}, {"from": "literal"}, {"template": "x", "from": "session", "key": "k"}, {}):
+        c = _with_rule(copy.deepcopy(cfg), {"tool": tool, "args": {"a": bad}})
+        with pytest.raises(ValidationError):
+            MergedConfig.validate_full(c)
+
+
+def test_unknown_normalise_table_rejected():
+    cfg = copy.deepcopy(_minimal_valid_config())
+    _with_rule(cfg, {"tool": _read_tool(cfg), "args": {"a": {"from": "session", "key": "k", "normalise": "nope"}}})
+    with pytest.raises(ValidationError, match="nope"):
+        MergedConfig.validate_full(cfg)
+
+
+def test_on_intent_must_be_producible():
+    cfg = copy.deepcopy(_minimal_valid_config())
+    _with_rule(cfg, {"tool": _read_tool(cfg), "on_intent": ["never_made"], "args": {}})
+    with pytest.raises(ValidationError, match="never_made"):
+        MergedConfig.validate_full(cfg)

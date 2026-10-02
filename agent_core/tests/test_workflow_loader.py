@@ -837,3 +837,25 @@ def test_loads_without_nlu_intents_and_has_no_intent_set(loader, registry):
     assert not hasattr(workflow, "nlu_intent_set")
     assert not hasattr(workflow, "global_intents")
     assert not hasattr(workflow.subagents["start"], "valid_intents")
+
+
+# ---------------------------------------------------------------------------
+# Pre-dispatch rules (Spec E)
+# ---------------------------------------------------------------------------
+
+
+def test_predispatch_rules_loaded_in_order():
+    cfg = _minimal_config()
+    rules = [
+        {"tool": "fetch_jobs", "unless_fresh": True,
+         "args": {"q": {"from": "session", "key": "trade"}}},
+        {"tool": "fetch_jobs", "on_intent": ["apply_now"], "args": {}},
+    ]
+    cfg["agent_workflow"]["subagents"][0]["predispatch"] = rules
+    wf = AgentWorkflowLoader().load(cfg, _make_tool_registry())
+    assert wf.subagents[wf.start_subagent_id].predispatch == rules
+
+
+def test_predispatch_defaults_to_empty():
+    wf = AgentWorkflowLoader().load(_minimal_config(), _make_tool_registry())
+    assert all(s.predispatch == [] for s in wf.subagents.values())
