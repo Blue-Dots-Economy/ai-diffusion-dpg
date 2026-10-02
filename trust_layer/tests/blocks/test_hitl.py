@@ -53,7 +53,7 @@ def test_missing_hitl_config():
     assert result["holding_message"] == ""
 
 
-def test_unsupported_queue_backend_still_queues():
+def test_unsupported_queue_backend_is_not_queued():
     block = HiTLBlock({
         "trust": {
             "hitl": {
@@ -63,5 +63,28 @@ def test_unsupported_queue_backend_still_queues():
         }
     })
     result = block.escalate("s1", "reason", "msg", "ready")
-    assert result["queued"] is True
+    assert result["queued"] is False
     assert result["ticket_id"].startswith("TKT-")
+
+
+# ── delivery semantics ────────────────────────────────────────────────────
+def _cfg(backend="log"):
+    return {"trust": {"hitl": {"queue_backend": backend, "holding_message": "hold", "notification_webhook": None}}}
+
+
+def test_log_backend_is_queued_but_not_delivered():
+    r = HiTLBlock(_cfg("log")).escalate("s1", "human_request", "msg", "job_match", handoff={"a": 1})
+    assert r["queued"] is True and r["delivered"] is False and r["reason"] == "log_only"
+    assert r["ticket_id"].startswith("TKT-")
+
+
+def test_unsupported_backend_is_not_queued():
+    r = HiTLBlock(_cfg("redis")).escalate("s1", "human_request", "msg", "job_match")
+    assert r["queued"] is False and r["delivered"] is False and r["reason"] == "unsupported_backend"
+
+
+def test_payload_is_never_logged(caplog):
+    caplog.set_level("DEBUG")
+    HiTLBlock(_cfg("log")).escalate("s1", "human_request", "msg", "job_match",
+                                    handoff={"caller": {"phone": "919900001000"}})
+    assert "919900001000" not in caplog.text

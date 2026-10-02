@@ -54,6 +54,7 @@ class HiTLBlock:
         escalation_reason: str,
         user_message: str,
         workflow_step: str,
+        handoff: dict | None = None,
     ) -> dict:
         """
         Queue an escalation event and return a ticket ID and holding message.
@@ -63,9 +64,11 @@ class HiTLBlock:
             escalation_reason: Human-readable reason string (e.g. "escalation_topic:suicide").
             user_message: The user's message that triggered escalation.
             workflow_step: Current subagent step at time of escalation.
+            handoff: Optional handoff payload (never logged).
 
         Returns:
-            dict with keys: queued (bool), ticket_id (str), holding_message (str).
+            dict with keys: queued (bool), delivered (bool), reason (str),
+            ticket_id (str), holding_message (str).
         """
         if session_id is None:
             raise ValueError("session_id must not be None")
@@ -73,12 +76,8 @@ class HiTLBlock:
         start = time.time()
         ticket_id = f"TKT-{time.strftime('%Y%m%d')}-{uuid.uuid4().hex[:8].upper()}"
 
-        self._write_to_queue(
-            ticket_id=ticket_id,
-            session_id=session_id,
-            escalation_reason=escalation_reason,
-            user_message=user_message,
-            workflow_step=workflow_step,
+        queued, delivered, reason = self._deliver(
+            ticket_id, session_id, escalation_reason, workflow_step, handoff
         )
 
         logger.info(
@@ -89,25 +88,29 @@ class HiTLBlock:
                 "session_id": session_id,
                 "ticket_id": ticket_id,
                 "escalation_reason": escalation_reason,
+                "delivered": delivered,
+                "reason": reason,
                 "latency_ms": int((time.time() - start) * 1000),
             },
         )
 
         return {
-            "queued": True,
+            "queued": queued,
+            "delivered": delivered,
+            "reason": reason,
             "ticket_id": ticket_id,
             "holding_message": self._holding_message,
         }
 
-    def _write_to_queue(
+    def _deliver(
         self,
         ticket_id: str,
         session_id: str,
         escalation_reason: str,
-        user_message: str,
         workflow_step: str,
-    ) -> None:
-        """Write escalation event to the configured queue backend."""
+        handoff: dict | None,
+    ) -> tuple[bool, bool, str]:
+        """Write to the configured backend. Returns (queued, delivered, reason)."""
         if self._queue_backend == "log":
             logger.warning(
                 "hitl_block.escalation_queued",
@@ -120,17 +123,14 @@ class HiTLBlock:
                     "workflow_step": workflow_step,
                 },
             )
-        else:
-            # TODO(GH-hitl): Implement redis and webhook backends.
-            # Returning queued=True for unsupported backends is a known gap tracked in
-            # the HiTL queue implementation issue. The caller (escalate) returns True
-            # to avoid breaking the turn; a real backend will either deliver or return queued=False.
-            logger.warning(
-                "hitl_block.unsupported_backend",
-                extra={
-                    "operation": "hitl_block.queue_write",
-                    "status": "skipped",
-                    "queue_backend": self._queue_backend,
-                    "ticket_id": ticket_id,
-                },
-            )
+            return True, False, "log_only"
+        logger.warning(
+            "hitl_block.unsupported_backend",
+            extra={
+                "operation": "hitl_block.queue_write",
+                "status": "skipped",
+                "ticket_id": ticket_id,
+                "backend": self._queue_backend,
+            },
+        )
+        return False, False, "unsupported_backend"

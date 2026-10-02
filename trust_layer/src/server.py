@@ -255,6 +255,7 @@ def create_app(trust: TrustLayer) -> FastAPI:
                 request.escalation_reason,
                 request.user_message,
                 request.workflow_step,
+                request.handoff,
             )
             logger.info(
                 "trust_server.escalate",
@@ -277,7 +278,9 @@ def create_app(trust: TrustLayer) -> FastAPI:
                     "latency_ms": int((time.time() - start) * 1000),
                 },
             )
-            return HiTLEscalateResponse(queued=False, ticket_id="", holding_message="")
+            return HiTLEscalateResponse(
+                queued=False, ticket_id="", holding_message="", delivered=False, reason="error"
+            )
 
     @app.get("/health")
     def health() -> StatusResponse:

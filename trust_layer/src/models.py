@@ -160,12 +160,14 @@ class HiTLEscalateRequest(BaseModel):
         escalation_reason: Reason for escalation (e.g., 'consent_needed').
         user_message: The user's message that triggered escalation.
         workflow_step: The workflow step at which escalation occurred.
+        handoff: Optional handoff payload built from session state.
     """
 
     session_id: str
     escalation_reason: str
     user_message: str
     workflow_step: str
+    handoff: dict | None = None
 
 
 class HiTLEscalateResponse(BaseModel):
@@ -174,14 +176,18 @@ class HiTLEscalateResponse(BaseModel):
     Confirms escalation and provides a holding message and ticket ID.
 
     Attributes:
-        queued: True if the escalation was successfully queued.
+        queued: True if the escalation was accepted by a supported backend.
         ticket_id: Unique identifier for the escalation ticket.
         holding_message: Message to send to the user while the ticket is pending.
+        delivered: True only if a human-facing channel confirmed receipt (2xx).
+        reason: Delivery outcome (e.g. 'log_only', 'unsupported_backend', 'error').
     """
 
     queued: bool
     ticket_id: str
     holding_message: str
+    delivered: bool = False
+    reason: str = ""
 
 
 class StatusResponse(BaseModel):
