@@ -60,19 +60,20 @@ def _sub(sid, rules=(), is_start=False):
                     predispatch=[dict(r) for r in rules])
 
 
-def _workflow(rules, post_applied=False):
+def _workflow(rules, post_applied=False, tools=None):
+    tools = list(TOOLS if tools is None else tools)
     subs = {"start": _sub("start", rules, is_start=True)}
     if post_applied:
         subs["post_applied"] = _sub("post_applied")
     wf = MagicMock(spec=AgentWorkflow)
     wf.start_subagent_id = "start"
     wf.subagents = subs
-    wf.tool_defs = {k: list(TOOLS) for k in subs}
+    wf.tool_defs = {k: list(tools) for k in subs}
     wf.global_tool_defs = []
     wf.global_routing = []
     wf.default_fallback_subagent_id = "start"
     wf.agent_system_prompt = "System prompt"
-    wf.resolve_tools_for.side_effect = lambda sid: list(TOOLS)
+    wf.resolve_tools_for.side_effect = lambda sid: list(tools)
     return wf
 
 
@@ -112,7 +113,7 @@ def _jobs_entry(query_text="Welder jobs in Bengaluru"):
 
 def _agent(session, rules, *, intent="any_input", writes=(), profile=None, entries=None,
            rounds=(), gateway=None, caps=None, timeout_s=1.5, consent=True, post_applied=False,
-           fetch_when_offered=False, manager=None):
+           fetch_when_offered=False, manager=None, tools=None):
     """Stream AgentCore routed into ``start`` (carrying ``rules``) with recorded LLM requests.
 
     The LLM requests each tool round in ``rounds`` in turn, then answers in text.
@@ -120,7 +121,7 @@ def _agent(session, rules, *, intent="any_input", writes=(), profile=None, entri
     entry: offered ``fetch_jobs`` and holding no result, it calls the tool first.
     Returns ``(agent, requests)``.
     """
-    agent = _make_agent_core(workflow=_workflow(rules, post_applied=post_applied))
+    agent = _make_agent_core(workflow=_workflow(rules, post_applied=post_applied, tools=tools))
     if manager is not None:
         agent._manager_agent = manager
     _wire(agent, caps=caps, timeout_s=timeout_s, consent=consent)
@@ -232,9 +233,9 @@ async def test_fresh_cache_no_predispatch(caplog):
     agent._async_gateway.execute.assert_not_awaited()
     assert len(requests) == 1 and "fetch_jobs" in _names(requests[0])
     assert not _has_pair(requests[0].messages)
-    rec.assert_called_once_with(None, "skipped_fresh")
+    rec.assert_called_once_with("fetch_jobs", "skipped_fresh")
     r = _complete_extras(caplog, "orchestrator.stream_turn_complete")
-    assert (r.predispatch_tool, r.predispatch_outcome) == (None, "skipped_fresh")
+    assert (r.predispatch_tool, r.predispatch_outcome) == ("fetch_jobs", "skipped_fresh")
 
 
 @pytest.mark.asyncio
@@ -377,6 +378,78 @@ async def test_post_applied_hook_fires_for_predispatched_apply_job():
                                              "current_subagent_id")
 
 
+@pytest.mark.asyncio
+async def test_predispatched_write_is_never_repeated_in_a_nested_round():
+    rounds = [[ToolUseBlock(tool_name="fetch_profile", tool_use_id="tu_1", input={})],
+              [ToolUseBlock(tool_name="apply_job", tool_use_id="tu_2",
+                            input={"profile_item_id": "P-1", "job_item_id": "J-1"})]]
+    agent, requests = _agent(APPLY_SESSION, [APPLY_RULE], intent="apply_now",
+                             rounds=rounds, caps={"apply_job": 1})
+    await _collect_events(agent, _make_turn_input())
+
+    assert _gateway_tools(agent._async_gateway.execute).count("apply_job") == 1
+    refusal = [b.content for b in requests[2].messages[-1].content if b.tool_use_id == "tu_2"][0]
+    assert "has already run this turn" in refusal
+
+
+@pytest.mark.asyncio
+async def test_read_failure_falls_back(caplog):
+    def failing(tc, *a, **k):
+        return ToolResult(tool_use_id=tc.tool_use_id, tool_name=tc.tool_name, result={}, success=False,
+                          result_text="Error: upstream 500", error="upstream 500")
+
+    agent, requests = _agent({"trade": "Welder", "location": "Bengaluru"}, [JOBS_RULE],
+                             gateway=failing, fetch_when_offered=True)
+    with caplog.at_level(logging.INFO, logger="src.orchestrator"):
+        await _collect_events(agent, _make_turn_input())
+
+    assert "fetch_jobs" in _names(requests[0]) and not _has_pair(requests[0].messages)
+    assert len(requests) == 2                            # today's path: the model calls it
+    r = _complete_extras(caplog, "orchestrator.stream_turn_complete")
+    assert (r.llm_calls, r.predispatch_outcome) == (2, "failed")
+
+
+@pytest.mark.asyncio
+async def test_only_offered_tool_is_not_predispatched(caplog):
+    agent, requests = _agent({"trade": "Welder", "location": "Bengaluru"}, [JOBS_RULE],
+                             tools=[FETCH_DEF])
+    with caplog.at_level(logging.INFO, logger="src.orchestrator"):
+        await _collect_events(agent, _make_turn_input())
+
+    agent._async_gateway.execute.assert_not_awaited()     # nothing ran, nothing counted
+    assert _names(requests[0]) == ["fetch_jobs"] and not _has_pair(requests[0].messages)
+    r = _complete_extras(caplog, "orchestrator.stream_turn_complete")
+    assert (r.predispatch_tool, r.predispatch_outcome) == ("fetch_jobs", "skipped_only_tool")
+
+
+@pytest.mark.asyncio
+async def test_abort_during_prompt_build_keeps_predispatched_write():
+    """An enabled apply fires, then the caller barges in before the LLM call."""
+    from src.chat_provider.types import SystemPrompt, TextBlock
+    from src.models import TurnRecord
+
+    agent, requests = _agent(APPLY_SESSION, [APPLY_RULE], intent="apply_now", post_applied=True)
+    abort = asyncio.Event()
+
+    def _build(**_kw):
+        abort.set()
+        return SystemPrompt(blocks=[TextBlock(text="System prompt")])
+
+    agent._manager_agent.build_system_prompt.side_effect = _build
+    record = TurnRecord()
+    async for _ in agent.stream_turn(_make_turn_input(), abort_event=abort, record=record):
+        pass
+    await record.persist_task
+
+    assert requests == []                                 # the turn stopped before the LLM
+    assert _gateway_tools(agent._async_gateway.execute) == ["apply_job"]
+    writes = agent._async_memory.write.await_args_list
+    stored = _session_writes(writes, "recent_tool_exchanges")[0]
+    assert stored[-1]["tool_uses"][0]["name"] == "apply_job"
+    assert stored[-1]["tool_uses"][0]["id"].startswith(PREDISPATCH_ID + "-")
+    assert "post_applied" in _session_writes(writes, "current_subagent_id")
+
+
 # ── sync path ──────────────────────────────────────────────────────────────
 
 def _sync_agent(session, rules, *, intent="any_input", consent=True, post_applied=False,
@@ -472,6 +545,59 @@ def test_sync_without_gateway_does_not_predispatch():
     agent._manager_agent._gateway = None
     _sync_turn(agent)
     assert not _has_pair(agent._llm.call.call_args.args[0].messages)
+
+
+def test_sync_llm_error_keeps_predispatched_write():
+    from src.chat_provider.types import ChatResponse, TokenUsage
+    agent, gw = _sync_agent(APPLY_SESSION, [APPLY_RULE], intent="apply_now", post_applied=True)
+    agent._llm.call.return_value = ChatResponse(
+        content=[], stop_reason="error", model_used="m", usage=TokenUsage(input_tokens=0, output_tokens=0),
+        error_type="api_error", error_message="boom")
+    result = _sync_turn(agent)
+
+    assert [c.args[0].tool_name for c in gw.execute.call_args_list] == ["apply_job"]
+    writes = agent._memory.write.call_args_list
+    stored = _session_writes(writes, "recent_tool_exchanges")[0]
+    assert stored[-1]["tool_uses"][0]["name"] == "apply_job"
+    assert "post_applied" in _session_writes(writes, "current_subagent_id")
+    assert result.was_tool_used is True
+    agent._manager_agent.run_turn.assert_not_called()
+
+
+def test_sync_write_is_never_repeated_through_real_run_turn():
+    from tests.test_manager_agent import _make_manager, _text_response
+    from src.chat_provider.types import ChatResponse, TokenUsage
+    real, *_ = _make_manager([_text_response(), _text_response("Done.")])
+    agent, gw = _sync_agent(APPLY_SESSION, [APPLY_RULE], intent="apply_now", manager=real,
+                            caps={"apply_job": 1})
+    agent._llm.call.return_value = ChatResponse(
+        content=[ToolUseBlock(tool_use_id="tu_1", tool_name="apply_job",
+                              input={"profile_item_id": "P-1", "job_item_id": "J-1"})],
+        stop_reason="tool_use", model_used="m", usage=TokenUsage(input_tokens=1, output_tokens=1))
+    result = _sync_turn(agent)
+
+    assert [c.args[0].tool_name for c in gw.execute.call_args_list] == ["apply_job"]
+    assert result.response_text == "Done."
+
+
+@pytest.mark.parametrize("tool_ok,expected", [(True, {"fetch_jobs": 1}), (False, {})])
+def test_sync_read_counts_only_on_success(tool_ok, expected):
+    def gateway(tc, *a, **k):
+        if tool_ok:
+            return _gateway_result(tc)
+        return ToolResult(tool_use_id=tc.tool_use_id, tool_name=tc.tool_name, result={}, success=False,
+                          result_text="Error", error="upstream 500")
+
+    agent, _gw = _sync_agent({"trade": "Welder", "location": "Bengaluru"}, [JOBS_RULE], gateway=gateway)
+    _sync_turn(agent)
+    assert agent._manager_agent.run_turn.call_args.kwargs["turn_tool_counts"] == expected
+
+
+def test_sync_write_counts_even_on_failure():
+    agent, _gw = _sync_agent(APPLY_SESSION, [APPLY_RULE], intent="apply_now",
+                             gateway=lambda tc, *a, **k: _gateway_result(tc, apply_ok=False))
+    _sync_turn(agent)
+    assert agent._manager_agent.run_turn.call_args.kwargs["turn_tool_counts"] == {"apply_job": 1}
 
 
 # ── startup ────────────────────────────────────────────────────────────────

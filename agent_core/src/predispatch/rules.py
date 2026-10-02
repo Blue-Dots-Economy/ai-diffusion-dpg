@@ -163,12 +163,15 @@ class Selection:
         args: Bound arguments (empty when tool is None).
         outcome: "fired" when a tool was chosen; otherwise the first gated rule's skip reason, or None.
         is_write: Whether ``tool`` is a write/identity tool.
+        considered_tool: On a skip outcome, the tool of the first gated rule
+            (the one that set ``outcome``); None when no rule's gates held.
     """
 
     tool: str | None
     args: dict = field(default_factory=dict)
     outcome: str | None = None
     is_write: bool = False
+    considered_tool: str | None = None
 
 
 def _gates_hold(rule: dict, intent: str, state: dict) -> bool:
@@ -196,10 +199,13 @@ def select(rules: list[dict], *, intent: str, state: dict, session: dict, tables
         Selection.
     """
     first_skip: str | None = None
+    first_tool: str | None = None
     for i, rule in enumerate(rules or []):
         try:
             if not _gates_hold(rule, intent, state):
                 continue
+            if first_skip is None:
+                first_tool = rule.get("tool") if isinstance(rule.get("tool"), str) else None
             tool = rule["tool"]
             is_write = tool in write_tools
             enabled = rule.get("enabled")
@@ -224,4 +230,4 @@ def select(rules: list[dict], *, intent: str, state: dict, session: dict, tables
         except Exception as e:  # noqa: BLE001 — never raise into the turn
             logger.warning("predispatch.rule_error", extra={"operation": "predispatch.select", "status": "failure", "rule_index": i, "error": type(e).__name__})
             first_skip = first_skip or "error"
-    return Selection(tool=None, outcome=first_skip)
+    return Selection(tool=None, outcome=first_skip, considered_tool=first_tool if first_skip else None)

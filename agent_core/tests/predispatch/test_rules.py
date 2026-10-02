@@ -106,6 +106,16 @@ def test_no_matching_rule_no_outcome():
     assert _sel([], session={}).outcome is None
 
 
+def test_considered_tool_names_the_first_gated_skipped_rule():
+    disabled = {"tool": "apply_job", "enabled": False, "on_intent": ["apply_now"],
+                "args": {"profile_item_id": {"from": "session", "key": "p"}}}
+    fresh = {"tool": "fetch_jobs", "unless_fresh": True, "args": {}}
+    s = _sel([disabled, fresh], intent="apply_now", session={"p": "p1"})
+    assert (s.tool, s.outcome, s.considered_tool) == (None, "disabled", "apply_job")
+    gated_out = _sel([disabled], intent="something_else", session={"p": "p1"})
+    assert (gated_out.outcome, gated_out.considered_tool) == (None, None)
+
+
 def test_select_never_raises_on_bad_rule():
     s = _sel([{"tool": "fetch_jobs", "when": [{"field": None}], "args": "nonsense"}])
     assert s.tool is None and s.outcome == "error"
