@@ -1,0 +1,19 @@
+id: T09
+title: Five facts then corrects two
+language: hi
+facts:
+  name: विजय सिंह
+  age: 29
+  trade: वेल्डर
+  city: कानपुर
+goal: welder job.
+quirks:
+- in your second line give name, age 29, trade, city Kanpur and that you have 3 years experience in one breath
+- 'then correct: age is actually 30 and city is Lucknow'
+ends_when: when the bot says goodbye, or when you have what you came for and say thank you
+feeds:
+- TC09
+- TC10
+legs:
+- goal: welder job.
+  opening_line: नमस्ते

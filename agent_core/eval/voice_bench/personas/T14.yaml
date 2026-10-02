@@ -1,0 +1,21 @@
+id: T14
+title: Returning caller with a live profile, applies
+language: hi
+facts:
+  name: मोहन लाल
+  age: 32
+  trade: इलेक्ट्रीशियन
+  city: लखनऊ
+goal: you already have a profile; find an electrician job and apply.
+quirks:
+- confirm your saved details are right
+- pick the second job offered
+ends_when: when the bot says goodbye, or when you have what you came for and say thank you
+feeds:
+- TC09
+- TC13
+- TC21
+seeded_phone: '919900014000'
+legs:
+- goal: you already have a profile; find an electrician job and apply.
+  opening_line: नमस्ते

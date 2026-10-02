@@ -156,7 +156,8 @@ def test_mode_flag_is_rejected():
     assert e.value.code == 2
 
 
-def test_load_merged_config_takes_one_argument():
+def test_load_merged_config_has_no_mode_argument():
     import inspect
     from eval.nlu.offline import load_merged_config
-    assert len(inspect.signature(load_merged_config).parameters) == 1
+    params = list(inspect.signature(load_merged_config).parameters)
+    assert params[0] == "domain_dir" and "mode" not in params

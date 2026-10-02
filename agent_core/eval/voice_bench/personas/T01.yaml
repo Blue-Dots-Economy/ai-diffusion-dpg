@@ -1,0 +1,26 @@
+id: T01
+title: Cooperative caller, applies to a job
+language: hi
+facts:
+  name: रमेश कुमार
+  age: 24
+  trade: इलेक्ट्रीशियन
+  city: लखनऊ
+goal: Find an electrician job in Lucknow and apply to one of the jobs offered.
+quirks:
+- answer each question briefly and truthfully
+- agree to save details when asked
+- pick the first job offered
+ends_when: after the bot confirms the application and says goodbye, or after you say thank you and the bot closes
+feeds:
+- TC01
+- TC04
+- TC05
+- TC07
+- TC09
+- TC13
+- TC16
+- TC21
+legs:
+- goal: apply to an electrician job in Lucknow
+  opening_line: नमस्ते
